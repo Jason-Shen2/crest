@@ -34,7 +34,7 @@ import {
     handleOsc7Command,
     type ShellIntegrationStatus,
 } from "./osc-handlers";
-import { bufferLinesToText, createTempFileFromBlob, extractAllClipboardData } from "./termutil";
+import { bufferLinesToText, createTempFileFromBlob, extractAllClipboardData, normalizeCursorStyle } from "./termutil";
 
 const dlog = debug("wave:termwrap");
 
@@ -209,6 +209,14 @@ export class TermWrap {
 
     getZoneId(): string {
         return this.blockId;
+    }
+
+    setCursorStyle(cursorStyle: string) {
+        this.terminal.options.cursorStyle = normalizeCursorStyle(cursorStyle);
+    }
+
+    setCursorBlink(cursorBlink: boolean) {
+        this.terminal.options.cursorBlink = cursorBlink ?? false;
     }
 
     resetCompositionState() {
