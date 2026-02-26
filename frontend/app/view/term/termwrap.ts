@@ -42,6 +42,7 @@ const TermFileName = "term";
 const TermCacheFileName = "cache:term:full";
 const MinDataProcessedForCache = 100 * 1024;
 export const SupportsImageInput = true;
+const IMEDedupWindowMs = 20;
 
 // detect webgl support
 function detectWebGLSupport(): boolean {
@@ -93,8 +94,6 @@ export class TermWrap {
     onLinkHover?: (uri: string | null, mouseX: number, mouseY: number) => void;
 
     // IME composition state tracking
-    // Prevents duplicate input when switching input methods during composition (e.g., using Capslock)
-    // xterm.js sends data during compositionupdate AND after compositionend, causing duplicates
     isComposing: boolean = false;
     composingData: string = "";
     lastCompositionEnd: number = 0;
@@ -205,7 +204,15 @@ export class TermWrap {
                 return true;
             })
         );
-        this.terminal.attachCustomKeyEventHandler(waveOptions.keydownHandler);
+        this.terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+            if (e.isComposing && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                return true;
+            }
+            if (!waveOptions.keydownHandler) {
+                return true;
+            }
+            return waveOptions.keydownHandler(e);
+        });
         this.connectElem = connectElem;
         this.mainFileSubject = null;
         this.heldData = [];
@@ -236,6 +243,9 @@ export class TermWrap {
     resetCompositionState() {
         this.isComposing = false;
         this.composingData = "";
+        this.lastComposedText = "";
+        this.lastCompositionEnd = 0;
+        this.firstDataAfterCompositionSent = false;
     }
 
     private handleCompositionStart = (e: CompositionEvent) => {
@@ -353,30 +363,13 @@ export class TermWrap {
             return;
         }
 
-        // IME Composition Handling
-        // Block all data during composition - only send the final text after compositionend
-        // This prevents xterm.js from sending intermediate composition data (e.g., during compositionupdate)
+        // IME fix: suppress isComposing=true events unless they immediately follow
+        // a compositionend (within 20ms). This handles CapsLock input method switching
+        // where the composition buffer gets flushed as a spurious isComposing=true event
         if (this.isComposing) {
-            dlog("Blocked data during composition:", data);
-            return;
-        }
-
-        // IME Deduplication (for Capslock input method switching)
-        // When switching input methods with Capslock during composition, some systems send the
-        // composed text twice. We allow the first send and block subsequent duplicates.
-        const IMEDedupWindowMs = 50;
-        const now = Date.now();
-        const timeSinceCompositionEnd = now - this.lastCompositionEnd;
-        if (timeSinceCompositionEnd < IMEDedupWindowMs && data === this.lastComposedText && this.lastComposedText) {
-            if (!this.firstDataAfterCompositionSent) {
-                // First send after composition - allow it but mark as sent
-                this.firstDataAfterCompositionSent = true;
-                dlog("First data after composition, allowing:", data);
-            } else {
-                // Second send of the same data - this is a duplicate from Capslock switching, block it
-                dlog("Blocked duplicate IME data:", data);
-                this.lastComposedText = ""; // Clear to allow same text to be typed again later
-                this.firstDataAfterCompositionSent = false;
+            const timeSinceCompositionEnd = Date.now() - this.lastCompositionEnd;
+            if (timeSinceCompositionEnd > IMEDedupWindowMs) {
+                dlog("Suppressed IME data (composing, not near compositionend):", data);
                 return;
             }
         }
