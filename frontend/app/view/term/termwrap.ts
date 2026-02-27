@@ -11,6 +11,7 @@ import {
     getOverrideConfigAtom,
     getSettingsKeyAtom,
     globalStore,
+    isDev,
     openLink,
     setTabIndicator,
     WOS,
@@ -43,6 +44,7 @@ const TermCacheFileName = "cache:term:full";
 const MinDataProcessedForCache = 100 * 1024;
 export const SupportsImageInput = true;
 const IMEDedupWindowMs = 20;
+const MaxRepaintTransactionMs = 2000;
 
 // detect webgl support
 function detectWebGLSupport(): boolean {
@@ -104,9 +106,23 @@ export class TermWrap {
     // xterm.js paste() method triggers onData event, which can cause duplicate sends
     lastPasteData: string = "";
     lastPasteTime: number = 0;
+
+    // for scrollToBottom support during a resize
     lastAtBottomTime: number = Date.now();
     lastScrollAtBottom: boolean = true;
     cachedAtBottomForResize: boolean | null = null;
+    viewportScrollTop: number = 0;
+
+    // dev only (for debugging)
+    recentWrites: { idx: number; data: string; ts: number }[] = [];
+    recentWritesCounter: number = 0;
+
+    // for repaint transaction scrolling behavior
+    lastClearScrollbackTs: number = 0;
+    lastMode2026SetTs: number = 0;
+    lastMode2026ResetTs: number = 0;
+    inSyncTransaction: boolean = false;
+    inRepaintTransaction: boolean = false;
 
     constructor(
         tabId: string,
@@ -188,6 +204,44 @@ export class TermWrap {
             return handleOsc16162Command(data, this.blockId, this.loaded, this);
         });
         this.toDispose.push(
+            this.terminal.parser.registerCsiHandler({ final: "J" }, (params) => {
+                if (params[0] === 3) {
+                    this.lastClearScrollbackTs = Date.now();
+                    if (this.inSyncTransaction) {
+                        console.log("[termwrap] repaint transaction starting");
+                        this.inRepaintTransaction = true;
+                    }
+                }
+                return false;
+            })
+        );
+        this.toDispose.push(
+            this.terminal.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+                if (params[0] === 2026) {
+                    this.lastMode2026SetTs = Date.now();
+                    this.inSyncTransaction = true;
+                }
+                return false;
+            })
+        );
+        this.toDispose.push(
+            this.terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+                if (params[0] === 2026) {
+                    this.lastMode2026ResetTs = Date.now();
+                    this.inSyncTransaction = false;
+                    const wasRepaint = this.inRepaintTransaction;
+                    this.inRepaintTransaction = false;
+                    if (wasRepaint && Date.now() - this.lastClearScrollbackTs <= MaxRepaintTransactionMs) {
+                        setTimeout(() => {
+                            console.log("[termwrap] repaint transaction complete, scrolling to bottom");
+                            this.terminal.scrollToBottom();
+                        }, 20);
+                    }
+                }
+                return false;
+            })
+        );
+        this.toDispose.push(
             this.terminal.onBell(() => {
                 if (!this.loaded) {
                     return true;
@@ -231,9 +285,8 @@ export class TermWrap {
         });
         const viewportElem = this.connectElem.querySelector(".xterm-viewport") as HTMLElement;
         if (viewportElem) {
-            const scrollHandler = () => {
-                const atBottom = viewportElem.scrollTop + viewportElem.clientHeight >= viewportElem.scrollHeight - 20;
-                this.setAtBottom(atBottom);
+            const scrollHandler = (e: any) => {
+                this.handleViewportScroll(viewportElem);
             };
             viewportElem.addEventListener("scroll", scrollHandler);
             this.toDispose.push({
@@ -416,6 +469,13 @@ export class TermWrap {
     }
 
     doTerminalWrite(data: string | Uint8Array, setPtyOffset?: number): Promise<void> {
+        if (isDev() && this.loaded) {
+            const dataStr = data instanceof Uint8Array ? new TextDecoder().decode(data) : data;
+            this.recentWrites.push({ idx: this.recentWritesCounter++, ts: Date.now(), data: dataStr });
+            if (this.recentWrites.length > 50) {
+                this.recentWrites.shift();
+            }
+        }
         let resolve: () => void = null;
         let prtn = new Promise<void>((presolve, _) => {
             resolve = presolve;
@@ -498,6 +558,19 @@ export class TermWrap {
         return Date.now() - this.lastAtBottomTime <= 1000;
     }
 
+    handleViewportScroll(viewportElem: HTMLElement) {
+        const { scrollTop, scrollHeight, clientHeight } = viewportElem;
+        const atBottom = scrollTop + clientHeight >= scrollHeight - clientHeight * 0.5;
+        this.setAtBottom(atBottom);
+        const delta = this.viewportScrollTop - scrollTop;
+        if (isDev() && delta >= 500) {
+            console.log(
+                `[termwrap] large-scroll blockId=${this.blockId} delta=${Math.round(delta)}px scrollTop=${scrollTop} wasNearBottom=${atBottom}`
+            );
+        }
+        this.viewportScrollTop = scrollTop;
+    }
+
     handleResize() {
         const oldRows = this.terminal.rows;
         const oldCols = this.terminal.cols;
@@ -508,6 +581,14 @@ export class TermWrap {
         this.fitAddon.fit();
         if (oldRows !== this.terminal.rows || oldCols !== this.terminal.cols) {
             const termSize: TermSize = { rows: this.terminal.rows, cols: this.terminal.cols };
+            console.log(
+                "[termwrap] resize",
+                `${oldRows}x${oldCols}`,
+                "->",
+                `${this.terminal.rows}x${this.terminal.cols}`,
+                "atBottom:",
+                atBottom
+            );
             RpcApi.ControllerInputCommand(TabRpcClient, { blockid: this.blockId, termsize: termSize });
         }
         dlog("resize", `${this.terminal.rows}x${this.terminal.cols}`, `${oldRows}x${oldCols}`, this.hasResized);
@@ -517,6 +598,7 @@ export class TermWrap {
         }
         if (atBottom) {
             setTimeout(() => {
+                console.log("[termwrap] resize scroll-to-bottom");
                 this.cachedAtBottomForResize = null;
                 this.terminal.scrollToBottom();
                 this.setAtBottom(true);
