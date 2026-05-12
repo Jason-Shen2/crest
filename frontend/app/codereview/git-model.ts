@@ -26,6 +26,47 @@ export type FileStats = {
     del: number;
 };
 
+export type DiffMode = "Head" | "MainBranch" | "Other";
+
+export type ReviewComment = {
+    id: string;
+    path: string;
+    // Line number in the new (post-change) file the comment is anchored to.
+    // null means file-level (not tied to a specific line).
+    line: number | null;
+    body: string;
+    createdAt: number;
+};
+
+// Status group ordering for the review panel — modified files first, then
+// added, then deleted, then renamed.  The `status` field of GitChangedFile
+// is the two-char porcelain code from `git status --short`.
+export function statusGroup(status: string): "modified" | "added" | "deleted" | "renamed" | "other" {
+    const s = status.trim();
+    if (s.startsWith("R")) return "renamed";
+    if (s === "??" || s === "A" || s.startsWith("A")) return "added";
+    if (s === "D" || s.startsWith("D")) return "deleted";
+    if (s === "M" || s.startsWith("M") || s === "MM" || s.endsWith("M")) return "modified";
+    return "other";
+}
+
+const StatusGroupOrder: Record<string, number> = {
+    modified: 0,
+    added: 1,
+    deleted: 2,
+    renamed: 3,
+    other: 4,
+};
+
+export function sortFilesForReview(files: GitChangedFile[]): GitChangedFile[] {
+    return [...files].sort((a, b) => {
+        const ga = StatusGroupOrder[statusGroup(a.status)];
+        const gb = StatusGroupOrder[statusGroup(b.status)];
+        if (ga !== gb) return ga - gb;
+        return a.path.localeCompare(b.path);
+    });
+}
+
 export function parseStatusOutput(raw: string): GitChangedFile[] {
     const files: GitChangedFile[] = [];
     for (const line of raw.split("\n")) {
@@ -38,6 +79,29 @@ export function parseStatusOutput(raw: string): GitChangedFile[] {
             files.push({ status, path, origPath });
         } else {
             files.push({ status, path: rest });
+        }
+    }
+    return files;
+}
+
+// `git diff --name-status` output, one file per line:
+//   M\tpath/to/file
+//   A\tnew/file
+//   D\tdeleted/file
+//   R100\told/path\tnew/path
+export function parseNameStatusOutput(raw: string): GitChangedFile[] {
+    const files: GitChangedFile[] = [];
+    for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        const parts = line.split("\t");
+        if (parts.length < 2) continue;
+        const code = parts[0];
+        if (code.startsWith("R") && parts.length >= 3) {
+            files.push({ status: "R", path: parts[2], origPath: parts[1] });
+        } else if (code.startsWith("C") && parts.length >= 3) {
+            files.push({ status: "C", path: parts[2], origPath: parts[1] });
+        } else {
+            files.push({ status: code, path: parts.slice(1).join("\t") });
         }
     }
     return files;
@@ -76,6 +140,7 @@ export class GitModel {
 
     isRepoAtom: jotai.PrimitiveAtom<boolean>;
     branchAtom: jotai.PrimitiveAtom<string>;
+    mainBranchAtom: jotai.PrimitiveAtom<string>;
     totalAddAtom: jotai.PrimitiveAtom<number>;
     totalDelAtom: jotai.PrimitiveAtom<number>;
     filesAtom: jotai.PrimitiveAtom<GitChangedFile[]>;
@@ -86,6 +151,10 @@ export class GitModel {
     loadingFilesAtom: jotai.PrimitiveAtom<Set<string>>;
     errorAtom: jotai.PrimitiveAtom<string | null>;
     cwdAtom: jotai.PrimitiveAtom<string>;
+    diffModeAtom: jotai.PrimitiveAtom<DiffMode>;
+    selectedFileAtom: jotai.PrimitiveAtom<string | null>;
+    fileSidebarCollapsedAtom: jotai.PrimitiveAtom<boolean>;
+    commentsAtom: jotai.PrimitiveAtom<ReviewComment[]>;
 
     private watchedGitDir: string | null = null;
     private watchedCwd: string | null = null;
@@ -96,6 +165,7 @@ export class GitModel {
     private constructor() {
         this.isRepoAtom = jotai.atom(false) as jotai.PrimitiveAtom<boolean>;
         this.branchAtom = jotai.atom("") as jotai.PrimitiveAtom<string>;
+        this.mainBranchAtom = jotai.atom("") as jotai.PrimitiveAtom<string>;
         this.totalAddAtom = jotai.atom(0) as jotai.PrimitiveAtom<number>;
         this.totalDelAtom = jotai.atom(0) as jotai.PrimitiveAtom<number>;
         this.filesAtom = jotai.atom([]) as jotai.PrimitiveAtom<GitChangedFile[]>;
@@ -106,6 +176,10 @@ export class GitModel {
         this.loadingFilesAtom = jotai.atom(new Set<string>()) as jotai.PrimitiveAtom<Set<string>>;
         this.errorAtom = jotai.atom(null) as jotai.PrimitiveAtom<string | null>;
         this.cwdAtom = jotai.atom("~") as jotai.PrimitiveAtom<string>;
+        this.diffModeAtom = jotai.atom("Head") as jotai.PrimitiveAtom<DiffMode>;
+        this.selectedFileAtom = jotai.atom(null) as jotai.PrimitiveAtom<string | null>;
+        this.fileSidebarCollapsedAtom = jotai.atom(false) as jotai.PrimitiveAtom<boolean>;
+        this.commentsAtom = jotai.atom([]) as jotai.PrimitiveAtom<ReviewComment[]>;
         this.debouncedRefresh = debounce(1000, () => fireAndForget(() => this.refresh()));
     }
 
@@ -159,42 +233,183 @@ export class GitModel {
         }
     }
 
+    // detectMainBranch resolves the repo's main/integration branch.
+    // Order: origin/HEAD symbolic-ref → main → master → empty (no remote default).
+    private async detectMainBranch(cwd: string): Promise<string> {
+        try {
+            const r = await RpcApi.RunLocalCmdCommand(TabRpcClient, {
+                cmd: "git",
+                args: ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                cwd,
+            });
+            const ref = r.stdout.trim();
+            if (ref) return ref;
+        } catch {
+            // expected when origin/HEAD isn't set
+        }
+        for (const candidate of ["origin/main", "origin/master", "main", "master"]) {
+            try {
+                const r = await RpcApi.RunLocalCmdCommand(TabRpcClient, {
+                    cmd: "git",
+                    args: ["rev-parse", "--verify", "--quiet", candidate],
+                    cwd,
+                });
+                if (r.exitcode === 0 && r.stdout.trim()) return candidate;
+            } catch {
+                // try next candidate
+            }
+        }
+        return "";
+    }
+
+    // Comparison ref used by diff commands.  For Head we diff against the
+    // current HEAD (working tree changes).  For MainBranch we use three-dot
+    // syntax (`<main>...HEAD`) which mirrors GitHub's PR view: commits on this
+    // branch since it diverged.  Other isn't wired up yet — it falls back to
+    // Head with a console warning so the panel still renders.
+    private comparisonRef(): string {
+        const mode = globalStore.get(this.diffModeAtom);
+        if (mode === "Head") return "HEAD";
+        if (mode === "MainBranch") {
+            const main = globalStore.get(this.mainBranchAtom);
+            return main ? `${main}...HEAD` : "HEAD";
+        }
+        return "HEAD";
+    }
+
     async refresh(): Promise<void> {
         const cwd = globalStore.get(this.cwdAtom);
         if (!cwd) return;
         globalStore.set(this.loadingAtom, true);
         globalStore.set(this.errorAtom, null);
         try {
-            const [info, statusResult] = await Promise.all([
+            const [info, mainBranch] = await Promise.all([
                 RpcApi.GetGitInfoCommand(TabRpcClient, cwd),
-                RpcApi.RunLocalCmdCommand(TabRpcClient, {
-                    cmd: "git",
-                    args: ["status", "--short", "--porcelain"],
-                    cwd,
-                }),
+                this.detectMainBranch(cwd),
             ]);
             globalStore.set(this.isRepoAtom, info.isrepo);
             globalStore.set(this.branchAtom, info.branch ?? "");
-            globalStore.set(this.totalAddAtom, info.additions ?? 0);
-            globalStore.set(this.totalDelAtom, info.deletions ?? 0);
+            globalStore.set(this.mainBranchAtom, mainBranch);
             if (info.isrepo) {
-                const files = parseStatusOutput(statusResult.stdout);
+                const files = await this.loadFiles();
                 globalStore.set(this.filesAtom, files);
+                this.maybeAutoSelectFile(files);
                 // Populate per-file stats up front so the panel shows
                 // real counts (not +0/-0) before the user expands a row.
-                // Cheap one-shot numstat, plus wc fallback for untracked.
                 fireAndForget(() => this.loadAllStats(files));
-                // Reload full line-level diffs for already-expanded files
+                // Reload diff for the currently selected file, plus any
+                // already-expanded rows in the file list.
+                const selected = globalStore.get(this.selectedFileAtom);
+                if (selected) fireAndForget(() => this.loadDiff(selected));
                 const expanded = globalStore.get(this.expandedFilesAtom);
                 for (const path of expanded) {
-                    fireAndForget(() => this.loadDiff(path));
+                    if (path !== selected) fireAndForget(() => this.loadDiff(path));
                 }
+                // Compute total +/- for the current diff mode.
+                this.recomputeTotalsFromStats();
+            } else {
+                globalStore.set(this.totalAddAtom, info.additions ?? 0);
+                globalStore.set(this.totalDelAtom, info.deletions ?? 0);
             }
         } catch (e: any) {
             globalStore.set(this.errorAtom, e?.message ?? String(e));
         } finally {
             globalStore.set(this.loadingAtom, false);
         }
+    }
+
+    // loadFiles returns the file list for the current diff mode.  Head uses
+    // `git status` so untracked files surface; MainBranch uses `git diff
+    // --name-status` so the listing matches the PR-style comparison.
+    private async loadFiles(): Promise<GitChangedFile[]> {
+        const cwd = globalStore.get(this.cwdAtom);
+        const mode = globalStore.get(this.diffModeAtom);
+        if (mode === "Head" || mode === "Other") {
+            const statusResult = await RpcApi.RunLocalCmdCommand(TabRpcClient, {
+                cmd: "git",
+                args: ["status", "--short", "--porcelain"],
+                cwd,
+            });
+            return sortFilesForReview(parseStatusOutput(statusResult.stdout));
+        }
+        // MainBranch — name-status against the comparison ref.
+        const ref = this.comparisonRef();
+        const r = await RpcApi.RunLocalCmdCommand(TabRpcClient, {
+            cmd: "git",
+            args: ["diff", "--name-status", ref],
+            cwd,
+        });
+        return sortFilesForReview(parseNameStatusOutput(r.stdout));
+    }
+
+    private maybeAutoSelectFile(files: GitChangedFile[]): void {
+        const selected = globalStore.get(this.selectedFileAtom);
+        if (selected && files.some((f) => f.path === selected)) return;
+        if (files.length === 0) {
+            globalStore.set(this.selectedFileAtom, null);
+            return;
+        }
+        const first = files[0].path;
+        globalStore.set(this.selectedFileAtom, first);
+        fireAndForget(() => this.loadDiff(first));
+    }
+
+    private recomputeTotalsFromStats(): void {
+        const stats = globalStore.get(this.fileStatsAtom);
+        let add = 0;
+        let del = 0;
+        for (const s of stats.values()) {
+            add += s.add;
+            del += s.del;
+        }
+        globalStore.set(this.totalAddAtom, add);
+        globalStore.set(this.totalDelAtom, del);
+    }
+
+    setDiffMode(mode: DiffMode): void {
+        if (globalStore.get(this.diffModeAtom) === mode) return;
+        globalStore.set(this.diffModeAtom, mode);
+        // Reset diff-derived state so the new mode's data lands cleanly.
+        globalStore.set(this.fileDiffsAtom, new Map());
+        globalStore.set(this.fileStatsAtom, new Map());
+        globalStore.set(this.expandedFilesAtom, new Set());
+        fireAndForget(() => this.refresh());
+    }
+
+    selectFile(path: string | null): void {
+        globalStore.set(this.selectedFileAtom, path);
+        if (!path) return;
+        const diffs = globalStore.get(this.fileDiffsAtom);
+        if (!diffs.has(path)) {
+            fireAndForget(() => this.loadDiff(path));
+        }
+    }
+
+    toggleFileSidebar(): void {
+        globalStore.set(this.fileSidebarCollapsedAtom, !globalStore.get(this.fileSidebarCollapsedAtom));
+    }
+
+    addComment(path: string, line: number | null, body: string): void {
+        const trimmed = body.trim();
+        if (!trimmed) return;
+        const comment: ReviewComment = {
+            id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            path,
+            line,
+            body: trimmed,
+            createdAt: Date.now(),
+        };
+        const next = [...globalStore.get(this.commentsAtom), comment];
+        globalStore.set(this.commentsAtom, next);
+    }
+
+    removeComment(id: string): void {
+        const next = globalStore.get(this.commentsAtom).filter((c) => c.id !== id);
+        globalStore.set(this.commentsAtom, next);
+    }
+
+    clearComments(): void {
+        globalStore.set(this.commentsAtom, []);
     }
 
     // loadAllStats fetches +/- counts for every changed file in one
@@ -207,11 +422,12 @@ export class GitModel {
     private async loadAllStats(files: GitChangedFile[]): Promise<void> {
         const cwd = globalStore.get(this.cwdAtom);
         if (!cwd || files.length === 0) return;
+        const ref = this.comparisonRef();
         const stats = new Map<string, FileStats>();
         try {
             const numstatResult = await RpcApi.RunLocalCmdCommand(TabRpcClient, {
                 cmd: "git",
-                args: ["diff", "--numstat", "HEAD"],
+                args: ["diff", "--numstat", ref],
                 cwd,
             });
             for (const line of numstatResult.stdout.split("\n")) {
@@ -252,17 +468,19 @@ export class GitModel {
             merged.set(path, s);
         }
         globalStore.set(this.fileStatsAtom, merged);
+        this.recomputeTotalsFromStats();
     }
 
     private async loadDiff(path: string): Promise<void> {
         const cwd = globalStore.get(this.cwdAtom);
+        const ref = this.comparisonRef();
         const loading = new Set(globalStore.get(this.loadingFilesAtom));
         loading.add(path);
         globalStore.set(this.loadingFilesAtom, loading);
         try {
             const result = await RpcApi.RunLocalCmdCommand(TabRpcClient, {
                 cmd: "git",
-                args: ["diff", "--unified=3", "HEAD", "--", path],
+                args: ["diff", "--unified=3", ref, "--", path],
                 cwd,
             });
             let diffText = result.stdout;

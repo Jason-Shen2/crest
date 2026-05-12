@@ -12,9 +12,9 @@ import * as jotai from "jotai";
 import { debounce } from "lodash-es";
 import { ImperativePanelGroupHandle, ImperativePanelHandle } from "react-resizable-panels";
 
-const VTabBar_DefaultWidth = 220;
-const VTabBar_MinWidth = 150;
-const VTabBar_MaxWidth = 320;
+const VTabBar_DefaultWidth = 248;
+const VTabBar_MinWidth = 200;
+const VTabBar_MaxWidth = 360;
 
 const FileExplorer_DefaultWidth = 260;
 const FileExplorer_MinWidth = 180;
@@ -287,11 +287,17 @@ class WorkspaceLayoutModel {
 
     getVTabInitialPercentage(windowWidth: number, showLeftTabBar: boolean): number {
         if (!showLeftTabBar || isBuilderWindow() || !this.vtabVisible) return 0;
+        // First render can land before window bounds are computed
+        // (windowWidth=0), which would yield Infinity here and crash
+        // react-resizable-panels.  Fall back to 0%; the subsequent
+        // commitLayouts() from registerRefs() re-sets the real sizes.
+        if (windowWidth <= 0) return 0;
         return (this.getResolvedVTabWidth() / windowWidth) * 100;
     }
 
     getFileExplorerInitialPercentage(windowWidth: number): number {
         if (!this.fileExplorerVisible) return 0;
+        if (windowWidth <= 0) return 0;
         return (this.getResolvedFileExplorerWidth(windowWidth) / windowWidth) * 100;
     }
 

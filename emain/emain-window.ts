@@ -417,10 +417,6 @@ export class WaveBrowserWindow extends BaseWindow {
 
     private async initializeTab(tabView: WaveTabView, primaryStartupTab: boolean) {
         const clientId = await getClientId();
-        await this.awaitWithDevTimeout(tabView.initPromise, "initPromise", tabView.waveTabId);
-        const winBounds = this.getContentBounds();
-        tabView.setBounds({ x: 0, y: 0, width: winBounds.width, height: winBounds.height });
-        this.contentView.addChildView(tabView);
         const initOpts: WaveInitOpts = {
             tabId: tabView.waveTabId,
             clientId: clientId,
@@ -430,9 +426,22 @@ export class WaveBrowserWindow extends BaseWindow {
         if (primaryStartupTab) {
             initOpts.primaryTabStartup = true;
         }
+        // Set savedInitOpts BEFORE awaiting initPromise so that if the
+        // renderer's "ready" IPC arrives after the dev-mode 5s timeout,
+        // the IPC handler in emain-ipc.ts can still fire `wave-init`
+        // (it gates on tabView.savedInitOpts != null).  Previously the
+        // assignment was after the await — if the await threw on
+        // timeout, savedInitOpts stayed null forever and the renderer
+        // got stuck in initBare with no wave-init ever delivered.  Easy
+        // to trip when vite is re-optimizing dependencies (cold start,
+        // post-`npm install`, large HMR edits).
         tabView.savedInitOpts = { ...initOpts };
         tabView.savedInitOpts.activate = false;
         delete tabView.savedInitOpts.primaryTabStartup;
+        await this.awaitWithDevTimeout(tabView.initPromise, "initPromise", tabView.waveTabId);
+        const winBounds = this.getContentBounds();
+        tabView.setBounds({ x: 0, y: 0, width: winBounds.width, height: winBounds.height });
+        this.contentView.addChildView(tabView);
         const startTime = Date.now();
         console.log(
             "before wave ready, init tab, sending wave-init",

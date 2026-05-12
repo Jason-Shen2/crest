@@ -135,8 +135,8 @@ const WorkspaceElem = memo(() => {
                                         <Panel
                                             id="tab-content"
                                             order={0}
-                                            defaultSize={codeReviewVisible && !codeReviewWide ? 70 : 100}
-                                            minSize={30}
+                                            defaultSize={codeReviewVisible && !codeReviewWide ? 65 : 100}
+                                            minSize={25}
                                         >
                                             <div className="relative flex flex-row w-full h-full overflow-hidden">
                                                 <TabContent key={tabId} tabId={tabId} noTopPadding={showLeftTabBar && isMacOS()} />
@@ -148,8 +148,9 @@ const WorkspaceElem = memo(() => {
                                                 <Panel
                                                     id="code-review"
                                                     order={1}
-                                                    defaultSize={30}
+                                                    defaultSize={35}
                                                     minSize={20}
+                                                    maxSize={70}
                                                     className="overflow-hidden"
                                                 >
                                                     <div className="w-full h-full overflow-hidden">
