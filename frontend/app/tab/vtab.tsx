@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { UIcon } from "@/app/element/ui-icon";
 import { refocusNode } from "@/app/store/global";
 import type { AgentKind } from "@/app/store/tabcmdstate";
 import { validateCssColor } from "@/util/color-validator";
@@ -95,32 +96,45 @@ interface VTabProps {
     renameRef?: React.RefObject<(() => void) | null>;
 }
 
-// Visual treatment per detected agent kind.  Color scheme mirrors each
-// vendor's brand so the indicator is recognizable at a glance.
-const AgentIconStyles: Record<AgentKind, { icon: string; color: string; title: string }> = {
-    claude: { icon: "fa-asterisk", color: "#c0634a", title: "Claude Code running" },
-    codex:  { icon: "fa-code",     color: "#10a37f", title: "Codex running" },
-    ai:     { icon: "fa-wand-magic-sparkles", color: "var(--color-accent)", title: "AI agent running" },
-    generic:{ icon: "fa-circle-notch", color: "var(--color-secondary)", title: "Command running" },
+// Agent visual treatment.  The brand glyph is shown as a small badge in the
+// bottom-right corner of the tab's main icon (vertical-tabs icon-with-
+// status pattern).  Color matches each vendor so the status reads at a glance.
+const AgentBadgeStyles: Record<
+    AgentKind,
+    { icon: string; color: string; title: string; spin?: boolean }
+> = {
+    claude: { icon: "claude", color: "#c0634a", title: "Claude Code running" },
+    codex: { icon: "stars-01", color: "#10a37f", title: "Codex running" },
+    ai: { icon: "stars-01", color: "var(--color-accent)", title: "AI agent running" },
+    generic: { icon: "clock-loader", color: "var(--color-secondary)", title: "Command running", spin: true },
 };
 
-function ActivityIcon({ kind }: { kind: AgentKind }) {
-    const style = AgentIconStyles[kind];
-    const spin = kind === "generic";
+function AgentBadge({ kind }: { kind: AgentKind }) {
+    const style = AgentBadgeStyles[kind];
     return (
         <span
-            className={cn(
-                "relative flex items-center justify-center mr-2 shrink-0 w-[16px] h-[16px]",
-                kind !== "generic" && "animate-pulse"
-            )}
+            className="absolute -bottom-0.5 -right-0.5 flex h-[14px] w-[14px] items-center justify-center rounded-full bg-background ring-1 ring-fg-overlay-3"
             title={style.title}
             aria-label={style.title}
         >
-            <i
-                className={cn("fa-solid", style.icon, spin && "fa-spin", "text-[12px]")}
+            <UIcon
+                name={style.icon}
+                size={10}
+                className={cn(style.spin && "animate-spin")}
                 style={{ color: style.color }}
-                aria-hidden
             />
+        </span>
+    );
+}
+
+function GitStatsBadge({ adds, dels }: { adds?: number; dels?: number }) {
+    const hasAdds = adds != null && adds > 0;
+    const hasDels = dels != null && dels > 0;
+    if (!hasAdds && !hasDels) return null;
+    return (
+        <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-sm bg-fg-overlay-1 px-1.5 py-[1px] text-[10px] font-medium tabular-nums">
+            {hasAdds && <span style={{ color: "var(--color-add-strong)" }}>+{adds}</span>}
+            {hasDels && <span style={{ color: "var(--color-remove-strong)" }}>−{dels}</span>}
         </span>
     );
 }
@@ -128,7 +142,6 @@ function ActivityIcon({ kind }: { kind: AgentKind }) {
 export function VTab({
     tab,
     active,
-    showDivider = true,
     isDragging,
     isReordering,
     hoverResetVersion,
@@ -244,7 +257,7 @@ export function VTab({
         event.stopPropagation();
     };
 
-    const applyRtlToName = isPathLike(tab.name);
+    const applyScrollOnName = isPathLike(tab.name);
 
     return (
         <div
@@ -263,53 +276,43 @@ export function VTab({
             onMouseEnter={() => onHoverChanged?.(true)}
             onMouseLeave={() => onHoverChanged?.(false)}
             className={cn(
-                "group relative flex w-full shrink-0 cursor-pointer items-center pl-3 text-[13px] transition-colors select-none",
-                "whitespace-nowrap min-h-[60px]",
-                active ? "text-primary" : isReordering ? "text-secondary" : "text-secondary hover:text-primary",
+                "group relative mx-2 my-0.5 flex shrink-0 cursor-pointer select-none items-start gap-2 rounded px-2 py-2 transition-colors",
+                "border",
+                active
+                    ? "border-fg-overlay-3 bg-fg-overlay-2 text-foreground"
+                    : isReordering
+                      ? "border-transparent text-secondary"
+                      : "border-transparent text-secondary hover:bg-fg-overlay-1 hover:text-foreground",
                 isDragging && "opacity-50"
             )}
         >
-            {active && (
-                <div
-                    className={cn(
-                        "pointer-events-none absolute inset-x-[6px] inset-y-[5px] rounded-[5px]",
-                        "border border-white/25",
-                        "bg-white/[0.06]"
-                    )}
-                />
-            )}
-            {!active && !isReordering && (
-                <div className="pointer-events-none absolute inset-x-[6px] inset-y-[5px] rounded-[5px] bg-transparent transition-colors group-hover:bg-white/[0.05]" />
-            )}
             {flagColor && (
                 <div
-                    className="pointer-events-none absolute top-[5px] bottom-[5px] left-[2px] w-[3px] rounded-l-[5px]"
+                    className="pointer-events-none absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-l"
                     style={{ backgroundColor: flagColor }}
                     aria-hidden
                 />
             )}
-            <div
-                className={cn(
-                    "pointer-events-none absolute bottom-0 left-[5%] right-[5%] h-px bg-border/70",
-                    !showDivider && "opacity-0"
+            <div className="relative flex h-6 w-6 shrink-0 items-center justify-center">
+                {badges && badges.length > 0 && !tab.runningKind ? (
+                    <TabBadges
+                        badges={badges}
+                        flagColor={flagColor}
+                        className="static top-auto left-auto z-auto m-0 flex h-6 w-6 translate-y-0 items-center justify-center p-0 [&_i]:text-[12px]"
+                    />
+                ) : (
+                    <UIcon name="terminal" size={18} className={active ? "text-foreground" : "text-secondary"} />
                 )}
-            />
-            {tab.runningKind ? (
-                <ActivityIcon kind={tab.runningKind} />
-            ) : (
-                <TabBadges
-                    badges={badges}
-                    flagColor={flagColor}
-                    className="mr-2 min-w-[16px] shrink-0 static top-auto left-auto z-auto h-[16px] w-auto translate-y-0 justify-start px-[2px] py-[1px] [&_i]:text-[10px]"
-                />
-            )}
-            <div className="min-w-0 flex-1 flex flex-col justify-center pr-3 gap-[3px]">
-                {isEditable || !applyRtlToName ? (
+                {tab.runningKind && <AgentBadge kind={tab.runningKind} />}
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col justify-center gap-[2px] pt-[1px] pr-1">
+                {isEditable || !applyScrollOnName ? (
                     <div
                         ref={editableRef}
                         className={cn(
-                            "overflow-hidden whitespace-nowrap leading-tight text-ellipsis",
-                            isEditable && "rounded-[2px] bg-white/15 outline-none px-[3px]"
+                            "overflow-hidden whitespace-nowrap text-[12px] leading-tight",
+                            !isEditable && "text-ellipsis",
+                            isEditable && "rounded-[2px] bg-fg-overlay-3 px-[3px] outline-none"
                         )}
                         contentEditable={isEditable}
                         role="textbox"
@@ -322,51 +325,40 @@ export function VTab({
                         {tab.name}
                     </div>
                 ) : (
-                    <PathText text={tab.name} className="leading-tight" title={tab.name} />
+                    <PathText
+                        text={tab.name}
+                        className="text-[12px] leading-tight"
+                        title={tab.name}
+                    />
                 )}
-                {/*
-                  Metadata row always renders with a reserved 14px min-height
-                  so the tab shape is constant whether or not cwd / branch
-                  / diff info is available. Prevents twitch when data trickles
-                  in after the click/switch.
-                */}
-                <div className="flex items-center gap-[6px] text-[11px] text-secondary/80 overflow-hidden whitespace-nowrap min-h-[14px] leading-tight">
+                <div className="flex min-h-[14px] items-center gap-1.5 overflow-hidden whitespace-nowrap text-[11px] leading-tight text-sub-text">
                     {tab.subtitle ? (
                         <PathText text={tab.subtitle} className="min-w-0 flex-1" title={tab.subtitle} />
                     ) : null}
                     {tab.gitBranch && (
-                        <span className="inline-flex items-center gap-[4px] shrink-0 text-[#b8f2c0]">
-                            <i className="fa-solid fa-code-branch text-[10px] opacity-85" aria-hidden />
-                            {tab.gitBranch}
+                        <span className="inline-flex shrink-0 items-center gap-0.5 text-[#b8f2c0]">
+                            <UIcon name="git-branch-02" size={11} className="opacity-85" />
+                            <span className="max-w-[80px] truncate">{tab.gitBranch}</span>
                         </span>
                     )}
-                    {tab.gitChangedFiles != null && tab.gitChangedFiles > 0 && (
-                        <span className="shrink-0">
-                            {tab.gitAdds != null && tab.gitAdds > 0 && (
-                                <span className="text-[#4caf50]">+{tab.gitAdds}</span>
-                            )}
-                            {tab.gitDels != null && tab.gitDels > 0 && (
-                                <span className="text-[#e57373] ml-[3px]">-{tab.gitDels}</span>
-                            )}
-                        </span>
-                    )}
+                    <GitStatsBadge adds={tab.gitAdds} dels={tab.gitDels} />
                 </div>
             </div>
             {onClose && (
                 <div
                     className={cn(
-                        "absolute top-[10px] right-[8px] flex items-center gap-[1px] h-[22px] p-[2px]",
-                        "rounded-[4px] bg-[rgba(232,233,230,0.96)] shadow-[0_1px_2px_rgba(0,0,0,0.18)]",
-                        "transition-opacity duration-100",
+                        "absolute right-1.5 top-1.5 flex h-[20px] items-center gap-[1px] rounded p-[2px]",
+                        "border border-white/10 bg-black/45 backdrop-blur-sm",
+                        "shadow-[0_1px_3px_rgba(0,0,0,0.4)] transition-opacity duration-100",
                         isReordering
-                            ? "opacity-0 pointer-events-none"
-                            : "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
+                            ? "pointer-events-none opacity-0"
+                            : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100"
                     )}
                 >
                     {(onContextMenu || onMoreButtonClick) && (
                         <button
                             type="button"
-                            className="cursor-pointer w-[20px] h-full flex items-center justify-center text-[#2a2a2a] rounded-[4px] hover:bg-[rgba(100,102,98,0.45)] transition-colors"
+                            className="flex h-full w-[18px] cursor-pointer items-center justify-center rounded text-foreground/85 transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
                             onClick={(event) => {
                                 event.stopPropagation();
                                 if (onMoreButtonClick) {
@@ -378,12 +370,12 @@ export function VTab({
                             aria-label="Tab options"
                             title="Tab options"
                         >
-                            <i className="fa fa-solid fa-ellipsis-vertical text-[11px]" />
+                            <UIcon name="dots-vertical" size={12} />
                         </button>
                     )}
                     <button
                         type="button"
-                        className="cursor-pointer w-[20px] h-full flex items-center justify-center text-[#2a2a2a] rounded-[4px] hover:bg-[rgba(100,102,98,0.45)] transition-colors"
+                        className="flex h-full w-[18px] cursor-pointer items-center justify-center rounded text-foreground/85 transition-colors hover:bg-fg-overlay-3 hover:text-foreground"
                         onClick={(event) => {
                             event.stopPropagation();
                             onClose();
@@ -391,7 +383,7 @@ export function VTab({
                         aria-label="Close tab"
                         title="Close tab"
                     >
-                        <i className="fa fa-solid fa-xmark text-[11px]" />
+                        <UIcon name="x-close" size={12} />
                     </button>
                 </div>
             )}

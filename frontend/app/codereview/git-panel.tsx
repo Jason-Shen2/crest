@@ -1,16 +1,29 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { ContextMenuModel } from "@/app/store/contextmenu";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
+import { UIcon } from "@/app/element/ui-icon";
 import { cn, fireAndForget } from "@/util/util";
 import { getApi } from "@/store/global";
 import { useAtomValue } from "jotai";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bundledLanguages, codeToHtml } from "shiki/bundle/web";
-import { DiffLine, FileStats, GitChangedFile, GitModel } from "./git-model";
+import {
+    DiffLine,
+    DiffMode,
+    FileStats,
+    GitChangedFile,
+    GitModel,
+    ReviewComment,
+    statusGroup,
+} from "./git-model";
 
 const ShikiTheme = "github-dark-high-contrast";
+const FileSidebar_DefaultWidth = 250;
+const FileSidebar_MinWidth = 160;
+const FileSidebar_MaxWidth = 480;
 
 // ---- Extension → Shiki language mapping ----
 const ExtToShikiLang: Record<string, string> = {
@@ -71,62 +84,122 @@ function resolveShikiLang(path: string): string | null {
     return lang && lang in bundledLanguages ? lang : null;
 }
 
-// ---- Icon button (shared header/action affordance) ----
-const IconButton = memo(
+// ---- Header icon button ----
+const HeaderIconButton = memo(
     ({
         icon,
         onClick,
         title,
         danger,
+        active,
     }: {
         icon: string;
-        onClick: (e: React.MouseEvent) => void;
+        onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
         title?: string;
         danger?: boolean;
+        active?: boolean;
     }) => (
         <button
             type="button"
             onClick={onClick}
             title={title}
+            aria-label={title}
             className={cn(
-                "flex items-center justify-center w-6 h-6 rounded-sm text-[11px] text-secondary/70 hover:bg-white/[0.06] transition-colors cursor-pointer",
-                danger ? "hover:text-rose-400" : "hover:text-primary"
+                "flex h-7 w-7 cursor-pointer items-center justify-center rounded transition-colors",
+                "text-secondary hover:bg-fg-overlay-2 hover:text-foreground",
+                danger && "hover:text-rose-400",
+                active && "bg-fg-overlay-2 text-foreground"
             )}
         >
-            <i className={cn("fa fa-solid", icon)} />
+            <UIcon name={icon} size={14} />
         </button>
     )
 );
-IconButton.displayName = "IconButton";
+HeaderIconButton.displayName = "HeaderIconButton";
 
-// ---- Stat badge: `+494 · -0` (pill, dark bg, skeleton while loading) ----
-const StatBadge = memo(({ add, del, loading }: { add: number; del: number; loading?: boolean }) => {
-    if (loading) {
-        return <span className="w-[72px] h-[20px] rounded-sm bg-white/[0.06] animate-pulse shrink-0" />;
+// ---- Status badge label (modified / added / deleted / renamed) ----
+function statusLabel(status: string): { label: string; color: string } | null {
+    const g = statusGroup(status);
+    if (g === "modified") return null;
+    if (g === "added") return { label: "Added", color: "text-emerald-400" };
+    if (g === "deleted") return { label: "Deleted", color: "text-rose-400" };
+    if (g === "renamed") return { label: "Renamed", color: "text-sky-400" };
+    return null;
+}
+
+// ---- Stat badge: `+494 −0` ----
+const StatBadge = memo(
+    ({
+        add,
+        del,
+        loading,
+        muted,
+    }: {
+        add: number;
+        del: number;
+        loading?: boolean;
+        muted?: boolean;
+    }) => {
+        if (loading) {
+            return <span className="h-4 w-[60px] shrink-0 animate-pulse rounded-sm bg-fg-overlay-1" />;
+        }
+        if (add === 0 && del === 0) return null;
+        const addClass = muted ? "text-emerald-300/80" : "text-emerald-400";
+        const delClass = muted ? "text-rose-300/80" : "text-rose-400";
+        return (
+            <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums">
+                {add > 0 && <span className={addClass}>+{add}</span>}
+                {del > 0 && <span className={delClass}>−{del}</span>}
+            </span>
+        );
     }
-    return (
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-black/40 border border-white/[0.05] text-[11px] font-mono tabular-nums shrink-0">
-            <span className="text-emerald-400">+{add}</span>
-            <span className="text-secondary/35">·</span>
-            <span className="text-rose-400">-{del}</span>
-        </span>
-    );
-});
+);
 StatBadge.displayName = "StatBadge";
 
-// ---- Format a file's diff as plain text for clipboard / context ----
-function formatDiffForClipboard(path: string, diff?: DiffLine[]): string {
-    const header = `--- ${path} ---`;
-    if (!diff || diff.length === 0) return `${header}\n(no diff available)`;
-    const lines: string[] = [header];
-    for (const line of diff) {
-        if (line.type === "add") lines.push("+" + line.content);
-        else if (line.type === "remove") lines.push("-" + line.content);
-        else if (line.type === "context") lines.push(" " + line.content);
-        else lines.push(line.content);
-    }
-    return lines.join("\n");
+// ---- Diff mode selector ----
+function diffModeLabel(mode: DiffMode, mainBranch: string): string {
+    if (mode === "Head") return "Uncommitted changes";
+    if (mode === "MainBranch") return mainBranch ? `vs. ${mainBranch}` : "vs. main";
+    return "Other branch…";
 }
+
+const DiffModeSelector = memo(({ mode, mainBranch }: { mode: DiffMode; mainBranch: string }) => {
+    const model = GitModel.getInstance();
+    const handleClick = useCallback(
+        (e: React.MouseEvent<HTMLButtonElement>) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const items: ContextMenuItem[] = [
+                {
+                    label: "Uncommitted changes",
+                    type: "checkbox",
+                    checked: mode === "Head",
+                    click: () => model.setDiffMode("Head"),
+                },
+                {
+                    label: mainBranch ? `vs. ${mainBranch}` : "vs. main (no remote default)",
+                    type: "checkbox",
+                    checked: mode === "MainBranch",
+                    click: () => model.setDiffMode("MainBranch"),
+                },
+            ];
+            ContextMenuModel.getInstance().showContextMenu(items, e, {
+                position: { x: rect.left, y: rect.bottom + 4 },
+            });
+        },
+        [mode, mainBranch, model]
+    );
+    return (
+        <button
+            type="button"
+            onClick={handleClick}
+            className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded border border-fg-overlay-2 bg-fg-overlay-1 px-2 text-[12px] text-foreground transition-colors hover:bg-fg-overlay-2"
+        >
+            <span className="truncate max-w-[180px]">{diffModeLabel(mode, mainBranch)}</span>
+            <UIcon name="chevron-down" size={11} className="text-secondary" />
+        </button>
+    );
+});
+DiffModeSelector.displayName = "DiffModeSelector";
 
 // ---- Compute per-line old/new numbers by walking hunk headers ----
 type NumberedLine = { line: DiffLine; oldNum?: number; newNum?: number };
@@ -166,70 +239,162 @@ function numberDiffLines(diff: DiffLine[]): NumberedLine[] {
 }
 
 // ---- Single diff line ----
-const DiffLineRow = memo(({ item, highlighted }: { item: NumberedLine; highlighted?: string }) => {
-    const { line, oldNum, newNum } = item;
-    if (line.type === "header") return null;
-    if (line.type === "hunk") {
+const DiffLineRow = memo(
+    ({
+        item,
+        highlighted,
+        onAddComment,
+    }: {
+        item: NumberedLine;
+        highlighted?: string;
+        onAddComment?: (line: number) => void;
+    }) => {
+        const { line, oldNum, newNum } = item;
+        if (line.type === "header") return null;
+        if (line.type === "hunk") {
+            return (
+                <div className="border-y border-fg-overlay-1 bg-sky-400/[0.04] px-3 py-1 font-mono text-[10px] text-sky-300/70">
+                    {line.content}
+                </div>
+            );
+        }
+        const isAdd = line.type === "add";
+        const isDel = line.type === "remove";
+        const codeClass = cn(
+            "flex-1 whitespace-pre-wrap break-all pr-3",
+            isAdd && "text-emerald-100",
+            isDel && "text-rose-100",
+            !isAdd && !isDel && "text-foreground/80"
+        );
+        const targetLine = isAdd ? newNum : isDel ? oldNum : newNum;
         return (
-            <div className="px-3 py-1 text-[10px] font-mono text-sky-300/70 bg-sky-400/[0.04] border-y border-white/[0.05]">
-                {line.content}
+            <div
+                className={cn(
+                    "group/line relative flex font-mono text-[11px] leading-[18px]",
+                    isAdd && "bg-emerald-400/[0.06]",
+                    isDel && "bg-rose-400/[0.06]"
+                )}
+            >
+                {(isAdd || isDel) && (
+                    <span
+                        className={cn(
+                            "absolute bottom-0 left-0 top-0 w-[2px]",
+                            isAdd ? "bg-emerald-400" : "bg-rose-400"
+                        )}
+                    />
+                )}
+                <span className="w-9 shrink-0 select-none pl-2 pr-1 text-right text-[10px] tabular-nums text-secondary/45">
+                    {isAdd ? "" : oldNum ?? ""}
+                </span>
+                <span className="relative w-9 shrink-0 select-none pr-2 text-right text-[10px] tabular-nums text-secondary/45">
+                    {isDel ? "" : newNum ?? ""}
+                    {onAddComment && targetLine != null && (
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onAddComment(targetLine);
+                            }}
+                            className="absolute -right-1 top-[1px] hidden h-4 w-4 cursor-pointer items-center justify-center rounded-sm bg-fg-overlay-3 text-foreground hover:bg-accent group-hover/line:flex"
+                            title="Add comment on this line"
+                            aria-label="Add comment on this line"
+                        >
+                            <UIcon name="plus" size={10} />
+                        </button>
+                    )}
+                </span>
+                {highlighted ? (
+                    <span className={codeClass} dangerouslySetInnerHTML={{ __html: highlighted }} />
+                ) : (
+                    <span className={codeClass}>{line.content}</span>
+                )}
             </div>
         );
     }
-    const isAdd = line.type === "add";
-    const isDel = line.type === "remove";
-    const codeClass = cn(
-        "whitespace-pre-wrap break-all flex-1 pr-3",
-        isAdd && "text-emerald-100",
-        isDel && "text-rose-100",
-        !isAdd && !isDel && "text-primary/75"
-    );
-    return (
-        <div
-            className={cn(
-                "flex text-[11px] font-mono leading-[18px] relative",
-                isAdd && "bg-emerald-400/[0.06]",
-                isDel && "bg-rose-400/[0.06]"
-            )}
-        >
-            {(isAdd || isDel) && (
-                <span
-                    className={cn(
-                        "absolute left-0 top-0 bottom-0 w-[2px]",
-                        isAdd ? "bg-emerald-400" : "bg-rose-400"
-                    )}
-                />
-            )}
-            <span className="w-9 pl-2 pr-1 text-right text-[10px] text-secondary/40 tabular-nums select-none shrink-0">
-                {isAdd ? "" : oldNum ?? ""}
-            </span>
-            <span className="w-9 pr-2 text-right text-[10px] text-secondary/40 tabular-nums select-none shrink-0">
-                {isDel ? "" : newNum ?? ""}
-            </span>
-            {highlighted ? (
-                <span className={codeClass} dangerouslySetInnerHTML={{ __html: highlighted }} />
-            ) : (
-                <span className={codeClass}>{line.content}</span>
-            )}
-        </div>
-    );
-});
+);
 DiffLineRow.displayName = "DiffLineRow";
 
-// ---- File block ----
-type FileRowProps = {
+// ---- Inline comment composer at a specific line ----
+function LineCommentComposer({
+    path,
+    line,
+    onClose,
+}: {
+    path: string;
+    line: number | null;
+    onClose: () => void;
+}) {
+    const [body, setBody] = useState("");
+    const inputRef = useRef<HTMLTextAreaElement>(null);
+    useEffect(() => {
+        inputRef.current?.focus();
+    }, []);
+    const submit = () => {
+        const trimmed = body.trim();
+        if (!trimmed) {
+            onClose();
+            return;
+        }
+        GitModel.getInstance().addComment(path, line, trimmed);
+        onClose();
+    };
+    return (
+        <div className="border-y border-fg-overlay-2 bg-surface-2 px-3 py-2">
+            <textarea
+                ref={inputRef}
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                placeholder={line == null ? "File-level comment…" : `Comment on line ${line}…`}
+                className="min-h-[60px] w-full resize-y rounded border border-fg-overlay-2 bg-fg-overlay-1 px-2 py-1.5 text-[12px] text-foreground outline-none focus:border-fg-overlay-3"
+                onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                        e.preventDefault();
+                        onClose();
+                    } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                        e.preventDefault();
+                        submit();
+                    }
+                }}
+            />
+            <div className="mt-2 flex justify-end gap-2">
+                <button
+                    type="button"
+                    onClick={onClose}
+                    className="cursor-pointer rounded px-2 py-1 text-[11px] text-secondary hover:bg-fg-overlay-1 hover:text-foreground"
+                >
+                    Cancel
+                </button>
+                <button
+                    type="button"
+                    onClick={submit}
+                    disabled={!body.trim()}
+                    className="cursor-pointer rounded bg-accent/80 px-3 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    Add comment
+                </button>
+            </div>
+        </div>
+    );
+}
+
+// ---- File card in the diff viewer ----
+type FileCardProps = {
     file: GitChangedFile;
     expanded: boolean;
+    selected: boolean;
     loading: boolean;
     stats?: FileStats;
     diff?: DiffLine[];
+    comments: ReviewComment[];
 };
 
-const FileRow = memo(({ file, expanded, loading, stats, diff }: FileRowProps) => {
+const FileCard = memo(({ file, expanded, selected, loading, stats, diff, comments }: FileCardProps) => {
     const model = GitModel.getInstance();
     const parts = file.path.split("/");
     const name = parts.pop() ?? file.path;
     const dirPath = parts.join("/");
+    const status = statusLabel(file.status);
+    const [composerLine, setComposerLine] = useState<number | null | "file">(null);
 
     const numbered = useMemo(() => (diff ? numberDiffLines(diff) : []), [diff]);
 
@@ -297,67 +462,63 @@ const FileRow = memo(({ file, expanded, loading, stats, diff }: FileRowProps) =>
 
     return (
         <div
+            data-filepath={file.path}
             className={cn(
-                "mx-3 rounded-md border transition-colors overflow-hidden shrink-0",
-                expanded
-                    ? "border-white/[0.14] bg-white/[0.03]"
-                    : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04]"
+                "shrink-0 overflow-hidden border-b border-fg-overlay-1 transition-colors",
+                selected && "bg-surface-1"
             )}
         >
             {/* Header row */}
             <div
-                className="flex items-center gap-1 h-10 pl-1.5 pr-2 cursor-pointer group"
+                className={cn(
+                    "group flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-fg-overlay-1",
+                    selected && "bg-fg-overlay-1"
+                )}
                 onClick={() => fireAndForget(() => model.toggleExpand(file.path))}
             >
-                {/* Chevron with hover-bg (rounded square on row hover) */}
-                <span className="w-6 h-6 flex items-center justify-center rounded-sm group-hover:bg-white/[0.07] transition-colors shrink-0">
-                    <i
-                        className={cn(
-                            "fa fa-solid fa-chevron-right text-[10px] text-secondary/70 transition-transform duration-150",
-                            expanded && "rotate-90"
-                        )}
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors group-hover:bg-fg-overlay-2">
+                    <UIcon
+                        name={expanded ? "chevron-down" : "chevron-right"}
+                        size={11}
+                        className="text-secondary"
                     />
                 </span>
-                {/* Path: natural width when it fits, end-anchored with left fade when overflowing */}
-                <span
-                    className="min-w-0 text-[12px] whitespace-nowrap overflow-hidden ml-1"
-                    title={file.path}
-                    style={{
-                        direction: "rtl",
-                        maskImage: "linear-gradient(to right, transparent 0, black 18px, black 100%)",
-                        WebkitMaskImage: "linear-gradient(to right, transparent 0, black 18px, black 100%)",
-                    }}
-                >
-                    <bdi>
-                        {dirPath && <span className="text-secondary/55">{dirPath}/</span>}
-                        <span className="text-primary font-medium">{name}</span>
-                    </bdi>
+                <span className="min-w-0 flex-1 truncate text-[12px]" title={file.path}>
+                    {dirPath && <span className="text-sub-text">{dirPath}/</span>}
+                    <span className="font-medium text-foreground">{name}</span>
                 </span>
-                {/* Copy path — right next to filename, always visible */}
-                <IconButton
-                    icon="fa-copy"
-                    title="Copy path"
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        navigator.clipboard.writeText(file.path);
-                    }}
-                />
-                {/* Stat badge */}
+                {status && (
+                    <span className={cn("shrink-0 text-[10px] font-medium uppercase tracking-wide", status.color)}>
+                        {status.label}
+                    </span>
+                )}
                 <StatBadge add={stats?.add ?? 0} del={stats?.del ?? 0} loading={loading && !stats} />
-                {/* Action cluster — pushed to right edge via ml-auto */}
-                <div className="flex items-center gap-0.5 ml-auto shrink-0">
-                    <IconButton
-                        icon="fa-paperclip"
+                <div className="flex shrink-0 items-center gap-0.5 pl-1">
+                    <button
+                        type="button"
                         title="Add file diff as context"
                         onClick={(e) => {
                             e.stopPropagation();
                             navigator.clipboard.writeText(formatDiffForClipboard(file.path, diff));
                         }}
-                    />
-                    <IconButton
-                        icon="fa-reply"
+                        className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-secondary hover:bg-fg-overlay-2 hover:text-foreground"
+                    >
+                        <UIcon name="paperclip" size={11} />
+                    </button>
+                    <button
+                        type="button"
+                        title="Comment on file"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setComposerLine("file");
+                        }}
+                        className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-secondary hover:bg-fg-overlay-2 hover:text-foreground"
+                    >
+                        <UIcon name="new-conversation" size={12} />
+                    </button>
+                    <button
+                        type="button"
                         title="Discard changes"
-                        danger
                         onClick={(e) => {
                             e.stopPropagation();
                             const ok = window.confirm(
@@ -366,54 +527,293 @@ const FileRow = memo(({ file, expanded, loading, stats, diff }: FileRowProps) =>
                             if (!ok) return;
                             fireAndForget(() => model.discardFile(file.path));
                         }}
-                    />
-                    <IconButton
-                        icon="fa-arrow-up-right-from-square"
+                        className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-secondary hover:bg-fg-overlay-2 hover:text-rose-400"
+                    >
+                        <UIcon name="reverse-left" size={12} />
+                    </button>
+                    <button
+                        type="button"
                         title="Open file"
                         onClick={(e) => {
                             e.stopPropagation();
-                            const cwd = globalStore_get_cwd();
+                            const cwd = globalStore.get(model.cwdAtom);
                             if (cwd) getApi().openNativePath(`${cwd}/${file.path}`);
                         }}
-                    />
+                        className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-secondary hover:bg-fg-overlay-2 hover:text-foreground"
+                    >
+                        <UIcon name="share-01" size={11} />
+                    </button>
                 </div>
             </div>
-            {/* Diff viewport */}
+            {/* File-level comment composer */}
+            {composerLine === "file" && (
+                <LineCommentComposer
+                    path={file.path}
+                    line={null}
+                    onClose={() => setComposerLine(null)}
+                />
+            )}
+            {/* File-level inline comments */}
+            {comments.filter((c) => c.line == null).length > 0 && (
+                <div className="border-t border-fg-overlay-1 bg-surface-1 px-3 py-1.5">
+                    {comments
+                        .filter((c) => c.line == null)
+                        .map((c) => (
+                            <CommentCard key={c.id} comment={c} />
+                        ))}
+                </div>
+            )}
+            {/* Diff body */}
             {expanded && (
-                <div className="border-t border-white/[0.06] bg-black/30 overflow-x-auto">
+                <div className="border-t border-fg-overlay-1 bg-black/30">
                     {loading && !diff ? (
-                        <div className="px-3 py-2 text-[11px] text-secondary/60 italic">Loading diff…</div>
+                        <div className="px-3 py-2 text-[11px] italic text-secondary/70">Loading diff…</div>
                     ) : numbered.length > 0 ? (
-                        numbered.map((item, i) => (
-                            <DiffLineRow key={i} item={item} highlighted={highlightedLines[i]} />
-                        ))
+                        numbered.map((item, i) => {
+                            const lineNumber =
+                                item.line.type === "add"
+                                    ? item.newNum
+                                    : item.line.type === "remove"
+                                      ? item.oldNum
+                                      : item.newNum;
+                            const lineComments = comments.filter(
+                                (c) => c.line != null && c.line === lineNumber
+                            );
+                            return (
+                                <Fragment key={i}>
+                                    <DiffLineRow
+                                        item={item}
+                                        highlighted={highlightedLines[i]}
+                                        onAddComment={(ln) => setComposerLine(ln)}
+                                    />
+                                    {lineComments.length > 0 && (
+                                        <div className="border-y border-fg-overlay-1 bg-surface-1 px-3 py-1.5">
+                                            {lineComments.map((c) => (
+                                                <CommentCard key={c.id} comment={c} />
+                                            ))}
+                                        </div>
+                                    )}
+                                    {composerLine === lineNumber && lineNumber != null && (
+                                        <LineCommentComposer
+                                            path={file.path}
+                                            line={lineNumber}
+                                            onClose={() => setComposerLine(null)}
+                                        />
+                                    )}
+                                </Fragment>
+                            );
+                        })
                     ) : (
-                        <div className="px-3 py-2 text-[11px] text-secondary/60 italic">No diff available</div>
+                        <div className="px-3 py-2 text-[11px] italic text-secondary/70">
+                            {file.status === "??" ? "New empty file or unreadable" : "No diff available"}
+                        </div>
                     )}
                 </div>
             )}
         </div>
     );
 });
-FileRow.displayName = "FileRow";
+FileCard.displayName = "FileCard";
 
-// Helper: grab cwd from the model atom directly. Earlier versions read a DOM
-// data attribute that was never populated — that silently broke "Open file".
-function globalStore_get_cwd(): string | null {
-    return globalStore.get(GitModel.getInstance().cwdAtom) || null;
+// ---- Comment card (rendered inline) ----
+const CommentCard = memo(({ comment }: { comment: ReviewComment }) => {
+    const ts = new Date(comment.createdAt);
+    const time = ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return (
+        <div className="group/comment flex items-start gap-2 rounded px-2 py-1.5 text-[12px] hover:bg-fg-overlay-1">
+            <UIcon name="new-conversation" size={12} className="mt-0.5 shrink-0 text-accent" />
+            <div className="min-w-0 flex-1">
+                <div className="mb-0.5 flex items-center gap-2 text-[10px] text-secondary/70">
+                    <span>You</span>
+                    <span>{time}</span>
+                    {comment.line != null && <span>line {comment.line}</span>}
+                </div>
+                <div className="whitespace-pre-wrap text-foreground">{comment.body}</div>
+            </div>
+            <button
+                type="button"
+                onClick={() => GitModel.getInstance().removeComment(comment.id)}
+                className="hidden h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-secondary hover:bg-fg-overlay-2 hover:text-rose-400 group-hover/comment:flex"
+                title="Delete comment"
+                aria-label="Delete comment"
+            >
+                <UIcon name="x-close" size={10} />
+            </button>
+        </div>
+    );
+});
+CommentCard.displayName = "CommentCard";
+
+// ---- Helper: format diff for clipboard ----
+function formatDiffForClipboard(path: string, diff?: DiffLine[]): string {
+    const header = `--- ${path} ---`;
+    if (!diff || diff.length === 0) return `${header}\n(no diff available)`;
+    const lines: string[] = [header];
+    for (const line of diff) {
+        if (line.type === "add") lines.push("+" + line.content);
+        else if (line.type === "remove") lines.push("-" + line.content);
+        else if (line.type === "context") lines.push(" " + line.content);
+        else lines.push(line.content);
+    }
+    return lines.join("\n");
 }
 
-// ---- Skeleton file block (loading state) ----
-const FileSkeleton = memo(() => (
-    <div className="mx-3 h-10 rounded-lg border border-white/[0.06] bg-white/[0.02] animate-pulse" />
-));
-FileSkeleton.displayName = "FileSkeleton";
+// ---- File sidebar (resizable nav list) ----
+function FileSidebar({
+    files,
+    selected,
+    fileStats,
+    onSelect,
+    width,
+    onResize,
+}: {
+    files: GitChangedFile[];
+    selected: string | null;
+    fileStats: Map<string, FileStats>;
+    onSelect: (path: string) => void;
+    width: number;
+    onResize: (next: number) => void;
+}) {
+    const [dragging, setDragging] = useState(false);
+    useEffect(() => {
+        if (!dragging) return;
+        const onMove = (e: MouseEvent) => {
+            onResize(e.clientX);
+        };
+        const onUp = () => setDragging(false);
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+        return () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+        };
+    }, [dragging, onResize]);
 
-// ---- Code Review right sidebar ----
+    return (
+        <div className="relative flex shrink-0 flex-col border-r border-fg-overlay-2" style={{ width }}>
+            <div className="flex-1 overflow-y-auto py-1">
+                {files.map((file) => {
+                    const stats = fileStats.get(file.path);
+                    const status = statusLabel(file.status);
+                    const parts = file.path.split("/");
+                    const name = parts.pop() ?? file.path;
+                    const dir = parts.join("/");
+                    const isSelected = selected === file.path;
+                    return (
+                        <div
+                            key={file.path}
+                            onClick={() => onSelect(file.path)}
+                            className={cn(
+                                "group mx-1 flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-[12px] transition-colors",
+                                isSelected
+                                    ? "bg-fg-overlay-2 text-foreground"
+                                    : "text-secondary hover:bg-fg-overlay-1 hover:text-foreground"
+                            )}
+                            title={file.path}
+                        >
+                            <span className="flex min-w-0 flex-1 flex-col">
+                                <span className="truncate font-medium">{name}</span>
+                                {dir && (
+                                    <span className="truncate text-[10px] text-secondary/70" dir="rtl">
+                                        <bdi>{dir}/</bdi>
+                                    </span>
+                                )}
+                            </span>
+                            <StatBadge add={stats?.add ?? 0} del={stats?.del ?? 0} muted={!isSelected} />
+                            {status && (
+                                <span
+                                    className={cn(
+                                        "shrink-0 text-[9px] font-medium uppercase tracking-wide",
+                                        status.color
+                                    )}
+                                >
+                                    {status.label[0]}
+                                </span>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+            <div
+                onMouseDown={() => setDragging(true)}
+                className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent hover:bg-fg-overlay-2"
+                aria-label="Resize file sidebar"
+            />
+        </div>
+    );
+}
+
+// ---- Comments panel footer ----
+function CommentsPanel({ comments }: { comments: ReviewComment[] }) {
+    const model = GitModel.getInstance();
+    const [open, setOpen] = useState(false);
+    useEffect(() => {
+        if (comments.length > 0 && !open) setOpen(true);
+    }, [comments.length]);
+
+    if (comments.length === 0) return null;
+    return (
+        <div className="shrink-0 border-t border-fg-overlay-2 bg-surface-1">
+            <button
+                type="button"
+                onClick={() => setOpen(!open)}
+                className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-[12px] hover:bg-fg-overlay-1"
+            >
+                <UIcon
+                    name={open ? "chevron-down" : "chevron-right"}
+                    size={11}
+                    className="text-secondary"
+                />
+                <span className="font-medium text-foreground">
+                    {comments.length} comment{comments.length === 1 ? "" : "s"}
+                </span>
+                <span className="ml-auto text-secondary/70">{open ? "Hide" : "Show"}</span>
+            </button>
+            {open && (
+                <>
+                    <div className="max-h-[200px] overflow-y-auto px-2 py-1">
+                        {comments.map((c) => (
+                            <CommentCard key={c.id} comment={c} />
+                        ))}
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t border-fg-overlay-1 px-3 py-2">
+                        <button
+                            type="button"
+                            onClick={() => model.clearComments()}
+                            className="cursor-pointer rounded px-2 py-1 text-[12px] text-secondary hover:bg-fg-overlay-1 hover:text-foreground"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const text = comments
+                                    .map((c) => {
+                                        const where = c.line != null ? `${c.path}:${c.line}` : c.path;
+                                        return `[${where}] ${c.body}`;
+                                    })
+                                    .join("\n\n");
+                                navigator.clipboard.writeText(text);
+                            }}
+                            className="inline-flex cursor-pointer items-center gap-1.5 rounded bg-accent/80 px-3 py-1 text-[12px] font-medium text-primary transition-colors hover:bg-accent"
+                            title="Copy comments to clipboard for use in the agent"
+                        >
+                            <UIcon name="paperclip" size={11} />
+                            Send to Agent
+                        </button>
+                    </div>
+                </>
+            )}
+        </div>
+    );
+}
+
+// ---- Main panel ----
 export const GitReviewSidebar = memo(() => {
     const model = GitModel.getInstance();
     const isRepo = useAtomValue(model.isRepoAtom);
     const branch = useAtomValue(model.branchAtom);
+    const mainBranch = useAtomValue(model.mainBranchAtom);
     const totalAdd = useAtomValue(model.totalAddAtom);
     const totalDel = useAtomValue(model.totalDelAtom);
     const files = useAtomValue(model.filesAtom);
@@ -423,6 +823,10 @@ export const GitReviewSidebar = memo(() => {
     const loadingFiles = useAtomValue(model.loadingFilesAtom);
     const loading = useAtomValue(model.loadingAtom);
     const error = useAtomValue(model.errorAtom);
+    const diffMode = useAtomValue(model.diffModeAtom);
+    const selectedFile = useAtomValue(model.selectedFileAtom);
+    const sidebarCollapsed = useAtomValue(model.fileSidebarCollapsedAtom);
+    const comments = useAtomValue(model.commentsAtom);
 
     useEffect(() => {
         model.syncCwd();
@@ -434,54 +838,62 @@ export const GitReviewSidebar = memo(() => {
     const layoutModel = WorkspaceLayoutModel.getInstance();
     const isWide = useAtomValue(layoutModel.codeReviewWideAtom);
 
+    // File sidebar width — local to the panel (per-tab persistence is a polish item).
+    const [sidebarWidth, setSidebarWidth] = useState(FileSidebar_DefaultWidth);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const handleSidebarResize = useCallback((clientX: number) => {
+        if (!containerRef.current) return;
+        const rect = containerRef.current.getBoundingClientRect();
+        const next = clientX - rect.left;
+        const max = Math.min(FileSidebar_MaxWidth, rect.width * 0.6);
+        setSidebarWidth(Math.max(FileSidebar_MinWidth, Math.min(next, max)));
+    }, []);
+
+    // Scroll to selected file's card when selection changes.
+    const scrollHostRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!selectedFile || !scrollHostRef.current) return;
+        const el = scrollHostRef.current.querySelector(`[data-filepath="${cssEscape(selectedFile)}"]`);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, [selectedFile]);
+
+    const fileCount = files.length;
+
     return (
-        <div className="flex flex-col h-full border-l border-white/[0.08] bg-black/20">
-            {/* ---- Title bar ---- */}
-            <div className="flex items-center justify-between h-10 px-3 border-b border-white/[0.06] shrink-0">
-                <div className="flex items-center gap-2">
-                    <i className="fa fa-solid fa-code-pull-request text-accent text-[12px]" />
-                    <span className="text-[13px] font-semibold tracking-tight text-primary">Code review</span>
+        <div ref={containerRef} className="flex h-full w-full flex-col bg-panel border-l border-fg-overlay-2">
+            {/* ---- Header ---- */}
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-fg-overlay-2 px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                    {isRepo && (
+                        <>
+                            <UIcon name="git-branch-02" size={14} className="shrink-0 text-secondary" />
+                            <span
+                                className="truncate text-[14px] font-semibold text-foreground"
+                                title={branch}
+                            >
+                                {branch || "—"}
+                            </span>
+                            <StatBadge add={totalAdd} del={totalDel} loading={loading && totalAdd === 0 && totalDel === 0} />
+                            <span className="shrink-0 text-[11px] tabular-nums text-secondary/70">
+                                {fileCount} file{fileCount === 1 ? "" : "s"}
+                            </span>
+                        </>
+                    )}
                 </div>
-                <div className="flex items-center gap-1">
-                    <IconButton
-                        icon={isWide ? "fa-compress" : "fa-expand"}
-                        title={isWide ? "Collapse panel" : "Expand panel"}
-                        onClick={() => globalStore.set(layoutModel.codeReviewWideAtom, !isWide)}
-                    />
-                    <IconButton
-                        icon="fa-xmark"
-                        title="Close"
-                        onClick={() => layoutModel.setCodeReviewVisible(false)}
-                    />
-                </div>
-            </div>
-
-            {/* ---- Branch + totals (inline, no card) ---- */}
-            {isRepo && (
-                <div className="flex items-center gap-2 px-3 pt-2 pb-1 shrink-0">
-                    <span className="text-[14px] font-semibold text-primary truncate">{branch || "—"}</span>
-                    <i className="fa fa-solid fa-file text-secondary/50 text-[11px] shrink-0 ml-1" />
-                    <span className="text-[12px] text-secondary/85 tabular-nums">{files.length}</span>
-                    <span className="text-secondary/35 text-[11px]">·</span>
-                    <span className="text-[12px] font-mono tabular-nums text-emerald-400">+{totalAdd}</span>
-                    <span className="text-[12px] font-mono tabular-nums text-rose-400">-{totalDel}</span>
-                </div>
-            )}
-
-            {/* ---- Filter + global actions ---- */}
-            {isRepo && (
-                <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-2 shrink-0">
-                    <button
-                        type="button"
-                        className="flex items-center gap-2 h-6 px-2 rounded-sm border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] text-[12px] text-primary/85 cursor-pointer transition-colors"
-                    >
-                        <span>Uncommitted changes</span>
-                        <i className="fa fa-solid fa-chevron-down text-[9px] text-secondary/60" />
-                    </button>
-                    <div className="flex items-center gap-1">
-                        <button
-                            type="button"
-                            disabled={files.length === 0}
+                <div className="ml-auto flex shrink-0 items-center gap-1">
+                    {isRepo && <DiffModeSelector mode={diffMode} mainBranch={mainBranch} />}
+                    {isRepo && (
+                        <HeaderIconButton
+                            icon={sidebarCollapsed ? "left-panel-open" : "left-panel-close"}
+                            title={sidebarCollapsed ? "Show file list" : "Hide file list"}
+                            onClick={() => model.toggleFileSidebar()}
+                        />
+                    )}
+                    {isRepo && fileCount > 0 && (
+                        <HeaderIconButton
+                            icon="reverse-left"
+                            title="Discard all uncommitted changes"
+                            danger
                             onClick={() => {
                                 const n = files.length;
                                 const ok = window.confirm(
@@ -490,76 +902,100 @@ export const GitReviewSidebar = memo(() => {
                                 if (!ok) return;
                                 fireAndForget(() => model.discardFiles(files.map((f) => f.path)));
                             }}
-                            className="flex items-center gap-1.5 h-6 px-2 rounded-sm border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] text-[12px] text-secondary/85 hover:text-rose-400 cursor-pointer transition-colors disabled:opacity-40 disabled:hover:bg-white/[0.02] disabled:hover:text-secondary/85"
-                            title="Discard all uncommitted changes"
-                        >
-                            <i className="fa fa-solid fa-reply text-[11px]" />
-                            <span>Discard all</span>
-                        </button>
-                        <button
-                            type="button"
+                        />
+                    )}
+                    {isRepo && fileCount > 0 && (
+                        <HeaderIconButton
+                            icon="paperclip"
+                            title="Add all diffs as context"
                             onClick={() => {
-                                if (files.length === 0) return;
                                 const all = files
                                     .map((f) => formatDiffForClipboard(f.path, diffs.get(f.path)))
                                     .join("\n\n");
                                 navigator.clipboard.writeText(all);
                             }}
-                            title="Add all diffs as context"
-                            className="flex items-center justify-center h-6 w-6 rounded-sm border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] text-[11px] text-secondary/85 hover:text-primary cursor-pointer transition-colors"
-                        >
-                            <i className="fa fa-solid fa-paperclip" />
-                        </button>
+                        />
+                    )}
+                    <HeaderIconButton
+                        icon={isWide ? "minimize-01" : "maximize-01"}
+                        title={isWide ? "Collapse panel" : "Maximize panel"}
+                        onClick={() => globalStore.set(layoutModel.codeReviewWideAtom, !isWide)}
+                    />
+                    <HeaderIconButton
+                        icon="x-close"
+                        title="Close"
+                        onClick={() => layoutModel.setCodeReviewVisible(false)}
+                    />
+                </div>
+            </div>
+
+            {/* ---- Body ---- */}
+            {loading && fileCount === 0 ? (
+                <div className="flex flex-1 items-center justify-center p-8">
+                    <div className="text-[12px] text-secondary/70">Loading…</div>
+                </div>
+            ) : error ? (
+                <div className="flex flex-1 items-center justify-center p-8">
+                    <div className="flex flex-col items-center gap-3 text-center">
+                        <UIcon name="alert-triangle" size={20} className="text-rose-400/80" />
+                        <span className="max-w-[260px] text-[12px] text-secondary/80">{error}</span>
+                    </div>
+                </div>
+            ) : !isRepo ? (
+                <div className="flex flex-1 items-center justify-center p-8">
+                    <div className="flex flex-col items-center gap-3 text-secondary/70">
+                        <UIcon name="git-branch-02" size={22} className="opacity-60" />
+                        <span className="text-[12px]">Diffs only work for git repositories.</span>
+                    </div>
+                </div>
+            ) : fileCount === 0 ? (
+                <div className="flex flex-1 items-center justify-center p-8">
+                    <div className="flex flex-col items-center gap-3 text-secondary/70">
+                        <UIcon name="check-circle-broken" size={20} className="text-emerald-400/70" />
+                        <span className="text-[12px]">Working tree clean.</span>
+                    </div>
+                </div>
+            ) : (
+                <div className="flex min-h-0 flex-1">
+                    {!sidebarCollapsed && (
+                        <FileSidebar
+                            files={files}
+                            selected={selectedFile}
+                            fileStats={fileStats}
+                            onSelect={(p) => model.selectFile(p)}
+                            width={sidebarWidth}
+                            onResize={handleSidebarResize}
+                        />
+                    )}
+                    <div ref={scrollHostRef} className="flex-1 overflow-y-auto">
+                        {files.map((file) => (
+                            <FileCard
+                                key={file.path}
+                                file={file}
+                                expanded={expanded.has(file.path)}
+                                selected={selectedFile === file.path}
+                                loading={loadingFiles.has(file.path)}
+                                stats={fileStats.get(file.path)}
+                                diff={diffs.get(file.path)}
+                                comments={comments.filter((c) => c.path === file.path)}
+                            />
+                        ))}
                     </div>
                 </div>
             )}
 
-            {/* ---- Body ---- */}
-            {loading && files.length === 0 ? (
-                <div className="flex flex-col gap-2 mt-3 shrink-0">
-                    <FileSkeleton />
-                    <FileSkeleton />
-                    <FileSkeleton />
-                </div>
-            ) : error ? (
-                <div className="flex-1 flex items-center justify-center p-8">
-                    <div className="flex flex-col items-center gap-3 text-center">
-                        <i className="fa fa-solid fa-triangle-exclamation text-[18px] text-rose-400/80" />
-                        <span className="text-[12px] text-secondary/80 max-w-[240px]">{error}</span>
-                    </div>
-                </div>
-            ) : !isRepo ? (
-                <div className="flex-1 flex items-center justify-center p-8">
-                    <div className="flex flex-col items-center gap-3 text-secondary/70">
-                        <i className="fa fa-brands fa-git-alt text-[18px] opacity-70" />
-                        <span className="text-[12px]">Not a git repository</span>
-                    </div>
-                </div>
-            ) : files.length === 0 ? (
-                <div className="flex-1 flex items-center justify-center p-8">
-                    <div className="flex flex-col items-center gap-3 text-secondary/70">
-                        <i className="fa fa-solid fa-check text-[18px] text-emerald-400/70" />
-                        <span className="text-[12px]">Working tree clean</span>
-                    </div>
-                </div>
-            ) : (
-                <div className="flex-1 min-h-0 overflow-y-auto py-3 flex flex-col gap-2">
-                    {files.map((file) => (
-                        <FileRow
-                            key={file.path}
-                            file={file}
-                            expanded={expanded.has(file.path)}
-                            loading={loadingFiles.has(file.path)}
-                            stats={fileStats.get(file.path)}
-                            diff={diffs.get(file.path)}
-                        />
-                    ))}
-                </div>
-            )}
+            {/* ---- Comments footer ---- */}
+            <CommentsPanel comments={comments} />
         </div>
     );
 });
 GitReviewSidebar.displayName = "GitReviewSidebar";
+
+// CSS.escape polyfill for older webviews — Electron has it, but defensive fallback.
+function cssEscape(s: string): string {
+    if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(s);
+    return s.replace(/(["\\])/g, "\\$1");
+}
 
 // Keep old export for compat
 export { GitReviewSidebar as GitReviewPanel };

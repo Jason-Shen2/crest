@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { UIcon } from "@/app/element/ui-icon";
 import { Tooltip } from "@/app/element/tooltip";
 import { getTabBadgeAtom } from "@/app/store/badge";
 import { ContextMenuModel } from "@/app/store/contextmenu";
@@ -17,10 +18,8 @@ import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildTabBarContextMenu, buildTabContextMenu } from "./tabcontextmenu";
-import { UpdateStatusBanner } from "./updatebanner";
 import { VTab, VTabItem } from "./vtab";
 import { VTabBarEnv } from "./vtabbarenv";
-import { WorkspaceSwitcher } from "./workspaceswitcher";
 export type { VTabItem } from "./vtab";
 
 interface VTabBarProps {
@@ -44,6 +43,7 @@ interface VTabWrapperProps {
     onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
     onDragEnd: () => void;
     onHoverChanged: (isHovered: boolean) => void;
+    matchesQuery: (item: VTabItem) => boolean;
 }
 
 function shortenHome(cwd: string, home: string): string {
@@ -125,6 +125,7 @@ function VTabWrapper({
     onDrop,
     onDragEnd,
     onHoverChanged,
+    matchesQuery,
 }: VTabWrapperProps) {
     const env = useWaveEnv<VTabBarEnv>();
     const [tabData] = env.wos.useWaveObjectValue<Tab>(makeORef("tab", tabId));
@@ -223,6 +224,8 @@ function VTabWrapper({
         runningKind,
     };
 
+    const matched = matchesQuery(tab);
+
     const handleContextMenu = useCallback(
         (e: React.MouseEvent<HTMLDivElement>) => {
             e.preventDefault();
@@ -258,6 +261,10 @@ function VTabWrapper({
         [tabId, onClose, env]
     );
 
+    if (!matched) {
+        return null;
+    }
+
     return (
         <VTab
             tab={tab}
@@ -281,6 +288,69 @@ function VTabWrapper({
     );
 }
 
+interface ControlBarProps {
+    query: string;
+    onQueryChange: (q: string) => void;
+    onNewTab: () => void;
+    onSettingsClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+function ControlBar({ query, onQueryChange, onNewTab, onSettingsClick }: ControlBarProps) {
+    const inputRef = useRef<HTMLInputElement>(null);
+    return (
+        <div className="flex shrink-0 items-center gap-1 px-2 py-1.5">
+            <div
+                className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 text-secondary focus-within:bg-fg-overlay-1 focus-within:text-foreground hover:bg-fg-overlay-1"
+                onClick={() => inputRef.current?.focus()}
+            >
+                <UIcon name="search-small" size={12} className="opacity-80" />
+                <input
+                    ref={inputRef}
+                    type="text"
+                    value={query}
+                    onChange={(e) => onQueryChange(e.target.value)}
+                    placeholder="Search tabs"
+                    className="min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-secondary/50"
+                    aria-label="Search tabs"
+                />
+                {query && (
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onQueryChange("");
+                        }}
+                        className="cursor-pointer text-secondary/70 hover:text-foreground"
+                        aria-label="Clear search"
+                    >
+                        <UIcon name="x-close" size={12} />
+                    </button>
+                )}
+            </div>
+            <Tooltip content="Tab settings" placement="bottom" divClassName="shrink-0">
+                <button
+                    type="button"
+                    onClick={onSettingsClick}
+                    className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-secondary transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                    aria-label="Tab settings"
+                >
+                    <UIcon name="settings" size={14} />
+                </button>
+            </Tooltip>
+            <Tooltip content="New tab" placement="bottom" divClassName="shrink-0">
+                <button
+                    type="button"
+                    onClick={onNewTab}
+                    className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-secondary transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                    aria-label="New tab"
+                >
+                    <UIcon name="plus" size={14} />
+                </button>
+            </Tooltip>
+        </div>
+    );
+}
+
 export function VTabBar({ workspace, className }: VTabBarProps) {
     const env = useWaveEnv<VTabBarEnv>();
     const activeTabId = useAtomValue(env.atoms.staticTabId);
@@ -294,13 +364,27 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
     const [dropLineTop, setDropLineTop] = useState<number | null>(null);
     const [hoverResetVersion, setHoverResetVersion] = useState(0);
     const [hoveredTabId, setHoveredTabId] = useState<string | null>(null);
-    const [isNewTabHovered, setIsNewTabHovered] = useState(false);
+    const [searchQuery, setSearchQuery] = useState("");
     const dragSourceRef = useRef<string | null>(null);
     const didResetHoverForDragRef = useRef(false);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const scrollAnimFrameRef = useRef<number | null>(null);
     const scrollDirectionRef = useRef<number>(0);
     const scrollSpeedRef = useRef<number>(0);
+
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    const matchesQuery = useCallback(
+        (item: VTabItem) => {
+            if (!normalizedQuery) return true;
+            if (item.name.toLowerCase().includes(normalizedQuery)) return true;
+            if (item.subtitle && item.subtitle.toLowerCase().includes(normalizedQuery)) return true;
+            if (item.gitBranch && item.gitBranch.toLowerCase().includes(normalizedQuery)) return true;
+            return false;
+        },
+        [normalizedQuery]
+    );
+
+    const dragReorderEnabled = normalizedQuery.length === 0;
 
     useEffect(() => {
         setOrderedTabIds(tabIds);
@@ -421,16 +505,34 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
         [env]
     );
 
+    const handleSettingsClick = useCallback(
+        (e: React.MouseEvent<HTMLButtonElement>) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const menu = buildTabBarContextMenu(env);
+            ContextMenuModel.getInstance().showContextMenu(menu, e, {
+                position: { x: rect.left, y: rect.bottom + 6 },
+            });
+        },
+        [env]
+    );
+
     return (
         <div
-            className={cn("flex h-full flex-col overflow-hidden", className)}
-            style={{ backdropFilter: "blur(20px)", background: "rgba(0, 0, 0, 0.35)" }}
+            className={cn("flex h-full flex-col overflow-hidden bg-panel", className)}
+            style={{ backdropFilter: "blur(20px)" }}
             onContextMenu={handleTabBarContextMenu}
         >
+            <ControlBar
+                query={searchQuery}
+                onQueryChange={setSearchQuery}
+                onNewTab={() => env.electron.createTab()}
+                onSettingsClick={handleSettingsClick}
+            />
             <div
                 ref={scrollContainerRef}
-                className="relative flex min-h-0 flex-col overflow-y-auto"
+                className="relative flex min-h-0 flex-col overflow-y-auto pb-2"
                 onDragOver={(event) => {
+                    if (!dragReorderEnabled) return;
                     event.preventDefault();
                     updateScrollFromDragY(event.clientY);
                     if (event.target === event.currentTarget) {
@@ -439,6 +541,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                     }
                 }}
                 onDrop={(event) => {
+                    if (!dragReorderEnabled) return;
                     event.preventDefault();
                     if (dropIndex != null) {
                         reorder(dropIndex);
@@ -463,18 +566,23 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                 !isNextActive &&
                                 !isHovered &&
                                 !isNextHovered &&
-                                !(isLast && isNewTabHovered)
+                                !isLast
                             }
                             isDragging={dragTabId === tabId}
                             isReordering={dragTabId != null}
                             hoverResetVersion={hoverResetVersion}
                             index={index}
+                            matchesQuery={matchesQuery}
                             onSelect={() => env.electron.setActiveTab(tabId)}
                             onClose={() => fireAndForget(() => env.electron.closeTab(workspace.oid, tabId, false))}
                             onRename={(newName) =>
                                 fireAndForget(() => env.rpc.UpdateTabNameCommand(TabRpcClient, tabId, newName))
                             }
                             onDragStart={(event) => {
+                                if (!dragReorderEnabled) {
+                                    event.preventDefault();
+                                    return;
+                                }
                                 didResetHoverForDragRef.current = false;
                                 dragSourceRef.current = tabId;
                                 event.dataTransfer.effectAllowed = "move";
@@ -484,6 +592,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                 setDropLineTop(event.currentTarget.offsetTop);
                             }}
                             onDragOver={(event) => {
+                                if (!dragReorderEnabled) return;
                                 event.preventDefault();
                                 const rect = event.currentTarget.getBoundingClientRect();
                                 const relativeY = event.clientY - rect.top;
@@ -497,6 +606,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                 );
                             }}
                             onDrop={(event) => {
+                                if (!dragReorderEnabled) return;
                                 event.preventDefault();
                                 if (dropIndex != null) {
                                     reorder(dropIndex);
@@ -508,25 +618,13 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                         />
                     );
                 })}
-                {dragTabId != null && dropIndex != null && dropLineTop != null && (
+                {dragTabId != null && dropIndex != null && dropLineTop != null && dragReorderEnabled && (
                     <div
-                        className="pointer-events-none absolute left-0 right-0 border-t-2 border-accent/80"
+                        className="pointer-events-none absolute left-2 right-2 border-t-2 border-accent/80"
                         style={{ top: dropLineTop, transform: "translateY(-1px)" }}
                     />
                 )}
             </div>
-            <button
-                type="button"
-                className="group relative flex h-9 w-full shrink-0 cursor-pointer items-center gap-1.5 pl-3 pr-3 text-xs text-secondary/60 transition-colors hover:text-primary select-none whitespace-nowrap"
-                onClick={() => env.electron.createTab()}
-                onMouseEnter={() => setIsNewTabHovered(true)}
-                onMouseLeave={() => setIsNewTabHovered(false)}
-                aria-label="New Tab"
-            >
-                <div className="pointer-events-none absolute inset-x-1 inset-y-[4px] rounded-sm bg-transparent transition-colors group-hover:bg-hover" />
-                <i className="fa fa-solid fa-plus" style={{ fontSize: "10px" }} />
-                <span>New Tab</span>
-            </button>
         </div>
     );
 }
