@@ -36,6 +36,23 @@
     --color-accent: rgb(88, 193, 66);
     --color-accenthover: rgb(118, 223, 96);
 
+    /* Surface overlay tokens.  Layered tints are applied over the panel
+       background to produce idle / hover / active / border states.
+       fg-overlay-1 = subtle hover, fg-overlay-2 = active, fg-overlay-3 =
+       border/strong hover.  surface-1/2/3 are the equivalent for panel
+       surfaces (e.g. the code review file sidebar). */
+    --color-fg-overlay-1: rgba(255, 255, 255, 0.05);
+    --color-fg-overlay-2: rgba(255, 255, 255, 0.09);
+    --color-fg-overlay-3: rgba(255, 255, 255, 0.18);
+    --color-surface-1: rgba(255, 255, 255, 0.025);
+    --color-surface-2: rgba(255, 255, 255, 0.06);
+    --color-surface-3: rgba(255, 255, 255, 0.12);
+    --color-add: rgba(118, 194, 102, 0.22);
+    --color-add-strong: rgb(118, 194, 102);
+    --color-remove: rgba(204, 104, 92, 0.24);
+    --color-remove-strong: rgb(204, 104, 92);
+    --color-sub-text: rgba(247, 247, 247, 0.62);
+
     --font-sans: "Inter", sans-serif;
     --font-mono: "Hack", monospace;
     --font-markdown:
