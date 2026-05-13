@@ -85,6 +85,7 @@
         "dayjs": "^1.11.19",
         "debug": "^4.4.3",
         "diff": "^9.0.0",
+        "edgeflowjs": "^0.2.0",
         "electron-updater": "^6.6",
         "env-paths": "^3.0.0",
         "fast-average-color": "^9.5.0",
@@ -96,6 +97,7 @@
         "mermaid": "^11.12.3",
         "monaco-editor": "^0.55.1",
         "monaco-yaml": "^5.4.0",
+        "onnxruntime-web": "^1.26.0",
         "overlayscrollbars": "^2.14.0",
         "overlayscrollbars-react": "^0.5.6",
         "papaparse": "^5.5.3",
@@ -129,6 +131,7 @@
         "unist-util-visit": "^5.1.0",
         "use-device-pixel-ratio": "^1.1.2",
         "uuid": "^13.0.0",
+        "wink-porter2-stemmer": "^2.0.1",
         "winston": "^3.19.0",
         "ws": "^8.19.0",
         "yaml": "^2.8.3"
