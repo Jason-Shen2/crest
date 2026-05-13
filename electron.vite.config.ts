@@ -4,6 +4,9 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "electron-vite";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ViteImageOptimizer } from "vite-plugin-image-optimizer";
 import svgr from "vite-plugin-svgr";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -11,6 +14,14 @@ import tsconfigPaths from "vite-tsconfig-paths";
 // from our electron build
 const CHROME = "chrome140";
 const NODE = "node22";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Local sibling clone of the edgeFlow.js library — used for in-tree
+// iteration so source edits show up in crest without a publish round-trip.
+// Falls back to whatever's in node_modules when the path doesn't exist
+// (e.g. CI, fresh clone) so the build still produces a working artifact.
+const EDGEFLOW_LOCAL = path.resolve(__dirname, "../edgeFlow.js");
 
 // for debugging
 // target is like -- path.resolve(__dirname, "frontend/app/workspace/workspace-layout-model.ts");
@@ -123,6 +134,20 @@ export default defineConfig({
     },
     renderer: {
         root: ".",
+        resolve: {
+            // Resolve edgeflowjs to the sibling repo's source when present,
+            // so iteration in /Users/.../edgeFlow.js is instant.  See
+            // EDGEFLOW_LOCAL above.  Drop this block to fall back to the
+            // published npm package.
+            alias: existsSync(EDGEFLOW_LOCAL)
+                ? [
+                      {
+                          find: /^edgeflowjs$/,
+                          replacement: path.resolve(EDGEFLOW_LOCAL, "src/index.ts"),
+                      },
+                  ]
+                : [],
+        },
         build: {
             target: CHROME,
             sourcemap: true,
@@ -152,6 +177,12 @@ export default defineConfig({
         },
         server: {
             open: false,
+            // Allow Vite to read source files from the sibling edgeFlow.js
+            // clone.  Default fs.allow is the workspace root only, so
+            // /Users/.../edgeFlow.js would otherwise 403.
+            fs: existsSync(EDGEFLOW_LOCAL)
+                ? { allow: [path.resolve(__dirname), EDGEFLOW_LOCAL] }
+                : undefined,
             watch: {
                 ignored: [
                     "dist/**",
