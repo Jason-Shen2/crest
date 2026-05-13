@@ -60,6 +60,12 @@ export const FindBar = memo(({ model }: FindBarProps) => {
     const total = matches.length;
     const counterText = total === 0 ? (query ? "no matches" : "") : `${currentIndex + 1} / ${total}`;
 
+    // Visual reference: warp
+    // crates/warp_core/src/ui/theme/color.rs:312-314 — Find toggle pills
+    // (case-sensitive, regex) use find_bar_button_selection_color =
+    // accent_overlay_2 (accent @ 25%) when active.  We mirror that with
+    // --color-term-accent-25 so an active toggle reads as the same hue
+    // as the highlighted match underneath.
     return (
         <div className={cn("flex shrink-0 items-center gap-2 border-b border-fg-overlay-2 bg-surface-1 px-3 py-1.5")}>
             <UIcon name="search-small" size={12} className="text-secondary" />
@@ -100,7 +106,9 @@ export const FindBar = memo(({ model }: FindBarProps) => {
                 onClick={() => model.setFindCaseSensitive(!caseSensitive)}
                 className={cn(
                     "flex h-5 cursor-pointer items-center rounded px-1 font-mono text-[10px] hover:bg-fg-overlay-2",
-                    caseSensitive ? "bg-fg-overlay-2 text-foreground" : "text-secondary"
+                    caseSensitive
+                        ? "bg-[var(--color-term-accent-25)] text-foreground"
+                        : "text-secondary"
                 )}
                 aria-label="Toggle case sensitivity"
                 title="Case-sensitive"
@@ -112,7 +120,9 @@ export const FindBar = memo(({ model }: FindBarProps) => {
                 onClick={() => model.setFindRegex(!regexEnabled)}
                 className={cn(
                     "flex h-5 cursor-pointer items-center rounded px-1 font-mono text-[10px] hover:bg-fg-overlay-2",
-                    regexEnabled ? "bg-fg-overlay-2 text-foreground" : "text-secondary"
+                    regexEnabled
+                        ? "bg-[var(--color-term-accent-25)] text-foreground"
+                        : "text-secondary"
                 )}
                 aria-label="Toggle regex"
                 title="Regular expression"

@@ -63,13 +63,19 @@ export function CursorOverlay({
     }
     const left = cellLeft;
 
+    // Visual reference: warp
+    // crates/warp_core/src/ui/theme/color.rs:134-136 — `cursor()` falls back
+    // to `self.accent()` when no explicit cursor color is set.  We mirror
+    // that: an OSC 12 override wins, otherwise we use the terminal accent
+    // (warp Dark theme accent = #19AAD8).  Block-shape opacity is dropped
+    // to 0.5 so the glyph under the cursor stays readable.
     const style: React.CSSProperties = {
         position: "absolute",
         left: `${left}px`,
         top: `${topPx}px`,
         width: `${width}px`,
         height: `${height}px`,
-        background: overrides.cursorColor ?? "currentColor",
+        background: overrides.cursorColor ?? "var(--color-term-accent)",
         opacity: shape === "block" ? 0.5 : 0.85,
         pointerEvents: "none",
     };
