@@ -11,6 +11,7 @@ import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
+import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
@@ -45,6 +46,17 @@ function useTerminalModel(outerBlockId: string): TerminalModel {
     return model;
 }
 
+// Per-pane NLD model.  Lifecycle parallels TerminalModel: created once
+// per outerBlockId, disposed on unmount.  Holds the input mode (locked
+// or auto) plus the classifier's effective verdict.
+function useNLDModel(outerBlockId: string): NLDModel {
+    const model = useMemo(() => new NLDModel(outerBlockId), [outerBlockId]);
+    useEffect(() => {
+        return () => model.dispose();
+    }, [model]);
+    return model;
+}
+
 export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overlaySlot, replaceContent }: TerminalViewProps) => {
     const model = useTerminalModel(outerBlockId);
     const loading = useAtomValue(model.loadingAtom);
@@ -70,6 +82,7 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
     );
 
     const bellTick = useAtomValue(model.bellTickAtom);
+    const commandHistory = useAtomValue(model.commandHistoryAtom);
     const [bellFlash, setBellFlash] = useState(false);
 
     // Visual bell — C0 BEL bumps bellTick; flash a brief ring around the
@@ -112,7 +125,33 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [revision]);
 
-    const [inputMode, setInputMode] = useState<InputMode>("terminal");
+    const nld = useNLDModel(outerBlockId);
+    const inputMode = useAtomValue(nld.modeAtom);
+    const effectiveMode = useAtomValue(nld.effectiveModeAtom);
+    const setInputMode = useCallback(
+        (next: InputMode, currentText?: string) => {
+            nld.setMode(next);
+            // When toggling Auto *on* with existing buffer content, fire a
+            // one-shot classifier run so the effective mode reflects the
+            // current text immediately — without this the stale value
+            // persists until the next keystroke.
+            if (next === "auto" && currentText && currentText.trim().length > 0) {
+                // isAgentFollowUp is wired to false until crest's block
+                // engine surfaces a "last block was AI" signal.
+                nld.triggerDetectionImmediate(currentText, commandHistory, false);
+            }
+        },
+        [nld, commandHistory]
+    );
+    const onInputTextChange = useCallback(
+        (next: string) => {
+            // For now we don't have a "last block was AI" signal in
+            // crest's block list, so isAgentFollowUp is always false.
+            // Wire it in once the agent block-type lands.
+            nld.onTextChange(next, commandHistory, false);
+        },
+        [nld, commandHistory]
+    );
     const [submitting, setSubmitting] = useState(false);
 
     const onSubmit = useCallback(
@@ -462,6 +501,10 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                 onSubmit={onSubmit}
                 submitting={submitting}
                 disabled={isRunning && !inAltScreen ? false : false}
+                fontSize={fontSize}
+                history={commandHistory}
+                onTextChange={onInputTextChange}
+                effectiveMode={effectiveMode}
                 placeholder={
                     inAltScreen
                         ? "TUI active — keystrokes forward to the running app (not yet wired)"
