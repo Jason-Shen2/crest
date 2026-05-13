@@ -53,3 +53,14 @@ ROADMAP-v2.md
 jobs/
 __pycache__/
 .env
+public/nld-model/
+training/.google-10k-cache.txt
+frontend/app/term/nld/word-lists/.google-10k-cache.txt
+
+# NLD training artifacts (not source)
+training/.venv/
+training/onnx_model/
+training/finetuned_model/
+training/optimum_tmp/
+training/eval_results.json
+training/augmented_model.onnx
