@@ -65,23 +65,51 @@
 
     --radius: 8px;
 
-    /* ANSI Colors (Default Dark Palette) */
-    --ansi-black: #757575;
-    --ansi-red: #cc685c;
-    --ansi-green: #76c266;
-    --ansi-yellow: #cbca9b;
-    --ansi-blue: #85aacb;
-    --ansi-magenta: #cc72ca;
-    --ansi-cyan: #74a7cb;
-    --ansi-white: #c1c1c1;
-    --ansi-brightblack: #727272;
-    --ansi-brightred: #cc9d97;
-    --ansi-brightgreen: #a3dd97;
-    --ansi-brightyellow: #cbcaaa;
-    --ansi-brightblue: #9ab6cb;
-    --ansi-brightmagenta: #cc8ecb;
-    --ansi-brightcyan: #b7b8cb;
-    --ansi-brightwhite: #f0f0f0;
+    /* ANSI Colors — warp Dark theme palette.
+       Visual reference: warp app/src/themes/default_themes.rs:11-30
+       (DARK_MODE_NORMAL_COLORS, DARK_MODE_BRIGHT_COLORS).  These are the
+       glyph colors emitted by terminal apps' SGR sequences; they're the
+       single biggest driver of terminal output appearance, so matching
+       them brings crest's `ls`/grep/etc. output color cast in line with
+       warp at a glance. */
+    --ansi-black: #616161;
+    --ansi-red: #ff8272;
+    --ansi-green: #b4fa72;
+    --ansi-yellow: #fefdc2;
+    --ansi-blue: #a5d5fe;
+    --ansi-magenta: #ff8ffd;
+    --ansi-cyan: #d0d1fe;
+    --ansi-white: #f1f1f1;
+    --ansi-brightblack: #8e8e8e;
+    --ansi-brightred: #ffc4bd;
+    --ansi-brightgreen: #d6fcb9;
+    --ansi-brightyellow: #fefdd5;
+    --ansi-brightblue: #c1e3fe;
+    --ansi-brightmagenta: #ffb1fe;
+    --ansi-brightcyan: #e5e6fe;
+    --ansi-brightwhite: #feffff;
+
+    /* Terminal-scoped accent / status / selection tokens.  These mirror
+       warp's color decisions for the terminal pane.  Kept distinct from
+       crest's global `--color-accent` (green brand) so the rest of the
+       app keeps its identity while the terminal looks like warp.
+       Visual references:
+         - --color-term-accent: warp Dark theme accent
+             app/src/themes/default_themes.rs:266 (0x19AAD8FF)
+         - --color-term-selection: text selection fill
+             crates/warp_core/src/ui/theme/color.rs:303-304
+             ColorU(118, 167, 250, 102) == rgb @ 40% alpha
+         - --color-term-success / -error / -warning: UI status hexes
+             crates/warp_core/src/ui/theme/color.rs:138-152
+             ui_warning=#C28000, ui_error=#BC362A, ui_green=#1CA05A */
+    --color-term-accent: #19aad8;
+    --color-term-accent-25: rgba(25, 170, 216, 0.25);
+    --color-term-accent-10: rgba(25, 170, 216, 0.10);
+    --color-term-selection: rgba(118, 167, 250, 0.4);
+    --color-term-success: #1ca05a;
+    --color-term-error: #bc362a;
+    --color-term-warning: #c28000;
+    --color-term-yellow: #e5a01a;
 
     --container-w600: 600px;
     --container-w450: 450px;
