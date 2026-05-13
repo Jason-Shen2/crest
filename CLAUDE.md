@@ -16,3 +16,17 @@ This project uses a set of "skill" guides — focused how-to documents for commo
 | electron-api | `.kilocode/skills/electron-api/SKILL.md` | Guide for adding new Electron APIs to Wave Terminal. Use when implementing new frontend-to-electron communications via preload/IPC.                                                                                                         |
 | waveenv      | `.kilocode/skills/waveenv/SKILL.md`      | Guide for creating WaveEnv narrowings in Wave Terminal. Use when writing a named subset type of WaveEnv for a component tree, documenting environmental dependencies, or enabling mock environments for preview/test server usage.          |
 | wps-events   | `.kilocode/skills/wps-events/SKILL.md`   | Guide for working with Wave Terminal's WPS (Wave PubSub) event system. Use when implementing new event types, publishing events, subscribing to events, or adding asynchronous communication between components.                            |
+
+---
+
+## edgeFlow.js Integration Feedback Loop
+
+crest's NLD module (`frontend/app/term/nld/`) depends on **edgeFlow.js**, a sibling repo cloned at `../edgeFlow.js`. Whenever you hit friction while integrating or using edgeFlow.js — a missing API, a workaround you had to write, a confusing error, a bundler quirk, a tokenizer / wasm-path issue — log it.
+
+**Where:** `../edgeFlow.js/docs/INTEGRATION_LOG.md` (read the "How to use this log" section there for the entry template and conventions).
+
+**When:** the moment you write a workaround. Don't batch.
+
+**On the consumer side:** mark every workaround with `// TODO(edgeflow): docs/INTEGRATION_LOG.md YYYY-MM-DD — <one-line>` so future readers can trace why the code looks the way it does, and so the workaround surfaces in `grep` once edgeFlow.js catches up.
+
+This loop is the only mechanism we have to drive concrete library improvements rather than letting workarounds rot silently in crest. Treat it as load-bearing.
