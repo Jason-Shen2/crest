@@ -193,6 +193,20 @@ declare module "*.wasm?init" {
     export default initWasm;
 }
 
+// `?url` — Vite returns the asset's served URL as a string default export.
+// Covers both `import x from "./foo.png?url"` and `import x from "pkg/foo.wasm?url"`.
+declare module "*?url" {
+    const src: string;
+    export default src;
+}
+
+// `?raw` — Vite returns the asset's contents as a string default export.
+// Used for inlining text resources like word lists.
+declare module "*?raw" {
+    const content: string;
+    export default content;
+}
+
 // web worker
 declare module "*?worker" {
     const workerConstructor: {
