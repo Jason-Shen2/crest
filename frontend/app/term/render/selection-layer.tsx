@@ -41,12 +41,13 @@ export const SelectionLayer = memo(({ slice, grid, charWidth, lineHeight }: Sele
                 return (
                     <div
                         key={i}
-                        // Use a standard selection-blue (close to macOS
-                        // native selection) instead of crest's accent
-                        // token — accent is bright green in the default
-                        // theme and clashes with what users expect from
-                        // text selection.
-                        className="absolute bg-sky-500/35"
+                        // Visual reference: warp
+                        // crates/warp_core/src/ui/theme/color.rs:303-304
+                        // text_selection_color = ColorU(118, 167, 250, 102)
+                        // — periwinkle blue at 40% alpha.  Distinct from
+                        // the (sky-blue) accent so users can tell text
+                        // selection apart from block-level highlights.
+                        className="absolute bg-[var(--color-term-selection)]"
                         style={{
                             top: `${r.row * lineHeight}px`,
                             height: `${r.rows * lineHeight}px`,

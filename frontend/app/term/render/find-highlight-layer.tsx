@@ -35,10 +35,18 @@ export const FindHighlightLayer = memo(
                     return (
                         <div
                             key={i}
+                            // Visual reference: warp
+                            // crates/warp_core/src/ui/theme/color.rs:312-314
+                            // find_bar_button_selection_color = accent_overlay_2
+                            // (accent @ 25%).  Active match gets a stronger
+                            // ring so prev/next focus is visible at a glance;
+                            // inactive matches use the same hue at a fainter
+                            // alpha so the runs are detectable without
+                            // overwhelming the row colors.
                             className={
                                 isActive
-                                    ? "absolute bg-amber-400/55 ring-1 ring-amber-300"
-                                    : "absolute bg-amber-300/30"
+                                    ? "absolute bg-[var(--color-term-accent-25)] ring-1 ring-[var(--color-term-accent)]"
+                                    : "absolute bg-[var(--color-term-accent-10)]"
                             }
                             style={{
                                 top: `${m.row * lineHeight}px`,

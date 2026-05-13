@@ -29,6 +29,14 @@ interface BlockStatusIconProps {
 // BlockStatusIcon — renders the small lifecycle glyph that sits in the
 // block header (top-right of the cwd/branch/cmd row).  Uses UIcon so the
 // SVG is themed via currentColor.
+//
+// Visual reference: warp
+// crates/warp_core/src/ui/theme/color.rs:138-152 — ui_green_color,
+// ui_error_color, ui_warning_color define the canonical status hexes.
+// Using the same values keeps the success/failure/warning signal looking
+// like warp at a glance instead of leaning on Tailwind's emerald/rose
+// stock palette (which is brighter and reads as a different visual
+// language than warp).
 export const BlockStatusIcon = memo(({ state, size = 14, className }: BlockStatusIconProps) => {
     if (state === "before") return null;
     if (state === "running") {
@@ -46,7 +54,7 @@ export const BlockStatusIcon = memo(({ state, size = 14, className }: BlockStatu
             <UIcon
                 name="check-circle-broken"
                 size={size}
-                className={cn("text-emerald-400", className)}
+                className={cn("text-[var(--color-term-success)]", className)}
                 title="Succeeded"
             />
         );
@@ -56,7 +64,7 @@ export const BlockStatusIcon = memo(({ state, size = 14, className }: BlockStatu
             <UIcon
                 name="x-circle"
                 size={size}
-                className={cn("text-rose-400", className)}
+                className={cn("text-[var(--color-term-error)]", className)}
                 title="Failed"
             />
         );
@@ -66,7 +74,7 @@ export const BlockStatusIcon = memo(({ state, size = 14, className }: BlockStatu
             <UIcon
                 name="clock"
                 size={size}
-                className={cn("text-sky-400", className)}
+                className={cn("text-[var(--color-term-accent)]", className)}
                 title="Background"
             />
         );
