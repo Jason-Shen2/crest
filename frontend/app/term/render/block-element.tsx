@@ -410,16 +410,24 @@ export const BlockElement = memo(
             return items;
         })();
 
+        // Visual reference: warp
+        // app/src/terminal/block_list_element.rs:119-130 — single-block
+        // selection uses a 2px border in accent @ 25%.  We render that as
+        // a left-edge marker so it doesn't pile on top of the in-block
+        // header padding.  Failed blocks get a similar left edge tinted
+        // with warp's failed_block_color (color.rs:316-318), which
+        // resolves to terminal.normal.red (= --ansi-red in our palette).
+        const isFailed =
+            block.state === "done-with-execution" &&
+            block.exitCode != null &&
+            block.exitCode !== 0;
         return (
             <div
                 onClick={onSelect}
                 className={cn(
-                    "group relative border-b border-fg-overlay-1 transition-colors",
-                    selected && "bg-fg-overlay-1",
-                    block.state === "done-with-execution" &&
-                        block.exitCode != null &&
-                        block.exitCode !== 0 &&
-                        "border-l border-l-rose-500/60"
+                    "group relative border-b border-fg-overlay-1 border-l-2 border-l-transparent transition-colors",
+                    selected && "bg-fg-overlay-1 border-l-[var(--color-term-accent-25)]",
+                    isFailed && !selected && "border-l-[var(--ansi-red)]/60"
                 )}
             >
                 {showSnackbar && (
@@ -437,7 +445,7 @@ export const BlockElement = memo(
                         onDismiss={model ? () => model.setSnackbarVisible(false) : undefined}
                     />
                 )}
-                <div ref={headerAnchorRef} className="relative">
+                <div ref={headerAnchorRef}>
                     <CmdBlockHeader
                         state={visualState}
                         cwd={block.pwd}
@@ -449,16 +457,19 @@ export const BlockElement = memo(
                         selected={selected}
                         venv={block.virtualEnv}
                         nodeVersion={block.nodeVersion}
+                        rightSlot={
+                            toolbelt ? <CmdBlockToolbelt {...toolbelt} /> : undefined
+                        }
                     />
-                    {toolbelt && (
-                        <div className="pointer-events-none absolute right-2 top-1.5 flex items-center">
-                            <div className="pointer-events-auto">
-                                <CmdBlockToolbelt {...toolbelt} />
-                            </div>
-                        </div>
-                    )}
                 </div>
-                <div className="px-3 pb-1">
+                {/* Visual reference: warp app/src/settings/mod.rs:548-549 —
+                    output body uses ~0.5 lines top gap + 1.0 lines bottom
+                    padding.  px-3 matches the header's horizontal inset
+                    so glyphs line up under the cwd text.  pt-2 + pb-3
+                    approximates the 0.5-line top gap and 1.0-line bottom
+                    margin warp uses to separate one block's output from
+                    the next block's header. */}
+                <div className="px-3 pt-2 pb-3">
                     <div
                     ref={gridHostRef}
                     // Layout padding sits on the outer div so this inner
