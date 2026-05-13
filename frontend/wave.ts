@@ -3,6 +3,7 @@
 
 import { App } from "@/app/app";
 import { loadMonaco } from "@/app/monaco/monaco-env";
+import { EdgeFlowEmbedder, setEmbedder } from "@/app/term/nld";
 import { loadBadges } from "@/app/store/badge";
 import { GlobalModel } from "@/app/store/global-model";
 import {
@@ -191,6 +192,10 @@ async function initWave(initOpts: WaveInitOpts) {
     registerElectronReinjectKeyHandler();
     registerControlShiftStateUpdateHandler();
     await loadMonaco();
+    // Fire-and-forget — the embedder warms up in a worker; tier-1
+    // heuristics carry the input bar during the few hundred ms before
+    // tier-2 reports ready.
+    setEmbedder(new EdgeFlowEmbedder());
     const fullConfig = await RpcApi.GetFullConfigCommand(TabRpcClient);
     console.log("fullconfig", fullConfig);
     globalStore.set(atoms.fullConfigAtom, fullConfig);
