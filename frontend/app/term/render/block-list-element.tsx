@@ -250,15 +250,19 @@ export const BlockListElement = memo(
                     })}
                 </div>
                 {overhangingBlockId && (
+                    // Visual reference: warp app/src/terminal/view.rs:599-604
+                    // icon_size=20, padding=4 uniform, corner_radius=4.
+                    // Icon-only button — warp relies on the tooltip rather
+                    // than inline text, which keeps the button compact and
+                    // out of the way of the bottom-right of the output.
                     <button
                         type="button"
                         onClick={handleJumpToBottom}
-                        className="absolute bottom-3 right-3 flex h-7 cursor-pointer items-center gap-1 rounded-full border border-fg-overlay-2 bg-surface-1/95 px-2.5 text-[11px] text-foreground shadow-lg hover:bg-fg-overlay-2"
+                        className="absolute bottom-3 right-3 flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-fg-overlay-2 bg-surface-2/95 text-foreground shadow-md hover:bg-fg-overlay-3"
                         title="Jump to bottom of this block"
                         aria-label="Jump to bottom of this block"
                     >
-                        <UIcon name="arrow-down" size={12} />
-                        <span>Jump to bottom</span>
+                        <UIcon name="arrow-down" size={14} />
                     </button>
                 )}
             </div>
