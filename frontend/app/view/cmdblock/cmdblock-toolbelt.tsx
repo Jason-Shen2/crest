@@ -23,13 +23,13 @@ const ToolbeltButton = memo(({ icon, title, onClick, active, danger }: ToolbeltB
         title={title}
         aria-label={title}
         className={cn(
-            "flex h-6 w-6 cursor-pointer items-center justify-center rounded transition-colors",
-            "text-foreground/85 hover:bg-fg-overlay-3 hover:text-foreground",
-            active && "bg-fg-overlay-3 text-foreground",
-            danger && "hover:text-rose-400"
+            "flex h-5 w-5 cursor-pointer items-center justify-center rounded transition-colors",
+            "text-secondary/80 hover:bg-fg-overlay-2 hover:text-foreground",
+            active && "bg-fg-overlay-2 text-foreground",
+            danger && "hover:text-[var(--color-term-error)]"
         )}
     >
-        <UIcon name={icon} size={12} />
+        <UIcon name={icon} size={11} />
     </button>
 ));
 ToolbeltButton.displayName = "ToolbeltButton";
@@ -50,9 +50,13 @@ export interface CmdBlockToolbeltProps {
     forceOpen?: boolean;
 }
 
-// CmdBlockToolbelt — hover overlay on the right side of every block.
-// A "belt" with a dark transparent backdrop and 1px border that floats inside
-// the block header.  Buttons surface on hover via the parent's `group` class.
+// CmdBlockToolbelt — persistent action icons on the right side of the
+// block header.  Visual reference: warp persistent toolbelt visible in
+// the dark-theme screenshot (paperclip / download / filter / more-dots).
+// Background is transparent — the icons sit directly in the header row
+// rather than inside a chip, so they feel part of the prompt strip and
+// not a separate UI element.  forceOpen survives as a no-op flag for
+// callers that previously toggled hover-only visibility.
 export const CmdBlockToolbelt = memo(
     ({
         onMore,
@@ -65,15 +69,11 @@ export const CmdBlockToolbelt = memo(
         bookmarked,
         filterActive,
         className,
-        forceOpen,
+        forceOpen: _forceOpen,
     }: CmdBlockToolbeltProps) => (
         <div
             className={cn(
-                "flex h-7 items-center gap-[1px] rounded border border-white/10 bg-black/45 p-[2px] backdrop-blur-sm",
-                "shadow-[0_1px_3px_rgba(0,0,0,0.4)] transition-opacity duration-100",
-                forceOpen
-                    ? "opacity-100"
-                    : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
+                "flex h-5 items-center gap-0.5",
                 className
             )}
         >
