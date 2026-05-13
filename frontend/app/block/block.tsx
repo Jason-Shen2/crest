@@ -186,7 +186,6 @@ const BlockFull = memo(({ nodeModel, viewModel }: FullBlockProps) => {
             pendingFocusRafRef.current = null;
         }
         const ok = viewModel?.giveFocus?.();
-        console.log("[cd-bug] setFocusTarget", { blockId: nodeModel.blockId, giveFocusOk: ok, activeEl: document.activeElement?.tagName });
         if (ok) {
             return;
         }
