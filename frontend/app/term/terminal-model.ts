@@ -184,6 +184,14 @@ export class TerminalModel {
     // `hidden_by_toggle` semantics (terminal-wide, not per-block).
     readonly snackbarVisibleAtom = jotai.atom(true) as jotai.PrimitiveAtom<boolean>;
 
+    // Recent submitted commands (oldest → newest).  Bounded at 200 to
+    // match the shell-history depth most users carry; exceeding entries
+    // are dropped from the front.  Mirrors warp's
+    // input/inline_history/ wire-up: warp persists this on a
+    // BlocklistAIHistoryModel; we keep it in-memory for now and can
+    // persist via wshrpc later if the user wants cross-session history.
+    readonly commandHistoryAtom = jotai.atom<string[]>([]) as jotai.PrimitiveAtom<string[]>;
+
     constructor(outerBlockId: string, cols: number = DefaultCols) {
         this.outerBlockId = outerBlockId;
         this.cols = cols;
@@ -365,6 +373,18 @@ export class TerminalModel {
 
     async submitInput(text: string): Promise<void> {
         const payload = text.endsWith("\n") || text.endsWith("\r") ? text : text + "\r";
+        // Push to history before sending the RPC — if the command fails
+        // server-side the user still gets it back via ↑.  Drop consecutive
+        // duplicates (same as bash HISTCONTROL=ignoredups).
+        const trimmed = text.replace(/[\r\n]+$/, "");
+        if (trimmed.length > 0) {
+            const prev = globalStore.get(this.commandHistoryAtom);
+            if (prev[prev.length - 1] !== trimmed) {
+                const next = [...prev, trimmed];
+                if (next.length > 200) next.shift();
+                globalStore.set(this.commandHistoryAtom, next);
+            }
+        }
         await RpcApi.ControllerInputCommand(TabRpcClient, {
             blockid: this.outerBlockId,
             inputdata64: stringToBase64(payload),
