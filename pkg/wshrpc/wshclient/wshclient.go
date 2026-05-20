@@ -294,6 +294,12 @@ func EventUnsubAllCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) error {
 	return err
 }
 
+// command "fetchcontextchip", wshserver.FetchContextChipCommand
+func FetchContextChipCommand(w *wshutil.WshRpc, data wshrpc.CommandFetchContextChipData, opts *wshrpc.RpcOpts) (*wshrpc.CommandFetchContextChipResponse, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.CommandFetchContextChipResponse](w, "fetchcontextchip", data, opts)
+	return resp, err
+}
+
 // command "fetchsuggestions", wshserver.FetchSuggestionsCommand
 func FetchSuggestionsCommand(w *wshutil.WshRpc, data wshrpc.FetchSuggestionsData, opts *wshrpc.RpcOpts) (*wshrpc.FetchSuggestionsResponse, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.FetchSuggestionsResponse](w, "fetchsuggestions", data, opts)
@@ -393,6 +399,12 @@ func FindGitBashCommand(w *wshutil.WshRpc, data bool, opts *wshrpc.RpcOpts) (str
 func FocusWindowCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "focuswindow", data, opts)
 	return err
+}
+
+// command "getaiuserconfig", wshserver.GetAIUserConfigCommand
+func GetAIUserConfigCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (*wshrpc.GetAIUserConfigRtnData, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GetAIUserConfigRtnData](w, "getaiuserconfig", nil, opts)
+	return resp, err
 }
 
 // command "getallbadges", wshserver.GetAllBadgesCommand
@@ -512,12 +524,6 @@ func GetVarCommand(w *wshutil.WshRpc, data wshrpc.CommandVarData, opts *wshrpc.R
 // command "getwaveaichat", wshserver.GetWaveAIChatCommand
 func GetWaveAIChatCommand(w *wshutil.WshRpc, data wshrpc.CommandGetWaveAIChatData, opts *wshrpc.RpcOpts) (*uctypes.UIChat, error) {
 	resp, err := sendRpcRequestCallHelper[*uctypes.UIChat](w, "getwaveaichat", data, opts)
-	return resp, err
-}
-
-// command "getwaveaimodeconfig", wshserver.GetWaveAIModeConfigCommand
-func GetWaveAIModeConfigCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (wconfig.AIModeConfigUpdate, error) {
-	resp, err := sendRpcRequestCallHelper[wconfig.AIModeConfigUpdate](w, "getwaveaimodeconfig", nil, opts)
 	return resp, err
 }
 
@@ -1071,6 +1077,12 @@ func WebSelectorCommand(w *wshutil.WshRpc, data wshrpc.CommandWebSelectorData, o
 func WorkspaceListCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) ([]wshrpc.WorkspaceInfoData, error) {
 	resp, err := sendRpcRequestCallHelper[[]wshrpc.WorkspaceInfoData](w, "workspacelist", nil, opts)
 	return resp, err
+}
+
+// command "writeaiuserconfig", wshserver.WriteAIUserConfigCommand
+func WriteAIUserConfigCommand(w *wshutil.WshRpc, data uctypes.AIUserConfig, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "writeaiuserconfig", data, opts)
+	return err
 }
 
 // command "writeappfile", wshserver.WriteAppFileCommand
