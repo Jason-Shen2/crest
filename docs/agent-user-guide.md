@@ -4,6 +4,136 @@ Crest includes a built-in coding agent that runs directly in your terminal. Invo
 
 ---
 
+## AI Provider Configuration
+
+Crest is BYO-API-key. You configure providers + credentials in **`~/.config/crest/ai.json`**. The file is required — the agent refuses to send a message until at least one provider with credentials and a `default` selection are set.
+
+### Minimal example
+
+```jsonc
+{
+    "providers": {
+        "openai": { "tokensecretname": "OPENAI_API_KEY" }
+    },
+    "default": {
+        "provider": "openai",
+        "model": "gpt-5"
+    }
+}
+```
+
+That's it. After saving, the model picker (the chip next to the input bar) populates with OpenAI's catalog models; selecting one writes the choice to the pane's meta and the next agent message uses it.
+
+### Where credentials live
+
+Two ways to provide an API key:
+
+1. **`tokensecretname` (preferred)** — the OS keychain holds the token under this name; crest's `secretstore` resolves it at request time. Set the keychain entry via system tools or via `crest secret set OPENAI_API_KEY sk-...` (forthcoming wsh command).
+
+2. **`token` (testing only)** — literal token in the JSON. Plaintext, not recommended; takes precedence over `tokensecretname` if both are set.
+
+### Built-in providers
+
+The shipped catalog (`frontend/app/store/ai-catalog.ts`) covers OpenAI, Anthropic, Google Gemini, and OpenRouter. Each entry knows its endpoint, API protocol, default token secret name, and the popular models for that provider with their context window + capabilities. You don't write any of this in `ai.json` — only credentials and the default selection.
+
+### Profiles (optional)
+
+Save named selections you switch between:
+
+```jsonc
+{
+    "providers": {
+        "openai":    { "tokensecretname": "OPENAI_API_KEY" },
+        "anthropic": { "tokensecretname": "ANTHROPIC_API_KEY" }
+    },
+    "default":  { "provider": "openai", "model": "gpt-5-mini" },
+    "profiles": {
+        "fast":     { "provider": "openai",    "model": "gpt-5-mini" },
+        "deepwork": { "provider": "anthropic", "model": "claude-opus-4-7", "reasoning": "high" }
+    }
+}
+```
+
+Profiles render as a `★ Profiles` section at the top of the picker. Picking one writes the resolved `{provider, model, reasoning}` triple to the pane's `agent:selection` meta — the profile *name* isn't stored, so renaming or deleting a profile later doesn't break already-selected panes.
+
+### Custom models (not in catalog)
+
+Provider is in the catalog but the model isn't (newly released, etc.):
+
+```jsonc
+{
+    "providers": { "openai": { "tokensecretname": "OPENAI_API_KEY" } },
+    "default":   { "provider": "openai", "model": "gpt-experimental" },
+    "custom_models": [
+        {
+            "provider": "openai",
+            "id": "gpt-experimental",
+            "displayname": "GPT Experimental",
+            "capabilities": ["tools"],
+            "contextwindow": 50000
+        }
+    ]
+}
+```
+
+Inherits the provider's endpoint + apitype. Override per-model with `"apitypeoverride": "openai-chat"` if the model needs a different API protocol than the provider's default.
+
+### Custom endpoints (entirely new provider)
+
+For local vLLM, Together AI, Groq, LM Studio, or anywhere not in the catalog — declare the endpoint inline:
+
+```jsonc
+{
+    "providers": {
+        "vllm-local": { "tokensecretname": "" }    // empty == no auth header
+    },
+    "default": { "provider": "vllm-local", "model": "qwen-coder-32b" },
+    "custom_endpoints": {
+        "vllm-local": {
+            "displayname": "Local vLLM",
+            "endpoint":  "http://localhost:8000/v1/chat/completions",
+            "apitype":   "openai-chat",
+            "tokensecretname": "",
+            "models": [
+                {
+                    "id": "qwen-coder-32b",
+                    "displayName": "Qwen 2.5 Coder",
+                    "capabilities": ["tools"],
+                    "contextWindow": 128000
+                }
+            ]
+        }
+    }
+}
+```
+
+`apitype` values: `openai-chat`, `openai-responses`, `anthropic-messages`, `google-gemini`. Pick whichever the endpoint speaks; most non-OpenAI compatible servers are `openai-chat`.
+
+### Picker UI
+
+Open the picker by clicking the model chip at the right end of the input bar. Sections from top to bottom:
+
+```
+★ Profiles               (your saved selections)
+OpenAI                   (catalog models — dimmed when no key)
+Anthropic
+Google Gemini
+OpenRouter
+Custom Endpoints         (your custom_endpoints entries)
+```
+
+Models with reasoning capability expose an inline `[low] [med] [high]` row when selected. The chip shows the picked model's display name; the choice persists on the pane's outer block until you pick something else.
+
+### Where reasoning goes
+
+Reasoning level is **part of the selection**, not the catalog. `gpt-5 + high` and `gpt-5 + low` are the same model with different effort hints — picking either updates the reasoning sub-row and the chip badge (`GPT-5 · high`). Reasoning is silently dropped when the resolved model doesn't support it, so old selections survive model swaps cleanly.
+
+### Architecture reference
+
+For maintainers / contributors: see [`docs/ai-config-architecture.md`](./ai-config-architecture.md) — covers the 4-layer design (catalog / user config / selection / resolver) and the rationale for each decision.
+
+---
+
 ## Modes
 
 Crest's agent operates in three modes, each with different permission levels.
@@ -113,12 +243,9 @@ All session commands are prefixed with `:`.
 
 ### Switching Models
 
-```
-:model claude-sonnet-4-20250514
-:model claude-opus-4-20250514
-```
+Use the **model chip** at the right end of the input bar (see "AI Provider Configuration" above). Open the picker, pick a model, the next message uses it. The choice persists on the current pane's outer block — different panes can run different models.
 
-The conversation resets when you switch models.
+The `:model` slash command from earlier crest versions is gone; the picker replaces it.
 
 ---
 
