@@ -153,7 +153,18 @@ type MetaTSType struct {
 	OnboardingGithubStar  bool   `json:"onboarding:githubstar,omitempty"`  // for client
 	OnboardingLastVersion string `json:"onboarding:lastversion,omitempty"` // for client (tracks semver of last 'onboarding' shown)
 
+	AgentSelection *AgentSelectionMeta `json:"agent:selection,omitempty"` // per-pane AI selection — provider/model/reasoning triple, written by the model picker
+
 	Count int `json:"count,omitempty"` // temp for cpu plot. will remove later
+}
+
+// AgentSelectionMeta is the per-pane AI selection persisted on the
+// outer block's meta.  Mirrors frontend AgentSelection in
+// ai-types.ts.  See docs/ai-config-architecture.md §5.
+type AgentSelectionMeta struct {
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning,omitempty"` // "low" | "medium" | "high"; only honored when the resolved model supports reasoning
 }
 
 type MetaDataDecl struct {

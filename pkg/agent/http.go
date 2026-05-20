@@ -14,9 +14,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/s-zx/crest/pkg/aiusechat"
 	"github.com/s-zx/crest/pkg/aiusechat/uctypes"
-	"github.com/s-zx/crest/pkg/secretstore"
-	"github.com/s-zx/crest/pkg/wconfig"
 	"github.com/s-zx/crest/pkg/web/sse"
 	"github.com/s-zx/crest/pkg/wstore"
 )
@@ -81,15 +80,21 @@ func readPlanContext(planPath, cwd string) (string, error) {
 // harnesses (Harbor/TB2) — that gets translated to PostureBench
 // inside the handler.
 type PostAgentMessageRequest struct {
-	ChatID            string            `json:"chatid"`
-	TabId             string            `json:"tabid"`
-	BlockId           string            `json:"blockid"`
-	Mode              string            `json:"mode"`
-	PermissionPosture string            `json:"permission_posture,omitempty"`
-	ModelOverride     string            `json:"modeloverride,omitempty"`
-	PlanPath          string            `json:"planpath,omitempty"`
-	Msg               uctypes.AIMessage `json:"msg"`
-	Context           AgentContext      `json:"context,omitempty"`
+	ChatID            string                     `json:"chatid"`
+	TabId             string                     `json:"tabid"`
+	BlockId           string                     `json:"blockid"`
+	Mode              string                     `json:"mode"`
+	PermissionPosture string                     `json:"permission_posture,omitempty"`
+	ModelOverride     string                     `json:"modeloverride,omitempty"`
+	// AIConfig is the resolved AI configuration the frontend produced
+	// from CATALOG + ai.json + the user's selection.  Required — the
+	// backend no longer falls back to global ai:* settings (legacy
+	// path was removed in Phase E of the ai-config refactor; see
+	// docs/ai-config-architecture.md).
+	AIConfig aiusechat.AIConfigRequest `json:"aiconfig"`
+	PlanPath string                    `json:"planpath,omitempty"`
+	Msg      uctypes.AIMessage         `json:"msg"`
+	Context  AgentContext              `json:"context,omitempty"`
 }
 
 type AgentContext struct {
@@ -121,69 +126,6 @@ func isValidModelName(name string) bool {
 	return true
 }
 
-func buildAIOptsFromSettings() (*uctypes.AIOptsType, error) {
-	fullConfig := wconfig.GetWatcher().GetFullConfig()
-	settings := fullConfig.Settings
-	apiType := settings.AiApiType
-	baseUrl := settings.AiBaseURL
-	model := settings.AiModel
-	if apiType == "" {
-		apiType = detectAPIType(baseUrl)
-	}
-	apiToken := settings.AiApiToken
-	if apiToken == "" && settings.AiApiTokenSecretName != "" {
-		secret, exists, err := secretstore.GetSecret(settings.AiApiTokenSecretName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve secret %s: %w", settings.AiApiTokenSecretName, err)
-		}
-		secret = strings.TrimSpace(secret)
-		if !exists || secret == "" {
-			return nil, fmt.Errorf("secret %s not found or empty — configure your API key in Settings → AI Provider", settings.AiApiTokenSecretName)
-		}
-		apiToken = secret
-	}
-	if apiToken == "" {
-		return nil, fmt.Errorf("no API key configured — open Settings → AI Provider to set one up")
-	}
-	if baseUrl == "" && apiType == uctypes.APIType_GoogleGemini && model != "" {
-		baseUrl = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent", model)
-	}
-	if baseUrl == "" {
-		return nil, fmt.Errorf("no ai:baseurl configured — open Settings → AI Provider to set one up")
-	}
-	maxTokens := int(settings.AiMaxTokens)
-	if maxTokens <= 0 {
-		maxTokens = 16384
-	}
-	capabilities := []string{uctypes.AICapabilityTools}
-	if apiType == uctypes.APIType_GoogleGemini {
-		capabilities = append(capabilities, uctypes.AICapabilityImages, uctypes.AICapabilityPdfs)
-	}
-	return &uctypes.AIOptsType{
-		APIType:       apiType,
-		Model:         model,
-		Endpoint:      baseUrl,
-		APIToken:      apiToken,
-		MaxTokens:     maxTokens,
-		ThinkingLevel: uctypes.ThinkingLevelMedium,
-		Verbosity:     uctypes.VerbosityLevelMedium,
-		Capabilities:  capabilities,
-	}, nil
-}
-
-func detectAPIType(endpoint string) string {
-	e := strings.ToLower(endpoint)
-	switch {
-	case strings.Contains(e, "anthropic.com"):
-		return uctypes.APIType_AnthropicMessages
-	case strings.Contains(e, "generativelanguage.googleapis.com"):
-		return uctypes.APIType_GoogleGemini
-	case strings.Contains(e, "responses"):
-		return uctypes.APIType_OpenAIResponses
-	default:
-		return uctypes.APIType_OpenAIChat
-	}
-}
 
 func AgentWorktreeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -330,9 +272,12 @@ func PostAgentMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	aiOpts, err := buildAIOptsFromSettings()
+	// Frontend resolved CATALOG + ai.json + selection into a complete
+	// AIConfigRequest before posting.  Backend just ingests it (token
+	// lookup via secretstore happens inside BuildAIOptsFromConfig).
+	aiOpts, err := aiusechat.BuildAIOptsFromConfig(req.AIConfig)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("WaveAI configuration error: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("WaveAI configuration error: %v", err), http.StatusBadRequest)
 		return
 	}
 	if req.ModelOverride != "" {
@@ -390,13 +335,12 @@ func PostAgentMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = RunAgent(r.Context(), sseHandler, wstore.GetClientId(), AgentOpts{
+	if err := RunAgent(r.Context(), sseHandler, wstore.GetClientId(), AgentOpts{
 		Session:     sess,
 		UserMsg:     &req.Msg,
 		AIOpts:      *aiOpts,
 		PlanContext: planContext,
-	})
-	if err != nil {
+	}); err != nil {
 		log.Printf("agent: RunAgent error: %v\n", err)
 		// SSE stream may already be closed by RunAgent via AiMsgError.
 	}

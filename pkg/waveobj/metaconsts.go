@@ -150,6 +150,8 @@ const (
 	MetaKey_OnboardingGithubStar             = "onboarding:githubstar"
 	MetaKey_OnboardingLastVersion            = "onboarding:lastversion"
 
+	MetaKey_AgentSelection                   = "agent:selection"
+
 	MetaKey_Count                            = "count"
 )
 

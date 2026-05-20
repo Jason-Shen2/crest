@@ -25,10 +25,15 @@
 //   - warp context_chips/spacing.rs                     chip padding constants
 //   - warp agent.rs:43-67                               cloud-mode constants
 
+import { Tooltip } from "@/app/element/tooltip";
 import { UIcon } from "@/app/element/ui-icon";
 import { cn } from "@/util/util";
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatPromptCwd } from "./cmdblock-status";
+import { ModelPickerPopover } from "./model-picker-popover";
+import { ProviderEntry } from "@/app/store/ai-catalog";
+import { AgentSelection } from "@/app/store/ai-types";
+import { AIUserConfigStatus } from "@/app/store/ai-user-config";
 
 // "auto" maps to warp's InputToggleMode::AutoDetection
 // (universal_developer_input.rs:440).  Visual-only for crest until we
@@ -41,6 +46,33 @@ export interface CmdBlockInputProps {
     branch?: string;
     venv?: string;
     nodeVersion?: string;
+    // SSH session context — non-empty `sshHost` makes the SshChip appear.
+    sshHost?: string;
+    sshUser?: string;
+    // Git diff stats for the working tree.  Both 0 / undefined → chip hides.
+    gitAdded?: number;
+    gitRemoved?: number;
+    // GitHub pull request linked to this branch.  `prNumber` lights the chip.
+    prNumber?: number;
+    prTitle?: string;
+    onPrClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+    // Agent plan progress (completed / total).  total > 0 → chip appears.
+    agentPlanCompleted?: number;
+    agentPlanTotal?: number;
+    onAgentPlanClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+    // Context window usage in tokens.  Both set → chip appears.
+    usedTokens?: number;
+    maxTokens?: number;
+    onContextWindowClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+    // Active kubectl context name (warp KubernetesContext chip).
+    kubernetesContext?: string;
+    // Fast-forward (auto-approve tool calls) toggle.  Threaded only when
+    // the agent backend supports it — gates visibility.
+    fastForwardOn?: boolean;
+    onFastForwardToggle?: () => void;
+    // Voice input — threaded only when the feature is wired.
+    onVoiceInput?: () => void;
+    voiceRecording?: boolean;
     mode: InputMode;
     // Pass the current buffer text alongside the new mode so the parent
     // can fire a one-shot NLD trigger when the user toggles Auto on with
@@ -50,8 +82,19 @@ export interface CmdBlockInputProps {
     onSubmit: (text: string, mode: InputMode) => void;
     submitting?: boolean;
     disabled?: boolean;
-    modelName?: string;
-    onModelClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+    // Label shown on the model chip.  Computed by the parent from
+    // resolveAIConfig(selection, userConfig, catalog) so the chip reads
+    // the resolved displayName ("GPT-5 high" rather than the raw id).
+    modelDisplayLabel?: string;
+    // Picker data — when `onSelectionChange` is provided the chip
+    // opens a popover backed by these.  See docs/ai-config-architecture.md §9.
+    catalog?: ProviderEntry[];
+    userConfig?: AIUserConfig | null;
+    userConfigStatus?: AIUserConfigStatus;
+    userConfigError?: string;
+    selection?: AgentSelection | null;
+    onSelectionChange?: (next: AgentSelection) => void;
+    onOpenAIConfigFile?: () => void;
     placeholder?: string;
     // Grid font size — only used by Editor.  Chrome (chips, buttons,
     // help row) uses fixed UI sizes for legibility.  Reference: warp's
@@ -92,7 +135,6 @@ const UI_BUTTON_PX = 26;     // chip/button height — comfortable click target
 const UI_ICON_PX = 14;       // icon size inside buttons
 const UI_GAP_PX = 6;         // gap between adjacent chrome elements
 const UI_CHIP_RADIUS_PX = 6; // chip corner radius (warp uses ~6 for chips)
-const UI_DIVIDER_HEIGHT_PX = 22; // 1px wide divider, slightly shorter than button
 
 // =========================================================================
 // HelpRow — kbd hint strip at TOP of the input.  Warp screenshot shows
@@ -106,31 +148,148 @@ interface HelpRowProps {
 
 const HelpRow = memo(({ rightSlot }: HelpRowProps) => (
     <div
-        className="flex items-center gap-x-4 gap-y-1 font-sans leading-none text-secondary/60"
+        className="flex items-center gap-x-4 gap-y-1 font-sans leading-none text-secondary/70"
         style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
     >
-        <Hint kbd="↵" label="shell" />
-        <Hint kbd="⌘↵" label="agent" />
-        <Hint kbd="⇧↵" label="newline" />
-        <Hint kbd="/" label="commands" />
-        <Hint kbd="⌘F" label="find" />
+        <Hint keys={["!"]} label="shell" />
+        <Hint keys={["/"]} label="commands" />
         {rightSlot && <div className="ml-auto flex shrink-0 items-center">{rightSlot}</div>}
     </div>
 ));
 HelpRow.displayName = "HelpRow";
 
-const Hint = memo(({ kbd, label }: { kbd: string; label: string }) => (
-    <span className="inline-flex items-center gap-1.5">
+// =========================================================================
+// ShellPrefixHintRow — replaces HelpRow when the buffer starts with `!`.
+// Visually parallels AutodetectHintRow so the user gets the same kind of
+// "you're about to run X, not Y" feedback that auto-detect mode provides.
+// =========================================================================
+interface ShellPrefixHintRowProps {
+    rightSlot?: React.ReactNode;
+}
+
+// =========================================================================
+// AgentHintRow — shown when the buffer has typed content in the default
+// agent mode (no `!` prefix, mode !== "auto").  Mirrors ShellPrefixHintRow
+// so the user always sees which side of the rail their input will run on.
+// =========================================================================
+interface AgentHintRowProps {
+    rightSlot?: React.ReactNode;
+}
+
+const AgentHintRow = memo(({ rightSlot }: AgentHintRowProps) => (
+    <div
+        className="flex items-center gap-x-2 font-sans leading-none text-secondary/70"
+        style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
+    >
+        <span className="inline-flex items-center gap-1.5 text-[var(--ansi-yellow)]">
+            <UIcon name="stars-01" size={UI_HELP_FONT_PX} />
+            <span>agent mode</span>
+        </span>
+        {rightSlot && <div className="ml-auto flex shrink-0 items-center">{rightSlot}</div>}
+    </div>
+));
+AgentHintRow.displayName = "AgentHintRow";
+
+const ShellPrefixHintRow = memo(({ rightSlot }: ShellPrefixHintRowProps) => (
+    <div
+        className="flex items-center gap-x-2 font-sans leading-none text-secondary/70"
+        style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
+    >
+        <span className="inline-flex items-center gap-1.5 text-[var(--ansi-blue)]">
+            <UIcon name="terminal" size={UI_HELP_FONT_PX} />
+            <span>shell mode</span>
+        </span>
+        {rightSlot && <div className="ml-auto flex shrink-0 items-center">{rightSlot}</div>}
+    </div>
+));
+ShellPrefixHintRow.displayName = "ShellPrefixHintRow";
+
+// Each modifier / key renders as its own small chip; combos like ⇧↵ are
+// two adjacent chips with a tiny gap (matches warp's help-row style).
+// Single-char chips use a square box; multi-char (e.g. "esc") expand
+// horizontally with a comfortable pad so the text doesn't crowd the edges.
+const Kbd = memo(({ char }: { char: string }) => {
+    const multi = char.length > 1;
+    return (
         <kbd
-            className="inline-flex items-center justify-center rounded border border-fg-overlay-2 bg-fg-overlay-1 px-1.5 py-0.5 font-mono"
-            style={{ fontSize: `${UI_HELP_FONT_PX - 1}px`, minWidth: "16px", lineHeight: 1 }}
+            className="inline-flex items-center justify-center rounded-[5px] bg-fg-overlay-2/70 font-sans text-secondary/85"
+            style={{
+                height: `${UI_HELP_FONT_PX + 7}px`,
+                minWidth: `${UI_HELP_FONT_PX + 7}px`,
+                padding: multi ? "0 6px" : 0,
+                fontSize: `${UI_HELP_FONT_PX}px`,
+                lineHeight: 1,
+            }}
         >
-            {kbd}
+            {char}
         </kbd>
-        <span>{label}</span>
+    );
+});
+Kbd.displayName = "Kbd";
+
+const Hint = memo(({ keys, label }: { keys: string[]; label: string }) => (
+    <span className="inline-flex items-center gap-1.5">
+        <span className="inline-flex items-center gap-[3px]">
+            {keys.map((k, i) => (
+                <Kbd key={`${k}-${i}`} char={k} />
+            ))}
+        </span>
+        <span>for {label}</span>
     </span>
 ));
 Hint.displayName = "Hint";
+
+// =========================================================================
+// TooltipBody — content layout for a chip / button tooltip.  Mirrors warp's
+// `Tooltip` component (warp/crates/ui_components/src/tooltip.rs:35-83):
+// label text on the left, optional keystroke chip on the right with 10px
+// gap.  Font is one step smaller than the UI base (warp's
+// UI_FONT_SIZE_ADJUSTMENT = -2).  Pure content — the outer
+// <Tooltip content=...> shell handles positioning + fade + portal.
+// =========================================================================
+interface TooltipBodyProps {
+    label: string;
+    keys?: string[];
+}
+
+const TooltipBody = memo(({ label, keys }: TooltipBodyProps) => (
+    <span className="inline-flex items-center gap-2.5 whitespace-nowrap leading-none">
+        <span className="font-sans text-foreground/95" style={{ fontSize: `${UI_HELP_FONT_PX}px` }}>
+            {label}
+        </span>
+        {keys && keys.length > 0 && (
+            <span className="inline-flex items-center gap-[3px] text-secondary/70">
+                {keys.map((k, i) => (
+                    <Kbd key={`${k}-${i}`} char={k} />
+                ))}
+            </span>
+        )}
+    </span>
+));
+TooltipBody.displayName = "TooltipBody";
+
+// withTooltip — shorthand around <Tooltip> to render a warp-style body and
+// preserve the chip's flex alignment.  `display: contents` on the wrapper
+// keeps the chip a direct flex item of its parent row (the chip row uses
+// `gap`, so we don't want an extra inline-block to disturb spacing).
+interface WithTooltipProps {
+    label?: string;
+    keys?: string[];
+    children: React.ReactNode;
+}
+
+const WithTooltip = memo(({ label, keys, children }: WithTooltipProps) => {
+    if (!label) return <>{children}</>;
+    return (
+        <Tooltip
+            content={<TooltipBody label={label} keys={keys} />}
+            divClassName="inline-flex shrink-0"
+        >
+            {children}
+        </Tooltip>
+    );
+});
+WithTooltip.displayName = "WithTooltip";
 
 // =========================================================================
 // AutodetectHintRow — replaces HelpRow when auto-detect is active and the
@@ -164,48 +323,329 @@ const AutodetectHintRow = memo(({ effectiveMode, rightSlot }: AutodetectHintRowP
 AutodetectHintRow.displayName = "AutodetectHintRow";
 
 // =========================================================================
-// CwdChip — bottom-left chip showing the working directory (and env /
-// branch when present).  Warp screenshot: `📁 ...ents/open-source/...`
-// rendered as a rounded pill with a subtle border.  Visual reference:
-// warp prompt_render_helper.rs:669 + context_chips/spacing.rs
-// (UDI_CHIP_HORIZONTAL_PADDING = 4, UDI_CHIP_VERTICAL_PADDING = 2,
-// UDI_CHIP_ICON_GAP = 4).
+// ContextChip — shared pill shell used by every footer chip.  Visual
+// reference: warp context_chips/spacing.rs (UDI_CHIP_HORIZONTAL_PADDING=4,
+// UDI_CHIP_VERTICAL_PADDING=2, UDI_CHIP_ICON_GAP=4) + the chip pill
+// rendered by display_chips in agent_input_footer/.  Renders as a button
+// when interactive (onClick / onContextMenu), otherwise a span.
 // =========================================================================
+interface ContextChipProps {
+    icon: string;
+    children?: React.ReactNode;
+    title?: string;
+    tooltipKeys?: string[];
+    onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+    onContextMenu?: (e: React.MouseEvent) => void;
+    className?: string;
+}
+
+const ContextChip = memo(
+    ({ icon, children, title, tooltipKeys, onClick, onContextMenu, className }: ContextChipProps) => {
+        const interactive = onClick != null || onContextMenu != null;
+        const inner = (
+            <>
+                <UIcon
+                    name={icon}
+                    size={UI_ICON_PX - 1}
+                    className="shrink-0 opacity-70"
+                />
+                {children}
+            </>
+        );
+        // Higher-contrast palette than fg-overlay-{1,2,3} so the chips
+        // don't visually merge with the input bar's own border / bg.
+        // border 30% white + bg 10% white reliably reads on dark themes
+        // even when the input bar is unfocused (bg-transparent).
+        const sharedClass = cn(
+            "inline-flex shrink-0 items-center gap-1.5 rounded-[6px] border border-white/25 bg-white/[0.08] px-2 font-sans text-foreground/85 transition-colors",
+            interactive && "cursor-pointer hover:bg-white/[0.14] hover:text-foreground",
+            className
+        );
+        const sharedStyle = { height: `${UI_BUTTON_PX}px`, fontSize: `${UI_FONT_PX}px` } as const;
+        const chipEl = interactive ? (
+            <button
+                type="button"
+                onClick={onClick}
+                onContextMenu={onContextMenu}
+                aria-label={title}
+                className={sharedClass}
+                style={sharedStyle}
+            >
+                {inner}
+            </button>
+        ) : (
+            <span
+                onContextMenu={onContextMenu}
+                className={sharedClass}
+                style={sharedStyle}
+            >
+                {inner}
+            </span>
+        );
+        return (
+            <WithTooltip label={title} keys={tooltipKeys}>
+                {chipEl}
+            </WithTooltip>
+        );
+    }
+);
+ContextChip.displayName = "ContextChip";
+
+// =========================================================================
+// Per-kind chips.  Each takes optional data and returns null when the
+// data isn't available — matches warp's `should_render(app)` predicate
+// (display_chip.rs).  Layout order mirrors warp's `default_left()` /
+// `default_right()` in agent_input_footer/toolbar_item.rs:182-214.
+// =========================================================================
+
+// SshChip — warp ContextChipKind::Ssh.  Shown when the active session is
+// running on a remote host.  Format: `user@host` (or `host` if user empty).
+interface SshChipProps {
+    user?: string;
+    host?: string;
+    onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+const SshChip = memo(({ user, host, onClick }: SshChipProps) => {
+    if (!host) return null;
+    const label = user ? `${user}@${host}` : host;
+    return (
+        <ContextChip icon="compass-3" title={`SSH session: ${label}`} onClick={onClick}>
+            <span className="max-w-[160px] truncate">{label}</span>
+        </ContextChip>
+    );
+});
+SshChip.displayName = "SshChip";
+
+// CwdChip — warp ContextChipKind::WorkingDirectory.  Just the working
+// directory (no branch — that lives in GitBranchChip).  An env-marker
+// (venv name / node version) renders ahead of the path when present.
 interface CwdChipProps {
     cwd?: string;
     home?: string;
-    branch?: string;
     venv?: string;
     nodeVersion?: string;
     onContextMenu?: (e: React.MouseEvent) => void;
 }
 
-const CwdChip = memo(({ cwd, home, branch, venv, nodeVersion, onContextMenu }: CwdChipProps) => {
+const CwdChip = memo(({ cwd, home, venv, nodeVersion, onContextMenu }: CwdChipProps) => {
     const prettyCwd = formatPromptCwd(cwd, home ?? "");
-    if (!prettyCwd && !branch && !venv && !nodeVersion) return null;
+    if (!prettyCwd && !venv && !nodeVersion) return null;
     const env = venv ?? nodeVersion;
     return (
-        <div
-            onContextMenu={onContextMenu}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-[6px] border border-fg-overlay-2 bg-fg-overlay-1/40 px-2 font-sans text-secondary/80 hover:bg-fg-overlay-1"
-            style={{ height: `${UI_BUTTON_PX}px`, fontSize: `${UI_FONT_PX}px` }}
-            title={cwd}
-        >
-            <UIcon name="folder" size={UI_ICON_PX - 1} className="opacity-70" />
+        <ContextChip icon="notebook" title={cwd} onContextMenu={onContextMenu}>
             {env && <span className="shrink-0 opacity-70">{env}</span>}
-            {prettyCwd && (
-                <span className="max-w-[280px] truncate">{prettyCwd}</span>
-            )}
-            {branch && (
-                <span className="inline-flex shrink-0 items-center gap-1 border-l border-fg-overlay-2 pl-1.5">
-                    <UIcon name="git-branch-02" size={UI_ICON_PX - 1} className="opacity-70" />
-                    <span className="max-w-[100px] truncate">{branch}</span>
-                </span>
-            )}
-        </div>
+            {prettyCwd && <span className="max-w-[260px] truncate">{prettyCwd}</span>}
+        </ContextChip>
     );
 });
 CwdChip.displayName = "CwdChip";
+
+// GitBranchChip — warp ContextChipKind::ShellGitBranch.
+interface GitBranchChipProps {
+    branch?: string;
+}
+
+const GitBranchChip = memo(({ branch }: GitBranchChipProps) => {
+    if (!branch) return null;
+    return (
+        <ContextChip icon="git-branch-02" title={`Git branch: ${branch}`}>
+            <span className="max-w-[140px] truncate">{branch}</span>
+        </ContextChip>
+    );
+});
+GitBranchChip.displayName = "GitBranchChip";
+
+// GitDiffStatsChip — warp ContextChipKind::GitDiffStats.  Shows working
+// tree changes as `+added -removed`, colored to match warp's `ansi_green`
+// / `ansi_red` accents.  Renders only when one of the counts is non-zero.
+interface GitDiffStatsChipProps {
+    added?: number;
+    removed?: number;
+}
+
+const GitDiffStatsChip = memo(({ added = 0, removed = 0 }: GitDiffStatsChipProps) => {
+    if (added <= 0 && removed <= 0) return null;
+    return (
+        <ContextChip icon="file-code-02" title="Working tree changes (added / removed lines)">
+            <span className="inline-flex items-center gap-1.5 font-mono">
+                {added > 0 && (
+                    <span className="text-[var(--ansi-green)]">+{added}</span>
+                )}
+                {removed > 0 && (
+                    <span className="text-[var(--ansi-red)]">-{removed}</span>
+                )}
+            </span>
+        </ContextChip>
+    );
+});
+GitDiffStatsChip.displayName = "GitDiffStatsChip";
+
+// GithubPrChip — warp ContextChipKind::GithubPullRequest.  Shows the PR
+// number with the title as tooltip; click navigates (future hook).
+interface GithubPrChipProps {
+    number?: number;
+    title?: string;
+    onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+const GithubPrChip = memo(({ number, title, onClick }: GithubPrChipProps) => {
+    if (!number) return null;
+    return (
+        <ContextChip
+            icon="share-01"
+            title={title ? `PR #${number}: ${title}` : `PR #${number}`}
+            onClick={onClick}
+        >
+            <span className="font-mono">#{number}</span>
+        </ContextChip>
+    );
+});
+GithubPrChip.displayName = "GithubPrChip";
+
+// KubernetesContextChip — warp `kubernetes_current_context()` shell
+// command generator (builtins.rs:207-212).  Shows the active kubectl
+// context name; hides when kubectl isn't installed or no context is set.
+interface KubernetesContextChipProps {
+    context?: string;
+    onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+const KubernetesContextChip = memo(({ context, onClick }: KubernetesContextChipProps) => {
+    if (!context) return null;
+    return (
+        <ContextChip icon="workflow" title={`Kubernetes context: ${context}`} onClick={onClick}>
+            <span className="max-w-[160px] truncate">{context}</span>
+        </ContextChip>
+    );
+});
+KubernetesContextChip.displayName = "KubernetesContextChip";
+
+// AgentPlanChip — warp ContextChipKind::AgentPlanAndTodoList.  Shows the
+// progress of an agent's plan as `done / total` with a small fill bar.
+interface AgentPlanChipProps {
+    completed?: number;
+    total?: number;
+    onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+const AgentPlanChip = memo(({ completed, total, onClick }: AgentPlanChipProps) => {
+    if (!total || total <= 0) return null;
+    const done = Math.max(0, Math.min(total, completed ?? 0));
+    return (
+        <ContextChip
+            icon="check-circle-broken"
+            title={`Agent plan: ${done} / ${total} steps complete`}
+            onClick={onClick}
+        >
+            <span className="font-mono">
+                {done}/{total}
+            </span>
+        </ContextChip>
+    );
+});
+AgentPlanChip.displayName = "AgentPlanChip";
+
+// ContextWindowUsageChip — warp AgentToolbarItemKind::ContextWindowUsage.
+// Shows current vs max token usage on the active conversation.  Format
+// matches warp's compact `8k/200k` layout (kilo-tokens for the eye).
+interface ContextWindowUsageChipProps {
+    usedTokens?: number;
+    maxTokens?: number;
+    onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}
+
+function formatTokens(n: number): string {
+    if (n >= 1000) {
+        const k = n / 1000;
+        return k >= 10 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
+    }
+    return `${n}`;
+}
+
+const ContextWindowUsageChip = memo(
+    ({ usedTokens, maxTokens, onClick }: ContextWindowUsageChipProps) => {
+        if (!usedTokens || !maxTokens || maxTokens <= 0) return null;
+        const ratio = Math.min(1, usedTokens / maxTokens);
+        const accent =
+            ratio < 0.6
+                ? "text-secondary/85"
+                : ratio < 0.85
+                  ? "text-[var(--ansi-yellow)]"
+                  : "text-[var(--ansi-red)]";
+        return (
+            <ContextChip
+                icon="clock-loader"
+                title={`Context: ${usedTokens.toLocaleString()} / ${maxTokens.toLocaleString()} tokens (${Math.round(ratio * 100)}%)`}
+                onClick={onClick}
+            >
+                <span className={cn("font-mono", accent)}>
+                    {formatTokens(usedTokens)}/{formatTokens(maxTokens)}
+                </span>
+            </ContextChip>
+        );
+    }
+);
+ContextWindowUsageChip.displayName = "ContextWindowUsageChip";
+
+// FastForwardToggle — warp AgentToolbarItemKind::FastForwardToggle.  A
+// toggle button that lets the agent auto-approve tool calls.  Renders
+// only when the parent threads `fastForwardOn != null` (gates visibility
+// on whether the agent backend supports it at all).
+interface FastForwardToggleProps {
+    on?: boolean;
+    onToggle?: () => void;
+}
+
+const FastForwardToggle = memo(({ on, onToggle }: FastForwardToggleProps) => {
+    if (on == null || onToggle == null) return null;
+    // Wording mirrors warp agent_input_footer/mod.rs:133-134:
+    //   FAST_FORWARD_ON_TOOLTIP  = "Turn off auto-approve all agent actions"
+    //   FAST_FORWARD_OFF_TOOLTIP = "Auto-approve all agent actions for this task"
+    const label = on
+        ? "Turn off auto-approve all agent actions"
+        : "Auto-approve all agent actions for this task";
+    return (
+        <WithTooltip label={label}>
+            <button
+                type="button"
+                onClick={onToggle}
+                style={{ width: `${UI_BUTTON_PX}px`, height: `${UI_BUTTON_PX}px` }}
+                className={cn(
+                    "flex shrink-0 cursor-pointer items-center justify-center rounded-[6px] border transition-colors",
+                    on
+                        ? "border-[var(--ansi-green)]/60 bg-[var(--ansi-green)]/15 text-[var(--ansi-green)]"
+                        : "border-white/25 bg-white/[0.08] text-foreground/85 hover:bg-white/[0.14] hover:text-foreground"
+                )}
+                aria-pressed={on}
+                aria-label={label}
+            >
+                <UIcon name="refresh-cw-04" size={UI_ICON_PX} />
+            </button>
+        </WithTooltip>
+    );
+});
+FastForwardToggle.displayName = "FastForwardToggle";
+
+// VoiceInputBtn — warp AgentToolbarItemKind::VoiceInput.  Stubbed: only
+// renders when the parent threads `onVoiceInput` (= the feature is wired).
+interface VoiceInputBtnProps {
+    onVoiceInput?: () => void;
+    recording?: boolean;
+}
+
+const VoiceInputBtn = memo(({ onVoiceInput, recording }: VoiceInputBtnProps) => {
+    if (onVoiceInput == null) return null;
+    return (
+        <IconButton
+            icon="lightning-02"
+            title={recording ? "Stop voice input" : "Voice input"}
+            onClick={onVoiceInput}
+            active={recording}
+        />
+    );
+});
+VoiceInputBtn.displayName = "VoiceInputBtn";
 
 // =========================================================================
 // AutoToggle — single binary toggle replacing the Terminal | Agent | Auto
@@ -219,24 +659,31 @@ interface AutoToggleProps {
     onToggle: () => void;
 }
 
-const AutoToggle = memo(({ on, onToggle }: AutoToggleProps) => (
-    <button
-        type="button"
-        onClick={onToggle}
-        style={{ width: `${UI_BUTTON_PX}px`, height: `${UI_BUTTON_PX}px` }}
-        className={cn(
-            "flex shrink-0 cursor-pointer items-center justify-center rounded-[6px] border transition-colors",
-            on
-                ? "border-[var(--ansi-yellow)]/60 bg-[var(--ansi-yellow)]/15 text-[var(--ansi-yellow)]"
-                : "border-fg-overlay-2 bg-fg-overlay-1/60 text-secondary/70 hover:text-foreground"
-        )}
-        title={on ? "Disable NL auto detection" : "Enable NL auto detection"}
-        aria-pressed={on}
-        aria-label={on ? "Disable NL auto detection" : "Enable NL auto detection"}
-    >
-        <UIcon name="lightning-02" size={UI_ICON_PX} />
-    </button>
-));
+const AutoToggle = memo(({ on, onToggle }: AutoToggleProps) => {
+    // Tooltip wording matches warp agent_input_footer/mod.rs:130-131:
+    //   ENABLE_NLD_TOOLTIP  = "Enable terminal command autodetection"
+    //   DISABLE_NLD_TOOLTIP = "Disable terminal command autodetection"
+    const label = on ? "Disable terminal command autodetection" : "Enable terminal command autodetection";
+    return (
+        <WithTooltip label={label}>
+            <button
+                type="button"
+                onClick={onToggle}
+                style={{ width: `${UI_BUTTON_PX}px`, height: `${UI_BUTTON_PX}px` }}
+                className={cn(
+                    "flex shrink-0 cursor-pointer items-center justify-center rounded-[6px] border transition-colors",
+                    on
+                        ? "border-[var(--ansi-yellow)]/60 bg-[var(--ansi-yellow)]/15 text-[var(--ansi-yellow)]"
+                        : "border-white/25 bg-white/[0.08] text-foreground/85 hover:bg-white/[0.14] hover:text-foreground"
+                )}
+                aria-pressed={on}
+                aria-label={label}
+            >
+                <UIcon name="lightning-02" size={UI_ICON_PX} />
+            </button>
+        </WithTooltip>
+    );
+});
 AutoToggle.displayName = "AutoToggle";
 
 // =========================================================================
@@ -254,37 +701,26 @@ interface IconButtonProps {
 }
 
 const IconButton = memo(({ icon, title, onClick, disabled, active }: IconButtonProps) => (
-    <button
-        type="button"
-        onClick={onClick}
-        disabled={disabled}
-        title={title}
-        aria-label={title}
-        style={{ width: `${UI_BUTTON_PX}px`, height: `${UI_BUTTON_PX}px` }}
-        className={cn(
-            "flex shrink-0 cursor-pointer items-center justify-center rounded-[6px] transition-colors",
-            "text-secondary/70 hover:bg-fg-overlay-2 hover:text-foreground",
-            active && "bg-fg-overlay-2 text-foreground",
-            disabled && "cursor-default opacity-40 hover:bg-transparent hover:text-secondary/70"
-        )}
-    >
-        <UIcon name={icon} size={UI_ICON_PX} />
-    </button>
+    <WithTooltip label={title}>
+        <button
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            aria-label={title}
+            style={{ width: `${UI_BUTTON_PX}px`, height: `${UI_BUTTON_PX}px` }}
+            className={cn(
+                "flex shrink-0 cursor-pointer items-center justify-center rounded-[6px] transition-colors",
+                "text-secondary/70 hover:bg-fg-overlay-2 hover:text-foreground",
+                active && "bg-fg-overlay-2 text-foreground",
+                disabled && "cursor-default opacity-40 hover:bg-transparent hover:text-secondary/70"
+            )}
+        >
+            <UIcon name={icon} size={UI_ICON_PX} />
+        </button>
+    </WithTooltip>
 ));
 IconButton.displayName = "IconButton";
 
-// =========================================================================
-// ButtonBarDivider — 1px wide vertical line between button-bar sections.
-// Visual reference: warp universal_developer_input.rs:797-808 — 1×20 px,
-// color theme.surface_3, 4 px margin left + right.
-// =========================================================================
-const ButtonBarDivider = memo(() => (
-    <div
-        className="mx-1 w-px shrink-0 bg-surface-3"
-        style={{ height: `${UI_DIVIDER_HEIGHT_PX}px` }}
-    />
-));
-ButtonBarDivider.displayName = "ButtonBarDivider";
 
 // =========================================================================
 // ModelChip — pill on the right showing current model.  Warp screenshot:
@@ -294,20 +730,30 @@ ButtonBarDivider.displayName = "ButtonBarDivider";
 interface ModelChipProps {
     label: string;
     onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+    buttonRef?: React.RefObject<HTMLButtonElement>;
+    expanded?: boolean;
 }
 
-const ModelChip = memo(({ label, onClick }: ModelChipProps) => (
-    <button
-        type="button"
-        onClick={onClick}
-        style={{ height: `${UI_BUTTON_PX}px`, fontSize: `${UI_FONT_PX}px` }}
-        className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-[6px] border border-fg-overlay-2 bg-fg-overlay-1/60 px-2 font-sans text-secondary/85 transition-colors hover:bg-fg-overlay-2"
-        title="Pick model"
-    >
-        <UIcon name="stars-01" size={UI_ICON_PX - 1} />
-        <span className="max-w-[180px] truncate">{label}</span>
-        <UIcon name="chevron-down" size={UI_ICON_PX - 4} className="text-secondary" />
-    </button>
+const ModelChip = memo(({ label, onClick, buttonRef, expanded }: ModelChipProps) => (
+    <WithTooltip label="Pick model">
+        <button
+            type="button"
+            ref={buttonRef}
+            onClick={onClick}
+            style={{ height: `${UI_BUTTON_PX}px`, fontSize: `${UI_FONT_PX}px` }}
+            className={cn(
+                "inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-[6px] border border-white/25 px-2 font-sans text-foreground/85 transition-colors hover:bg-white/[0.14] hover:text-foreground",
+                expanded ? "bg-white/[0.18] text-foreground" : "bg-white/[0.08]"
+            )}
+            aria-label="Pick model"
+            aria-haspopup="listbox"
+            aria-expanded={expanded}
+        >
+            <UIcon name="stars-01" size={UI_ICON_PX - 1} />
+            <span className="max-w-[180px] truncate">{label}</span>
+            <UIcon name="chevron-down" size={UI_ICON_PX - 4} className="text-secondary" />
+        </button>
+    </WithTooltip>
 ));
 ModelChip.displayName = "ModelChip";
 
@@ -321,8 +767,6 @@ interface EditorProps {
     value: string;
     onChange: (next: string) => void;
     onSubmit: () => void;
-    // Fires on ⌘↵ / Ctrl+↵ — explicit "send to agent regardless of mode".
-    onSubmitAgent?: () => void;
     placeholder?: string;
     disabled?: boolean;
     fontSize: number;
@@ -331,13 +775,17 @@ interface EditorProps {
     onHistoryPrev?: () => boolean;
     onHistoryNext?: () => boolean;
     onCancelMenus?: () => void;
+    // When non-null, an inline menu is open; ↑/↓ moves selection (returns
+    // true if consumed) and ↵ commits the selected row instead of submitting.
+    menuOpen?: boolean;
+    onMenuNavigate?: (delta: -1 | 1) => boolean;
+    onMenuAccept?: () => boolean;
 }
 
 const Editor = memo(({
     value,
     onChange,
     onSubmit,
-    onSubmitAgent,
     placeholder,
     disabled,
     fontSize,
@@ -346,6 +794,9 @@ const Editor = memo(({
     onHistoryPrev,
     onHistoryNext,
     onCancelMenus,
+    menuOpen,
+    onMenuNavigate,
+    onMenuAccept,
 }: EditorProps) => {
     const ref = useRef<HTMLDivElement>(null);
 
@@ -382,15 +833,11 @@ const Editor = memo(({
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent<HTMLDivElement>) => {
             if (disabled) return;
-            if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
-                // ⌘↵ (macOS) / Ctrl+↵ — explicit "send to agent".  Wins
-                // regardless of mode or NLD verdict.  Shift+↵ still
-                // inserts a newline (handled by the fallthrough below).
-                if (e.metaKey || e.ctrlKey) {
-                    if (onSubmitAgent) {
-                        e.preventDefault();
-                        onSubmitAgent();
-                    }
+            if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+                // When a slash / @ menu is open, ↵ commits the highlighted
+                // row instead of submitting the editor buffer.
+                if (menuOpen && onMenuAccept?.()) {
+                    e.preventDefault();
                     return;
                 }
                 e.preventDefault();
@@ -405,6 +852,16 @@ const Editor = memo(({
             if (e.key === "Escape") {
                 onCancelMenus?.();
                 return;
+            }
+            // Inline-menu navigation wins over history when a menu is open
+            // — matches warp's inline_menu/view.rs key handling.
+            if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
+                if (menuOpen) {
+                    if (onMenuNavigate?.(e.key === "ArrowUp" ? -1 : 1)) {
+                        e.preventDefault();
+                        return;
+                    }
+                }
             }
             // History navigation — only fires when the caret is on the
             // first line (so multi-line edits use ↑/↓ normally).  Warp
@@ -427,7 +884,7 @@ const Editor = memo(({
                 }
             }
         },
-        [disabled, onSubmit, onSubmitAgent, onCancelMenus, onHistoryPrev, onHistoryNext]
+        [disabled, onSubmit, onCancelMenus, onHistoryPrev, onHistoryNext, menuOpen, onMenuNavigate, onMenuAccept]
     );
 
     const lineHeight = Math.round(fontSize * 1.4);
@@ -493,18 +950,22 @@ function caretRectOf(host: HTMLElement, range: Range): DOMRect {
 interface InlineCommand {
     name: string;
     description: string;
+    icon: string;
+    // Optional alternate keystroke chips shown in the trailing slot
+    // when this row is selected (warp: `/agent or ⌘↵`).
+    altKeys?: string[];
 }
 
 const SlashCommands: InlineCommand[] = [
-    { name: "/help", description: "Show available commands" },
-    { name: "/clear", description: "Clear the current terminal output" },
-    { name: "/find", description: "Open the find bar (also Cmd+F)" },
-    { name: "/agent", description: "Switch input to agent mode" },
-    { name: "/terminal", description: "Switch input to terminal mode" },
-    { name: "/auto", description: "Auto-detect command vs question" },
-    { name: "/history", description: "Browse command history" },
-    { name: "/settings", description: "Open settings" },
-    { name: "/reload", description: "Reload the terminal pane" },
+    { name: "/agent", icon: "stars-01", description: "Send input to the agent", altKeys: ["⌘", "↵"] },
+    { name: "/terminal", icon: "terminal", description: "Switch input to shell mode" },
+    { name: "/auto", icon: "lightning-02", description: "Auto-detect shell vs natural language" },
+    { name: "/clear", icon: "x-close", description: "Clear the current terminal output" },
+    { name: "/find", icon: "search", description: "Open the find bar" },
+    { name: "/history", icon: "clock", description: "Browse command history" },
+    { name: "/help", icon: "book-open", description: "Show keyboard shortcuts and commands" },
+    { name: "/settings", icon: "settings", description: "Open settings" },
+    { name: "/reload", icon: "refresh", description: "Reload the terminal pane" },
 ];
 
 // =========================================================================
@@ -513,48 +974,153 @@ const SlashCommands: InlineCommand[] = [
 // for now — the parent will populate with real context sources later.
 // =========================================================================
 const AtCommands: InlineCommand[] = [
-    { name: "@file", description: "Attach a file" },
-    { name: "@block", description: "Reference a terminal block" },
-    { name: "@selection", description: "Use the current selection" },
-    { name: "@diff", description: "Include current git diff" },
-    { name: "@branch", description: "Reference the current git branch" },
+    { name: "@file", icon: "file", description: "Attach a file" },
+    { name: "@block", icon: "code-02", description: "Reference a terminal block" },
+    { name: "@selection", icon: "copy", description: "Use the current selection" },
+    { name: "@diff", icon: "file-code-02", description: "Include current git diff" },
+    { name: "@branch", icon: "git-branch-02", description: "Reference the current git branch" },
 ];
 
-interface InlineMenuProps {
-    query: string;
-    items: InlineCommand[];
-    onPick: (name: string) => void;
+// Substring match — warp's slash search ranks by score; the crest stub
+// just keeps anything whose name contains the query.  Empty query → all.
+function filterCommands(query: string, items: InlineCommand[]): InlineCommand[] {
+    const q = query.toLowerCase();
+    if (!q || q === "/" || q === "@") return items;
+    return items.filter((c) => c.name.toLowerCase().includes(q));
 }
 
-const InlineMenu = memo(({ query, items, onPick }: InlineMenuProps) => {
-    const lowerQuery = query.toLowerCase();
-    const matches = items.filter((c) => c.name.toLowerCase().startsWith(lowerQuery));
-    if (matches.length === 0) return null;
+// =========================================================================
+// InlineMenu — slash / @ command palette.  Visual reference: warp
+// inline_menu/view.rs:708-851 (header), styles.rs (constants), and
+// message_provider.rs (footer hints).  Structure:
+//
+//   ┌─────────────────────────────────────────────────────┐
+//   │ /COMMANDS                                       ⋮⋮  │  header
+//   ├─────────────────────────────────────────────────────┤
+//   │ ☰  /agent or ⌘↵     Send input to the agent         │  ← selected
+//   │ ▷  /terminal        Switch input to shell mode      │
+//   │ …                                                   │
+//   ├─────────────────────────────────────────────────────┤
+//   │ ↑ ↓ to navigate   esc to dismiss                    │  footer
+//   └─────────────────────────────────────────────────────┘
+// =========================================================================
+const INLINE_MENU_ROW_PX = 28;
+const INLINE_MENU_ICON_PX = 14;
+
+interface InlineMenuProps {
+    label: string;          // header label ("commands" → "/COMMANDS")
+    items: InlineCommand[]; // already filtered by caller
+    selectedIdx: number;
+    onPick: (name: string) => void;
+    onHover: (idx: number) => void;
+}
+
+const InlineMenu = memo(({ label, items, selectedIdx, onPick, onHover }: InlineMenuProps) => {
+    if (items.length === 0) return null;
     return (
         <div
-            className="mt-1 flex flex-col gap-px overflow-hidden rounded border border-fg-overlay-2 bg-fg-overlay-1/60 font-sans"
+            className="border-t border-fg-overlay-2 bg-fg-overlay-1/40 font-sans"
             style={{ fontSize: `${UI_FONT_PX}px` }}
         >
-            {matches.map((c) => (
-                <button
-                    key={c.name}
-                    type="button"
-                    onMouseDown={(e) => {
-                        // mouseDown not click — click fires after blur and
-                        // the editor's focusout would already close the menu.
-                        e.preventDefault();
-                        onPick(c.name);
-                    }}
-                    className="flex cursor-pointer items-center gap-2 px-2 py-1 text-left hover:bg-fg-overlay-2"
-                >
-                    <span className="font-mono text-foreground">{c.name}</span>
-                    <span className="text-secondary/70">{c.description}</span>
-                </button>
-            ))}
+            <InlineMenuHeader label={label} />
+            <div className="flex max-h-[40vh] flex-col overflow-y-auto py-1">
+                {items.map((c, idx) => (
+                    <InlineMenuRow
+                        key={c.name}
+                        item={c}
+                        selected={idx === selectedIdx}
+                        onMouseEnter={() => onHover(idx)}
+                        onPick={() => onPick(c.name)}
+                    />
+                ))}
+            </div>
+            <InlineMenuFooter />
         </div>
     );
 });
 InlineMenu.displayName = "InlineMenu";
+
+const InlineMenuHeader = memo(({ label }: { label: string }) => (
+    <div
+        className="flex items-center justify-between border-b border-fg-overlay-2 bg-fg-overlay-1/60 px-3"
+        style={{ height: "24px" }}
+    >
+        <span
+            className="font-mono uppercase tracking-wider text-foreground/85"
+            style={{ fontSize: `${UI_HELP_FONT_PX + 1}px` }}
+        >
+            /{label}
+        </span>
+        <UIcon name="dots-vertical" size={UI_ICON_PX - 2} className="text-secondary/50" />
+    </div>
+));
+InlineMenuHeader.displayName = "InlineMenuHeader";
+
+interface InlineMenuRowProps {
+    item: InlineCommand;
+    selected: boolean;
+    onMouseEnter: () => void;
+    onPick: () => void;
+}
+
+const InlineMenuRow = memo(({ item, selected, onMouseEnter, onPick }: InlineMenuRowProps) => (
+    <button
+        type="button"
+        onMouseDown={(e) => {
+            // mouseDown not click — click fires after blur and the editor's
+            // focusout would already close the menu.
+            e.preventDefault();
+            onPick();
+        }}
+        onMouseEnter={onMouseEnter}
+        style={{ height: `${INLINE_MENU_ROW_PX}px` }}
+        className={cn(
+            "flex w-full cursor-pointer items-center gap-3 px-3 text-left transition-colors",
+            selected ? "bg-fg-overlay-2/70" : "hover:bg-fg-overlay-1/60"
+        )}
+    >
+        <UIcon
+            name={item.icon}
+            size={INLINE_MENU_ICON_PX}
+            className={cn("shrink-0", selected ? "text-foreground/90" : "text-secondary/75")}
+        />
+        <span className="flex shrink-0 items-center gap-2 font-mono text-foreground/90">
+            <span>{item.name}</span>
+            {selected && item.altKeys && (
+                <span className="inline-flex items-center gap-1 font-sans text-secondary/55">
+                    <span style={{ fontSize: `${UI_HELP_FONT_PX}px` }}>or</span>
+                    <span className="inline-flex items-center gap-[3px]">
+                        {item.altKeys.map((k, i) => (
+                            <Kbd key={`${k}-${i}`} char={k} />
+                        ))}
+                    </span>
+                </span>
+            )}
+        </span>
+        <span className="ml-6 truncate text-secondary/70">{item.description}</span>
+    </button>
+));
+InlineMenuRow.displayName = "InlineMenuRow";
+
+const InlineMenuFooter = memo(() => (
+    <div
+        className="flex items-center gap-x-4 border-t border-fg-overlay-2 bg-fg-overlay-1/60 px-3 py-1.5 font-sans text-secondary/70"
+        style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
+    >
+        <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-[3px]">
+                <Kbd char="↑" />
+                <Kbd char="↓" />
+            </span>
+            <span>to navigate</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+            <Kbd char="esc" />
+            <span>to dismiss</span>
+        </span>
+    </div>
+));
+InlineMenuFooter.displayName = "InlineMenuFooter";
 
 // =========================================================================
 // CmdBlockInput — composition matches warp's agent-view screenshot.
@@ -566,13 +1132,37 @@ export const CmdBlockInput = memo(
         branch,
         venv,
         nodeVersion,
+        sshHost,
+        sshUser,
+        gitAdded,
+        gitRemoved,
+        prNumber,
+        prTitle,
+        onPrClick,
+        agentPlanCompleted,
+        agentPlanTotal,
+        onAgentPlanClick,
+        usedTokens,
+        maxTokens,
+        onContextWindowClick,
+        kubernetesContext,
+        fastForwardOn,
+        onFastForwardToggle,
+        onVoiceInput,
+        voiceRecording,
         mode,
         onModeChange,
         onSubmit,
         submitting,
         disabled,
-        modelName,
-        onModelClick,
+        modelDisplayLabel,
+        catalog,
+        userConfig,
+        userConfigStatus,
+        userConfigError,
+        selection,
+        onSelectionChange,
+        onOpenAIConfigFile,
         placeholder,
         fontSize = 12,
         banner,
@@ -593,14 +1183,60 @@ export const CmdBlockInput = memo(
             },
             [onTextChange]
         );
+        // A leading `!` on the buffer is the user's explicit shell escape
+        // hatch.  When detected, the help row swaps to a shell-mode banner
+        // so the user knows ↵ will run as a shell command instead of
+        // going to the agent (the new default).
+        const hasShellPrefix = /^\s*!/.test(text);
         // Show the NLD autodetect hint in the top bar only when we're in
         // auto mode and the user has actually typed something — otherwise
-        // the kbd hints (HelpRow) remain.
-        const showAutodetectHint = mode === "auto" && text.trim().length > 0;
+        // the kbd hints (HelpRow) remain.  Shell-prefix wins over the
+        // autodetect banner because `!` is a stronger signal than the
+        // classifier verdict.
+        const showShellPrefixHint = hasShellPrefix;
+        const showAutodetectHint =
+            !showShellPrefixHint && mode === "auto" && text.trim().length > 0;
+        // Plain agent banner: default mode, user is typing, no `!` prefix
+        // and not in auto-detect.  Tells the user ↵ will route to the
+        // agent.  Suppressed in terminal-locked mode (then HelpRow stays).
+        const showAgentHint =
+            !showShellPrefixHint &&
+            !showAutodetectHint &&
+            mode === "agent" &&
+            text.trim().length > 0;
         const [focused, setFocused] = useState(false);
         const [slashOpen, setSlashOpen] = useState(false);
         const [atOpen, setAtOpen] = useState(false);
+        const [modelPickerOpen, setModelPickerOpen] = useState(false);
+        const modelChipRef = useRef<HTMLButtonElement>(null);
+        const chipLabel = modelDisplayLabel || "Pick model";
+        // hasModelPicker — true whenever the parent wires a write path.
+        // The popover handles empty / error states internally via the
+        // userConfigStatus prop, so the chip can always open it.
+        const hasModelPicker = !!onSelectionChange;
+        const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
+        const [atSelectedIdx, setAtSelectedIdx] = useState(0);
         const [dragOver, setDragOver] = useState(false);
+        const atQuery = (/(^|\s)(@\S*)$/.exec(text)?.[2] ?? "@");
+        // Filter both menus in parent so we can index the result list for
+        // keyboard navigation (↑/↓ → setSelectedIdx).  Memoising keeps the
+        // arrays reference-stable across keystrokes that don't change them.
+        const slashFiltered = useMemo(
+            () => filterCommands(text, SlashCommands),
+            [text]
+        );
+        const atFiltered = useMemo(
+            () => filterCommands(atQuery, AtCommands),
+            [atQuery]
+        );
+        // Clamp selected index whenever the filtered list shrinks past it
+        // (e.g. the user typed more characters and the matches narrowed).
+        useEffect(() => {
+            if (slashSelectedIdx >= slashFiltered.length) setSlashSelectedIdx(0);
+        }, [slashFiltered.length, slashSelectedIdx]);
+        useEffect(() => {
+            if (atSelectedIdx >= atFiltered.length) setAtSelectedIdx(0);
+        }, [atFiltered.length, atSelectedIdx]);
         // History ring — most recent at the end.  navIndex == null when
         // not navigating; the saved draft restores when the user dismisses
         // history with Escape or types over.  Reference: warp
@@ -630,11 +1266,10 @@ export const CmdBlockInput = memo(
         }, []);
 
         const submitWith = useCallback(
-            (resolved: "terminal" | "agent") => {
+            (resolved: "terminal" | "agent", payload: string) => {
                 if (disabled || submitting) return;
-                const trimmed = text.replace(/\s+$/g, "");
-                if (!trimmed) return;
-                onSubmit(trimmed, resolved);
+                if (!payload) return;
+                onSubmit(payload, resolved);
                 setText("");
                 setSlashOpen(false);
                 setAtOpen(false);
@@ -644,28 +1279,36 @@ export const CmdBlockInput = memo(
                 // history through, the model already owns the push path.
                 if (externalHistory == null) {
                     setLocalHistory((prev) => {
-                        if (prev[prev.length - 1] === trimmed) return prev;
-                        const next = [...prev, trimmed];
+                        if (prev[prev.length - 1] === payload) return prev;
+                        const next = [...prev, payload];
                         if (next.length > 200) next.shift();
                         return next;
                     });
                 }
             },
-            [disabled, submitting, text, onSubmit, externalHistory]
+            [disabled, submitting, onSubmit, externalHistory]
         );
 
-        // Default ↵ — auto mode follows the NLD verdict, otherwise the
-        // mode is shell (legacy "agent" locked state still respected).
+        // Default ↵ — `!` prefix always wins (strip and send to shell).
+        // Otherwise: auto mode follows the NLD verdict; locked modes pin
+        // to themselves.  The new default mode is "agent", so a plain ↵
+        // on natural-language input sends to the agent.
         const submit = useCallback(() => {
+            const trimmedTail = text.replace(/\s+$/g, "");
+            if (!trimmedTail) return;
+            const shellPrefixMatch = /^\s*!(.*)$/s.exec(trimmedTail);
+            if (shellPrefixMatch) {
+                // Drop the `!` and any whitespace right after it.  An empty
+                // command after the prefix (`!  ` etc.) is a no-op.
+                const payload = shellPrefixMatch[1].replace(/^\s+/, "");
+                if (!payload) return;
+                submitWith("terminal", payload);
+                return;
+            }
             const resolved: "terminal" | "agent" =
-                mode === "auto" ? effectiveMode ?? "terminal" : mode === "agent" ? "agent" : "terminal";
-            submitWith(resolved);
-        }, [submitWith, mode, effectiveMode]);
-
-        // ⌘↵ — explicit "send to agent" regardless of mode / NLD verdict.
-        const submitAgent = useCallback(() => {
-            submitWith("agent");
-        }, [submitWith]);
+                mode === "auto" ? effectiveMode ?? "agent" : mode === "terminal" ? "terminal" : "agent";
+            submitWith(resolved, trimmedTail);
+        }, [submitWith, mode, effectiveMode, text]);
 
         // History navigation — return true when consumed so the editor
         // suppresses the default caret motion.
@@ -725,13 +1368,56 @@ export const CmdBlockInput = memo(
             [text]
         );
 
+        // Editor-side menu callbacks: ↑/↓ moves selection within the
+        // currently open menu; ↵ commits the highlighted row.
+        const menuOpen = slashOpen || atOpen;
+        const onMenuNavigate = useCallback(
+            (delta: -1 | 1): boolean => {
+                if (slashOpen) {
+                    if (slashFiltered.length === 0) return false;
+                    setSlashSelectedIdx((prev) =>
+                        (prev + delta + slashFiltered.length) % slashFiltered.length
+                    );
+                    return true;
+                }
+                if (atOpen) {
+                    if (atFiltered.length === 0) return false;
+                    setAtSelectedIdx((prev) =>
+                        (prev + delta + atFiltered.length) % atFiltered.length
+                    );
+                    return true;
+                }
+                return false;
+            },
+            [slashOpen, atOpen, slashFiltered.length, atFiltered.length]
+        );
+        const onMenuAccept = useCallback((): boolean => {
+            if (slashOpen && slashFiltered.length > 0) {
+                const pick = slashFiltered[slashSelectedIdx]?.name;
+                if (pick) {
+                    replaceLastToken(pick, "/");
+                    setSlashOpen(false);
+                }
+                return true;
+            }
+            if (atOpen && atFiltered.length > 0) {
+                const pick = atFiltered[atSelectedIdx]?.name;
+                if (pick) {
+                    replaceLastToken(pick, "@");
+                    setAtOpen(false);
+                }
+                return true;
+            }
+            return false;
+        }, [slashOpen, atOpen, slashFiltered, atFiltered, slashSelectedIdx, atSelectedIdx, replaceLastToken]);
+
         const placeholderText =
             placeholder ??
-            (mode === "agent"
-                ? "Ask the agent…"
+            (mode === "terminal"
+                ? "Run a command…"
                 : mode === "auto"
-                  ? "Type a command or question…"
-                  : "Run a command…");
+                  ? "Type a command or question (use `!` for explicit shell)…"
+                  : "Ask the agent (use `!` for shell commands)…");
 
         const handleDragOver = useCallback((e: React.DragEvent) => {
             if (!onFilesDropped) return;
@@ -755,21 +1441,55 @@ export const CmdBlockInput = memo(
         }, [onFilesDropped]);
 
         return (
-            <div
-                ref={containerRef}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={cn(
-                    // Visual reference: warp universal.rs:182-197.
-                    "shrink-0 m-1.5 rounded-lg border transition-colors",
-                    focused
-                        ? "bg-fg-overlay-1 border-fg-overlay-3"
-                        : "bg-transparent border-fg-overlay-2",
-                    dragOver && "border-[var(--color-term-accent)] bg-[var(--color-term-accent-10)]",
-                    disabled && "opacity-60"
+            <div ref={containerRef} className="shrink-0">
+                {/* Inline menu sits ABOVE the input card, full-width and
+                    flush with the pane edges.  Visual reference: warp
+                    inline_menu/view.rs — the menu is a separate panel
+                    docked to the top of the input area, not nested inside
+                    the editor frame. */}
+                {slashOpen && (
+                    <InlineMenu
+                        label="commands"
+                        items={slashFiltered}
+                        selectedIdx={slashSelectedIdx}
+                        onHover={setSlashSelectedIdx}
+                        onPick={(cmd) => {
+                            replaceLastToken(cmd, "/");
+                            setSlashOpen(false);
+                        }}
+                    />
                 )}
-            >
+                {atOpen && !slashOpen && (
+                    <InlineMenu
+                        label="context"
+                        items={atFiltered}
+                        selectedIdx={atSelectedIdx}
+                        onHover={setAtSelectedIdx}
+                        onPick={(cmd) => {
+                            replaceLastToken(cmd, "@");
+                            setAtOpen(false);
+                        }}
+                    />
+                )}
+                <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className={cn(
+                        // Visual reference: warp agent.rs:609-664 — the
+                        // input container is full-width, edge-to-edge, with
+                        // just a top divider against the content above (and
+                        // against the inline menu when it's open).  No
+                        // rounded corners; sectioning is done with border-b
+                        // dividers between rows.
+                        "border-t transition-colors",
+                        focused
+                            ? "bg-fg-overlay-1 border-fg-overlay-3"
+                            : "bg-transparent border-fg-overlay-2",
+                        dragOver && "border-[var(--color-term-accent)] bg-[var(--color-term-accent-10)]",
+                        disabled && "opacity-60"
+                    )}
+                >
                 {/* 1. Optional banner (vim status / errors / hints).
                     Visual reference: warp universal.rs:64-72. */}
                 {banner && <div className="px-4 pt-4">{banner}</div>}
@@ -784,27 +1504,31 @@ export const CmdBlockInput = memo(
                     <div
                         className={cn(
                             "px-4 pt-3 pb-2 border-b border-fg-overlay-1/50 transition-colors",
-                            showAutodetectHint && "bg-fg-overlay-1/30"
+                            (showAutodetectHint || showShellPrefixHint || showAgentHint) &&
+                                "bg-fg-overlay-1/30"
                         )}
                     >
-                        {showAutodetectHint ? (
+                        {showShellPrefixHint ? (
+                            <ShellPrefixHintRow rightSlot={topRightSlot} />
+                        ) : showAutodetectHint ? (
                             <AutodetectHintRow
-                                effectiveMode={effectiveMode ?? "terminal"}
+                                effectiveMode={effectiveMode ?? "agent"}
                                 rightSlot={topRightSlot}
                             />
+                        ) : showAgentHint ? (
+                            <AgentHintRow rightSlot={topRightSlot} />
                         ) : (
                             <HelpRow rightSlot={topRightSlot} />
                         )}
                     </div>
                 )}
 
-                {/* 3. Editor + inline slash / @ menus. */}
+                {/* 3. Editor. */}
                 <div className="px-4 pt-3 pb-2">
                     <Editor
                         value={text}
                         onChange={handleTextChange}
                         onSubmit={submit}
-                        onSubmitAgent={submitAgent}
                         placeholder={placeholderText}
                         disabled={disabled || submitting}
                         fontSize={fontSize}
@@ -813,86 +1537,90 @@ export const CmdBlockInput = memo(
                         onHistoryPrev={historyPrev}
                         onHistoryNext={historyNext}
                         onCancelMenus={cancelMenus}
+                        menuOpen={menuOpen}
+                        onMenuNavigate={onMenuNavigate}
+                        onMenuAccept={onMenuAccept}
                     />
-                    {slashOpen && (
-                        <InlineMenu
-                            query={text}
-                            items={SlashCommands}
-                            onPick={(cmd) => {
-                                replaceLastToken(cmd, "/");
-                                setSlashOpen(false);
-                            }}
-                        />
-                    )}
-                    {atOpen && !slashOpen && (
-                        <InlineMenu
-                            // Query is the trailing `@token` segment.
-                            query={(/(^|\s)(@\S*)$/.exec(text)?.[2] ?? "@")}
-                            items={AtCommands}
-                            onPick={(cmd) => {
-                                replaceLastToken(cmd, "@");
-                                setAtOpen(false);
-                            }}
-                        />
-                    )}
                 </div>
 
-                {/* 4. Bottom button bar.  cwd chip on left, tool cluster
-                    + model picker on right.  Bottom padding 16px matches
-                    warp agent.rs:55 CLOUD_MODE_V2_INPUT_BOTTOM_PADDING.
-                    Horizontal padding 16px matches :49. */}
+                {/* 4. Bottom footer — chip row.  Visual + ordering reference:
+                    warp agent_input_footer/toolbar_item.rs:182-214
+                    (`default_left()` / `default_right()`).  Left = context
+                    chips (SSH, cwd, branch, diff, PR) + NLD toggle.
+                    Right = agent-plan / context-window / model selector /
+                    fast-forward / voice / file-attach.  Bottom & horizontal
+                    padding match warp agent.rs:49,55 (16 px). */}
                 <div
-                    className="flex items-center px-4 pb-4 pt-1"
+                    className="flex flex-wrap items-center px-4 pb-4 pt-2"
                     style={{ gap: `${UI_GAP_PX}px` }}
                 >
+                    <SshChip user={sshUser} host={sshHost} />
                     <CwdChip
                         cwd={cwd}
                         home={home}
-                        branch={branch}
                         venv={venv}
                         nodeVersion={nodeVersion}
                         onContextMenu={onPromptContextMenu}
                     />
+                    <GitBranchChip branch={branch} />
+                    <GitDiffStatsChip added={gitAdded} removed={gitRemoved} />
+                    <GithubPrChip number={prNumber} title={prTitle} onClick={onPrClick} />
+                    <KubernetesContextChip context={kubernetesContext} />
                     <AutoToggle
                         on={mode === "auto"}
                         onToggle={() =>
-                            onModeChange(mode === "auto" ? "terminal" : "auto", text)
+                            onModeChange(mode === "auto" ? "agent" : "auto", text)
                         }
                     />
 
                     <div className="ml-auto flex shrink-0 items-center" style={{ gap: `${UI_GAP_PX}px` }}>
-                        {/* Visual reference: warp universal_developer_input.rs:382-394 (slash),
-                            :356-368 (@), :370-380 (+).  Voice button skipped — warp gates
-                            it on feature "voice_input" (:826). */}
-                        <IconButton
-                            icon="prompt"
-                            title="Slash commands"
+                        <AgentPlanChip
+                            completed={agentPlanCompleted}
+                            total={agentPlanTotal}
+                            onClick={onAgentPlanClick}
+                        />
+                        <ContextWindowUsageChip
+                            usedTokens={usedTokens}
+                            maxTokens={maxTokens}
+                            onClick={onContextWindowClick}
+                        />
+                        {promptAlert && (
+                            <div
+                                className="flex shrink-0 items-center font-sans text-[var(--color-term-warning)]"
+                                style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
+                            >
+                                {promptAlert}
+                            </div>
+                        )}
+                        <ModelChip
+                            label={chipLabel}
+                            buttonRef={modelChipRef}
+                            expanded={hasModelPicker && modelPickerOpen}
                             onClick={() => {
-                                setText("/");
-                                setSlashOpen(true);
+                                if (!hasModelPicker) return;
+                                setModelPickerOpen((v) => !v);
                             }}
                         />
-                        <IconButton
-                            icon="paperclip"
-                            title="Add context (@)"
-                            onClick={() => {
-                                // Insert `@` at the end of buffer and open
-                                // the inline menu — mirrors warp clicking
-                                // the @ action_button (universal_developer_input.rs:356).
-                                setText((prev) => (prev.endsWith(" ") || prev.length === 0 ? `${prev}@` : `${prev} @`));
-                                setAtOpen(true);
-                            }}
-                        />
+                        {hasModelPicker && (
+                            <ModelPickerPopover
+                                anchorRef={modelChipRef}
+                                open={modelPickerOpen}
+                                onOpenChange={setModelPickerOpen}
+                                selection={selection ?? null}
+                                onSelectionChange={(next) => onSelectionChange!(next)}
+                                userConfig={userConfig ?? null}
+                                userConfigStatus={userConfigStatus ?? "loading"}
+                                userConfigError={userConfigError}
+                                catalog={catalog}
+                                onOpenConfigFile={onOpenAIConfigFile}
+                            />
+                        )}
+                        <FastForwardToggle on={fastForwardOn} onToggle={onFastForwardToggle} />
+                        <VoiceInputBtn onVoiceInput={onVoiceInput} recording={voiceRecording} />
                         <IconButton
                             icon="plus"
                             title="Attach file"
-                            onClick={() => {
-                                // Hidden file input — clicking it opens
-                                // the native file picker.  Selected files
-                                // route through onFilesDropped (same path
-                                // as drag-and-drop).
-                                fileInputRef.current?.click();
-                            }}
+                            onClick={() => fileInputRef.current?.click()}
                             disabled={!onFilesDropped}
                         />
                         <input
@@ -908,16 +1636,6 @@ export const CmdBlockInput = memo(
                                 e.target.value = "";
                             }}
                         />
-                        {promptAlert && (
-                            <div
-                                className="flex shrink-0 items-center font-sans text-[var(--color-term-warning)]"
-                                style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
-                            >
-                                {promptAlert}
-                            </div>
-                        )}
-                        <ButtonBarDivider />
-                        <ModelChip label={modelName ?? "Default"} onClick={onModelClick} />
                         {submitting && (
                             <UIcon
                                 name="clock-loader"
@@ -926,6 +1644,7 @@ export const CmdBlockInput = memo(
                             />
                         )}
                     </div>
+                </div>
                 </div>
             </div>
         );

@@ -82,15 +82,11 @@ type SettingsType struct {
 
 	FeatureWaveAppBuilder bool `json:"feature:waveappbuilder,omitempty"`
 
-	AiApiType            string  `json:"ai:apitype,omitempty"`
-	AiBaseURL            string  `json:"ai:baseurl,omitempty"`
-	AiApiToken           string  `json:"ai:apitoken,omitempty"`
-	AiApiTokenSecretName string  `json:"ai:apitokensecretname,omitempty"`
-	AiModel              string  `json:"ai:model,omitempty"`
-	AiMaxTokens          float64                      `json:"ai:maxtokens,omitempty"`
-	AiTimeoutMs          float64                      `json:"ai:timeoutms,omitempty"`
-	AiMcpServers         map[string]MCPServerConfig   `json:"ai:mcpservers,omitempty"`
-	AiPermissions        *AIPermissionsConfig         `json:"ai:permissions,omitempty"`
+	// AI provider/model/credentials config now lives in
+	// ~/.config/crest/ai.json (pkg/aiusechat/uctypes.AIUserConfig).
+	// MCP servers and permissions are orthogonal — they stay here.
+	AiMcpServers  map[string]MCPServerConfig `json:"ai:mcpservers,omitempty"`
+	AiPermissions *AIPermissionsConfig       `json:"ai:permissions,omitempty"`
 
 	TermClear               bool     `json:"term:*,omitempty"`
 	TermFontSize            float64  `json:"term:fontsize,omitempty"`
@@ -141,6 +137,20 @@ type SettingsType struct {
 	TabPreset       string `json:"tab:preset,omitempty"`
 	TabConfirmClose bool   `json:"tab:confirmclose,omitempty"`
 	TabBackground   string `json:"tab:background,omitempty"`
+
+	// Vertical tab panel settings — mirror warp's
+	// `vertical_tabs_*` TabSettings.  Names are kept lowercase / no
+	// underscores per the JSON-field convention in CLAUDE.md.  All
+	// fields use *bool / pointer string so an unset config falls back
+	// to the resolved default in TS rather than the Go zero value
+	// (false / "").  Warp parity: app/src/workspace/tab_settings.rs.
+	VtabGranularity         string `json:"vtab:granularity,omitempty" jsonschema:"enum=tabs,enum=panes"`
+	VtabViewMode            string `json:"vtab:viewmode,omitempty" jsonschema:"enum=compact,enum=expanded"`
+	VtabPrimaryInfo         string `json:"vtab:primaryinfo,omitempty" jsonschema:"enum=command,enum=workingdir,enum=branch"`
+	VtabCompactSubtitle     string `json:"vtab:compactsubtitle,omitempty" jsonschema:"enum=none,enum=command,enum=workingdir,enum=branch"`
+	VtabShowDiffStats       *bool  `json:"vtab:showdiffstats,omitempty"`
+	VtabShowDetailsOnHover  *bool  `json:"vtab:showdetailsonhover,omitempty"`
+	VtabShowPrLink          *bool  `json:"vtab:showprlink,omitempty"`
 
 	WidgetClear    bool  `json:"widget:*,omitempty"`
 	WidgetShowHelp *bool `json:"widget:showhelp,omitempty"`
@@ -202,34 +212,6 @@ type WebBookmark struct {
 	DisplayOrder float64 `json:"display:order,omitempty"`
 }
 
-// Wave AI panel mode configuration (NEW)
-type AIModeConfigType struct {
-	DisplayName        string   `json:"display:name"`
-	DisplayOrder       float64  `json:"display:order,omitempty"`
-	DisplayIcon        string   `json:"display:icon,omitempty"`
-	DisplayDescription string   `json:"display:description,omitempty"`
-	Provider           string   `json:"ai:provider,omitempty" jsonschema:"enum=wave,enum=google,enum=groq,enum=openrouter,enum=nanogpt,enum=openai,enum=azure,enum=azure-legacy,enum=custom"`
-	APIType            string   `json:"ai:apitype,omitempty" jsonschema:"enum=google-gemini,enum=openai-responses,enum=openai-chat"`
-	Model              string   `json:"ai:model,omitempty"`
-	ThinkingLevel      string   `json:"ai:thinkinglevel,omitempty" jsonschema:"enum=low,enum=medium,enum=high"`
-	Verbosity          string   `json:"ai:verbosity,omitempty" jsonschema:"enum=low,enum=medium,enum=high,description=Text verbosity level (OpenAI Responses API only)"`
-	Endpoint           string   `json:"ai:endpoint,omitempty"`
-	ProxyURL           string   `json:"ai:proxyurl,omitempty"`
-	AzureAPIVersion    string   `json:"ai:azureapiversion,omitempty"`
-	APIToken           string   `json:"ai:apitoken,omitempty"`
-	APITokenSecretName string   `json:"ai:apitokensecretname,omitempty"`
-	AzureResourceName  string   `json:"ai:azureresourcename,omitempty"`
-	AzureDeployment    string   `json:"ai:azuredeployment,omitempty"`
-	Capabilities       []string `json:"ai:capabilities,omitempty" jsonschema:"enum=pdfs,enum=images,enum=tools"`
-	SwitchCompat       []string `json:"ai:switchcompat,omitempty"`
-	WaveAICloud        bool     `json:"waveai:cloud,omitempty"`
-	WaveAIPremium      bool     `json:"waveai:premium,omitempty"`
-}
-
-type AIModeConfigUpdate struct {
-	Configs map[string]AIModeConfigType `json:"configs"`
-}
-
 type WidgetConfigType struct {
 	DisplayOrder  float64          `json:"display:order,omitempty"`
 	DisplayHidden bool             `json:"display:hidden,omitempty"`
@@ -257,31 +239,70 @@ type MimeTypeConfigType struct {
 	Color string `json:"color"`
 }
 
+// TermThemeType is Wave's serializable theme record.  The schema mirrors warp's
+// WarpTheme (warp/crates/warp_core/src/ui/theme/mod.rs:589 + default_themes.rs):
+// background / foreground / accent drive the entire UI, the ANSI palette drives
+// glyph colors, and the rest is derived at runtime by ThemeModel via the same
+// blend / overlay formulas warp uses (warp/.../color.rs).
+//
+// Background and accent are normally solid hex strings, but warp's "Cyber Wave"
+// style gradients are supported via the optional *Top/*Bottom and *Left/*Right
+// pairs.  When a gradient pair is set it wins over the solid value for the
+// large-surface render; derived tokens still collapse the fill to a solid
+// (warp's into_solid_bias_top_color) so small widgets get a stable color.
 type TermThemeType struct {
-	DisplayName         string  `json:"display:name"`
-	DisplayOrder        float64 `json:"display:order"`
-	Black               string  `json:"black"`
-	Red                 string  `json:"red"`
-	Green               string  `json:"green"`
-	Yellow              string  `json:"yellow"`
-	Blue                string  `json:"blue"`
-	Magenta             string  `json:"magenta"`
-	Cyan                string  `json:"cyan"`
-	White               string  `json:"white"`
-	BrightBlack         string  `json:"brightBlack"`
-	BrightRed           string  `json:"brightRed"`
-	BrightGreen         string  `json:"brightGreen"`
-	BrightYellow        string  `json:"brightYellow"`
-	BrightBlue          string  `json:"brightBlue"`
-	BrightMagenta       string  `json:"brightMagenta"`
-	BrightCyan          string  `json:"brightCyan"`
-	BrightWhite         string  `json:"brightWhite"`
-	Gray                string  `json:"gray"`
-	CmdText             string  `json:"cmdtext"`
-	Foreground          string  `json:"foreground"`
-	SelectionBackground string  `json:"selectionBackground"`
-	Background          string  `json:"background"`
-	Cursor              string  `json:"cursor"`
+	DisplayName  string  `json:"display:name"`
+	DisplayOrder float64 `json:"display:order"`
+
+	// ANSI 16-color palette (drives --ansi-* CSS variables and SGR output).
+	Black         string `json:"black"`
+	Red           string `json:"red"`
+	Green         string `json:"green"`
+	Yellow        string `json:"yellow"`
+	Blue          string `json:"blue"`
+	Magenta       string `json:"magenta"`
+	Cyan          string `json:"cyan"`
+	White         string `json:"white"`
+	BrightBlack   string `json:"brightBlack"`
+	BrightRed     string `json:"brightRed"`
+	BrightGreen   string `json:"brightGreen"`
+	BrightYellow  string `json:"brightYellow"`
+	BrightBlue    string `json:"brightBlue"`
+	BrightMagenta string `json:"brightMagenta"`
+	BrightCyan    string `json:"brightCyan"`
+	BrightWhite   string `json:"brightWhite"`
+
+	// Core surface + text colors.
+	Gray                string `json:"gray"`
+	CmdText             string `json:"cmdtext"`
+	Foreground          string `json:"foreground"`
+	SelectionBackground string `json:"selectionBackground"`
+	Background          string `json:"background"`
+	Cursor              string `json:"cursor"`
+
+	// Warp-parity additions (all optional).
+	//
+	// Accent is warp's single most theme-defining color besides bg/fg —
+	// drives cursor (when Cursor is unset), selection highlights, buttons,
+	// and the terminal accent.  Falls back to the ANSI cyan if unset.
+	Accent string `json:"accent,omitempty"`
+
+	// BackgroundTop/BackgroundBottom define a vertical gradient background
+	// (warp's Fill::VerticalGradient).  When both are present, ThemeModel
+	// renders body bg with a linear-gradient; --color-background still
+	// resolves to BackgroundTop so widget-level fills stay solid.
+	BackgroundTop    string `json:"backgroundTop,omitempty"`
+	BackgroundBottom string `json:"backgroundBottom,omitempty"`
+
+	// AccentLeft/AccentRight define a horizontal gradient accent
+	// (warp's Fill::HorizontalGradient) for themes like Cyber Wave.
+	AccentLeft  string `json:"accentLeft,omitempty"`
+	AccentRight string `json:"accentRight,omitempty"`
+
+	// Details = "darker" | "lighter" — switches warp's text-opacity / overlay
+	// preset so light themes don't end up with washed-out text on a bright
+	// background.  Defaults to "darker" if unset.
+	Details string `json:"details,omitempty"`
 }
 
 type FullConfigType struct {
@@ -294,7 +315,6 @@ type FullConfigType struct {
 	TermThemes     map[string]TermThemeType        `json:"termthemes"`
 	Connections    map[string]ConnKeywords         `json:"connections"`
 	Bookmarks      map[string]WebBookmark          `json:"bookmarks"`
-	WaveAIModes    map[string]AIModeConfigType     `json:"waveai"`
 	ConfigErrors   []ConfigError                   `json:"configerrors" configfile:"-"`
 	Version        string                          `json:"version" configfile:"-"`
 	BuildTime      string                          `json:"buildtime" configfile:"-"`
@@ -873,16 +893,11 @@ func (fc *FullConfigType) CountCustomWidgets() int {
 	return count
 }
 
-// CountCustomAIModes returns the number of custom AI modes the user has defined.
-// Custom AI modes are identified as modes that don't start with "waveai@".
+// CountCustomAIModes — deprecated.  Returns 0 always.  Kept as a
+// stable telemetry surface during the ai-config refactor (Phase E);
+// will be removed once the telemetry pipeline stops querying it.
 func (fc *FullConfigType) CountCustomAIModes() int {
-	count := 0
-	for modeID := range fc.WaveAIModes {
-		if !strings.HasPrefix(modeID, "waveai@") {
-			count++
-		}
-	}
-	return count
+	return 0
 }
 
 // CountCustomSettings returns the number of settings in the user's settings file.

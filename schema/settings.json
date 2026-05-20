@@ -115,27 +115,6 @@
         "feature:waveappbuilder": {
           "type": "boolean"
         },
-        "ai:apitype": {
-          "type": "string"
-        },
-        "ai:baseurl": {
-          "type": "string"
-        },
-        "ai:apitoken": {
-          "type": "string"
-        },
-        "ai:apitokensecretname": {
-          "type": "string"
-        },
-        "ai:model": {
-          "type": "string"
-        },
-        "ai:maxtokens": {
-          "type": "number"
-        },
-        "ai:timeoutms": {
-          "type": "number"
-        },
         "ai:mcpservers": {
           "additionalProperties": {
             "$ref": "#/$defs/MCPServerConfig"
@@ -284,6 +263,46 @@
         },
         "tab:background": {
           "type": "string"
+        },
+        "vtab:granularity": {
+          "type": "string",
+          "enum": [
+            "tabs",
+            "panes"
+          ]
+        },
+        "vtab:viewmode": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "expanded"
+          ]
+        },
+        "vtab:primaryinfo": {
+          "type": "string",
+          "enum": [
+            "command",
+            "workingdir",
+            "branch"
+          ]
+        },
+        "vtab:compactsubtitle": {
+          "type": "string",
+          "enum": [
+            "none",
+            "command",
+            "workingdir",
+            "branch"
+          ]
+        },
+        "vtab:showdiffstats": {
+          "type": "boolean"
+        },
+        "vtab:showdetailsonhover": {
+          "type": "boolean"
+        },
+        "vtab:showprlink": {
+          "type": "boolean"
         },
         "widget:*": {
           "type": "boolean"
