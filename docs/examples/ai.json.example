@@ -1,0 +1,49 @@
+{
+    "providers": {
+        "openai":     { "tokensecretname": "OPENAI_API_KEY" },
+        "anthropic":  { "tokensecretname": "ANTHROPIC_API_KEY" },
+        "google":     { "tokensecretname": "GOOGLE_AI_KEY" },
+        "openrouter": { "tokensecretname": "OPENROUTER_API_KEY" }
+    },
+
+    "default": {
+        "provider":  "openai",
+        "model":     "gpt-5",
+        "reasoning": "medium"
+    },
+
+    "profiles": {
+        "fast":     { "provider": "openai",    "model": "gpt-5-mini" },
+        "deepwork": { "provider": "anthropic", "model": "claude-opus-4-7", "reasoning": "high" },
+        "cheap":    { "provider": "google",    "model": "gemini-2.0-flash" }
+    },
+
+    "custom_models": [
+        {
+            "provider":      "openai",
+            "id":            "gpt-experimental",
+            "displayname":   "GPT Experimental",
+            "description":   "Bleeding-edge OpenAI model not yet in catalog",
+            "capabilities":  ["tools"],
+            "contextwindow": 50000
+        }
+    ],
+
+    "custom_endpoints": {
+        "vllm-local": {
+            "displayname":     "Local vLLM",
+            "endpoint":        "http://localhost:8000/v1/chat/completions",
+            "apitype":         "openai-chat",
+            "tokensecretname": "",
+            "icon":            "server",
+            "models": [
+                {
+                    "id":             "qwen-2.5-coder-32b",
+                    "displayName":    "Qwen 2.5 Coder 32B",
+                    "capabilities":   ["tools"],
+                    "contextWindow":  128000
+                }
+            ]
+        }
+    }
+}
