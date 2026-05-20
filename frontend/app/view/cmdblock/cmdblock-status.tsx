@@ -135,3 +135,86 @@ export function formatPromptCwd(cwd: string | undefined, home: string): string {
     if (home && cwd.startsWith(home + "/")) return "~" + cwd.slice(home.length);
     return cwd;
 }
+
+// ---------- agent watching ----------
+//
+// When the agent runs a command via shell_exec(background:true) it
+// gets a block_id back and may keep polling that block via the
+// long_running_read tool.  The user benefits from a visible signal
+// that this block is being watched + an explicit hand-off control
+// equivalent to the agent calling transfer_to_user.
+//
+// These components are exported standalone scaffolding — the parent
+// renderer (block-element.tsx or wherever we land the wiring) decides
+// when to mount them based on whether `block.agentSessionId` is set
+// and the underlying command is still running.
+
+interface AgentWatchingBadgeProps {
+    // When true, show a pulsing dot — visually distinguishes "agent is
+    // actively watching" from the (rarer) "block was started by agent
+    // but agent has moved on" case.  Defaults to true; callers can set
+    // false when the latest long_running_read result reported the
+    // process has exited.
+    active?: boolean;
+    className?: string;
+}
+
+// AgentWatchingBadge — small chip placed next to the block status
+// icon to signal "an agent has tools active on this block."  Click
+// behavior is intentionally absent: the badge is informational, the
+// take-over verb lives on TakeOverButton below.
+//
+// Visual reference: warp's "watching" pill on long-running blocks
+// (`app/src/ai/blocklist/block/view_impl.rs` background section);
+// crest uses the same icon-plus-pill silhouette in Tailwind tokens
+// rather than warp's pathfinder_color literals.
+export const AgentWatchingBadge = memo(({ active = true, className }: AgentWatchingBadgeProps) => {
+    return (
+        <span
+            className={cn(
+                "inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--color-term-accent)]/40 bg-[var(--color-term-accent)]/10 px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wider text-[var(--color-term-accent)]",
+                className
+            )}
+            title="An agent has tools active on this block"
+        >
+            <UIcon name="stars-01" size={10} className="shrink-0" />
+            <span>Agent</span>
+            {active && (
+                <span className="ml-0.5 inline-block h-1 w-1 animate-pulse rounded-full bg-[var(--color-term-accent)]" />
+            )}
+        </span>
+    );
+});
+AgentWatchingBadge.displayName = "AgentWatchingBadge";
+
+interface TakeOverButtonProps {
+    // Click handler — wire to "make this block visible if hidden + tell
+    // the agent it should stop driving this block."  v1 doesn't include
+    // the wshrpc plumbing for the agent-side "stop driving" signal; the
+    // FE-side visibility flip is the user-facing half of the contract
+    // and is the only thing we render here.
+    onTakeOver: () => void;
+    className?: string;
+}
+
+// TakeOverButton — explicit user-side verb to claim control of an
+// agent-watched block.  Symmetric to the agent's `transfer_to_user`
+// tool: agent can yield, user can grab.  Both verbs end up at the
+// same UI state (block visible, badge gone).
+export const TakeOverButton = memo(({ onTakeOver, className }: TakeOverButtonProps) => {
+    return (
+        <button
+            type="button"
+            onClick={onTakeOver}
+            title="Take over this block — agent stops driving it"
+            className={cn(
+                "inline-flex shrink-0 cursor-pointer items-center gap-1 rounded border border-fg-overlay-3 bg-fg-overlay-1/40 px-1.5 py-0.5 font-sans text-[11px] text-foreground/85 transition-colors hover:bg-fg-overlay-2/60 hover:text-foreground",
+                className
+            )}
+        >
+            <UIcon name="hand" size={11} className="shrink-0" />
+            <span>Take over</span>
+        </button>
+    );
+});
+TakeOverButton.displayName = "TakeOverButton";
