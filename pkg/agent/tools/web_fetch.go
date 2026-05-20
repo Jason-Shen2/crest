@@ -64,12 +64,23 @@ func WebFetch(approval func(any) string) uctypes.ToolDefinition {
 			}
 			return fmt.Sprintf("fetching %s", truncURL(parsed.URL))
 		},
-		ToolTextCallback: func(input any) (string, error) {
+		ToolAnyCallback: func(input any, data *uctypes.UIMessageDataToolUse) (any, error) {
 			parsed, err := parseWebFetchInput(input)
 			if err != nil {
 				return "", err
 			}
-			return fetchAndExtract(parsed.URL)
+			text, err := fetchAndExtract(parsed.URL)
+			if err != nil {
+				return "", err
+			}
+			if data != nil {
+				data.AddCitation(uctypes.Citation{
+					Kind:  uctypes.CitationKindWeb,
+					URL:   parsed.URL,
+					Title: truncURL(parsed.URL),
+				})
+			}
+			return text, nil
 		},
 		ToolApproval: approval,
 	}

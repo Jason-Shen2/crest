@@ -88,12 +88,33 @@ func CmdHistory(defaultBlockID string, approval func(any) string) uctypes.ToolDe
 			parsed, _ := parseCmdHistoryInput(input, defaultBlockID)
 			return fmt.Sprintf("reading last %d commands from block %s", parsed.Limit, parsed.BlockID)
 		},
-		ToolAnyCallback: func(input any, _ *uctypes.UIMessageDataToolUse) (any, error) {
+		ToolAnyCallback: func(input any, data *uctypes.UIMessageDataToolUse) (any, error) {
 			parsed, err := parseCmdHistoryInput(input, defaultBlockID)
 			if err != nil {
 				return nil, err
 			}
-			return runCmdHistory(context.Background(), parsed)
+			out, err := runCmdHistory(context.Background(), parsed)
+			if err != nil {
+				return nil, err
+			}
+			if data != nil {
+				const maxCitations = 10
+				count := 0
+				for _, row := range out.Rows {
+					if count >= maxCitations {
+						break
+					}
+					if row.Cmd == "" {
+						continue
+					}
+					data.AddCitation(uctypes.Citation{
+						Kind:  uctypes.CitationKindHistory,
+						Title: utilfn.TruncateString(row.Cmd, 200),
+					})
+					count++
+				}
+			}
+			return out, nil
 		},
 		Parallel:     true,
 		ToolApproval: approval,

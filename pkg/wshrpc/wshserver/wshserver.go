@@ -27,6 +27,7 @@ import (
 	"github.com/s-zx/crest/pkg/aiusechat/chatstore"
 	"github.com/s-zx/crest/pkg/aiusechat/uctypes"
 	"github.com/s-zx/crest/pkg/baseds"
+	"github.com/s-zx/crest/pkg/contextchip"
 	"github.com/s-zx/crest/pkg/blockcontroller"
 	"github.com/s-zx/crest/pkg/blocklogger"
 	"github.com/s-zx/crest/pkg/cmdblock"
@@ -567,9 +568,28 @@ func (ws *WshServer) GetFullConfigCommand(ctx context.Context) (wconfig.FullConf
 	return watcher.GetFullConfig(), nil
 }
 
-func (ws *WshServer) GetWaveAIModeConfigCommand(ctx context.Context) (wconfig.AIModeConfigUpdate, error) {
-	fullConfig := wconfig.GetWatcher().GetFullConfig()
-	return wconfig.AIModeConfigUpdate{Configs: fullConfig.WaveAIModes}, nil
+// GetAIUserConfigCommand reads ~/.config/crest/ai.json.  Returns a
+// status-tagged response so the FE can distinguish "fresh install,
+// no file yet" from "file exists but is broken" without resorting to
+// error-string sniffing.  Never returns a non-nil error to the caller
+// — every problem is folded into Status + Error so the RPC's success
+// shape stays predictable.
+func (ws *WshServer) GetAIUserConfigCommand(ctx context.Context) (*wshrpc.GetAIUserConfigRtnData, error) {
+	cfg, err := aiusechat.ReadAIUserConfig()
+	if err == nil {
+		return &wshrpc.GetAIUserConfigRtnData{Status: "ok", Config: cfg}, nil
+	}
+	if errors.Is(err, aiusechat.ErrAIUserConfigMissing) {
+		return &wshrpc.GetAIUserConfigRtnData{Status: "missing"}, nil
+	}
+	return &wshrpc.GetAIUserConfigRtnData{Status: "malformed", Error: err.Error()}, nil
+}
+
+// WriteAIUserConfigCommand validates and atomically writes the user
+// config.  Validation errors propagate to the FE as RPC errors so the
+// save form can surface them inline.
+func (ws *WshServer) WriteAIUserConfigCommand(ctx context.Context, data uctypes.AIUserConfig) error {
+	return aiusechat.WriteAIUserConfig(&data)
 }
 
 func (ws *WshServer) ConnStatusCommand(ctx context.Context) ([]wshrpc.ConnStatus, error) {
@@ -1306,7 +1326,11 @@ func (ws *WshServer) WaveAIToolApproveCommand(ctx context.Context, data wshrpc.C
 			log.Printf("WaveAIToolApprove: persist suggestion failed: %v\n", err)
 		}
 	}
-	return aiusechat.UpdateToolApproval(data.ToolCallId, data.Approval)
+	// ask_user_question carries structured answers alongside the
+	// approval. UpdateToolApprovalWithAnswers degrades to plain
+	// UpdateToolApproval when AskAnswers is nil, so other tools follow
+	// exactly the same code path as before.
+	return aiusechat.UpdateToolApprovalWithAnswers(data.ToolCallId, data.Approval, data.AskAnswers)
 }
 
 func (ws *WshServer) WaveAIGetToolDiffCommand(ctx context.Context, data wshrpc.CommandWaveAIGetToolDiffData) (*wshrpc.CommandWaveAIGetToolDiffRtnData, error) {
@@ -1585,6 +1609,25 @@ func (ws *WshServer) GetCmdBlocksCommand(ctx context.Context, data wshrpc.Comman
 func (ws *WshServer) GetShellHistoryCommand(ctx context.Context, data wshrpc.CommandGetShellHistoryData) (*wshrpc.ShellHistoryResponse, error) {
 	return &wshrpc.ShellHistoryResponse{
 		Lines: cmdblock.LoadShellHistory(data.Shell, data.Limit),
+	}, nil
+}
+
+// FetchContextChipCommand runs a single context-chip generator (warp's
+// `context_chips` framework — see pkg/contextchip).  Stateless: caching,
+// fingerprinting and rate-limiting live on the frontend ChipFetcherModel
+// (frontend/app/term/contextchip/model.ts).
+func (ws *WshServer) FetchContextChipCommand(ctx context.Context, data wshrpc.CommandFetchContextChipData) (*wshrpc.CommandFetchContextChipResponse, error) {
+	if data.Kind == "" {
+		return nil, fmt.Errorf("kind is required")
+	}
+	value, failed, err := contextchip.Fetch(ctx, data.Kind, data.Cwd)
+	if err != nil {
+		return nil, fmt.Errorf("fetch context chip %q: %w", data.Kind, err)
+	}
+	return &wshrpc.CommandFetchContextChipResponse{
+		Kind:   data.Kind,
+		Value:  value,
+		Failed: failed,
 	}, nil
 }
 

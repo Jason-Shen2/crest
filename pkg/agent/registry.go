@@ -85,6 +85,21 @@ func buildTool(name string, sess *Session) (uctypes.ToolDefinition, bool) {
 		return tools.TodoRead(AgentChatStorePrefix+sess.ChatID, engineDeferredApproval), true
 	case "web_fetch":
 		return tools.WebFetch(engineDeferredApproval), true
+	case "ask_user_question":
+		// approval slot is irrelevant — the tool itself returns
+		// ApprovalNeedsApproval unconditionally and the user's answer
+		// is the approval signal.
+		return tools.AskUserQuestion(engineDeferredApproval), true
+	case "long_running_read":
+		return tools.LongRunningRead(engineDeferredApproval), true
+	case "long_running_write":
+		// All three modes (raw/line/block) inherit the engine's
+		// approval decision — no built-in always-gate. Strict mirror
+		// of warp's WriteToLongRunningShellCommand which is also not
+		// inherently approval-gated.
+		return tools.LongRunningWrite(engineDeferredApproval), true
+	case "transfer_to_user":
+		return tools.TransferToUser(sess.TabID, sess.BlockID, engineDeferredApproval), true
 	case "spawn_task":
 		cfg := tools.SpawnTaskConfig{
 			ParentOpts: sess.AIOpts,
