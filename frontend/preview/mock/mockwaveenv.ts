@@ -169,9 +169,7 @@ function makeMockGlobalAtoms(
         workspaceId: workspaceIdAtom,
         workspace: workspaceAtom,
         fullConfigAtom,
-        waveaiModeConfigAtom: atom({}) as any,
         settingsAtom,
-        hasCustomAIPresetsAtom: atom(false),
         hasConfigErrors: atom((get) => {
             const c = get(fullConfigAtom);
             return c?.configerrors != null && c.configerrors.length > 0;

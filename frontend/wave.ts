@@ -6,6 +6,8 @@ import { loadMonaco } from "@/app/monaco/monaco-env";
 import { EdgeFlowEmbedder, setEmbedder } from "@/app/term/nld";
 import { loadBadges } from "@/app/store/badge";
 import { GlobalModel } from "@/app/store/global-model";
+import { ThemeModel } from "@/app/theme/theme-model";
+import { initAIUserConfig } from "@/app/store/ai-user-config";
 import {
     globalRefocus,
     registerBuilderGlobalKeys,
@@ -199,6 +201,11 @@ async function initWave(initOpts: WaveInitOpts) {
     const fullConfig = await RpcApi.GetFullConfigCommand(TabRpcClient);
     console.log("fullconfig", fullConfig);
     globalStore.set(atoms.fullConfigAtom, fullConfig);
+    // Hydrate the AI user config atom (ai.json).  Non-blocking — the
+    // picker handles the "loading" state, and a slow / failed RPC
+    // doesn't stall first paint.
+    initAIUserConfig();
+    ThemeModel.getInstance().initialize();
     console.log("Wave First Render");
     let firstRenderResolveFn: () => void = null;
     const firstRenderPromise = new Promise<void>((resolve) => {
@@ -268,6 +275,11 @@ async function initBuilder(initOpts: BuilderInitOpts) {
     const fullConfig = await RpcApi.GetFullConfigCommand(TabRpcClient);
     console.log("fullconfig", fullConfig);
     globalStore.set(atoms.fullConfigAtom, fullConfig);
+    // Hydrate the AI user config atom (ai.json).  Non-blocking — the
+    // picker handles the "loading" state, and a slow / failed RPC
+    // doesn't stall first paint.
+    initAIUserConfig();
+    ThemeModel.getInstance().initialize();
 
     console.log("Tsunami Builder First Render");
     let firstRenderResolveFn: () => void = null;

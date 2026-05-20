@@ -203,9 +203,9 @@ func main() {
 		log.Fatalf("backgrounds schema error: %v", err)
 	}
 
-	waveAITemplate := make(map[string]wconfig.AIModeConfigType)
-	err = generateSchema(&waveAITemplate, WaveSchemaWaveAIFileName, false)
-	if err != nil {
-		log.Fatalf("waveai schema error: %v", err)
-	}
+	// waveai.json schema generation removed in Phase E of the ai-config
+	// refactor — AI config now lives in ~/.config/crest/ai.json
+	// (pkg/aiusechat/uctypes.AIUserConfig).  A dedicated ai.json schema
+	// generator can be added later if we want jsonschema validation in
+	// the user's editor; v1 relies on the Go decoder's own checks.
 }

@@ -7,7 +7,6 @@ import type { TabModel } from "@/app/store/tab-model";
 import { makeORef } from "@/app/store/wos";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { SecretsContent } from "@/app/view/waveconfig/secretscontent";
-import { WaveAIVisualContent } from "@/app/view/waveconfig/waveaivisual";
 import { WaveConfigView } from "@/app/view/waveconfig/waveconfig";
 import type { WaveConfigEnv } from "@/app/view/waveconfig/waveconfigenv";
 import { base64ToString, stringToBase64 } from "@/util/util";
@@ -43,19 +42,6 @@ function validateAiJson(parsed: any): ValidationResult {
     return { success: true };
 }
 
-function validateWaveAiJson(parsed: any): ValidationResult {
-    const keys = Object.keys(parsed);
-    const keyPattern = /^[a-zA-Z0-9_@.-]+$/;
-    for (const key of keys) {
-        if (!keyPattern.test(key)) {
-            return {
-                error: `Invalid key "${key}": keys must only contain letters, numbers, underscores, @, dots, and hyphens`,
-            };
-        }
-    }
-    return { success: true };
-}
-
 function makeConfigFiles(isWindows: boolean): ConfigFile[] {
     return [
         {
@@ -82,12 +68,10 @@ function makeConfigFiles(isWindows: boolean): ConfigFile[] {
         },
         {
             name: "AI Provider",
-            path: "waveai.json",
+            path: "ai.json",
             language: "json",
             docsUrl: "https://docs.waveterm.dev/waveai-modes",
-            validator: validateWaveAiJson,
-            hasJsonView: false,
-            visualComponent: WaveAIVisualContent,
+            hasJsonView: true,
         },
         {
             name: "Tab Backgrounds",

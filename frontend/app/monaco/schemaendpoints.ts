@@ -4,7 +4,6 @@
 import backgroundsSchema from "../../../schema/backgrounds.json";
 import connectionsSchema from "../../../schema/connections.json";
 import settingsSchema from "../../../schema/settings.json";
-import waveaiSchema from "../../../schema/waveai.json";
 import widgetsSchema from "../../../schema/widgets.json";
 
 type SchemaInfo = {
@@ -28,11 +27,6 @@ const MonacoSchemas: SchemaInfo[] = [
         uri: "wave://schema/backgrounds.json",
         fileMatch: ["*/WAVECONFIGPATH/backgrounds.json"],
         schema: backgroundsSchema,
-    },
-    {
-        uri: "wave://schema/waveai.json",
-        fileMatch: ["*/WAVECONFIGPATH/waveai.json"],
-        schema: waveaiSchema,
     },
     {
         uri: "wave://schema/widgets.json",

@@ -5,12 +5,19 @@
 // TerminalModel for this outer block, mounts the block list, and the input
 // bar.  Replaces the old `TermBlocksView` from view/termblocks/termblocks.tsx.
 
-import { atoms, getApi } from "@/store/global";
+import { atoms, getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
+import { ContextChipModel } from "../contextchip/chip-model";
 import { globalStore } from "@/app/store/jotaiStore";
+import { ObjectService } from "@/app/store/services";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
+import { CATALOG } from "@/app/store/ai-catalog";
+import { resolveAIConfig } from "@/app/store/ai-resolver";
+import { AgentSelection } from "@/app/store/ai-types";
+import { aiUserConfigAtom } from "@/app/store/ai-user-config";
+import { AgentChatHost } from "./agent-chat-host";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
 import { BlockListElement } from "./block-list-element";
@@ -51,6 +58,16 @@ function useTerminalModel(outerBlockId: string): TerminalModel {
 // or auto) plus the classifier's effective verdict.
 function useNLDModel(outerBlockId: string): NLDModel {
     const model = useMemo(() => new NLDModel(outerBlockId), [outerBlockId]);
+    useEffect(() => {
+        return () => model.dispose();
+    }, [model]);
+    return model;
+}
+
+// Per-pane context-chip model.  Owns the fingerprint cache + RPC-driven
+// fetches that populate the input bar's git/diff/PR/k8s chips.
+function useContextChipModel(outerBlockId: string): ContextChipModel {
+    const model = useMemo(() => new ContextChipModel(outerBlockId), [outerBlockId]);
     useEffect(() => {
         return () => model.dispose();
     }, [model]);
@@ -113,6 +130,24 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
             return "";
         }
     }, []);
+    // Initial cwd from the outer block's `cmd:cwd` meta — the value the
+    // shell was spawned in.  Acts as a fallback before the shell's first
+    // OSC precmd sends a live `pwd` update.
+    const initialCwd = useOrefMetaKeyAtom(WOS.makeORef("block", outerBlockId), "cmd:cwd");
+    // Connection name — empty / "local" / "local:..." → local session;
+    // "wsl://..." → WSL; anything else is treated as SSH.  Drives the
+    // SshChip in the input bar.
+    const connectionName = useOrefMetaKeyAtom(WOS.makeORef("block", outerBlockId), "connection") ?? "";
+    const [sshUser, sshHost] = useMemo<[string | undefined, string | undefined]>(() => {
+        if (!connectionName || connectionName === "local" || connectionName.startsWith("local:") || connectionName.startsWith("wsl://")) {
+            return [undefined, undefined];
+        }
+        const at = connectionName.indexOf("@");
+        if (at > 0) {
+            return [connectionName.slice(0, at), connectionName.slice(at + 1)];
+        }
+        return [undefined, connectionName];
+    }, [connectionName]);
 
     // Whichever block is currently running drives input-bar disablement
     // and context (its cwd shows in the strip).
@@ -127,7 +162,136 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
 
     const nld = useNLDModel(outerBlockId);
     const inputMode = useAtomValue(nld.modeAtom);
+    const chipModel = useContextChipModel(outerBlockId);
+    const chipValues = useAtomValue(chipModel.valuesAtom);
     const effectiveMode = useAtomValue(nld.effectiveModeAtom);
+
+    // AI model picker (Phase D of the ai-config refactor).  Two
+    // sources of truth: CATALOG (in-repo) + ~/.config/crest/ai.json
+    // (via aiUserConfigAtom).  Selection is persisted per-pane in
+    // block.meta["agent:selection"] as a {provider, model, reasoning?}
+    // triple.  See docs/ai-config-architecture.md §5.
+    const userConfigState = useAtomValue(aiUserConfigAtom);
+    const blockAgentSelection = useOrefMetaKeyAtom(
+        WOS.makeORef("block", outerBlockId),
+        "agent:selection"
+    );
+    // Effective selection — block override beats the ai.json default.
+    // Null is a valid state (user hasn't picked, no default) and the
+    // picker handles it via its empty/loading banners.
+    const activeSelection = useMemo<AgentSelection | null>(() => {
+        if (blockAgentSelection?.provider && blockAgentSelection?.model) {
+            return {
+                provider: blockAgentSelection.provider,
+                model: blockAgentSelection.model,
+                reasoning: blockAgentSelection.reasoning as
+                    | "low"
+                    | "medium"
+                    | "high"
+                    | undefined,
+            };
+        }
+        const def = userConfigState.config?.default;
+        if (def?.provider && def?.model) {
+            return {
+                provider: def.provider,
+                model: def.model,
+                reasoning: def.reasoning as "low" | "medium" | "high" | undefined,
+            };
+        }
+        return null;
+    }, [blockAgentSelection, userConfigState.config]);
+
+    // Chip label — resolves through the catalog to get a model's
+    // displayName ("GPT-5") rather than its wire id ("gpt-5").  Falls
+    // back to a placeholder when nothing is picked yet.
+    const modelDisplayLabel = useMemo(() => {
+        if (!activeSelection) return "Pick model";
+        const r = resolveAIConfig(activeSelection, userConfigState.config ?? undefined, CATALOG);
+        if (!r.ok) return activeSelection.model;
+        // Walk catalog to get the displayName (the resolver returns
+        // the wire id in `r.config.model`, not the displayName).
+        const provider = CATALOG.find((p) => p.id === activeSelection.provider);
+        const modelMeta = provider?.models.find((m) => m.id === activeSelection.model);
+        const base = modelMeta?.displayName ?? activeSelection.model;
+        return activeSelection.reasoning ? `${base} · ${activeSelection.reasoning}` : base;
+    }, [activeSelection, userConfigState.config]);
+
+    const onSelectionChange = useCallback(
+        (next: AgentSelection) => {
+            void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
+                "agent:selection": {
+                    provider: next.provider,
+                    model: next.model,
+                    reasoning: next.reasoning ?? "",
+                },
+            });
+        },
+        [outerBlockId]
+    );
+
+    // Resolve the active selection through the catalog + user config
+    // into the final wire shape the backend ingests.  Recomputed on
+    // every selection / config change.  Null when the resolver fails
+    // (no creds, unknown model, etc.) — AgentChatHost refuses to
+    // submit while null so the user gets feedback instead of a 400.
+    const resolvedAIConfig = useMemo(() => {
+        if (!activeSelection) return null;
+        const r = resolveAIConfig(
+            activeSelection,
+            userConfigState.config ?? undefined,
+            CATALOG
+        );
+        return r.ok ? r.config : null;
+    }, [activeSelection, userConfigState.config]);
+
+    const onOpenAIConfigFile = useCallback(() => {
+        // V1: just surface the path in the notification toast.  Future
+        // polish: actually open in $EDITOR via getApi().openExternal().
+        try {
+            const home = getApi().getHomeDir();
+            globalStore.set(
+                model.notificationAtom,
+                `Edit ${home}/.config/crest/ai.json`
+            );
+        } catch {
+            globalStore.set(
+                model.notificationAtom,
+                "Edit ~/.config/crest/ai.json"
+            );
+        }
+    }, [model]);
+
+    // Feed the chip model with the current cwd / branch + finished-block
+    // events.  Each input is a fingerprint dimension (warp's
+    // ChipFingerprintInput) — when it changes, the model re-fetches the
+    // chips whose policy lists it.
+    const liveCwd = liveBlock?.pwd || initialCwd || home;
+    const liveBranch = liveBlock?.gitBranch;
+    useEffect(() => {
+        if (liveCwd) chipModel.setCwd(liveCwd);
+    }, [chipModel, liveCwd]);
+    useEffect(() => {
+        chipModel.setGitBranch(liveBranch);
+    }, [chipModel, liveBranch]);
+
+    // Per-completed-block invalidation pass.  Mirrors warp's
+    // `invalidate_on_commands`: we look for blocks that have transitioned
+    // to a finished state since the last revision tick and feed their
+    // command lines to the chip model.  The Set persists across renders
+    // via a ref so each block is reported at most once.
+    const reportedCompletionRef = useRef<Set<string>>(new Set());
+    useEffect(() => {
+        const all = model.getBlocks().all();
+        for (const b of all) {
+            if (b.state !== "done-with-execution") continue;
+            if (reportedCompletionRef.current.has(b.id)) continue;
+            reportedCompletionRef.current.add(b.id);
+            const cmd = b.cmd ?? "";
+            if (cmd) chipModel.onCommandCompleted(cmd);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [revision, chipModel]);
     const setInputMode = useCallback(
         (next: InputMode, currentText?: string) => {
             nld.setMode(next);
@@ -153,10 +317,82 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         [nld, commandHistory]
     );
     const [submitting, setSubmitting] = useState(false);
+    // Fast-forward (agent auto-approve) toggle — local-only state for now.
+    // Persistence and actual agent-backend coupling come once the agent
+    // tool-call gate is wired (warp's FastForwardToggle.set_active equiv).
+    const [fastForwardOn, setFastForwardOn] = useState(false);
+    const toggleFastForward = useCallback(() => setFastForwardOn((v) => !v), []);
+
+    // ---------- agent submit wiring ----------
+    //
+    // AgentChatHost mounts useChat and hands back a submit fn the input
+    // bar can fire when the user picks agent mode (or NLD decides for
+    // them in auto mode).  The host is invisible — all rendering lives
+    // in AgentBlockElement (block-list-element.tsx dispatches by kind).
+    const agentSubmitRef = useRef<((text: string) => void) | null>(null);
+    const onAgentHostReady = useCallback((submit: (text: string) => void) => {
+        agentSubmitRef.current = submit;
+    }, []);
+    // Stable chatId per pane.  Persisted on TerminalModel so resync /
+    // remount keeps the same conversation.  v1 generates locally; future
+    // work: write to block.meta["waveai:chatid"] so it survives reloads.
+    const chatId = useMemo(() => {
+        if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+            return crypto.randomUUID();
+        }
+        return `chat-${outerBlockId}-${Date.now().toString(36)}`;
+        // outerBlockId is the stable per-pane identity; one chatId per pane
+        // is the right grain for v1.
+    }, [outerBlockId]);
+    const tabId = useAtomValue(atoms.staticTabId);
+    const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
+    const liveConnection = useMemo(
+        () => connectionName || "",
+        [connectionName]
+    );
+
+    // V1 file-citation jump.  Proper "scroll to the block whose output
+    // touched this file" requires a filename→block index we don't have
+    // yet — until then we copy `filename:line` to clipboard so the user
+    // can paste into their editor.  Real scroll-to-block is a P-future
+    // punch list item.
+    const onAgentFileJump = useCallback((filename: string, line?: number) => {
+        const ref = line != null ? `${filename}:${line}` : filename;
+        try {
+            void navigator.clipboard.writeText(ref);
+            globalStore.set(model.notificationAtom, `Copied ${ref}`);
+        } catch {
+            // sandbox / permissions failure — drop silently
+        }
+    }, [model]);
+
+    // V1 open-block — when a tool-use card carries a blockid (e.g. the
+    // headless shell block that ran a shell_exec call), let the user
+    // scroll the timeline to that block.  Works for blocks already in
+    // this pane; "open hidden block" UX is future polish.
+    const onAgentOpenBlock = useCallback((blockId: string) => {
+        const found = model.getBlocks().findById(blockId);
+        if (!found) {
+            globalStore.set(model.notificationAtom, `Block ${blockId} is not in this pane`);
+            return;
+        }
+        model.setScrollPosition({ kind: "anchored", blockId });
+    }, [model]);
 
     const onSubmit = useCallback(
-        async (text: string) => {
+        async (text: string, mode: "terminal" | "agent") => {
             if (!text) return;
+            if (mode === "agent") {
+                const submit = agentSubmitRef.current;
+                if (!submit) {
+                    // Host not yet mounted (first render or remount mid-
+                    // construction).  Drop silently — the user can retry;
+                    // a more elegant fix is to queue but v1 keeps it simple.
+                    return;
+                }
+                submit(text);
+                return;
+            }
             setSubmitting(true);
             try {
                 await model.submitInput(text);
@@ -455,7 +691,7 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
     if (replaceContent != null) {
         return (
             <PaletteContext.Provider value={paletteValue}>
-                <div ref={rootRef} className="flex h-full w-full flex-col bg-background">
+                <div ref={rootRef} className="flex h-full w-full flex-col bg-panel">
                     {replaceContent}
                 </div>
             </PaletteContext.Provider>
@@ -467,12 +703,29 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         <div
             ref={rootRef}
             className={cn(
-                "relative flex h-full w-full flex-col bg-background transition-shadow",
+                // bg-panel (translucent, matches vtabbar/treeview on the left)
+                // instead of bg-background (opaque) so gradient themes like
+                // Cyber Wave paint through to the body's --bg-gradient.  For
+                // solid themes the visual delta is negligible — bg-panel
+                // resolves to a faint foreground tint at 50% alpha over the
+                // same body color.
+                "relative flex h-full w-full flex-col bg-panel transition-shadow",
                 bellFlash && "ring-2 ring-inset ring-amber-400/50"
             )}
         >
             {topSlot}
             <FindBar model={model} />
+            <AgentChatHost
+                model={model}
+                chatId={chatId}
+                outerBlockId={outerBlockId}
+                tabId={tabId}
+                aiConfig={resolvedAIConfig}
+                cwd={liveCwd}
+                connection={liveConnection}
+                recentCmds={recentCmds}
+                onReady={onAgentHostReady}
+            />
             {error && (
                 <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
                     {error}
@@ -490,12 +743,34 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                     onCopyBlock={onCopyBlock}
                     onLinkClick={onLinkClick}
                     charWidth={charWidth}
+                    agentChatId={chatId}
+                    onAgentFileJump={onAgentFileJump}
+                    onAgentOpenBlock={onAgentOpenBlock}
                 />
             )}
+            {/* prompt_to_editor_padding — warp settings/mod.rs:551 keeps a
+                10px breathing room between the last block's output and the
+                top of the input editor.  Without this the input's border-t
+                hugs the last command's stdout. */}
+            <div className="mt-2.5" />
             <CmdBlockInput
-                cwd={liveBlock?.pwd}
+                cwd={liveCwd}
                 home={home}
-                branch={liveBlock?.gitBranch}
+                // Branch prefers the precmd value (instant) and falls back
+                // to the chip-model fetch (covers shells with no precmd).
+                branch={liveBlock?.gitBranch || chipValues.gitBranch}
+                venv={liveBlock?.virtualEnv}
+                nodeVersion={liveBlock?.nodeVersion}
+                // Diff stats: precmd if shell sent it, else chip-model.
+                gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
+                gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
+                prNumber={chipValues.prNumber}
+                prTitle={chipValues.prTitle}
+                kubernetesContext={chipValues.kubernetesContext}
+                sshHost={sshHost}
+                sshUser={sshUser}
+                fastForwardOn={fastForwardOn}
+                onFastForwardToggle={toggleFastForward}
                 mode={inputMode}
                 onModeChange={setInputMode}
                 onSubmit={onSubmit}
@@ -505,6 +780,14 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                 history={commandHistory}
                 onTextChange={onInputTextChange}
                 effectiveMode={effectiveMode}
+                modelDisplayLabel={modelDisplayLabel}
+                catalog={CATALOG}
+                userConfig={userConfigState.config}
+                userConfigStatus={userConfigState.status}
+                userConfigError={userConfigState.error}
+                selection={activeSelection}
+                onSelectionChange={onSelectionChange}
+                onOpenAIConfigFile={onOpenAIConfigFile}
                 placeholder={
                     inAltScreen
                         ? "TUI active — keystrokes forward to the running app (not yet wired)"
