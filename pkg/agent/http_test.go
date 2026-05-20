@@ -69,3 +69,23 @@ func TestHandler_MalformedJSON(t *testing.T) {
 		t.Fatalf("expected 400 for malformed JSON, got %d", w.Code)
 	}
 }
+
+// TestHandler_MissingAIConfig — Phase E acceptance: aiconfig is now
+// required.  A request that omits it (or sends an empty / partial
+// AIConfigRequest) must 400, not 500.  Guards against the FE forgetting
+// to thread the resolved config and producing a confusing upstream
+// error message.
+func TestHandler_MissingAIConfig(t *testing.T) {
+	w := postJSON(t, map[string]any{
+		"chatid": "550e8400-e29b-41d4-a716-446655440000",
+		"mode":   "do",
+		"msg": map[string]any{
+			"messageid": "m1",
+			"parts":     []any{map[string]any{"type": "text", "text": "hi"}},
+		},
+		// aiconfig deliberately absent
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing aiconfig, got %d: %s", w.Code, w.Body.String())
+	}
+}

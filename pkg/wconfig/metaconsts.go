@@ -21,13 +21,6 @@ const (
 
 	ConfigKey_FeatureWaveAppBuilder          = "feature:waveappbuilder"
 
-	ConfigKey_AiApiType                      = "ai:apitype"
-	ConfigKey_AiBaseURL                      = "ai:baseurl"
-	ConfigKey_AiApiToken                     = "ai:apitoken"
-	ConfigKey_AiApiTokenSecretName           = "ai:apitokensecretname"
-	ConfigKey_AiModel                        = "ai:model"
-	ConfigKey_AiMaxTokens                    = "ai:maxtokens"
-	ConfigKey_AiTimeoutMs                    = "ai:timeoutms"
 	ConfigKey_AiMcpServers                   = "ai:mcpservers"
 	ConfigKey_AiPermissions                  = "ai:permissions"
 
@@ -80,6 +73,14 @@ const (
 	ConfigKey_TabPreset                      = "tab:preset"
 	ConfigKey_TabConfirmClose                = "tab:confirmclose"
 	ConfigKey_TabBackground                  = "tab:background"
+
+	ConfigKey_VtabGranularity                = "vtab:granularity"
+	ConfigKey_VtabViewMode                   = "vtab:viewmode"
+	ConfigKey_VtabPrimaryInfo                = "vtab:primaryinfo"
+	ConfigKey_VtabCompactSubtitle            = "vtab:compactsubtitle"
+	ConfigKey_VtabShowDiffStats              = "vtab:showdiffstats"
+	ConfigKey_VtabShowDetailsOnHover         = "vtab:showdetailsonhover"
+	ConfigKey_VtabShowPrLink                 = "vtab:showprlink"
 
 	ConfigKey_WidgetClear                    = "widget:*"
 	ConfigKey_WidgetShowHelp                 = "widget:showhelp"

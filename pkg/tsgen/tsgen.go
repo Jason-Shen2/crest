@@ -51,7 +51,6 @@ var ExtraTypes = []any{
 	vdom.VDomBackendUpdate{},
 	waveobj.MetaTSType{},
 	waveobj.ObjRTInfo{},
-	wconfig.AIModeConfigUpdate{},
 	wshrpc.BlockJobStatusData{},
 }
 

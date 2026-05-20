@@ -66,18 +66,6 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
     const settingsAtom = atom((get) => {
         return get(fullConfigAtom)?.settings ?? {};
     }) as Atom<SettingsType>;
-    const hasCustomAIPresetsAtom = atom((get) => {
-        const fullConfig = get(fullConfigAtom);
-        if (!fullConfig?.presets) {
-            return false;
-        }
-        for (const presetId in fullConfig.presets) {
-            if (presetId.startsWith("ai@") && presetId !== "ai@global" && presetId !== "ai@wave") {
-                return true;
-            }
-        }
-        return false;
-    }) as Atom<boolean>;
     const hasConfigErrors = atom((get) => {
         const fullConfig = get(fullConfigAtom);
         return fullConfig?.configerrors != null && fullConfig.configerrors.length > 0;
@@ -141,7 +129,6 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
         workspace: workspaceAtom,
         fullConfigAtom,
         settingsAtom,
-        hasCustomAIPresetsAtom,
         hasConfigErrors,
         staticTabId: staticTabIdAtom,
         isFullScreen: isFullScreenAtom,
