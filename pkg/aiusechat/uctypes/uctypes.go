@@ -199,14 +199,6 @@ const (
 )
 
 const (
-	AIModeQuick          = "waveai@quick"
-	AIModeBalanced       = "waveai@balanced"
-	AIModeDeep           = "waveai@deep"
-	AIModeBuilderDefault = "waveaibuilder@default"
-	AIModeBuilderDeep    = "waveaibuilder@deep"
-)
-
-const (
 	ToolUseStatusPending   = "pending"
 	ToolUseStatusError     = "error"
 	ToolUseStatusCompleted = "completed"
@@ -250,6 +242,100 @@ type UIMessageDataToolUse struct {
 	// the permissions engine has "remember this" rule shortcuts. The
 	// FE renders them as a radio-list under the Approve/Deny buttons.
 	Suggestions []SuggestedRule `json:"suggestions,omitempty"`
+	// Citations are sources the tool's output is tied to. Populated by
+	// tools that produce verifiable references (web_fetch, search,
+	// cmd_history). Rendered as clickable chips by the FE; mirrored
+	// into ToolAuditEvent for trajectory replay.
+	Citations []Citation `json:"citations,omitempty"`
+	// AskQuestion is the question payload presented to the user when
+	// the tool is `ask_user_question` and approval == "needs-approval".
+	// FE renders a card with the options; user submits answers via the
+	// approval RPC, which the dispatcher copies into AskAnswers below
+	// before the tool callback runs.
+	AskQuestion *AskUserQuestionPayload `json:"askquestion,omitempty"`
+	// AskAnswers carries the user's responses to AskQuestion. Set by
+	// the dispatcher in usechat.go after WaitForToolApproval returns
+	// successfully; the `ask_user_question` tool's ToolAnyCallback
+	// reads from this field to format the result for the agent.
+	AskAnswers []AskUserQuestionAnswer `json:"askanswers,omitempty"`
+}
+
+const (
+	// AskUserQuestionTypeMultipleChoice — kind discriminator for the
+	// MultipleChoice variant of AskUserQuestionType.  Today this is the
+	// only variant defined; the discriminator lives in the type so we
+	// can grow new shapes (FreeForm, Range, …) without breaking the
+	// item-level wire format.  Mirrors warp's `AskUserQuestionType`
+	// enum (`crates/ai/src/agent/action/mod.rs:611-618`).
+	AskUserQuestionTypeMultipleChoice = "multiplechoice"
+)
+
+// AskUserQuestionOption — one choice in a multi-choice question.
+// Strict mirror of warp's `AskUserQuestionOption`
+// (`action/mod.rs:620-624`): `{ label, recommended }`.  No
+// description / sub-label field — warp doesn't carry one.
+type AskUserQuestionOption struct {
+	Label       string `json:"label"`
+	Recommended bool   `json:"recommended,omitempty"`
+}
+
+// AskUserQuestionType — variant payload describing the answer shape.
+// Mirrors warp's `AskUserQuestionType::MultipleChoice` enum variant
+// (`action/mod.rs:611-618`).  The discriminator (`Kind`) is required
+// so future variants can be added; today only `multiplechoice` is
+// defined and the FE asserts on that.
+type AskUserQuestionType struct {
+	Kind          string                  `json:"kind"`
+	Options       []AskUserQuestionOption `json:"options"`
+	MultiSelect   bool                    `json:"multiselect,omitempty"`
+	SupportsOther bool                    `json:"supportsother,omitempty"`
+}
+
+// AskUserQuestionItem — one question in the payload.  Mirrors warp's
+// `AskUserQuestionItem` (`action/mod.rs:626-631`): `QuestionId` is the
+// echoed-back correlation id; `Question` is the prompt text; the
+// answer-shape sits in the nested `QuestionType` variant.  No
+// `Header` field — warp doesn't carry one.
+type AskUserQuestionItem struct {
+	QuestionId   string              `json:"questionid"`
+	Question     string              `json:"question"`
+	QuestionType AskUserQuestionType `json:"questiontype"`
+}
+
+// AskUserQuestionPayload — the shape attached to UIMessageDataToolUse
+// when the agent invokes the `ask_user_question` tool. The FE reads
+// this to render the question card; the user's response comes back via
+// the approval RPC as []AskUserQuestionAnswer below.
+type AskUserQuestionPayload struct {
+	Questions []AskUserQuestionItem `json:"questions"`
+}
+
+// AskUserQuestionAnswer — user's response to one question. `Choices`
+// holds the option labels picked (length ≥1 for single-select; ≥1 for
+// multi-select). `OtherText` is non-empty only when the user picked the
+// "Other" fallback; the agent receives both fields and can decide which
+// to treat as authoritative.
+type AskUserQuestionAnswer struct {
+	QuestionId string   `json:"questionid"`
+	Choices    []string `json:"choices,omitempty"`
+	OtherText  string   `json:"othertext,omitempty"`
+}
+
+// AddCitation appends a citation to the tool-use record. Safe to call
+// from inside a ToolAnyCallback. Skips duplicate entries (same Kind +
+// URL + Title + LineStart) so tools that emit per-match citations
+// (e.g. ripgrep returning 5 hits in one file) collapse cleanly.
+func (d *UIMessageDataToolUse) AddCitation(c Citation) {
+	if d == nil || c.Kind == "" {
+		return
+	}
+	for _, existing := range d.Citations {
+		if existing.Kind == c.Kind && existing.URL == c.URL &&
+			existing.Title == c.Title && existing.LineStart == c.LineStart {
+			return
+		}
+	}
+	d.Citations = append(d.Citations, c)
 }
 
 func (d *UIMessageDataToolUse) IsApproved() bool {
@@ -311,7 +397,6 @@ type AIOptsType struct {
 	TimeoutMs     int      `json:"timeoutms,omitempty"`
 	ThinkingLevel string   `json:"thinkinglevel,omitempty"` // ThinkingLevelLow, ThinkingLevelMedium, or ThinkingLevelHigh
 	Verbosity     string   `json:"verbosity,omitempty"`     // Text verbosity level (OpenAI Responses API only, ignored by other backends)
-	AIMode        string   `json:"aimode,omitempty"`
 	Capabilities  []string `json:"capabilities,omitempty"`
 }
 
@@ -336,16 +421,17 @@ type AIUsage struct {
 }
 
 type ToolAuditEvent struct {
-	Timestamp  int64  `json:"ts"`
-	ChatId     string `json:"chatid"`
-	ToolName   string `json:"tool"`
-	ToolCallId string `json:"callid"`
-	InputArgs  string `json:"input"`
-	Approval   string `json:"approval"`
-	DurationMs int64  `json:"durationms"`
-	Outcome    string `json:"outcome"`
-	ErrorText  string `json:"error,omitempty"`
-	ErrorType  string `json:"errortype,omitempty"` // one of ErrorType_* constants
+	Timestamp  int64      `json:"ts"`
+	ChatId     string     `json:"chatid"`
+	ToolName   string     `json:"tool"`
+	ToolCallId string     `json:"callid"`
+	InputArgs  string     `json:"input"`
+	Approval   string     `json:"approval"`
+	DurationMs int64      `json:"durationms"`
+	Outcome    string     `json:"outcome"`
+	ErrorText  string     `json:"error,omitempty"`
+	ErrorType  string     `json:"errortype,omitempty"` // one of ErrorType_* constants
+	Citations  []Citation `json:"citations,omitempty"` // mirrored from UIMessageDataToolUse.Citations
 }
 
 type AIMetrics struct {
@@ -365,7 +451,6 @@ type AIMetrics struct {
 	RequestDuration   int              `json:"requestduration"`  // ms
 	WidgetAccess      bool             `json:"widgetaccess"`
 	ThinkingLevel     string           `json:"thinkinglevel,omitempty"`
-	AIMode            string           `json:"aimode,omitempty"`
 	AIProvider        string           `json:"aiprovider,omitempty"`
 	IsLocal           bool             `json:"islocal,omitempty"`
 	AuditLog          []ToolAuditEvent `json:"auditlog,omitempty"`
@@ -675,6 +760,44 @@ type SuggestedRule struct {
 	ToolName string `json:"toolname"`
 	Content  string `json:"content,omitempty"`
 	Display  string `json:"display"`
+}
+
+const (
+	CitationKindWeb     = "web"     // external page fetched via web_fetch
+	CitationKindFile    = "file"    // local file (search hit, read_file)
+	CitationKindHistory = "history" // prior shell command (cmd_history)
+	CitationKindDoc     = "doc"     // internal/docs reference (future)
+)
+
+// Citation tags a tool's output with a source the model can point at.
+// Surfaced as a chip beneath the tool-use card in the inline agent block
+// and persisted into the audit log for trajectory replay.
+//
+// Tools populate Citations on the *UIMessageDataToolUse they receive in
+// ToolAnyCallback; the framework copies the slice into ToolAuditEvent
+// when building the per-call audit row, so per-tool code never touches
+// the audit struct directly.
+//
+// LineStart/LineEnd are 1-indexed and inclusive. A zero LineStart means
+// "no line — entire file." Use a single struct (not Vec<Range>) for now;
+// multi-range citations can be modelled by emitting several Citation
+// rows.
+//
+// Divergence from warp (`crates/ai/src/agent/citation.rs:5-11`): warp's
+// `AIAgentCitation` enum has three variants — WarpDriveObject /
+// WarpDocumentation / WebPage.  Crest keeps `web` (≈ WebPage) and
+// `doc` (≈ WarpDocumentation) but adds `file` and `history` kinds
+// plus LineStart/LineEnd.  Justification: crest emits citations
+// from `search` (file:line) and `cmd_history` (prior commands) —
+// neither tool surface exists on warp's side, so warp's enum
+// doesn't cover those use cases.  Decision recorded in
+// docs/warp-agent-improvement-plan.md → "Audit C-class decisions".
+type Citation struct {
+	Kind      string `json:"kind"`                // CitationKind* const
+	URL       string `json:"url,omitempty"`       // web/doc
+	Title     string `json:"title"`               // display label
+	LineStart int    `json:"linestart,omitempty"` // file, 1-indexed
+	LineEnd   int    `json:"lineend,omitempty"`   // file, inclusive
 }
 
 // ApprovalDecider is the closure CreateToolUseData calls to decide

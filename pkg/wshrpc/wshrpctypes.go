@@ -78,7 +78,8 @@ type WshRpcInterface interface {
 	SetConfigCommand(ctx context.Context, data MetaSettingsType) error
 	SetConnectionsConfigCommand(ctx context.Context, data ConnConfigRequest) error
 	GetFullConfigCommand(ctx context.Context) (wconfig.FullConfigType, error)
-	GetWaveAIModeConfigCommand(ctx context.Context) (wconfig.AIModeConfigUpdate, error)
+	GetAIUserConfigCommand(ctx context.Context) (*GetAIUserConfigRtnData, error)
+	WriteAIUserConfigCommand(ctx context.Context, data uctypes.AIUserConfig) error
 	BlockInfoCommand(ctx context.Context, blockId string) (*BlockInfoData, error)
 	DebugTermCommand(ctx context.Context, data CommandDebugTermData) (*CommandDebugTermRtnData, error)
 	BlocksListCommand(ctx context.Context, data BlocksListRequest) ([]BlocksListEntry, error)
@@ -102,6 +103,7 @@ type WshRpcInterface interface {
 	ReadBlockFileRangeCommand(ctx context.Context, data CommandReadBlockFileRangeData) (*BlockFileRangeResponse, error)
 	GetGitInfoCommand(ctx context.Context, cwd string) (*GitInfoResponse, error)
 	RunLocalCmdCommand(ctx context.Context, data CommandRunLocalCmdData) (*CommandRunLocalCmdResponse, error)
+	FetchContextChipCommand(ctx context.Context, data CommandFetchContextChipData) (*CommandFetchContextChipResponse, error)
 	GetShellHistoryCommand(ctx context.Context, data CommandGetShellHistoryData) (*ShellHistoryResponse, error)
 
 	// connection functions
@@ -409,6 +411,30 @@ type CommandRunLocalCmdResponse struct {
 	ExitCode int    `json:"exitcode"`
 }
 
+// CommandFetchContextChipData — input to FetchContextChipCommand.  See
+// pkg/contextchip for the kind catalog.
+type CommandFetchContextChipData struct {
+	// Kind selects which built-in chip generator to run (e.g.
+	// "shell_git_branch", "git_diff_stats", "github_pull_request").
+	Kind string `json:"kind"`
+	// Cwd is the working directory the generator runs in.  Required for
+	// any git-aware chip; for ones that only inspect the environment
+	// (e.g. kubernetes_context) it can be empty.
+	Cwd string `json:"cwd,omitempty"`
+}
+
+// CommandFetchContextChipResponse — raw shell output from the chip's
+// generator.  `value` is the trimmed stdout (empty when no value applies
+// in this context, e.g. git branch outside a repo).  `failed` is true
+// only when the generator's command erred for non-exit-code reasons —
+// callers should hide chips with `failed=true` to match warp's
+// `suppress_on_failure` policy.
+type CommandFetchContextChipResponse struct {
+	Kind   string `json:"kind"`
+	Value  string `json:"value"`
+	Failed bool   `json:"failed,omitempty"`
+}
+
 type CommandGetShellHistoryData struct {
 	Shell string `json:"shell,omitempty"`
 	Limit int    `json:"limit,omitempty"`
@@ -585,6 +611,12 @@ type CommandWaveAIToolApproveData struct {
 	AcceptedContent     string `json:"acceptedcontent,omitempty"`
 	AcceptedDestination string `json:"accepteddestination,omitempty"` // "session" | "localProject" | "sharedProject" | "user"
 	Cwd                 string `json:"cwd,omitempty"`                  // required for project-scope persistence
+	// AskAnswers — populated only when the toolcallid refers to an
+	// ask_user_question tool. The server forwards these to the agent
+	// loop via UpdateToolApprovalWithAnswers; the tool callback reads
+	// them off UIMessageDataToolUse.AskAnswers and formats the
+	// agent-facing result.
+	AskAnswers []uctypes.AskUserQuestionAnswer `json:"askanswers,omitempty"`
 }
 
 type AIAttachedFile struct {
@@ -609,6 +641,17 @@ type CommandWaveAIGetToolDiffData struct {
 type CommandWaveAIGetToolDiffRtnData struct {
 	OriginalContents64 string `json:"originalcontents64"`
 	ModifiedContents64 string `json:"modifiedcontents64"`
+}
+
+// GetAIUserConfigRtnData wraps the read result of ~/.config/crest/ai.json.
+// `Config` is nil exactly when `Status` != "ok"; otherwise it carries the
+// parsed user config.  Status discriminator lets the frontend render the
+// right empty-state vs error UI without resorting to message-string
+// sniffing.
+type GetAIUserConfigRtnData struct {
+	Status  string             `json:"status"` // "ok" | "missing" | "malformed"
+	Config  *uctypes.AIUserConfig `json:"config,omitempty"`
+	Error   string             `json:"error,omitempty"` // populated when Status == "malformed"
 }
 
 // CommandListProviderModelsData lists models a provider exposes via its

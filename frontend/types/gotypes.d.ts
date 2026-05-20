@@ -13,41 +13,28 @@ declare global {
         data64: string;
     };
 
-    // wconfig.AIModeConfigType
-    type AIModeConfigType = {
-        "display:name": string;
-        "display:order"?: number;
-        "display:icon"?: string;
-        "display:description"?: string;
-        "ai:provider"?: string;
-        "ai:apitype"?: string;
-        "ai:model"?: string;
-        "ai:thinkinglevel"?: string;
-        "ai:verbosity"?: string;
-        "ai:endpoint"?: string;
-        "ai:proxyurl"?: string;
-        "ai:azureapiversion"?: string;
-        "ai:apitoken"?: string;
-        "ai:apitokensecretname"?: string;
-        "ai:azureresourcename"?: string;
-        "ai:azuredeployment"?: string;
-        "ai:capabilities"?: string[];
-        "ai:switchcompat"?: string[];
-        "waveai:cloud"?: boolean;
-        "waveai:premium"?: boolean;
-    };
-
-    // wconfig.AIModeConfigUpdate
-    type AIModeConfigUpdate = {
-        configs: {[key: string]: AIModeConfigType};
-    };
-
     // wconfig.AIPermissionsConfig
     type AIPermissionsConfig = {
         allow?: string[];
         deny?: string[];
         ask?: string[];
         defaultPosture?: string;
+    };
+
+    // uctypes.AISelectionConfig
+    type AISelectionConfig = {
+        provider: string;
+        model: string;
+        reasoning?: string;
+    };
+
+    // uctypes.AIUserConfig
+    type AIUserConfig = {
+        providers: {[key: string]: ProviderCredentials};
+        default: AISelectionConfig;
+        profiles?: {[key: string]: AISelectionConfig};
+        custom_models?: UserCustomModel[];
+        custom_endpoints?: {[key: string]: UserCustomEndpoint};
     };
 
     // wshrpc.ActivityDisplayType
@@ -88,6 +75,13 @@ declare global {
         conn?: {[key: string]: number};
     };
 
+    // waveobj.AgentSelectionMeta
+    type AgentSelectionMeta = {
+        provider: string;
+        model: string;
+        reasoning?: string;
+    };
+
     // wshrpc.AiMessageData
     type AiMessageData = {
         message?: string;
@@ -114,6 +108,13 @@ declare global {
         shortdesc: string;
         icon: string;
         iconcolor: string;
+    };
+
+    // uctypes.AskUserQuestionAnswer
+    type AskUserQuestionAnswer = {
+        questionid: string;
+        choices?: string[];
+        othertext?: string;
     };
 
     // wconfig.BackgroundConfigType
@@ -441,6 +442,19 @@ declare global {
         event: string;
         scope: string;
         maxitems: number;
+    };
+
+    // wshrpc.CommandFetchContextChipData
+    type CommandFetchContextChipData = {
+        kind: string;
+        cwd?: string;
+    };
+
+    // wshrpc.CommandFetchContextChipResponse
+    type CommandFetchContextChipResponse = {
+        kind: string;
+        value: string;
+        failed?: boolean;
     };
 
     // wshrpc.CommandFileCopyData
@@ -876,6 +890,7 @@ declare global {
         acceptedcontent?: string;
         accepteddestination?: string;
         cwd?: string;
+        askanswers?: AskUserQuestionAnswer[];
     };
 
     // wshrpc.CommandWaveFileReadStreamData
@@ -1158,10 +1173,16 @@ declare global {
         termthemes: {[key: string]: TermThemeType};
         connections: {[key: string]: ConnKeywords};
         bookmarks: {[key: string]: WebBookmark};
-        waveai: {[key: string]: AIModeConfigType};
         configerrors: ConfigError[];
         version: string;
         buildtime: string;
+    };
+
+    // wshrpc.GetAIUserConfigRtnData
+    type GetAIUserConfigRtnData = {
+        status: string;
+        config?: AIUserConfig;
+        error?: string;
     };
 
     // wshrpc.GitInfoResponse
@@ -1367,6 +1388,7 @@ declare global {
         "vdom:persist"?: boolean;
         "onboarding:githubstar"?: boolean;
         "onboarding:lastversion"?: string;
+        "agent:selection"?: AgentSelectionMeta;
         count?: number;
     };
 
@@ -1405,7 +1427,6 @@ declare global {
         "builder:appid"?: string;
         "builder:env"?: {[key: string]: string};
         "waveai:chatid"?: string;
-        "waveai:mode"?: string;
         "waveai:maxoutputtokens"?: number;
     };
 
@@ -1459,6 +1480,12 @@ declare global {
         memfree?: number;
         numcpu?: number;
         cpusum?: number;
+    };
+
+    // uctypes.ProviderCredentials
+    type ProviderCredentials = {
+        tokensecretname?: string;
+        token?: string;
     };
 
     // wshrpc.ProviderModelInfo
@@ -1544,13 +1571,6 @@ declare global {
         "app:focusfollowscursor"?: string;
         "app:tabbar"?: string;
         "feature:waveappbuilder"?: boolean;
-        "ai:apitype"?: string;
-        "ai:baseurl"?: string;
-        "ai:apitoken"?: string;
-        "ai:apitokensecretname"?: string;
-        "ai:model"?: string;
-        "ai:maxtokens"?: number;
-        "ai:timeoutms"?: number;
         "ai:mcpservers"?: {[key: string]: MCPServerConfig};
         "ai:permissions"?: AIPermissionsConfig;
         "term:*"?: boolean;
@@ -1596,6 +1616,13 @@ declare global {
         "tab:preset"?: string;
         "tab:confirmclose"?: boolean;
         "tab:background"?: string;
+        "vtab:granularity"?: string;
+        "vtab:viewmode"?: string;
+        "vtab:primaryinfo"?: string;
+        "vtab:compactsubtitle"?: string;
+        "vtab:showdiffstats"?: boolean;
+        "vtab:showdetailsonhover"?: boolean;
+        "vtab:showprlink"?: boolean;
         "widget:*"?: boolean;
         "widget:showhelp"?: boolean;
         "window:*"?: boolean;
@@ -1791,7 +1818,6 @@ declare global {
         "waveai:requestdurms"?: number;
         "waveai:widgetaccess"?: boolean;
         "waveai:thinkinglevel"?: string;
-        "waveai:mode"?: string;
         "waveai:provider"?: string;
         "waveai:islocal"?: boolean;
         "waveai:action"?: string;
@@ -1865,6 +1891,12 @@ declare global {
         selectionBackground: string;
         background: string;
         cursor: string;
+        accent?: string;
+        backgroundTop?: string;
+        backgroundBottom?: string;
+        accentLeft?: string;
+        accentRight?: string;
+        details?: string;
     };
 
     // wshrpc.TimeSeriesData
@@ -1914,6 +1946,38 @@ declare global {
         id?: string;
         data?: any;
         providerMetadata?: {[key: string]: any};
+    };
+
+    // uctypes.UserCustomEndpoint
+    type UserCustomEndpoint = {
+        displayname: string;
+        endpoint: string;
+        apitype: string;
+        tokensecretname: string;
+        icon?: string;
+        models: UserCustomEndpointModel[];
+    };
+
+    // uctypes.UserCustomEndpointModel
+    type UserCustomEndpointModel = {
+        id: string;
+        displayName: string;
+        description?: string;
+        capabilities: string[];
+        contextWindow: number;
+        reasoningLevels?: string[];
+    };
+
+    // uctypes.UserCustomModel
+    type UserCustomModel = {
+        provider: string;
+        id: string;
+        displayname: string;
+        description?: string;
+        capabilities: string[];
+        contextwindow: number;
+        reasoninglevels?: string[];
+        apitypeoverride?: string;
     };
 
     // userinput.UserInputRequest

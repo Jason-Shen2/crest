@@ -331,6 +331,14 @@ func runShellExec(ctx context.Context, params *shellExecInput, tabID, defaultBlo
 }
 
 func readBlockTail(ctx context.Context, blockID string) (string, bool) {
+	return readBlockTailN(ctx, blockID, shellExecTailBytes)
+}
+
+// readBlockTailN reads up to n bytes from the tail of a block's
+// terminal output. Returns (cleaned-output, was-truncated). Shared
+// by shell_exec's post-execution capture and long_running_read's
+// snapshot path.
+func readBlockTailN(ctx context.Context, blockID string, n int64) (string, bool) {
 	wfile, err := filestore.WFS.Stat(ctx, blockID, wavebase.BlockFile_Term)
 	if err != nil || wfile == nil {
 		return "", false
@@ -342,9 +350,9 @@ func readBlockTail(ctx context.Context, blockID string) (string, bool) {
 	offset := int64(0)
 	readLen := fileSize
 	truncated := false
-	if fileSize > shellExecTailBytes {
-		offset = fileSize - shellExecTailBytes
-		readLen = shellExecTailBytes
+	if fileSize > n {
+		offset = fileSize - n
+		readLen = n
 		truncated = true
 	}
 	_, data, err := filestore.WFS.ReadAt(ctx, blockID, wavebase.BlockFile_Term, offset, readLen)
@@ -354,6 +362,17 @@ func readBlockTail(ctx context.Context, blockID string) (string, bool) {
 	cleaned := stripAnsi(string(data))
 	cleaned = repairUTF8(cleaned)
 	return cleaned, truncated
+}
+
+// readBlockTotalBytes returns the current size of a block's terminal
+// output file. Zero on stat error / missing file — callers should
+// treat that as "nothing written yet" rather than as an error.
+func readBlockTotalBytes(ctx context.Context, blockID string) int64 {
+	wfile, err := filestore.WFS.Stat(ctx, blockID, wavebase.BlockFile_Term)
+	if err != nil || wfile == nil {
+		return 0
+	}
+	return wfile.Size
 }
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[\x20-\x2F]*[\x40-\x7E]`)

@@ -79,6 +79,7 @@ func ToolNamesForMode(name string) []string {
 			"get_scrollback",
 			"cmd_history",
 			"web_fetch",
+			"ask_user_question",
 		}
 	case ModePlan:
 		return []string{
@@ -89,6 +90,7 @@ func ToolNamesForMode(name string) []string {
 			"cmd_history",
 			"write_plan",
 			"web_fetch",
+			"ask_user_question",
 		}
 	case ModeBench:
 		return []string{
@@ -99,6 +101,8 @@ func ToolNamesForMode(name string) []string {
 			"edit_text_file",
 			"multi_edit",
 			"shell_exec",
+			"long_running_read",
+			"long_running_write",
 			"web_fetch",
 			"spawn_task",
 			"todo_write",
@@ -115,6 +119,9 @@ func ToolNamesForMode(name string) []string {
 			"edit_text_file",
 			"multi_edit",
 			"shell_exec",
+			"long_running_read",
+			"long_running_write",
+			"transfer_to_user",
 			"create_block",
 			"focus_block",
 			"browser.navigate",
@@ -125,6 +132,7 @@ func ToolNamesForMode(name string) []string {
 			"spawn_task",
 			"todo_write",
 			"todo_read",
+			"ask_user_question",
 		}
 	}
 }

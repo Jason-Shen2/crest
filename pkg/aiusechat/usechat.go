@@ -21,7 +21,6 @@ import (
 	"github.com/s-zx/crest/pkg/aiusechat/aiutil"
 	"github.com/s-zx/crest/pkg/aiusechat/chatstore"
 	"github.com/s-zx/crest/pkg/aiusechat/uctypes"
-	"github.com/s-zx/crest/pkg/secretstore"
 	"github.com/s-zx/crest/pkg/telemetry"
 	"github.com/s-zx/crest/pkg/telemetry/telemetrydata"
 	"github.com/s-zx/crest/pkg/util/ds"
@@ -29,7 +28,6 @@ import (
 	"github.com/s-zx/crest/pkg/util/utilfn"
 	"github.com/s-zx/crest/pkg/waveappstore"
 	"github.com/s-zx/crest/pkg/wavebase"
-	"github.com/s-zx/crest/pkg/waveobj"
 	"github.com/s-zx/crest/pkg/web/sse"
 	"github.com/s-zx/crest/pkg/wstore"
 )
@@ -65,64 +63,6 @@ func isLocalEndpoint(endpoint string) bool {
 	return strings.Contains(endpointLower, "localhost") || strings.Contains(endpointLower, "127.0.0.1")
 }
 
-func getWaveAISettings(premium bool, builderMode bool, rtInfo waveobj.ObjRTInfo, aiModeName string) (*uctypes.AIOptsType, error) {
-	maxTokens := DefaultMaxTokens
-	if builderMode {
-		maxTokens = BuilderMaxTokens
-	}
-	if rtInfo.WaveAIMaxOutputTokens > 0 {
-		maxTokens = rtInfo.WaveAIMaxOutputTokens
-	}
-	aiMode, config, err := resolveAIMode(aiModeName, premium)
-	if err != nil {
-		return nil, err
-	}
-	apiToken := config.APIToken
-	if apiToken == "" && config.APITokenSecretName != "" {
-		secret, exists, err := secretstore.GetSecret(config.APITokenSecretName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve secret %s: %w", config.APITokenSecretName, err)
-		}
-		secret = strings.TrimSpace(secret)
-		if !exists || secret == "" {
-			return nil, fmt.Errorf("secret %s not found or empty", config.APITokenSecretName)
-		}
-		apiToken = secret
-	}
-
-	var baseUrl string
-	if config.Endpoint != "" {
-		baseUrl = config.Endpoint
-	} else {
-		return nil, fmt.Errorf("no ai:endpoint configured for AI mode %s", aiMode)
-	}
-
-	thinkingLevel := config.ThinkingLevel
-	if thinkingLevel == "" {
-		thinkingLevel = uctypes.ThinkingLevelMedium
-	}
-	verbosity := config.Verbosity
-	if verbosity == "" {
-		verbosity = uctypes.VerbosityLevelMedium // default to medium
-	}
-	opts := &uctypes.AIOptsType{
-		Provider:      config.Provider,
-		APIType:       config.APIType,
-		Model:         config.Model,
-		MaxTokens:     maxTokens,
-		ThinkingLevel: thinkingLevel,
-		Verbosity:     verbosity,
-		AIMode:        aiMode,
-		Endpoint:      baseUrl,
-		ProxyURL:      config.ProxyURL,
-		Capabilities:  config.Capabilities,
-	}
-	if apiToken != "" {
-		opts.APIToken = apiToken
-	}
-	return opts, nil
-}
-
 func shouldUseChatCompletionsAPI(model string) bool {
 	m := strings.ToLower(model)
 	// Chat Completions API is required for older models: gpt-3.5-*, gpt-4, gpt-4-turbo, o1-*
@@ -130,14 +70,6 @@ func shouldUseChatCompletionsAPI(model string) bool {
 		strings.HasPrefix(m, "gpt-4-") ||
 		m == "gpt-4" ||
 		strings.HasPrefix(m, "o1-")
-}
-
-// GetWaveAISettings is the exported entrypoint used by pkg/agent. It wraps
-// the private getWaveAISettings helper with the standard premium-detection
-// and non-builder defaults so external packages don't need to know about
-// those knobs.
-func GetWaveAISettings(rtInfo waveobj.ObjRTInfo, aiModeName string) (*uctypes.AIOptsType, error) {
-	return getWaveAISettings(false, false, rtInfo, aiModeName)
 }
 
 func runAIChatStep(ctx context.Context, sseHandler *sse.SSEHandlerCh, backend UseChatBackend, chatOpts uctypes.WaveChatOpts, cont *uctypes.WaveContinueResponse) (*uctypes.WaveStopReason, []uctypes.GenAIMessage, error) {
@@ -385,12 +317,18 @@ func processToolCallInternal(backend UseChatBackend, toolCall uctypes.WaveToolCa
 
 	if toolCall.ToolUseData.Approval == uctypes.ApprovalNeedsApproval {
 		log.Printf("  waiting for approval...\n")
-		approval, err := WaitForToolApproval(sseHandler.Context(), toolCall.ID)
+		approval, answers, err := WaitForToolApproval(sseHandler.Context(), toolCall.ID)
 		if err != nil || approval == "" {
 			approval = uctypes.ApprovalCanceled
 		}
 		log.Printf("  approval result: %q\n", approval)
 		toolCall.ToolUseData.Approval = approval
+		// Carry ask_user_question answers onto the tool-use record so
+		// the tool's ToolAnyCallback can read them. Other tools always
+		// pass nil here and the field stays empty.
+		if len(answers) > 0 {
+			toolCall.ToolUseData.AskAnswers = answers
+		}
 
 		if !toolCall.ToolUseData.IsApproved() {
 			errorMsg := "Tool use denied or timed out"
@@ -525,6 +463,10 @@ func processToolCall(backend UseChatBackend, toolCall uctypes.WaveToolCall, chat
 		ErrorType:  result.ErrorType,
 	})
 
+	var auditCitations []uctypes.Citation
+	if toolCall.ToolUseData != nil && len(toolCall.ToolUseData.Citations) > 0 {
+		auditCitations = toolCall.ToolUseData.Citations
+	}
 	return uctypes.ToolCallOutcome{
 		Result: result,
 		Audit: uctypes.ToolAuditEvent{
@@ -538,6 +480,7 @@ func processToolCall(backend UseChatBackend, toolCall uctypes.WaveToolCall, chat
 			Outcome:    outcomeStr,
 			ErrorText:  result.ErrorText,
 			ErrorType:  result.ErrorType,
+			Citations:  auditCitations,
 		},
 		IsError:     isError,
 		ToolLogName: toolLogName,
@@ -887,7 +830,6 @@ func RunAIChat(ctx context.Context, sseHandler *sse.SSEHandlerCh, backend UseCha
 		WidgetAccess:  chatOpts.WidgetAccess,
 		ToolDetail:    make(map[string]int),
 		ThinkingLevel: chatOpts.Config.ThinkingLevel,
-		AIMode:        chatOpts.Config.AIMode,
 		AIProvider:    aiProvider,
 		IsLocal:       isLocal,
 	}
@@ -1249,16 +1191,22 @@ func ResolveToolCall(toolDef *uctypes.ToolDefinition, toolCall uctypes.WaveToolC
 		if err != nil {
 			result.ErrorText = err.Error()
 		} else {
-			// Marshal the result to JSON
-			jsonBytes, marshalErr := json.Marshal(output)
-			if marshalErr != nil {
-				result.ErrorText = fmt.Sprintf("failed to marshal tool output: %v", marshalErr)
+			// String outputs pass through as-is so plain-text tools (e.g.
+			// web_fetch returning extracted page text) don't get
+			// JSON-quoted before reaching the LLM. Structured outputs are
+			// still JSON-marshalled.
+			if str, ok := output.(string); ok {
+				result.Text = str
 			} else {
-				result.Text = string(jsonBytes)
-				// Recompute tool description with the result
-				if toolDef.ToolCallDesc != nil && toolCall.ToolUseData != nil {
-					toolCall.ToolUseData.ToolDesc = toolDef.ToolCallDesc(toolCall.Input, output, toolCall.ToolUseData)
+				jsonBytes, marshalErr := json.Marshal(output)
+				if marshalErr != nil {
+					result.ErrorText = fmt.Sprintf("failed to marshal tool output: %v", marshalErr)
+				} else {
+					result.Text = string(jsonBytes)
 				}
+			}
+			if result.ErrorText == "" && toolDef.ToolCallDesc != nil && toolCall.ToolUseData != nil {
+				toolCall.ToolUseData.ToolDesc = toolDef.ToolCallDesc(toolCall.Input, output, toolCall.ToolUseData)
 			}
 		}
 	} else {
@@ -1337,7 +1285,6 @@ func sendAIMetricsTelemetry(ctx context.Context, metrics *uctypes.AIMetrics) {
 		WaveAIRequestDurMs:         metrics.RequestDuration,
 		WaveAIWidgetAccess:         metrics.WidgetAccess,
 		WaveAIThinkingLevel:        metrics.ThinkingLevel,
-		WaveAIMode:                 metrics.AIMode,
 		WaveAIProvider:             metrics.AIProvider,
 		WaveAIIsLocal:              metrics.IsLocal,
 	})
@@ -1352,7 +1299,10 @@ type PostMessageRequest struct {
 	ChatID       string            `json:"chatid"`
 	Msg          uctypes.AIMessage `json:"msg"`
 	WidgetAccess bool              `json:"widgetaccess,omitempty"`
-	AIMode       string            `json:"aimode"`
+	// AIConfig is the resolved AI configuration the frontend built
+	// from CATALOG + ai.json + selection.  Required — Phase E of the
+	// ai-config refactor removed the legacy AIMode path.
+	AIConfig AIConfigRequest `json:"aiconfig"`
 }
 
 func WaveAIPostMessageHandler(w http.ResponseWriter, r *http.Request) {
@@ -1379,27 +1329,9 @@ func WaveAIPostMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get RTInfo from TabId or BuilderId
-	var rtInfo *waveobj.ObjRTInfo
-	if req.TabId != "" {
-		oref := waveobj.MakeORef(waveobj.OType_Tab, req.TabId)
-		rtInfo = wstore.GetRTInfo(oref)
-	} else if req.BuilderId != "" {
-		oref := waveobj.MakeORef(waveobj.OType_Builder, req.BuilderId)
-		rtInfo = wstore.GetRTInfo(oref)
-	}
-	if rtInfo == nil {
-		rtInfo = &waveobj.ObjRTInfo{}
-	}
-
-	builderMode := req.BuilderId != ""
-	if req.AIMode == "" {
-		http.Error(w, "aimode is required in request body", http.StatusBadRequest)
-		return
-	}
-	aiOpts, err := getWaveAISettings(false, builderMode, *rtInfo, req.AIMode)
+	aiOpts, err := BuildAIOptsFromConfig(req.AIConfig)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("WaveAI configuration error: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("WaveAI configuration error: %v", err), http.StatusBadRequest)
 		return
 	}
 

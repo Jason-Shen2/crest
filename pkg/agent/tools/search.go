@@ -41,6 +41,13 @@ type rgMatch struct {
 	} `json:"data"`
 }
 
+// searchHit is one (file, line) match surfaced for citation rendering.
+// Same row appears in the result text; this is the structured echo.
+type searchHit struct {
+	Path string
+	Line int
+}
+
 func Search(defaultCwd string, approval func(any) string) uctypes.ToolDefinition {
 	return uctypes.ToolDefinition{
 		Name:        "search",
@@ -99,7 +106,7 @@ func Search(defaultCwd string, approval func(any) string) uctypes.ToolDefinition
 			}
 			return fmt.Sprintf("searching for %q in %s", parsed.Pattern, dir)
 		},
-		ToolTextCallback: func(input any) (string, error) {
+		ToolAnyCallback: func(input any, data *uctypes.UIMessageDataToolUse) (any, error) {
 			parsed, err := parseSearchInput(input)
 			if err != nil {
 				return "", err
@@ -107,7 +114,29 @@ func Search(defaultCwd string, approval func(any) string) uctypes.ToolDefinition
 			if parsed.Path == "" && defaultCwd != "" {
 				parsed.Path = defaultCwd
 			}
-			return runSearch(parsed)
+			text, hits, err := runSearch(parsed)
+			if err != nil {
+				return "", err
+			}
+			if data != nil {
+				const maxCitations = 10
+				emitted := make(map[string]bool, maxCitations)
+				for _, h := range hits {
+					if emitted[h.Path] {
+						continue
+					}
+					emitted[h.Path] = true
+					data.AddCitation(uctypes.Citation{
+						Kind:      uctypes.CitationKindFile,
+						Title:     h.Path,
+						LineStart: h.Line,
+					})
+					if len(emitted) >= maxCitations {
+						break
+					}
+				}
+			}
+			return text, nil
 		},
 		ToolApproval: approval,
 	}
@@ -134,21 +163,21 @@ func parseSearchInput(input any) (*searchInput, error) {
 	return params, nil
 }
 
-func runSearch(params *searchInput) (string, error) {
-	result, err := runRipgrep(params)
+func runSearch(params *searchInput) (string, []searchHit, error) {
+	text, hits, err := runRipgrep(params)
 	if err != nil {
-		result, err = runGrepFallback(params)
+		text, hits, err = runGrepFallback(params)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 	}
-	if result == "" {
-		return "No matches found.", nil
+	if text == "" {
+		return "No matches found.", nil, nil
 	}
-	return result, nil
+	return text, hits, nil
 }
 
-func runRipgrep(params *searchInput) (string, error) {
+func runRipgrep(params *searchInput) (string, []searchHit, error) {
 	args := []string{
 		"--json",
 		"--max-count", fmt.Sprintf("%d", params.MaxResults),
@@ -169,16 +198,18 @@ func runRipgrep(params *searchInput) (string, error) {
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return "", nil
+			return "", nil, nil
 		}
-		return "", fmt.Errorf("ripgrep failed: %w", err)
+		return "", nil, fmt.Errorf("ripgrep failed: %w", err)
 	}
 
-	return parseRipgrepJSON(string(output), params.MaxResults), nil
+	text, hits := parseRipgrepJSON(string(output), params.MaxResults)
+	return text, hits, nil
 }
 
-func parseRipgrepJSON(output string, maxResults int) string {
+func parseRipgrepJSON(output string, maxResults int) (string, []searchHit) {
 	var sb strings.Builder
+	var hits []searchHit
 	count := 0
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
@@ -199,12 +230,13 @@ func parseRipgrepJSON(output string, maxResults int) string {
 			sb.WriteByte('\n')
 		}
 		sb.WriteString(fmt.Sprintf("%s:%d: %s", m.Data.Path.Text, m.Data.LineNumber, content))
+		hits = append(hits, searchHit{Path: m.Data.Path.Text, Line: m.Data.LineNumber})
 		count++
 	}
-	return sb.String()
+	return sb.String(), hits
 }
 
-func runGrepFallback(params *searchInput) (string, error) {
+func runGrepFallback(params *searchInput) (string, []searchHit, error) {
 	args := []string{"-rn"}
 	if params.Glob != "" {
 		args = append(args, "--include="+params.Glob)
@@ -222,16 +254,39 @@ func runGrepFallback(params *searchInput) (string, error) {
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return "", nil
+			return "", nil, nil
 		}
-		return "", fmt.Errorf("grep failed: %w", err)
+		return "", nil, fmt.Errorf("grep failed: %w", err)
 	}
 
-	return truncGrepOutput(string(output), params.MaxResults), nil
+	text, hits := truncGrepOutput(string(output), params.MaxResults)
+	return text, hits, nil
 }
 
-func truncGrepOutput(output string, maxResults int) string {
+// parseGrepLine pulls "path:line:..." out of a grep -n output row. Returns
+// false on Windows-style paths (path may contain a drive-letter colon)
+// or any line where line-number parsing fails; callers fall back to
+// citation-less output for that row.
+func parseGrepLine(line string) (string, int, bool) {
+	i1 := strings.Index(line, ":")
+	if i1 < 0 {
+		return "", 0, false
+	}
+	rest := line[i1+1:]
+	i2 := strings.Index(rest, ":")
+	if i2 < 0 {
+		return "", 0, false
+	}
+	var lineNum int
+	if _, err := fmt.Sscanf(rest[:i2], "%d", &lineNum); err != nil || lineNum <= 0 {
+		return "", 0, false
+	}
+	return line[:i1], lineNum, true
+}
+
+func truncGrepOutput(output string, maxResults int) (string, []searchHit) {
 	var sb strings.Builder
+	var hits []searchHit
 	count := 0
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
@@ -243,7 +298,10 @@ func truncGrepOutput(output string, maxResults int) string {
 			sb.WriteByte('\n')
 		}
 		sb.WriteString(line)
+		if path, lineNum, ok := parseGrepLine(line); ok {
+			hits = append(hits, searchHit{Path: path, Line: lineNum})
+		}
 		count++
 	}
-	return sb.String()
+	return sb.String(), hits
 }
