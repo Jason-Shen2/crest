@@ -231,20 +231,18 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 
 **Problem:** Switching models requires editing `settings.json` and restarting. Want to A/B test models mid-session.
 
-**Approach:** `:model <name>` command sets `termAgentModelOverride`. Sent as `modeloverride` in request body. Backend overrides `aiOpts.Model`. Chat ID is reset to avoid chatstore model-mismatch errors (different providers have incompatible message formats).
+**Approach (current — §24 ai-config refactor):** Model chip popover in the input bar reads the in-repo catalog + `~/.config/crest/ai.json` and writes the selected `{provider, model, reasoning?}` triple to `block.meta["agent:selection"]`. Each agent request resolves the selection client-side into a complete `AIConfigRequest` and posts it; the backend ingests via `aiusechat.BuildAIOptsFromConfig`. No legacy `:model` slash command.
 
 **Files:**
-- `frontend/app/view/termblocks/termblocks.tsx` — intercepts `:model`, stores `termAgentModelOverride`, resets `termAgentChatId`
-- `pkg/agent/http.go` — `PostAgentMessageRequest.ModelOverride`, applied to `aiOpts` before `RunAgent`
+- `frontend/app/view/cmdblock/model-picker-popover.tsx` — sectioned popover
+- `frontend/app/store/ai-resolver.ts` — `resolveAIConfig` (catalog + user_config → ResolvedAIConfig)
+- `frontend/app/term/render/terminal-view.tsx` — derives `activeSelection` from meta + `userConfig.default`, computes `resolvedAIConfig`, threads to AgentChatHost
+- `pkg/agent/http.go` — `PostAgentMessageRequest.AIConfig`, no longer reads ai:* settings
+- `pkg/aiusechat/aiconfig.go` — `BuildAIOptsFromConfig`
 
-**Data flow:**
-1. User types `:model claude-haiku-4-5`
-2. Frontend stores override + generates new chatId (chatstore.go errors on model change)
-3. Next agent request includes `modeloverride: "claude-haiku-4-5"`
-4. Handler: `if req.ModelOverride != "" { aiOpts.Model = req.ModelOverride }`
-5. Backend creates new chatstore entry with the new model
+**Trade-offs:** `modeloverride` (the old wire-level escape hatch) still works for eval harnesses that need to override a single field without authoring a full `ai.json` — passed in the request body, overrides `aiOpts.Model` after resolution.
 
-**Trade-offs:** Resetting chatId loses prior conversation history. Switching models = starting fresh. The alternative (keeping history with mixed providers) is technically hard and rarely useful.
+**Historical (pre-2026-05):** Earlier crest had a `:model <name>` slash command + `termAgentModelOverride` state in the input bar. Replaced by the picker UI as part of §24 (the ai-config refactor); the chatstore still uses its existing model-mismatch handling — switching models mid-conversation may force a fresh chat id depending on provider compatibility, same behavior as before.
 
 ---
 
@@ -497,3 +495,142 @@ timelineAtom = atom((get) => {
 - Requires `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` repo secret
 
 **Trade-offs:** Harbor nightly is expensive (~30 min on the full suite, real API costs). Manual trigger lets contributors run cheaper smoke tests on demand. Results aren't auto-tracked over time — would need a leaderboard repo.
+
+---
+
+## 20. Track C — agent UI on the new term engine
+
+**Problem:** The term-engine migration (P1–P16 in `docs/term-engine-migration.md`) removed the legacy `view/term/term-agent.tsx` overlay and its `TermAgentChatProvider`. The Go backend kept emitting `data-tooluse` SSE events into a void; new dev sessions show shell blocks but agent output and tool-use cards never render.
+
+**Approach:** Add a `Block.kind` discriminator (`shell` | `agent`) so agent exchanges become first-class blocks alongside command output. Append-only positioning by call order — no timestamp re-sort — mirrors warp's `BlockList::append_item_to_blocklist` semantics (`app/src/terminal/model/blocks.rs:1074`). A new `AgentChatHost` owns ai-sdk's `useChat` hook and bridges its message stream into per-block state on `TerminalModel`, so jotai and useChat each own their natural domain.
+
+**Files:**
+- `frontend/app/term/engine/block.ts`, `engine/types.ts`, `engine/blocks.ts` — kind discriminator + `AgentPayload` + `appendAgentBlock` factory
+- `frontend/app/term/engine/block-handler.ts:110-111` — `isAgent()` gate skips ANSI dispatch for agent blocks
+- `frontend/app/term/terminal-model.ts` — `agentVisible/Posture/ChatStatus/ChatId/ModelOverride/Parts` atoms + `submitAgentMessage`/`applyAgentDelta`/`applyAgentStatus`/`applyAgentParts`/`getRecentCommands`
+- `frontend/app/term/render/agent-block-element.tsx` — block view (header + user msg + markdown body / parts stream)
+- `frontend/app/term/render/agent-chat-host.tsx` — useChat host, request body builder, message-stream sync
+- `frontend/app/term/render/block-list-element.tsx:246-262` — kind-based dispatch
+- `frontend/app/term/render/terminal-view.tsx:326-339` — onSubmit picks PTY vs useChat by mode
+
+**Data flow:**
+1. `cmdblock-input` submits with mode resolved to "agent" (explicit pick or NLD verdict).
+2. `TerminalView.onSubmit` calls the `submit` fn exposed via `AgentChatHost.onReady`.
+3. `submit` mints exchangeId, calls `model.submitAgentMessage(text)` to append an agent block, then `useChat.sendMessage(text, {messageId: exchangeId})`.
+4. useChat POSTs `/api/post-agent-message` and streams; a sync `useEffect` walks messages, finds the user-message id as exchangeId, calls `applyAgentParts` / `applyAgentText`.
+5. `AgentBlockElement` re-renders via revision bump; tool-use parts route to `ToolUseCard`.
+
+**Trade-offs:** Append-only positioning means an agent block created during a still-running shell command appears below it (matches warp). Engine changes are pure additions — the shell-block path is untouched, so regression risk is contained to the kind-discriminator dispatch.
+
+---
+
+## 21. Typed citations + chip rendering
+
+**Problem:** Agents emit commands and answers, but users can't easily verify what those are based on. A command suggestion may come from a stale README or an irrelevant blog post; the user should be able to click the source.
+
+**Approach:** A `Citation` value attached to tool-use records, rendered as clickable chips beneath each tool-use card. Mirrors warp's `AIAgentCitation` enum (`crates/ai/src/agent/citation.rs:5-11`) but adds `file` and `history` kinds with `LineStart`/`LineEnd` to cover crest's `search` and `cmd_history` tools (warp's three-kind enum doesn't cover those use cases — recorded in `docs/warp-agent-improvement-plan.md` → Audit C-class decisions).
+
+**Files:**
+- `pkg/aiusechat/uctypes/uctypes.go` — `Citation` struct + `CitationKind_*` consts + `AddCitation` helper with dedup; mirrored field on `UIMessageDataToolUse` and `ToolAuditEvent`
+- `pkg/aiusechat/usechat.go` — finalize copies `toolusedata.Citations` into the per-call audit row; new fast path so `ToolAnyCallback` returning a plain string passes through raw (no JSON quoting)
+- `pkg/agent/tools/web_fetch.go`, `search.go`, `cmd_history.go` — each populates citations during the callback
+- `frontend/app/store/aitypes.ts` — TS mirror of Citation + tooluse field
+- `frontend/app/term/render/citation-chips.tsx` — chip render + per-kind click dispatch (web → openExternal, file → onFileJump, history → clipboard, doc → openExternal)
+- `frontend/app/term/render/tool-use-card.tsx` — chips at card bottom
+
+**Data flow:**
+1. Tool callback emits citations via `data.AddCitation({kind, url, title, linestart, lineend})`.
+2. usechat finalize copies them into the audit row for trajectory replay.
+3. SSE `data-tooluse` event carries them to the FE.
+4. `CitationChips` renders one button per entry; click dispatches per kind.
+
+**Trade-offs:** The `web_fetch` and `search` tools migrated from `ToolTextCallback` to `ToolAnyCallback` so they can write into `*UIMessageDataToolUse`; the dispatcher patch ensures plain-string outputs aren't accidentally JSON-quoted. File-jump click currently copies `path:line` to clipboard rather than scrolling to a block — proper scroll-to-block needs a filename→block index and is a P0.7 carry-over.
+
+---
+
+## 22. `ask_user_question` tool
+
+**Problem:** Agents at a genuine fork ("did you mean dev or main?", "framework X or Y?") otherwise guess and waste turns on retracted choices, or apologize in prose. Neither is as good as just asking once with explicit options.
+
+**Approach:** A first-class tool that pauses the turn with a multi-choice card. Schema and data shape mirror warp's `AskUserQuestionItem` (`crates/ai/src/agent/action/mod.rs:611-657`): up to four questions per call, each with a nested `questiontype` discriminator (today only `multiplechoice`); 2–4 options each; optional `supportsother` for free-form fallback; `recommended` flag highlights the agent's default. The user's answers ride back through the existing approval RPC.
+
+**Files:**
+- `pkg/aiusechat/uctypes/uctypes.go` — `AskUserQuestion{Option, Type, Item, Payload, Answer}` types
+- `pkg/aiusechat/toolapproval.go` — `ApprovalRequest.askAnswers` + `UpdateToolApprovalWithAnswers` + `WaitForToolApproval` returns `(approval, answers, err)`
+- `pkg/aiusechat/usechat.go:386-404` — dispatcher copies answers onto `toolusedata.AskAnswers` before the tool callback runs
+- `pkg/wshrpc/wshrpctypes.go` — `CommandWaveAIToolApproveData.AskAnswers`
+- `pkg/wshrpc/wshserver/wshserver.go:1310` — routes through `UpdateToolApprovalWithAnswers`
+- `pkg/agent/tools/ask_user_question.go` — tool definition, nested schema, strict parser
+- `pkg/agent/registry.go` + `profile.go` — registered in ask / plan / do modes (not bench — bench expects deterministic non-interactive runs)
+- `frontend/app/term/render/tool-ask-card.tsx` — interactive card (1–9 select, ← → between questions, ⌘↵ submit, Esc cancel) + `ToolAskSummary` read-only render for resolved state
+- `frontend/app/term/render/tool-use-card.tsx` — dispatch by `needsApproval` between interactive card and summary
+
+**Data flow:**
+1. Agent emits `ask_user_question`; `ToolVerifyInput` populates `toolusedata.AskQuestion`.
+2. FE renders `ToolAskCard`; user picks options.
+3. User submits via `WaveAIToolApproveCommand({approval: "user-approved", askanswers: [...]})`.
+4. Server calls `UpdateToolApprovalWithAnswers`; approval loop wakes; answers copy onto `toolusedata.AskAnswers`.
+5. Tool callback formats answers as `{ answers: [...] }` JSON for the agent's next turn.
+6. After resolution the card switches to `ToolAskSummary` (read-only chips).
+
+**Trade-offs:** Keyboard left/right matches warp's `ask_user_question_view.rs:1400-1401`. Cancel binding is Esc rather than warp's Ctrl-C (`ask_user_question_view.rs:759`) because Ctrl-C in Electron is reserved for the surrounding shell. The system prompt explicitly tells the agent "use only on genuine forks" — without that, models love asking permission for trivia.
+
+---
+
+## 23. Long-running command tools (read / write / transfer)
+
+**Problem:** `shell_exec(background: true)` lets the agent detach from a long-running process (dev server, watcher), but the agent then has no way to follow up — look at the log, send input, hand off when the process needs human attention.
+
+**Approach:** Three new tools that operate on a background block by its `block_id`. Strict ports of warp's `ReadShellCommandOutput`, `WriteToLongRunningShellCommand`, and `TransferShellCommandControlToUser` actions (`crates/ai/src/agent/action/mod.rs:126-129, 61-65, 161-165`). The write tool's three modes (`raw` / `line` / `block`) match warp's `AIAgentPtyWriteMode` byte decoration (`action/mod.rs:762-812`): raw passes through, line wraps with SOH + LF for readline-style editors, block wraps in bracketed-paste markers.
+
+**Files:**
+- `pkg/agent/tools/long_running_read.go` — tail + nested `delay` (`{kind:"duration", duration_ms}` or `{kind:"oncompletion"}`) mirroring warp's `ShellCommandDelay::{Duration, OnCompletion}` enum
+- `pkg/agent/tools/long_running_write.go` — `decorateLongRunningWriteBytes` matches warp's `decorate_bytes`; `SendInput` delivers to `blockcontroller`'s input pipe
+- `pkg/agent/tools/transfer_to_user.go` — `wcore.QueueLayoutActionForTab` makes a hidden background block visible; agent is expected to stop driving it on subsequent turns
+- `pkg/agent/tools/shell_exec.go` — `readBlockTail` refactored into `readBlockTailN(n)` + new `readBlockTotalBytes` so long_running_read shares the same filestore path
+- `pkg/agent/registry.go` + `profile.go` — registered in do (all three) + bench (read + write; transfer excluded since bench expects non-interactive runs)
+- `frontend/app/view/cmdblock/cmdblock-status.tsx` — exported `AgentWatchingBadge` + `TakeOverButton` scaffolding (not yet mounted into block headers — wiring deferred to a separate design pass)
+
+**Data flow (typical dev-server workflow):**
+1. Agent: `shell_exec({cmd: "npm run dev", background: true})` → returns `block_id`.
+2. Agent: `long_running_read({block_id, delay: {kind:"duration", duration_ms: 2000}})` to give the server time to bind.
+3. Reads the tail, confirms "Local: http://localhost:5173"; moves on to verification work.
+4. If an interactive prompt appears: `long_running_write({block_id, input: "y", mode: "line"})`.
+5. If the user is needed (OTP, auth prompt): `transfer_to_user({block_id, reason: "needs the GitHub OTP"})` — hidden block becomes visible; agent stops driving.
+
+**Trade-offs:** `tail_bytes` cap is a crest extension over warp (warp's agent doesn't have an LLM context window to worry about). An earlier prototype of `long_running_write` exposed signal-sending (`mode: "control"` + `signal`); audit pass removed it — warp's `WriteToLongRunningShellCommand` doesn't carry signals, and exposing kill capability through the same tool without a dedicated approval gate is the wrong default. If we need it later, a separate `signal_block` tool with always-NeedsApproval is the right shape. `transfer_to_user` takes `block_id` explicitly because crest's Go tool system has no implicit "current block" session state the way warp's runtime tracks it.
+
+---
+
+## 24. AI configuration: catalog + user config + resolver
+
+**Problem:** Earlier crest had two parallel AI config systems running side-by-side — legacy `ai:*` global settings (read by `pkg/agent/http.go:buildAIOptsFromSettings`) and a new `waveai@*` mode dict (read by `pkg/aiusechat/usechat-mode.go:getWaveAISettings`). The agent HTTP handler picked one or the other based on whether the request carried `aimode`. Three overlapping layers (`settings.json`, `waveai.json`, `presets.json:ai@*`), no single source of truth, API tokens duplicated per mode, provider knowledge (endpoint URLs, apitype mapping) leaked into user-edited JSON.
+
+**Approach:** Four-layer architecture. (1) **Catalog** — static in-repo TS describing all known providers + popular models with endpoint, apitype, capabilities, context window, reasoning support. Maintained by crest contributors via PR. Lives in `frontend/app/store/ai-catalog.ts`. (2) **User config** — `~/.config/crest/ai.json` carries only what the user owns: their providers/credentials, default selection, optional saved profiles, optional custom models / custom endpoints not in the catalog. (3) **Selection** — per-pane `{provider, model, reasoning?}` triple persisted to `block.meta["agent:selection"]` by the model picker. (4) **Resolver** — `frontend/app/store/ai-resolver.ts` consumes (selection, user_config, catalog) and produces a `ResolvedAIConfig`. The frontend sends this on every agent request as the `aiconfig` field; backend's `aiusechat.BuildAIOptsFromConfig` ingests it 1:1 with no further catalog or settings lookups.
+
+**Files:**
+- `frontend/app/store/ai-catalog.ts` — the catalog (TS source of truth)
+- `frontend/app/store/ai-types.ts` — `AgentSelection`, `UserConfig`, `ResolvedAIConfig`, error types
+- `frontend/app/store/ai-resolver.ts` — `resolveAIConfig(selection, userConfig, catalog)`
+- `frontend/app/store/ai-user-config.ts` — jotai atom + loader for ai.json
+- `frontend/app/view/cmdblock/model-picker-popover.tsx` — sectioned picker UI
+- `pkg/aiusechat/uctypes/userconfig.go` — Go mirror of the ai.json schema
+- `pkg/aiusechat/userconfig.go` — `ReadAIUserConfig` / `WriteAIUserConfig` + validation
+- `pkg/aiusechat/aiconfig.go` — `BuildAIOptsFromConfig(req AIConfigRequest) (*AIOptsType, error)` + `secretLookup` injection point
+- `pkg/waveobj/wtypemeta.go` — `MetaTSType.AgentSelection` + `AgentSelectionMeta` shape
+- `pkg/wshrpc/wshrpctypes.go` — `GetAIUserConfigCommand` + `WriteAIUserConfigCommand` RPCs, `GetAIUserConfigRtnData` (status-tagged: `ok`/`missing`/`malformed`)
+
+**Data flow (per agent message):**
+1. User edits `~/.config/crest/ai.json` → backend `wshrpc.GetAIUserConfigCommand` reads it → FE `aiUserConfigAtom` hydrates.
+2. User clicks the model chip → `ModelPickerPopover` renders catalog + profiles + custom entries.
+3. User picks → `block.meta["agent:selection"] = {provider, model, reasoning?}` via `ObjectService.UpdateObjectMeta`.
+4. On submit, `terminal-view.tsx` reads the meta, runs `resolveAIConfig` (with catalog + userConfig) → `ResolvedAIConfig`.
+5. `AgentChatHost`'s `prepareSendMessagesRequest` puts the resolved config in the request body's `aiconfig` field.
+6. Backend `PostAgentMessageHandler` calls `aiusechat.BuildAIOptsFromConfig(req.AIConfig)`. Token resolution: literal `Token` > `TokenSecretName` via `secretstore.GetSecret` > empty (unauthed local endpoint).
+7. `AIOptsType` flows to existing backends (`openai-responses`, `openai-chat`, `google-gemini`, `anthropic-messages`) unchanged.
+
+**Deletions vs the old system (Phase E of the refactor):** Removed entirely — `pkg/aiusechat/usechat-mode.go` (`resolveAIMode`, `getAIModeConfig`, `applyProviderDefaults`), `pkg/agent/http.go:buildAIOptsFromSettings`, `SettingsType.AiApiType / AiBaseURL / AiApiToken / AiApiTokenSecretName / AiModel / AiMaxTokens / AiTimeoutMs`, `AIModeConfigType`, `AIModeConfigUpdate`, `FullConfigType.WaveAIModes`, `MetaTSType.WaveAIMode`, `ObjRTInfo.WaveAIMode`, `telemetrydata.WaveAIMode`, `AIOptsType.AIMode`, `uctypes.AIModeQuick/Balanced/Deep/Builder*` constants, `wshserver.GetWaveAIModeConfigCommand`, `frontend/app/view/waveconfig/waveaivisual.tsx`, `global-atoms.hasCustomAIPresetsAtom`, default `waveai.json` + `schema/waveai.json`. The 5 ai/waveai keys in `defaultconfig/settings.json` (`ai:preset`, `ai:model`, `ai:maxtokens`, `ai:timeoutms`, `waveai:defaultmode`, `waveai:showcloudmodes`) are also gone.
+
+**Trade-offs:** Catalog is static (vs warp's proto-served Oz catalog) because crest doesn't have a backend catalog service and adding one would conflict with the BYO-API-key philosophy. Trade-off: model availability isn't backend-validated; a user picking a stale model gets the upstream provider's 404 instead of an early friendly error. Update cadence: in-repo PR to `ai-catalog.ts`. Reasoning is folded into the selection triple rather than a separate axis because most "models with reasoning" are really one model + a hint, not two models. POC stage: no migration script for existing legacy configs — users re-pick after upgrading.
+
+**Reference:** Full design doc at [`docs/ai-config-architecture.md`](./ai-config-architecture.md).
