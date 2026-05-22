@@ -21,6 +21,7 @@ import { UIcon } from "@/app/element/ui-icon";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FindMatch, TerminalModel } from "../terminal-model";
+import { AgentBlockElement } from "./agent-block-element";
 import { BlockElement } from "./block-element";
 import { computeBlockSlice } from "./selection";
 
@@ -44,10 +45,27 @@ export interface BlockListElementProps {
     // Pixel width of one monospace cell — TerminalView measures and
     // threads it through.  Used by per-block mouse-to-cell math.
     charWidth?: number;
+    // Agent-block context — threaded only when an AgentChatHost is
+    // mounted in the same TerminalView.  agentChatId tags approval RPCs;
+    // citation-jump / open-block are routed to render handlers.
+    agentChatId?: string;
+    onAgentFileJump?: (filename: string, line?: number) => void;
+    onAgentOpenBlock?: (blockId: string) => void;
 }
 
 export const BlockListElement = memo(
-    ({ model, fontSize = 12, home, onCopyBlock, onAskAI, onLinkClick, charWidth }: BlockListElementProps) => {
+    ({
+        model,
+        fontSize = 12,
+        home,
+        onCopyBlock,
+        onAskAI,
+        onLinkClick,
+        charWidth,
+        agentChatId,
+        onAgentFileJump,
+        onAgentOpenBlock,
+    }: BlockListElementProps) => {
         const revision = useAtomValue(model.revisionAtom);
         const scrollPos = useAtomValue(model.scrollPositionAtom);
         const selectedBlockId = useAtomValue(model.selectedBlockIdAtom);
@@ -221,6 +239,43 @@ export const BlockListElement = memo(
                     {blockList.map((block) => {
                         if (block.hidden) return null;
                         if (block.id === "__sentinel__") return null;
+                        // Agent blocks render through a dedicated element
+                        // (no shell-block chrome, no ANSI grid).  Dispatch
+                        // by kind happens here so BlockElement stays
+                        // unconcerned with agent payloads.
+                        if (block.kind === "agent") {
+                            return (
+                                <div key={block.id} data-block-oid={block.id}>
+                                    <AgentBlockElement
+                                        block={block}
+                                        revision={revision}
+                                        selected={block.id === selectedBlockId}
+                                        fontSize={fontSize}
+                                        onSelect={() => model.selectBlock(block.id)}
+                                        model={model}
+                                        chatId={agentChatId}
+                                        onFileJump={onAgentFileJump}
+                                        onOpenBlock={onAgentOpenBlock}
+                                    />
+                                </div>
+                            );
+                        }
+                        // Active waiting block — warp's missing_command()
+                        // case (block.rs:2023-2025).  Warp collapses
+                        // padding_top + padding_bottom to 0 so the block
+                        // takes no visible space; the prompt context
+                        // (cwd, branch) is shown in the input editor
+                        // instead.  crest does the same by skipping the
+                        // render entirely — the CmdBlockInput chip row
+                        // already exposes cwd / branch / duration.
+                        if (
+                            block.state === "waiting-for-input" &&
+                            !block.commandText() &&
+                            !block.isBackground &&
+                            !block.isStatic
+                        ) {
+                            return null;
+                        }
                         return (
                             <div key={block.id} data-block-oid={block.id}>
                                 <BlockElement

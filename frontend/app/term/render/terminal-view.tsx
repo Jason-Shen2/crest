@@ -8,6 +8,7 @@
 import { atoms, getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { ContextChipModel } from "../contextchip/chip-model";
 import { globalStore } from "@/app/store/jotaiStore";
+import { modalsModel } from "@/app/store/modalmodel";
 import { ObjectService } from "@/app/store/services";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
@@ -245,22 +246,14 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         return r.ok ? r.config : null;
     }, [activeSelection, userConfigState.config]);
 
+    // Open the AI setup wizard.  Replaces the earlier "open the JSON
+    // file in $EDITOR" affordance — picker now hands off to a guided
+    // 3-step modal (provider checkboxes → API keys → default model)
+    // that writes ai.json + keychain entries without the user ever
+    // touching the file.
     const onOpenAIConfigFile = useCallback(() => {
-        // V1: just surface the path in the notification toast.  Future
-        // polish: actually open in $EDITOR via getApi().openExternal().
-        try {
-            const home = getApi().getHomeDir();
-            globalStore.set(
-                model.notificationAtom,
-                `Edit ${home}/.config/crest/ai.json`
-            );
-        } catch {
-            globalStore.set(
-                model.notificationAtom,
-                "Edit ~/.config/crest/ai.json"
-            );
-        }
-    }, [model]);
+        modalsModel.pushModal("AISetupWizard");
+    }, []);
 
     // Feed the chip model with the current cwd / branch + finished-block
     // events.  Each input is a fingerprint dimension (warp's

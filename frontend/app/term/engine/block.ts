@@ -23,7 +23,10 @@ import { AltScreen } from "./alt-screen";
 import { BlockGrid } from "./block-grid";
 import { HeaderGrid } from "./header-grid";
 import {
+    AgentBlockStatus,
+    AgentPayload,
     BlockId,
+    BlockKind,
     BlockLifecycleState,
     ImagePlacement,
     PrecmdState,
@@ -36,12 +39,24 @@ export interface BlockInit {
     sessionId?: SessionId;
     cols: number;
     creationTs?: number;
+    // Defaults to "shell".  Agent blocks set this to "agent" via the
+    // appendAgentBlock factory on Blocks; callers should not construct
+    // agent blocks directly.
+    kind?: BlockKind;
+    agentPayload?: AgentPayload;
 }
 
 export class Block {
     readonly id: BlockId;
     readonly seq: number;
     readonly sessionId?: SessionId;
+    // Partitions block timeline into shell (PTY-driven) vs agent (LLM
+    // exchange).  Agent blocks bypass the ANSI parser entirely and render
+    // via AgentBlockElement instead of BlockElement.
+    readonly kind: BlockKind;
+    // Populated only when kind === "agent".  Mutated by appendAgentText
+    // and setAgentStatus as the useChat stream produces deltas.
+    agentPayload?: AgentPayload;
 
     readonly headerGrid: HeaderGrid;
     readonly outputGrid: BlockGrid;
@@ -54,6 +69,12 @@ export class Block {
     pwd?: string;
     gitBranch?: string;
     gitBranchName?: string;
+    // Working-tree diff stats parsed from `git diff --shortstat HEAD`,
+    // emitted by shell precmd hooks.  `undefined` while outside a git repo
+    // or before any precmd has fired.
+    gitDiffAdded?: number;
+    gitDiffRemoved?: number;
+    gitDiffFiles?: number;
     virtualEnv?: string;
     nodeVersion?: string;
 
@@ -104,12 +125,51 @@ export class Block {
         this.id = init.id;
         this.seq = init.seq;
         this.sessionId = init.sessionId;
+        this.kind = init.kind ?? "shell";
+        this.agentPayload = init.agentPayload;
         const ts = init.creationTs ?? Date.now();
         this.creationTs = ts;
         this.lastWriteTs = ts;
         this.headerGrid = new HeaderGrid(init.cols);
         this.outputGrid = new BlockGrid(init.cols);
         this.altScreen = new AltScreen(init.cols);
+    }
+
+    // ---------- agent block mutators ----------
+    //
+    // These are no-ops on shell blocks so the renderer / SSE bridge can
+    // call them without first dispatching on kind.  Equivalent to warp's
+    // `UpdatedStreamingExchange` event handler in history_model.rs:2177.
+
+    // appendAgentText — accumulate an assistant-text delta into the
+    // agent payload.  Caller is responsible for bumping any external
+    // revision counter (TerminalModel.bumpRevision) so subscribers
+    // re-render.
+    appendAgentText(delta: string): void {
+        if (this.kind !== "agent" || !this.agentPayload) return;
+        if (!delta) return;
+        this.agentPayload.assistantText += delta;
+        this.lastWriteTs = Date.now();
+    }
+
+    // setAgentText — replace the agent payload's assistant text with a
+    // full snapshot.  Used when bridging from ai-sdk's `useChat` which
+    // exposes cumulative text per message (each chunk yields the full
+    // text-so-far rather than just the delta).
+    setAgentText(fullText: string): void {
+        if (this.kind !== "agent" || !this.agentPayload) return;
+        if (this.agentPayload.assistantText === fullText) return;
+        this.agentPayload.assistantText = fullText;
+        this.lastWriteTs = Date.now();
+    }
+
+    // setAgentStatus — flip the lifecycle state of the agent exchange.
+    // `errorMessage` is only honored when status === "error".
+    setAgentStatus(status: AgentBlockStatus, errorMessage?: string): void {
+        if (this.kind !== "agent" || !this.agentPayload) return;
+        this.agentPayload.status = status;
+        this.agentPayload.errorMessage = status === "error" ? errorMessage : undefined;
+        this.lastWriteTs = Date.now();
     }
 
     // ---------- routing ----------

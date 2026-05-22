@@ -54,17 +54,56 @@ export const CmdBlockHeader = memo(
         const duration = formatDuration(durationMs);
         const showExit = state === "done-err" && exitCode != null && exitCode !== 0;
         const envLabel = pickEnvLabel(venv, nodeVersion);
+        // Skip the prompt row entirely when it has nothing to show — keeps
+        // bare command-only blocks compact instead of reserving a
+        // line-height of blank space.  Right-slot (toolbelt) needs the row
+        // to anchor, but it sits behind opacity-0 group-hover, so its
+        // visibility is gated by hover anyway.
+        const showPromptRow =
+            !!envLabel ||
+            !!prettyCwd ||
+            !!branch ||
+            (!!duration && state !== "running") ||
+            state === "running" ||
+            showExit ||
+            !!rightSlot;
         return (
             <div
                 className={cn(
-                    "flex flex-col gap-0.5 px-3 py-2",
-                    "text-[12px] leading-tight",
-                    "border-b border-fg-overlay-1",
-                    selected && "bg-fg-overlay-1"
+                    // Sticky behaviour: when the block is taller than the
+                    // viewport and the user scrolls past its top, the header
+                    // re-anchors at the top of the scroll container — warp
+                    // SnackbarHeader equivalent (block_list_element.rs:287
+                    // -446) but implemented via plain CSS `position: sticky`
+                    // since we render in DOM.  Solid `bg-background` keeps
+                    // the underlying output from bleeding through.
+                    // Sticky to top of scroll container — when a long
+                    // block scrolls past the viewport top, the header pins
+                    // in place.  Warp equivalent: SnackbarHeader in
+                    // block_list_element.rs:287-446 (custom paint there;
+                    // CSS `position: sticky` does the same thing here).
+                    // Sticky to top of scroll container (warp SnackbarHeader
+                    // equivalent, block_list_element.rs:287-446).  No
+                    // solid bg, no blur — the wrapper paints failed /
+                    // selected tints across the whole block and we want
+                    // the command row to inherit those uniformly (per
+                    // user feedback: command and output must share one
+                    // continuous background, no visible band-switch).
+                    "sticky top-0 z-10",
+                    // Compact padding: pt-2 + gap-1 keeps the prompt /
+                    // command rows tight against the wrapper top.  No
+                    // bottom padding — command flows straight into the
+                    // output container below.
+                    "flex flex-col gap-1 px-3 pt-2 pb-0",
+                    "text-[12px] leading-tight"
                 )}
             >
                 {/* Row 1: env / cwd / branch / (duration) — all muted.
-                    Persistent right slot floats to the far right. */}
+                    Persistent right slot floats to the far right.  Hidden
+                    when the block has no prompt data yet (missing_command
+                    equivalent — warp block.rs:2040 zeros padding_top in
+                    the same case). */}
+                {showPromptRow && (
                 <div className="flex min-w-0 items-center gap-x-2 text-secondary/80">
                     {envLabel && (
                         <span className="shrink-0" title={envLabel}>
@@ -106,8 +145,15 @@ export const CmdBlockHeader = memo(
                             </span>
                         </span>
                     )}
-                    <div className="ml-auto flex shrink-0 items-center">{rightSlot}</div>
+                    {/* Toolbelt: hidden by default, fades in on block hover.
+                        Matches warp block_list_element.rs:154 + :1792 hover-
+                        button behaviour — copy/share/filter icons only show
+                        when the user is actually pointing at the block. */}
+                    <div className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                        {rightSlot}
+                    </div>
                 </div>
+                )}
 
                 {/* Row 2: command in ANSI yellow.  Visual reference:
                     warp default_themes.rs:15 — DARK_MODE yellow = #FEFDC2.
