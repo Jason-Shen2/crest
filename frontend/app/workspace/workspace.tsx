@@ -12,163 +12,175 @@ import { TabBar } from "@/app/tab/tabbar";
 import { TabContent } from "@/app/tab/tabcontent";
 import { VTabBar } from "@/app/tab/vtabbar";
 import { TopBar } from "@/app/topbar/topbar";
+import { ResizeHandle } from "@/app/workspace/resize-handle";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { atoms, getSettingsKeyAtom } from "@/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { useAtomValue } from "jotai";
-import { memo, useEffect, useRef } from "react";
-import {
-    ImperativePanelGroupHandle,
-    ImperativePanelHandle,
-    Panel,
-    PanelGroup,
-    PanelResizeHandle,
-} from "react-resizable-panels";
+import { memo, useCallback, useEffect } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
+// Workspace layout — warp parity (see app/src/workspace/view.rs:19448
+// `render_panels`).  Left panels are absolute-px widths in a flex row;
+// when hidden they're absent from the row entirely (no collapse animation,
+// no defaultSize negotiation).  The center "content" column is flex-1
+// so it absorbs all remaining space — warp uses `Shrinkable::new(1.0, ...)`
+// on the terminal_view for the same purpose (view.rs:19503).
 const WorkspaceElem = memo(() => {
     const workspaceLayoutModel = WorkspaceLayoutModel.getInstance();
     const tabId = useAtomValue(atoms.staticTabId);
     const ws = useAtomValue(atoms.workspace);
 
-    // Start background subscriptions immediately so completions that happen
-    // before the notifications panel is first opened still surface as toasts.
     useEffect(() => {
+        // Background subscription kept so completions that happen before
+        // the notifications panel is first opened still surface as toasts.
         NotificationsModel.getInstance().ensureSubscribed();
     }, []);
+
     const tabBarPosition = useAtomValue(getSettingsKeyAtom("app:tabbar")) ?? "top";
     const showLeftTabBar = tabBarPosition === "left";
     const vtabVisible = useAtomValue(workspaceLayoutModel.vtabVisibleAtom);
     const fileExplorerVisible = useAtomValue(workspaceLayoutModel.fileExplorerVisibleAtom);
+    const vtabWidth = useAtomValue(workspaceLayoutModel.vtabWidthAtom);
+    const fileExplorerWidth = useAtomValue(workspaceLayoutModel.fileExplorerWidthAtom);
     const codeReviewVisible = useAtomValue(workspaceLayoutModel.codeReviewVisibleAtom);
     const codeReviewWide = useAtomValue(workspaceLayoutModel.codeReviewWideAtom);
-    const windowWidth = window.innerWidth;
-    const vtabInitialPct = workspaceLayoutModel.getVTabInitialPercentage(windowWidth, showLeftTabBar);
-    const vtabMinPct = workspaceLayoutModel.getVTabMinPct(windowWidth);
-    const fileExplorerInitialPct = workspaceLayoutModel.getFileExplorerInitialPercentage(windowWidth);
-    const fileExplorerMinPct = workspaceLayoutModel.getFileExplorerMinPct(windowWidth);
-    const contentInitialPct = workspaceLayoutModel.getContentInitialPercentage(windowWidth, showLeftTabBar);
 
-    const outerPanelGroupRef = useRef<ImperativePanelGroupHandle>(null);
-    const vtabPanelRef = useRef<ImperativePanelHandle>(null);
-    const fileExplorerPanelRef = useRef<ImperativePanelHandle>(null);
-    const panelContainerRef = useRef<HTMLDivElement>(null);
-    const vtabPanelWrapperRef = useRef<HTMLDivElement>(null);
-    const fileExplorerWrapperRef = useRef<HTMLDivElement>(null);
-
+    // VTab visibility derives from the tabbar-position setting — same
+    // semantics as the legacy model.  Setting persists at the app level;
+    // we mirror it into our visibility atom so the toolbar toggle (which
+    // also flips this atom) stays in sync.
     useEffect(() => {
-        if (outerPanelGroupRef.current && panelContainerRef.current) {
-            workspaceLayoutModel.registerRefs(
-                outerPanelGroupRef.current,
-                panelContainerRef.current,
-                vtabPanelRef.current ?? undefined,
-                vtabPanelWrapperRef.current ?? undefined,
-                showLeftTabBar,
-                fileExplorerPanelRef.current ?? undefined,
-                fileExplorerWrapperRef.current ?? undefined
-            );
-        }
-    }, []);
+        workspaceLayoutModel.setVTabVisible(showLeftTabBar);
+    }, [showLeftTabBar, workspaceLayoutModel]);
 
-    useEffect(() => {
-        window.addEventListener("resize", workspaceLayoutModel.handleWindowResize);
-        return () => window.removeEventListener("resize", workspaceLayoutModel.handleWindowResize);
-    }, []);
+    // ResizeHandle reads `maxFn()` on every pointermove so a window
+    // resize mid-drag updates the bound (warp's `with_bounds_callback`).
+    // Each closure also captures the *other* panel's visibility/width so
+    // shrinking the FE doesn't let the VTab steal the budget.
+    const vtabMaxFn = useCallback(
+        () =>
+            workspaceLayoutModel.getVTabMaxWidth(
+                window.innerWidth,
+                fileExplorerVisible,
+                fileExplorerWidth
+            ),
+        [workspaceLayoutModel, fileExplorerVisible, fileExplorerWidth]
+    );
+    const fileExplorerMaxFn = useCallback(
+        () =>
+            workspaceLayoutModel.getFileExplorerMaxWidth(
+                window.innerWidth,
+                vtabVisible,
+                vtabWidth
+            ),
+        [workspaceLayoutModel, vtabVisible, vtabWidth]
+    );
 
-    useEffect(() => {
-        workspaceLayoutModel.setShowLeftTabBar(showLeftTabBar);
-    }, [showLeftTabBar]);
-
-    useEffect(() => {
-        const handleFocus = () => workspaceLayoutModel.syncVTabWidthFromMeta();
-        window.addEventListener("focus", handleFocus);
-        return () => window.removeEventListener("focus", handleFocus);
-    }, []);
-
-    const vtabHandleVisible = vtabVisible;
-    const vtabHandleClass = `bg-transparent hover:bg-zinc-500/20 transition-colors ${vtabHandleVisible ? "w-0.5" : "w-0 pointer-events-none"}`;
-    const feHandleVisible = fileExplorerVisible;
-    const feHandleClass = `bg-transparent hover:bg-zinc-500/20 transition-colors ${feHandleVisible ? "w-0.5" : "w-0 pointer-events-none"}`;
+    const onVTabResize = useCallback(
+        (px: number) => workspaceLayoutModel.setVTabWidth(px),
+        [workspaceLayoutModel]
+    );
+    const onFileExplorerResize = useCallback(
+        (px: number) => workspaceLayoutModel.setFileExplorerWidth(px),
+        [workspaceLayoutModel]
+    );
 
     return (
         <div className="flex flex-col w-full flex-grow overflow-hidden">
             <TopBar />
             {!showLeftTabBar && <TabBar key={ws.oid} workspace={ws} noTabs={false} />}
-            <div ref={panelContainerRef} className="flex flex-row flex-grow overflow-hidden">
+            <div className="flex flex-row flex-grow overflow-hidden min-h-0">
                 <ErrorBoundary key={tabId}>
-                    <PanelGroup
-                        direction="horizontal"
-                        onLayout={workspaceLayoutModel.handleOuterPanelLayout}
-                        ref={outerPanelGroupRef}
-                    >
-                        <Panel
-                            ref={vtabPanelRef}
-                            collapsible
-                            defaultSize={vtabInitialPct}
-                            minSize={vtabMinPct}
-                            order={0}
-                            className="overflow-hidden"
-                        >
-                            <div ref={vtabPanelWrapperRef} className="w-full h-full">
-                                {showLeftTabBar && <VTabBar workspace={ws} />}
+                    {/* Left panel 1: vertical tab bar.  Absent from the
+                        flex row when hidden — warp pattern (view.rs:19466
+                        `if vertical_tabs_active { add child }`). */}
+                    {vtabVisible && showLeftTabBar && (
+                        <>
+                            <div
+                                className="shrink-0 h-full overflow-hidden"
+                                style={{ width: `${vtabWidth}px` }}
+                            >
+                                <VTabBar workspace={ws} />
                             </div>
-                        </Panel>
-                        <PanelResizeHandle className={vtabHandleClass} />
-                        <Panel
-                            ref={fileExplorerPanelRef}
-                            collapsible
-                            defaultSize={fileExplorerInitialPct}
-                            minSize={fileExplorerMinPct}
-                            order={1}
-                            className="overflow-hidden"
-                        >
-                            <div ref={fileExplorerWrapperRef} className="w-full h-full">
+                            <ResizeHandle
+                                width={vtabWidth}
+                                min={workspaceLayoutModel.getVTabMinWidth()}
+                                maxFn={vtabMaxFn}
+                                onResize={onVTabResize}
+                                side="right"
+                            />
+                        </>
+                    )}
+
+                    {/* Left panel 2: file explorer.  Same pattern. */}
+                    {fileExplorerVisible && (
+                        <>
+                            <div
+                                className="shrink-0 h-full overflow-hidden"
+                                style={{ width: `${fileExplorerWidth}px` }}
+                            >
                                 {tabId !== "" && <FileExplorer />}
                             </div>
-                        </Panel>
-                        <PanelResizeHandle className={feHandleClass} />
-                        <Panel order={2} defaultSize={contentInitialPct} className="overflow-hidden flex flex-col">
-                            {tabId === "" ? (
-                                <CenteredDiv>No Active Tab</CenteredDiv>
-                            ) : (
-                                <div className="relative flex-1 min-h-0 w-full">
-                                    <PanelGroup direction="horizontal" className="h-full w-full">
-                                        <Panel
-                                            id="tab-content"
-                                            order={0}
-                                            defaultSize={codeReviewVisible && !codeReviewWide ? 65 : 100}
-                                            minSize={25}
-                                        >
-                                            <div className="relative flex flex-row w-full h-full overflow-hidden">
-                                                <TabContent key={tabId} tabId={tabId} noTopPadding={showLeftTabBar && isMacOS()} />
-                                            </div>
-                                        </Panel>
-                                        {codeReviewVisible && !codeReviewWide && (
-                                            <>
-                                                <PanelResizeHandle className="bg-transparent hover:bg-zinc-500/20 transition-colors w-0.5" />
-                                                <Panel
-                                                    id="code-review"
-                                                    order={1}
-                                                    defaultSize={35}
-                                                    minSize={20}
-                                                    maxSize={70}
-                                                    className="overflow-hidden"
-                                                >
-                                                    <div className="w-full h-full overflow-hidden">
-                                                        <GitReviewSidebar />
-                                                    </div>
-                                                </Panel>
-                                            </>
-                                        )}
-                                    </PanelGroup>
-                                    {codeReviewVisible && codeReviewWide && (
-                                        <div className="absolute inset-0 z-10 backdrop-blur-xl bg-black/30">
-                                            <GitReviewSidebar />
+                            <ResizeHandle
+                                width={fileExplorerWidth}
+                                min={workspaceLayoutModel.getFileExplorerMinWidth()}
+                                maxFn={fileExplorerMaxFn}
+                                onResize={onFileExplorerResize}
+                                side="right"
+                            />
+                        </>
+                    )}
+
+                    {/* Content column — flex-1 absorbs the remaining width
+                        on window resize.  warp: `Shrinkable::new(1.0, terminal_view)`
+                        in render_panels (view.rs:19503). */}
+                    <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+                        {tabId === "" ? (
+                            <CenteredDiv>No Active Tab</CenteredDiv>
+                        ) : (
+                            <div className="relative flex-1 min-h-0 w-full">
+                                <PanelGroup direction="horizontal" className="h-full w-full">
+                                    <Panel
+                                        id="tab-content"
+                                        order={0}
+                                        defaultSize={codeReviewVisible && !codeReviewWide ? 65 : 100}
+                                        minSize={25}
+                                    >
+                                        <div className="relative flex flex-row w-full h-full overflow-hidden">
+                                            <TabContent
+                                                key={tabId}
+                                                tabId={tabId}
+                                                noTopPadding={showLeftTabBar && isMacOS()}
+                                            />
                                         </div>
+                                    </Panel>
+                                    {codeReviewVisible && !codeReviewWide && (
+                                        <>
+                                            <PanelResizeHandle className="bg-transparent hover:bg-zinc-500/20 transition-colors w-0.5" />
+                                            <Panel
+                                                id="code-review"
+                                                order={1}
+                                                defaultSize={35}
+                                                minSize={20}
+                                                maxSize={70}
+                                                className="overflow-hidden"
+                                            >
+                                                <div className="w-full h-full overflow-hidden">
+                                                    <GitReviewSidebar />
+                                                </div>
+                                            </Panel>
+                                        </>
                                     )}
-                                </div>
-                            )}
-                        </Panel>
-                    </PanelGroup>
+                                </PanelGroup>
+                                {codeReviewVisible && codeReviewWide && (
+                                    <div className="absolute inset-0 z-10 backdrop-blur-xl bg-black/30">
+                                        <GitReviewSidebar />
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
                     <ModalsRenderer />
                 </ErrorBoundary>
             </div>
