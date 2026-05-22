@@ -68,17 +68,34 @@ export interface VTabItem {
     badge?: Badge | null;
     badges?: Badge[] | null;
     flagColor?: string | null;
+    // Second-line content.  In Expanded mode this gets its own row at
+    // 12px; in Compact mode it's the 10px subtitle (optional).
     subtitle?: string;
-    gitBranch?: string;
+    // Third-line content (Expanded mode only).  Mirrors warp's
+    // `MetadataLeftContent` — when Pane-title-as is Command or
+    // WorkingDirectory the left of the metadata row shows the git
+    // branch; when it's Branch, it shows the working directory.
+    metadataLeftKind?: "branch" | "workingdir";
+    metadataLeftValue?: string;
+    // Right-side metadata (Expanded mode only).
     gitAdds?: number;
     gitDels?: number;
     gitChangedFiles?: number;
+    // Legacy field — kept so existing call sites that only render a
+    // branch chip on the second-line metadata still compile.  When
+    // metadataLeftKind is set, this is ignored.
+    gitBranch?: string;
     runningKind?: AgentKind;
+    // Optional icon override.  Tab rows always render the terminal
+    // glyph (or a TabBadges cluster); pane rows pick an icon based on
+    // their block's view type (term, preview, web, etc.).
+    iconName?: string;
 }
 
 interface VTabProps {
     tab: VTabItem;
     active: boolean;
+    viewMode?: "compact" | "expanded";
     showDivider?: boolean;
     isDragging: boolean;
     isReordering: boolean;
@@ -142,6 +159,7 @@ function GitStatsBadge({ adds, dels }: { adds?: number; dels?: number }) {
 export function VTab({
     tab,
     active,
+    viewMode = "expanded",
     isDragging,
     isReordering,
     hoverResetVersion,
@@ -258,6 +276,26 @@ export function VTab({
     };
 
     const applyScrollOnName = isPathLike(tab.name);
+    const isCompact = viewMode === "compact";
+    // Resolve metadata-left for the third row (Expanded only).
+    const hasMetadataLeft = !!(tab.metadataLeftKind && tab.metadataLeftValue);
+    const hasGitStats =
+        (tab.gitAdds ?? 0) > 0 || (tab.gitDels ?? 0) > 0 || (tab.gitChangedFiles ?? 0) > 0;
+    const showMetadataRow = !isCompact && (hasMetadataLeft || hasGitStats);
+    const [isLocalHovered, setIsLocalHovered] = useState(false);
+
+    // Warp `pane_row_background` (vertical_tabs.rs 272-293):
+    // - If the tab has a user-chosen color, the row background IS that
+    //   color — 15% opacity at rest, 50% on hover or when selected.
+    //   No left-edge stripe; the whole card tints.
+    // - Otherwise the row falls back to `fg_overlay_2` (selected) or
+    //   `fg_overlay_1` (hover/drag-target), or no background at all.
+    // TAB_COLOR_OPACITY = 15, TAB_COLOR_HOVER_OPACITY = 50 (vertical_tabs.rs 107-108).
+    let inlineBg: string | undefined;
+    if (flagColor) {
+        const opacityPct = active || isLocalHovered ? 50 : 15;
+        inlineBg = `color-mix(in srgb, ${flagColor} ${opacityPct}%, transparent)`;
+    }
 
     return (
         <div
@@ -273,26 +311,49 @@ export function VTab({
             onDragOver={onDragOver}
             onDrop={onDrop}
             onDragEnd={onDragEnd}
-            onMouseEnter={() => onHoverChanged?.(true)}
-            onMouseLeave={() => onHoverChanged?.(false)}
+            onMouseEnter={() => {
+                setIsLocalHovered(true);
+                onHoverChanged?.(true);
+            }}
+            onMouseLeave={() => {
+                setIsLocalHovered(false);
+                onHoverChanged?.(false);
+            }}
+            style={{ backgroundColor: inlineBg }}
+            // Warp `render_pane_row_element` (vertical_tabs.rs 295-357):
+            // - 4px corner radius, 1px border (transparent when not selected)
+            // - Padding::uniform(8.) — 8px all around
+            // - Selected: fg_overlay_2 bg + fg_overlay_3 border (or color tint above)
+            // - Hover (non-selected): fg_overlay_1 bg, NO border tint
+            // - Title color stays main_text_color in all states; only the
+            //   background changes when the row is selected.  Crucially we
+            //   keep `text-foreground` on inactive rows too — dimming the
+            //   title for non-selected rows makes the whole panel look
+            //   washed out compared to warp.
             className={cn(
-                "group relative mx-2 my-0.5 flex shrink-0 cursor-pointer select-none items-start gap-2 rounded px-2 py-2 transition-colors",
-                "border",
-                active
-                    ? "border-fg-overlay-3 bg-fg-overlay-2 text-foreground"
-                    : isReordering
-                      ? "border-transparent text-secondary"
-                      : "border-transparent text-secondary hover:bg-fg-overlay-1 hover:text-foreground",
+                "group relative mx-2 my-0.5 flex shrink-0 cursor-pointer select-none rounded transition-[background-color,border-color] duration-75",
+                "border text-foreground items-start gap-2 px-2 py-2",
+                // Warp uses `Padding::uniform(8.)` for BOTH compact and
+                // expanded (`render_pane_row_element`).  The visual
+                // diff between modes is purely the subtitle font size
+                // and the absence/presence of the metadata row — NOT
+                // padding or layout direction.  Both modes use a top-
+                // aligned icon + text column.
+                flagColor
+                    ? active
+                        ? "border-fg-overlay-3"
+                        : "border-transparent"
+                    : active
+                      ? "border-fg-overlay-3 bg-fg-overlay-2"
+                      : isReordering
+                        ? "border-transparent"
+                        : "border-transparent hover:bg-fg-overlay-1",
                 isDragging && "opacity-50"
             )}
         >
-            {flagColor && (
-                <div
-                    className="pointer-events-none absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-l"
-                    style={{ backgroundColor: flagColor }}
-                    aria-hidden
-                />
-            )}
+            {/* No flag-color stripe — warp `pane_row_background`
+                tints the whole row background (handled via the
+                style prop above), there's no left-edge accent rail. */}
             <div className="relative flex h-6 w-6 shrink-0 items-center justify-center">
                 {badges && badges.length > 0 && !tab.runningKind ? (
                     <TabBadges
@@ -301,11 +362,30 @@ export function VTab({
                         className="static top-auto left-auto z-auto m-0 flex h-6 w-6 translate-y-0 items-center justify-center p-0 [&_i]:text-[12px]"
                     />
                 ) : (
-                    <UIcon name="terminal" size={18} className={active ? "text-foreground" : "text-secondary"} />
+                    // Warp neutral icons use NEUTRAL_GLYPH_RATIO = 16/24
+                    // — a 16px glyph centered in a 24px container —
+                    // identical between compact and expanded.  Icon color
+                    // is theme.sub_text in both states; selection only
+                    // changes the row background, never the glyph color.
+                    <UIcon
+                        name={tab.iconName ?? "terminal"}
+                        size={16}
+                        className="text-secondary"
+                    />
                 )}
                 {tab.runningKind && <AgentBadge kind={tab.runningKind} />}
             </div>
-            <div className="flex min-w-0 flex-1 flex-col justify-center gap-[2px] pt-[1px] pr-1">
+            <div
+                className={cn(
+                    "flex min-w-0 flex-1 flex-col pr-1 pt-[1px]",
+                    // Warp Expanded uses 2px between lines
+                    // (`with_margin_top(2.)` in render_terminal_row_content);
+                    // Compact uses 1px (`with_spacing(1.)` in
+                    // render_compact_pane_row).
+                    isCompact ? "gap-[1px]" : "gap-[2px]"
+                )}
+            >
+                {/* Line 1 — title @ 12px, identical in both modes. */}
                 {isEditable || !applyScrollOnName ? (
                     <div
                         ref={editableRef}
@@ -325,40 +405,105 @@ export function VTab({
                         {tab.name}
                     </div>
                 ) : (
+                    <PathText text={tab.name} className="text-[12px] leading-tight" title={tab.name} />
+                )}
+
+                {/* Line 2 — subtitle.  Compact: 10px sub_text; Expanded:
+                    12px sub_text (warp `render_text_line` default).
+                    Hidden when there's nothing to show. */}
+                {tab.subtitle && (
                     <PathText
-                        text={tab.name}
-                        className="text-[12px] leading-tight"
-                        title={tab.name}
+                        text={tab.subtitle}
+                        className={cn(
+                            "leading-tight text-sub-text",
+                            isCompact ? "text-[10px]" : "text-[12px]"
+                        )}
+                        title={tab.subtitle}
                     />
                 )}
-                <div className="flex min-h-[14px] items-center gap-1.5 overflow-hidden whitespace-nowrap text-[11px] leading-tight text-sub-text">
-                    {tab.subtitle ? (
-                        <PathText text={tab.subtitle} className="min-w-0 flex-1" title={tab.subtitle} />
-                    ) : null}
-                    {tab.gitBranch && (
-                        <span className="inline-flex shrink-0 items-center gap-0.5 text-[#b8f2c0]">
-                            <UIcon name="git-branch-02" size={11} className="opacity-85" />
-                            <span className="max-w-[80px] truncate">{tab.gitBranch}</span>
-                        </span>
-                    )}
-                    <GitStatsBadge adds={tab.gitAdds} dels={tab.gitDels} />
-                </div>
+
+                {/* Line 3 — metadata row (Expanded only, terminal-style).
+                    Left: branch or working-dir per primaryInfo.
+                    Right: diff stats badge (gated by showDiffStats up-stream).
+                    Fixed height so toggling stats doesn't resize the row
+                    (warp `METADATA_ROW_HEIGHT = BADGE_ICON_SIZE + 2`). */}
+                {showMetadataRow && (
+                    <div className="flex h-[14px] items-center justify-between gap-2 overflow-hidden text-[10px] leading-tight text-sub-text">
+                        <div className="min-w-0 flex-1 overflow-hidden">
+                            {tab.metadataLeftKind === "branch" && tab.metadataLeftValue && (
+                                <span className="inline-flex max-w-full items-center gap-0.5 text-[#b8f2c0]">
+                                    <UIcon name="git-branch-02" size={10} className="opacity-85" />
+                                    <span className="truncate">{tab.metadataLeftValue}</span>
+                                </span>
+                            )}
+                            {tab.metadataLeftKind === "workingdir" && tab.metadataLeftValue && (
+                                <PathText
+                                    text={tab.metadataLeftValue}
+                                    className="block max-w-full text-[10px] text-sub-text"
+                                    title={tab.metadataLeftValue}
+                                />
+                            )}
+                        </div>
+                        <GitStatsBadge adds={tab.gitAdds} dels={tab.gitDels} />
+                    </div>
+                )}
             </div>
             {onClose && (
+                // Warp "belt" action group — direct port of
+                // `render_group_action_buttons` (vertical_tabs.rs:2186-2260)
+                // with the positioning from the Stack overlay at
+                // vertical_tabs.rs:2103-2110:
+                //   ParentAnchor::TopRight, ChildAnchor::TopRight
+                //   offset = vec2f(-4., GROUP_HEADER_VERTICAL_PADDING /*=4*/)
+                //   → belt's top-right sits 4px from row's top, 4px from right edge.
+                //
+                // Constants:
+                //   GROUP_ACTION_BUTTON_ICON_SIZE = 12   (12px icons)
+                //   GROUP_ACTION_BUTTON_PADDING   = 2    (2px padding,
+                //                                        applied both around the belt
+                //                                        and inside each button)
+                //   GROUP_ACTION_BUTTON_GAP       = 2    (2px between buttons)
+                //   ROW_CORNER_RADIUS / belt radius = 4
+                //
+                // Color tokens:
+                //   belt bg  = internal_colors::neutral_3 (= bg.blend(fg@15%) — opaque)
+                //   belt brd = internal_colors::neutral_4 (= bg.blend(fg@20%) — opaque)
+                //   icon col = sub_text_color
+                //   kebab hover bg = fg_overlay_2
+                //   close hover bg = fg_overlay_3
+                //
+                // We compute neutral_3 / neutral_4 via CSS `color-mix`
+                // against crest's existing --color-background and
+                // --color-foreground vars so the belt stays theme-correct
+                // without hardcoding hex values.
                 <div
                     className={cn(
-                        "absolute right-1.5 top-1.5 flex h-[20px] items-center gap-[1px] rounded p-[2px]",
-                        "border border-white/10 bg-black/45 backdrop-blur-sm",
-                        "shadow-[0_1px_3px_rgba(0,0,0,0.4)] transition-opacity duration-100",
+                        "absolute top-1 right-1 flex items-center gap-[2px] rounded-[4px] border p-[2px]",
+                        "transition-opacity duration-100",
                         isReordering
                             ? "pointer-events-none opacity-0"
                             : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100"
                     )}
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, var(--color-background) 85%, var(--color-foreground) 15%)",
+                        borderColor:
+                            "color-mix(in srgb, var(--color-background) 80%, var(--color-foreground) 20%)",
+                    }}
                 >
                     {(onContextMenu || onMoreButtonClick) && (
                         <button
                             type="button"
-                            className="flex h-full w-[18px] cursor-pointer items-center justify-center rounded text-foreground/85 transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                            // data-vtab-menu-trigger lets the open menu's
+                            // outside-click handler recognize this click
+                            // as "the user wants to toggle me off, not
+                            // dismiss elsewhere".  Without it, the menu
+                            // closes on mousedown and the kebab's click
+                            // re-opens it on the same gesture, so the
+                            // menu can never be dismissed by re-clicking
+                            // its trigger.
+                            data-vtab-menu-trigger="true"
+                            className="flex h-[16px] w-[16px] cursor-pointer items-center justify-center rounded-[4px] text-secondary transition-colors hover:bg-fg-overlay-2"
                             onClick={(event) => {
                                 event.stopPropagation();
                                 if (onMoreButtonClick) {
@@ -375,7 +520,7 @@ export function VTab({
                     )}
                     <button
                         type="button"
-                        className="flex h-full w-[18px] cursor-pointer items-center justify-center rounded text-foreground/85 transition-colors hover:bg-fg-overlay-3 hover:text-foreground"
+                        className="flex h-[16px] w-[16px] cursor-pointer items-center justify-center rounded-[4px] text-secondary transition-colors hover:bg-fg-overlay-3"
                         onClick={(event) => {
                             event.stopPropagation();
                             onClose();
