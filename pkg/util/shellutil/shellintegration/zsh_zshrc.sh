@@ -75,6 +75,45 @@ _waveterm_si_osc7() {
   printf '\033]7;file://localhost%s\007' "$encoded_pwd"  # OSC 7 - current directory
 }
 
+# Collect prompt-time environment (git branch, working tree diff, venv,
+# node_version, conda) and emit them as an OSC 133 P sequence so the
+# frontend's block-handler.applyPrecmdKv can populate the context chips.
+# Mirrors warp's prompt_render_helper precmd block: warp executes the same
+# `git symbolic-ref` / `git rev-parse` fallback to fetch the branch, and
+# `git diff --shortstat HEAD` for the diff counts.  See
+# warp/app/src/context_chips/builtins.rs:127-187 for the original source.
+# Empty values are skipped so a non-git cwd emits a slim sequence.
+_waveterm_si_emit_env() {
+  _waveterm_si_blocked && return
+  local parts="cwd=$(_waveterm_si_urlencode "$PWD")"
+
+  if command -v git >/dev/null 2>&1; then
+    local _git_branch
+    _git_branch=$(GIT_OPTIONAL_LOCKS=0 git symbolic-ref --short HEAD 2>/dev/null) || \
+      _git_branch=$(GIT_OPTIONAL_LOCKS=0 git rev-parse --short HEAD 2>/dev/null)
+    if [ -n "$_git_branch" ]; then
+      parts="${parts};git_branch=$(_waveterm_si_urlencode "$_git_branch")"
+      local _diff
+      _diff=$(GIT_OPTIONAL_LOCKS=0 git -c diff.autoRefreshIndex=false diff --shortstat HEAD 2>/dev/null)
+      if [ -n "$_diff" ]; then
+        parts="${parts};git_diff_stats=$(_waveterm_si_urlencode "$_diff")"
+      fi
+    fi
+  fi
+
+  if [ -n "$VIRTUAL_ENV" ]; then
+    parts="${parts};venv=$(_waveterm_si_urlencode "${VIRTUAL_ENV##*/}")"
+  fi
+  if [ -n "$CONDA_DEFAULT_ENV" ]; then
+    parts="${parts};conda=$(_waveterm_si_urlencode "$CONDA_DEFAULT_ENV")"
+  fi
+  if [ -n "$NODE_VERSION" ]; then
+    parts="${parts};node_version=$(_waveterm_si_urlencode "$NODE_VERSION")"
+  fi
+
+  printf '\033]133;P;%s\007' "$parts"
+}
+
 _waveterm_si_precmd() {
   local _waveterm_si_status=$?
   _waveterm_si_blocked && return
@@ -90,6 +129,9 @@ _waveterm_si_precmd() {
     # OSC 7 only sent on first prompt - chpwd hook handles directory changes
     _waveterm_si_osc7
   fi
+  # Context-chip data — emitted every prompt so the chips track branch /
+  # diff / venv changes mid-session.
+  _waveterm_si_emit_env
   printf '\033]16162;A\007'
   _WAVETERM_SI_FIRSTPRECMD=0
 }

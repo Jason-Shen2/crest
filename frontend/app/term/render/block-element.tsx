@@ -410,13 +410,16 @@ export const BlockElement = memo(
             return items;
         })();
 
-        // Visual reference: warp
-        // app/src/terminal/block_list_element.rs:119-130 — single-block
-        // selection uses a 2px border in accent @ 25%.  We render that as
-        // a left-edge marker so it doesn't pile on top of the in-block
-        // header padding.  Failed blocks get a similar left edge tinted
-        // with warp's failed_block_color (color.rs:316-318), which
-        // resolves to terminal.normal.red (= --ansi-red in our palette).
+        // Block frame visual rules — mirror warp's draw_block_background /
+        // draw_border_between_blocks (block_list_element.rs:2358-2459):
+        //   • 1px bottom divider in theme.outline() (= our `border` token)
+        //     between consecutive blocks.
+        //   • Failed blocks: 10% red tint over the whole block + a 4-5px
+        //     red left flag-pole (LEFT_STRIPE_WIDTH = 5, warpify/render.rs:39).
+        //   • Selected blocks: stronger fg-overlay-2 fill + accent left
+        //     stripe so selection still reads even with the red tint.
+        // The flag-pole is rendered as a border-l-4 on the wrapper so it
+        // automatically clips to block bounds when scrolling.
         const isFailed =
             block.state === "done-with-execution" &&
             block.exitCode != null &&
@@ -425,9 +428,25 @@ export const BlockElement = memo(
             <div
                 onClick={onSelect}
                 className={cn(
-                    "group relative border-b border-fg-overlay-1 border-l-2 border-l-transparent transition-colors",
-                    selected && "bg-fg-overlay-1 border-l-[var(--color-term-accent-25)]",
-                    isFailed && !selected && "border-l-[var(--ansi-red)]/60"
+                    // 1px bottom border between blocks — warp
+                    // draw_border_between_blocks (block_list_element.rs:
+                    // 2454-2459) paints in `theme.outline()`, which
+                    // resolves to fg_overlay_2 = white×10% (color.rs:154
+                    // + :546).  Reserve a 5px left strip on every block so
+                    // failed/AI stripes don't shift content horizontally
+                    // when they light up.  LEFT_STRIPE_WIDTH = 5
+                    // (warpify/render.rs:39).
+                    "group relative border-b border-fg-overlay-2 border-l-[5px] border-l-transparent transition-colors",
+                    // Selection: subtle 10% accent fill, no border — per
+                    // user feedback, warp's full 25% + 2px outline reads
+                    // too aggressive in crest's layout.  Keeps the
+                    // selection discoverable via the tint alone.
+                    selected && "bg-[var(--color-term-accent-10)]",
+                    // Failed (non-selected): 10% red overlay + 5px solid
+                    // red flag-pole.  Maps warp block_list_element.rs:
+                    //   :2404-2410  bg = failed_block_color × 10%
+                    //   :2412-2419  flag pole when !selected && !AI stripe
+                    isFailed && !selected && "bg-[var(--ansi-red)]/10 border-l-[var(--ansi-red)]"
                 )}
             >
                 {showSnackbar && (
@@ -462,14 +481,14 @@ export const BlockElement = memo(
                         }
                     />
                 </div>
-                {/* Visual reference: warp app/src/settings/mod.rs:548-549 —
-                    output body uses ~0.5 lines top gap + 1.0 lines bottom
-                    padding.  px-3 matches the header's horizontal inset
-                    so glyphs line up under the cwd text.  pt-2 + pb-3
-                    approximates the 0.5-line top gap and 1.0-line bottom
-                    margin warp uses to separate one block's output from
-                    the next block's header. */}
-                <div className="px-3 pt-2 pb-3">
+                {/* Per user feedback: no visible gap between the command
+                    row and its output — the two share one continuous
+                    background.  Drop padding_middle (warp 0.5 lines) to
+                    0 so the first stdout row sits flush under the command
+                    line.  Keep a small pb-2 (≈ 8 px, half of warp's 1.0
+                    line) so the next block's top divider doesn't kiss
+                    this block's last line. */}
+                <div className="px-3 pt-0 pb-2">
                     <div
                     ref={gridHostRef}
                     // Layout padding sits on the outer div so this inner

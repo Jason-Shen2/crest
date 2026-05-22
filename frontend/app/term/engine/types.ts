@@ -304,3 +304,39 @@ export type BlockId = string;
 
 // SessionId — opaque, supplied by Go.
 export type SessionId = string;
+
+// ---------- Agent blocks ----------
+
+// BlockKind partitions the block timeline into two kinds: shell blocks
+// (the existing PTY-driven flow) and agent blocks (LLM exchanges).
+// Mirrors warp's `Block::AgentResponse` enum variant.  Engine code paths
+// for shell vs agent are kept strictly separate — the ANSI parser never
+// writes into an agent block, and renderers dispatch on `kind`.
+export type BlockKind = "shell" | "agent";
+
+// AgentBlockStatus tracks the lifecycle of a single agent exchange.
+// Mirrors warp's `AIAgentOutput.status`:
+//   streaming — useChat is actively producing tokens / tool calls
+//   done      — the turn finished normally
+//   error     — the request errored; the body carries the error message
+export type AgentBlockStatus = "streaming" | "done" | "error";
+
+// AgentPayload — per-block agent data carried alongside the (unused)
+// outputGrid on a Block whose `kind === "agent"`.  Field names mirror
+// warp's `AIAgentOutput` semantics (exchangeId / status / createdAt) so
+// future trajectory replay can deserialize without name remapping.
+//
+// `createdAt` is UI metadata only ("5s ago" displays); it does NOT
+// participate in block ordering.  Ordering is always the order of
+// `appendAgentBlock` / `pushShellBlock` calls — see `Blocks.push`.
+export interface AgentPayload {
+    exchangeId: string;
+    userText: string;
+    status: AgentBlockStatus;
+    createdAt: number;
+    // Accumulated assistant text deltas.  Mutated by `appendAgentText`
+    // (engine/block.ts) which the useChat → applyAgentDelta bridge calls.
+    assistantText: string;
+    // Optional error message when status === "error".  Set by setAgentStatus.
+    errorMessage?: string;
+}

@@ -30,12 +30,54 @@ function Global:_waveterm_si_blocked {
 
 function Global:_waveterm_si_osc7 {
     if (_waveterm_si_blocked) { return }
-    
+
     # Percent-encode the raw path as-is (handles UNC, drive letters, etc.)
     $encoded_pwd = [System.Uri]::EscapeDataString($PWD.Path)
-    
+
     # OSC 7 - current directory
     Write-Host -NoNewline "`e]7;file://localhost/$encoded_pwd`a"
+}
+
+# Mirrors zsh_zshrc.sh's _waveterm_si_emit_env — see that file for the
+# rationale and warp source pointers (context_chips/builtins.rs:127-187).
+function Global:_waveterm_si_emit_env {
+    if (_waveterm_si_blocked) { return }
+
+    $parts = "cwd=$([System.Uri]::EscapeDataString($PWD.Path))"
+
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $prevGitLocks = $env:GIT_OPTIONAL_LOCKS
+        $env:GIT_OPTIONAL_LOCKS = "0"
+        try {
+            $gitBranch = & git symbolic-ref --short HEAD 2>$null
+            if (-not $gitBranch) {
+                $gitBranch = & git rev-parse --short HEAD 2>$null
+            }
+            if ($gitBranch) {
+                $parts = "$parts;git_branch=$([System.Uri]::EscapeDataString($gitBranch.Trim()))"
+                $diff = (& git -c diff.autoRefreshIndex=false diff --shortstat HEAD 2>$null) -join " "
+                if ($diff) {
+                    $parts = "$parts;git_diff_stats=$([System.Uri]::EscapeDataString($diff.Trim()))"
+                }
+            }
+        } catch {}
+        finally {
+            $env:GIT_OPTIONAL_LOCKS = $prevGitLocks
+        }
+    }
+
+    if ($env:VIRTUAL_ENV) {
+        $venv = Split-Path -Leaf $env:VIRTUAL_ENV
+        $parts = "$parts;venv=$([System.Uri]::EscapeDataString($venv))"
+    }
+    if ($env:CONDA_DEFAULT_ENV) {
+        $parts = "$parts;conda=$([System.Uri]::EscapeDataString($env:CONDA_DEFAULT_ENV))"
+    }
+    if ($env:NODE_VERSION) {
+        $parts = "$parts;node_version=$([System.Uri]::EscapeDataString($env:NODE_VERSION))"
+    }
+
+    Write-Host -NoNewline "`e]133;P;$parts`a"
 }
 
 function Global:_waveterm_si_prompt {
@@ -49,6 +91,7 @@ function Global:_waveterm_si_prompt {
     }
     
     _waveterm_si_osc7
+    _waveterm_si_emit_env
 }
 
 # Add the OSC 7 call to the prompt function

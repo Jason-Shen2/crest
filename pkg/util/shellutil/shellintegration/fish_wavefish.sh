@@ -24,6 +24,39 @@ function _waveterm_si_osc7
     printf '\033]7;file://localhost%s\007' $encoded_pwd
 end
 
+# Mirrors zsh_zshrc.sh's _waveterm_si_emit_env — see that file for the
+# rationale and warp source pointers (context_chips/builtins.rs:127-187).
+function _waveterm_si_emit_env
+    _waveterm_si_blocked; and return
+    set -l parts "cwd="(string escape --style=url -- "$PWD")
+
+    if type -q git
+        set -l _git_branch (env GIT_OPTIONAL_LOCKS=0 git symbolic-ref --short HEAD 2>/dev/null)
+        if test -z "$_git_branch"
+            set _git_branch (env GIT_OPTIONAL_LOCKS=0 git rev-parse --short HEAD 2>/dev/null)
+        end
+        if test -n "$_git_branch"
+            set parts "$parts;git_branch="(string escape --style=url -- "$_git_branch")
+            set -l _diff (env GIT_OPTIONAL_LOCKS=0 git -c diff.autoRefreshIndex=false diff --shortstat HEAD 2>/dev/null)
+            if test -n "$_diff"
+                set parts "$parts;git_diff_stats="(string escape --style=url -- "$_diff")
+            end
+        end
+    end
+
+    if test -n "$VIRTUAL_ENV"
+        set parts "$parts;venv="(string escape --style=url -- (basename "$VIRTUAL_ENV"))
+    end
+    if test -n "$CONDA_DEFAULT_ENV"
+        set parts "$parts;conda="(string escape --style=url -- "$CONDA_DEFAULT_ENV")
+    end
+    if test -n "$NODE_VERSION"
+        set parts "$parts;node_version="(string escape --style=url -- "$NODE_VERSION")
+    end
+
+    printf '\033]133;P;%s\007' "$parts"
+end
+
 function _waveterm_si_prompt --on-event fish_prompt
     set -l _waveterm_si_status $status
     _waveterm_si_blocked; and return
@@ -35,6 +68,7 @@ function _waveterm_si_prompt --on-event fish_prompt
     else
         printf '\033]16162;D;{"exitcode":%d}\007' $_waveterm_si_status
     end
+    _waveterm_si_emit_env
     printf '\033]16162;A\007'
     set -g _WAVETERM_SI_FIRSTPROMPT 0
 end
