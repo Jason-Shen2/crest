@@ -16,7 +16,13 @@ body {
     color: var(--main-text-color);
     font: var(--base-font);
     overflow: hidden;
-    background: rgb(from var(--main-bg-color) r g b / var(--window-opacity));
+    /* Theme background — ThemeModel writes a solid into --color-background
+       and only sets --bg-gradient for gradient themes (e.g. Cyber Wave).
+       The user's window:bgcolor override still wins when set, via the
+       outer rgb(from ...) call.  background-image rides on top so a
+       gradient theme paints over the solid color underneath. */
+    background-color: rgb(from var(--main-bg-color, var(--color-background)) r g b / var(--window-opacity, 1));
+    background-image: var(--bg-gradient, none);
     -webkit-font-smoothing: auto;
     backface-visibility: hidden;
     transform: translateZ(0);
@@ -24,6 +30,7 @@ body {
 
 .is-transparent {
     background-color: transparent;
+    background-image: none;
 }
 
 *::-webkit-scrollbar {

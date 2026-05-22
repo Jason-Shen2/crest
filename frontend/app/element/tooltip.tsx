@@ -161,7 +161,7 @@ function TooltipInner({
                         }}
                         {...getFloatingProps()}
                         className={cn(
-                            "bg-zinc-800 border border-border rounded-md px-2 py-1 text-xs text-foreground shadow-xl z-50"
+                            "bg-[var(--color-tooltip-bg)] text-[var(--color-on-tooltip)] border border-border rounded-md px-2 py-1 text-xs shadow-xl z-50"
                         )}
                     >
                         {content}
