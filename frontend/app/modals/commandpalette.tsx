@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { focusedBlockCwdAtom, getCachedHome } from "@/app/fileexplorer/file-explorer-atoms";
-import { createBlock, createTab, globalStore, replaceBlock } from "@/app/store/global";
+import { atoms, createBlock, createTab, globalStore, replaceBlock } from "@/app/store/global";
 import { modalsModel } from "@/app/store/modalmodel";
 import {
     genericClose,
@@ -15,6 +15,7 @@ import {
 } from "@/app/store/keymodel";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { ThemeModel } from "@/app/theme/theme-model";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { getLayoutModelForStaticTab, NavigateDirection } from "@/layout/index";
 import { cn, fireAndForget, makeIconClass } from "@/util/util";
@@ -32,6 +33,70 @@ interface PaletteCommand {
     shortcut?: string[];
     icon: string;
     action: () => void;
+}
+
+// ---- theme switcher ----
+//
+// Each bundled theme becomes its own searchable palette entry under the
+// "Theme" category.  The label always includes the word "Theme" so a
+// generic search for "theme" surfaces all of them; typing the theme's
+// display name (e.g. "gruvbox", "cyber wave", "solarized") also matches
+// via the substring filter further down.  Selecting an entry persists
+// term:theme via SetConfigCommand AND calls ThemeModel.applyTheme()
+// directly for instant feedback — without the second call the user
+// would see a one-frame delay while the new fullConfig propagates back
+// from the server via the file watcher.
+//
+// Arrow-key navigation also previews the theme live (see useEffect on
+// selectedIdx further down): the visible UI tracks the highlighted
+// entry, and closing the palette without pressing Enter reverts to the
+// theme that was active when the palette opened.
+
+const THEME_CMD_PREFIX = "theme-switch-";
+
+function isThemeCmd(cmd: PaletteCommand): boolean {
+    return cmd.id.startsWith(THEME_CMD_PREFIX);
+}
+
+function themeKeyFromCmd(cmd: PaletteCommand): string {
+    return cmd.id.slice(THEME_CMD_PREFIX.length);
+}
+
+function buildThemeCommands(): PaletteCommand[] {
+    const fullConfig = globalStore.get(atoms.fullConfigAtom);
+    const themes = fullConfig?.termthemes ?? {};
+    const activeKey = fullConfig?.settings?.["term:theme"];
+
+    const entries = Object.entries(themes)
+        .map(([key, theme]) => ({
+            key,
+            name: theme["display:name"] || key,
+            order: theme["display:order"] ?? Number.MAX_SAFE_INTEGER,
+            theme,
+        }))
+        .sort((a, b) => (a.order !== b.order ? a.order - b.order : a.name.localeCompare(b.name)));
+
+    return entries.map((entry) => ({
+        id: `${THEME_CMD_PREFIX}${entry.key}`,
+        label: `Theme: ${entry.name}${entry.key === activeKey ? "  (active)" : ""}`,
+        category: "Theme",
+        icon: "fa-solid fa-palette",
+        action: () => {
+            ThemeModel.getInstance().applyTheme(entry.key, entry.theme);
+            fireAndForget(() => RpcApi.SetConfigCommand(TabRpcClient, { "term:theme": entry.key }));
+        },
+    }));
+}
+
+// Apply a theme to the live UI without persisting it.  Used by the
+// preview-on-arrow flow; the committing path (Enter / click) goes
+// through the command's action which both applies AND persists.
+function applyThemePreview(key: string): boolean {
+    const themes = globalStore.get(atoms.fullConfigAtom)?.termthemes ?? {};
+    const theme = themes[key];
+    if (!theme) return false;
+    ThemeModel.getInstance().applyTheme(key, theme);
+    return true;
 }
 
 // ---- static command list ----
@@ -254,7 +319,23 @@ const CommandPaletteModal = () => {
     const listRef = useRef<HTMLDivElement>(null);
     const reqNumRef = useRef(0);
 
-    const allCommands = useMemo(() => buildCommandList(), []);
+    // Live theme-preview bookkeeping:
+    //   original   — the persisted theme when the modal opened; we revert
+    //                here if the user closes without committing.
+    //   previewing — the theme currently shown via preview (null = no
+    //                preview active, the original is on screen).
+    //   committed  — set true by executeCommand when a theme entry is
+    //                chosen so the unmount cleanup doesn't undo the save.
+    const previewRef = useRef<{ original: string | null; previewing: string | null; committed: boolean }>({
+        original: null,
+        previewing: null,
+        committed: false,
+    });
+
+    // Re-evaluate when fullConfig changes so the active-theme marker stays
+    // in sync and any user-added termthemes show up without a reload.
+    const fullConfig = useAtomValue(atoms.fullConfigAtom);
+    const allCommands = useMemo(() => [...buildCommandList(), ...buildThemeCommands()], [fullConfig]);
     const { cwd } = useAtomValue(focusedBlockCwdAtom);
 
     const isCommandMode = query.startsWith(">");
@@ -268,10 +349,42 @@ const CommandPaletteModal = () => {
 
     const totalResults = isCommandMode ? filteredCommands.length : fileResults.length;
 
-    // auto-focus input
+    // auto-focus input + snapshot the active theme for revert-on-cancel
     useEffect(() => {
         inputRef.current?.focus();
+        previewRef.current.original = globalStore.get(atoms.fullConfigAtom)?.settings?.["term:theme"] ?? null;
+        return () => {
+            // Cleanup: if a theme was previewed but never committed,
+            // restore the original so the visible UI matches what's
+            // actually persisted in settings.
+            const { original, previewing, committed } = previewRef.current;
+            if (!committed && previewing != null && previewing !== original) {
+                if (original) {
+                    applyThemePreview(original);
+                }
+            }
+        };
     }, []);
+
+    // Preview the highlighted theme as the user arrows up/down.  When
+    // the highlight moves off a theme entry (onto a normal command or
+    // out of command mode entirely), we revert to the original so the
+    // visible theme always matches what pressing Enter at that moment
+    // would persist.
+    useEffect(() => {
+        const cmd = isCommandMode ? filteredCommands[selectedIdx] : null;
+        if (cmd != null && isThemeCmd(cmd)) {
+            const key = themeKeyFromCmd(cmd);
+            if (applyThemePreview(key)) {
+                previewRef.current.previewing = key;
+            }
+            return;
+        }
+        if (previewRef.current.previewing != null && previewRef.current.original != null) {
+            applyThemePreview(previewRef.current.original);
+            previewRef.current.previewing = null;
+        }
+    }, [selectedIdx, filteredCommands, isCommandMode]);
 
     // file search with debounce
     useEffect(() => {
@@ -322,6 +435,13 @@ const CommandPaletteModal = () => {
     const close = useCallback(() => modalsModel.popModal(), []);
 
     const executeCommand = useCallback((cmd: PaletteCommand) => {
+        // Theme commands set committed=true so the unmount-cleanup
+        // doesn't undo the apply+persist they're about to perform.
+        // Must run before popModal — popModal triggers the cleanup
+        // synchronously, before cmd.action() gets a chance to run.
+        if (isThemeCmd(cmd)) {
+            previewRef.current.committed = true;
+        }
         // pop first so the modal cleanup runs synchronously before the action
         // (avoids focus-trap conflicts when an action opens another modal)
         modalsModel.popModal();
