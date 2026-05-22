@@ -1,5 +1,27 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+//
+// WorkspaceLayoutModel — owns visibility + px width for the two left
+// panels (VTabBar + FileExplorer).  Mirrors warp's pattern (LeftPanelView
+// + ResizableData / WindowSnapshot in app/src/workspace/view/left_panel.rs
+// and app/src/terminal/resizable_data.rs):
+//
+//   * Width is stored as a single px number — never converted to %.
+//     Warp: `resizable_state_handle(DEFAULT_LEFT_PANEL_WIDTH)` keyed by
+//     `ModalType::LeftPanelWidth`, restored from WindowSnapshot.
+//   * Visibility is a bool.  When false, the panel is simply absent from
+//     the flex row in workspace.tsx — no collapse, no animation, no
+//     defaultSize fight.  Warp: `if !pane_group.left_panel_open { skip }`.
+//   * Width is preserved across hide/show — warp's `toggle_left_panel`
+//     (view.rs:8004-8061) keeps the previous px in ResizableData even
+//     while the panel is closed, so reopen restores it exactly.
+//   * Window resize doesn't touch widths — the content panel (flex-1)
+//     absorbs the delta.  Warp does the same: `Shrinkable::new(1.0, ...)`
+//     on the terminal_view in render_panels (view.rs:19503).
+//
+// Persistence cadence: visibility persists immediately on toggle; widths
+// persist debounced on drag (300 ms idle) so a slow drag doesn't fire
+// dozens of meta writes.
 
 import { globalStore } from "@/app/store/jotaiStore";
 import { isBuilderWindow } from "@/app/store/windowtype";
@@ -10,8 +32,14 @@ import { getLayoutModelForStaticTab } from "@/layout/lib/layoutModelHooks";
 import { atoms, getOrefMetaKeyAtom, getSettingsKeyAtom, refocusNode } from "@/store/global";
 import * as jotai from "jotai";
 import { debounce } from "lodash-es";
-import { ImperativePanelGroupHandle, ImperativePanelHandle } from "react-resizable-panels";
 
+// Width constants — warp parity.
+//   warp/drive/panel.rs:38           MIN_SIDEBAR_WIDTH      = 250.
+//   warp/drive/panel.rs:39           MAX_SIDEBAR_WIDTH_RATIO = 0.75
+//   warp/terminal/resizable_data.rs:16  DEFAULT_LEFT_PANEL_WIDTH = 240.
+// crest tweaks: VTab+FE coexist (warp has one panel with view-switcher),
+// so we give the FE a slightly tighter max and the VTab a narrower band
+// so the two together can't crowd the terminal off the screen.
 const VTabBar_DefaultWidth = 248;
 const VTabBar_MinWidth = 200;
 const VTabBar_MaxWidth = 360;
@@ -20,69 +48,51 @@ const FileExplorer_DefaultWidth = 260;
 const FileExplorer_MinWidth = 180;
 const FileExplorer_MaxWidthRatio = 0.5;
 
-function clampVTabWidth(w: number): number {
-    return Math.max(VTabBar_MinWidth, Math.min(w, VTabBar_MaxWidth));
-}
+// Floor for the content panel — together both side panels can never
+// take more than (window - this) px.  Matches the spirit of warp's
+// max_width clamp without needing a runtime window-size callback.
+const Content_MinWidth = 320;
 
-function clampFileExplorerWidth(w: number, windowWidth: number): number {
-    const maxWidth = Math.floor(windowWidth * FileExplorer_MaxWidthRatio);
-    if (FileExplorer_MinWidth > maxWidth) return FileExplorer_MinWidth;
-    return Math.max(FileExplorer_MinWidth, Math.min(w, maxWidth));
+function clamp(value: number, min: number, max: number): number {
+    if (max < min) return min;
+    return Math.max(min, Math.min(value, max));
 }
 
 class WorkspaceLayoutModel {
     private static instance: WorkspaceLayoutModel | null = null;
 
-    vtabPanelRef: ImperativePanelHandle | null;
-    fileExplorerPanelRef: ImperativePanelHandle | null;
-    outerPanelGroupRef: ImperativePanelGroupHandle | null;
-    panelContainerRef: HTMLDivElement | null;
-    vtabPanelWrapperRef: HTMLDivElement | null;
-    fileExplorerWrapperRef: HTMLDivElement | null;
-
+    // ---- Source-of-truth atoms ----
+    // Visibility booleans — toggle flips them, view skips render when false.
     vtabVisibleAtom: jotai.PrimitiveAtom<boolean>;
     fileExplorerVisibleAtom: jotai.PrimitiveAtom<boolean>;
+    // Widths in px.  Workspace.tsx reads these via useAtomValue.
+    vtabWidthAtom: jotai.PrimitiveAtom<number>;
+    fileExplorerWidthAtom: jotai.PrimitiveAtom<number>;
+    // Right-side code-review panel — orthogonal to the two left panels.
     codeReviewVisibleAtom: jotai.PrimitiveAtom<boolean>;
     codeReviewWideAtom: jotai.PrimitiveAtom<boolean>;
-    // Kept for backward-compat with code that still imports the AI panel atom.
-    // We no longer render the AI panel, so this stays permanently false.
+    // Legacy: AI panel was removed but external callers still import the
+    // atom + setter.  Keep them as harmless no-ops.
     panelVisibleAtom: jotai.PrimitiveAtom<boolean>;
 
-    private inResize: boolean;
-    private vtabWidth: number;
-    private vtabVisible: boolean;
-    private fileExplorerVisible: boolean;
-    private fileExplorerWidth: number | null;
-    private transitionTimeoutRef: NodeJS.Timeout | null = null;
     private debouncedPersistVTabWidth: () => void;
     private debouncedPersistFileExplorerWidth: () => void;
 
     private constructor() {
-        this.vtabPanelRef = null;
-        this.fileExplorerPanelRef = null;
-        this.outerPanelGroupRef = null;
-        this.panelContainerRef = null;
-        this.vtabPanelWrapperRef = null;
-        this.fileExplorerWrapperRef = null;
-        this.inResize = false;
-        this.vtabWidth = VTabBar_DefaultWidth;
-        this.vtabVisible = false;
-        this.fileExplorerVisible = true;
-        this.fileExplorerWidth = null;
         this.vtabVisibleAtom = jotai.atom(false);
         this.fileExplorerVisibleAtom = jotai.atom(true);
+        this.vtabWidthAtom = jotai.atom(VTabBar_DefaultWidth);
+        this.fileExplorerWidthAtom = jotai.atom(FileExplorer_DefaultWidth);
         this.codeReviewVisibleAtom = jotai.atom(false);
         this.codeReviewWideAtom = jotai.atom(false);
         this.panelVisibleAtom = jotai.atom(false);
+
         this.initializeFromMeta();
 
-        this.handleWindowResize = this.handleWindowResize.bind(this);
-        this.handleOuterPanelLayout = this.handleOuterPanelLayout.bind(this);
-
         this.debouncedPersistVTabWidth = debounce(() => {
-            if (!this.vtabVisible) return;
-            const width = this.vtabPanelWrapperRef?.offsetWidth;
-            if (width == null || width <= 0) return;
+            if (!globalStore.get(this.vtabVisibleAtom)) return;
+            const width = globalStore.get(this.vtabWidthAtom);
+            if (width <= 0) return;
             try {
                 RpcApi.SetMetaCommand(TabRpcClient, {
                     oref: WOS.makeORef("workspace", this.getWorkspaceId()),
@@ -94,9 +104,9 @@ class WorkspaceLayoutModel {
         }, 300);
 
         this.debouncedPersistFileExplorerWidth = debounce(() => {
-            if (!this.fileExplorerVisible) return;
-            const width = this.fileExplorerWrapperRef?.offsetWidth;
-            if (width == null || width <= 0) return;
+            if (!globalStore.get(this.fileExplorerVisibleAtom)) return;
+            const width = globalStore.get(this.fileExplorerWidthAtom);
+            if (width <= 0) return;
             try {
                 RpcApi.SetMetaCommand(TabRpcClient, {
                     oref: WOS.makeORef("workspace", this.getWorkspaceId()),
@@ -139,237 +149,111 @@ class WorkspaceLayoutModel {
             const savedFileExplorerVisible = globalStore.get(this.getFileExplorerVisibleAtom());
             const savedFileExplorerWidth = globalStore.get(this.getFileExplorerWidthAtom());
             if (savedVTabWidth != null && savedVTabWidth > 0) {
-                this.vtabWidth = savedVTabWidth;
+                globalStore.set(this.vtabWidthAtom, clamp(savedVTabWidth, VTabBar_MinWidth, VTabBar_MaxWidth));
             }
             if (savedFileExplorerVisible != null) {
-                this.fileExplorerVisible = savedFileExplorerVisible;
                 globalStore.set(this.fileExplorerVisibleAtom, savedFileExplorerVisible);
             }
             if (savedFileExplorerWidth != null && savedFileExplorerWidth > 0) {
-                this.fileExplorerWidth = savedFileExplorerWidth;
+                // Initial FE width clamp is min-only; the runtime max
+                // depends on the live window width, which the view
+                // re-clamps on drag.
+                globalStore.set(
+                    this.fileExplorerWidthAtom,
+                    Math.max(FileExplorer_MinWidth, savedFileExplorerWidth)
+                );
             }
             const tabBarPosition = globalStore.get(getSettingsKeyAtom("app:tabbar")) ?? "top";
             const showLeftTabBar = tabBarPosition === "left" && !isBuilderWindow();
-            this.vtabVisible = showLeftTabBar;
             globalStore.set(this.vtabVisibleAtom, showLeftTabBar);
         } catch (e) {
             console.warn("Failed to initialize from tab meta:", e);
         }
     }
 
-    // ---- Resolved widths ----
+    // ---- Width clamps ----
+    // The view passes `maxFn` to ResizeHandle as a live callback so the
+    // upper bound tracks window resizes mid-drag (warp's `with_bounds_callback`).
 
-    private getResolvedVTabWidth(): number {
-        return clampVTabWidth(this.vtabWidth);
+    getVTabMinWidth(): number {
+        return VTabBar_MinWidth;
     }
 
-    private getResolvedFileExplorerWidth(windowWidth: number): number {
-        let w = this.fileExplorerWidth;
-        if (w == null) {
-            w = FileExplorer_DefaultWidth;
-            this.fileExplorerWidth = w;
-        }
-        return clampFileExplorerWidth(w, windowWidth);
+    getVTabMaxWidth(windowWidth: number, fileExplorerVisible: boolean, fileExplorerWidth: number): number {
+        const otherSidePx = fileExplorerVisible ? fileExplorerWidth : 0;
+        const budget = windowWidth - otherSidePx - Content_MinWidth;
+        return Math.max(VTabBar_MinWidth, Math.min(VTabBar_MaxWidth, budget));
     }
 
-    // ---- Layout ----
-
-    private computeLayout(windowWidth: number): number[] {
-        const vtabW = this.vtabVisible ? this.getResolvedVTabWidth() : 0;
-        const feW = this.fileExplorerVisible ? this.getResolvedFileExplorerWidth(windowWidth) : 0;
-        const vtabPct = windowWidth > 0 ? (vtabW / windowWidth) * 100 : 0;
-        const fePct = windowWidth > 0 ? (feW / windowWidth) * 100 : 0;
-        const contentPct = Math.max(0, 100 - vtabPct - fePct);
-        return [vtabPct, fePct, contentPct];
+    getFileExplorerMinWidth(): number {
+        return FileExplorer_MinWidth;
     }
 
-    private commitLayouts(windowWidth: number): void {
-        if (!this.outerPanelGroupRef) return;
-        const layout = this.computeLayout(windowWidth);
-        this.inResize = true;
-        try {
-            this.outerPanelGroupRef.setLayout(layout);
-        } catch (e) {
-            // ignore transient layout mismatch (HMR / panel count changes)
-        }
-        this.inResize = false;
-    }
-
-    handleOuterPanelLayout(sizes: number[]): void {
-        if (this.inResize) return;
-        if (sizes.length < 3) return;
-        const windowWidth = window.innerWidth;
-        const newVTabPx = (sizes[0] / 100) * windowWidth;
-        const newFePx = (sizes[1] / 100) * windowWidth;
-
-        if (this.vtabVisible) {
-            const clamped = clampVTabWidth(newVTabPx);
-            if (clamped !== this.vtabWidth) {
-                this.vtabWidth = clamped;
-                this.debouncedPersistVTabWidth();
-            }
-        }
-
-        if (this.fileExplorerVisible) {
-            const clamped = clampFileExplorerWidth(newFePx, windowWidth);
-            if (clamped !== this.fileExplorerWidth) {
-                this.fileExplorerWidth = clamped;
-                this.debouncedPersistFileExplorerWidth();
-            }
-        }
-
-        this.commitLayouts(windowWidth);
-    }
-
-    handleWindowResize(): void {
-        this.commitLayouts(window.innerWidth);
-    }
-
-    syncVTabWidthFromMeta(): void {
-        const savedVTabWidth = globalStore.get(this.getVTabBarWidthAtom());
-        if (savedVTabWidth != null && savedVTabWidth > 0 && savedVTabWidth !== this.vtabWidth) {
-            this.vtabWidth = savedVTabWidth;
-            this.commitLayouts(window.innerWidth);
-        }
-    }
-
-    registerRefs(
-        outerPanelGroupRef: ImperativePanelGroupHandle,
-        panelContainerRef: HTMLDivElement,
-        vtabPanelRef?: ImperativePanelHandle,
-        vtabPanelWrapperRef?: HTMLDivElement,
-        showLeftTabBar?: boolean,
-        fileExplorerPanelRef?: ImperativePanelHandle,
-        fileExplorerWrapperRef?: HTMLDivElement
-    ): void {
-        this.outerPanelGroupRef = outerPanelGroupRef;
-        this.panelContainerRef = panelContainerRef;
-        this.vtabPanelRef = vtabPanelRef ?? null;
-        this.vtabPanelWrapperRef = vtabPanelWrapperRef ?? null;
-        this.fileExplorerPanelRef = fileExplorerPanelRef ?? null;
-        this.fileExplorerWrapperRef = fileExplorerWrapperRef ?? null;
-        if (showLeftTabBar != null) {
-            this.vtabVisible = showLeftTabBar;
-            globalStore.set(this.vtabVisibleAtom, showLeftTabBar);
-        }
-        this.syncPanelCollapse();
-        this.commitLayouts(window.innerWidth);
-    }
-
-    private syncPanelCollapse(): void {
-        if (this.vtabPanelRef) {
-            if (this.vtabVisible) this.vtabPanelRef.expand();
-            else this.vtabPanelRef.collapse();
-        }
-        if (this.fileExplorerPanelRef) {
-            if (this.fileExplorerVisible) this.fileExplorerPanelRef.expand();
-            else this.fileExplorerPanelRef.collapse();
-        }
-    }
-
-    enableTransitions(duration: number): void {
-        if (!this.panelContainerRef) return;
-        const panels = this.panelContainerRef.querySelectorAll("[data-panel]");
-        panels.forEach((panel: HTMLElement) => {
-            panel.style.transition = "flex 0.2s ease-in-out";
-        });
-        if (this.transitionTimeoutRef) clearTimeout(this.transitionTimeoutRef);
-        this.transitionTimeoutRef = setTimeout(() => {
-            if (!this.panelContainerRef) return;
-            const panels = this.panelContainerRef.querySelectorAll("[data-panel]");
-            panels.forEach((panel: HTMLElement) => {
-                panel.style.transition = "none";
-            });
-        }, duration);
-    }
-
-    // ---- Initial percentages + min sizes (used by workspace.tsx) ----
-
-    getVTabInitialPercentage(windowWidth: number, showLeftTabBar: boolean): number {
-        if (!showLeftTabBar || isBuilderWindow() || !this.vtabVisible) return 0;
-        // First render can land before window bounds are computed
-        // (windowWidth=0), which would yield Infinity here and crash
-        // react-resizable-panels.  Fall back to 0%; the subsequent
-        // commitLayouts() from registerRefs() re-sets the real sizes.
-        if (windowWidth <= 0) return 0;
-        return (this.getResolvedVTabWidth() / windowWidth) * 100;
-    }
-
-    getFileExplorerInitialPercentage(windowWidth: number): number {
-        if (!this.fileExplorerVisible) return 0;
-        if (windowWidth <= 0) return 0;
-        return (this.getResolvedFileExplorerWidth(windowWidth) / windowWidth) * 100;
-    }
-
-    getContentInitialPercentage(windowWidth: number, showLeftTabBar: boolean): number {
-        return Math.max(
-            0,
-            100 -
-                this.getVTabInitialPercentage(windowWidth, showLeftTabBar) -
-                this.getFileExplorerInitialPercentage(windowWidth)
-        );
-    }
-
-    getVTabMinPct(windowWidth: number): number {
-        return windowWidth > 0 ? (VTabBar_MinWidth / windowWidth) * 100 : 0;
-    }
-
-    getFileExplorerMinPct(windowWidth: number): number {
-        return windowWidth > 0 ? (FileExplorer_MinWidth / windowWidth) * 100 : 0;
+    getFileExplorerMaxWidth(windowWidth: number, vtabVisible: boolean, vtabWidth: number): number {
+        const otherSidePx = vtabVisible ? vtabWidth : 0;
+        const hardMax = Math.floor(windowWidth * FileExplorer_MaxWidthRatio);
+        const budget = windowWidth - otherSidePx - Content_MinWidth;
+        return Math.max(FileExplorer_MinWidth, Math.min(hardMax, budget));
     }
 
     // ---- Public getters ----
 
     getVTabVisible(): boolean {
-        return this.vtabVisible;
+        return globalStore.get(this.vtabVisibleAtom);
     }
 
     getFileExplorerVisible(): boolean {
-        return this.fileExplorerVisible;
+        return globalStore.get(this.fileExplorerVisibleAtom);
     }
 
     // ---- Toggle / visibility ----
+    //
+    // Each toggle ONLY mutates its own atom — no panel-ref calls, no
+    // layout commits, no transition tweaking.  The view's conditional
+    // render (workspace.tsx) handles the appearance/disappearance.
 
     setVTabVisible(visible: boolean): void {
-        const changed = this.vtabVisible !== visible;
-        if (changed) {
-            this.vtabVisible = visible;
-            globalStore.set(this.vtabVisibleAtom, visible);
-            this.enableTransitions(200);
-        }
-        this.syncPanelCollapse();
-        this.commitLayouts(window.innerWidth);
+        if (globalStore.get(this.vtabVisibleAtom) === visible) return;
+        globalStore.set(this.vtabVisibleAtom, visible);
     }
 
     setFileExplorerVisible(visible: boolean): void {
-        const changed = this.fileExplorerVisible !== visible;
-        if (changed) {
-            this.fileExplorerVisible = visible;
-            globalStore.set(this.fileExplorerVisibleAtom, visible);
-            try {
-                RpcApi.SetMetaCommand(TabRpcClient, {
-                    oref: WOS.makeORef("workspace", this.getWorkspaceId()),
-                    meta: { "layout:fileexplorervisible": visible },
-                });
-            } catch (e) {
-                console.warn("Failed to persist file explorer visibility:", e);
-            }
-            this.enableTransitions(200);
+        if (globalStore.get(this.fileExplorerVisibleAtom) === visible) return;
+        globalStore.set(this.fileExplorerVisibleAtom, visible);
+        // Persist visibility immediately — width is debounced but the
+        // bool is a single byte and the user expects the next session
+        // to come up in the same state.
+        try {
+            RpcApi.SetMetaCommand(TabRpcClient, {
+                oref: WOS.makeORef("workspace", this.getWorkspaceId()),
+                meta: { "layout:fileexplorervisible": visible },
+            });
+        } catch (e) {
+            console.warn("Failed to persist file explorer visibility:", e);
         }
-        // Always re-sync panel collapse + layout so a stray out-of-sync state
-        // from HMR or rapid clicks still converges on the desired state.
-        this.syncPanelCollapse();
-        this.commitLayouts(window.innerWidth);
     }
 
-    setShowLeftTabBar(showLeftTabBar: boolean): void {
-        if (this.vtabVisible === showLeftTabBar) return;
-        this.vtabVisible = showLeftTabBar;
-        globalStore.set(this.vtabVisibleAtom, showLeftTabBar);
-        this.enableTransitions(200);
-        this.syncPanelCollapse();
-        this.commitLayouts(window.innerWidth);
+    // ---- Width setters (called by ResizeHandle during drag) ----
+
+    setVTabWidth(widthPx: number): void {
+        const fileExplorerVisible = globalStore.get(this.fileExplorerVisibleAtom);
+        const fileExplorerWidth = globalStore.get(this.fileExplorerWidthAtom);
+        const max = this.getVTabMaxWidth(window.innerWidth, fileExplorerVisible, fileExplorerWidth);
+        const clamped = clamp(widthPx, VTabBar_MinWidth, max);
+        globalStore.set(this.vtabWidthAtom, clamped);
+        this.debouncedPersistVTabWidth();
     }
+
+    setFileExplorerWidth(widthPx: number): void {
+        const vtabVisible = globalStore.get(this.vtabVisibleAtom);
+        const vtabWidth = globalStore.get(this.vtabWidthAtom);
+        const max = this.getFileExplorerMaxWidth(window.innerWidth, vtabVisible, vtabWidth);
+        const clamped = clamp(widthPx, FileExplorer_MinWidth, max);
+        globalStore.set(this.fileExplorerWidthAtom, clamped);
+        this.debouncedPersistFileExplorerWidth();
+    }
+
+    // ---- Code review panel (orthogonal, right side) ----
 
     setCodeReviewVisible(visible: boolean): void {
         globalStore.set(this.codeReviewVisibleAtom, visible);

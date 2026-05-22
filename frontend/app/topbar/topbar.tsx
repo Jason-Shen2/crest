@@ -23,28 +23,41 @@ type ToolbarButtonProps = {
     active?: boolean;
     badgeCount?: number;
     onClick?: () => void;
+    // "neutral" matches the WorkspaceSwitcher pill on the far right —
+    // white-opacity background, no accent color when active.
+    variant?: "accent" | "neutral";
 };
 
-const ToolbarButton = memo(({ icon, label, active, badgeCount, onClick }: ToolbarButtonProps) => (
-    <Tooltip
-        content={label}
-        placement="bottom"
-        hideOnClick
-        divClassName={cn(
-            "relative flex items-center justify-center h-7 w-7 rounded-md text-[13px] transition-colors cursor-pointer",
-            active ? "text-accent bg-white/10" : "text-secondary hover:text-primary hover:bg-white/5"
-        )}
-        divStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-        divOnClick={onClick}
-    >
-        <i className={`fa fa-solid ${icon}`} />
-        {badgeCount != null && badgeCount > 0 && (
-            <span className="absolute top-0.5 right-0.5 min-w-[14px] h-[14px] rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center px-0.5 leading-none">
-                {badgeCount > 99 ? "99+" : badgeCount}
-            </span>
-        )}
-    </Tooltip>
-));
+const ToolbarButton = memo(({ icon, label, active, badgeCount, onClick, variant = "accent" }: ToolbarButtonProps) => {
+    const activeCls =
+        variant === "neutral"
+            ? "text-primary bg-white/[0.14]"
+            : "text-accent bg-white/10";
+    const inactiveCls =
+        variant === "neutral"
+            ? "text-secondary bg-white/[0.08] hover:text-primary hover:bg-white/[0.14]"
+            : "text-secondary hover:text-primary hover:bg-white/5";
+    return (
+        <Tooltip
+            content={label}
+            placement="bottom"
+            hideOnClick
+            divClassName={cn(
+                "relative flex items-center justify-center h-7 w-7 rounded-md text-[13px] transition-colors cursor-pointer",
+                active ? activeCls : inactiveCls
+            )}
+            divStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            divOnClick={onClick}
+        >
+            <i className={`fa fa-solid ${icon}`} />
+            {badgeCount != null && badgeCount > 0 && (
+                <span className="absolute top-0.5 right-0.5 min-w-[14px] h-[14px] rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center px-0.5 leading-none">
+                    {badgeCount > 99 ? "99+" : badgeCount}
+                </span>
+            )}
+        </Tooltip>
+    );
+});
 ToolbarButton.displayName = "ToolbarButton";
 
 // ---- Panel wrapper using floating-ui click popover ----
@@ -141,6 +154,7 @@ const VTabToggleButton = memo(() => {
             label="Toggle Sidebar  ⌘B"
             active={visible}
             onClick={() => model.setVTabVisible(!model.getVTabVisible())}
+            variant="neutral"
         />
     );
 });
@@ -156,6 +170,7 @@ const FileExplorerToggleButton = memo(() => {
             label="Toggle File Explorer"
             active={visible}
             onClick={() => model.setFileExplorerVisible(!model.getFileExplorerVisible())}
+            variant="neutral"
         />
     );
 });
@@ -171,7 +186,7 @@ const SearchTrigger = memo(() => (
     >
         <i className="fa fa-solid fa-magnifying-glass text-[11px]" />
         <span className="flex-1 text-left">Search files, commands...</span>
-        <span className="text-[10px] text-secondary/60 border border-white/10 rounded px-1 py-0.5 leading-none">⌘K</span>
+        <span className="text-[10px] text-secondary/60 border border-white/10 rounded px-1 py-0.5 leading-none">⌘P</span>
     </button>
 ));
 SearchTrigger.displayName = "SearchTrigger";
