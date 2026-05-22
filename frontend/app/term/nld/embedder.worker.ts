@@ -25,12 +25,19 @@ import {
     configureOnnxAssets,
     loadModel,
     runInferenceNamed,
+    setOnnxModule,
     type LoadedModel,
 } from "edgeflowjs";
-import { env as ortEnv } from "onnxruntime-web/wasm";
+import * as ort from "onnxruntime-web/wasm";
 import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
 import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 
+// TODO(edgeflow): ../edgeFlow.js/docs/INTEGRATION_LOG.md 2026-05-19 —
+// inject the statically-imported ORT module instead of relying on
+// edgeflowjs's internal `await import('onnxruntime-web/wasm')`.  Vite's
+// worker chunker doesn't always preserve that dynamic import, and when
+// it fails the backend silently reports "No runtime available."
+setOnnxModule(ort);
 // Hand the WASM URLs to ORT.  See docs/INTEGRATION_LOG.md entries for
 // the trail of bugs that made this necessary.
 configureOnnxAssets({ wasm: ortWasm, mjs: ortMjs });

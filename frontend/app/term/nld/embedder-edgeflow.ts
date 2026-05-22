@@ -79,26 +79,35 @@ export class EdgeFlowNldClassifier implements NldClassifier {
         if (signal.aborted) return null;
 
         const id = this.nextId++;
-        return await new Promise<Verdict | null>((resolve, reject) => {
-            const onAbort = () => {
-                this.pending.delete(id);
-                resolve(null);
-            };
-            signal.addEventListener("abort", onAbort, { once: true });
+        try {
+            return await new Promise<Verdict | null>((resolve, reject) => {
+                const onAbort = () => {
+                    this.pending.delete(id);
+                    resolve(null);
+                };
+                signal.addEventListener("abort", onAbort, { once: true });
 
-            this.pending.set(id, {
-                resolve: (v) => {
-                    signal.removeEventListener("abort", onAbort);
-                    resolve(v);
-                },
-                reject: (err) => {
-                    signal.removeEventListener("abort", onAbort);
-                    reject(err);
-                },
-                onAbort,
+                this.pending.set(id, {
+                    resolve: (v) => {
+                        signal.removeEventListener("abort", onAbort);
+                        resolve(v);
+                    },
+                    reject: (err) => {
+                        signal.removeEventListener("abort", onAbort);
+                        reject(err);
+                    },
+                    onAbort,
+                });
+                this.worker.postMessage({ id, type: "classify", text });
             });
-            this.worker.postMessage({ id, type: "classify", text });
-        });
+        } catch (err) {
+            // Inference failure — treat as neutral so the composer can fall
+            // back to tier-1.  Logged once at the call site rather than in
+            // handleMessage so init failures don't masquerade as classify
+            // failures.
+            console.error("[NLD] classify failed:", err);
+            return null;
+        }
     }
 
     dispose(): void {
@@ -129,9 +138,10 @@ export class EdgeFlowNldClassifier implements NldClassifier {
             pending.resolve({ pShell: msg.pShell, pAI: msg.pAI });
             return;
         }
-        // Error — log and resolve null so composer treats it as neutral.
-        console.error("[NLD] classifier error:", msg.message);
-        pending.resolve(null);
+        // Error — reject so init's catch sees the real failure (instead
+        // of being fake-resolved as "ready") and classify's catch maps it
+        // to a neutral null at the call site.
+        pending.reject(new Error(msg.message));
     };
 }
 
