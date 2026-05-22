@@ -20,6 +20,7 @@ import { globalStore } from "@/app/store/jotaiStore";
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { WaveUIMessagePart } from "@/app/store/aitypes";
 import { base64ToArray, stringToBase64 } from "@/util/util";
 import * as jotai from "jotai";
 
@@ -192,6 +193,38 @@ export class TerminalModel {
     // persist via wshrpc later if the user wants cross-session history.
     readonly commandHistoryAtom = jotai.atom<string[]>([]) as jotai.PrimitiveAtom<string[]>;
 
+    // ---------- agent atoms ----------
+    //
+    // Mirrors warp's `BlocklistAIHistoryModel` (history_model.rs:185-200):
+    //   agentChatStatusAtom    ↔ AIAgentOutput.status
+    //   agentChatIdAtom        ↔ AIConversationId (history_model.rs:42)
+    //   agentModelOverrideAtom ↔ OrchestrationConfig.model_id
+    //   agentPostureAtom       — crest-specific (permission posture; warp
+    //                             uses BlocklistAIPermissions for this)
+    //
+    // The TerminalModel owns the *persistent* agent state (status, chat id,
+    // permission posture); the transient message buffer is owned by
+    // ai-sdk's useChat hook in TerminalView.  applyAgentDelta /
+    // applyAgentStatus are the bridge between the two — useChat's onChunk
+    // calls these so the corresponding agent block mutates and the UI
+    // re-renders via the standard revision bump.
+
+    readonly agentVisibleAtom = jotai.atom(false) as jotai.PrimitiveAtom<boolean>;
+    readonly agentPostureAtom = jotai.atom("default") as jotai.PrimitiveAtom<string>;
+    readonly agentChatStatusAtom = jotai.atom<"idle" | "streaming" | "error">(
+        "idle"
+    ) as jotai.PrimitiveAtom<"idle" | "streaming" | "error">;
+    readonly agentChatIdAtom = jotai.atom("") as jotai.PrimitiveAtom<string>;
+    readonly agentModelOverrideAtom = jotai.atom(null) as jotai.PrimitiveAtom<string | null>;
+    // Per-exchange assistant message parts (text + data-tooluse + ...).
+    // AgentChatHost syncs the latest snapshot from useChat here; the
+    // AgentBlockElement reads via useAtomValue.  Keyed by exchangeId
+    // (which == the user-message id we passed to sendMessage).  Stored
+    // as an immutable Map so subscribers re-render on assignment.
+    readonly agentPartsAtom = jotai.atom<Map<string, WaveUIMessagePart[]>>(
+        new Map()
+    ) as jotai.PrimitiveAtom<Map<string, WaveUIMessagePart[]>>;
+
     constructor(outerBlockId: string, cols: number = DefaultCols) {
         this.outerBlockId = outerBlockId;
         this.cols = cols;
@@ -221,6 +254,7 @@ export class TerminalModel {
                     globalStore.get(this.bellTickAtom) + 1
                 );
             },
+            clearPriorBlocks: () => this.clearPriorBlocks(),
         };
         // The parser needs a handler at construction.  We start with a
         // throwaway block as the target — the first real chunk event will
@@ -408,6 +442,89 @@ export class TerminalModel {
             blockid: this.outerBlockId,
             termsize: { rows, cols },
         });
+    }
+
+    // ---------- agent message flow ----------
+    //
+    // Pattern: useChat (TerminalView) owns the request lifecycle and the
+    // transient message stream; TerminalModel owns the *block-level* state
+    // (one agent block per exchange).  The three methods below are the
+    // narrow API the host calls to keep them in sync.
+    //
+    // Order of operations on a turn:
+    //   1. submitAgentMessage(text) → appends an agent block, returns its
+    //      exchangeId.  The host passes the exchangeId as useChat's
+    //      message id so deltas can be correlated back to the block.
+    //   2. applyAgentDelta(id, delta) on every assistant-text chunk.
+    //   3. applyAgentStatus(id, "done" | "error") on terminal events.
+
+    submitAgentMessage(text: string): string {
+        const exchangeId = (typeof crypto !== "undefined" && "randomUUID" in crypto)
+            ? crypto.randomUUID()
+            : `e-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        this.blocks.appendAgentBlock(exchangeId, text);
+        globalStore.set(this.agentChatStatusAtom, "streaming");
+        this.bumpRevision();
+        return exchangeId;
+    }
+
+    applyAgentDelta(exchangeId: string, delta: string): void {
+        if (!delta) return;
+        const block = this.blocks.findById(`agent_${exchangeId}`);
+        if (!block) return;
+        block.appendAgentText(delta);
+        this.bumpRevision();
+    }
+
+    // applyAgentText — replace the assistant text with a snapshot.  Use
+    // this when bridging from `useChat` (which exposes cumulative text
+    // per message rather than deltas).  No-op when the text is unchanged.
+    applyAgentText(exchangeId: string, fullText: string): void {
+        const block = this.blocks.findById(`agent_${exchangeId}`);
+        if (!block) return;
+        const prev = block.agentPayload?.assistantText;
+        if (prev === fullText) return;
+        block.setAgentText(fullText);
+        this.bumpRevision();
+    }
+
+    // applyAgentParts — store the full ordered parts array for an
+    // assistant message.  Replaces (does not merge) so the in-progress
+    // streaming snapshot is always authoritative.  No-op when the
+    // reference is unchanged (ai-sdk gives us a fresh array on each
+    // update, but the guard is still cheap).
+    applyAgentParts(exchangeId: string, parts: WaveUIMessagePart[]): void {
+        const cur = globalStore.get(this.agentPartsAtom);
+        if (cur.get(exchangeId) === parts) return;
+        const next = new Map(cur);
+        next.set(exchangeId, parts);
+        globalStore.set(this.agentPartsAtom, next);
+        // No bumpRevision — Map atom triggers its own subscribers.
+    }
+
+    applyAgentStatus(
+        exchangeId: string,
+        status: "streaming" | "done" | "error",
+        errorMessage?: string
+    ): void {
+        const block = this.blocks.findById(`agent_${exchangeId}`);
+        if (block) {
+            block.setAgentStatus(status, errorMessage);
+        }
+        // Mirror onto the model-level atom so the input bar / chrome can
+        // show a global spinner / error chip without iterating blocks.
+        const next = status === "streaming" ? "streaming" : status === "error" ? "error" : "idle";
+        globalStore.set(this.agentChatStatusAtom, next);
+        this.bumpRevision();
+    }
+
+    // getRecentCommands — last n submitted commands (oldest → newest).
+    // Fed into the agent system prompt as conversational context (warp's
+    // `recent_cmds` field on the agent request body).
+    getRecentCommands(n: number = 10): string[] {
+        const all = globalStore.get(this.commandHistoryAtom);
+        if (n <= 0 || all.length === 0) return [];
+        return all.slice(-n);
     }
 
     // setCols — change the column count used for *future* blocks.  Running
@@ -850,6 +967,20 @@ export class TerminalModel {
         if (!block) return;
         if (e.enter) block.enterAltScreen();
         else block.exitAltScreen();
+        this.bumpRevision();
+    }
+
+    // CSI 3J (or shell `clear`) handler — drains every block before the
+    // currently active one so the input bar starts on a fresh canvas.
+    // Public so BlockHandler's TerminalContext can route the escape to us.
+    // Skips the sentinel.  Mirrors warp blocks.rs:3556-3594 (ResetAndClear).
+    clearPriorBlocks(): void {
+        const all = this.blocks.all().filter((b) => b.id !== "__sentinel__");
+        if (all.length <= 1) return;
+        const last = all[all.length - 1];
+        const idx = this.blocks.indexOf(last.id);
+        if (idx <= 0) return;
+        this.blocks.truncateBefore(idx);
         this.bumpRevision();
     }
 

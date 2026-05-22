@@ -58,6 +58,12 @@ export interface TerminalContext {
     setDefaultFg?(css: string | null): void;
     setDefaultBg?(css: string | null): void;
     setCursorColor?(css: string | null): void;
+    // CSI 3J — drain all blocks preceding the active one, leaving the
+    // current command's block as the only entry in the list.  Mirrors
+    // warp's BlockList::clear_screen(ClearMode::ResetAndClear)
+    // (terminal/model/blocks.rs:3556-3594).  No-op in alt-screen (so vim's
+    // own clear doesn't blow away history).
+    clearPriorBlocks?(): void;
 }
 
 const NoopCtx: TerminalContext = {
@@ -94,32 +100,50 @@ export class BlockHandler implements AnsiHandler {
         return this.block.activeGrid().raw();
     }
 
+    // Defensive guard — agent blocks bypass the ANSI parser entirely
+    // (their rendering lives in AgentBlockElement, not BlockElement).
+    // In normal operation BlockHandler never gets pointed at an agent
+    // block (the host swaps to a fresh shell block when a command starts),
+    // but if it did, writes would corrupt the dummy outputGrid we keep
+    // alongside agentPayload for shape uniformity.  Each on-* method that
+    // touches the grid early-returns when this flag is true.
+    private isAgent(): boolean {
+        return this.block.kind === "agent";
+    }
+
     // ---------- text & C0 ----------
 
     onText(text: string): void {
+        if (this.isAgent()) return;
         this.grid().writeText(text);
         this.block.noteWrite();
     }
 
     onLineFeed(): void {
+        if (this.isAgent()) return;
         this.grid().lineFeed();
     }
     onCarriageReturn(): void {
+        if (this.isAgent()) return;
         this.grid().carriageReturn();
     }
     onBackspace(): void {
+        if (this.isAgent()) return;
         this.grid().backspace();
     }
     onTab(): void {
+        if (this.isAgent()) return;
         this.grid().tab();
     }
     onBell(): void {
         this.ctx.bell?.();
     }
     onShiftOut(): void {
+        if (this.isAgent()) return;
         this.grid().setActiveCharset(1);
     }
     onShiftIn(): void {
+        if (this.isAgent()) return;
         this.grid().setActiveCharset(0);
     }
 
@@ -132,6 +156,7 @@ export class BlockHandler implements AnsiHandler {
         isPrivate: boolean,
         privatePrefix?: string
     ): void {
+        if (this.isAgent()) return;
         // Mode set/reset routes by private vs ANSI standard.
         if (isPrivate && (final === "h" || final === "l")) {
             const on = final === "h";
@@ -216,9 +241,20 @@ export class BlockHandler implements AnsiHandler {
                 return;
 
             // ----- erase -----
-            case "J":
-                g.eraseInDisplay(clamp0123(params[0] || 0));
+            case "J": {
+                const mode = clamp0123(params[0] || 0);
+                g.eraseInDisplay(mode);
+                // CSI 3J (and the conventional 2J pair that follows H/2J
+                // from `clear`) wipe scrollback — in our block model that
+                // means dropping every earlier block.  Skip when an alt-
+                // screen is active so TUIs (vim/htop/less) that issue 2J
+                // to repaint don't blow away the user's main-screen
+                // history.  Mirrors warp blocks.rs:3556-3594.
+                if (mode === 3 && !this.block.altScreen.active) {
+                    this.ctx.clearPriorBlocks?.();
+                }
                 return;
+            }
             case "K":
                 g.eraseInLine(clamp012(params[0] || 0));
                 return;
@@ -538,6 +574,7 @@ export class BlockHandler implements AnsiHandler {
     // ---------- OSC ----------
 
     onOsc(payload: string): void {
+        if (this.isAgent()) return;
         const semi = payload.indexOf(";");
         const code = semi >= 0 ? payload.slice(0, semi) : payload;
         const rest = semi >= 0 ? payload.slice(semi + 1) : "";
@@ -742,6 +779,18 @@ export class BlockHandler implements AnsiHandler {
             case "git_branch_name":
                 block.gitBranchName = value;
                 return;
+            case "git_diff_stats": {
+                // Raw shortstat output, e.g.
+                //   " 3 files changed, 12 insertions(+), 3 deletions(-)".
+                // A clean tree emits empty string (shell suppresses the kv).
+                const files = /([0-9]+) files? changed/.exec(value);
+                const added = /([0-9]+) insertion/.exec(value);
+                const removed = /([0-9]+) deletion/.exec(value);
+                block.gitDiffFiles = files ? parseInt(files[1], 10) : 0;
+                block.gitDiffAdded = added ? parseInt(added[1], 10) : 0;
+                block.gitDiffRemoved = removed ? parseInt(removed[1], 10) : 0;
+                return;
+            }
             case "virtual_env":
             case "venv":
                 block.virtualEnv = value;
@@ -762,6 +811,7 @@ export class BlockHandler implements AnsiHandler {
     // ---------- ESC ----------
 
     onEsc(final: string, intermediate: string): void {
+        if (this.isAgent()) return;
         const g = this.grid();
 
         // Charset selection: ESC ( c (G0), ESC ) c (G1).  * / + slots are
