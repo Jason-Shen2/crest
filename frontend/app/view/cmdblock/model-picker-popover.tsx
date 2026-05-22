@@ -256,7 +256,13 @@ export const ModelPickerPopover = memo(
                         status={userConfigStatus}
                         error={userConfigError}
                         rowsCount={allRows.length}
-                        onOpenConfigFile={onOpenConfigFile}
+                        onOpenConfigFile={onOpenConfigFile ? () => {
+                            // Close the popover before opening the
+                            // wizard — the popover's z-index would
+                            // otherwise paint over the modal.
+                            onOpenChange(false);
+                            onOpenConfigFile();
+                        } : undefined}
                     />
 
                     <div
@@ -344,13 +350,14 @@ const ConfigBanner = memo(
         }
         const isMissing = status === "missing" || (status === "ok" && rowsCount === 0);
         const title = isMissing
-            ? "No AI providers configured"
+            ? "Set up your AI provider"
             : status === "malformed"
                 ? "Config file is malformed"
                 : "Failed to load AI config";
         const body = isMissing
-            ? "Create ~/.config/crest/ai.json with at least one provider and a default selection."
+            ? "Pick a provider, paste your API key, choose a default model — takes 30 seconds."
             : error ?? "Unknown error.";
+        const buttonLabel = isMissing ? "Get started" : "Edit ai.json";
         return (
             <div
                 className={cn(
@@ -367,9 +374,14 @@ const ConfigBanner = memo(
                     <button
                         type="button"
                         onClick={onOpenConfigFile}
-                        className="mt-1.5 inline-flex cursor-pointer items-center gap-1 rounded border border-fg-overlay-3 px-2 py-0.5 text-foreground/85 hover:bg-fg-overlay-2/60"
+                        className={cn(
+                            "mt-1.5 inline-flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 font-medium",
+                            isMissing
+                                ? "bg-amber-400 text-black hover:bg-amber-300"
+                                : "border border-fg-overlay-3 text-foreground/85 hover:bg-fg-overlay-2/60"
+                        )}
                     >
-                        Open config file
+                        {buttonLabel}
                     </button>
                 )}
             </div>
