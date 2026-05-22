@@ -20,7 +20,6 @@ import type { InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import * as jotai from "jotai";
 
 import { Classifier } from "./classifier";
-import { embedderReadyAtom } from "./embedder";
 import type { ClassifierContext, InputClassification } from "./types";
 import { NEUTRAL_CLASSIFICATION } from "./types";
 
@@ -45,13 +44,15 @@ export class NLDModel {
     readonly outerBlockId: string;
 
     // The user's intent.  `auto` means "let the classifier choose".
-    // Locked-vs-unlocked maps onto modeAtom !== "auto".
-    readonly modeAtom = jotai.atom<InputMode>("terminal") as jotai.PrimitiveAtom<InputMode>;
+    // Locked-vs-unlocked maps onto modeAtom !== "auto".  Default is
+    // `agent`: ↵ sends to the agent, and a leading `!` is the explicit
+    // escape hatch back to shell (handled in cmdblock-input).
+    readonly modeAtom = jotai.atom<InputMode>("agent") as jotai.PrimitiveAtom<InputMode>;
 
     // What the classifier *would* run if the user hit enter right now.
     // Only meaningful when modeAtom === "auto".  Other times this stays
     // pinned to whatever the locked mode is.
-    readonly effectiveModeAtom = jotai.atom<"terminal" | "agent">("terminal") as jotai.PrimitiveAtom<
+    readonly effectiveModeAtom = jotai.atom<"terminal" | "agent">("agent") as jotai.PrimitiveAtom<
         "terminal" | "agent"
     >;
 
@@ -63,36 +64,10 @@ export class NLDModel {
     private inflight: AbortController | null = null;
     private lastExplicitAt: number = 0;
     private disposed = false;
-    // Flipped to true the first time the user clicks the Auto toggle.
-    // Suppresses the embedder-ready auto-enable hook below, so a user
-    // who explicitly turned Auto off doesn't have it bounce back on
-    // when the model finishes loading.
-    private userHasInteracted = false;
-    private unsubEmbedderReady: (() => void) | null = null;
 
     constructor(outerBlockId: string, classifier: Classifier = new Classifier()) {
         this.outerBlockId = outerBlockId;
         this.classifier = classifier;
-
-        // Auto-enable Auto mode the moment the tier-2 embedder becomes
-        // ready — but only if the user hasn't already made an explicit
-        // choice.  If the embedder never loads (no network, model file
-        // missing, etc.) the mode stays at "terminal" so ↵ keeps running
-        // shell commands like a vanilla terminal would.  We deliberately
-        // do not call setMode() here because that flags userHasInteracted
-        // and starts the cooldown timer — neither is appropriate for an
-        // automatic state transition.
-        const applyReady = () => {
-            if (this.disposed || this.userHasInteracted) return;
-            if (!globalStore.get(embedderReadyAtom)) return;
-            if (globalStore.get(this.modeAtom) === "auto") return;
-            globalStore.set(this.modeAtom, "auto");
-        };
-        // Apply immediately in case the embedder finished loading before
-        // this NLDModel was constructed (e.g. opening a new pane after
-        // the app has been running a while).
-        applyReady();
-        this.unsubEmbedderReady = globalStore.sub(embedderReadyAtom, applyReady);
     }
 
     // Caller (cmdblock-input parent) wires this to the editor's onChange.
@@ -179,11 +154,8 @@ export class NLDModel {
     // User explicitly picked a mode (auto toggle, `!`/`#` prefix handler,
     // /agent | /terminal slash commands).  Locking a mode also pins
     // effectiveMode; un-locking (to "auto") leaves effectiveMode at its
-    // previous value until the next classifier run rewrites it.  Marks
-    // userHasInteracted so the embedder-ready auto-enable hook no longer
-    // fights the user.
+    // previous value until the next classifier run rewrites it.
     setMode(next: InputMode): void {
-        this.userHasInteracted = true;
         this.lastExplicitAt = Date.now();
         this.cancelInflight();
         globalStore.set(this.modeAtom, next);
@@ -259,8 +231,6 @@ export class NLDModel {
 
     dispose(): void {
         this.disposed = true;
-        this.unsubEmbedderReady?.();
-        this.unsubEmbedderReady = null;
         this.cancelInflight();
     }
 }

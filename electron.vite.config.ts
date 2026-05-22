@@ -148,6 +148,20 @@ export default defineConfig({
                   ]
                 : [],
         },
+        // ES-module workers so dynamic imports inside worker files work.
+        // edgeFlow.js's onnx backend does `await import('onnxruntime-web/wasm')`
+        // inside the worker (src/backends/onnx.ts:92); the default IIFE worker
+        // format silently strips the dynamic import in dev and outright fails
+        // the production build with:
+        //   [vite:worker] Invalid value "iife" for option "worker.format" —
+        //   UMD and IIFE output formats are not supported for code-splitting builds.
+        // TODO(edgeflow): ../edgeFlow.js/docs/INTEGRATION_LOG.md 2026-05-19 —
+        // edgeFlow's worker-compatible code path forces consumers onto
+        // worker.format='es'.  Once edgeFlow ships a static-only ORT loader,
+        // this override can go.
+        worker: {
+            format: "es",
+        },
         build: {
             target: CHROME,
             sourcemap: true,
