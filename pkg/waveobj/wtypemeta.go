@@ -154,7 +154,7 @@ type MetaTSType struct {
 	OnboardingLastVersion string `json:"onboarding:lastversion,omitempty"` // for client (tracks semver of last 'onboarding' shown)
 
 	AgentSelection *AgentSelectionMeta `json:"agent:selection,omitempty"` // per-pane AI selection — provider/model/reasoning triple, written by the model picker
-	AgentChatID    string              `json:"agent:chatid,omitempty"`    // per-pane conversation id; minted lazily on first agent submit, addresses backend chatstore
+	AgentSession   *AgentSessionMeta   `json:"agent:session,omitempty"`   // per-pane agent session — JsonlSessionMetadata-compatible pointer to the JSONL file managed on the main process; minted lazily on first agent send
 
 	Count int `json:"count,omitempty"` // temp for cpu plot. will remove later
 }
@@ -166,6 +166,23 @@ type AgentSelectionMeta struct {
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 	Reasoning string `json:"reasoning,omitempty"` // "low" | "medium" | "high"; only honored when the resolved model supports reasoning
+}
+
+// AgentSessionMeta is the per-pane agent session pointer persisted on
+// the outer block's meta. Structurally a subset of pi's
+// JsonlSessionMetadata (emain/agent/harness/types.ts:439) — main
+// process round-trips this object straight into repo.open() without
+// translation. See docs/agent-runtime-architecture.md §5.
+//
+// Naming exception: camelCase here (createdAt) rather than crest's
+// usual lowercase, to match pi's wire shape exactly. See
+// docs/agent-runtime-architecture.md §7.2; task #15 tracks the
+// project-wide naming alignment.
+type AgentSessionMeta struct {
+	Id        string `json:"id"`        // pi-minted UUID, immutable
+	CreatedAt string `json:"createdAt"` // ISO-8601 timestamp of session creation
+	Cwd       string `json:"cwd"`       // cwd at creation time, immutable; drives storage grouping
+	Path      string `json:"path"`      // absolute path of the JSONL file on the main process
 }
 
 type MetaDataDecl struct {
