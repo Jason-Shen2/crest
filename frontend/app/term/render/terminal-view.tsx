@@ -359,39 +359,13 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
     const onAgentHostReady = useCallback((submit: (text: string) => void) => {
         agentSubmitRef.current = submit;
     }, []);
-    // Persistent chatId per pane. Stored in block.meta["agent:chatid"];
-    // minted lazily on first agent activity (deferred to useEffect so
-    // we don't race the meta-atom hydration — minting during render
-    // before the meta object loads would overwrite a stale undefined
-    // and clobber any existing chatid in DB).
-    //
-    // Backend hard-validates chatid as a UUID (pkg/agent/http.go:261).
-    // Persisting it means closing/reopening the app, reloading the tab,
-    // or React remount all keep the same backend chatstore history —
-    // without this the conversation orphans in chatstore and the user
-    // sees an empty UI with no recovery path.
-    const persistedChatId = useOrefMetaKeyAtom(
-        WOS.makeORef("block", outerBlockId),
-        "agent:chatid"
-    );
-    const [mintedChatId, setMintedChatId] = useState<string | null>(null);
-    const chatId =
-        (typeof persistedChatId === "string" && persistedChatId.length > 0
-            ? persistedChatId
-            : null) ?? mintedChatId;
-    useEffect(() => {
-        // Wait for the block (and its meta) to fully load before deciding
-        // to mint. `loading` going false means the atom has the real
-        // current value of agent:chatid, not a transient undefined.
-        if (loading) return;
-        if (typeof persistedChatId === "string" && persistedChatId.length > 0) return;
-        if (mintedChatId) return;
-        const fresh = crypto.randomUUID();
-        setMintedChatId(fresh);
-        void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
-            "agent:chatid": fresh,
-        });
-    }, [loading, persistedChatId, mintedChatId, outerBlockId]);
+    // Transient per-pane chatId. The legacy Go-backend + useChat path
+    // is being retired by tasks #12 / #13; at that point this whole
+    // block is replaced by block.meta["agent:session"] (AgentSessionMeta)
+    // addressing through the new IPC layer. Until then an in-memory
+    // UUID is enough — losing it on remount is acceptable for the days
+    // the legacy path remains live.
+    const chatId = useMemo(() => crypto.randomUUID(), [outerBlockId]);
     const tabId = useAtomValue(atoms.staticTabId);
     const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
     const liveConnection = useMemo(
@@ -763,20 +737,18 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         >
             {topSlot}
             <FindBar model={model} />
-            {chatId && (
-                <AgentChatHost
-                    model={model}
-                    chatId={chatId}
-                    outerBlockId={outerBlockId}
-                    tabId={tabId}
-                    aiConfig={resolvedAIConfig}
-                    aiConfigError={aiConfigError}
-                    cwd={liveCwd}
-                    connection={liveConnection}
-                    recentCmds={recentCmds}
-                    onReady={onAgentHostReady}
-                />
-            )}
+            <AgentChatHost
+                model={model}
+                chatId={chatId}
+                outerBlockId={outerBlockId}
+                tabId={tabId}
+                aiConfig={resolvedAIConfig}
+                aiConfigError={aiConfigError}
+                cwd={liveCwd}
+                connection={liveConnection}
+                recentCmds={recentCmds}
+                onReady={onAgentHostReady}
+            />
             {error && (
                 <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
                     {error}

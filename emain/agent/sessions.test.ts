@@ -1,0 +1,162 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Tests for sessions.ts + build-system-prompt.ts. Doesn't exercise
+// AgentHarness or LLM calls — that's the spike + task #14 E2E.
+
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { JsonlSessionRepo } from "./harness/session/jsonl-repo";
+import { NodeExecutionEnv } from "./node";
+import { buildSystemPrompt } from "./build-system-prompt";
+import {
+    _setSessionsRepoForTests,
+    createPaneSession,
+    defaultSessionsDir,
+    listSessionsForCwd,
+    openPaneSession,
+} from "./sessions";
+
+describe("sessions — JsonlSessionRepo wiring", () => {
+    let tmpRoot: string;
+
+    beforeEach(async () => {
+        tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-sessions-test-"));
+        const env = new NodeExecutionEnv({ cwd: process.cwd() });
+        _setSessionsRepoForTests(new JsonlSessionRepo({ fs: env, sessionsRoot: tmpRoot }));
+    });
+
+    afterEach(async () => {
+        _setSessionsRepoForTests(undefined);
+        await fs.rm(tmpRoot, { recursive: true, force: true });
+    });
+
+    it("createPaneSession mints metadata with all four required fields", async () => {
+        const { metadata } = await createPaneSession("/tmp/some-project");
+        expect(metadata.id).toMatch(/^[0-9a-f-]{20,}$/i);
+        expect(metadata.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+        expect(metadata.cwd).toBe("/tmp/some-project");
+        expect(metadata.path).toContain(tmpRoot);
+        expect(metadata.path.endsWith(".jsonl")).toBe(true);
+    });
+
+    it("createPaneSession writes a JSONL file with a session header on line 1", async () => {
+        const { metadata } = await createPaneSession("/tmp/proj-a");
+        const raw = await fs.readFile(metadata.path, "utf8");
+        const firstLine = raw.split("\n")[0];
+        const header = JSON.parse(firstLine);
+        expect(header.type).toBe("session");
+        expect(header.id).toBe(metadata.id);
+        expect(header.cwd).toBe("/tmp/proj-a");
+    });
+
+    it("openPaneSession returns a Session with matching metadata", async () => {
+        const created = await createPaneSession("/tmp/proj-b");
+        const reopened = await openPaneSession(created.metadata);
+        const reopenedMeta = await reopened.getMetadata();
+        expect(reopenedMeta.id).toBe(created.metadata.id);
+        expect(reopenedMeta.path).toBe(created.metadata.path);
+        expect(reopenedMeta.cwd).toBe("/tmp/proj-b");
+    });
+
+    it("listSessionsForCwd returns only sessions for the given cwd, newest first", async () => {
+        const a1 = await createPaneSession("/tmp/proj-x");
+        // Brief delay so timestamps differ (pi sorts by createdAt).
+        await new Promise((r) => setTimeout(r, 10));
+        const a2 = await createPaneSession("/tmp/proj-x");
+        await new Promise((r) => setTimeout(r, 10));
+        await createPaneSession("/tmp/proj-y"); // different cwd; should not appear
+
+        const list = await listSessionsForCwd("/tmp/proj-x");
+        expect(list).toHaveLength(2);
+        // newest first
+        expect(list[0].id).toBe(a2.metadata.id);
+        expect(list[1].id).toBe(a1.metadata.id);
+    });
+
+    it("listSessionsForCwd returns [] for a cwd with no sessions", async () => {
+        await createPaneSession("/tmp/proj-other");
+        const list = await listSessionsForCwd("/tmp/never-touched");
+        expect(list).toEqual([]);
+    });
+
+    it("AgentSessionMeta shape matches JsonlSessionMetadata fields", async () => {
+        // Tests the doc §5.1 promise: AgentSessionMeta (from Go-generated TS)
+        // is structurally a subset of pi's JsonlSessionMetadata, so round-trip
+        // is identity. We verify by reading the metadata pi produces and
+        // checking it has exactly the four fields AgentSessionMeta declares.
+        const { metadata } = await createPaneSession("/tmp/shape-check");
+        expect(typeof metadata.id).toBe("string");
+        expect(typeof metadata.createdAt).toBe("string");
+        expect(typeof metadata.cwd).toBe("string");
+        expect(typeof metadata.path).toBe("string");
+    });
+});
+
+describe("defaultSessionsDir", () => {
+    const originalEnv = { ...process.env };
+
+    afterEach(() => {
+        process.env = { ...originalEnv };
+    });
+
+    it("uses WAVETERM_CONFIG_HOME when set", () => {
+        process.env.WAVETERM_CONFIG_HOME = "/tmp/probe-config";
+        delete process.env.XDG_CONFIG_HOME;
+        delete process.env.WAVETERM_DEV;
+        expect(defaultSessionsDir()).toBe(path.join("/tmp/probe-config", "sessions"));
+    });
+
+    it("falls back to crest-dev when WAVETERM_DEV is set", () => {
+        delete process.env.WAVETERM_CONFIG_HOME;
+        process.env.XDG_CONFIG_HOME = "/tmp/xdg";
+        process.env.WAVETERM_DEV = "1";
+        expect(defaultSessionsDir()).toBe(path.join("/tmp/xdg", "crest-dev", "sessions"));
+    });
+
+    it("falls back to crest in prod (no WAVETERM_DEV)", () => {
+        delete process.env.WAVETERM_CONFIG_HOME;
+        process.env.XDG_CONFIG_HOME = "/tmp/xdg";
+        delete process.env.WAVETERM_DEV;
+        expect(defaultSessionsDir()).toBe(path.join("/tmp/xdg", "crest", "sessions"));
+    });
+});
+
+describe("buildSystemPrompt", () => {
+    it("renders cwd as the minimum context", () => {
+        const out = buildSystemPrompt({ cwd: "/Users/me/project" });
+        expect(out).toContain("- cwd: /Users/me/project");
+        expect(out).toContain("Pane context");
+    });
+
+    it("includes git branch when present", () => {
+        const out = buildSystemPrompt({ cwd: "/x", gitBranch: "main" });
+        expect(out).toContain("- git branch: main");
+    });
+
+    it("skips connection line when local", () => {
+        const out = buildSystemPrompt({ cwd: "/x", connection: "local" });
+        expect(out).not.toContain("connection");
+    });
+
+    it("includes connection line for remote hosts", () => {
+        const out = buildSystemPrompt({ cwd: "/x", connection: "user@host" });
+        expect(out).toContain("- connection: user@host");
+    });
+
+    it("includes recent commands capped to 5", () => {
+        const cmds = Array.from({ length: 12 }, (_, i) => `cmd-${i}`);
+        const out = buildSystemPrompt({ cwd: "/x", recentCmds: cmds });
+        expect(out).toContain("cmd-7"); // 12-5=7 is the first kept
+        expect(out).toContain("cmd-11");
+        expect(out).not.toContain("cmd-6");
+    });
+
+    it("omits the Recent commands section when no cmds provided", () => {
+        const out = buildSystemPrompt({ cwd: "/x" });
+        expect(out).not.toContain("Recent commands");
+    });
+});

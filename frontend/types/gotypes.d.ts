@@ -83,6 +83,14 @@ declare global {
         reasoning?: string;
     };
 
+    // waveobj.AgentSessionMeta
+    type AgentSessionMeta = {
+        id: string;
+        createdAt: string;
+        cwd: string;
+        path: string;
+    };
+
     // wshrpc.AiMessageData
     type AiMessageData = {
         message?: string;
@@ -1391,7 +1399,7 @@ declare global {
         "onboarding:githubstar"?: boolean;
         "onboarding:lastversion"?: string;
         "agent:selection"?: AgentSelectionMeta;
-        "agent:chatid"?: string;
+        "agent:session"?: AgentSessionMeta;
         count?: number;
     };
 
