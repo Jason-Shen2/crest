@@ -37,6 +37,7 @@ import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
 import { buildPaneHarness, type PaneHarness } from "./agent/harness-factory";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
+import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import {
     createPaneSession,
     listSessionsForCwd,
@@ -73,6 +74,13 @@ interface SendOptions {
     gitBranch?: string;
     recentCmds?: string[];
     connection?: string;
+    /**
+     * Per-pane tool allowlist. Optional in v1 — when omitted, permissions
+     * default to allowAll:true (no approval UI exists yet; the agent
+     * stays functional). Bench mode (CREST_AGENT_BENCH=1) also forces
+     * allowAll regardless of this value. See emain/agent/permissions.ts.
+     */
+    allowedTools?: string[];
 }
 
 function resolveModelOrThrow(provider: string, modelId: string): Model<Api> {
@@ -124,6 +132,18 @@ async function ensurePaneHarness(
         thinkingLevel: opts.reasoning,
         promptInputs: buildPromptInputs(opts),
         tools: [], // task #10 will wire crest tools
+        // Bench mode (eval harness sets CREST_AGENT_BENCH=1) bypasses
+        // the allowlist entirely. Otherwise: v1 defaults to allowAll
+        // when the renderer didn't pass an allowedTools list (no
+        // approval UI yet); future task wires this to a per-pane
+        // setting written from the renderer.
+        toolCallHook: buildPermissionsHook(
+            isBenchMode()
+                ? { allowAll: true }
+                : opts.allowedTools
+                  ? { allowAll: false, allowedTools: opts.allowedTools }
+                  : { allowAll: true },
+        ),
     });
     harnessCache.set(metadata.path, pane);
     return pane;
