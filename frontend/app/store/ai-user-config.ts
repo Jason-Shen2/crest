@@ -103,3 +103,31 @@ export async function writeAIUserConfig(cfg: UserConfig): Promise<void> {
 export function initAIUserConfig(): void {
     void reloadAIUserConfig();
 }
+
+// isPinned — read-only helper for the picker; checks whether a
+// (provider, model) pair appears in the current pinned[] list. Returns
+// false when the config isn't loaded yet, which doubles as a sensible
+// default while the picker is still hydrating.
+export function isPinned(cfg: UserConfig | null, provider: string, model: string): boolean {
+    if (!cfg?.pinned) return false;
+    return cfg.pinned.some((p) => p.provider === provider && p.model === model);
+}
+
+// togglePinned — flips pinned membership for (provider, model) and
+// persists the new ai.json. The atom is refreshed by writeAIUserConfig
+// so consumers automatically see the new state on the next render.
+// Throws on RPC/IO failure so the caller can surface the error.
+export async function togglePinned(provider: string, model: string): Promise<void> {
+    const state = globalStore.get(aiUserConfigAtom);
+    if (state.status !== "ok" || !state.config) {
+        throw new Error("ai.json not loaded — cannot toggle pin");
+    }
+    const cfg = state.config;
+    const existing = cfg.pinned ?? [];
+    const already = existing.some((p) => p.provider === provider && p.model === model);
+    const nextPinned = already
+        ? existing.filter((p) => !(p.provider === provider && p.model === model))
+        : [...existing, { provider, model }];
+    const next: UserConfig = { ...cfg, pinned: nextPinned };
+    await writeAIUserConfig(next);
+}

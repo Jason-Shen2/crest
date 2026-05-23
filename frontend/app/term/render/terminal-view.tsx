@@ -15,8 +15,9 @@ import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import { CATALOG } from "@/app/store/ai-catalog";
+import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
 import { resolveAIConfig } from "@/app/store/ai-resolver";
-import { AgentSelection } from "@/app/store/ai-types";
+import { AgentSelection, ResolveError, ResolvedAIConfig } from "@/app/store/ai-types";
 import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { AgentChatHost } from "./agent-chat-host";
 import { NLDModel } from "../nld";
@@ -203,20 +204,28 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         return null;
     }, [blockAgentSelection, userConfigState.config]);
 
-    // Chip label — resolves through the catalog to get a model's
-    // displayName ("GPT-5") rather than its wire id ("gpt-5").  Falls
-    // back to a placeholder when nothing is picked yet.
+    const providerModelsMap = useAtomValue(providerModelsMapAtom);
+
+    // Chip label — show just the friendly model name. Resolution order:
+    //   1. Catalog displayName (curated)
+    //   2. Live /models name (e.g. OpenRouter returns "Anthropic: Claude…")
+    //   3. Wire id with any "vendor/" prefix stripped
+    // Whatever wins also goes through cleanModelLabel to strip the
+    // provider marker baked into many real-world names: catalog uses
+    // " (OpenRouter)" suffix, OpenRouter uses "Vendor: " prefix.
     const modelDisplayLabel = useMemo(() => {
         if (!activeSelection) return "Pick model";
-        const r = resolveAIConfig(activeSelection, userConfigState.config ?? undefined, CATALOG);
-        if (!r.ok) return activeSelection.model;
-        // Walk catalog to get the displayName (the resolver returns
-        // the wire id in `r.config.model`, not the displayName).
         const provider = CATALOG.find((p) => p.id === activeSelection.provider);
         const modelMeta = provider?.models.find((m) => m.id === activeSelection.model);
-        const base = modelMeta?.displayName ?? activeSelection.model;
+        const liveMatch = providerModelsMap[activeSelection.provider]?.models.find(
+            (m) => m.id === activeSelection.model
+        );
+        const fallbackId = stripVendorPrefix(activeSelection.model);
+        const base = cleanModelLabel(
+            modelMeta?.displayName ?? liveMatch?.name ?? fallbackId
+        );
         return activeSelection.reasoning ? `${base} · ${activeSelection.reasoning}` : base;
-    }, [activeSelection, userConfigState.config]);
+    }, [activeSelection, providerModelsMap]);
 
     const onSelectionChange = useCallback(
         (next: AgentSelection) => {
@@ -233,17 +242,41 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
 
     // Resolve the active selection through the catalog + user config
     // into the final wire shape the backend ingests.  Recomputed on
-    // every selection / config change.  Null when the resolver fails
-    // (no creds, unknown model, etc.) — AgentChatHost refuses to
-    // submit while null so the user gets feedback instead of a 400.
-    const resolvedAIConfig = useMemo(() => {
-        if (!activeSelection) return null;
+    // every selection / config change.  When the resolver fails
+    // (no creds, unknown model, etc.) we keep the structured error so
+    // AgentChatHost can surface it inline in the agent block instead of
+    // a 3.5s self-dismissing toast.  Note: an absent selection is also
+    // surfaced as a synthetic no_default error here so the downstream
+    // path is uniform (one nullable error, never both null).
+    // Separate config/error pair (instead of a discriminated union here)
+    // because the project has `strict: false`, which makes TS unreliable
+    // at narrowing `{ ok: true; config } | { ok: false; error }` after a
+    // ternary on `.ok`. Returning the pair explicitly sidesteps that.
+    const { resolvedAIConfig, aiConfigError } = useMemo<{
+        resolvedAIConfig: ResolvedAIConfig | null;
+        aiConfigError: ResolveError | null;
+    }>(() => {
+        if (!activeSelection) {
+            return {
+                resolvedAIConfig: null,
+                aiConfigError: {
+                    code: "no_default",
+                    message:
+                        "No model selected. Open the picker or set a default in ai.json.",
+                },
+            };
+        }
         const r = resolveAIConfig(
             activeSelection,
             userConfigState.config ?? undefined,
             CATALOG
         );
-        return r.ok ? r.config : null;
+        if (r.ok) return { resolvedAIConfig: r.config, aiConfigError: null };
+        // TS with strict:false doesn't narrow the `!r.ok` branch of the
+        // ResolveResult union; assert via the false-branch object shape
+        // so we can read `.error` without `// @ts-ignore`.
+        const errResult = r as { ok: false; error: ResolveError };
+        return { resolvedAIConfig: null, aiConfigError: errResult.error };
     }, [activeSelection, userConfigState.config]);
 
     // Open the AI setup wizard.  Replaces the earlier "open the JSON
@@ -326,17 +359,39 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
     const onAgentHostReady = useCallback((submit: (text: string) => void) => {
         agentSubmitRef.current = submit;
     }, []);
-    // Stable chatId per pane.  Persisted on TerminalModel so resync /
-    // remount keeps the same conversation.  v1 generates locally; future
-    // work: write to block.meta["waveai:chatid"] so it survives reloads.
-    const chatId = useMemo(() => {
-        if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-            return crypto.randomUUID();
-        }
-        return `chat-${outerBlockId}-${Date.now().toString(36)}`;
-        // outerBlockId is the stable per-pane identity; one chatId per pane
-        // is the right grain for v1.
-    }, [outerBlockId]);
+    // Persistent chatId per pane. Stored in block.meta["agent:chatid"];
+    // minted lazily on first agent activity (deferred to useEffect so
+    // we don't race the meta-atom hydration — minting during render
+    // before the meta object loads would overwrite a stale undefined
+    // and clobber any existing chatid in DB).
+    //
+    // Backend hard-validates chatid as a UUID (pkg/agent/http.go:261).
+    // Persisting it means closing/reopening the app, reloading the tab,
+    // or React remount all keep the same backend chatstore history —
+    // without this the conversation orphans in chatstore and the user
+    // sees an empty UI with no recovery path.
+    const persistedChatId = useOrefMetaKeyAtom(
+        WOS.makeORef("block", outerBlockId),
+        "agent:chatid"
+    );
+    const [mintedChatId, setMintedChatId] = useState<string | null>(null);
+    const chatId =
+        (typeof persistedChatId === "string" && persistedChatId.length > 0
+            ? persistedChatId
+            : null) ?? mintedChatId;
+    useEffect(() => {
+        // Wait for the block (and its meta) to fully load before deciding
+        // to mint. `loading` going false means the atom has the real
+        // current value of agent:chatid, not a transient undefined.
+        if (loading) return;
+        if (typeof persistedChatId === "string" && persistedChatId.length > 0) return;
+        if (mintedChatId) return;
+        const fresh = crypto.randomUUID();
+        setMintedChatId(fresh);
+        void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
+            "agent:chatid": fresh,
+        });
+    }, [loading, persistedChatId, mintedChatId, outerBlockId]);
     const tabId = useAtomValue(atoms.staticTabId);
     const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
     const liveConnection = useMemo(
@@ -708,17 +763,20 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         >
             {topSlot}
             <FindBar model={model} />
-            <AgentChatHost
-                model={model}
-                chatId={chatId}
-                outerBlockId={outerBlockId}
-                tabId={tabId}
-                aiConfig={resolvedAIConfig}
-                cwd={liveCwd}
-                connection={liveConnection}
-                recentCmds={recentCmds}
-                onReady={onAgentHostReady}
-            />
+            {chatId && (
+                <AgentChatHost
+                    model={model}
+                    chatId={chatId}
+                    outerBlockId={outerBlockId}
+                    tabId={tabId}
+                    aiConfig={resolvedAIConfig}
+                    aiConfigError={aiConfigError}
+                    cwd={liveCwd}
+                    connection={liveConnection}
+                    recentCmds={recentCmds}
+                    onReady={onAgentHostReady}
+                />
+            )}
             {error && (
                 <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
                     {error}
@@ -800,3 +858,27 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
     );
 });
 TerminalView.displayName = "TerminalView";
+
+// stripVendorPrefix — OpenRouter / Together style model ids carry the
+// upstream vendor as a slash-prefixed namespace ("anthropic/claude-…").
+// The chip should surface just the model name, not the vendor segment.
+function stripVendorPrefix(modelId: string): string {
+    const i = modelId.lastIndexOf("/");
+    if (i < 0 || i === modelId.length - 1) return modelId;
+    return modelId.slice(i + 1);
+}
+
+// cleanModelLabel — display labels arrive with the provider baked in,
+// in two flavors:
+//   - " (OpenRouter)" suffix on the curated catalog displayName
+//   - "Vendor: " prefix on the live /models name for OpenRouter etc.
+// Both look like noise in the chip. Strip them so the chip shows just
+// the model. The detail tooltip still surfaces the provider explicitly.
+function cleanModelLabel(label: string): string {
+    let s = label.replace(/\s*\([^)]*\)\s*$/, "");
+    const idx = s.indexOf(": ");
+    if (idx > 0 && idx < s.length - 2) {
+        s = s.slice(idx + 2);
+    }
+    return s.trim();
+}

@@ -48,12 +48,26 @@ const TEST_CATALOG: ProviderEntry[] = [
             { id: "gemini-flash", displayName: "Gemini Flash", capabilities: ["tools"], contextWindow: 1000000 },
         ],
     },
+    {
+        // Aggregator — kind: "aggregator" + empty models[]. Resolver
+        // must still succeed by synthesizing from provider defaults
+        // when the user picks an id from the live list.
+        id: "openrouter-test",
+        displayName: "OpenRouter (test)",
+        kind: "aggregator",
+        defaultEndpoint: "https://example.com/openrouter/v1/chat/completions",
+        defaultApiType: "openai-chat",
+        tokenSecretName: "OPENROUTER_TEST_KEY",
+        icon: "stars-01",
+        models: [],
+    },
 ];
 
 const BASE_CONFIG: UserConfig = {
     providers: {
         openai: { tokensecretname: "OPENAI_API_KEY" },
         google: { tokensecretname: "GOOGLE_AI_KEY" },
+        "openrouter-test": { tokensecretname: "OPENROUTER_TEST_KEY" },
     },
     default: { provider: "openai", model: "gpt-5" },
 };
@@ -287,12 +301,46 @@ describe("resolveAIConfig — error paths", () => {
         expect(r.error.hint?.provider).toBe("nope");
     });
 
-    it("unknown_model when provider exists but model id doesn't", () => {
+    it("synthesizes provider defaults when catalog provider exists but model isn't enumerated", () => {
+        // Live /models endpoints surface ids the catalog doesn't enumerate
+        // (direct providers occasionally lag behind upstream releases). The
+        // picker writes those to agent:selection and the resolver must still
+        // produce a usable ResolvedAIConfig instead of erroring with
+        // unknown_model.
         const r = resolveAIConfig({ provider: "openai", model: "gpt-9000" }, BASE_CONFIG, TEST_CATALOG);
-        expect(r.ok).toBe(false);
-        if (r.ok) return;
-        expect(r.error.code).toBe("unknown_model");
-        expect(r.error.hint?.model).toBe("gpt-9000");
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.config).toMatchObject({
+            provider: "openai",
+            model: "gpt-9000",
+            endpoint: "https://api.openai.com/v1/responses",
+            apitype: "openai-responses",
+            capabilities: [],
+            contextwindow: 0,
+            tokensecretname: "OPENAI_API_KEY",
+        });
+    });
+
+    it("aggregator provider with empty catalog.models[] resolves any live-picked id", () => {
+        // Aggregators (OpenRouter et al) ship empty catalog.models[] by
+        // design — live /models is the only source. This is the primary
+        // path the synth fallback exists to serve.
+        const r = resolveAIConfig(
+            { provider: "openrouter-test", model: "anthropic/claude-opus-4-7" },
+            BASE_CONFIG,
+            TEST_CATALOG
+        );
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.config).toMatchObject({
+            provider: "openrouter-test",
+            model: "anthropic/claude-opus-4-7",
+            endpoint: "https://example.com/openrouter/v1/chat/completions",
+            apitype: "openai-chat",
+            capabilities: [],
+            contextwindow: 0,
+            tokensecretname: "OPENROUTER_TEST_KEY",
+        });
     });
 
     it("no_credentials when provider is valid but ai.json has no providers entry", () => {

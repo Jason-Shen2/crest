@@ -1346,7 +1346,18 @@ func (ws *WshServer) WaveAIGetToolDiffCommand(ctx context.Context, data wshrpc.C
 }
 
 func (ws *WshServer) ListProviderModelsCommand(ctx context.Context, data wshrpc.CommandListProviderModelsData) (*wshrpc.CommandListProviderModelsRtnData, error) {
-	models, err := aiusechat.ListProviderModels(ctx, data.APIType, data.BaseURL, data.APIToken)
+	token := data.APIToken
+	if token == "" && data.TokenSecretName != "" {
+		value, exists, err := secretstore.GetSecret(data.TokenSecretName)
+		if err != nil {
+			return nil, fmt.Errorf("listprovidermodels: secretstore lookup for %q: %w", data.TokenSecretName, err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("listprovidermodels: secret %q not found — open Settings → AI Provider to set the key", data.TokenSecretName)
+		}
+		token = value
+	}
+	models, err := aiusechat.ListProviderModels(ctx, data.APIType, data.BaseURL, token)
 	if err != nil {
 		return nil, err
 	}

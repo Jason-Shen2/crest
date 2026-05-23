@@ -15,12 +15,13 @@
 // write ai.json (the user can re-enter keys without losing provider
 // selection).
 
-import { reloadAIUserConfig } from "@/app/store/ai-user-config";
+import { aiUserConfigAtom, reloadAIUserConfig } from "@/app/store/ai-user-config";
 import { CATALOG, ModelEntry, ProviderEntry, ReasoningLevel } from "@/app/store/ai-catalog";
 import { modalsModel } from "@/app/store/modalmodel";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { cn } from "@/util/util";
+import { useAtomValue } from "jotai";
 import { useCallback, useMemo, useState } from "react";
 
 import { Modal } from "./modal";
@@ -296,34 +297,48 @@ interface Step1Props {
     onToggle: (id: string) => void;
 }
 
-const Step1 = ({ providers, onToggle }: Step1Props) => (
-    <div className="flex flex-col gap-2">
-        <div className="mb-1 text-[12px] text-secondary/75">
-            Crest is BYO API key. Pick the providers you have keys for; you can add more later.
-        </div>
-        {CATALOG.map((p) => (
-            <label
-                key={p.id}
-                className="flex cursor-pointer items-start gap-3 rounded border border-fg-overlay-2/60 bg-fg-overlay-1/30 px-3 py-2 hover:bg-fg-overlay-2/40"
-            >
-                <input
-                    type="checkbox"
-                    checked={providers.has(p.id)}
-                    onChange={() => onToggle(p.id)}
-                    className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-[var(--ansi-blue)]"
-                />
-                <div className="flex flex-1 flex-col">
-                    <div className="text-[13px] font-medium text-foreground">{p.displayName}</div>
-                    <div className="text-[11px] text-secondary/70">
-                        {p.models.length} model{p.models.length === 1 ? "" : "s"} ·{" "}
-                        {p.models.map((m) => m.displayName).slice(0, 3).join(", ")}
-                        {p.models.length > 3 && "…"}
-                    </div>
+const Step1 = ({ providers, onToggle }: Step1Props) => {
+    // Hide providers the user has already configured — the wizard is
+    // strictly an "add new provider" flow now, not a place to manage
+    // existing keys (which still lives in ai.json).
+    const userConfigState = useAtomValue(aiUserConfigAtom);
+    const configured = userConfigState.config?.providers ?? {};
+    const available = CATALOG.filter((p) => !configured[p.id]);
+
+    if (available.length === 0) {
+        return (
+            <div className="flex flex-col gap-2">
+                <div className="rounded border border-fg-overlay-2/60 bg-fg-overlay-1/30 px-3 py-4 text-center text-[12px] text-secondary/75">
+                    All catalog providers are already configured. Edit
+                    <code className="mx-1 rounded bg-fg-overlay-2/50 px-1 py-0.5 font-mono text-[11px]">~/.config/crest/ai.json</code>
+                    to rotate keys or add custom endpoints.
                 </div>
-            </label>
-        ))}
-    </div>
-);
+            </div>
+        );
+    }
+
+    return (
+        <div className="flex flex-col gap-2">
+            <div className="mb-1 text-[12px] text-secondary/75">
+                Crest is BYO API key. Pick the providers you have keys for; you can add more later.
+            </div>
+            {available.map((p) => (
+                <label
+                    key={p.id}
+                    className="flex cursor-pointer items-center gap-3 rounded border border-fg-overlay-2/60 bg-fg-overlay-1/30 px-3 py-2 hover:bg-fg-overlay-2/40"
+                >
+                    <input
+                        type="checkbox"
+                        checked={providers.has(p.id)}
+                        onChange={() => onToggle(p.id)}
+                        className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--ansi-blue)]"
+                    />
+                    <div className="text-[13px] font-medium text-foreground">{p.displayName}</div>
+                </label>
+            ))}
+        </div>
+    );
+};
 
 // =========================================================================
 // Step 2 — paste API keys
@@ -337,22 +352,13 @@ interface Step2Props {
 
 const Step2 = ({ providers, keys, onSetKey }: Step2Props) => (
     <div className="flex flex-col gap-4">
-        <div className="text-[12px] text-secondary/75">
-            Keys are saved to the OS keychain (macOS Keychain / Linux Secret Service / Windows
-            Credential Manager) under the names below. They never touch ai.json.
-        </div>
         {[...providers].map((pid) => {
             const meta = CATALOG.find((p) => p.id === pid);
             if (!meta) return null;
             return (
                 <div key={pid} className="flex flex-col gap-1">
-                    <div className="flex items-center justify-between">
-                        <div className="text-[13px] font-medium text-foreground">
-                            {meta.displayName}
-                        </div>
-                        <div className="font-mono text-[10px] text-secondary/60">
-                            keychain: {meta.tokenSecretName}
-                        </div>
+                    <div className="text-[13px] font-medium text-foreground">
+                        {meta.displayName}
                     </div>
                     <input
                         type="password"

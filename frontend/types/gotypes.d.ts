@@ -35,6 +35,7 @@ declare global {
         profiles?: {[key: string]: AISelectionConfig};
         custom_models?: UserCustomModel[];
         custom_endpoints?: {[key: string]: UserCustomEndpoint};
+        pinned?: PinnedModel[];
     };
 
     // wshrpc.ActivityDisplayType
@@ -586,6 +587,7 @@ declare global {
         apitype: string;
         baseurl?: string;
         apitoken?: string;
+        tokensecretname?: string;
     };
 
     // wshrpc.CommandListProviderModelsRtnData
@@ -1389,6 +1391,7 @@ declare global {
         "onboarding:githubstar"?: boolean;
         "onboarding:lastversion"?: string;
         "agent:selection"?: AgentSelectionMeta;
+        "agent:chatid"?: string;
         count?: number;
     };
 
@@ -1436,6 +1439,12 @@ declare global {
         open: boolean;
         openexternal: boolean;
         tabid: string;
+    };
+
+    // uctypes.PinnedModel
+    type PinnedModel = {
+        provider: string;
+        model: string;
     };
 
     // waveobj.Point
@@ -1494,6 +1503,14 @@ declare global {
         name?: string;
         description?: string;
         context?: number;
+        maxoutputtokens?: number;
+        promptcost?: number;
+        completioncost?: number;
+        imagecost?: number;
+        requestcost?: number;
+        inputmodalities?: string[];
+        tokenizer?: string;
+        ismoderated?: boolean;
     };
 
     // wshrpc.RemoteInfo

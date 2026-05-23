@@ -26,8 +26,7 @@ import { useChat } from "@ai-sdk/react";
 
 import { TerminalModel } from "../terminal-model";
 import { WaveUIMessage } from "@/app/store/aitypes";
-import { ResolvedAIConfig } from "@/app/store/ai-types";
-import { globalStore } from "@/app/store/jotaiStore";
+import { ResolvedAIConfig, ResolveError } from "@/app/store/ai-types";
 
 export interface AgentChatHostProps {
     model: TerminalModel;
@@ -36,9 +35,15 @@ export interface AgentChatHostProps {
     tabId?: string;
     // Resolved AI config — the backend ingests this directly via
     // BuildAIOptsFromConfig, no further catalog / settings lookups.
-    // Null while user hasn't picked a model and ai.json has no
-    // default; in that state submitting is a no-op (we just log).
+    // Null while the resolver failed; companion `aiConfigError` carries
+    // the structured reason so we can render an inline error block
+    // instead of a self-dismissing toast.
     aiConfig?: ResolvedAIConfig | null;
+    // Resolver failure (or "no selection") carried alongside aiConfig.
+    // When submit fires with no config, we read this to populate the
+    // user-visible error message in the agent block.  Null when
+    // aiConfig is non-null (happy path).
+    aiConfigError?: ResolveError | null;
     cwd?: string;
     connection?: string;
     recentCmds?: string[];
@@ -59,6 +64,7 @@ export function AgentChatHost({
     outerBlockId,
     tabId,
     aiConfig,
+    aiConfigError,
     cwd,
     connection,
     recentCmds,
@@ -70,6 +76,7 @@ export function AgentChatHost({
     // refs inside prepareSendMessagesRequest).
     const tabIdRef = useRef(tabId);
     const aiConfigRef = useRef(aiConfig);
+    const aiConfigErrorRef = useRef(aiConfigError);
     const cwdRef = useRef(cwd);
     const connRef = useRef(connection);
     const recentCmdsRef = useRef(recentCmds);
@@ -77,11 +84,12 @@ export function AgentChatHost({
     useEffect(() => {
         tabIdRef.current = tabId;
         aiConfigRef.current = aiConfig;
+        aiConfigErrorRef.current = aiConfigError;
         cwdRef.current = cwd;
         connRef.current = connection;
         recentCmdsRef.current = recentCmds;
         agentModeRef.current = agentMode;
-    }, [tabId, aiConfig, cwd, connection, recentCmds, agentMode]);
+    }, [tabId, aiConfig, aiConfigError, cwd, connection, recentCmds, agentMode]);
 
     const transport = useMemo(
         () =>
@@ -183,15 +191,20 @@ export function AgentChatHost({
             const trimmed = text.trim();
             if (!trimmed) return;
             // Refuse to submit when no resolved aiConfig is available.
-            // The backend now requires it unconditionally (Phase E
-            // cutover), so sending without it would produce a 400.
-            // Surface a clear visible toast (not just a console warn)
-            // so the user knows why nothing happened.
+            // The backend hard-requires it (would 400). Instead of a
+            // self-dismissing toast, append an agent block in the
+            // timeline with the resolver's specific error message so:
+            //   1. the user actually sees the failure (toast was 3.5s);
+            //   2. the message itself is preserved (not silently dropped);
+            //   3. the error is addressable (specific reason, not a
+            //      generic "configure ai.json" — e.g. "No API key for
+            //      provider openrouter").
             if (!aiConfigRef.current) {
-                globalStore.set(
-                    model.notificationAtom,
-                    "Configure ~/.config/crest/ai.json to enable the agent"
-                );
+                const errMsg =
+                    aiConfigErrorRef.current?.message ??
+                    "AI is not configured. Open the model picker to set up a provider and pick a model.";
+                const exchangeId = model.submitAgentMessage(trimmed);
+                model.applyAgentStatus(exchangeId, "error", errMsg);
                 return;
             }
             // Mint an exchangeId on the model side so the agent block is
