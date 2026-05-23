@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,15 +116,30 @@ func listOpenAICompatibleModels(ctx context.Context, baseURL, apiToken string) (
 	if err != nil {
 		return nil, err
 	}
-	// OpenRouter and OpenAI both return {data: [...]}, with OpenRouter
-	// adding name/description/context_length fields on top of the OpenAI
-	// shape. One decode path covers both.
+	// OpenAI returns a minimal {data: [{id, ...}]} shape. OpenRouter
+	// returns the same envelope but with name / description / context_length
+	// plus a nested pricing + architecture + top_provider block. One
+	// decode path absorbs both — absent fields stay at zero values.
 	var resp struct {
 		Data []struct {
 			ID            string `json:"id"`
 			Name          string `json:"name"`
 			Description   string `json:"description"`
 			ContextLength int    `json:"context_length"`
+			Pricing       struct {
+				Prompt     string `json:"prompt"`
+				Completion string `json:"completion"`
+				Image      string `json:"image"`
+				Request    string `json:"request"`
+			} `json:"pricing"`
+			TopProvider struct {
+				MaxCompletionTokens int  `json:"max_completion_tokens"`
+				IsModerated         bool `json:"is_moderated"`
+			} `json:"top_provider"`
+			Architecture struct {
+				InputModalities []string `json:"input_modalities"`
+				Tokenizer       string   `json:"tokenizer"`
+			} `json:"architecture"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -135,14 +151,37 @@ func listOpenAICompatibleModels(ctx context.Context, baseURL, apiToken string) (
 			continue
 		}
 		out = append(out, wshrpc.ProviderModelInfo{
-			ID:          m.ID,
-			Name:        m.Name,
-			Description: m.Description,
-			Context:     m.ContextLength,
+			ID:                     m.ID,
+			Name:                   m.Name,
+			Description:            m.Description,
+			Context:                m.ContextLength,
+			MaxOutputTokens:        m.TopProvider.MaxCompletionTokens,
+			PromptCostPerToken:     parseUSDRate(m.Pricing.Prompt),
+			CompletionCostPerToken: parseUSDRate(m.Pricing.Completion),
+			ImageCostPerImage:      parseUSDRate(m.Pricing.Image),
+			RequestCostPerCall:     parseUSDRate(m.Pricing.Request),
+			InputModalities:        m.Architecture.InputModalities,
+			Tokenizer:              m.Architecture.Tokenizer,
+			IsModerated:            m.TopProvider.IsModerated,
 		})
 	}
 	sortModels(out)
 	return out, nil
+}
+
+// parseUSDRate turns OpenRouter's stringified per-token rates ("0.000003")
+// into a float. Empty / unparseable strings are zero, which the FE
+// treats as "no pricing info available".
+func parseUSDRate(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func listAnthropicModels(ctx context.Context, baseURL, apiToken string) ([]wshrpc.ProviderModelInfo, error) {

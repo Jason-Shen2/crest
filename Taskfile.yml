@@ -324,6 +324,19 @@ tasks:
             - "pkg/**/*.go"
         # don't add generates key (otherwise will always execute)
 
+    sync:models:
+        desc: |
+            Re-fetch the LiteLLM model registry and regenerate
+            frontend/app/store/ai-catalog-models.gen.ts. Run after a
+            major OpenAI/Anthropic/Google model release; otherwise the
+            checked-in file is the source of truth for the AI picker.
+        cmds:
+            - node scripts/sync-ai-models.mjs
+        sources:
+            - "scripts/sync-ai-models.mjs"
+        generates:
+            - "frontend/app/store/ai-catalog-models.gen.ts"
+
     outdated:
         desc: Check for outdated packages using npm-check-updates.
         cmd: npx npm-check-updates@latest

@@ -151,6 +151,7 @@ const (
 	MetaKey_OnboardingLastVersion            = "onboarding:lastversion"
 
 	MetaKey_AgentSelection                   = "agent:selection"
+	MetaKey_AgentChatID                      = "agent:chatid"
 
 	MetaKey_Count                            = "count"
 )
