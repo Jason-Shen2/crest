@@ -160,6 +160,12 @@ declare global {
         gitBranch?: string;
         recentCmds?: string[];
         connection?: string;
+        /**
+         * Per-pane tool allowlist. Optional — when omitted, main defaults
+         * to allowAll (no UX-gated approval in v1). See
+         * emain/agent/permissions.ts and the architecture doc §7.9.
+         */
+        allowedTools?: string[];
     };
 
     type ElectronContextMenuItem = {
