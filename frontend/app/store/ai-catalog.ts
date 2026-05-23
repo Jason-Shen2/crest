@@ -35,11 +35,37 @@ export type Capability = "tools" | "images" | "pdfs" | "reasoning";
 // capability.  Maps directly to ThinkingLevel on AIOptsType.
 export type ReasoningLevel = "low" | "medium" | "high";
 
+// Provider kind — distinguishes "direct" providers (OpenAI, Anthropic,
+// Google) whose model set is small and stable enough to curate, from
+// "aggregator" providers (OpenRouter, Together, ...) whose model set is
+// open-ended and only the live /models endpoint is authoritative.
+//
+// Consumer rules:
+//   - kind: "direct"     → catalog.models[] is the canonical list; live
+//                          fetch supplements (newer models the catalog
+//                          hasn't picked up) but catalog metadata wins
+//                          when both have the same id.
+//   - kind: "aggregator" → catalog.models[] MUST be empty; the picker
+//                          shows ONLY live /models results.  Resolver
+//                          synthesizes endpoint/apitype from provider
+//                          defaults — that's the whole reason the entry
+//                          exists in catalog.
+//
+// Why: hard-coding even 2 OpenRouter models in catalog created a UX
+// trap (chip showed model name → user thought it was set → resolver
+// returned unknown_model → silent toast).  Aggregator kind makes the
+// "we don't enumerate this provider" intent explicit.
+export type ProviderKind = "direct" | "aggregator";
+
 export interface ProviderEntry {
     // Stable id used as a key in user config and selection meta.  Must
     // be lowercase, alphanumeric + dashes only.
     id: string;
     displayName: string;
+    // See ProviderKind above for semantics.  Defaults to "direct" when
+    // omitted so adding a new catalog entry doesn't accidentally turn
+    // it into a live-only aggregator.
+    kind?: ProviderKind;
     // Default URL the resolver uses unless a per-model override or user
     // override applies.  May contain the literal `{model}` placeholder
     // which the resolver substitutes with the selected model id (used
@@ -87,12 +113,24 @@ export interface ModelEntry {
 }
 
 // =========================================================================
-// v1 catalog content
+// Catalog content
 // =========================================================================
 //
-// Conservative v1 list — popular models per provider, no exhaustive
-// coverage.  Users extend via custom_models in ai.json.  Update via PR
-// as the AI market shifts.
+// Provider-level entries (endpoint, apitype, token secret name, kind)
+// are CURATED here — these are the facts that don't change with the
+// AI market churn (OpenAI's Responses API URL is stable; OpenRouter is
+// always an aggregator; Gemini always uses its {model} URL template).
+//
+// Model-level entries (the `models` array) are SYNCED from the LiteLLM
+// registry by `scripts/sync-ai-models.mjs` (run via `task sync:models`).
+// This keeps the catalog current with new model releases without
+// per-release PR churn. The synced file is ai-catalog-models.gen.ts.
+//
+// Aggregator providers (kind: "aggregator") get an empty models[] by
+// design — their authoritative list is the upstream /models endpoint
+// fetched at picker open time. See ProviderKind comment above.
+
+import { MODELS_BY_PROVIDER } from "./ai-catalog-models.gen";
 
 export const CATALOG: ProviderEntry[] = [
     {
@@ -102,39 +140,7 @@ export const CATALOG: ProviderEntry[] = [
         defaultApiType: "openai-responses",
         tokenSecretName: "OPENAI_API_KEY",
         icon: "stars-01",
-        models: [
-            {
-                id: "gpt-5",
-                displayName: "GPT-5",
-                description: "Top-tier reasoning + tool use",
-                capabilities: ["tools", "images", "pdfs", "reasoning"],
-                contextWindow: 200000,
-                reasoningLevels: ["low", "medium", "high"],
-            },
-            {
-                id: "gpt-5-mini",
-                displayName: "GPT-5 mini",
-                description: "Fast, low-cost",
-                capabilities: ["tools", "images", "pdfs"],
-                contextWindow: 200000,
-            },
-            {
-                id: "gpt-4o",
-                displayName: "GPT-4o",
-                description: "Previous-gen flagship, openai-chat API",
-                capabilities: ["tools", "images"],
-                contextWindow: 128000,
-                apiTypeOverride: "openai-chat",
-            },
-            {
-                id: "o3-mini",
-                displayName: "o3 mini",
-                description: "Reasoning-optimized small model",
-                capabilities: ["tools", "reasoning"],
-                contextWindow: 200000,
-                reasoningLevels: ["low", "medium", "high"],
-            },
-        ],
+        models: MODELS_BY_PROVIDER.openai ?? [],
     },
     {
         id: "anthropic",
@@ -143,31 +149,7 @@ export const CATALOG: ProviderEntry[] = [
         defaultApiType: "anthropic-messages",
         tokenSecretName: "ANTHROPIC_API_KEY",
         icon: "stars-01",
-        models: [
-            {
-                id: "claude-opus-4-7",
-                displayName: "Claude Opus 4.7",
-                description: "Largest Claude — 1M context",
-                capabilities: ["tools", "images", "pdfs", "reasoning"],
-                contextWindow: 1000000,
-                reasoningLevels: ["low", "medium", "high"],
-            },
-            {
-                id: "claude-sonnet-4-6",
-                displayName: "Claude Sonnet 4.6",
-                description: "Balanced default",
-                capabilities: ["tools", "images", "pdfs", "reasoning"],
-                contextWindow: 200000,
-                reasoningLevels: ["low", "medium", "high"],
-            },
-            {
-                id: "claude-haiku-4-5-20251001",
-                displayName: "Claude Haiku 4.5",
-                description: "Fastest Claude",
-                capabilities: ["tools", "images", "pdfs"],
-                contextWindow: 200000,
-            },
-        ],
+        models: MODELS_BY_PROVIDER.anthropic ?? [],
     },
     {
         id: "google",
@@ -178,46 +160,23 @@ export const CATALOG: ProviderEntry[] = [
         defaultApiType: "google-gemini",
         tokenSecretName: "GOOGLE_AI_KEY",
         icon: "stars-01",
-        models: [
-            {
-                id: "gemini-2.0-pro",
-                displayName: "Gemini 2.0 Pro",
-                description: "2M token context",
-                capabilities: ["tools", "images", "pdfs"],
-                contextWindow: 2000000,
-            },
-            {
-                id: "gemini-2.0-flash",
-                displayName: "Gemini 2.0 Flash",
-                description: "Fast, 1M context",
-                capabilities: ["tools", "images", "pdfs"],
-                contextWindow: 1000000,
-            },
-        ],
+        models: MODELS_BY_PROVIDER.google ?? [],
     },
     {
+        // OpenRouter is an aggregator — it routes to 300+ upstream models
+        // we couldn't curate in catalog without immediate drift.  The
+        // picker drives off live /models exclusively for aggregators; this
+        // entry exists only to provide endpoint/apitype/icon so the
+        // resolver can construct a request once the user picks a row from
+        // the live list.  See ProviderKind comment above.
         id: "openrouter",
         displayName: "OpenRouter",
+        kind: "aggregator",
         defaultEndpoint: "https://openrouter.ai/api/v1/chat/completions",
         defaultApiType: "openai-chat",
         tokenSecretName: "OPENROUTER_API_KEY",
         icon: "stars-01",
-        models: [
-            {
-                id: "anthropic/claude-opus-4-7",
-                displayName: "Claude Opus 4.7 (OpenRouter)",
-                description: "Routed via OpenRouter",
-                capabilities: ["tools", "images"],
-                contextWindow: 1000000,
-            },
-            {
-                id: "openai/gpt-5",
-                displayName: "GPT-5 (OpenRouter)",
-                description: "Routed via OpenRouter",
-                capabilities: ["tools", "images"],
-                contextWindow: 200000,
-            },
-        ],
+        models: [],
     },
 ];
 

@@ -30,7 +30,7 @@ import { UIcon } from "@/app/element/ui-icon";
 import { cn } from "@/util/util";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatPromptCwd } from "./cmdblock-status";
-import { ModelPickerPopover } from "./model-picker-popover";
+import { ModelPickerInline, ModelPickerPopover } from "./model-picker-popover";
 import { ProviderEntry } from "@/app/store/ai-catalog";
 import { AgentSelection } from "@/app/store/ai-types";
 import { AIUserConfigStatus } from "@/app/store/ai-user-config";
@@ -958,6 +958,7 @@ interface InlineCommand {
 
 const SlashCommands: InlineCommand[] = [
     { name: "/agent", icon: "stars-01", description: "Send input to the agent", altKeys: ["⌘", "↵"] },
+    { name: "/model", icon: "stars-01", description: "Pick the AI model" },
     { name: "/terminal", icon: "terminal", description: "Switch input to shell mode" },
     { name: "/auto", icon: "lightning-02", description: "Auto-detect shell vs natural language" },
     { name: "/clear", icon: "x-close", description: "Clear the current terminal output" },
@@ -1296,6 +1297,14 @@ export const CmdBlockInput = memo(
         const submit = useCallback(() => {
             const trimmedTail = text.replace(/\s+$/g, "");
             if (!trimmedTail) return;
+            // Action-style slash commands are intercepted before any
+            // shell/agent routing — typing `/model` and pressing Enter
+            // opens the picker, doesn't submit the literal text.
+            if (trimmedTail === "/model" && hasModelPicker) {
+                setText("");
+                setModelPickerOpen(true);
+                return;
+            }
             const shellPrefixMatch = /^\s*!(.*)$/s.exec(trimmedTail);
             if (shellPrefixMatch) {
                 // Drop the `!` and any whitespace right after it.  An empty
@@ -1308,7 +1317,7 @@ export const CmdBlockInput = memo(
             const resolved: "terminal" | "agent" =
                 mode === "auto" ? effectiveMode ?? "agent" : mode === "terminal" ? "terminal" : "agent";
             submitWith(resolved, trimmedTail);
-        }, [submitWith, mode, effectiveMode, text]);
+        }, [submitWith, mode, effectiveMode, text, hasModelPicker]);
 
         // History navigation — return true when consumed so the editor
         // suppresses the default caret motion.
@@ -1368,6 +1377,25 @@ export const CmdBlockInput = memo(
             [text]
         );
 
+        // Slash dispatch — most picks just insert the command name into
+        // the editor buffer, but action-style commands like /model open
+        // a UI directly and clear whatever the user typed instead. Used
+        // by both mouse-pick (InlineMenu onPick) and keyboard-pick
+        // (onMenuAccept via Enter).
+        const pickSlashCommand = useCallback(
+            (cmd: string) => {
+                if (cmd === "/model" && hasModelPicker) {
+                    setText("");
+                    setSlashOpen(false);
+                    setModelPickerOpen(true);
+                    return;
+                }
+                replaceLastToken(cmd, "/");
+                setSlashOpen(false);
+            },
+            [hasModelPicker, replaceLastToken]
+        );
+
         // Editor-side menu callbacks: ↑/↓ moves selection within the
         // currently open menu; ↵ commits the highlighted row.
         const menuOpen = slashOpen || atOpen;
@@ -1395,8 +1423,7 @@ export const CmdBlockInput = memo(
             if (slashOpen && slashFiltered.length > 0) {
                 const pick = slashFiltered[slashSelectedIdx]?.name;
                 if (pick) {
-                    replaceLastToken(pick, "/");
-                    setSlashOpen(false);
+                    pickSlashCommand(pick);
                 }
                 return true;
             }
@@ -1409,7 +1436,7 @@ export const CmdBlockInput = memo(
                 return true;
             }
             return false;
-        }, [slashOpen, atOpen, slashFiltered, atFiltered, slashSelectedIdx, atSelectedIdx, replaceLastToken]);
+        }, [slashOpen, atOpen, slashFiltered, atFiltered, slashSelectedIdx, atSelectedIdx, replaceLastToken, pickSlashCommand]);
 
         const placeholderText =
             placeholder ??
@@ -1453,10 +1480,7 @@ export const CmdBlockInput = memo(
                         items={slashFiltered}
                         selectedIdx={slashSelectedIdx}
                         onHover={setSlashSelectedIdx}
-                        onPick={(cmd) => {
-                            replaceLastToken(cmd, "/");
-                            setSlashOpen(false);
-                        }}
+                        onPick={pickSlashCommand}
                     />
                 )}
                 {atOpen && !slashOpen && (
@@ -1469,6 +1493,23 @@ export const CmdBlockInput = memo(
                             replaceLastToken(cmd, "@");
                             setAtOpen(false);
                         }}
+                    />
+                )}
+                {/* Inline model picker — warp-style menu docked above the
+                    input card, sharing its frame. Replaces the floating
+                    ModelPickerPopover when hasModelPicker is true. */}
+                {hasModelPicker && (
+                    <ModelPickerInline
+                        open={modelPickerOpen}
+                        onOpenChange={setModelPickerOpen}
+                        selection={selection ?? null}
+                        onSelectionChange={(next) => onSelectionChange!(next)}
+                        userConfig={userConfig ?? null}
+                        userConfigStatus={userConfigStatus ?? "loading"}
+                        userConfigError={userConfigError}
+                        catalog={catalog}
+                        onOpenConfigFile={onOpenAIConfigFile}
+                        anchorRef={modelChipRef}
                     />
                 )}
                 <div
@@ -1601,7 +1642,12 @@ export const CmdBlockInput = memo(
                                 setModelPickerOpen((v) => !v);
                             }}
                         />
-                        {hasModelPicker && (
+                        {/* Floating popover variant — superseded by the
+                            inline ModelPickerInline above the input card.
+                            Left in place (and importable) so we can flip
+                            back during evaluation; void reference keeps
+                            the named export reachable for bundlers / IDEs. */}
+                        {false && hasModelPicker && (
                             <ModelPickerPopover
                                 anchorRef={modelChipRef}
                                 open={modelPickerOpen}

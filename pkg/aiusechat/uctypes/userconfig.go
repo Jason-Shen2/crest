@@ -20,6 +20,16 @@ type AIUserConfig struct {
 	Profiles        map[string]AISelectionConfig     `json:"profiles,omitempty"`
 	CustomModels    []UserCustomModel                `json:"custom_models,omitempty"`
 	CustomEndpoints map[string]UserCustomEndpoint    `json:"custom_endpoints,omitempty"`
+	Pinned          []PinnedModel                    `json:"pinned,omitempty"`
+}
+
+// PinnedModel — a user-pinned (provider, model) pair surfaced in the
+// picker's "Pinned" tab for quick access.  Persisted in ai.json so
+// pins survive restarts and follow the same backup/sync path as the
+// rest of the AI config.
+type PinnedModel struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // ProviderCredentials — exactly one of TokenSecretName / Token is

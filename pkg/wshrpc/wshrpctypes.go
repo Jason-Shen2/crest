@@ -655,24 +655,48 @@ type GetAIUserConfigRtnData struct {
 }
 
 // CommandListProviderModelsData lists models a provider exposes via its
-// /models endpoint. The request carries the user's *current* (unsaved)
-// inputs from the AI Provider settings UI so they can preview a model
-// list before persisting the form.
+// /models endpoint. The FE resolves apitype/baseurl/tokensecretname
+// from the catalog + saved ai.json (same resolver path used to build
+// agent requests), then calls this RPC. Token resolution:
+//   - APIToken set — literal pass-through (used by the setup wizard
+//     before credentials are persisted).
+//   - TokenSecretName set, APIToken empty — server looks up the secret
+//     in the keychain (used by the picker once the user has saved
+//     credentials).
 type CommandListProviderModelsData struct {
-	APIType  string `json:"apitype"`            // "openai-chat" / "anthropic-messages" / "google-gemini"
-	BaseURL  string `json:"baseurl,omitempty"`  // chat-completions URL; we strip the suffix to find /models
-	APIToken string `json:"apitoken,omitempty"` // bearer / x-api-key / google query-string key
+	APIType         string `json:"apitype"`                   // "openai-chat" / "anthropic-messages" / "google-gemini"
+	BaseURL         string `json:"baseurl,omitempty"`         // chat-completions URL; we strip the suffix to find /models
+	APIToken        string `json:"apitoken,omitempty"`        // bearer / x-api-key / google query-string key
+	TokenSecretName string `json:"tokensecretname,omitempty"` // resolved from secretstore when APIToken is empty
 }
 
 // ProviderModelInfo is the shape we return to the FE — a slim, normalized
-// view of the per-provider /models response. Most providers carry more
-// fields (pricing, features) but the FE picker only needs id + name +
-// context size for display and selection.
+// view of the per-provider /models response. The optional fields below
+// are only populated when the upstream provider exposes them; OpenRouter
+// returns the full set, OpenAI / Anthropic / Gemini typically only the
+// first few. FE treats absent fields as "unknown" and hides them.
 type ProviderModelInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name,omitempty"`
 	Description string `json:"description,omitempty"`
 	Context     int    `json:"context,omitempty"`
+	// Output cap when distinct from Context (OpenRouter top_provider.max_completion_tokens).
+	MaxOutputTokens int `json:"maxoutputtokens,omitempty"`
+	// USD per token. Pre-divided by 1 since OpenRouter ships pricing as
+	// stringified per-token rates ("0.000003"); FE formats per-million
+	// for display.
+	PromptCostPerToken     float64 `json:"promptcost,omitempty"`
+	CompletionCostPerToken float64 `json:"completioncost,omitempty"`
+	// USD per image / request, when present in the upstream pricing block.
+	ImageCostPerImage   float64 `json:"imagecost,omitempty"`
+	RequestCostPerCall  float64 `json:"requestcost,omitempty"`
+	// Architecture metadata — input modalities (text / image / audio),
+	// tokenizer family ("GPT" / "Claude" / etc.).
+	InputModalities []string `json:"inputmodalities,omitempty"`
+	Tokenizer       string   `json:"tokenizer,omitempty"`
+	// Moderation flag from OpenRouter — model output goes through their
+	// safety filter when true.
+	IsModerated bool `json:"ismoderated,omitempty"`
 }
 
 type CommandListProviderModelsRtnData struct {

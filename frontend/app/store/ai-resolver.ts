@@ -99,6 +99,30 @@ export function resolveAIConfig(
         );
         if (custom) model = viewFromCustomModel(custom, catalogProvider, customEndpoint);
     }
+    // Catalog-provider-defaults fallback. Two cases this serves:
+    //
+    //   1. kind: "aggregator" (OpenRouter et al) — catalog.models[] is
+    //      empty by design, live /models is authoritative. The id the
+    //      user picked came from the live list; we use provider defaults
+    //      for endpoint/apitype since aggregators don't vary those per
+    //      model.
+    //
+    //   2. kind: "direct" (OpenAI, Anthropic, Google) — user picked a
+    //      newer model the curated catalog hasn't picked up yet but
+    //      that's in the provider's live /models response. Same path:
+    //      provider defaults for endpoint/apitype work because direct
+    //      providers also don't vary those per model (apiTypeOverride
+    //      on ModelEntry is the explicit per-model escape hatch, and
+    //      it only applies when the model IS in catalog.models).
+    //
+    // Capabilities / contextWindow default to the empty shape — the
+    // backend treats them as "unknown" rather than failing. UX win in
+    // Phase D: the chip / picker shows live name+context, the resolver
+    // synthesizes a request, the agent runs. Catalog and live now use
+    // the same fallback chain — no more "configured but unsendable".
+    if (!model && catalogProvider) {
+        model = viewFromCatalogProviderDefaults(effective.model, catalogProvider);
+    }
     if (!model) {
         return {
             ok: false,
@@ -194,6 +218,19 @@ function viewFromCustomEndpointModel(
         apiType: endpoint.apitype,
         capabilities: model.capabilities,
         contextWindow: model.contextWindow,
+    };
+}
+
+function viewFromCatalogProviderDefaults(
+    modelId: string,
+    provider: ProviderEntry
+): ResolvedModelView {
+    return {
+        id: modelId,
+        endpoint: provider.defaultEndpoint.replace("{model}", modelId),
+        apiType: provider.defaultApiType,
+        capabilities: [],
+        contextWindow: 0,
     };
 }
 

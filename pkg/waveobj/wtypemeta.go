@@ -154,6 +154,7 @@ type MetaTSType struct {
 	OnboardingLastVersion string `json:"onboarding:lastversion,omitempty"` // for client (tracks semver of last 'onboarding' shown)
 
 	AgentSelection *AgentSelectionMeta `json:"agent:selection,omitempty"` // per-pane AI selection — provider/model/reasoning triple, written by the model picker
+	AgentChatID    string              `json:"agent:chatid,omitempty"`    // per-pane conversation id; minted lazily on first agent submit, addresses backend chatstore
 
 	Count int `json:"count,omitempty"` // temp for cpu plot. will remove later
 }
