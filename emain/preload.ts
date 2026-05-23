@@ -17,6 +17,25 @@ ipcRenderer.on("dir-changed", (_event, path: string, eventType: string, filename
     }
 });
 
+// Agent event fan-out — mirrors the dir-watch pattern. Main emits
+// "agent:event" with {sessionPath, event}; we route to per-sessionPath
+// callbacks the renderer registered via api.agent.subscribe().
+const agentEventCallbacks = new Map<string, Set<(event: unknown) => void>>();
+ipcRenderer.on(
+    "agent:event",
+    (_event, payload: { sessionPath: string; event: unknown }) => {
+        const cbs = agentEventCallbacks.get(payload.sessionPath);
+        if (!cbs) return;
+        for (const cb of cbs) {
+            try {
+                cb(payload.event);
+            } catch (e) {
+                console.error("agent:event callback error", e);
+            }
+        }
+    },
+);
+
 // update type in custom.d.ts (ElectronApi type)
 contextBridge.exposeInMainWorld("api", {
     getAuthKey: () => ipcRenderer.sendSync("get-auth-key"),
@@ -114,6 +133,34 @@ contextBridge.exposeInMainWorld("api", {
         } else {
             ipcRenderer.send("unwatch-dir", path);
         }
+    },
+    // ─── Agent runtime (Electron main agent loop) ────────────────────
+    // See docs/agent-runtime-architecture.md §2 + emain/agent-ipc.ts.
+    agent: {
+        createSession: (cwd: string) => ipcRenderer.invoke("agent:create-session", cwd),
+        listSessionsForCwd: (cwd: string) =>
+            ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
+        send: (opts: unknown) => ipcRenderer.invoke("agent:send", opts),
+        abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
+        subscribe: (sessionPath: string, callback: (event: unknown) => void): (() => void) => {
+            let entry = agentEventCallbacks.get(sessionPath);
+            if (!entry) {
+                entry = new Set();
+                agentEventCallbacks.set(sessionPath, entry);
+                // First subscriber for this path → tell main to start forwarding.
+                ipcRenderer.send("agent:subscribe", sessionPath);
+            }
+            entry.add(callback);
+            return () => {
+                const cur = agentEventCallbacks.get(sessionPath);
+                if (!cur) return;
+                cur.delete(callback);
+                if (cur.size === 0) {
+                    agentEventCallbacks.delete(sessionPath);
+                    ipcRenderer.send("agent:unsubscribe", sessionPath);
+                }
+            };
+        },
     },
 });
 

@@ -136,6 +136,30 @@ declare global {
         setIsActive: () => Promise<void>; // set-is-active
         watchDir: (path: string, callback: (eventType: string, filename: string) => void) => void;
         unwatchDir: (path: string, callback?: (eventType: string, filename: string) => void) => void;
+        // Agent runtime IPC. See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
+        // Event payloads are pi AgentHarnessEvent shapes (text deltas, tool calls,
+        // turn boundaries, etc.); usePiChat (task #12) wraps them into React state.
+        agent: {
+            createSession: (cwd: string) => Promise<AgentSessionMeta>;
+            listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
+            send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta }>;
+            abort: (sessionPath: string) => void;
+            /** Subscribe to events for one session. Returns an unsubscribe fn. */
+            subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;
+        };
+    };
+
+    type AgentSendOptions = {
+        /** Existing session metadata, or null to have main mint a new one. */
+        sessionMetadata?: AgentSessionMeta | null;
+        cwd: string;
+        text: string;
+        provider: string;
+        model: string;
+        reasoning?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+        gitBranch?: string;
+        recentCmds?: string[];
+        connection?: string;
     };
 
     type ElectronContextMenuItem = {
