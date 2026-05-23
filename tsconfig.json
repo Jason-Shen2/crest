@@ -2,7 +2,7 @@
     "include": ["frontend/**/*", "emain/**/*"],
     "exclude": ["node_modules"],
     "compilerOptions": {
-        "target": "es6",
+        "target": "es2022",
         "module": "es2020",
         "jsx": "preserve",
         "esModuleInterop": true,
@@ -26,7 +26,7 @@
             "@/preview/*": ["frontend/preview/*"],
             "edgeflowjs": ["../edgeFlow.js/src/index.ts"]
         },
-        "lib": ["dom", "dom.iterable", "es6"],
+        "lib": ["dom", "dom.iterable", "es2022"],
         "allowJs": true,
         "strict": false,
         "noEmit": true

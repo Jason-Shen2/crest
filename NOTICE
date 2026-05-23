@@ -10,6 +10,17 @@ full list of derivative works:
       ForgeCode (https://github.com/tailcallhq/forgecode), Apache
       License 2.0.
 
+This product also includes software derived from third parties under
+the MIT License. The relevant sources retain their original copyright
+notices in their file headers:
+
+  - emain/agent/  (started from pi-agent-core v0.75.5)
+  - emain/ai/     (started from pi-ai v0.75.5)
+      Copyright (c) Mario Zechner / earendil-works.
+      Source: https://github.com/earendil-works/pi
+      Subsequently maintained in-tree as part of crest; see
+      emain/agent/LICENSE.pi for the MIT terms.
+
 You may obtain a copy of the Apache License, Version 2.0 at:
 
     https://www.apache.org/licenses/LICENSE-2.0
