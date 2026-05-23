@@ -26,6 +26,7 @@ import { handleCtrlShiftState } from "./emain-util";
 import { getWaveVersion } from "./emain-wavesrv";
 import { createNewWaveWindow, getWaveWindowByWebContentsId } from "./emain-window";
 import { ElectronWshClient } from "./emain-wsh";
+import { registerAgentIpcHandlers } from "./agent-ipc";
 
 const electronApp = electron.app;
 
@@ -193,6 +194,10 @@ function saveImageFileWithNativeDialog(
 }
 
 export function initIpcHandlers() {
+    // Agent runtime IPC (renderer ↔ Electron-main agent loop).
+    // See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
+    registerAgentIpcHandlers();
+
     electron.ipcMain.on("open-external", (event, url) => {
         if (url && typeof url === "string") {
             fireAndForget(() =>
