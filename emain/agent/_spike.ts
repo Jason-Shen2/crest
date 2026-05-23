@@ -1,24 +1,36 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// _spike.ts — end-to-end sanity check for the integrated agent stack.
+// _spike.ts — end-to-end smoke for the integrated agent runtime.
 //
-// Constructs an Agent with whichever provider has an env-var key
-// available, runs one prompt, and prints the streamed event types.
-// Confirms:
-//   - emain/agent and emain/ai compile and load at runtime
-//   - register-builtins wired the providers we care about
-//   - a real upstream call streams events back through Agent.subscribe()
+// Exercises the full stack from sessions.ts → harness-factory.ts →
+// AgentHarness → pi-ai → upstream LLM. Confirms:
+//   - emain/agent + emain/ai compile and load at runtime
+//   - JsonlSessionRepo mints a JSONL file under the configured root
+//   - buildPaneHarness wires env / model / system prompt correctly
+//   - AgentHarness.prompt drives a real turn and emits event stream
+//   - Session JSONL contains the appended messages afterwards
 //
 // Usage:
 //   ANTHROPIC_API_KEY=sk-ant-... npx tsx emain/agent/_spike.ts
-//   OPENAI_API_KEY=sk-... npx tsx emain/agent/_spike.ts "Hello"
+//   OPENAI_API_KEY=sk-... npx tsx emain/agent/_spike.ts "Tell me a joke"
 //   GEMINI_API_KEY=... npx tsx emain/agent/_spike.ts
 //
-// Delete this file once the runtime path is wired through Electron main.
+// Spike writes session JSONL under a tmp dir (not the user's real
+// sessions store) so repeated runs don't pile up real conversations.
+//
+// Delete this file once the Electron main runtime + IPC wiring is in
+// place and exercised by integration tests.
 
-import { Agent } from "./index";
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { getModel } from "../ai";
+import { JsonlSessionRepo } from "./harness/session/jsonl-repo";
+import { NodeExecutionEnv } from "./node";
+import { buildPaneHarness } from "./harness-factory";
+import { _setSessionsRepoForTests, createPaneSession } from "./sessions";
 
 interface ProviderChoice {
     provider: "anthropic" | "openai" | "google";
@@ -46,6 +58,17 @@ async function main(): Promise<void> {
     const pick = pickProvider();
     console.log(`[spike] provider=${pick.provider} model=${pick.model}`);
 
+    // Sandbox the sessions root to a tmp dir so we don't pollute the
+    // user's real conversation history.
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-spike-"));
+    const sandboxedEnv = new NodeExecutionEnv({ cwd: process.cwd() });
+    const tmpRepo = new JsonlSessionRepo({ fs: sandboxedEnv, sessionsRoot: tmpRoot });
+    _setSessionsRepoForTests(tmpRepo);
+    console.log(`[spike] sessions root: ${tmpRoot}`);
+
+    const { session, metadata } = await createPaneSession(process.cwd());
+    console.log(`[spike] minted session id=${metadata.id} at ${metadata.path}`);
+
     // getModel is typed with literal generics; the loose `pick.provider`
     // string can't satisfy them. Cast — runtime accepts any registered id.
     const model = (getModel as unknown as (p: string, m: string) => unknown)(
@@ -54,32 +77,42 @@ async function main(): Promise<void> {
     );
     if (!model) throw new Error(`getModel returned no entry for ${pick.provider}/${pick.model}`);
 
-    const agent = new Agent({
-        initialState: {
-            systemPrompt: "You answer in five words or fewer.",
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            model: model as any,
+    const pane = buildPaneHarness({
+        session,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        model: model as any,
+        promptInputs: {
+            cwd: process.cwd(),
+            gitBranch: "main",
+            recentCmds: ["git status", "ls"],
         },
     });
 
     const eventCounts: Record<string, number> = {};
-    let finalMessageCount = 0;
-    agent.subscribe((event) => {
+    // subscribe() gets the full AgentHarnessEvent | AgentEvent union;
+    // the per-type .on() API is reserved for AgentHarness-OWN hooks
+    // (queue, save_point, ...), not the underlying Agent's stream events.
+    pane.harness.subscribe((event) => {
         eventCounts[event.type] = (eventCounts[event.type] ?? 0) + 1;
         if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
             process.stdout.write(event.assistantMessageEvent.delta);
         }
-        if (event.type === "agent_end") {
-            finalMessageCount = event.messages.length;
-        }
     });
 
-    await agent.prompt(prompt);
+    const assistantMessage = await pane.harness.prompt(prompt);
+
     process.stdout.write("\n\n[spike] event tally:\n");
     for (const [type, count] of Object.entries(eventCounts).sort()) {
         process.stdout.write(`  ${type}: ${count}\n`);
     }
-    console.log(`[spike] final message count: ${finalMessageCount}`);
+    console.log(`[spike] stop reason: ${assistantMessage.stopReason}`);
+    if (assistantMessage.errorMessage) {
+        console.log(`[spike] error message: ${assistantMessage.errorMessage}`);
+    }
+
+    // Verify the session JSONL has appended entries.
+    const lines = (await fs.readFile(metadata.path, "utf8")).trim().split("\n");
+    console.log(`[spike] session jsonl line count: ${lines.length}`);
     console.log(`[spike] OK`);
 }
 
