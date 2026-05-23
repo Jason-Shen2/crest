@@ -15,6 +15,7 @@ import type { Api, Model } from "../ai";
 import { AgentHarness } from "./harness/agent-harness";
 import type { Session } from "./harness/types";
 import { NodeExecutionEnv } from "./node";
+import type { ToolCallHook } from "./permissions";
 import type { AgentTool, ThinkingLevel } from "./types";
 import { buildSystemPrompt, type SystemPromptInputs } from "./build-system-prompt";
 
@@ -29,6 +30,15 @@ export interface BuildPaneHarnessOptions {
     promptInputs: SystemPromptInputs;
     /** Tool definitions. Empty until task #10 wires the crest tools. */
     tools?: AgentTool[];
+    /**
+     * Optional tool_call gate (typically from buildPermissionsHook).
+     * AgentHarness invokes this before executing every tool call.
+     * Returning undefined allows; {block: true, reason} denies and
+     * surfaces `reason` as the tool result text (visible inline in
+     * the agent block). See emain/agent/permissions.ts and
+     * docs/agent-runtime-architecture.md §7.9.
+     */
+    toolCallHook?: ToolCallHook;
 }
 
 export interface PaneHarness {
@@ -61,6 +71,12 @@ export function buildPaneHarness(opts: BuildPaneHarnessOptions): PaneHarness {
         // because pi's AgentHarness threads this through every turn.
         systemPrompt: () => buildSystemPrompt(inputs),
     });
+    if (opts.toolCallHook) {
+        // AgentHarness gates tool execution via the typed "tool_call"
+        // event hook; .on() returns an unsubscribe we ignore because
+        // the harness lifetime IS the hook lifetime.
+        harness.on("tool_call", opts.toolCallHook);
+    }
     return {
         harness,
         update(next: SystemPromptInputs): void {
