@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 
 	"github.com/google/uuid"
-	"github.com/s-zx/crest/pkg/aiusechat/uctypes"
 	"github.com/s-zx/crest/pkg/baseds"
 	"github.com/s-zx/crest/pkg/cmdblock/cbtypes"
 	"github.com/s-zx/crest/pkg/telemetry/telemetrydata"
@@ -78,8 +77,6 @@ type WshRpcInterface interface {
 	SetConfigCommand(ctx context.Context, data MetaSettingsType) error
 	SetConnectionsConfigCommand(ctx context.Context, data ConnConfigRequest) error
 	GetFullConfigCommand(ctx context.Context) (wconfig.FullConfigType, error)
-	GetAIUserConfigCommand(ctx context.Context) (*GetAIUserConfigRtnData, error)
-	WriteAIUserConfigCommand(ctx context.Context, data uctypes.AIUserConfig) error
 	BlockInfoCommand(ctx context.Context, blockId string) (*BlockInfoData, error)
 	DebugTermCommand(ctx context.Context, data CommandDebugTermData) (*CommandDebugTermRtnData, error)
 	BlocksListCommand(ctx context.Context, data BlocksListRequest) ([]BlocksListEntry, error)
@@ -164,12 +161,6 @@ type WshRpcInterface interface {
 
 	// ai
 	AiSendMessageCommand(ctx context.Context, data AiMessageData) error
-	WaveAIEnableTelemetryCommand(ctx context.Context) error
-	GetWaveAIChatCommand(ctx context.Context, data CommandGetWaveAIChatData) (*uctypes.UIChat, error)
-	WaveAIToolApproveCommand(ctx context.Context, data CommandWaveAIToolApproveData) error
-	WaveAIAddContextCommand(ctx context.Context, data CommandWaveAIAddContextData) error
-	WaveAIGetToolDiffCommand(ctx context.Context, data CommandWaveAIGetToolDiffData) (*CommandWaveAIGetToolDiffRtnData, error)
-	ListProviderModelsCommand(ctx context.Context, data CommandListProviderModelsData) (*CommandListProviderModelsRtnData, error)
 	ShowBlockCommand(ctx context.Context, data CommandShowBlockData) error
 
 	// screenshot
@@ -593,114 +584,6 @@ type BlocksListEntry struct {
 
 type AiMessageData struct {
 	Message string `json:"message,omitempty"`
-}
-
-type CommandGetWaveAIChatData struct {
-	ChatId string `json:"chatid"`
-}
-
-type CommandWaveAIToolApproveData struct {
-	ChatId     string `json:"chatid,omitempty"`
-	ToolCallId string `json:"toolcallid"`
-	Approval   string `json:"approval,omitempty"`
-	// Optional: when the user clicks "Approve and Remember", these
-	// fields carry the chosen suggestion + destination so the server
-	// can persist a permission rule alongside approving this single
-	// call.
-	AcceptedToolName    string `json:"acceptedtoolname,omitempty"`
-	AcceptedContent     string `json:"acceptedcontent,omitempty"`
-	AcceptedDestination string `json:"accepteddestination,omitempty"` // "session" | "localProject" | "sharedProject" | "user"
-	Cwd                 string `json:"cwd,omitempty"`                  // required for project-scope persistence
-	// AskAnswers — populated only when the toolcallid refers to an
-	// ask_user_question tool. The server forwards these to the agent
-	// loop via UpdateToolApprovalWithAnswers; the tool callback reads
-	// them off UIMessageDataToolUse.AskAnswers and formats the
-	// agent-facing result.
-	AskAnswers []uctypes.AskUserQuestionAnswer `json:"askanswers,omitempty"`
-}
-
-type AIAttachedFile struct {
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Size   int    `json:"size"`
-	Data64 string `json:"data64"`
-}
-
-type CommandWaveAIAddContextData struct {
-	Files   []AIAttachedFile `json:"files,omitempty"`
-	Text    string           `json:"text,omitempty"`
-	Submit  bool             `json:"submit,omitempty"`
-	NewChat bool             `json:"newchat,omitempty"`
-}
-
-type CommandWaveAIGetToolDiffData struct {
-	ChatId     string `json:"chatid"`
-	ToolCallId string `json:"toolcallid"`
-}
-
-type CommandWaveAIGetToolDiffRtnData struct {
-	OriginalContents64 string `json:"originalcontents64"`
-	ModifiedContents64 string `json:"modifiedcontents64"`
-}
-
-// GetAIUserConfigRtnData wraps the read result of ~/.config/crest/ai.json.
-// `Config` is nil exactly when `Status` != "ok"; otherwise it carries the
-// parsed user config.  Status discriminator lets the frontend render the
-// right empty-state vs error UI without resorting to message-string
-// sniffing.
-type GetAIUserConfigRtnData struct {
-	Status  string             `json:"status"` // "ok" | "missing" | "malformed"
-	Config  *uctypes.AIUserConfig `json:"config,omitempty"`
-	Error   string             `json:"error,omitempty"` // populated when Status == "malformed"
-}
-
-// CommandListProviderModelsData lists models a provider exposes via its
-// /models endpoint. The FE resolves apitype/baseurl/tokensecretname
-// from the catalog + saved ai.json (same resolver path used to build
-// agent requests), then calls this RPC. Token resolution:
-//   - APIToken set — literal pass-through (used by the setup wizard
-//     before credentials are persisted).
-//   - TokenSecretName set, APIToken empty — server looks up the secret
-//     in the keychain (used by the picker once the user has saved
-//     credentials).
-type CommandListProviderModelsData struct {
-	APIType         string `json:"apitype"`                   // "openai-chat" / "anthropic-messages" / "google-gemini"
-	BaseURL         string `json:"baseurl,omitempty"`         // chat-completions URL; we strip the suffix to find /models
-	APIToken        string `json:"apitoken,omitempty"`        // bearer / x-api-key / google query-string key
-	TokenSecretName string `json:"tokensecretname,omitempty"` // resolved from secretstore when APIToken is empty
-}
-
-// ProviderModelInfo is the shape we return to the FE — a slim, normalized
-// view of the per-provider /models response. The optional fields below
-// are only populated when the upstream provider exposes them; OpenRouter
-// returns the full set, OpenAI / Anthropic / Gemini typically only the
-// first few. FE treats absent fields as "unknown" and hides them.
-type ProviderModelInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	Context     int    `json:"context,omitempty"`
-	// Output cap when distinct from Context (OpenRouter top_provider.max_completion_tokens).
-	MaxOutputTokens int `json:"maxoutputtokens,omitempty"`
-	// USD per token. Pre-divided by 1 since OpenRouter ships pricing as
-	// stringified per-token rates ("0.000003"); FE formats per-million
-	// for display.
-	PromptCostPerToken     float64 `json:"promptcost,omitempty"`
-	CompletionCostPerToken float64 `json:"completioncost,omitempty"`
-	// USD per image / request, when present in the upstream pricing block.
-	ImageCostPerImage   float64 `json:"imagecost,omitempty"`
-	RequestCostPerCall  float64 `json:"requestcost,omitempty"`
-	// Architecture metadata — input modalities (text / image / audio),
-	// tokenizer family ("GPT" / "Claude" / etc.).
-	InputModalities []string `json:"inputmodalities,omitempty"`
-	Tokenizer       string   `json:"tokenizer,omitempty"`
-	// Moderation flag from OpenRouter — model output goes through their
-	// safety filter when true.
-	IsModerated bool `json:"ismoderated,omitempty"`
-}
-
-type CommandListProviderModelsRtnData struct {
-	Models []ProviderModelInfo `json:"models"`
 }
 
 // CommandShowBlockData attaches an existing (already-created, possibly

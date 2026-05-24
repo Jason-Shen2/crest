@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	agentmcp "github.com/s-zx/crest/pkg/agent/mcp"
 	"github.com/s-zx/crest/pkg/authkey"
 	"github.com/s-zx/crest/pkg/blockcontroller"
 	"github.com/s-zx/crest/pkg/blocklogger"
@@ -80,7 +79,6 @@ func doShutdown(reason string) {
 		ctx, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelFn()
 		go blockcontroller.StopAllBlockControllersForShutdown()
-		agentmcp.GetManager().Shutdown()
 		shutdownActivityUpdate()
 		sendTelemetryWrapper()
 		// TODO deal with flush in progress

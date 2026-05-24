@@ -402,12 +402,6 @@ export class RpcApiType {
         return client.wshRpcCall("focuswindow", data, opts);
     }
 
-    // command "getaiuserconfig" [call]
-    GetAIUserConfigCommand(client: WshClient, opts?: RpcOpts): Promise<GetAIUserConfigRtnData> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "getaiuserconfig", null, opts);
-        return client.wshRpcCall("getaiuserconfig", null, opts);
-    }
-
     // command "getallbadges" [call]
     GetAllBadgesCommand(client: WshClient, opts?: RpcOpts): Promise<BadgeEvent[]> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "getallbadges", null, opts);
@@ -522,12 +516,6 @@ export class RpcApiType {
         return client.wshRpcCall("getvar", data, opts);
     }
 
-    // command "getwaveaichat" [call]
-    GetWaveAIChatCommand(client: WshClient, data: CommandGetWaveAIChatData, opts?: RpcOpts): Promise<UIChat> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "getwaveaichat", data, opts);
-        return client.wshRpcCall("getwaveaichat", data, opts);
-    }
-
     // command "jobcmdexited" [call]
     JobCmdExitedCommand(client: WshClient, data: CommandJobCmdExitedData, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "jobcmdexited", data, opts);
@@ -634,12 +622,6 @@ export class RpcApiType {
     ListAllEditableAppsCommand(client: WshClient, opts?: RpcOpts): Promise<AppInfo[]> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "listalleditableapps", null, opts);
         return client.wshRpcCall("listalleditableapps", null, opts);
-    }
-
-    // command "listprovidermodels" [call]
-    ListProviderModelsCommand(client: WshClient, data: CommandListProviderModelsData, opts?: RpcOpts): Promise<CommandListProviderModelsRtnData> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "listprovidermodels", data, opts);
-        return client.wshRpcCall("listprovidermodels", data, opts);
     }
 
     // command "macosversion" [call]
@@ -1026,30 +1008,6 @@ export class RpcApiType {
         return client.wshRpcCall("waitforroute", data, opts);
     }
 
-    // command "waveaiaddcontext" [call]
-    WaveAIAddContextCommand(client: WshClient, data: CommandWaveAIAddContextData, opts?: RpcOpts): Promise<void> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "waveaiaddcontext", data, opts);
-        return client.wshRpcCall("waveaiaddcontext", data, opts);
-    }
-
-    // command "waveaienabletelemetry" [call]
-    WaveAIEnableTelemetryCommand(client: WshClient, opts?: RpcOpts): Promise<void> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "waveaienabletelemetry", null, opts);
-        return client.wshRpcCall("waveaienabletelemetry", null, opts);
-    }
-
-    // command "waveaigettooldiff" [call]
-    WaveAIGetToolDiffCommand(client: WshClient, data: CommandWaveAIGetToolDiffData, opts?: RpcOpts): Promise<CommandWaveAIGetToolDiffRtnData> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "waveaigettooldiff", data, opts);
-        return client.wshRpcCall("waveaigettooldiff", data, opts);
-    }
-
-    // command "waveaitoolapprove" [call]
-    WaveAIToolApproveCommand(client: WshClient, data: CommandWaveAIToolApproveData, opts?: RpcOpts): Promise<void> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "waveaitoolapprove", data, opts);
-        return client.wshRpcCall("waveaitoolapprove", data, opts);
-    }
-
     // command "wavefilereadstream" [call]
     WaveFileReadStreamCommand(client: WshClient, data: CommandWaveFileReadStreamData, opts?: RpcOpts): Promise<WaveFileInfo> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "wavefilereadstream", data, opts);
@@ -1084,12 +1042,6 @@ export class RpcApiType {
     WorkspaceListCommand(client: WshClient, opts?: RpcOpts): Promise<WorkspaceInfoData[]> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "workspacelist", null, opts);
         return client.wshRpcCall("workspacelist", null, opts);
-    }
-
-    // command "writeaiuserconfig" [call]
-    WriteAIUserConfigCommand(client: WshClient, data: AIUserConfig, opts?: RpcOpts): Promise<void> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "writeaiuserconfig", data, opts);
-        return client.wshRpcCall("writeaiuserconfig", data, opts);
     }
 
     // command "writeappfile" [call]

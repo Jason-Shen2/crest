@@ -24,7 +24,6 @@ func GenerateWshClient() error {
 	fmt.Fprintf(os.Stderr, "generating wshclient file to %s\n", WshClientFileName)
 	var buf strings.Builder
 	gogen.GenerateBoilerplate(&buf, "wshclient", []string{
-		"github.com/s-zx/crest/pkg/aiusechat/uctypes",
 		"github.com/s-zx/crest/pkg/baseds",
 		"github.com/s-zx/crest/pkg/cmdblock/cbtypes",
 		"github.com/s-zx/crest/pkg/telemetry/telemetrydata",
