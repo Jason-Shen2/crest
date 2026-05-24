@@ -26,6 +26,11 @@ import {
     type ProviderModelInfo,
 } from "./aiconfig/list-provider-models";
 import { getSecret } from "./aiconfig/secrets";
+import {
+    readAIUserConfig,
+    writeAIUserConfig,
+    type AIUserConfigReadResult,
+} from "./aiconfig/user-config";
 
 interface ListProviderModelsIpcInput extends ListProviderModelsInput {
     tokensecretname?: string;
@@ -54,6 +59,20 @@ export function registerAiConfigIpcHandlers(): void {
                 baseurl: input.baseurl,
                 apitoken: token,
             });
+        },
+    );
+
+    electron.ipcMain.handle(
+        "ai:get-user-config",
+        async (): Promise<AIUserConfigReadResult> => {
+            return readAIUserConfig();
+        },
+    );
+
+    electron.ipcMain.handle(
+        "ai:write-user-config",
+        async (_event, cfg: Parameters<typeof writeAIUserConfig>[0]): Promise<void> => {
+            await writeAIUserConfig(cfg);
         },
     );
 }

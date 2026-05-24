@@ -63,9 +63,11 @@ const previewElectronApi: ElectronApi = {
     watchDir: (_path: string, _callback: (eventType: string, filename: string) => void) => {},
     unwatchDir: (_path: string, _callback?: (eventType: string, filename: string) => void) => {},
     // AI config IPC stubs — preview pages don't fetch live provider
-    // model lists. Only here to satisfy ElectronApi.
+    // model lists or persist ai.json. Only here to satisfy ElectronApi.
     ai: {
         listProviderModels: () => Promise.resolve([]),
+        getUserConfig: () => Promise.resolve({ status: "missing" }),
+        writeUserConfig: () => Promise.resolve(),
     },
     // Agent IPC stubs — preview pages never actually invoke the agent
     // runtime, so these reject / no-op. Only here to satisfy ElectronApi.

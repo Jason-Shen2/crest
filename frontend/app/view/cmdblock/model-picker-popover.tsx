@@ -68,7 +68,7 @@ import {
     providersWithCredentials,
     refreshProviderModels,
 } from "@/app/store/ai-provider-models";
-import { AgentSelection } from "@/app/store/ai-types";
+import { AgentSelection, AIUserConfig, UserCustomEndpointModel, UserCustomModel } from "@/app/store/ai-types";
 import { AIUserConfigStatus, isPinned, togglePinned } from "@/app/store/ai-user-config";
 
 const POPOVER_WIDTH_PX = 340;

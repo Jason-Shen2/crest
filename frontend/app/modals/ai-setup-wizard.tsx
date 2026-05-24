@@ -9,17 +9,18 @@
 // Step 2: paste API key for each selected provider
 // Step 3: pick default model (provider + model + optional reasoning)
 //
-// On submit: writes ai.json via WriteAIUserConfigCommand AND saves
+// On submit: writes ai.json via getApi().ai.writeUserConfig AND saves
 // keys to OS keychain via SetSecretsCommand. Both happen atomically
 // from the user's perspective — if the keychain write fails we still
 // write ai.json (the user can re-enter keys without losing provider
 // selection).
 
-import { aiUserConfigAtom, reloadAIUserConfig } from "@/app/store/ai-user-config";
+import { aiUserConfigAtom, reloadAIUserConfig, writeAIUserConfig } from "@/app/store/ai-user-config";
 import { CATALOG, ModelEntry, ProviderEntry, ReasoningLevel } from "@/app/store/ai-catalog";
 import { modalsModel } from "@/app/store/modalmodel";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import type { AIUserConfig } from "@/app/store/ai-types";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { useCallback, useMemo, useState } from "react";
@@ -154,9 +155,11 @@ const AISetupWizardV = ({ onClose }: { onClose: () => void }) => {
             if (Object.keys(secrets).length > 0) {
                 await RpcApi.SetSecretsCommand(TabRpcClient, secrets);
             }
-            await RpcApi.WriteAIUserConfigCommand(TabRpcClient, config);
-            // Refresh the picker atom so the UI picks up the new state
-            // immediately (no need to wait for a watcher event).
+            // writeAIUserConfig() persists ai.json via electron IPC and
+            // refreshes the atom on success — no separate reload call
+            // needed (the explicit reload below is defensive in case a
+            // future change drops the implicit refresh).
+            await writeAIUserConfig(config);
             await reloadAIUserConfig();
             onClose();
         } catch (e) {

@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Frontend access layer for ~/.config/crest/ai.json.  Calls the
-// GetAIUserConfigCommand / WriteAIUserConfigCommand wshrpcs and
-// exposes the result as a jotai atom so the picker and any other
-// consumers see the same single load.
+// getApi().ai.getUserConfig / writeUserConfig electron-main IPC
+// handlers (see emain/aiconfig-ipc.ts) and exposes the result as a
+// jotai atom so the picker and any other consumers see the same
+// single load.
 //
 // State machine:
 //
@@ -18,11 +19,10 @@
 // underlying parse error to the user so they can fix the file.
 
 import { atom } from "jotai";
-import { RpcApi } from "@/app/store/wshclientapi";
-import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { getApi } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
 
-import type { UserConfig } from "./ai-types";
+import type { AIUserConfig, UserConfig } from "./ai-types";
 
 export type AIUserConfigStatus = "loading" | "ok" | "missing" | "malformed" | "rpc_error";
 
@@ -51,7 +51,7 @@ export const aiUserConfigAtom = atom<AIUserConfigState>({
 // answer).
 export async function reloadAIUserConfig(): Promise<void> {
     try {
-        const resp = await RpcApi.GetAIUserConfigCommand(TabRpcClient);
+        const resp = await getApi().ai.getUserConfig();
         switch (resp.status) {
             case "ok":
                 globalStore.set(aiUserConfigAtom, {
@@ -76,7 +76,7 @@ export async function reloadAIUserConfig(): Promise<void> {
                 globalStore.set(aiUserConfigAtom, {
                     status: "rpc_error",
                     config: null,
-                    error: `unknown status "${resp.status}" from GetAIUserConfigCommand`,
+                    error: `unknown status "${(resp as { status: string }).status}" from ai.getUserConfig`,
                 });
         }
     } catch (e) {
@@ -88,12 +88,12 @@ export async function reloadAIUserConfig(): Promise<void> {
     }
 }
 
-// writeAIUserConfig — persist the config via wshrpc and refresh the
-// atom on success.  Throws on validation / IO failure so the caller
-// (a save button) can show the error inline; refresh fires
+// writeAIUserConfig — persist the config via electron IPC and refresh
+// the atom on success.  Throws on validation / IO failure so the
+// caller (a save button) can show the error inline; refresh fires
 // afterwards so the picker sees the new state immediately.
 export async function writeAIUserConfig(cfg: UserConfig): Promise<void> {
-    await RpcApi.WriteAIUserConfigCommand(TabRpcClient, cfg as AIUserConfig);
+    await getApi().ai.writeUserConfig(cfg as AIUserConfig);
     await reloadAIUserConfig();
 }
 

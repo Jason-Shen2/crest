@@ -32,7 +32,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { formatPromptCwd } from "./cmdblock-status";
 import { ModelPickerInline, ModelPickerPopover } from "./model-picker-popover";
 import { ProviderEntry } from "@/app/store/ai-catalog";
-import { AgentSelection } from "@/app/store/ai-types";
+import { AgentSelection, AIUserConfig } from "@/app/store/ai-types";
 import { AIUserConfigStatus } from "@/app/store/ai-user-config";
 
 // "auto" maps to warp's InputToggleMode::AutoDetection

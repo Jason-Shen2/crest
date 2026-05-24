@@ -137,9 +137,17 @@ declare global {
         watchDir: (path: string, callback: (eventType: string, filename: string) => void) => void;
         unwatchDir: (path: string, callback?: (eventType: string, filename: string) => void) => void;
         // AI config / provider model listing IPC. See emain/aiconfig-ipc.ts.
-        // Replaces the deleted Go ListProviderModelsCommand wshrpc.
+        // Replaces the deleted Go ListProviderModelsCommand /
+        // Get|WriteAIUserConfigCommand wshrpcs.
+        //
+        // Configs are typed as `unknown` here so this ambient surface
+        // doesn't depend on the renderer's AIUserConfig shape (defined
+        // in frontend/app/store/ai-types.ts). Callers cast at the
+        // boundary, where the concrete type is already in scope.
         ai: {
             listProviderModels: (input: ListProviderModelsInput) => Promise<AiProviderModelInfo[]>;
+            getUserConfig: () => Promise<AIUserConfigReadResult>;
+            writeUserConfig: (cfg: unknown) => Promise<void>;
         };
         // Agent runtime IPC. See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
         // Event payloads are pi AgentHarnessEvent shapes (text deltas, tool calls,
@@ -152,6 +160,13 @@ declare global {
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
             subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;
         };
+    };
+
+    type AIUserConfigReadResult = {
+        status: "ok" | "missing" | "malformed";
+        // Renderer casts to its own UserConfig type on receive.
+        config?: unknown;
+        error?: string;
     };
 
     type ListProviderModelsInput = {
