@@ -134,6 +134,12 @@ contextBridge.exposeInMainWorld("api", {
             ipcRenderer.send("unwatch-dir", path);
         }
     },
+    // ─── AI config / provider listing ────────────────────────────────
+    // See emain/aiconfig-ipc.ts. Replaces the Go ListProviderModelsCommand.
+    ai: {
+        listProviderModels: (input: unknown) =>
+            ipcRenderer.invoke("ai:list-provider-models", input),
+    },
     // ─── Agent runtime (Electron main agent loop) ────────────────────
     // See docs/agent-runtime-architecture.md §2 + emain/agent-ipc.ts.
     agent: {
