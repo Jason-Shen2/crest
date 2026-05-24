@@ -5,37 +5,12 @@
 
 declare global {
 
-    // wshrpc.AIAttachedFile
-    type AIAttachedFile = {
-        name: string;
-        type: string;
-        size: number;
-        data64: string;
-    };
-
     // wconfig.AIPermissionsConfig
     type AIPermissionsConfig = {
         allow?: string[];
         deny?: string[];
         ask?: string[];
         defaultPosture?: string;
-    };
-
-    // uctypes.AISelectionConfig
-    type AISelectionConfig = {
-        provider: string;
-        model: string;
-        reasoning?: string;
-    };
-
-    // uctypes.AIUserConfig
-    type AIUserConfig = {
-        providers: {[key: string]: ProviderCredentials};
-        default: AISelectionConfig;
-        profiles?: {[key: string]: AISelectionConfig};
-        custom_models?: UserCustomModel[];
-        custom_endpoints?: {[key: string]: UserCustomEndpoint};
-        pinned?: PinnedModel[];
     };
 
     // wshrpc.ActivityDisplayType
@@ -117,13 +92,6 @@ declare global {
         shortdesc: string;
         icon: string;
         iconcolor: string;
-    };
-
-    // uctypes.AskUserQuestionAnswer
-    type AskUserQuestionAnswer = {
-        questionid: string;
-        choices?: string[];
-        othertext?: string;
     };
 
     // wconfig.BackgroundConfigType
@@ -513,11 +481,6 @@ declare global {
         filename?: string;
     };
 
-    // wshrpc.CommandGetWaveAIChatData
-    type CommandGetWaveAIChatData = {
-        chatid: string;
-    };
-
     // wshrpc.CommandJobCmdExitedData
     type CommandJobCmdExitedData = {
         jobid: string;
@@ -588,19 +551,6 @@ declare global {
         entrycount: number;
         totalentries: number;
         truncated?: boolean;
-    };
-
-    // wshrpc.CommandListProviderModelsData
-    type CommandListProviderModelsData = {
-        apitype: string;
-        baseurl?: string;
-        apitoken?: string;
-        tokensecretname?: string;
-    };
-
-    // wshrpc.CommandListProviderModelsRtnData
-    type CommandListProviderModelsRtnData = {
-        models: ProviderModelInfo[];
     };
 
     // wshrpc.CommandMakeDraftFromLocalData
@@ -869,38 +819,6 @@ declare global {
     type CommandWaitForRouteData = {
         routeid: string;
         waitms: number;
-    };
-
-    // wshrpc.CommandWaveAIAddContextData
-    type CommandWaveAIAddContextData = {
-        files?: AIAttachedFile[];
-        text?: string;
-        submit?: boolean;
-        newchat?: boolean;
-    };
-
-    // wshrpc.CommandWaveAIGetToolDiffData
-    type CommandWaveAIGetToolDiffData = {
-        chatid: string;
-        toolcallid: string;
-    };
-
-    // wshrpc.CommandWaveAIGetToolDiffRtnData
-    type CommandWaveAIGetToolDiffRtnData = {
-        originalcontents64: string;
-        modifiedcontents64: string;
-    };
-
-    // wshrpc.CommandWaveAIToolApproveData
-    type CommandWaveAIToolApproveData = {
-        chatid?: string;
-        toolcallid: string;
-        approval?: string;
-        acceptedtoolname?: string;
-        acceptedcontent?: string;
-        accepteddestination?: string;
-        cwd?: string;
-        askanswers?: AskUserQuestionAnswer[];
     };
 
     // wshrpc.CommandWaveFileReadStreamData
@@ -1188,13 +1106,6 @@ declare global {
         buildtime: string;
     };
 
-    // wshrpc.GetAIUserConfigRtnData
-    type GetAIUserConfigRtnData = {
-        status: string;
-        config?: AIUserConfig;
-        error?: string;
-    };
-
     // wshrpc.GitInfoResponse
     type GitInfoResponse = {
         isrepo: boolean;
@@ -1449,12 +1360,6 @@ declare global {
         tabid: string;
     };
 
-    // uctypes.PinnedModel
-    type PinnedModel = {
-        provider: string;
-        model: string;
-    };
-
     // waveobj.Point
     type Point = {
         x: number;
@@ -1497,28 +1402,6 @@ declare global {
         memfree?: number;
         numcpu?: number;
         cpusum?: number;
-    };
-
-    // uctypes.ProviderCredentials
-    type ProviderCredentials = {
-        tokensecretname?: string;
-        token?: string;
-    };
-
-    // wshrpc.ProviderModelInfo
-    type ProviderModelInfo = {
-        id: string;
-        name?: string;
-        description?: string;
-        context?: number;
-        maxoutputtokens?: number;
-        promptcost?: number;
-        completioncost?: number;
-        imagecost?: number;
-        requestcost?: number;
-        inputmodalities?: string[];
-        tokenizer?: string;
-        ismoderated?: boolean;
     };
 
     // wshrpc.RemoteInfo
@@ -1930,79 +1813,10 @@ declare global {
         values: {[key: string]: number};
     };
 
-    // uctypes.UIChat
-    type UIChat = {
-        chatid: string;
-        apitype: string;
-        model: string;
-        apiversion: string;
-        messages: UIMessage[];
-    };
-
     // waveobj.UIContext
     type UIContext = {
         windowid: string;
         activetabid: string;
-    };
-
-    // uctypes.UIMessage
-    type UIMessage = {
-        id: string;
-        role: string;
-        metadata?: any;
-        parts?: UIMessagePart[];
-    };
-
-    // uctypes.UIMessagePart
-    type UIMessagePart = {
-        type: string;
-        text?: string;
-        state?: string;
-        toolCallId?: string;
-        input?: any;
-        output?: any;
-        errorText?: string;
-        providerExecuted?: boolean;
-        sourceId?: string;
-        url?: string;
-        title?: string;
-        filename?: string;
-        mediaType?: string;
-        id?: string;
-        data?: any;
-        providerMetadata?: {[key: string]: any};
-    };
-
-    // uctypes.UserCustomEndpoint
-    type UserCustomEndpoint = {
-        displayname: string;
-        endpoint: string;
-        apitype: string;
-        tokensecretname: string;
-        icon?: string;
-        models: UserCustomEndpointModel[];
-    };
-
-    // uctypes.UserCustomEndpointModel
-    type UserCustomEndpointModel = {
-        id: string;
-        displayName: string;
-        description?: string;
-        capabilities: string[];
-        contextWindow: number;
-        reasoningLevels?: string[];
-    };
-
-    // uctypes.UserCustomModel
-    type UserCustomModel = {
-        provider: string;
-        id: string;
-        displayname: string;
-        description?: string;
-        capabilities: string[];
-        contextwindow: number;
-        reasoninglevels?: string[];
-        apitypeoverride?: string;
     };
 
     // userinput.UserInputRequest
