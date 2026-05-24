@@ -136,6 +136,11 @@ declare global {
         setIsActive: () => Promise<void>; // set-is-active
         watchDir: (path: string, callback: (eventType: string, filename: string) => void) => void;
         unwatchDir: (path: string, callback?: (eventType: string, filename: string) => void) => void;
+        // AI config / provider model listing IPC. See emain/aiconfig-ipc.ts.
+        // Replaces the deleted Go ListProviderModelsCommand wshrpc.
+        ai: {
+            listProviderModels: (input: ListProviderModelsInput) => Promise<AiProviderModelInfo[]>;
+        };
         // Agent runtime IPC. See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
         // Event payloads are pi AgentHarnessEvent shapes (text deltas, tool calls,
         // turn boundaries, etc.); usePiChat (task #12) wraps them into React state.
@@ -147,6 +152,28 @@ declare global {
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
             subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;
         };
+    };
+
+    type ListProviderModelsInput = {
+        apitype: string;
+        baseurl?: string;
+        apitoken?: string;
+        tokensecretname?: string;
+    };
+
+    type AiProviderModelInfo = {
+        id: string;
+        name?: string;
+        description?: string;
+        context?: number;
+        maxoutputtokens?: number;
+        promptcost?: number;
+        completioncost?: number;
+        imagecost?: number;
+        requestcost?: number;
+        inputmodalities?: string[];
+        tokenizer?: string;
+        ismoderated?: boolean;
     };
 
     type AgentSendOptions = {

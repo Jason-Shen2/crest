@@ -27,6 +27,7 @@ import { getWaveVersion } from "./emain-wavesrv";
 import { createNewWaveWindow, getWaveWindowByWebContentsId } from "./emain-window";
 import { ElectronWshClient } from "./emain-wsh";
 import { registerAgentIpcHandlers } from "./agent-ipc";
+import { registerAiConfigIpcHandlers } from "./aiconfig-ipc";
 
 const electronApp = electron.app;
 
@@ -197,6 +198,10 @@ export function initIpcHandlers() {
     // Agent runtime IPC (renderer ↔ Electron-main agent loop).
     // See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
     registerAgentIpcHandlers();
+
+    // AI config / provider /models listing IPC (replaces the Go-side
+    // ListProviderModelsCommand wshrpc).
+    registerAiConfigIpcHandlers();
 
     electron.ipcMain.on("open-external", (event, url) => {
         if (url && typeof url === "string") {
