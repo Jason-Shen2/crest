@@ -389,7 +389,7 @@ Tasks (cross-ref with the task list):
 - [x] **#7** — Spike: prove Agent.prompt() works end-to-end (`2a4945ba`)
 - [x] **#8** — Session bridge + system-prompt builder + PaneHarness factory (`6494b288`)
 - [x] **#9** — IPC bridge renderer ↔ main (`ce6c9735`)
-- [x] **#10** — Port crest tools — 6 of 24 (v1 baseline: read/write/multi_edit/list_dir/web_fetch/shell_exec) (`18c9a001`). 18 deferred; tracked separately.
+- [x] **#10** — First-pass tool baseline: 6 hand-written pure-Node tools (`18c9a001`). Superseded by **#16**, which replaced them with pi's own tools.
 - [x] **#11** — Simple permissions hook, allowlist + bench bypass (`aa5a8e54`)
 - [x] **#12** — `usePiChat` React hook + drop `@ai-sdk/react` (`c0222e13`)
 - [x] **#13** — Delete Go agent stack. Done as four sequenced commits:
@@ -397,8 +397,11 @@ Tasks (cross-ref with the task list):
   - `9774a614` — port `ai.json` read/write to electron-main IPC
   - `e6c41d94` — delete Wave-era `aifilediff` view + previews
   - `2994635c` — delete `pkg/agent/`, `pkg/aiusechat/`, 5 dead web routes, 7 wshrpc commands, `wsh ai` CLI, dead test utilities; regen Go/TS bindings
-- [ ] **#14** — E2E regression across all 4 providers × representative tool calls
-- [ ] **#15** — Migrate all block.meta JSON tags to camelCase (independent housekeeping)
+- [x] **#16** — Reuse pi's coding-agent tools (TUI render layer stripped), replacing the #10 hand-written set. Final set (8, all cwd-bound): `read` `write` `edit` `ls` `bash` `find` `grep` + crest's own `web_fetch`.
+  - `cc5ddcc0` (regression harness) → `fb9d4c43` (read/write/edit/ls) → `ce2f5968` (bash, replaces shell_exec) → `7b8ef069` (find/grep, pure-Node — no fd/ripgrep download)
+  - Deviations from verbatim pi, flagged in-code: pi-tui render dropped (crest renders in React); `read`'s image branch deferred; `find`/`grep` use a pure-Node `glob` + `ignore` backend (root `.gitignore` only) instead of fd/ripgrep, to avoid runtime binary downloads in the Electron app.
+- ~~**#14** — E2E regression across all 4 providers~~ — **cancelled.** A repeatable harness exists (`emain/agent/eval/`) and OpenRouter is validated end-to-end; running the other three providers needs their API keys and wasn't worth pursuing. Run manually anytime: `<PROVIDER>_API_KEY=… npx tsx emain/agent/eval/run-regression.ts`.
+- ~~**#15** — Migrate block.meta JSON tags to camelCase~~ — **cancelled.** Large, high-blast-radius housekeeping with no capability gain; not pursued.
 
 ### Post-#13 surface
 
