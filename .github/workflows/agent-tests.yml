@@ -1,31 +1,41 @@
 name: Agent Tests
 
+# The agent runtime moved from Go (pkg/agent + pkg/aiusechat, deleted in
+# 2994635c) to TypeScript in the Electron main process (emain/agent +
+# emain/aiconfig), so this job now runs the vitest suite that covers it.
+
 on:
   pull_request:
     paths:
-      - "pkg/agent/**"
-      - "pkg/aiusechat/**"
-      - "pkg/util/textdiff/**"
-      - "go.mod"
-      - "go.sum"
+      - "emain/agent/**"
+      - "emain/aiconfig/**"
+      - "emain/ai/**"
+      - "frontend/app/store/**"
+      - "frontend/app/term/**"
+      - "package.json"
+      - "package-lock.json"
   push:
     branches:
       - main
       - "feat/**"
 
+env:
+  NODE_VERSION: 22
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-node@v6
         with:
-          go-version-file: go.mod
-          cache: true
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      - name: Run agent + aiusechat tests
-        run: go test -count=1 -race ./pkg/agent/... ./pkg/aiusechat/...
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
 
-      - name: Run golden transcripts
-        run: go test -count=1 -run TestGoldenTranscripts ./pkg/agent/eval/...
+      - name: Run vitest
+        run: npx vitest run

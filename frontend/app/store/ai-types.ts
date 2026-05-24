@@ -1,14 +1,13 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// AI configuration types — selection (per-pane), user config (~/.config),
-// resolved config (the wire shape sent to the agent backend).
+// AI configuration types — selection (per-pane), user config
+// (~/.config/crest/ai.json), and the resolver's output.
 //
-// Design: see docs/ai-config-architecture.md.  These types are
-// frontend-authored; the Go side has a mirror struct in
-// pkg/aiusechat/aiconfig.go (AIConfigRequest) that ingests the resolved
-// shape.  Field names match across the boundary so JSON round-trips
-// without translation.
+// Design: see docs/ai-config-architecture.md.  These are the canonical
+// TS definitions; ai.json read/write happens in electron-main
+// (emain/aiconfig/user-config.ts) over the same JSON shape, and the
+// agent send path carries only {provider, model, reasoning} via IPC.
 
 import type { ApiType, Capability, ModelEntry, ReasoningLevel } from "./ai-catalog";
 
@@ -98,12 +97,17 @@ export interface AIUserConfig {
 export type UserConfig = AIUserConfig;
 
 // =========================================================================
-// Resolved config — output of the resolver, input to the backend
+// Resolved config — output of the resolver
 // =========================================================================
 //
-// What gets sent on the wire to /api/post-agent-message in the
-// `aiconfig` field.  Mirrors pkg/aiusechat/aiconfig.go AIConfigRequest
-// 1:1 — field names must stay in sync.
+// Historically this was the wire shape POSTed to the Go agent backend.
+// With the pi-native runtime (agent loop in electron-main), the agent
+// send path carries only {provider, model, reasoning} over IPC and
+// pi-ai resolves the endpoint/credentials from its own registry. The
+// resolver now serves two live purposes: (1) validation — does the
+// current selection resolve to a real model with credentials? the
+// error half drives the picker's empty/error state — and (2) the
+// derived endpoint/apitype fields the picker reads for display.
 
 export interface ResolvedAIConfig {
     provider: string;
@@ -115,19 +119,13 @@ export interface ResolvedAIConfig {
     // Only present when the resolved model supports reasoning AND the
     // selection requested a level.
     reasoning?: ReasoningLevel;
-    // Exactly one of tokensecretname / token will be set.  Backend
-    // resolves tokensecretname via secretstore.GetSecret; token is
-    // passed through literally (used for testing or unauthed local
+    // Exactly one of tokensecretname / token will be set.  The agent
+    // runtime resolves tokensecretname via emain/aiconfig/secrets.ts;
+    // token is a literal pass-through (testing / unauthed local
     // endpoints).
     tokensecretname?: string;
     token?: string;
 }
-
-// AIConfigRequest is what the agent HTTP request body carries.  Same
-// shape as ResolvedAIConfig — separate name purely for callsite
-// clarity (we say "the request carries an AIConfigRequest, the
-// resolver produces a ResolvedAIConfig" even though they're identical).
-export type AIConfigRequest = ResolvedAIConfig;
 
 // =========================================================================
 // Resolver errors
