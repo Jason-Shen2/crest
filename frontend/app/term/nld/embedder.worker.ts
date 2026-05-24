@@ -23,34 +23,28 @@ import {
     EdgeFlowTensor,
     Tokenizer,
     loadModel,
-    runInference,
+    runInferenceNamed,
+    setOnnxModule,
     type LoadedModel,
 } from "edgeflowjs";
 import * as ort from "onnxruntime-web/wasm";
 import ortWasm from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
 import ortMjs from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 
-// TODO(edgeflow): ../edgeFlow.js/docs/INTEGRATION_LOG.md 2026-05-24 —
-// edgeflowjs 0.2.0 ships none of the injection APIs this worker was
-// written against: setOnnxModule / configureOnnxAssets don't exist, and
-// runInferenceNamed is implemented (core/runtime.js) but never
-// re-exported from any public entry point. On top of that, the onnx
-// backend only sets ort.env.wasm.wasmPaths when `typeof window !==
-// "undefined"` (backends/onnx.js) — always false in a Web Worker — so it
-// leaves ORT's asset paths unconfigured here. We work around all of that
-// consumer-side: configure ORT directly on the statically-imported
-// module. ESM modules are singletons, so edgeflowjs's internal
-// `await import("onnxruntime-web/wasm")` resolves to this same instance
-// and inherits the config (and won't overwrite it, since window is
-// undefined). The static import also forces Vite to bundle ORT into the
-// worker chunk, so that dynamic import always resolves.
+// Inject-and-defer (edgeflowjs >= 0.3.0): we own the ORT module and its
+// config, edgeflowjs uses it as-is. The static import forces Vite to
+// bundle ORT into the worker chunk (otherwise the library's internal
+// dynamic import can be dropped from a worker build); setOnnxModule hands
+// that instance to the library so it never relies on that dynamic import.
 //
-// numThreads=1 keeps us off SharedArrayBuffer (workers usually aren't
-// cross-origin isolated). wasmPaths takes the { wasm, mjs } object form
-// (ORT's WasmFilePaths): Vite's `?url` imports are content-hashed, so a
-// bare prefix string wouldn't resolve to the right files.
+// We configure wasm paths + threads directly because we own the injected
+// module: wasmPaths takes the { wasm, mjs } object form since Vite's
+// `?url` imports are content-hashed (a bare prefix can't address them),
+// and numThreads=1 keeps us off SharedArrayBuffer (workers usually aren't
+// cross-origin isolated).
 ort.env.wasm.wasmPaths = { wasm: ortWasm, mjs: ortMjs };
 ort.env.wasm.numThreads = 1;
+setOnnxModule(ort);
 
 // Model + tokenizer URLs.  Both live under crest's `public/nld-model/`
 // (gitignored — the 130 MB tarball is built artifact, not source).
@@ -135,14 +129,7 @@ async function classify(text: string): Promise<{ pShell: number; pAI: number }> 
         named.set("token_type_ids", tokenTypeIds);
     }
 
-    // edgeflowjs 0.2.0 doesn't re-export runInferenceNamed, so use the
-    // positional runInference and order the tensors to match the model's
-    // declared input order — the ONNX backend maps inputs[i] → the i-th
-    // model input name (backends/onnx.js run()).
-    const orderedInputs = model.metadata.inputs
-        .map((spec) => named.get(spec.name))
-        .filter((t): t is EdgeFlowTensor => t != null);
-    const outputs = await runInference(model, orderedInputs);
+    const outputs = await runInferenceNamed(model, named);
     // Output is logits of shape [batch=1, num_labels=2].  Label order
     // matches training/finetune_classifier.py LABEL_NAMES: [shell, ai].
     const logits = (outputs[0] as EdgeFlowTensor).toFloat32Array();

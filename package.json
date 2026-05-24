@@ -85,7 +85,7 @@
         "dayjs": "^1.11.19",
         "debug": "^4.4.3",
         "diff": "^9.0.0",
-        "edgeflowjs": "^0.2.0",
+        "edgeflowjs": "^0.3.0",
         "electron-updater": "^6.6",
         "env-paths": "^3.0.0",
         "fast-average-color": "^9.5.0",

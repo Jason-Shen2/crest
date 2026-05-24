@@ -17,11 +17,14 @@ const NODE = "node22";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Local sibling clone of the edgeFlow.js library — used for in-tree
-// iteration so source edits show up in crest without a publish round-trip.
-// Falls back to whatever's in node_modules when the path doesn't exist
-// (e.g. CI, fresh clone) so the build still produces a working artifact.
+// Local sibling clone of the edgeFlow.js library. By default crest builds
+// against the published `edgeflowjs` npm package; set EDGEFLOW_LINK=1 to
+// alias it to this local source instead, for instant iteration while
+// hacking on edgeFlow.js (no publish round-trip). Opt-in — NOT auto-on-
+// existence — so merely having the sibling checked out doesn't silently
+// change what crest ships.
 const EDGEFLOW_LOCAL = path.resolve(__dirname, "../edgeFlow.js");
+const USE_LOCAL_EDGEFLOW = process.env.EDGEFLOW_LINK === "1" && existsSync(EDGEFLOW_LOCAL);
 
 // for debugging
 // target is like -- path.resolve(__dirname, "frontend/app/workspace/workspace-layout-model.ts");
@@ -135,11 +138,10 @@ export default defineConfig({
     renderer: {
         root: ".",
         resolve: {
-            // Resolve edgeflowjs to the sibling repo's source when present,
-            // so iteration in /Users/.../edgeFlow.js is instant.  See
-            // EDGEFLOW_LOCAL above.  Drop this block to fall back to the
-            // published npm package.
-            alias: existsSync(EDGEFLOW_LOCAL)
+            // Default: resolve edgeflowjs from node_modules (the published
+            // npm package). With EDGEFLOW_LINK=1, alias it to the sibling
+            // repo's source for instant iteration. See EDGEFLOW_LOCAL above.
+            alias: USE_LOCAL_EDGEFLOW
                 ? [
                       {
                           find: /^edgeflowjs$/,
@@ -148,17 +150,14 @@ export default defineConfig({
                   ]
                 : [],
         },
-        // ES-module workers so dynamic imports inside worker files work.
-        // edgeFlow.js's onnx backend does `await import('onnxruntime-web/wasm')`
-        // inside the worker (src/backends/onnx.ts:92); the default IIFE worker
-        // format silently strips the dynamic import in dev and outright fails
-        // the production build with:
-        //   [vite:worker] Invalid value "iife" for option "worker.format" —
-        //   UMD and IIFE output formats are not supported for code-splitting builds.
-        // TODO(edgeflow): ../edgeFlow.js/docs/INTEGRATION_LOG.md 2026-05-19 —
-        // edgeFlow's worker-compatible code path forces consumers onto
-        // worker.format='es'.  Once edgeFlow ships a static-only ORT loader,
-        // this override can go.
+        // ES-module workers. edgeflowjs's onnx backend keeps a dynamic
+        // `import('onnxruntime-web/wasm')` as an auto-load fallback (we
+        // inject ORT via setOnnxModule so that path isn't taken, but the
+        // statement is still in the worker's module graph). Any dynamic
+        // import means code-splitting, which the default IIFE worker format
+        // rejects ("UMD and IIFE output formats are not supported for
+        // code-splitting builds"). ES workers are the correct permanent
+        // setting here, not a workaround.
         worker: {
             format: "es",
         },
@@ -194,7 +193,7 @@ export default defineConfig({
             // Allow Vite to read source files from the sibling edgeFlow.js
             // clone.  Default fs.allow is the workspace root only, so
             // /Users/.../edgeFlow.js would otherwise 403.
-            fs: existsSync(EDGEFLOW_LOCAL)
+            fs: USE_LOCAL_EDGEFLOW
                 ? { allow: [path.resolve(__dirname), EDGEFLOW_LOCAL] }
                 : undefined,
             watch: {
