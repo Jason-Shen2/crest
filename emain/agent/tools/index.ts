@@ -7,9 +7,9 @@
 // implementations have smarter truncation, fuzzy-matched multi-edit,
 // line-ending preservation, and process-tree-kill shell execution beyond
 // the hand-written originals they replace. web_fetch is still crest's own
-// (pi has none). pi's find + grep are follow-ups — they shell out to
-// fd / ripgrep, which is a binary-distribution decision for the Electron
-// packaging.
+// (pi has none). pi's find + grep shell out to fd / ripgrep; crest
+// implements them in pure Node instead (glob + ignore, see ./_search) so
+// the Electron app never downloads binaries at runtime.
 //
 // pi's tools are cwd-bound: getDefaultTools(cwd) constructs them against
 // the pane's cwd so the LLM can use relative paths.
@@ -17,6 +17,8 @@
 import type { AgentTool } from "../types";
 import { createBashTool } from "./bash";
 import { createEditTool } from "./edit";
+import { createFindTool } from "./find";
+import { createGrepTool } from "./grep";
 import { createLsTool } from "./ls";
 import { createReadTool } from "./read";
 import { webFetchTool } from "./web-fetch";
@@ -24,6 +26,8 @@ import { createWriteTool } from "./write";
 
 export { createBashTool } from "./bash";
 export { createEditTool } from "./edit";
+export { createFindTool } from "./find";
+export { createGrepTool } from "./grep";
 export { createLsTool } from "./ls";
 export { createReadTool } from "./read";
 export { webFetchTool } from "./web-fetch";
@@ -40,6 +44,8 @@ export function getDefaultTools(cwd: string): AgentTool[] {
         createEditTool(cwd),
         createLsTool(cwd),
         createBashTool(cwd),
+        createFindTool(cwd),
+        createGrepTool(cwd),
         webFetchTool,
     ];
 }
@@ -48,4 +54,4 @@ export function getDefaultTools(cwd: string): AgentTool[] {
  * Tool names enabled by default. Useful for buildPermissionsHook's
  * allowedTools list when callers want to enable only a subset.
  */
-export const DEFAULT_TOOL_NAMES = ["read", "write", "edit", "ls", "bash", "web_fetch"] as const;
+export const DEFAULT_TOOL_NAMES = ["read", "write", "edit", "ls", "bash", "find", "grep", "web_fetch"] as const;

@@ -113,4 +113,29 @@ export const SCENARIOS: Scenario[] = [
             return fails;
         },
     },
+    {
+        id: "find",
+        prompt: "Use the find tool to list the TypeScript files (*.ts) under {cwd}, then say how many you found.",
+        check: (cap) => {
+            const fails = [...notErrored(cap), ...noToolErrors(cap)];
+            if (!calledTool(cap, "find")) {
+                fails.push(`expected find to be called; tools called: ${cap.toolCalls.map((c) => c.name).join(", ") || "(none)"}`);
+            }
+            return fails;
+        },
+    },
+    {
+        id: "grep",
+        prompt: 'Use the grep tool to find which lines in {cwd}/package.json contain the text "crest", and report them.',
+        check: (cap) => {
+            const fails = [...notErrored(cap), ...noToolErrors(cap)];
+            if (!calledTool(cap, "grep")) {
+                fails.push(`expected grep to be called; tools called: ${cap.toolCalls.map((c) => c.name).join(", ") || "(none)"}`);
+            }
+            if (!textIncludes(cap, "crest")) {
+                fails.push(`expected final text to mention "crest", got: ${JSON.stringify(cap.finalText.slice(0, 160))}`);
+            }
+            return fails;
+        },
+    },
 ];

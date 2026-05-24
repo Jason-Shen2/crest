@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createBashTool } from "./bash";
 import { createEditTool } from "./edit";
+import { createFindTool } from "./find";
+import { createGrepTool } from "./grep";
 import { createLsTool } from "./ls";
 import { createReadTool } from "./read";
 import { createWriteTool } from "./write";
@@ -244,6 +246,108 @@ describe("bash", () => {
     });
 });
 
+describe("find", () => {
+    it("matches files recursively by basename pattern", async () => {
+        await fs.writeFile(path.join(tmpDir, "a.ts"), "");
+        await fs.mkdir(path.join(tmpDir, "sub"));
+        await fs.writeFile(path.join(tmpDir, "sub/c.ts"), "");
+        await fs.writeFile(path.join(tmpDir, "note.md"), "");
+        const tool = createFindTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "*.ts" });
+        const out = text(result);
+        expect(out).toContain("a.ts");
+        expect(out).toContain("sub/c.ts");
+        expect(out).not.toContain("note.md");
+    });
+
+    it("matches a path-containing glob", async () => {
+        await fs.mkdir(path.join(tmpDir, "src"));
+        await fs.writeFile(path.join(tmpDir, "src/x.spec.ts"), "");
+        await fs.writeFile(path.join(tmpDir, "src/x.ts"), "");
+        const tool = createFindTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "src/**/*.spec.ts" });
+        expect(text(result)).toContain("src/x.spec.ts");
+        expect(text(result)).not.toContain("src/x.ts\n");
+    });
+
+    it("respects .gitignore", async () => {
+        await fs.writeFile(path.join(tmpDir, ".gitignore"), "ignored/\n");
+        await fs.mkdir(path.join(tmpDir, "ignored"));
+        await fs.writeFile(path.join(tmpDir, "ignored/secret.ts"), "");
+        await fs.writeFile(path.join(tmpDir, "kept.ts"), "");
+        const tool = createFindTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "*.ts" });
+        expect(text(result)).toContain("kept.ts");
+        expect(text(result)).not.toContain("secret.ts");
+    });
+
+    it("returns a placeholder when nothing matches", async () => {
+        const tool = createFindTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "*.nope" });
+        expect(text(result)).toContain("No files found");
+    });
+});
+
+describe("grep", () => {
+    it("finds matching lines with path:line:content", async () => {
+        await fs.writeFile(path.join(tmpDir, "f.txt"), "alpha\nbeta\nhello world\n");
+        const tool = createGrepTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "hello" });
+        expect(text(result)).toMatch(/f\.txt:3:hello world/);
+    });
+
+    it("treats the pattern as a regex unless literal is set", async () => {
+        await fs.writeFile(path.join(tmpDir, "r.txt"), "a.b\naxb\n");
+        const tool = createGrepTool(tmpDir);
+        const asRegex = await tool.execute("tc-1", { pattern: "a.b" });
+        expect(text(asRegex)).toContain("axb"); // '.' matched any char
+        const asLiteral = await tool.execute("tc-1", { pattern: "a.b", literal: true });
+        expect(text(asLiteral)).toContain("a.b");
+        expect(text(asLiteral)).not.toContain("axb");
+    });
+
+    it("supports case-insensitive search", async () => {
+        await fs.writeFile(path.join(tmpDir, "c.txt"), "HELLO\n");
+        const tool = createGrepTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "hello", ignoreCase: true });
+        expect(text(result)).toContain("HELLO");
+    });
+
+    it("filters files by glob", async () => {
+        await fs.writeFile(path.join(tmpDir, "x.ts"), "needle\n");
+        await fs.writeFile(path.join(tmpDir, "x.md"), "needle\n");
+        const tool = createGrepTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "needle", glob: "*.ts" });
+        expect(text(result)).toContain("x.ts:");
+        expect(text(result)).not.toContain("x.md:");
+    });
+
+    it("includes context lines", async () => {
+        await fs.writeFile(path.join(tmpDir, "ctx.txt"), "one\ntwo\nMATCH\nfour\nfive\n");
+        const tool = createGrepTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "MATCH", context: 1 });
+        expect(text(result)).toContain("two");
+        expect(text(result)).toContain("four");
+        expect(text(result)).toMatch(/ctx\.txt:3:MATCH/);
+    });
+
+    it("returns a placeholder when nothing matches", async () => {
+        await fs.writeFile(path.join(tmpDir, "empty.txt"), "nothing here\n");
+        const tool = createGrepTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "absent" });
+        expect(text(result)).toContain("No matches found");
+    });
+
+    it("skips binary files", async () => {
+        await fs.writeFile(path.join(tmpDir, "bin"), Buffer.from([0x68, 0x00, 0x69, 0x6e])); // has NUL
+        await fs.writeFile(path.join(tmpDir, "t.txt"), "in\n");
+        const tool = createGrepTool(tmpDir);
+        const result = await tool.execute("tc-1", { pattern: "in" });
+        expect(text(result)).toContain("t.txt:");
+        expect(text(result)).not.toContain("bin:");
+    });
+});
+
 describe("web_fetch", () => {
     let server: Server;
     let baseUrl: string;
@@ -297,10 +401,10 @@ describe("web_fetch", () => {
 });
 
 describe("tools registry", () => {
-    it("getDefaultTools(cwd) returns the 6-tool baseline", () => {
+    it("getDefaultTools(cwd) returns the full tool baseline", () => {
         const tools = getDefaultTools(tmpDir);
         expect(tools.map((t) => t.name).sort()).toEqual(
-            ["bash", "edit", "ls", "read", "web_fetch", "write"].sort(),
+            ["bash", "edit", "find", "grep", "ls", "read", "web_fetch", "write"].sort(),
         );
     });
 
