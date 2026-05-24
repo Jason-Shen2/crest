@@ -190,7 +190,19 @@ function createWaveValueObject<T extends WaveObj>(oref: string, shouldFetch: boo
     return wov;
 }
 
+// A shared, never-fetching value for blank orefs. makeORef() returns null
+// for a blank otype/oid as a "no object" sentinel; honoring it here means
+// a blank oref resolves to null instead of triggering GetObject(""), which
+// the backend rejects with `invalid object reference: ""`.
+const blankWaveObjectValue: WaveObjectValue<any> = {
+    pendingPromise: null,
+    dataAtom: atom({ value: null, loading: false }),
+};
+
 function getWaveObjectValue<T extends WaveObj>(oref: string, createIfMissing = true): WaveObjectValue<T> {
+    if (isBlank(oref)) {
+        return blankWaveObjectValue as WaveObjectValue<T>;
+    }
     let wov = waveObjectValueCache.get(oref);
     if (wov === undefined && createIfMissing) {
         wov = createWaveValueObject(oref, true);
