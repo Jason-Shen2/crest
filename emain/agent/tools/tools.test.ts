@@ -205,7 +205,11 @@ describe("shell_exec", () => {
             timeoutMs: 200,
         });
         expect(result.details.timedOut).toBe(true);
-    }, 5_000);
+        // shell-exec floors timeoutMs at 1000ms and allows a 2000ms
+        // SIGKILL grace after SIGTERM, so worst case is ~3s + spawn
+        // overhead. The generous vitest budget keeps this from flaking
+        // on loaded CI runners (it's ~1s locally).
+    }, 20_000);
 
     it("respects the cwd parameter", async () => {
         const result = await shellExecTool.execute("tc-1", {
