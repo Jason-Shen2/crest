@@ -32,9 +32,9 @@ import {
     ResolvedAIConfig,
     ResolveResult,
     UserConfig,
+    UserCustomEndpoint,
+    UserCustomModel,
 } from "./ai-types";
-// UserCustomEndpoint and UserCustomModel are ambient gotypes — no
-// import needed.  See ai-types.ts for the rationale.
 
 export function resolveAIConfig(
     selection: AgentSelection | undefined,

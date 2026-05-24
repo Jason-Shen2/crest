@@ -139,6 +139,8 @@ contextBridge.exposeInMainWorld("api", {
     ai: {
         listProviderModels: (input: unknown) =>
             ipcRenderer.invoke("ai:list-provider-models", input),
+        getUserConfig: () => ipcRenderer.invoke("ai:get-user-config"),
+        writeUserConfig: (cfg: unknown) => ipcRenderer.invoke("ai:write-user-config", cfg),
     },
     // ─── Agent runtime (Electron main agent loop) ────────────────────
     // See docs/agent-runtime-architecture.md §2 + emain/agent-ipc.ts.
