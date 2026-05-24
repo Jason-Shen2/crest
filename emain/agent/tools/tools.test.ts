@@ -1,10 +1,9 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Unit tests for the agent tool baseline. The read/write/edit/ls tools
-// are pi-derived (cwd-bound factories); shell_exec + web_fetch are
-// crest's own. web_fetch hits a real loopback HTTP server to stay
-// deterministic and offline.
+// Unit tests for the agent tool baseline. read/write/edit/ls/bash are
+// pi-derived (cwd-bound factories); web_fetch is crest's own. web_fetch
+// hits a real loopback HTTP server to stay deterministic and offline.
 
 import { createServer, type Server } from "node:http";
 import { promises as fs } from "node:fs";
@@ -12,12 +11,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { createBashTool } from "./bash";
 import { createEditTool } from "./edit";
 import { createLsTool } from "./ls";
 import { createReadTool } from "./read";
 import { createWriteTool } from "./write";
 import { DEFAULT_TOOL_NAMES, getDefaultTools } from "./index";
-import { shellExecTool } from "./shell-exec";
 import { webFetchTool } from "./web-fetch";
 import { expandHome, requireAbsolute, resolveToCwd } from "./_paths";
 
@@ -209,31 +208,39 @@ describe("ls", () => {
     });
 });
 
-describe("shell_exec", () => {
-    it("captures stdout and exit code from a simple command", async () => {
-        const result = await shellExecTool.execute("tc-1", { command: "echo hi" });
+describe("bash", () => {
+    it("captures stdout from a simple command", async () => {
+        const tool = createBashTool(tmpDir);
+        const result = await tool.execute("tc-1", { command: "echo hi" });
         expect(text(result)).toContain("hi");
-        expect(result.details.exitCode).toBe(0);
     });
 
-    it("captures stderr and non-zero exit", async () => {
-        const result = await shellExecTool.execute("tc-1", { command: "echo oops 1>&2; exit 3" });
-        expect(text(result)).toContain("oops");
-        expect(result.details.exitCode).toBe(3);
+    it("throws on non-zero exit, with the output in the message", async () => {
+        const tool = createBashTool(tmpDir);
+        await expect(tool.execute("tc-1", { command: "echo oops 1>&2; exit 3" })).rejects.toThrow(
+            /oops[\s\S]*exited with code 3/,
+        );
     });
 
-    it("times out long-running commands", async () => {
-        const result = await shellExecTool.execute("tc-1", { command: "sleep 5", timeoutMs: 200 });
-        expect(result.details.timedOut).toBe(true);
-        // shell-exec floors timeoutMs at 1000ms and allows a 2000ms
-        // SIGKILL grace after SIGTERM, so worst case is ~3s + spawn
-        // overhead. The generous vitest budget keeps this from flaking
-        // on loaded CI runners (it's ~1s locally).
+    it("times out long-running commands (process-tree killed)", async () => {
+        const tool = createBashTool(tmpDir);
+        await expect(tool.execute("tc-1", { command: "sleep 30", timeout: 1 })).rejects.toThrow(/timed out/);
     }, 20_000);
 
-    it("respects the cwd parameter", async () => {
-        const result = await shellExecTool.execute("tc-1", { command: "pwd", cwd: tmpDir });
+    it("runs in the bound cwd", async () => {
+        const tool = createBashTool(tmpDir);
+        const result = await tool.execute("tc-1", { command: "pwd" });
         expect(text(result)).toContain(tmpDir);
+    });
+
+    it("streams output via onUpdate", async () => {
+        const tool = createBashTool(tmpDir);
+        const updates: string[] = [];
+        await tool.execute("tc-1", { command: "echo streamed" }, undefined, (partial) => {
+            const t = (partial.content[0] as { type: "text"; text?: string } | undefined)?.text;
+            if (t) updates.push(t);
+        });
+        expect(updates.join("")).toContain("streamed");
     });
 });
 
@@ -293,7 +300,7 @@ describe("tools registry", () => {
     it("getDefaultTools(cwd) returns the 6-tool baseline", () => {
         const tools = getDefaultTools(tmpDir);
         expect(tools.map((t) => t.name).sort()).toEqual(
-            ["edit", "ls", "read", "shell_exec", "web_fetch", "write"].sort(),
+            ["bash", "edit", "ls", "read", "web_fetch", "write"].sort(),
         );
     });
 

@@ -86,14 +86,14 @@ describe("regression scenario checks", () => {
 
     describe("shell-exec", () => {
         const s = scenario("shell-exec");
-        it("passes when shell_exec ran and marker echoed", () => {
+        it("passes when bash ran and marker echoed", () => {
             expect(
-                s.check(baseCapture({ toolCalls: [{ name: "shell_exec", args: {} }], finalText: "output was regression-marker-42" })),
+                s.check(baseCapture({ toolCalls: [{ name: "bash", args: {} }], finalText: "output was regression-marker-42" })),
             ).toEqual([]);
         });
         it("fails when marker is missing", () => {
             expect(
-                s.check(baseCapture({ toolCalls: [{ name: "shell_exec", args: {} }], finalText: "done" })).length,
+                s.check(baseCapture({ toolCalls: [{ name: "bash", args: {} }], finalText: "done" })).length,
             ).toBeGreaterThan(0);
         });
     });
