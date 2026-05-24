@@ -51,69 +51,33 @@ describe("TerminalModel agent surface", () => {
         model.dispose();
     });
 
-    it("submitAgentMessage returns a non-empty exchangeId per call", () => {
-        const id1 = model.submitAgentMessage("hi");
-        const id2 = model.submitAgentMessage("again");
-        expect(id1).toBeTruthy();
-        expect(id2).toBeTruthy();
-        expect(id1).not.toBe(id2);
-    });
-
-    it("submitAgentMessage appends an agent block keyed by `agent_${exchangeId}`", () => {
-        const id = model.submitAgentMessage("explain the diff");
-        const block = model.getBlocks().findById(`agent_${id}`);
+    it("appendAgentRun appends an agent-kind block keyed by `agent_${runId}`", () => {
+        model.appendAgentRun("run-0");
+        const block = model.getBlocks().findById("agent_run-0");
         expect(block).toBeDefined();
         expect(block!.kind).toBe("agent");
-        expect(block!.agentPayload?.userText).toBe("explain the diff");
-        expect(block!.agentPayload?.status).toBe("streaming");
-        // Status atom mirrors onto the model so the chrome can show a
-        // global spinner without walking blocks.
-        expect(globalStore.get(model.agentChatStatusAtom)).toBe("streaming");
+        expect(block!.agentRef?.runId).toBe("run-0");
     });
 
-    it("applyAgentDelta accumulates text, does not overwrite", () => {
-        const id = model.submitAgentMessage("q");
-        model.applyAgentDelta(id, "Hello, ");
-        model.applyAgentDelta(id, "world");
-        model.applyAgentDelta(id, "!");
-        const block = model.getBlocks().findById(`agent_${id}`);
-        expect(block!.agentPayload?.assistantText).toBe("Hello, world!");
+    it("appendAgentRun is idempotent — second call with the same runId is a no-op", () => {
+        model.appendAgentRun("run-0");
+        const countBefore = model.getBlocks().length();
+        model.appendAgentRun("run-0");
+        expect(model.getBlocks().length()).toBe(countBefore);
     });
 
-    it("applyAgentDelta on an unknown exchangeId is a no-op", () => {
-        // Build a baseline so we can detect spurious bumps.
-        const id = model.submitAgentMessage("q");
-        const baselineRev = globalStore.get(model.revisionAtom);
-        model.applyAgentDelta("nonsense", "ignored");
-        const block = model.getBlocks().findById(`agent_${id}`);
-        expect(block!.agentPayload?.assistantText).toBe("");
-        // No matching block ⇒ no revision bump.
-        expect(globalStore.get(model.revisionAtom)).toBe(baselineRev);
+    it("appendAgentRun bumps revision so subscribers re-render", () => {
+        const before = globalStore.get(model.revisionAtom);
+        model.appendAgentRun("run-x");
+        const after = globalStore.get(model.revisionAtom);
+        expect(after).toBeGreaterThan(before);
     });
 
-    it("applyAgentText snapshot replaces (does not append)", () => {
-        const id = model.submitAgentMessage("q");
-        model.applyAgentText(id, "Hello");
-        model.applyAgentText(id, "Hello, world");
-        const block = model.getBlocks().findById(`agent_${id}`);
-        expect(block!.agentPayload?.assistantText).toBe("Hello, world");
-    });
-
-    it("applyAgentStatus flips block + mirrors onto agentChatStatusAtom", () => {
-        const id = model.submitAgentMessage("q");
-        model.applyAgentStatus(id, "done");
-        const block = model.getBlocks().findById(`agent_${id}`);
-        expect(block!.agentPayload?.status).toBe("done");
-        expect(globalStore.get(model.agentChatStatusAtom)).toBe("idle");
-    });
-
-    it("applyAgentStatus error path carries the message and switches the chrome atom", () => {
-        const id = model.submitAgentMessage("q");
-        model.applyAgentStatus(id, "error", "429 rate limited");
-        const block = model.getBlocks().findById(`agent_${id}`);
-        expect(block!.agentPayload?.status).toBe("error");
-        expect(block!.agentPayload?.errorMessage).toBe("429 rate limited");
-        expect(globalStore.get(model.agentChatStatusAtom)).toBe("error");
+    it("appendAgentRun on an empty runId is a no-op", () => {
+        const before = globalStore.get(model.revisionAtom);
+        model.appendAgentRun("");
+        const after = globalStore.get(model.revisionAtom);
+        expect(after).toBe(before);
     });
 
     it("getRecentCommands returns the last N entries from commandHistoryAtom", () => {

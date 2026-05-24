@@ -45,12 +45,12 @@ export interface BlockListElementProps {
     // Pixel width of one monospace cell — TerminalView measures and
     // threads it through.  Used by per-block mouse-to-cell math.
     charWidth?: number;
-    // Agent-block context — threaded only when an AgentChatHost is
-    // mounted in the same TerminalView.  agentChatId tags approval RPCs;
-    // citation-jump / open-block are routed to render handlers.
-    agentChatId?: string;
-    onAgentFileJump?: (filename: string, line?: number) => void;
-    onAgentOpenBlock?: (blockId: string) => void;
+    // Agent run index — keyed by Block.agentRef.runId, populated by
+    // the parent (TerminalView) which slices usePiChat's messages.
+    // Agent blocks (kind === "agent") look up their messages here at
+    // render time. When a runId is missing from the map, the block
+    // renders an empty/streaming placeholder.
+    agentRunsById?: Map<string, import("@/app/store/slice-pi-runs").PiRun>;
 }
 
 export const BlockListElement = memo(
@@ -62,9 +62,7 @@ export const BlockListElement = memo(
         onAskAI,
         onLinkClick,
         charWidth,
-        agentChatId,
-        onAgentFileJump,
-        onAgentOpenBlock,
+        agentRunsById,
     }: BlockListElementProps) => {
         const revision = useAtomValue(model.revisionAtom);
         const scrollPos = useAtomValue(model.scrollPositionAtom);
@@ -244,18 +242,32 @@ export const BlockListElement = memo(
                         // by kind happens here so BlockElement stays
                         // unconcerned with agent payloads.
                         if (block.kind === "agent") {
+                            const runId = block.agentRef?.runId;
+                            const run = runId ? agentRunsById?.get(runId) : undefined;
+                            if (!run) {
+                                // Marker block exists but run data hasn't
+                                // landed yet (first message_start in flight,
+                                // or pane re-opened pre-history-load).
+                                // Render a thin placeholder rather than
+                                // disappearing entries from the timeline.
+                                return (
+                                    <div key={block.id} data-block-oid={block.id}>
+                                        <div
+                                            className="border-b border-fg-overlay-1/40 px-4 py-3 text-[12px] italic text-secondary/60"
+                                            data-agent-block-runid={runId}
+                                        >
+                                            …loading agent run…
+                                        </div>
+                                    </div>
+                                );
+                            }
                             return (
                                 <div key={block.id} data-block-oid={block.id}>
                                     <AgentBlockElement
-                                        block={block}
-                                        revision={revision}
+                                        run={run}
                                         selected={block.id === selectedBlockId}
                                         fontSize={fontSize}
                                         onSelect={() => model.selectBlock(block.id)}
-                                        model={model}
-                                        chatId={agentChatId}
-                                        onFileJump={onAgentFileJump}
-                                        onOpenBlock={onAgentOpenBlock}
                                     />
                                 </div>
                             );
