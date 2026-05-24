@@ -62,6 +62,16 @@ const previewElectronApi: ElectronApi = {
     setIsActive: async () => {},
     watchDir: (_path: string, _callback: (eventType: string, filename: string) => void) => {},
     unwatchDir: (_path: string, _callback?: (eventType: string, filename: string) => void) => {},
+    // Agent IPC stubs — preview pages never actually invoke the agent
+    // runtime, so these reject / no-op. Only here to satisfy ElectronApi.
+    agent: {
+        createSession: () =>
+            Promise.reject(new Error("agent not available in preview env")),
+        listSessionsForCwd: () => Promise.resolve([]),
+        send: () => Promise.reject(new Error("agent not available in preview env")),
+        abort: () => {},
+        subscribe: () => () => {},
+    },
 };
 
 function installPreviewElectronApi() {

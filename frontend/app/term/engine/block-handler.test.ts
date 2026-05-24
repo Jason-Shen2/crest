@@ -10,7 +10,7 @@ import { Blocks } from "./blocks";
 describe("BlockHandler agent-block defensive guard", () => {
     it("onText / CSI / OSC / ESC do not mutate an agent block's grid", () => {
         const blocks = new Blocks();
-        const agent = blocks.appendAgentBlock("e1", "ask");
+        const agent = blocks.appendAgentBlock("run-test");
         const handler = new BlockHandler(agent);
 
         // Capture grid state before feeding parser events.
@@ -30,10 +30,9 @@ describe("BlockHandler agent-block defensive guard", () => {
 
         const after = agent.outputGrid.raw().rowCount();
         expect(after).toBe(before);
-
-        // assistantText should not have been touched by the parser path —
-        // only appendAgentText is allowed to write it.
-        expect(agent.agentPayload?.assistantText).toBe("");
+        // Agent block keeps its agentRef marker; nothing the parser
+        // did changed the run binding.
+        expect(agent.agentRef?.runId).toBe("run-test");
     });
 
     it("shell blocks still receive writes (regression check)", () => {

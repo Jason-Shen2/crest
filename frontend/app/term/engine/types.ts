@@ -321,22 +321,23 @@ export type BlockKind = "shell" | "agent";
 //   error     — the request errored; the body carries the error message
 export type AgentBlockStatus = "streaming" | "done" | "error";
 
-// AgentPayload — per-block agent data carried alongside the (unused)
-// outputGrid on a Block whose `kind === "agent"`.  Field names mirror
-// warp's `AIAgentOutput` semantics (exchangeId / status / createdAt) so
-// future trajectory replay can deserialize without name remapping.
+// AgentBlockRef — thin marker that ties a Block (kind === "agent") to
+// a pi run. The actual message data (user prompt, assistant content,
+// tool calls / results, status, error) lives in usePiChat's React
+// state and is looked up by runId at render time.
 //
-// `createdAt` is UI metadata only ("5s ago" displays); it does NOT
-// participate in block ordering.  Ordering is always the order of
-// `appendAgentBlock` / `pushShellBlock` calls — see `Blocks.push`.
-export interface AgentPayload {
-    exchangeId: string;
-    userText: string;
-    status: AgentBlockStatus;
+// This replaces the old fat AgentPayload (which carried assistantText
+// / status / errorMessage etc. and was mutated via Block.appendAgentText
+// / setAgentStatus from the ai-sdk useChat bridge). After the pi
+// migration, all of that state lives on the React side; the engine
+// just remembers WHICH run this block represents and WHEN it was
+// appended (for timeline ordering).
+//
+// See docs/agent-runtime-architecture.md §5 — agent state on the
+// React side, not in the engine.
+export interface AgentBlockRef {
+    /** Stable id from slicePiRuns (currently "run-{i}"). */
+    runId: string;
+    /** ms since epoch — UI metadata only ("5s ago" etc.). */
     createdAt: number;
-    // Accumulated assistant text deltas.  Mutated by `appendAgentText`
-    // (engine/block.ts) which the useChat → applyAgentDelta bridge calls.
-    assistantText: string;
-    // Optional error message when status === "error".  Set by setAgentStatus.
-    errorMessage?: string;
 }

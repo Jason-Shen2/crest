@@ -19,7 +19,8 @@ import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
 import { resolveAIConfig } from "@/app/store/ai-resolver";
 import { AgentSelection, ResolveError, ResolvedAIConfig } from "@/app/store/ai-types";
 import { aiUserConfigAtom } from "@/app/store/ai-user-config";
-import { AgentChatHost } from "./agent-chat-host";
+import { indexRunsById, type PiRun } from "@/app/store/slice-pi-runs";
+import { AgentChatHost, type AgentChatHostApi } from "./agent-chat-host";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
 import { BlockListElement } from "./block-list-element";
@@ -349,23 +350,40 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
     const [fastForwardOn, setFastForwardOn] = useState(false);
     const toggleFastForward = useCallback(() => setFastForwardOn((v) => !v), []);
 
-    // ---------- agent submit wiring ----------
+    // ---------- agent wiring ----------
     //
-    // AgentChatHost mounts useChat and hands back a submit fn the input
-    // bar can fire when the user picks agent mode (or NLD decides for
-    // them in auto mode).  The host is invisible — all rendering lives
-    // in AgentBlockElement (block-list-element.tsx dispatches by kind).
-    const agentSubmitRef = useRef<((text: string) => void) | null>(null);
-    const onAgentHostReady = useCallback((submit: (text: string) => void) => {
-        agentSubmitRef.current = submit;
+    // AgentChatHost owns usePiChat for this pane. It exposes a small
+    // API (send / abort / getRuns) via onReady so cmdblock-input can
+    // submit and the timeline can render runs. block.meta["agent:session"]
+    // is the persistent pane→session link; first send mints metadata,
+    // onSessionMintedHandler writes it back to meta.
+    const agentApiRef = useRef<AgentChatHostApi | null>(null);
+    const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
+        agentApiRef.current = api;
     }, []);
-    // Transient per-pane chatId. The legacy Go-backend + useChat path
-    // is being retired by tasks #12 / #13; at that point this whole
-    // block is replaced by block.meta["agent:session"] (AgentSessionMeta)
-    // addressing through the new IPC layer. Until then an in-memory
-    // UUID is enough — losing it on remount is acceptable for the days
-    // the legacy path remains live.
-    const chatId = useMemo(() => crypto.randomUUID(), [outerBlockId]);
+    const persistedAgentSession = useOrefMetaKeyAtom(
+        WOS.makeORef("block", outerBlockId),
+        "agent:session"
+    );
+    const onSessionMintedHandler = useCallback(
+        (meta: AgentSessionMeta) => {
+            void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
+                "agent:session": meta,
+            });
+        },
+        [outerBlockId]
+    );
+    // Renderer state for agent runs. AgentChatHost watches usePiChat
+    // and announces runIds to the model; here we read the same source
+    // (via the API) to feed AgentBlockElement via BlockListElement.
+    // For the timeline render we keep the runs map in a small state
+    // hook updated on each api refresh.
+    const [agentRunsById, setAgentRunsById] = useState<Map<string, PiRun>>(
+        new Map()
+    );
+    const onAgentRunsUpdate = useCallback((runs: PiRun[]) => {
+        setAgentRunsById(indexRunsById(runs));
+    }, []);
     const tabId = useAtomValue(atoms.staticTabId);
     const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
     const liveConnection = useMemo(
@@ -405,14 +423,15 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         async (text: string, mode: "terminal" | "agent") => {
             if (!text) return;
             if (mode === "agent") {
-                const submit = agentSubmitRef.current;
-                if (!submit) {
-                    // Host not yet mounted (first render or remount mid-
-                    // construction).  Drop silently — the user can retry;
-                    // a more elegant fix is to queue but v1 keeps it simple.
+                const api = agentApiRef.current;
+                if (!api) {
+                    // Host not yet mounted (first render or remount
+                    // mid-construction). Drop silently — the user can
+                    // retry; a more elegant fix is to queue but v1
+                    // keeps it simple.
                     return;
                 }
-                submit(text);
+                api.send(text);
                 return;
             }
             setSubmitting(true);
@@ -739,15 +758,28 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
             <FindBar model={model} />
             <AgentChatHost
                 model={model}
-                chatId={chatId}
                 outerBlockId={outerBlockId}
-                tabId={tabId}
-                aiConfig={resolvedAIConfig}
-                aiConfigError={aiConfigError}
-                cwd={liveCwd}
-                connection={liveConnection}
-                recentCmds={recentCmds}
+                sessionMetadata={persistedAgentSession}
+                onSessionMinted={onSessionMintedHandler}
+                modelSelection={
+                    activeSelection
+                        ? {
+                              provider: activeSelection.provider,
+                              model: activeSelection.model,
+                              reasoning: activeSelection.reasoning,
+                          }
+                        : undefined
+                }
+                paneContext={{
+                    cwd: liveCwd,
+                    gitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
+                    recentCmds,
+                    connection: liveConnection,
+                }}
+                selectionError={aiConfigError}
                 onReady={onAgentHostReady}
+                onRunsChange={onAgentRunsUpdate}
+                onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
             />
             {error && (
                 <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
@@ -766,9 +798,7 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                     onCopyBlock={onCopyBlock}
                     onLinkClick={onLinkClick}
                     charWidth={charWidth}
-                    agentChatId={chatId}
-                    onAgentFileJump={onAgentFileJump}
-                    onAgentOpenBlock={onAgentOpenBlock}
+                    agentRunsById={agentRunsById}
                 />
             )}
             {/* prompt_to_editor_padding — warp settings/mod.rs:551 keeps a

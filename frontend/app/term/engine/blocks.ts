@@ -25,7 +25,7 @@
 // right call.
 
 import { Block } from "./block";
-import { AgentPayload, BlockId } from "./types";
+import { AgentBlockRef, BlockId } from "./types";
 
 export interface VisibleRange {
     // First visible block index (inclusive).
@@ -59,41 +59,35 @@ export class Blocks {
         this.cumHeights.push(this.cumHeights[idx] + height);
     }
 
-    // appendAgentBlock — factory for agent-kind blocks.  Mirrors warp's
-    // `BlockList::append_item_to_blocklist` (blocks.rs:1074) followed by
-    // `live_conversation_ids_for_terminal_view.push` (history_model.rs:668):
-    // the new block is **always appended at the tail** in call order.  No
-    // post-hoc reordering based on timestamps — once the block lands, its
-    // position is fixed.
+    // appendAgentBlock — factory for agent-kind blocks. Mirrors warp's
+    // `BlockList::append_item_to_blocklist` (blocks.rs:1074): the new
+    // block is always appended at the tail in call order; no post-hoc
+    // reordering based on timestamps.
     //
     // The returned Block carries an outputGrid + headerGrid for shape
-    // uniformity with shell blocks, but neither grid is ever written into
-    // (BlockHandler no-ops for kind === "agent").  Rendering goes through
-    // AgentBlockElement which reads `block.agentPayload` exclusively.
+    // uniformity with shell blocks, but neither grid is ever written
+    // into (BlockHandler no-ops for kind === "agent"). Rendering goes
+    // through AgentBlockElement which looks up the run's messages by
+    // agentRef.runId from usePiChat state.
     //
-    // `seq` is auto-assigned from the current list length so agent and
-    // shell blocks share one monotonic sequence space (matches warp's
-    // unified BlockId space).  `cols` is taken from the most recent block
-    // when present, defaulting to 80 — agent blocks don't visibly use cols
-    // but the underlying Block constructor requires it.
-    appendAgentBlock(exchangeId: string, userText: string, height: number = 0): Block {
-        const payload: AgentPayload = {
-            exchangeId,
-            userText,
-            status: "streaming",
+    // runId is the pi-side identifier (currently "run-{i}" from
+    // slicePiRuns). The block holds it as the only piece of agent
+    // state; all message data lives on the React side.
+    appendAgentBlock(runId: string, height: number = 0): Block {
+        const ref: AgentBlockRef = {
+            runId,
             createdAt: Date.now(),
-            assistantText: "",
         };
-        // Use exchangeId as the BlockId but prefix to keep agent-vs-shell
+        // Use runId as the BlockId core; prefix keeps agent-vs-shell
         // ID origins visually distinguishable in logs / dev tools.
-        const blockId = `agent_${exchangeId}`;
+        const blockId = `agent_${runId}`;
         const cols = this.list[this.list.length - 1]?.outputGrid?.cols() ?? 80;
         const block = new Block({
             id: blockId,
             seq: this.list.length,
             cols,
             kind: "agent",
-            agentPayload: payload,
+            agentRef: ref,
         });
         this.push(block, height);
         return block;
