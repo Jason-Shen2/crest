@@ -35,12 +35,64 @@ export interface AgentSelection {
 // One file replaces both legacy `ai:*` global settings and `waveai@*`
 // mode dict.  See docs/ai-config-architecture.md §4.
 //
-// The wire shape (AIUserConfig + ProviderCredentials + UserCustomModel +
-// UserCustomEndpoint) lives in frontend/types/gotypes.d.ts — generated
-// from pkg/aiusechat/uctypes/userconfig.go by `task generate`.  We don't
-// re-declare them here to keep one source of truth; they're globally
-// available via the gotypes ambient declarations.
-//
+// Defined here as the canonical TS shape.  Read/written via the
+// electron-main IPC handlers in emain/aiconfig-ipc.ts — the renderer
+// uses getApi().ai.getUserConfig() / writeUserConfig().
+
+export interface ProviderCredentials {
+    tokensecretname?: string;
+    token?: string;
+}
+
+export interface PinnedModel {
+    provider: string;
+    model: string;
+}
+
+export interface UserCustomModel {
+    provider: string;
+    id: string;
+    displayname: string;
+    description?: string;
+    capabilities: string[];
+    contextwindow: number;
+    reasoninglevels?: string[];
+    apitypeoverride?: string;
+}
+
+export interface UserCustomEndpointModel {
+    id: string;
+    displayName: string;
+    description?: string;
+    capabilities: string[];
+    contextWindow: number;
+    reasoningLevels?: string[];
+}
+
+export interface UserCustomEndpoint {
+    displayname: string;
+    endpoint: string;
+    apitype: string;
+    tokensecretname: string;
+    icon?: string;
+    models: UserCustomEndpointModel[];
+}
+
+export interface AISelectionConfigPersisted {
+    provider: string;
+    model: string;
+    reasoning?: string;
+}
+
+export interface AIUserConfig {
+    providers: { [key: string]: ProviderCredentials };
+    default: AISelectionConfigPersisted;
+    profiles?: { [key: string]: AISelectionConfigPersisted };
+    custom_models?: UserCustomModel[];
+    custom_endpoints?: { [key: string]: UserCustomEndpoint };
+    pinned?: PinnedModel[];
+}
+
 // `UserConfig` is a local alias so resolver / picker code can stay
 // vocabulary-neutral.  Same shape, narrower-feel name.
 export type UserConfig = AIUserConfig;
