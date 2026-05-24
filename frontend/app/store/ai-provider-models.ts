@@ -13,9 +13,8 @@
 import { atom } from "jotai";
 
 import { CATALOG, findProvider, resolveEndpoint } from "@/app/store/ai-catalog";
+import { getApi } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
-import { RpcApi } from "@/app/store/wshclientapi";
-import { TabRpcClient } from "@/app/store/wshrpcutil";
 
 import type { UserConfig } from "./ai-types";
 
@@ -151,7 +150,7 @@ function runFetch(providerId: string, userConfig: UserConfig | null): Promise<vo
     });
     const p = (async () => {
         try {
-            const resp = await RpcApi.ListProviderModelsCommand(TabRpcClient, {
+            const models = await getApi().ai.listProviderModels({
                 apitype: inputs.apitype,
                 baseurl: inputs.baseurl,
                 apitoken: inputs.apitoken,
@@ -159,7 +158,7 @@ function runFetch(providerId: string, userConfig: UserConfig | null): Promise<vo
             });
             setSlice(providerId, {
                 status: "ok",
-                models: resp?.models ?? [],
+                models: models ?? [],
                 fetchedAt: Date.now(),
             });
         } catch (e) {
