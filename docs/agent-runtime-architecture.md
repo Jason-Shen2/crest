@@ -385,13 +385,27 @@ Things explicitly out of scope for the current sprint:
 
 Tasks (cross-ref with the task list):
 
-- [x] **#6** — Integrate pi source into `emain/agent` + `emain/ai` (committed `2a4945ba`)
-- [x] **#7** — Spike: prove Agent.prompt() works end-to-end (committed `2a4945ba`)
-- [ ] **#8** — Session bridge + system-prompt builder + PaneHarness factory + spike update + tests
-- [ ] **#9** — IPC bridge (renderer ↔ main): send / abort / subscribe / list-sessions-for-cwd / open-session
-- [ ] **#10** — Port 24 crest-specific tools to TS as pi `AgentTool` definitions
-- [ ] **#11** — Simple permissions hook (no posture engine)
-- [ ] **#12** — `usePiChat` React hook + delete `@ai-sdk/react` dependency
-- [ ] **#13** — Delete `pkg/agent/` + `pkg/aiusechat/` + Go HTTP route + wshrpc cleanup
+- [x] **#6** — Integrate pi source into `emain/agent` + `emain/ai` (`2a4945ba`)
+- [x] **#7** — Spike: prove Agent.prompt() works end-to-end (`2a4945ba`)
+- [x] **#8** — Session bridge + system-prompt builder + PaneHarness factory (`6494b288`)
+- [x] **#9** — IPC bridge renderer ↔ main (`ce6c9735`)
+- [x] **#10** — Port crest tools — 6 of 24 (v1 baseline: read/write/multi_edit/list_dir/web_fetch/shell_exec) (`18c9a001`). 18 deferred; tracked separately.
+- [x] **#11** — Simple permissions hook, allowlist + bench bypass (`aa5a8e54`)
+- [x] **#12** — `usePiChat` React hook + drop `@ai-sdk/react` (`c0222e13`)
+- [x] **#13** — Delete Go agent stack. Done as four sequenced commits:
+  - `b42f5e99` — port live `/models` listing to electron-main IPC
+  - `9774a614` — port `ai.json` read/write to electron-main IPC
+  - `e6c41d94` — delete Wave-era `aifilediff` view + previews
+  - `2994635c` — delete `pkg/agent/`, `pkg/aiusechat/`, 5 dead web routes, 7 wshrpc commands, `wsh ai` CLI, dead test utilities; regen Go/TS bindings
 - [ ] **#14** — E2E regression across all 4 providers × representative tool calls
-- [ ] **#15** — (separately scheduled) Migrate all block.meta JSON tags to camelCase
+- [ ] **#15** — Migrate all block.meta JSON tags to camelCase (independent housekeeping)
+
+### Post-#13 surface
+
+After #13, all AI-related state and IO lives in TypeScript:
+- Provider /models listing → `emain/aiconfig/list-provider-models.ts` (IPC: `ai:list-provider-models`)
+- `~/.config/crest/ai.json` read/write → `emain/aiconfig/user-config.ts` (IPC: `ai:get-user-config`, `ai:write-user-config`)
+- Secret resolution (`tokensecretname` → plaintext) → `emain/aiconfig/secrets.ts`, reading `secrets.enc` directly via `safeStorage` (no Go roundtrip)
+- Agent loop, sessions, tools → `emain/agent/` (covered by §2–§9)
+
+Secret *writes* still go through the Go `SetSecretsCommand` wshrpc (general-purpose, not AI-specific — also used by waveconfig and the builder). That's deliberate; the architecture goal was "AI lives in TS", not "all of pkg/secretstore lives in TS".
