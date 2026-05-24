@@ -116,8 +116,6 @@ function blockViewToUIcon(view: string): string {
         case "sysinfo":
         case "cpuplot":
             return "workflow";
-        case "aifilediff":
-            return "file-code-02";
         case "waveconfig":
             return "settings";
         case "vdom":
