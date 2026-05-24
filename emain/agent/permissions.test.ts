@@ -35,10 +35,10 @@ describe("buildPermissionsHook", () => {
         });
         expect(await hook(fakeToolCall("read"))).toBeUndefined();
         expect(await hook(fakeToolCall("ls"))).toBeUndefined();
-        const blocked = await hook(fakeToolCall("shell_exec"));
+        const blocked = await hook(fakeToolCall("bash"));
         expect(blocked).toEqual({
             block: true,
-            reason: expect.stringContaining("shell_exec"),
+            reason: expect.stringContaining("bash"),
         });
     });
 

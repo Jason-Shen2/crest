@@ -87,11 +87,11 @@ export const SCENARIOS: Scenario[] = [
     },
     {
         id: "shell-exec",
-        prompt: "Run the shell command: echo regression-marker-42 — using the shell_exec tool, and report its exact stdout.",
+        prompt: "Run the shell command: echo regression-marker-42 — using the bash tool, and report its exact stdout.",
         check: (cap) => {
             const fails = [...notErrored(cap), ...noToolErrors(cap)];
-            if (!calledTool(cap, "shell_exec")) {
-                fails.push(`expected shell_exec to be called; tools called: ${cap.toolCalls.map((c) => c.name).join(", ") || "(none)"}`);
+            if (!calledTool(cap, "bash")) {
+                fails.push(`expected bash to be called; tools called: ${cap.toolCalls.map((c) => c.name).join(", ") || "(none)"}`);
             }
             if (!textIncludes(cap, "regression-marker-42")) {
                 fails.push(`expected final text to echo "regression-marker-42", got: ${JSON.stringify(cap.finalText.slice(0, 160))}`);
