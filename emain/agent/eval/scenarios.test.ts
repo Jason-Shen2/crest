@@ -118,4 +118,30 @@ describe("regression scenario checks", () => {
             ).toBeGreaterThan(0);
         });
     });
+
+    describe("find", () => {
+        const s = scenario("find");
+        it("passes when find was called without error", () => {
+            expect(
+                s.check(baseCapture({ toolCalls: [{ name: "find", args: {} }], toolResults: [{ name: "find", isError: false }] })),
+            ).toEqual([]);
+        });
+        it("fails when find was never called", () => {
+            expect(s.check(baseCapture()).length).toBeGreaterThan(0);
+        });
+    });
+
+    describe("grep", () => {
+        const s = scenario("grep");
+        it("passes when grep ran and text mentions crest", () => {
+            expect(
+                s.check(baseCapture({ toolCalls: [{ name: "grep", args: {} }], finalText: 'found "crest" on line 2' })),
+            ).toEqual([]);
+        });
+        it("fails when grep ran but crest not mentioned", () => {
+            expect(
+                s.check(baseCapture({ toolCalls: [{ name: "grep", args: {} }], finalText: "found something" })).length,
+            ).toBeGreaterThan(0);
+        });
+    });
 });
