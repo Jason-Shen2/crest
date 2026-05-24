@@ -132,7 +132,7 @@ async function ensurePaneHarness(
         model: resolveModelOrThrow(opts.provider, opts.model),
         thinkingLevel: opts.reasoning,
         promptInputs: buildPromptInputs(opts),
-        tools: getDefaultTools(),
+        tools: getDefaultTools(opts.cwd),
         // Bench mode (eval harness sets CREST_AGENT_BENCH=1) bypasses
         // the allowlist entirely. Otherwise: v1 defaults to allowAll
         // when the renderer didn't pass an allowedTools list (no

@@ -4,7 +4,7 @@
 // Representative scenarios for the agent regression harness. Each scenario
 // is a prompt plus a `check` over what the agent actually did (tool calls,
 // tool results, final text, stop reason). LLM output is non-deterministic,
-// so checks assert on *behavior* (did it call list_dir? did the final text
+// so checks assert on *behavior* (did it call ls? did the final text
 // mention the marker?) rather than exact strings.
 
 export interface RunCapture {
@@ -61,22 +61,22 @@ export const SCENARIOS: Scenario[] = [
     },
     {
         id: "list-dir",
-        prompt: "List the files and directories in {cwd} using the list_dir tool, then briefly summarize what you found.",
+        prompt: "List the files and directories in {cwd} using the ls tool, then briefly summarize what you found.",
         check: (cap) => {
             const fails = [...notErrored(cap), ...noToolErrors(cap)];
-            if (!calledTool(cap, "list_dir")) {
-                fails.push(`expected list_dir to be called; tools called: ${cap.toolCalls.map((c) => c.name).join(", ") || "(none)"}`);
+            if (!calledTool(cap, "ls")) {
+                fails.push(`expected ls to be called; tools called: ${cap.toolCalls.map((c) => c.name).join(", ") || "(none)"}`);
             }
             return fails;
         },
     },
     {
         id: "read-file",
-        prompt: 'Read the file {cwd}/package.json with the read_file tool and tell me the exact value of its top-level "name" field.',
+        prompt: 'Read the file {cwd}/package.json with the read tool and tell me the exact value of its top-level "name" field.',
         check: (cap) => {
             const fails = [...notErrored(cap), ...noToolErrors(cap)];
-            if (!calledTool(cap, "read_file")) {
-                fails.push(`expected read_file to be called; tools called: ${cap.toolCalls.map((c) => c.name).join(", ") || "(none)"}`);
+            if (!calledTool(cap, "read")) {
+                fails.push(`expected read to be called; tools called: ${cap.toolCalls.map((c) => c.name).join(", ") || "(none)"}`);
             }
             // package.json name is "crest".
             if (!textIncludes(cap, "crest")) {
@@ -107,8 +107,8 @@ export const SCENARIOS: Scenario[] = [
             if (cap.toolCalls.length < 2) {
                 fails.push(`expected at least 2 tool calls (list then read), got ${cap.toolCalls.length}: ${cap.toolCalls.map((c) => c.name).join(", ")}`);
             }
-            if (!calledTool(cap, "read_file")) {
-                fails.push("expected read_file among the tool calls");
+            if (!calledTool(cap, "read")) {
+                fails.push("expected read among the tool calls");
             }
             return fails;
         },

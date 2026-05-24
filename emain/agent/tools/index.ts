@@ -1,47 +1,49 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Tools registry. v1 ships a pure-Node baseline (read / write /
-// edit / list / web / shell) sufficient for the agent to do real
-// coding work. Tools that need wavesrv state via wshrpc
-// (create_block, focus_block, get_scrollback, browser, ask_user_question,
-// transfer_to_user, spawn_task, cmd_history, file_tracker, dangerous)
-// are TODO — they were deferred by the autonomous-session handoff
-// because they need design decisions about the renderer/wavesrv
-// bridge.
+// Tools registry. The file-IO + listing tools (read / write / edit / ls)
+// are ported from pi's coding-agent package (earendil-works/pi) with the
+// pi-tui render layer stripped — pi's implementations have smarter
+// truncation, fuzzy-matched multi-edit, and line-ending preservation
+// than the hand-written originals they replace. shell_exec and web_fetch
+// are still crest's own (pi has no web_fetch; pi's bash + find + grep are
+// follow-ups — bash needs pi's shell-utils, find/grep need fd/ripgrep).
+//
+// pi's file tools are cwd-bound: getDefaultTools(cwd) constructs them
+// against the pane's cwd so the LLM can use relative paths.
 
 import type { AgentTool } from "../types";
-import { listDirTool } from "./list-dir";
-import { multiEditTool } from "./multi-edit";
-import { readFileTool } from "./read-file";
+import { createEditTool } from "./edit";
+import { createLsTool } from "./ls";
+import { createReadTool } from "./read";
 import { shellExecTool } from "./shell-exec";
 import { webFetchTool } from "./web-fetch";
-import { writeFileTool } from "./write-file";
+import { createWriteTool } from "./write";
 
-export { listDirTool } from "./list-dir";
-export { multiEditTool } from "./multi-edit";
-export { readFileTool } from "./read-file";
+export { createEditTool } from "./edit";
+export { createLsTool } from "./ls";
+export { createReadTool } from "./read";
 export { shellExecTool } from "./shell-exec";
 export { webFetchTool } from "./web-fetch";
-export { writeFileTool } from "./write-file";
+export { createWriteTool } from "./write";
 
 /**
- * Default tools enabled for every pane. The IPC layer passes this
- * (or a filtered subset) to buildPaneHarness.
+ * Default tools enabled for every pane, bound to the pane's cwd. The IPC
+ * layer passes this (or a filtered subset) to buildPaneHarness.
  */
-export function getDefaultTools(): AgentTool[] {
-    return [readFileTool, writeFileTool, multiEditTool, listDirTool, webFetchTool, shellExecTool];
+export function getDefaultTools(cwd: string): AgentTool[] {
+    return [
+        createReadTool(cwd),
+        createWriteTool(cwd),
+        createEditTool(cwd),
+        createLsTool(cwd),
+        webFetchTool,
+        shellExecTool,
+    ];
 }
 
 /**
- * Tool names defined in v1. Useful for buildPermissionsHook's
+ * Tool names enabled by default. Useful for buildPermissionsHook's
  * allowedTools list when callers want to enable only a subset.
  */
-export const DEFAULT_TOOL_NAMES = [
-    "read_file",
-    "write_file",
-    "multi_edit",
-    "list_dir",
-    "web_fetch",
-    "shell_exec",
-] as const;
+export const DEFAULT_TOOL_NAMES = ["read", "write", "edit", "ls", "web_fetch", "shell_exec"] as const;

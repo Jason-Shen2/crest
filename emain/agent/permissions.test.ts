@@ -31,10 +31,10 @@ describe("buildPermissionsHook", () => {
     it("enforces the allowlist when allowAll is false", async () => {
         const hook = buildPermissionsHook({
             allowAll: false,
-            allowedTools: ["read_file", "list_dir"],
+            allowedTools: ["read", "ls"],
         });
-        expect(await hook(fakeToolCall("read_file"))).toBeUndefined();
-        expect(await hook(fakeToolCall("list_dir"))).toBeUndefined();
+        expect(await hook(fakeToolCall("read"))).toBeUndefined();
+        expect(await hook(fakeToolCall("ls"))).toBeUndefined();
         const blocked = await hook(fakeToolCall("shell_exec"));
         expect(blocked).toEqual({
             block: true,
@@ -44,7 +44,7 @@ describe("buildPermissionsHook", () => {
 
     it("blocks all tools when allowAll is false and allowedTools is empty/missing", async () => {
         const hook = buildPermissionsHook({ allowAll: false });
-        const result = await hook(fakeToolCall("read_file"));
+        const result = await hook(fakeToolCall("read"));
         expect(result?.block).toBe(true);
     });
 

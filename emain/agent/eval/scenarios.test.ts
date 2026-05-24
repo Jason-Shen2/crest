@@ -36,7 +36,7 @@ describe("regression scenario checks", () => {
         });
         it("fails if any tool was called", () => {
             const fails = s.check(
-                baseCapture({ finalText: "OK", toolCalls: [{ name: "list_dir", args: {} }] }),
+                baseCapture({ finalText: "OK", toolCalls: [{ name: "ls", args: {} }] }),
             );
             expect(fails.length).toBeGreaterThan(0);
         });
@@ -53,17 +53,17 @@ describe("regression scenario checks", () => {
 
     describe("list-dir", () => {
         const s = scenario("list-dir");
-        it("passes when list_dir was called without error", () => {
+        it("passes when ls was called without error", () => {
             expect(
-                s.check(baseCapture({ toolCalls: [{ name: "list_dir", args: {} }], toolResults: [{ name: "list_dir", isError: false }] })),
+                s.check(baseCapture({ toolCalls: [{ name: "ls", args: {} }], toolResults: [{ name: "ls", isError: false }] })),
             ).toEqual([]);
         });
-        it("fails when list_dir was never called", () => {
+        it("fails when ls was never called", () => {
             expect(s.check(baseCapture()).length).toBeGreaterThan(0);
         });
         it("fails when the tool returned an error result", () => {
             const fails = s.check(
-                baseCapture({ toolCalls: [{ name: "list_dir", args: {} }], toolResults: [{ name: "list_dir", isError: true }] }),
+                baseCapture({ toolCalls: [{ name: "ls", args: {} }], toolResults: [{ name: "ls", isError: true }] }),
             );
             expect(fails.some((f) => f.includes("error result"))).toBe(true);
         });
@@ -71,14 +71,14 @@ describe("regression scenario checks", () => {
 
     describe("read-file", () => {
         const s = scenario("read-file");
-        it("passes when read_file ran and text mentions crest", () => {
+        it("passes when read ran and text mentions crest", () => {
             expect(
-                s.check(baseCapture({ toolCalls: [{ name: "read_file", args: {} }], finalText: 'the name is "crest"' })),
+                s.check(baseCapture({ toolCalls: [{ name: "read", args: {} }], finalText: 'the name is "crest"' })),
             ).toEqual([]);
         });
-        it("fails when read_file ran but name not mentioned", () => {
+        it("fails when read ran but name not mentioned", () => {
             const fails = s.check(
-                baseCapture({ toolCalls: [{ name: "read_file", args: {} }], finalText: "it is a package" }),
+                baseCapture({ toolCalls: [{ name: "read", args: {} }], finalText: "it is a package" }),
             );
             expect(fails.length).toBeGreaterThan(0);
         });
@@ -100,13 +100,13 @@ describe("regression scenario checks", () => {
 
     describe("multi-step", () => {
         const s = scenario("multi-step");
-        it("passes with >=2 tool calls including read_file", () => {
+        it("passes with >=2 tool calls including read", () => {
             expect(
                 s.check(
                     baseCapture({
                         toolCalls: [
-                            { name: "list_dir", args: {} },
-                            { name: "read_file", args: {} },
+                            { name: "ls", args: {} },
+                            { name: "read", args: {} },
                         ],
                     }),
                 ),
@@ -114,7 +114,7 @@ describe("regression scenario checks", () => {
         });
         it("fails with a single tool call", () => {
             expect(
-                s.check(baseCapture({ toolCalls: [{ name: "list_dir", args: {} }] })).length,
+                s.check(baseCapture({ toolCalls: [{ name: "ls", args: {} }] })).length,
             ).toBeGreaterThan(0);
         });
     });

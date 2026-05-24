@@ -80,7 +80,7 @@ async function runScenario(
         session,
         model: provider.buildModel(modelId),
         thinkingLevel: "off",
-        tools: getDefaultTools(),
+        tools: getDefaultTools(cwd),
         systemPrompt: () => buildSystemPrompt({ cwd, recentCmds: [] }),
         getApiKeyAndHeaders: async () => ({ apiKey }),
     });
