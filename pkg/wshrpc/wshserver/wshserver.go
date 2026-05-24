@@ -23,9 +23,6 @@ import (
 	"time"
 
 	"github.com/skratchdot/open-golang/open"
-	"github.com/s-zx/crest/pkg/aiusechat"
-	"github.com/s-zx/crest/pkg/aiusechat/chatstore"
-	"github.com/s-zx/crest/pkg/aiusechat/uctypes"
 	"github.com/s-zx/crest/pkg/baseds"
 	"github.com/s-zx/crest/pkg/contextchip"
 	"github.com/s-zx/crest/pkg/blockcontroller"
@@ -566,30 +563,6 @@ func (ws *WshServer) SetConnectionsConfigCommand(ctx context.Context, data wshrp
 func (ws *WshServer) GetFullConfigCommand(ctx context.Context) (wconfig.FullConfigType, error) {
 	watcher := wconfig.GetWatcher()
 	return watcher.GetFullConfig(), nil
-}
-
-// GetAIUserConfigCommand reads ~/.config/crest/ai.json.  Returns a
-// status-tagged response so the FE can distinguish "fresh install,
-// no file yet" from "file exists but is broken" without resorting to
-// error-string sniffing.  Never returns a non-nil error to the caller
-// — every problem is folded into Status + Error so the RPC's success
-// shape stays predictable.
-func (ws *WshServer) GetAIUserConfigCommand(ctx context.Context) (*wshrpc.GetAIUserConfigRtnData, error) {
-	cfg, err := aiusechat.ReadAIUserConfig()
-	if err == nil {
-		return &wshrpc.GetAIUserConfigRtnData{Status: "ok", Config: cfg}, nil
-	}
-	if errors.Is(err, aiusechat.ErrAIUserConfigMissing) {
-		return &wshrpc.GetAIUserConfigRtnData{Status: "missing"}, nil
-	}
-	return &wshrpc.GetAIUserConfigRtnData{Status: "malformed", Error: err.Error()}, nil
-}
-
-// WriteAIUserConfigCommand validates and atomically writes the user
-// config.  Validation errors propagate to the FE as RPC errors so the
-// save form can surface them inline.
-func (ws *WshServer) WriteAIUserConfigCommand(ctx context.Context, data uctypes.AIUserConfig) error {
-	return aiusechat.WriteAIUserConfig(&data)
 }
 
 func (ws *WshServer) ConnStatusCommand(ctx context.Context) ([]wshrpc.ConnStatus, error) {
@@ -1273,95 +1246,6 @@ func (ws *WshServer) RecordTEventCommand(ctx context.Context, data telemetrydata
 
 func (ws WshServer) SendTelemetryCommand(ctx context.Context) error {
 	return nil
-}
-
-func (ws *WshServer) WaveAIEnableTelemetryCommand(ctx context.Context) error {
-	// Enable telemetry in config
-	meta := waveobj.MetaMapType{
-		wconfig.ConfigKey_TelemetryEnabled: true,
-	}
-	err := wconfig.SetBaseConfigValue(meta)
-	if err != nil {
-		return fmt.Errorf("error setting telemetry enabled: %w", err)
-	}
-
-	// Record the telemetry event
-	event := telemetrydata.MakeTEvent("waveai:enabletelemetry", telemetrydata.TEventProps{})
-	err = telemetry.RecordTEvent(ctx, event)
-	if err != nil {
-		log.Printf("error recording waveai:enabletelemetry event: %v", err)
-	}
-
-	return nil
-}
-
-func (ws *WshServer) GetWaveAIChatCommand(ctx context.Context, data wshrpc.CommandGetWaveAIChatData) (*uctypes.UIChat, error) {
-	aiChat := chatstore.DefaultChatStore.Get(data.ChatId)
-	if aiChat == nil {
-		return nil, nil
-	}
-	uiChat, err := aiusechat.ConvertAIChatToUIChat(aiChat)
-	if err != nil {
-		return nil, fmt.Errorf("error converting AI chat to UI chat: %w", err)
-	}
-	return uiChat, nil
-}
-
-func (ws *WshServer) WaveAIToolApproveCommand(ctx context.Context, data wshrpc.CommandWaveAIToolApproveData) error {
-	// Persist "remember this" rule first so it lands in the engine
-	// before the next tool call (which may be the same shape and
-	// would otherwise re-prompt). Persistence is best-effort —
-	// failing to save a rule shouldn't block the approval the user
-	// already clicked. We log but continue.
-	if data.AcceptedToolName != "" && data.AcceptedDestination != "" {
-		err := aiusechat.PersistAcceptedSuggestion(aiusechat.AcceptedSuggestion{
-			ChatId:      data.ChatId,
-			ToolCallId:  data.ToolCallId,
-			ToolName:    data.AcceptedToolName,
-			Content:     data.AcceptedContent,
-			Destination: data.AcceptedDestination,
-			Cwd:         data.Cwd,
-		})
-		if err != nil {
-			log.Printf("WaveAIToolApprove: persist suggestion failed: %v\n", err)
-		}
-	}
-	// ask_user_question carries structured answers alongside the
-	// approval. UpdateToolApprovalWithAnswers degrades to plain
-	// UpdateToolApproval when AskAnswers is nil, so other tools follow
-	// exactly the same code path as before.
-	return aiusechat.UpdateToolApprovalWithAnswers(data.ToolCallId, data.Approval, data.AskAnswers)
-}
-
-func (ws *WshServer) WaveAIGetToolDiffCommand(ctx context.Context, data wshrpc.CommandWaveAIGetToolDiffData) (*wshrpc.CommandWaveAIGetToolDiffRtnData, error) {
-	originalContent, modifiedContent, err := aiusechat.CreateWriteTextFileDiff(ctx, data.ChatId, data.ToolCallId)
-	if err != nil {
-		return nil, err
-	}
-
-	return &wshrpc.CommandWaveAIGetToolDiffRtnData{
-		OriginalContents64: base64.StdEncoding.EncodeToString(originalContent),
-		ModifiedContents64: base64.StdEncoding.EncodeToString(modifiedContent),
-	}, nil
-}
-
-func (ws *WshServer) ListProviderModelsCommand(ctx context.Context, data wshrpc.CommandListProviderModelsData) (*wshrpc.CommandListProviderModelsRtnData, error) {
-	token := data.APIToken
-	if token == "" && data.TokenSecretName != "" {
-		value, exists, err := secretstore.GetSecret(data.TokenSecretName)
-		if err != nil {
-			return nil, fmt.Errorf("listprovidermodels: secretstore lookup for %q: %w", data.TokenSecretName, err)
-		}
-		if !exists {
-			return nil, fmt.Errorf("listprovidermodels: secret %q not found — open Settings → AI Provider to set the key", data.TokenSecretName)
-		}
-		token = value
-	}
-	models, err := aiusechat.ListProviderModels(ctx, data.APIType, data.BaseURL, token)
-	if err != nil {
-		return nil, err
-	}
-	return &wshrpc.CommandListProviderModelsRtnData{Models: models}, nil
 }
 
 func (ws *WshServer) ShowBlockCommand(ctx context.Context, data wshrpc.CommandShowBlockData) error {

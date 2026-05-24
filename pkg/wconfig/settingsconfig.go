@@ -46,15 +46,10 @@ type MCPServerConfig struct {
 }
 
 // AIPermissionsConfig is the on-disk shape of the user-scope permission
-// rule set. Mirrors permissions.AIPermissionsConfig — kept duplicated
-// (rather than imported) so wconfig stays at the bottom of the import
-// graph. The agent-side backend translates between this and the
-// permissions package's own type.
-//
-// DUPLICATED IN: pkg/agent/permissions/store.go. Keep field set in
-// sync; pkg/agent/permissions_userscope.go's Load/Save copies
-// field-by-field and silently drops anything that exists on only one
-// side.
+// rule set carried over from the Wave-era posture/rules engine. Kept
+// here so older settings.json files still parse; the new pi-native
+// agent runtime ignores it (see emain/agent/permissions.ts for the
+// replacement, which is allowlist-only in v1).
 type AIPermissionsConfig struct {
 	Allow          []string `json:"allow,omitempty"`
 	Deny           []string `json:"deny,omitempty"`
@@ -82,9 +77,11 @@ type SettingsType struct {
 
 	FeatureWaveAppBuilder bool `json:"feature:waveappbuilder,omitempty"`
 
-	// AI provider/model/credentials config now lives in
-	// ~/.config/crest/ai.json (pkg/aiusechat/uctypes.AIUserConfig).
-	// MCP servers and permissions are orthogonal — they stay here.
+	// AI provider/model/credentials config lives in ~/.config/crest/ai.json
+	// (read/written from electron-main via emain/aiconfig/user-config.ts).
+	// The MCP-servers and permissions fields below are dormant Wave-era
+	// configuration the new agent runtime ignores; kept so old
+	// settings.json files still parse.
 	AiMcpServers  map[string]MCPServerConfig `json:"ai:mcpservers,omitempty"`
 	AiPermissions *AIPermissionsConfig       `json:"ai:permissions,omitempty"`
 
