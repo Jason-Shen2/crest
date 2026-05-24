@@ -79,7 +79,11 @@ export const PROVIDERS: ProviderConfig[] = [
         id: "openrouter",
         envKey: "OPENROUTER_API_KEY",
         modelEnvKey: "OPENROUTER_MODEL",
-        defaultModel: "meta-llama/llama-3.3-70b-instruct:free",
+        // gpt-oss-20b:free reliably handles tool calls and is less
+        // aggressively rate-limited than llama-3.3-70b:free (which
+        // returns upstream 429s under light load). Override via
+        // OPENROUTER_MODEL.
+        defaultModel: "openai/gpt-oss-20b:free",
         buildModel: openRouterModel,
     },
 ];
