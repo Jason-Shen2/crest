@@ -20,7 +20,6 @@ import { globalStore } from "@/app/store/jotaiStore";
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { WaveUIMessagePart } from "@/app/store/aitypes";
 import { base64ToArray, stringToBase64 } from "@/util/util";
 import * as jotai from "jotai";
 
@@ -211,19 +210,11 @@ export class TerminalModel {
 
     readonly agentVisibleAtom = jotai.atom(false) as jotai.PrimitiveAtom<boolean>;
     readonly agentPostureAtom = jotai.atom("default") as jotai.PrimitiveAtom<string>;
-    readonly agentChatStatusAtom = jotai.atom<"idle" | "streaming" | "error">(
-        "idle"
-    ) as jotai.PrimitiveAtom<"idle" | "streaming" | "error">;
-    readonly agentChatIdAtom = jotai.atom("") as jotai.PrimitiveAtom<string>;
-    readonly agentModelOverrideAtom = jotai.atom(null) as jotai.PrimitiveAtom<string | null>;
-    // Per-exchange assistant message parts (text + data-tooluse + ...).
-    // AgentChatHost syncs the latest snapshot from useChat here; the
-    // AgentBlockElement reads via useAtomValue.  Keyed by exchangeId
-    // (which == the user-message id we passed to sendMessage).  Stored
-    // as an immutable Map so subscribers re-render on assignment.
-    readonly agentPartsAtom = jotai.atom<Map<string, WaveUIMessagePart[]>>(
-        new Map()
-    ) as jotai.PrimitiveAtom<Map<string, WaveUIMessagePart[]>>;
+    // Post-pi migration: per-exchange agent state (messages, status,
+    // error) lives on the React side in usePiChat. TerminalModel no
+    // longer owns assistantText / parts / status atoms — agent blocks
+    // are thin markers (Block.agentRef) that point at a pi runId; the
+    // renderer looks up message data via slicePiRuns.
 
     constructor(outerBlockId: string, cols: number = DefaultCols) {
         this.outerBlockId = outerBlockId;
@@ -458,63 +449,18 @@ export class TerminalModel {
     //   2. applyAgentDelta(id, delta) on every assistant-text chunk.
     //   3. applyAgentStatus(id, "done" | "error") on terminal events.
 
-    submitAgentMessage(text: string): string {
-        const exchangeId = (typeof crypto !== "undefined" && "randomUUID" in crypto)
-            ? crypto.randomUUID()
-            : `e-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        this.blocks.appendAgentBlock(exchangeId, text);
-        globalStore.set(this.agentChatStatusAtom, "streaming");
-        this.bumpRevision();
-        return exchangeId;
-    }
-
-    applyAgentDelta(exchangeId: string, delta: string): void {
-        if (!delta) return;
-        const block = this.blocks.findById(`agent_${exchangeId}`);
-        if (!block) return;
-        block.appendAgentText(delta);
-        this.bumpRevision();
-    }
-
-    // applyAgentText — replace the assistant text with a snapshot.  Use
-    // this when bridging from `useChat` (which exposes cumulative text
-    // per message rather than deltas).  No-op when the text is unchanged.
-    applyAgentText(exchangeId: string, fullText: string): void {
-        const block = this.blocks.findById(`agent_${exchangeId}`);
-        if (!block) return;
-        const prev = block.agentPayload?.assistantText;
-        if (prev === fullText) return;
-        block.setAgentText(fullText);
-        this.bumpRevision();
-    }
-
-    // applyAgentParts — store the full ordered parts array for an
-    // assistant message.  Replaces (does not merge) so the in-progress
-    // streaming snapshot is always authoritative.  No-op when the
-    // reference is unchanged (ai-sdk gives us a fresh array on each
-    // update, but the guard is still cheap).
-    applyAgentParts(exchangeId: string, parts: WaveUIMessagePart[]): void {
-        const cur = globalStore.get(this.agentPartsAtom);
-        if (cur.get(exchangeId) === parts) return;
-        const next = new Map(cur);
-        next.set(exchangeId, parts);
-        globalStore.set(this.agentPartsAtom, next);
-        // No bumpRevision — Map atom triggers its own subscribers.
-    }
-
-    applyAgentStatus(
-        exchangeId: string,
-        status: "streaming" | "done" | "error",
-        errorMessage?: string
-    ): void {
-        const block = this.blocks.findById(`agent_${exchangeId}`);
-        if (block) {
-            block.setAgentStatus(status, errorMessage);
-        }
-        // Mirror onto the model-level atom so the input bar / chrome can
-        // show a global spinner / error chip without iterating blocks.
-        const next = status === "streaming" ? "streaming" : status === "error" ? "error" : "idle";
-        globalStore.set(this.agentChatStatusAtom, next);
+    // appendAgentRun — add an agent-kind block to the timeline that
+    // points at a pi run. Called from AgentChatHost when usePiChat
+    // sees a new user message land. The runId is the slicePiRuns
+    // identifier ("run-{i}"); rendering looks up the run's messages
+    // via the same slicer at render time.
+    appendAgentRun(runId: string): void {
+        if (!runId) return;
+        // Idempotent: skip if a block for this run already exists.
+        // Handles the case where AgentChatHost's effect re-fires on
+        // the same messages snapshot.
+        if (this.blocks.findById(`agent_${runId}`)) return;
+        this.blocks.appendAgentBlock(runId);
         this.bumpRevision();
     }
 

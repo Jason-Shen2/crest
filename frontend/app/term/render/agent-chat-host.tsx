@@ -1,224 +1,165 @@
-// Copyright 2026, Crest contributors. SPDX-License-Identifier: Apache-2.0
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
 //
-// AgentChatHost — ai-sdk useChat host that bridges agent SSE chunks into
-// TerminalModel.  Structure derived from warp:
-//   app/src/ai/blocklist/controller/response_stream.rs:45-117 (event flow)
-//   app/src/ai/blocklist/history_model.rs:2177-2203 (UpdatedStreamingExchange)
-// Warp is © 2020-2026 Denver Technologies, Inc., MIT licensed.
+// AgentChatHost — bridges usePiChat to TerminalModel. Owns the React
+// hook lifecycle for one pane's agent session; watches the messages
+// array, slices into runs, and calls model.appendAgentRun for each
+// newly-seen runId so the timeline gets a marker block.
 //
-// Responsibilities:
-//   1. Owns the useChat hook keyed off a stable per-pane chatId.
-//   2. Translates ai-sdk's UIMessage[] stream into per-block agent state on
-//      TerminalModel (one block per exchange, addressed by message id).
-//   3. Builds the request body for /api/post-agent-message — pulls
-//      chatid / tabid / blockid / mode / aimode / context from props.
-//   4. Exposes `submit(text)` to the input bar via a callback ref so the
-//      cmdblock-input can fire useChat without owning the hook lifecycle.
+// Replaces the pre-pi version which mounted @ai-sdk/react useChat and
+// translated UIMessage parts into ai-sdk's WaveUIDataToolUse shape
+// via TerminalModel.applyAgentParts. Post-pi: messages live in
+// usePiChat state, runs are derived via slicePiRuns, and rendering
+// looks them up directly — TerminalModel just holds the marker blocks.
 //
-// Rendering: this component returns null.  All visual output lives in
-// AgentBlockElement (rendered by BlockListElement when block.kind ===
-// "agent").  The host's only DOM responsibility is to be a stable place
-// in the React tree where useChat can mount.
+// Returns null — purely a state-bridge component. UI lives in
+// AgentBlockElement (mounted by BlockListElement per agent block).
 
 import { useEffect, useMemo, useRef } from "react";
-import { DefaultChatTransport } from "ai";
-import { useChat } from "@ai-sdk/react";
+
+import { slicePiRuns, type PiRun } from "@/app/store/slice-pi-runs";
+import {
+    type UsePiChatModel,
+    type UsePiChatPaneContext,
+    usePiChat,
+} from "@/app/store/use-pi-chat";
+import type { ResolveError } from "@/app/store/ai-types";
 
 import { TerminalModel } from "../terminal-model";
-import { WaveUIMessage } from "@/app/store/aitypes";
-import { ResolvedAIConfig, ResolveError } from "@/app/store/ai-types";
 
 export interface AgentChatHostProps {
     model: TerminalModel;
-    chatId: string;
     outerBlockId: string;
-    tabId?: string;
-    // Resolved AI config — the backend ingests this directly via
-    // BuildAIOptsFromConfig, no further catalog / settings lookups.
-    // Null while the resolver failed; companion `aiConfigError` carries
-    // the structured reason so we can render an inline error block
-    // instead of a self-dismissing toast.
-    aiConfig?: ResolvedAIConfig | null;
-    // Resolver failure (or "no selection") carried alongside aiConfig.
-    // When submit fires with no config, we read this to populate the
-    // user-visible error message in the agent block.  Null when
-    // aiConfig is non-null (happy path).
-    aiConfigError?: ResolveError | null;
-    cwd?: string;
-    connection?: string;
-    recentCmds?: string[];
-    // Mode-string the backend expects on PostAgentMessageRequest.  Valid
-    // values match agent.NormalizeMode: "ask" | "plan" | "do" | "bench".
-    // v1 defaults to "do" — the broadest-permission mode, matches what a
-    // user picking "agent" via NLD implicitly asks for.
-    agentMode?: string;
-    // Set by the parent.  Invoked once on mount with a `submit(text)`
-    // function that fires useChat.sendMessage.  Lets cmdblock-input.tsx
-    // submit without owning the useChat hook.
-    onReady?: (submit: (text: string) => void) => void;
+    /** Persisted session metadata from block.meta["agent:session"]. Undefined → first send mints one. */
+    sessionMetadata?: AgentSessionMeta;
+    /** Called once when usePiChat receives the new metadata after first send. */
+    onSessionMinted?: (meta: AgentSessionMeta) => void;
+    /** Resolved model selection (provider/model/reasoning) from the picker + resolver. */
+    modelSelection?: UsePiChatModel;
+    /** Pane context (cwd / git / recent cmds / connection) fed into the system prompt. */
+    paneContext: UsePiChatPaneContext;
+    /**
+     * When the model selection failed to resolve (no API key, unknown model,
+     * etc.), this carries the structured error so submit attempts can be
+     * routed to an inline error block instead of silently dropped.
+     */
+    selectionError?: ResolveError | null;
+    /** Wired once with a send fn the input bar can call. Mirrors the previous useChat host's pattern. */
+    onReady?: (api: AgentChatHostApi) => void;
+    /** Called on every runs change so the parent can feed AgentBlockElement via BlockListElement. */
+    onRunsChange?: (runs: PiRun[]) => void;
+    /** Per-pane tool allowlist; undefined = main defaults to allowAll (v1). */
+    allowedTools?: string[];
+    /** Notification atom setter — surface user-facing errors when send can't proceed. */
+    onUserError?: (message: string) => void;
+}
+
+/** Functions exposed via onReady for the input bar / parent. */
+export interface AgentChatHostApi {
+    /** Send a user prompt. Idempotent if called twice with the same text — pi will queue. */
+    send: (text: string) => void;
+    /** Abort the in-flight run, if any. */
+    abort: () => void;
+    /** Snapshot of runs for diagnostics / future selectors. */
+    getRuns: () => PiRun[];
 }
 
 export function AgentChatHost({
     model,
-    chatId,
-    outerBlockId,
-    tabId,
-    aiConfig,
-    aiConfigError,
-    cwd,
-    connection,
-    recentCmds,
-    agentMode = "do",
+    outerBlockId: _outerBlockId,
+    sessionMetadata,
+    onSessionMinted,
+    modelSelection,
+    paneContext,
+    selectionError,
     onReady,
+    onRunsChange,
+    allowedTools,
+    onUserError,
 }: AgentChatHostProps) {
-    // Refs hold the latest values without retriggering useChat construction
-    // (the transport is built once on mount; per-request fields read from
-    // refs inside prepareSendMessagesRequest).
-    const tabIdRef = useRef(tabId);
-    const aiConfigRef = useRef(aiConfig);
-    const aiConfigErrorRef = useRef(aiConfigError);
-    const cwdRef = useRef(cwd);
-    const connRef = useRef(connection);
-    const recentCmdsRef = useRef(recentCmds);
-    const agentModeRef = useRef(agentMode);
-    useEffect(() => {
-        tabIdRef.current = tabId;
-        aiConfigRef.current = aiConfig;
-        aiConfigErrorRef.current = aiConfigError;
-        cwdRef.current = cwd;
-        connRef.current = connection;
-        recentCmdsRef.current = recentCmds;
-        agentModeRef.current = agentMode;
-    }, [tabId, aiConfig, aiConfigError, cwd, connection, recentCmds, agentMode]);
+    // usePiChat doesn't accept a undefined modelSelection (send needs
+    // provider+model). We feed it a synthetic placeholder when the
+    // resolver hasn't produced one yet so the hook can mount; send()
+    // below short-circuits with an error before actually calling the
+    // hook's send if the real selection isn't ready.
+    const effectiveSelection: UsePiChatModel = modelSelection ?? {
+        provider: "",
+        model: "",
+    };
 
-    const transport = useMemo(
-        () =>
-            new DefaultChatTransport<WaveUIMessage>({
-                api: "/api/post-agent-message",
-                prepareSendMessagesRequest: ({ messages, id }) => {
-                    // Pull the most recent user message — that's the one
-                    // the backend expects in `msg`.  Earlier messages were
-                    // already sent in prior turns; the chatstore (server-
-                    // side) reconstructs the rest of the conversation
-                    // from chatId.
-                    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-                    const textParts = (lastUser?.parts ?? [])
-                        .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                        .map((p) => ({ type: "text", text: p.text }));
-                    return {
-                        body: {
-                            chatid: id,
-                            tabid: tabIdRef.current ?? "",
-                            blockid: outerBlockId,
-                            mode: agentModeRef.current ?? "do",
-                            aiconfig: aiConfigRef.current ?? undefined,
-                            msg: {
-                                messageid: lastUser?.id ?? "",
-                                parts: textParts,
-                            },
-                            context: {
-                                cwd: cwdRef.current ?? "",
-                                connection: connRef.current ?? "",
-                                last_command: (recentCmdsRef.current ?? []).slice(-1)[0] ?? "",
-                                recent_cmds: recentCmdsRef.current ?? [],
-                            },
-                        },
-                    };
-                },
-            }),
-        [outerBlockId]
-    );
-
-    const { messages, status, error, sendMessage } = useChat<WaveUIMessage>({
-        id: chatId,
-        transport,
+    const chat = usePiChat({
+        initialSession: sessionMetadata,
+        onSessionMinted,
+        paneContext,
+        modelSelection: effectiveSelection,
+        allowedTools,
     });
 
-    // Sync assistant message text + parts → corresponding agent block.
-    // useChat gives cumulative text on each chunk, so we replace (not
-    // append).  exchangeId is the id of the user message that precedes
-    // this assistant message (= the value we passed via messageId on
-    // sendMessage, so the model knows where to address deltas).
+    // Derive runs once per messages change, then announce newly-seen
+    // runIds to TerminalModel so it appends marker blocks.
+    const runs = useMemo(() => slicePiRuns(chat.messages), [chat.messages]);
+    const seenRunIds = useRef<Set<string>>(new Set());
+    const onRunsChangeRef = useRef(onRunsChange);
+    onRunsChangeRef.current = onRunsChange;
     useEffect(() => {
-        for (const msg of messages) {
-            if (msg.role !== "assistant") continue;
-            const idx = messages.indexOf(msg);
-            let exchangeId: string | undefined;
-            for (let i = idx - 1; i >= 0; i--) {
-                if (messages[i].role === "user") {
-                    exchangeId = messages[i].id;
-                    break;
+        for (const run of runs) {
+            if (seenRunIds.current.has(run.runId)) continue;
+            seenRunIds.current.add(run.runId);
+            model.appendAgentRun(run.runId);
+        }
+        onRunsChangeRef.current?.(runs);
+    }, [runs, model]);
+
+    // Expose the send/abort API to the parent via onReady. Refs keep
+    // the callback closure stable across renders while still reading
+    // the latest model state, selection error, and chat handle.
+    const sendRef = useRef(chat.send);
+    const abortRef = useRef(chat.abort);
+    const runsRef = useRef(runs);
+    const selectionErrorRef = useRef(selectionError);
+    const modelSelectionRef = useRef(modelSelection);
+    useEffect(() => {
+        sendRef.current = chat.send;
+        abortRef.current = chat.abort;
+        runsRef.current = runs;
+        selectionErrorRef.current = selectionError;
+        modelSelectionRef.current = modelSelection;
+    }, [chat.send, chat.abort, runs, selectionError, modelSelection]);
+
+    const onReadyRef = useRef(onReady);
+    onReadyRef.current = onReady;
+    const onUserErrorRef = useRef(onUserError);
+    onUserErrorRef.current = onUserError;
+
+    // One-shot wiring of the API. Stable identity so re-renders don't
+    // tear down whatever the parent stored.
+    useEffect(() => {
+        const api: AgentChatHostApi = {
+            send: (text) => {
+                const trimmed = text.trim();
+                if (!trimmed) return;
+                // Block sends when no model is resolved (e.g. ai.json
+                // missing, no API key). Surface the resolver error so
+                // the user sees a specific reason rather than nothing.
+                if (!modelSelectionRef.current) {
+                    const msg =
+                        selectionErrorRef.current?.message ??
+                        "AI is not configured. Open the model picker to set up a provider and pick a model.";
+                    onUserErrorRef.current?.(msg);
+                    return;
                 }
-            }
-            if (!exchangeId) continue;
-            // Push the full parts snapshot — AgentBlockElement reads
-            // these to render interleaved markdown + tool-use cards.
-            model.applyAgentParts(exchangeId, msg.parts);
-            // Also maintain the flat assistantText projection as a
-            // fallback / preview (used pre-P0.4 and for find-bar text
-            // indexing).
-            const textParts = msg.parts.filter(
-                (p): p is { type: "text"; text: string; state?: "streaming" | "done" } =>
-                    p.type === "text"
-            );
-            const full = textParts.map((p) => p.text).join("");
-            model.applyAgentText(exchangeId, full);
-        }
-    }, [messages, model]);
-
-    // Status & error → terminal model.  ai-sdk's status values are
-    // "submitted" | "streaming" | "ready" | "error" (v5).  Map onto
-    // crest's "streaming" | "idle" | "error".
-    useEffect(() => {
-        const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-        const exchangeId = lastUserMsg?.id;
-        if (!exchangeId) return;
-        if (status === "error" && error) {
-            model.applyAgentStatus(exchangeId, "error", error.message);
-        } else if (status === "streaming" || status === "submitted") {
-            model.applyAgentStatus(exchangeId, "streaming");
-        } else if (status === "ready") {
-            model.applyAgentStatus(exchangeId, "done");
-        }
-    }, [status, error, messages, model]);
-
-    // Expose a submit fn to the parent.  Stable ref-callback would be
-    // nicer but plumbing through React refs across the boundary adds
-    // moving parts; a one-shot onReady is enough for v1.
-    useEffect(() => {
-        if (!onReady) return;
-        const submit = (text: string) => {
-            const trimmed = text.trim();
-            if (!trimmed) return;
-            // Refuse to submit when no resolved aiConfig is available.
-            // The backend hard-requires it (would 400). Instead of a
-            // self-dismissing toast, append an agent block in the
-            // timeline with the resolver's specific error message so:
-            //   1. the user actually sees the failure (toast was 3.5s);
-            //   2. the message itself is preserved (not silently dropped);
-            //   3. the error is addressable (specific reason, not a
-            //      generic "configure ai.json" — e.g. "No API key for
-            //      provider openrouter").
-            if (!aiConfigRef.current) {
-                const errMsg =
-                    aiConfigErrorRef.current?.message ??
-                    "AI is not configured. Open the model picker to set up a provider and pick a model.";
-                const exchangeId = model.submitAgentMessage(trimmed);
-                model.applyAgentStatus(exchangeId, "error", errMsg);
-                return;
-            }
-            // Mint an exchangeId on the model side so the agent block is
-            // appended *before* sendMessage races back deltas.  Pass the
-            // same id to useChat as the user message id so the bridge can
-            // correlate.
-            const exchangeId = model.submitAgentMessage(trimmed);
-            void sendMessage({
-                text: trimmed,
-                messageId: exchangeId,
-            });
+                void sendRef.current(trimmed);
+            },
+            abort: () => {
+                abortRef.current();
+            },
+            getRuns: () => runsRef.current,
         };
-        onReady(submit);
-    }, [onReady, sendMessage, model]);
+        onReadyRef.current?.(api);
+        // Re-fire when the API identity is stable; we want one-shot,
+        // but tolerating an extra fire on remount is harmless because
+        // the parent overwrites the ref unconditionally.
+    }, []);
 
     return null;
 }

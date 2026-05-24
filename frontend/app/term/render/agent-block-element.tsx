@@ -1,95 +1,54 @@
-// Copyright 2026, Crest contributors. SPDX-License-Identifier: Apache-2.0
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
 //
-// AgentBlockElement — renders one agent exchange (user message + assistant
-// reply) as a block within the terminal timeline.  Structure derived from
-// warp:
-//   app/src/ai/blocklist/agent_view/agent_view_block.rs
-//   app/src/ai/blocklist/agent_view/inline_agent_view_header.rs
-// Warp is © 2020-2026 Denver Technologies, Inc., MIT licensed.
+// AgentBlockElement — renders one pi run (one user-initiated send +
+// every subsequent assistant + toolResult message until the next
+// user message). Post-pi-migration: consumes a PiRun directly; no
+// Jotai-atom hop, no ai-sdk UIMessagePart shape, no exchangeId
+// indirection. The agent block in TerminalModel is just a marker
+// holding a runId; this component resolves it to messages via the
+// PiRun passed in.
 //
-// Differences from warp port:
-//   - Rust → React/TS.  Visual constants use crest Tailwind tokens (not
-//     warp's pathfinder_color::ColorU literals) so the block visually
-//     matches the rest of the crest UI.
-//   - Markdown via react-markdown + remark-gfm (warp uses its own
-//     markdown_parser crate).  v1 has no syntax highlighting in code
-//     blocks — that lives in P3 Markdown delta phase.
-//   - Tool action cards (P0.4) will mount inside this component as
-//     inline children between markdown segments.  v1 just renders
-//     `assistantText` as one markdown stream.
+// Visual structure unchanged from the previous incarnation: header
+// (status icon + label), user prompt chip, assistant content (text
+// + tool cards interleaved), optional error footer.
 
 import { UIcon } from "@/app/element/ui-icon";
+import type { PiAgentMessage } from "@/app/store/use-pi-chat";
+import type { PiRun, PiRunStatus } from "@/app/store/slice-pi-runs";
 import { cn } from "@/util/util";
-import * as jotai from "jotai";
-import { useAtomValue } from "jotai";
 import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { Block } from "../engine";
-import { TerminalModel } from "../terminal-model";
-import { ToolUseCard, WaveUIDataToolUse } from "./tool-use-card";
-import { WaveUIMessagePart } from "@/app/store/aitypes";
+import { type PiToolCall, type PiToolResultContent, ToolCallCard } from "./tool-call-card";
 
-// Sentinel atom for components rendered without a model (preview /
-// tests).  Stable identity = useAtomValue doesn't trigger re-renders
-// when the host doesn't provide a model.
-const EmptyPartsAtom = jotai.atom(new Map<string, WaveUIMessagePart[]>());
-
-export interface AgentBlockElementProps {
-    block: Block;
-    // `revision` from TerminalModel — props bumping forces re-render of
-    // the memoized component when the agent payload mutates in place.
-    revision: number;
-    selected?: boolean;
-    fontSize?: number;
-    onSelect?: () => void;
-    // When provided, AgentBlockElement walks the assistant parts array
-    // (text + data-tooluse + ...) and renders tool cards inline.  Falls
-    // back to the flat `assistantText` projection on agentPayload when
-    // parts are absent (e.g. resync from chatstore, pre-P0.4 callers).
-    model?: TerminalModel;
-    chatId?: string;
-    onFileJump?: (filename: string, line?: number) => void;
-    onOpenBlock?: (blockId: string) => void;
-}
-
-// Visual constants — mirror the spirit of warp's block padding / spacing.
-// Numbers chosen to align with cmdblock-input chrome at the bottom of the
-// pane so the timeline reads as one continuous column.
 const HORIZONTAL_PAD_PX = 16;
 const VERTICAL_PAD_PX = 12;
 
-export const AgentBlockElement = memo(
-    ({
-        block,
-        revision: _revision,
-        selected,
-        fontSize = 13,
-        onSelect,
-        model,
-        chatId,
-        onFileJump,
-        onOpenBlock,
-    }: AgentBlockElementProps) => {
-        const payload = block.agentPayload;
-        // Subscribe to parts map at top level so this component re-renders
-        // when useChat pushes new parts via applyAgentParts.  Hook must
-        // run unconditionally; we resolve the actual parts after the
-        // early-return guard.
-        const partsMap = useAtomValue(model?.agentPartsAtom ?? EmptyPartsAtom);
-        if (!payload) return null;
+export interface AgentBlockElementProps {
+    /** The pi run this block visualizes. Sliced by the parent (block-list-element). */
+    run: PiRun;
+    /** Selected highlight for the timeline (Cmd+↑/↓ block nav). */
+    selected?: boolean;
+    /** Font size for the body text. */
+    fontSize?: number;
+    /** Click handler to mark this block as selected. */
+    onSelect?: () => void;
+}
 
-        const isStreaming = payload.status === "streaming";
-        const isError = payload.status === "error";
-        const parts = partsMap.get(payload.exchangeId);
+export const AgentBlockElement = memo(
+    ({ run, selected, fontSize = 13, onSelect }: AgentBlockElementProps) => {
+        const userText = useMemo(() => extractText(run.userMessage), [run.userMessage]);
+        const isStreaming = run.status === "streaming";
+        const isError = run.status === "error";
 
         return (
             <div
                 onClick={onSelect}
                 className={cn(
                     "relative border-b border-fg-overlay-1/40 font-sans",
-                    selected && "bg-fg-overlay-1/30"
+                    selected && "bg-fg-overlay-1/30",
                 )}
                 style={{
                     paddingLeft: `${HORIZONTAL_PAD_PX}px`,
@@ -97,102 +56,129 @@ export const AgentBlockElement = memo(
                     paddingTop: `${VERTICAL_PAD_PX}px`,
                     paddingBottom: `${VERTICAL_PAD_PX}px`,
                 }}
-                data-agent-block-id={block.id}
-                data-agent-status={payload.status}
+                data-agent-block-runid={run.runId}
+                data-agent-status={run.status}
             >
-                <AgentBlockHeader status={payload.status} createdAt={payload.createdAt} />
-                <UserMessage text={payload.userText} fontSize={fontSize} />
-                {parts && parts.length > 0 && chatId ? (
-                    <AssistantParts
-                        parts={parts}
-                        streaming={isStreaming}
-                        fontSize={fontSize}
-                        chatId={chatId}
-                        onFileJump={onFileJump}
-                        onOpenBlock={onOpenBlock}
-                    />
-                ) : (
-                    <AssistantResponse
-                        text={payload.assistantText}
-                        streaming={isStreaming}
-                        fontSize={fontSize}
-                    />
-                )}
-                {isError && payload.errorMessage && (
+                <AgentBlockHeader status={run.status} />
+                <UserMessage text={userText} fontSize={fontSize} />
+                <AssistantContent
+                    responseMessages={run.responseMessages}
+                    streaming={isStreaming}
+                    fontSize={fontSize}
+                />
+                {isError && run.errorMessage && (
                     <div
                         className="mt-2 rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-rose-300"
                         style={{ fontSize: `${fontSize - 1}px` }}
                     >
-                        Error: {payload.errorMessage}
+                        Error: {run.errorMessage}
                     </div>
                 )}
             </div>
         );
-    }
+    },
 );
 AgentBlockElement.displayName = "AgentBlockElement";
 
 // =========================================================================
-// AssistantParts — interleaved render of an assistant message's parts
-// array.  Text parts go through the same prose pipeline as the v1
-// AssistantResponse; data-tooluse parts render as ToolUseCards inline at
-// their position in the array.  Other part types (reasoning, file,
-// source-url, etc.) are ignored for v1.
+// extractText — concat text parts from a pi AgentMessage.content array.
 // =========================================================================
-interface AssistantPartsProps {
-    parts: WaveUIMessagePart[];
-    streaming: boolean;
-    fontSize: number;
-    chatId: string;
-    onFileJump?: (filename: string, line?: number) => void;
-    onOpenBlock?: (blockId: string) => void;
+function extractText(message: PiAgentMessage): string {
+    const parts = message.content;
+    if (!parts) return "";
+    const out: string[] = [];
+    for (const c of parts) {
+        if (c.type === "text" && typeof c.text === "string") {
+            out.push(c.text);
+        }
+    }
+    return out.join("");
 }
 
-const AssistantParts = memo(
-    ({ parts, streaming, fontSize, chatId, onFileJump, onOpenBlock }: AssistantPartsProps) => {
-        // Walk parts in order.  Coalesce adjacent text parts into one
-        // markdown block so headings / lists / code fences spanning
-        // chunks render correctly.
+// =========================================================================
+// AssistantContent — walk the run's response messages in order, render
+// text from assistant messages as markdown, render toolCall blocks as
+// ToolCallCards paired with their matching toolResult (looked up by
+// toolUseId across subsequent toolResult messages).
+// =========================================================================
+interface AssistantContentProps {
+    responseMessages: PiAgentMessage[];
+    streaming: boolean;
+    fontSize: number;
+}
+
+interface PiToolResultLite extends PiToolResultContent {
+    toolUseId: string;
+}
+
+const AssistantContent = memo(
+    ({ responseMessages, streaming, fontSize }: AssistantContentProps) => {
+        // Index toolResults by toolUseId for O(1) lookup. Pi places
+        // tool results in dedicated messages (role: "toolResult"); each
+        // message's content array may carry multiple toolResult entries
+        // when the assistant called several tools in one turn.
+        const resultsByCallId = useMemo(() => {
+            const map = new Map<string, PiToolResultLite>();
+            for (const msg of responseMessages) {
+                if (msg.role !== "toolResult") continue;
+                if (!msg.content) continue;
+                for (const c of msg.content) {
+                    if (c.type !== "toolResult") continue;
+                    const toolUseId =
+                        typeof c.toolUseId === "string"
+                            ? c.toolUseId
+                            : typeof c.toolCallId === "string"
+                              ? (c.toolCallId as string)
+                              : "";
+                    if (!toolUseId) continue;
+                    map.set(toolUseId, {
+                        toolUseId,
+                        content: c.content as PiToolResultContent["content"],
+                        isError: c.isError === true,
+                    });
+                }
+            }
+            return map;
+        }, [responseMessages]);
+
         const rendered: React.ReactNode[] = [];
         let textBuf = "";
-        const flushText = (keySuffix: string) => {
+        let keyIdx = 0;
+        const flushText = () => {
             if (!textBuf) return;
-            rendered.push(
-                <AssistantResponse
-                    key={`text-${keySuffix}`}
-                    text={textBuf}
-                    streaming={false}
-                    fontSize={fontSize}
-                />
-            );
+            rendered.push(<AssistantMarkdown key={`text-${keyIdx++}`} text={textBuf} fontSize={fontSize} />);
             textBuf = "";
         };
-        parts.forEach((p, idx) => {
-            if (p.type === "text") {
-                textBuf += (p as { text: string }).text;
-                return;
+
+        for (const msg of responseMessages) {
+            if (msg.role !== "assistant" || !msg.content) continue;
+            for (const c of msg.content) {
+                if (c.type === "text" && typeof c.text === "string") {
+                    textBuf += c.text;
+                    continue;
+                }
+                if (c.type === "toolCall") {
+                    flushText();
+                    const call: PiToolCall = {
+                        id: String(c.id ?? ""),
+                        name: String(c.name ?? ""),
+                        input: c.input,
+                    };
+                    const result = resultsByCallId.get(call.id);
+                    rendered.push(<ToolCallCard key={`tool-${call.id}`} call={call} result={result} />);
+                    continue;
+                }
+                // Other content types (image, etc.) — ignore in v1.
             }
-            if (p.type === "data-tooluse") {
-                flushText(`b${idx}`);
-                const tool = (p as { data: WaveUIDataToolUse }).data;
-                rendered.push(
-                    <ToolUseCard
-                        key={`tool-${tool.toolcallid}`}
-                        tool={tool}
-                        chatId={chatId}
-                        onFileJump={onFileJump}
-                        onOpenBlock={onOpenBlock}
-                    />
-                );
-                return;
-            }
-            // Unhandled part types (reasoning, source-url, file, ...) —
-            // ignore in v1.  Future work: a dedicated renderer per kind.
-        });
-        flushText("tail");
+        }
+        flushText();
+
         return (
             <div>
                 {rendered}
+                {streaming && rendered.length === 0 && (
+                    <div className="text-secondary/70 text-[12px] italic">Thinking…</div>
+                )}
                 {streaming && (
                     <span
                         aria-hidden
@@ -201,23 +187,40 @@ const AssistantParts = memo(
                 )}
             </div>
         );
-    }
+    },
 );
-AssistantParts.displayName = "AssistantParts";
+AssistantContent.displayName = "AssistantContent";
 
 // =========================================================================
-// AgentBlockHeader — status icon + label.  Mirrors warp's
-// `inline_agent_view_header.rs` structure: status icon on the left, label
-// in the middle, optional metadata on the right.  v1 keeps it minimal —
-// "Agent" label + status indicator.  Per-mode icons (ask/plan/do/bench)
-// will come once Mode is threaded through.
+// AssistantMarkdown — render a text chunk through react-markdown.
+// =========================================================================
+interface AssistantMarkdownProps {
+    text: string;
+    fontSize: number;
+}
+const AssistantMarkdown = memo(({ text, fontSize }: AssistantMarkdownProps) => (
+    <div
+        className="prose prose-invert max-w-none break-words text-foreground/95
+            prose-headings:font-semibold prose-headings:text-foreground
+            prose-p:my-2 prose-p:leading-snug prose-li:my-0 prose-ol:my-2 prose-ul:my-2
+            prose-code:rounded prose-code:bg-fg-overlay-1/60 prose-code:px-1 prose-code:py-[1px]
+            prose-pre:my-2 prose-pre:bg-fg-overlay-1/50 prose-pre:p-2"
+        style={{ fontSize: `${fontSize}px`, lineHeight: 1.5 }}
+    >
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+    </div>
+));
+AssistantMarkdown.displayName = "AssistantMarkdown";
+
+// =========================================================================
+// AgentBlockHeader — status icon + "Agent" label, with a pulsing dot
+// while streaming.
 // =========================================================================
 interface AgentBlockHeaderProps {
-    status: "streaming" | "done" | "error";
-    createdAt: number;
+    status: PiRunStatus;
 }
 
-const AgentBlockHeader = memo(({ status, createdAt: _createdAt }: AgentBlockHeaderProps) => {
+const AgentBlockHeader = memo(({ status }: AgentBlockHeaderProps) => {
     const { icon, accent, label } = useMemo(() => {
         switch (status) {
             case "streaming":
@@ -244,10 +247,7 @@ const AgentBlockHeader = memo(({ status, createdAt: _createdAt }: AgentBlockHead
 AgentBlockHeader.displayName = "AgentBlockHeader";
 
 // =========================================================================
-// UserMessage — the user's typed prompt.  Warp renders this as a right-
-// aligned chip on a tinted background; crest mirrors that pattern but
-// keeps the chip left-aligned to match the cmdblock timeline reading
-// direction.
+// UserMessage — chip showing the user's prompt that initiated this run.
 // =========================================================================
 interface UserMessageProps {
     text: string;
@@ -258,71 +258,11 @@ const UserMessage = memo(({ text, fontSize }: UserMessageProps) => {
     if (!text) return null;
     return (
         <div
-            className="mb-2 whitespace-pre-wrap break-words rounded border border-fg-overlay-2/50 bg-fg-overlay-1/40 px-2.5 py-1.5 text-foreground/90"
-            style={{ fontSize: `${fontSize}px`, lineHeight: 1.45 }}
+            className="mb-2 inline-block max-w-full rounded border border-fg-overlay-2 bg-fg-overlay-1/40 px-2 py-1 text-foreground/90 whitespace-pre-wrap"
+            style={{ fontSize: `${fontSize}px` }}
         >
             {text}
         </div>
     );
 });
 UserMessage.displayName = "UserMessage";
-
-// =========================================================================
-// AssistantResponse — the streaming markdown body.  Wraps react-markdown
-// with crest-flavored prose styling (no plugin syntax highlighting in v1).
-// While `streaming` is true, render a trailing cursor dot so the user
-// sees liveness even if no new tokens have landed for a beat.
-//
-// react-markdown produces native <p>, <pre>, <code>, <ul>, etc.; we lean
-// on Tailwind utility selectors via a wrapping `prose` shim defined
-// inline.  Adding the `@tailwindcss/typography` plugin is out of scope
-// for v1; for now we hand-style the common tags so output isn't visually
-// unstyled.
-// =========================================================================
-interface AssistantResponseProps {
-    text: string;
-    streaming: boolean;
-    fontSize: number;
-}
-
-const AssistantResponse = memo(({ text, streaming, fontSize }: AssistantResponseProps) => {
-    if (!text && !streaming) {
-        return null;
-    }
-    return (
-        <div
-            className={cn(
-                // Hand-rolled "prose" — keep it tight; will replace with
-                // @tailwindcss/typography when we add the plugin.
-                "prose-agent text-foreground/95",
-                "[&_p]:my-1.5 [&_p]:leading-relaxed",
-                "[&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:border [&_pre]:border-fg-overlay-2 [&_pre]:bg-background/60 [&_pre]:p-2",
-                "[&_code]:rounded [&_code]:bg-fg-overlay-2/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[0.92em]",
-                "[&_pre_code]:bg-transparent [&_pre_code]:p-0",
-                "[&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5",
-                "[&_ol]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5",
-                "[&_li]:my-0.5",
-                "[&_a]:text-[var(--ansi-blue)] [&_a]:underline",
-                "[&_h1]:my-2 [&_h1]:text-[1.15em] [&_h1]:font-semibold",
-                "[&_h2]:my-2 [&_h2]:text-[1.08em] [&_h2]:font-semibold",
-                "[&_h3]:my-1.5 [&_h3]:text-[1.02em] [&_h3]:font-semibold",
-                "[&_blockquote]:my-1.5 [&_blockquote]:border-l-2 [&_blockquote]:border-fg-overlay-3 [&_blockquote]:pl-3 [&_blockquote]:text-foreground/80",
-                "[&_table]:my-2 [&_table]:border-collapse",
-                "[&_th]:border [&_th]:border-fg-overlay-2 [&_th]:px-2 [&_th]:py-1 [&_th]:bg-fg-overlay-1/60",
-                "[&_td]:border [&_td]:border-fg-overlay-2 [&_td]:px-2 [&_td]:py-1"
-            )}
-            style={{ fontSize: `${fontSize}px`, lineHeight: 1.5 }}
-        >
-            {text ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-            ) : null}
-            {streaming && (
-                <span
-                    aria-hidden
-                    className="ml-0.5 inline-block h-[1em] w-[2px] animate-pulse bg-foreground/70 align-text-bottom"
-                />
-            )}
-        </div>
-    );
-});
-AssistantResponse.displayName = "AssistantResponse";
