@@ -60,9 +60,18 @@ export class Blocks {
     }
 
     // appendAgentBlock — factory for agent-kind blocks. Mirrors warp's
-    // `BlockList::append_item_to_blocklist` (blocks.rs:1074): the new
-    // block is always appended at the tail in call order; no post-hoc
-    // reordering based on timestamps.
+    // `BlockList::append_item_to_blocklist` (blocks.rs:1074): blocks are
+    // added in call order with no timestamp reordering.
+    //
+    // Placement nuance vs warp: warp's input editor is a separate widget,
+    // so AI blocks append to the true tail. crest models the live shell
+    // prompt as an INVISIBLE "waiting-for-input" block kept at the tail of
+    // the list (the real editor is CmdBlockInput, rendered below the list).
+    // Appending after that placeholder would put the agent block below the
+    // pending prompt — then the next `ls` (which fills the placeholder)
+    // renders ABOVE the agent block and the following prompt below it. So
+    // we insert the agent block BEFORE a trailing input placeholder, keeping
+    // the live prompt last (the position warp's separate editor occupies).
     //
     // The returned Block carries an outputGrid + headerGrid for shape
     // uniformity with shell blocks, but neither grid is ever written
@@ -89,7 +98,12 @@ export class Blocks {
             kind: "agent",
             agentRef: ref,
         });
-        this.push(block, height);
+        const last = this.list[this.list.length - 1];
+        if (last?.state === "waiting-for-input") {
+            this.insertAt(this.list.length - 1, block, height);
+        } else {
+            this.push(block, height);
+        }
         return block;
     }
 
