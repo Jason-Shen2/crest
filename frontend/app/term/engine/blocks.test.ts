@@ -6,8 +6,19 @@ import { describe, expect, it } from "vitest";
 import { Block } from "./block";
 import { Blocks } from "./blocks";
 
+// A finished shell block (the realistic state of an "existing" block in the
+// timeline). A fresh Block defaults to "waiting-for-input" — that state is
+// reserved for the single live prompt placeholder at the tail.
 function makeShellBlock(id: string, seq: number, cols: number = 80): Block {
-    return new Block({ id, seq, cols });
+    const b = new Block({ id, seq, cols });
+    b.state = "done-with-execution";
+    return b;
+}
+
+// The invisible live-prompt placeholder kept at the tail (mirrors the real
+// shell's pending prompt; the visible input is the separate CmdBlockInput).
+function makePromptPlaceholder(id: string, seq: number, cols: number = 80): Block {
+    return new Block({ id, seq, cols }); // defaults to "waiting-for-input"
 }
 
 describe("Blocks.appendAgentBlock", () => {
@@ -62,5 +73,24 @@ describe("Blocks.appendAgentBlock", () => {
         with120.push(makeShellBlock("s1", 0, 120));
         const a = with120.appendAgentBlock("r1");
         expect(a.outputGrid.cols()).toBe(120);
+    });
+
+    it("inserts BEFORE a trailing waiting-for-input placeholder so the live prompt stays last", () => {
+        // Repro for the ordering bug: when the timeline ends in the live
+        // prompt placeholder, the agent block must land above it. Otherwise
+        // the next `ls` (which fills the placeholder) renders above the agent
+        // block and the following prompt below it.
+        const blocks = new Blocks();
+        blocks.push(makeShellBlock("s1", 0));
+        blocks.push(makePromptPlaceholder("p", 1));
+
+        blocks.appendAgentBlock("r1");
+
+        const order = blocks.all().map((b) => ({ id: b.id, state: b.state }));
+        expect(order).toEqual([
+            { id: "s1", state: "done-with-execution" },
+            { id: "agent_r1", state: "waiting-for-input" }, // agent block's own default; harmless
+            { id: "p", state: "waiting-for-input" }, // live prompt remains last
+        ]);
     });
 });
