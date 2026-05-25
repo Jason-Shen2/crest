@@ -46,11 +46,18 @@ import {
     openPaneSession,
 } from "./agent/sessions";
 import type { JsonlSessionMetadata } from "./agent/harness/types";
-import type { ThinkingLevel } from "./agent/types";
+import type { AgentMessage, ThinkingLevel } from "./agent/types";
 
 // Per-pane harness instances, keyed by session JSONL path (the natural
 // session identity — same path always reopens the same conversation).
 const harnessCache = new Map<string, PaneHarness>();
+
+// Authoritative per-session transcript (the source of truth the renderer
+// mirrors). Maintained by an internal harness subscription attached at
+// build time — BEFORE prompt() runs — so it never misses events, even for
+// a turn that completes before the renderer subscribes. Replayed as a
+// `snapshot` to each new subscriber. See docs/agent-rendering-architecture.md.
+const sessionMessages = new Map<string, AgentMessage[]>();
 
 // Per-(sender, sessionPath) subscriptions. The value is the unsubscribe
 // fn returned by PaneHarness.harness.subscribe(). On sender destroy we
@@ -188,6 +195,15 @@ async function ensurePaneHarness(
         ),
     });
     harnessCache.set(metadata.path, pane);
+    // Maintain the authoritative transcript from inside main, attached now
+    // (before any prompt() runs) so it never misses events. agent_end
+    // carries the full conversation after each turn — that's our snapshot
+    // source for late/re-subscribing renderers.
+    pane.harness.subscribe((ev) => {
+        if (ev.type === "agent_end" && Array.isArray(ev.messages)) {
+            sessionMessages.set(metadata.path, ev.messages as AgentMessage[]);
+        }
+    });
     return pane;
 }
 
@@ -282,6 +298,18 @@ export function registerAgentIpcHandlers(): void {
             event.sender.send("agent:event", { sessionPath, event: agentEvent });
         });
         subscriptions.set(key, unsub);
+        // Seed the new subscriber with the authoritative transcript so a
+        // late/re-subscribing renderer never misses pre-subscribe history
+        // (e.g. a turn that finished before the renderer subscribed). The
+        // renderer reduces `snapshot` by replacing its mirror. Sent after
+        // attaching the live listener so no event in between is dropped.
+        const snapshot = sessionMessages.get(sessionPath);
+        if (snapshot && !event.sender.isDestroyed()) {
+            event.sender.send("agent:event", {
+                sessionPath,
+                event: { type: "snapshot", messages: snapshot },
+            });
+        }
         let set = subscriptionsBySender.get(event.sender.id);
         if (!set) {
             set = new Set();
@@ -322,4 +350,5 @@ export function _resetAgentIpcForTests(): void {
         }
     }
     harnessCache.clear();
+    sessionMessages.clear();
 }

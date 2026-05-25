@@ -63,6 +63,18 @@ describe("reducePiChatEvent", () => {
         expect(out).toEqual(final);
     });
 
+    it("snapshot seeds the mirror with main's authoritative transcript", () => {
+        // Sent once on (re)subscribe. A renderer that missed the first
+        // turn's events (subscribed late) must back-fill from this so its
+        // blocks can find their runs. Replaces local state wholesale.
+        const authoritative: PiAgentMessage[] = [
+            { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1000 },
+            { role: "assistant", content: [{ type: "text", text: "hello" }], stopReason: "stop" },
+        ];
+        const out = reducePiChatEvent([], { type: "snapshot", messages: authoritative });
+        expect(out).toEqual(authoritative);
+    });
+
     it("handles message_start on empty state without crashing", () => {
         const msg: PiAgentMessage = { role: "user", content: [] };
         expect(reducePiChatEvent([], { type: "message_start", message: msg })).toEqual([msg]);

@@ -103,6 +103,12 @@ export interface UsePiChatModel {
     provider: string;
     model: string;
     reasoning?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    /**
+     * Credential reference from the ai-resolver, forwarded to main so it
+     * can resolve the provider API key. Exactly one is typically set.
+     */
+    token?: string;
+    tokenSecretName?: string;
 }
 
 /** Pane state threaded to the agent for system-prompt composition. */
@@ -195,10 +201,14 @@ export function reducePiChatEvent(
             next[next.length - 1] = event.message;
             return next;
         }
+        case "snapshot":
         case "agent_end": {
             if (!event.messages) return messages;
-            // Authoritative snapshot of the whole conversation —
-            // replace local state to reconcile any drift.
+            // Authoritative transcript from main — replace the local
+            // mirror to reconcile any drift / back-fill missed history.
+            // `snapshot` is sent once on (re)subscribe so a renderer that
+            // subscribed after a turn already streamed still gets the full
+            // conversation (see docs/agent-rendering-architecture.md).
             return event.messages;
         }
         default:
@@ -280,6 +290,8 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                     provider: modelSelectionRef.current.provider,
                     model: modelSelectionRef.current.model,
                     reasoning: modelSelectionRef.current.reasoning,
+                    token: modelSelectionRef.current.token,
+                    tokenSecretName: modelSelectionRef.current.tokenSecretName,
                     gitBranch: paneContextRef.current.gitBranch,
                     recentCmds: paneContextRef.current.recentCmds,
                     connection: paneContextRef.current.connection,
