@@ -976,6 +976,13 @@ export class TerminalModel {
         const initialState = mapState(rawState, row?.exitcode);
         this.advanceState(block, initialState);
         this.blocks.push(block);
+        // Pin the live prompt block to the tail (warp's pinned_to_bottom).
+        // It's invisible (renders null) but holds the current prompt context
+        // the input bar reads; keeping it last means agent blocks — and any
+        // future block type — append above the pending prompt automatically.
+        if (block.state === "waiting-for-input") {
+            this.blocks.setPinnedToBottom(block.id);
+        }
         return block;
     }
 
@@ -992,6 +999,12 @@ export class TerminalModel {
         const isOrdered = order.includes(block.state) && order.includes(target);
         if (isOrdered) {
             if (order.indexOf(target) <= order.indexOf(block.state)) return;
+        }
+        // Leaving the pending-prompt state: this block is now a real command,
+        // so release the bottom pin and let it stay at its committed position.
+        // (no-op if it wasn't the pinned block.)
+        if (target !== "waiting-for-input") {
+            this.blocks.clearPinnedToBottom(block.id);
         }
         // Drive the right method based on the destination so the block's
         // internal grids transition consistently (output_grid started,
