@@ -199,6 +199,13 @@ declare global {
         provider: string;
         model: string;
         reasoning?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+        /**
+         * Credential reference from the renderer's ai-resolver. Main turns
+         * these into the provider API key (literal token, else a
+         * secretstore lookup) — the plaintext key never round-trips.
+         */
+        token?: string;
+        tokenSecretName?: string;
         gitBranch?: string;
         recentCmds?: string[];
         connection?: string;

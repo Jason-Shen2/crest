@@ -762,13 +762,25 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                 sessionMetadata={persistedAgentSession}
                 onSessionMinted={onSessionMintedHandler}
                 modelSelection={
-                    activeSelection
+                    resolvedAIConfig
                         ? {
-                              provider: activeSelection.provider,
-                              model: activeSelection.model,
-                              reasoning: activeSelection.reasoning,
+                              // Resolved config carries the credential ref
+                              // (tokensecretname / token) main needs to find
+                              // the provider API key — activeSelection alone
+                              // doesn't, which left agent sends keyless.
+                              provider: resolvedAIConfig.provider,
+                              model: resolvedAIConfig.model,
+                              reasoning: resolvedAIConfig.reasoning,
+                              token: resolvedAIConfig.token,
+                              tokenSecretName: resolvedAIConfig.tokensecretname,
                           }
-                        : undefined
+                        : activeSelection
+                          ? {
+                                provider: activeSelection.provider,
+                                model: activeSelection.model,
+                                reasoning: activeSelection.reasoning,
+                            }
+                          : undefined
                 }
                 paneContext={{
                     cwd: liveCwd,
