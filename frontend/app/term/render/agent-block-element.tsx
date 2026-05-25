@@ -70,11 +70,22 @@ export const AgentBlockElement = memo(
                     fontSize={fontSize}
                 />
                 {isError && run.errorMessage && (
+                    // Warp's error style (block/view_impl/common.rs:3013): a row
+                    // of [red alert icon] + [muted message text], no box / no red
+                    // fill. The icon carries the "error" signal; the text is
+                    // subdued and wraps to the block width.
                     <div
-                        className="mt-2 w-fit max-w-[min(560px,100%)] rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-rose-300 break-words whitespace-pre-wrap"
+                        className="mt-2 flex items-start gap-1.5 text-secondary/80"
                         style={{ fontSize: `${fontSize - 1}px` }}
                     >
-                        Error: {run.errorMessage}
+                        <UIcon
+                            name="alert-circle"
+                            size={fontSize}
+                            className="mt-0.5 shrink-0 text-rose-400"
+                        />
+                        <span className="min-w-0 break-words whitespace-pre-wrap">
+                            {run.errorMessage.trim()}
+                        </span>
                     </div>
                 )}
             </div>
