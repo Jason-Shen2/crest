@@ -19,18 +19,13 @@
 
 import { UIcon } from "@/app/element/ui-icon";
 import { useAtomValue } from "jotai";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { FindMatch, TerminalModel } from "../terminal-model";
 import { AgentBlockElement } from "./agent-block-element";
 import { BlockElement } from "./block-element";
 import { computeBlockSlice } from "./selection";
 
 const ScrollBottomThresholdPx = 32;
-// Jump-to-bottom overhang threshold.  Match warp's choice so the button
-// shows up under the same conditions ours does.
-// Behavior reference: warp app/src/terminal/view.rs:599
-//   JUMP_TO_BOTTOM_OVERHANG_THRESHOLD_PX.
-const JumpToBottomOverhangPx = 70;
 
 export interface BlockListElementProps {
     model: TerminalModel;
@@ -120,57 +115,16 @@ export const BlockListElement = memo(
         const scrollRef = useRef<HTMLDivElement>(null);
         const lastFollowRevision = useRef<number>(-1);
 
-        // Currently-overhanging block: the block whose top is inside the
-        // viewport but whose bottom extends below by more than the
-        // threshold.  Drives the floating "jump to bottom" button.
-        const [overhangingBlockId, setOverhangingBlockId] = useState<string | null>(null);
-
-        const recomputeOverhang = useCallback(() => {
-            const container = scrollRef.current;
-            if (!container) {
-                setOverhangingBlockId((prev) => (prev == null ? prev : null));
-                return;
-            }
-            const containerRect = container.getBoundingClientRect();
-            const blockEls = container.querySelectorAll("[data-block-oid]");
-            let found: string | null = null;
-            for (const el of Array.from(blockEls) as HTMLElement[]) {
-                const r = el.getBoundingClientRect();
-                if (
-                    r.top < containerRect.bottom &&
-                    r.bottom > containerRect.bottom + JumpToBottomOverhangPx
-                ) {
-                    found = el.dataset.blockOid ?? null;
-                    break;
-                }
-            }
-            setOverhangingBlockId((prev) => (prev === found ? prev : found));
-        }, []);
-
-        useEffect(() => {
-            recomputeOverhang();
-            const container = scrollRef.current;
-            if (!container) return;
-            container.addEventListener("scroll", recomputeOverhang);
-            return () => container.removeEventListener("scroll", recomputeOverhang);
-        }, [recomputeOverhang]);
-
-        useEffect(() => {
-            // Block heights change as output streams in; recompute when
-            // the engine bumps revision.  Cheap — bounding-rect reads
-            // only.
-            recomputeOverhang();
-        }, [revision, recomputeOverhang]);
-
+        // Global "jump to bottom": one button per pane, shown whenever the
+        // user has scrolled away from the tail (scrollPos leaves
+        // "follow-bottom"). Scrolls the whole list to the very bottom and
+        // re-sticks — not tied to any single block.
         const handleJumpToBottom = useCallback(() => {
-            if (!overhangingBlockId) return;
-            const container = scrollRef.current;
-            if (!container) return;
-            const el = container.querySelector(
-                `[data-block-oid="${overhangingBlockId}"]`
-            ) as HTMLElement | null;
-            el?.scrollIntoView({ block: "end", behavior: "smooth" });
-        }, [overhangingBlockId]);
+            const el = scrollRef.current;
+            if (!el) return;
+            el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+            model.setScrollPosition({ kind: "follow-bottom" });
+        }, [model]);
 
         // Auto-scroll to bottom when in follow-bottom mode and revision bumps.
         // We perform a few deferred scrollTop sets to catch xterm-style
@@ -326,7 +280,7 @@ export const BlockListElement = memo(
                         );
                     })}
                 </div>
-                {overhangingBlockId && (
+                {scrollPos.kind !== "follow-bottom" && (
                     // Visual reference: warp app/src/terminal/view.rs:599-604
                     // icon_size=20, padding=4 uniform, corner_radius=4.
                     // Icon-only button — warp relies on the tooltip rather
@@ -336,10 +290,10 @@ export const BlockListElement = memo(
                         type="button"
                         onClick={handleJumpToBottom}
                         className="absolute bottom-3 right-3 flex h-7 w-7 cursor-pointer items-center justify-center rounded border border-fg-overlay-2 bg-surface-2/95 text-foreground shadow-md hover:bg-fg-overlay-3"
-                        title="Jump to bottom of this block"
-                        aria-label="Jump to bottom of this block"
+                        title="Jump to bottom"
+                        aria-label="Jump to bottom"
                     >
-                        <UIcon name="arrow-down" size={14} />
+                        <UIcon name="chevron-down" size={16} />
                     </button>
                 )}
             </div>
