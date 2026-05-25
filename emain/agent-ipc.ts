@@ -45,7 +45,7 @@ import {
     listSessionsForCwd,
     openPaneSession,
 } from "./agent/sessions";
-import type { JsonlSessionMetadata } from "./agent/harness/types";
+import { AgentHarnessError, type JsonlSessionMetadata } from "./agent/harness/types";
 import type { AgentMessage, ThinkingLevel } from "./agent/types";
 
 // Per-pane harness instances, keyed by session JSONL path (the natural
@@ -263,11 +263,21 @@ export function registerAgentIpcHandlers(): void {
             );
             const { metadata } = await ensureSession(opts);
             const pane = await ensurePaneHarness(metadata, opts);
-            // Fire-and-forget: pi emits errors via the assistant-message
-            // stop reason on the event stream. We log unexpected throws
-            // (which would be bugs in our wiring, not LLM errors).
+            // Concurrent sends: pi's harness rejects a second prompt() while
+            // a turn is streaming (code "busy"). That's by design — pi wants
+            // followUp() (queue after the current turn) or steer() instead of
+            // interrupting. So: try prompt(); if busy, route to followUp so
+            // the message runs after the current turn completes (pi drains
+            // its own follow-up queue). See docs/agent-rendering-architecture.md.
+            // Fire-and-forget: real LLM errors surface via the event stream's
+            // stop reason; we only log unexpected wiring throws.
             void pane.harness.prompt(opts.text).catch((err) => {
-                // eslint-disable-next-line no-console
+                if (err instanceof AgentHarnessError && err.code === "busy") {
+                    void pane.harness.followUp(opts.text).catch((e) => {
+                        console.error(`[agent-ipc] followUp error for ${metadata.path}:`, e);
+                    });
+                    return;
+                }
                 console.error(`[agent-ipc] prompt error for ${metadata.path}:`, err);
             });
             return { sessionMetadata: metadata };

@@ -158,6 +158,11 @@ end state — tracked as deferred below.
     (full authoritative array per turn).
   - `agent:subscribe` replays the cached transcript as a `snapshot` event
     to the newly-subscribed sender.
+  - `agent:send` concurrency: tries `harness.prompt(text)`; if the harness
+    rejects with `AgentHarnessError.code === "busy"` (a turn is already
+    streaming), routes the message to `harness.followUp(text)` so it runs
+    after the current turn — pi's intended concurrent-send path (queue,
+    not interrupt). pi drains its own follow-up queue.
 - `frontend/app/store/use-pi-chat.ts`
   - `reducePiChatEvent` handles a `snapshot` event by replacing
     `messages` with the authoritative array (no status side-effects).
@@ -171,11 +176,13 @@ end state — tracked as deferred below.
 
 ## 5. Deferred / known-separate
 
-- **`AgentHarness is busy` on concurrent sends.** pi rejects a second
-  `prompt()` while a turn is streaming. The UI currently lets the user
-  send mid-stream → busy error. Proper fix: disable/queue sends while
-  streaming, or route to pi's `steer` / `followUp` queue. Separate from
-  the rendering/state-sync work here.
+- **Concurrent-send UX polish.** The functional fix is done (send-while-
+  streaming routes to `followUp`, queuing after the current turn — see §4).
+  Remaining polish: surface the queued message(s) in the UI (pi emits a
+  queue-update via `AgentSession`; we use the raw harness so we'd track it
+  ourselves), and optionally a "Stop" affordance. Warp instead *interrupts*
+  (cancels the in-flight turn) with no queue — we chose pi's queue model on
+  purpose so in-flight tool calls / output aren't discarded.
 - **Full `AgentSession` adoption** (vendor it; collapse the renderer to a
   single mirrored conversation model; block list positions by stable id
   only). The end state closest to pi/Warp; not required to fix the bugs.
@@ -190,4 +197,7 @@ end state — tracked as deferred below.
 - [x] Runs keyed by stable message timestamp (`slice-pi-runs.ts`).
 - [x] Snapshot-on-subscribe (`agent-ipc.ts` cache + replay;
       `use-pi-chat.ts` snapshot reducer). Unit-tested.
-- [ ] Verified against the stuck-loading repro in the running app.
+- [x] Concurrent send → `followUp` queue instead of a busy error
+      (`agent-ipc.ts`).
+- [ ] Verified against the stuck-loading + concurrent-send repros in the
+      running app.
