@@ -432,21 +432,18 @@ export const BlockElement = memo(
                     // draw_border_between_blocks (block_list_element.rs:
                     // 2454-2459) paints in `theme.outline()`, which
                     // resolves to fg_overlay_2 = white×10% (color.rs:154
-                    // + :546).  Reserve a 5px left strip on every block so
-                    // failed/AI stripes don't shift content horizontally
-                    // when they light up.  LEFT_STRIPE_WIDTH = 5
-                    // (warpify/render.rs:39).
-                    "group relative border-b border-fg-overlay-2 border-l-[5px] border-l-transparent transition-colors",
+                    // + :546).  No left flag-pole (per user feedback the
+                    // left stripe looked bad); failure is shown via the red
+                    // background tint + the exit code in the header.
+                    "group relative border-b border-fg-overlay-2 transition-colors",
                     // Selection: subtle 10% accent fill, no border — per
                     // user feedback, warp's full 25% + 2px outline reads
                     // too aggressive in crest's layout.  Keeps the
                     // selection discoverable via the tint alone.
                     selected && "bg-[var(--color-term-accent-10)]",
-                    // Failed (non-selected): 10% red overlay + 5px solid
-                    // red flag-pole.  Maps warp block_list_element.rs:
-                    //   :2404-2410  bg = failed_block_color × 10%
-                    //   :2412-2419  flag pole when !selected && !AI stripe
-                    isFailed && !selected && "bg-[var(--ansi-red)]/10 border-l-[var(--ansi-red)]"
+                    // Failed (non-selected): 10% red overlay (warp
+                    // block_list_element.rs:2404-2410, bg = failed × 10%).
+                    isFailed && !selected && "bg-[var(--ansi-red)]/10"
                 )}
             >
                 {showSnackbar && (
