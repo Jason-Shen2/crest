@@ -71,7 +71,7 @@ export const AgentBlockElement = memo(
                 />
                 {isError && run.errorMessage && (
                     <div
-                        className="mt-2 rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-rose-300"
+                        className="mt-2 w-fit max-w-[min(560px,100%)] rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-rose-300 break-words whitespace-pre-wrap"
                         style={{ fontSize: `${fontSize - 1}px` }}
                     >
                         Error: {run.errorMessage}
