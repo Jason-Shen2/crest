@@ -11,6 +11,12 @@
 // it lists messages queued behind the current turn (concurrent sends are
 // queued via the harness steer/followUp queues, not run in parallel).
 //
+// Visual language matches the input bar's ContextChip (cmdblock-input.tsx):
+// subtle white/alpha surfaces, 6px radius, muted text — a cohesive card rather
+// than loose bordered rows. Spinner + neutral "Working…" follows the
+// understated treatment ChatGPT / Claude / Cursor use for an in-progress
+// agent, with a single clear Stop pill.
+//
 // Hidden entirely when the agent is idle with nothing queued.
 
 import { memo } from "react";
@@ -36,35 +42,39 @@ export const AgentActivityBar = memo(({ status, queuedMessages, onStop }: AgentA
     // Nothing to show when idle and no pending messages.
     if (!streaming && queuedMessages.length === 0) return null;
     return (
-        <div className="mb-1.5 flex flex-col gap-1">
+        <div className="mb-1.5 flex flex-col gap-1.5 rounded-lg border border-white/10 bg-white/[0.035] px-2.5 py-1.5">
             {streaming && (
-                <div className="flex items-center gap-1.5 text-[11px]">
-                    <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--ansi-yellow)]" />
-                    <span className="font-semibold uppercase tracking-wider text-[var(--ansi-yellow)]">
-                        Agent running…
-                    </span>
+                <div className="flex items-center gap-2">
+                    <span
+                        className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-foreground/20 border-t-foreground/70"
+                        aria-hidden
+                    />
+                    <span className="text-[12px] text-foreground/70">Working…</span>
                     <button
                         type="button"
                         onClick={onStop}
+                        aria-label="Stop the agent"
                         title="Stop the agent (clears any queued messages)"
                         className={cn(
-                            "ml-auto inline-flex items-center gap-1.5 rounded border border-fg-overlay-2",
-                            "px-2 py-0.5 text-secondary/80 transition-colors cursor-pointer",
-                            "hover:bg-fg-overlay-1/60 hover:text-foreground"
+                            "ml-auto inline-flex items-center gap-1.5 rounded-[6px] border border-white/25 bg-white/[0.08]",
+                            "px-2 py-0.5 text-[12px] text-foreground/85 transition-colors cursor-pointer",
+                            "hover:bg-white/[0.14] hover:text-foreground"
                         )}
                     >
-                        <span className="inline-block h-2 w-2 rounded-[1px] bg-rose-400" />
+                        <span className="h-2 w-2 rounded-[2px] bg-current" aria-hidden />
                         Stop
                     </button>
                 </div>
             )}
             {queuedMessages.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-secondary/70">
-                    <span className="uppercase tracking-wider">queued</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-secondary/55">
+                        Queued
+                    </span>
                     {queuedMessages.map((m, i) => (
                         <span
                             key={i}
-                            className="inline-block max-w-[240px] truncate rounded border border-fg-overlay-2 bg-fg-overlay-1/40 px-2 py-0.5 text-foreground/70"
+                            className="inline-block max-w-[240px] truncate rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] text-foreground/65"
                             title={messageText(m)}
                         >
                             {messageText(m)}
