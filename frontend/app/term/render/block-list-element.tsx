@@ -51,6 +51,9 @@ export interface BlockListElementProps {
     // render time. When a runId is missing from the map, the block
     // renders an empty/streaming placeholder.
     agentRunsById?: Map<string, import("@/app/store/slice-pi-runs").PiRun>;
+    // Stop the in-progress agent run; rendered as a bar at the bottom of the
+    // streaming agent block (warp orchestration pill bar model).
+    onAgentStop?: () => void;
 }
 
 export const BlockListElement = memo(
@@ -63,6 +66,7 @@ export const BlockListElement = memo(
         onLinkClick,
         charWidth,
         agentRunsById,
+        onAgentStop,
     }: BlockListElementProps) => {
         const revision = useAtomValue(model.revisionAtom);
         const scrollPos = useAtomValue(model.scrollPositionAtom);
@@ -278,6 +282,7 @@ export const BlockListElement = memo(
                                         selected={block.id === selectedBlockId}
                                         fontSize={fontSize}
                                         onSelect={() => model.selectBlock(block.id)}
+                                        onStop={onAgentStop}
                                     />
                                 </div>
                             );

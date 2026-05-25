@@ -822,6 +822,7 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                     onLinkClick={onLinkClick}
                     charWidth={charWidth}
                     agentRunsById={agentRunsById}
+                    onAgentStop={onAgentStop}
                 />
             )}
             {/* prompt_to_editor_padding — warp settings/mod.rs:551 keeps a
@@ -829,15 +830,11 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                 top of the input editor.  Without this the input's border-t
                 hugs the last command's stdout. */}
             <div className="mt-2.5" />
-            {/* Persistent agent activity strip (warp orchestration pill bar):
-                streaming + Stop + queued messages, kept above the input so
-                Stop is always reachable regardless of how long the agent's
-                output is. Renders nothing when idle with no queue. */}
-            <AgentActivityBar
-                status={agentState.status}
-                queuedMessages={agentState.queuedMessages}
-                onStop={onAgentStop}
-            />
+            {/* Queued-message strip above the input. Stop now lives at the
+                bottom of the streaming agent block (warp orchestration pill
+                bar model); this bar only surfaces messages waiting to run
+                after the current turn. Renders nothing when nothing queued. */}
+            <AgentActivityBar queuedMessages={agentState.queuedMessages} />
             <CmdBlockInput
                 cwd={liveCwd}
                 home={home}
