@@ -18,7 +18,7 @@ import { CATALOG } from "@/app/store/ai-catalog";
 import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
 import { resolveAIConfig } from "@/app/store/ai-resolver";
 import { AgentSelection, ResolveError, ResolvedAIConfig } from "@/app/store/ai-types";
-import { aiUserConfigAtom, setDefaultSelection } from "@/app/store/ai-user-config";
+import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { indexRunsById, type PiRun } from "@/app/store/slice-pi-runs";
 import { AgentChatHost, type AgentChatHostApi, type AgentHostState } from "./agent-chat-host";
 import { AgentActivityBar } from "./agent-activity-bar";
@@ -172,17 +172,29 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
 
     // AI model picker (Phase D of the ai-config refactor).  Two
     // sources of truth: CATALOG (in-repo) + ~/.config/crest/ai.json
-    // (via aiUserConfigAtom).  Selection is GLOBAL — the picker writes the
-    // ai.json `default` (setDefaultSelection) and every pane reads it; no
-    // per-block override.  See docs/ai-config-architecture.md §5.
+    // (via aiUserConfigAtom).  Selection is persisted per-pane in
+    // block.meta["agent:selection"] as a {provider, model, reasoning?}
+    // triple.  See docs/ai-config-architecture.md §5.
     const userConfigState = useAtomValue(aiUserConfigAtom);
-    // Effective selection — the ai.json default (global).
+    const blockAgentSelection = useOrefMetaKeyAtom(
+        WOS.makeORef("block", outerBlockId),
+        "agent:selection"
+    );
+    // Effective selection — block override beats the ai.json default.
     // Null is a valid state (user hasn't picked, no default) and the
     // picker handles it via its empty/loading banners.
     const activeSelection = useMemo<AgentSelection | null>(() => {
-        // Global selection: read the shared ai.json default (the picker writes
-        // it via setDefaultSelection). No per-block override — every pane
-        // reflects the same model.
+        if (blockAgentSelection?.provider && blockAgentSelection?.model) {
+            return {
+                provider: blockAgentSelection.provider,
+                model: blockAgentSelection.model,
+                reasoning: blockAgentSelection.reasoning as
+                    | "low"
+                    | "medium"
+                    | "high"
+                    | undefined,
+            };
+        }
         const def = userConfigState.config?.default;
         if (def?.provider && def?.model) {
             return {
@@ -192,7 +204,7 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
             };
         }
         return null;
-    }, [userConfigState.config]);
+    }, [blockAgentSelection, userConfigState.config]);
 
     const providerModelsMap = useAtomValue(providerModelsMapAtom);
 
@@ -217,18 +229,18 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
         return activeSelection.reasoning ? `${base} · ${activeSelection.reasoning}` : base;
     }, [activeSelection, providerModelsMap]);
 
-    const onSelectionChange = useCallback((next: AgentSelection) => {
-        // The model picker is GLOBAL: selecting a model updates the shared
-        // ai.json default so every pane uses it, rather than writing a
-        // per-block agent:selection. (User request — one global dropdown.)
-        void setDefaultSelection({
-            provider: next.provider,
-            model: next.model,
-            reasoning: next.reasoning,
-        }).catch((e) => {
-            globalStore.set(model.notificationAtom, e instanceof Error ? e.message : String(e));
-        });
-    }, [model]);
+    const onSelectionChange = useCallback(
+        (next: AgentSelection) => {
+            void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
+                "agent:selection": {
+                    provider: next.provider,
+                    model: next.model,
+                    reasoning: next.reasoning ?? "",
+                },
+            });
+        },
+        [outerBlockId]
+    );
 
     // Resolve the active selection through the catalog + user config
     // into the final wire shape the backend ingests.  Recomputed on
