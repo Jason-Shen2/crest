@@ -75,22 +75,50 @@ describe("Blocks.appendAgentBlock", () => {
         expect(a.outputGrid.cols()).toBe(120);
     });
 
-    it("inserts BEFORE a trailing waiting-for-input placeholder so the live prompt stays last", () => {
-        // Repro for the ordering bug: when the timeline ends in the live
-        // prompt placeholder, the agent block must land above it. Otherwise
-        // the next `ls` (which fills the placeholder) renders above the agent
-        // block and the following prompt below it.
+});
+
+describe("Blocks.pinnedToBottom (warp pinned_to_bottom)", () => {
+    it("keeps the pinned block last across appends — agent AND future block types", () => {
+        // Repro for the ordering bug: the live prompt placeholder is pinned;
+        // any block appended afterward must land ABOVE it. Otherwise the next
+        // `ls` (which fills the placeholder) renders above the agent block and
+        // the following prompt below it. The pin generalizes to every append,
+        // so a future "notification"/"env"/"AI-suggestion" block is correct
+        // for free — not just agent blocks.
         const blocks = new Blocks();
         blocks.push(makeShellBlock("s1", 0));
         blocks.push(makePromptPlaceholder("p", 1));
+        blocks.setPinnedToBottom("p");
 
         blocks.appendAgentBlock("r1");
+        blocks.push(makeShellBlock("future_notif", 2)); // simulate a future block type
 
-        const order = blocks.all().map((b) => ({ id: b.id, state: b.state }));
-        expect(order).toEqual([
-            { id: "s1", state: "done-with-execution" },
-            { id: "agent_r1", state: "waiting-for-input" }, // agent block's own default; harmless
-            { id: "p", state: "waiting-for-input" }, // live prompt remains last
-        ]);
+        expect(blocks.all().map((b) => b.id)).toEqual(["s1", "agent_r1", "future_notif", "p"]);
+    });
+
+    it("setPinnedToBottom re-floats a block that already has items after it", () => {
+        const blocks = new Blocks();
+        blocks.push(makePromptPlaceholder("p", 0));
+        blocks.push(makeShellBlock("s1", 1)); // appended after p, before the pin exists
+        blocks.setPinnedToBottom("p");
+        expect(blocks.all().map((b) => b.id)).toEqual(["s1", "p"]);
+    });
+
+    it("clearPinnedToBottom releases the pin so later appends go to the true tail", () => {
+        const blocks = new Blocks();
+        blocks.push(makePromptPlaceholder("p", 0));
+        blocks.setPinnedToBottom("p");
+        blocks.clearPinnedToBottom("p");
+        blocks.push(makeShellBlock("s1", 1));
+        expect(blocks.all().map((b) => b.id)).toEqual(["p", "s1"]);
+    });
+
+    it("clearPinnedToBottom ignores a non-matching id (can't clear a newer pin)", () => {
+        const blocks = new Blocks();
+        blocks.push(makePromptPlaceholder("p", 0));
+        blocks.setPinnedToBottom("p");
+        blocks.clearPinnedToBottom("stale-other-id"); // no-op
+        blocks.push(makeShellBlock("s1", 1));
+        expect(blocks.all().map((b) => b.id)).toEqual(["s1", "p"]); // still pinned
     });
 });

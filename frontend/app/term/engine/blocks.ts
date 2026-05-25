@@ -48,6 +48,14 @@ export class Blocks {
     // cumHeights[i] = sum of heights[0..i].  cumHeights[0] = 0.
     // Length = heights.length + 1.
     private cumHeights: number[] = [0];
+    // Id of a block kept at the tail across appends — warp's
+    // `pinned_to_bottom` (blocks.rs:338). crest pins the live shell prompt
+    // (the invisible "waiting-for-input" block, warp's missing_command at
+    // block.rs:2026): every append re-floats it to the end, so any new block
+    // (agent today; notification / env / AI-suggestion blocks later) lands
+    // ABOVE the pending prompt without each call site having to know about
+    // it. null = nothing pinned (append goes to the true tail).
+    private pinnedToBottomId: BlockId | null = null;
 
     // ---------- mutation ----------
 
@@ -57,21 +65,48 @@ export class Blocks {
         this.idIndex.set(block.id, idx);
         this.heights.push(height);
         this.cumHeights.push(this.cumHeights[idx] + height);
+        // Keep the pinned block last (mirrors warp append_rich_content →
+        // maintain_pinned_to_bottom, blocks.rs:1037/1058).
+        this.maintainPinnedToBottom();
+    }
+
+    // Pin a block to the tail (warp's append_rich_content_pinned_to_bottom,
+    // blocks.rs:1044). Immediately re-floats it in case blocks already sit
+    // after it.
+    setPinnedToBottom(id: BlockId): void {
+        this.pinnedToBottomId = id;
+        this.maintainPinnedToBottom();
+    }
+
+    // Release the pin. Pass the id so a stale caller can't clear a newer
+    // pin (e.g. the previous prompt clearing after a new one was pinned).
+    clearPinnedToBottom(id: BlockId): void {
+        if (this.pinnedToBottomId === id) {
+            this.pinnedToBottomId = null;
+        }
+    }
+
+    // Re-float the pinned block to the tail if something was appended after
+    // it. Mirrors warp's maintain_pinned_to_bottom: the pin is taken (set to
+    // null) during the move so the re-append's own maintain call is a no-op
+    // and never recurses (blocks.rs:1058-1090).
+    private maintainPinnedToBottom(): void {
+        const pinnedId = this.pinnedToBottomId;
+        if (pinnedId == null) return;
+        const idx = this.idIndex.get(pinnedId);
+        if (idx == null || idx === this.list.length - 1) return;
+        const height = this.heights[idx];
+        this.pinnedToBottomId = null;
+        const block = this.removeById(pinnedId);
+        if (block) this.push(block, height);
+        this.pinnedToBottomId = pinnedId;
     }
 
     // appendAgentBlock — factory for agent-kind blocks. Mirrors warp's
     // `BlockList::append_item_to_blocklist` (blocks.rs:1074): blocks are
-    // added in call order with no timestamp reordering.
-    //
-    // Placement nuance vs warp: warp's input editor is a separate widget,
-    // so AI blocks append to the true tail. crest models the live shell
-    // prompt as an INVISIBLE "waiting-for-input" block kept at the tail of
-    // the list (the real editor is CmdBlockInput, rendered below the list).
-    // Appending after that placeholder would put the agent block below the
-    // pending prompt — then the next `ls` (which fills the placeholder)
-    // renders ABOVE the agent block and the following prompt below it. So
-    // we insert the agent block BEFORE a trailing input placeholder, keeping
-    // the live prompt last (the position warp's separate editor occupies).
+    // added in call order with no timestamp reordering. push() keeps the
+    // pinned prompt block last (see pinnedToBottomId), so the agent block
+    // correctly lands above the pending prompt with no special-casing here.
     //
     // The returned Block carries an outputGrid + headerGrid for shape
     // uniformity with shell blocks, but neither grid is ever written
@@ -98,12 +133,7 @@ export class Blocks {
             kind: "agent",
             agentRef: ref,
         });
-        const last = this.list[this.list.length - 1];
-        if (last?.state === "waiting-for-input") {
-            this.insertAt(this.list.length - 1, block, height);
-        } else {
-            this.push(block, height);
-        }
+        this.push(block, height);
         return block;
     }
 
