@@ -198,7 +198,10 @@ async function ensurePaneSession(
     // the harness subscription NOW (before any prompt() runs), so it owns
     // the authoritative transcript + queue state from the first event on —
     // never missing a turn that finishes before a renderer subscribes.
-    const owner = new PaneAgentSession(metadata.path, pane);
+    // Seed it with the persisted transcript so a reopened session shows its
+    // history (a fresh session's buildContext is empty).
+    const seed = await piSession.buildContext();
+    const owner = new PaneAgentSession(metadata.path, pane, seed.messages ?? []);
     sessionCache.set(metadata.path, owner);
     return owner;
 }
