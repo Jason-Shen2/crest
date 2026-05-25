@@ -177,6 +177,36 @@ func getByOID(ctx context.Context, oid string) (*CmdBlock, error) {
 	return &cb, nil
 }
 
+// SetOutputData stores the durable per-block output snapshot (captured at
+// command completion from the still-valid term-file range). See
+// cbtypes.CmdBlock.OutputData and the 000013 migration.
+func SetOutputData(ctx context.Context, oid string, data []byte) error {
+	return wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
+		tx.Exec(`UPDATE db_cmdblock SET output_data = ? WHERE oid = ?`, data, oid)
+		return nil
+	})
+}
+
+// GetOutputData returns the durable per-block output snapshot for a finished
+// command. Returns (nil, nil) when the row is missing or has no snapshot
+// (e.g. a row written before this column existed).
+func GetOutputData(ctx context.Context, oid string) ([]byte, error) {
+	var data []byte
+	var found bool
+	err := wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
+		var cb CmdBlock
+		found = tx.Get(&cb, `SELECT * FROM db_cmdblock WHERE oid = ?`, oid)
+		if found {
+			data = cb.OutputData
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 // DeleteByBlockID removes all cmd_blocks belonging to a parent terminal block.
 // Called when the parent block is deleted.
 func DeleteByBlockID(ctx context.Context, blockID string) error {

@@ -62,9 +62,11 @@ type CmdBlockNotifyEvent struct {
 // CmdBlock is one shell-command lifecycle tracked inside a terminal block.
 //
 // Each row covers the span from OSC 16162;A (prompt appeared) to OSC 16162;D
-// (command done). The raw output bytes live in the parent terminal block's
-// existing BlockFile_Term circular file; we only store offsets here so the
-// frontend can replay a range into a per-command xterm instance.
+// (command done). The offsets index the parent block's BlockFile_Term for the
+// LIVE view; OutputData is the durable per-block snapshot of the command's
+// output, captured at completion (Warp's blocks.stylized_output model) and
+// used for history rehydrate — immune to the shared term file being reset or
+// wrapped. See db/migrations-wstore/000013_cmdblock_output.up.sql.
 type CmdBlock struct {
 	OID               string  `db:"oid" json:"oid"`
 	BlockID           string  `db:"blockid" json:"blockid"`
@@ -84,4 +86,8 @@ type CmdBlock struct {
 	TsDoneNs          *int64  `db:"ts_done_ns" json:"tsdonens,omitempty"`
 	AgentSessionID    *string `db:"agent_session_id" json:"agentsessionid,omitempty"`
 	CreatedAt         int64   `db:"created_at" json:"createdat"`
+	// Durable per-block output snapshot. Excluded from JSON (never sent in the
+	// live row/chunk events — those stream output directly); fetched on demand
+	// for history rehydrate via GetCmdBlockOutputCommand.
+	OutputData []byte `db:"output_data" json:"-"`
 }

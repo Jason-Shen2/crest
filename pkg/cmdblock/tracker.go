@@ -14,11 +14,18 @@ import (
 	"sync"
 
 	"github.com/s-zx/crest/pkg/cmdblock/cbtypes"
+	"github.com/s-zx/crest/pkg/filestore"
+	"github.com/s-zx/crest/pkg/wavebase"
 	"github.com/s-zx/crest/pkg/waveobj"
 	"github.com/s-zx/crest/pkg/wcore"
 	"github.com/s-zx/crest/pkg/wps"
 	"github.com/s-zx/crest/pkg/wstore"
 )
+
+// MaxStoredOutputBytes caps the durable per-block output snapshot. Matches the
+// frontend's MaxRenderedBytesPerBlock so a rehydrated block renders exactly
+// what the live view would have.
+const MaxStoredOutputBytes = 256 * 1024
 
 var altScreenEnterSeq = []byte("\x1b[?1049h")
 var altScreenExitSeq = []byte("\x1b[?1049l")
@@ -238,6 +245,13 @@ func (t *Tracker) handleEvent(ctx context.Context, ev Event) {
 		// publish below degrades gracefully when getByOID returns nil.
 		if row, err := getByOID(ctx, oid); err == nil {
 			if row != nil {
+				// Capture the command's output into a durable per-block blob
+				// NOW, while the term-file offsets are still valid (the file
+				// is reset on the next shell start, wrapped once it exceeds
+				// its max size). This is what history rehydrate reads — see
+				// the 000013 migration. Done before publishRow so a frontend
+				// re-fetch right after sees the snapshot.
+				t.captureOutput(ctx, row)
 				t.publishRow(row)
 			}
 		}
@@ -247,6 +261,35 @@ func (t *Tracker) handleEvent(ctx context.Context, ev Event) {
 		if shell := decodeShell(ev.Payload); shell != "" {
 			t.shellType = shell
 		}
+	}
+}
+
+// captureOutput snapshots the finished command's output from the term
+// blockfile into the durable output_data column. Reads the [start, end) range
+// (capped) that is still valid at completion time. Best-effort: a failure just
+// means this block won't rehydrate its output, which is non-fatal.
+func (t *Tracker) captureOutput(ctx context.Context, row *cbtypes.CmdBlock) {
+	if row.OutputStartOffset == nil || row.OutputEndOffset == nil {
+		return
+	}
+	start := *row.OutputStartOffset
+	size := *row.OutputEndOffset - start
+	if size <= 0 {
+		return
+	}
+	if size > MaxStoredOutputBytes {
+		size = MaxStoredOutputBytes
+	}
+	_, data, err := filestore.WFS.ReadAt(ctx, t.blockID, wavebase.BlockFile_Term, start, size)
+	if err != nil {
+		log.Printf("cmdblock: captureOutput ReadAt oid=%s: %v", row.OID, err)
+		return
+	}
+	if len(data) == 0 {
+		return
+	}
+	if err := SetOutputData(ctx, row.OID, data); err != nil {
+		log.Printf("cmdblock: captureOutput SetOutputData oid=%s: %v", row.OID, err)
 	}
 }
 

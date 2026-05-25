@@ -1,0 +1,11 @@
+-- Per-block output persistence (Warp `blocks.stylized_output` model).
+--
+-- Previously a cmdblock row stored ONLY byte offsets into the parent terminal
+-- block's shared, circular BlockFile_Term. That file is reset/truncated when
+-- the shell restarts (and wraps when it exceeds its max size), so on restart
+-- the persisted offsets aliased into unrelated bytes of the new stream — the
+-- frontend rehydrated history blocks with the new session's prompt/command
+-- bytes ("…spurious prompt header…"). Like Warp, each block now owns its own
+-- output blob, captured at command-completion while the offsets are still
+-- valid, so restore is immune to the shared file's lifecycle.
+ALTER TABLE db_cmdblock ADD COLUMN output_data BLOB;

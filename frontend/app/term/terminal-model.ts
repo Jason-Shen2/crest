@@ -44,7 +44,6 @@ import {
 
 const DefaultCols = 120;
 const ResyncIntervalMs = 10_000;
-const MaxRenderedBytesPerBlock = 256 * 1024;
 // Auto-collapse threshold — finished blocks with more output rows than
 // this start collapsed.
 //
@@ -837,19 +836,19 @@ export class TerminalModel {
     }
 
     private async fetchOutputFor(row: CmdBlock): Promise<void> {
-        if (row.outputstartoffset == null || row.outputendoffset == null) return;
-        const rawSize = row.outputendoffset - row.outputstartoffset;
-        if (rawSize <= 0) return;
-        const size = Math.min(rawSize, MaxRenderedBytesPerBlock);
+        // Rehydrate history output from the block's OWN durable snapshot
+        // (Warp's blocks.stylized_output model), captured in main at command
+        // completion. We do NOT slice the shared "term" blockfile by offset
+        // here: that file is reset on shell restart and wrapped past its max
+        // size, so the persisted offsets aliased into the new session's bytes
+        // and rendered spurious prompt headers in history blocks. The per-
+        // block blob is immune to the term file's lifecycle.
         try {
-            const resp = await RpcApi.ReadBlockFileRangeCommand(TabRpcClient, {
-                blockid: this.outerBlockId,
-                name: "term",
-                offset: row.outputstartoffset,
-                size,
-            });
+            const resp = await RpcApi.GetCmdBlockOutputCommand(TabRpcClient, { oid: row.oid });
             if (this.disposed) return;
             const bytes = base64ToArray(resp.data64 ?? "");
+            // Empty = no snapshot (e.g. a row from before output_data existed,
+            // or a command with no output). Nothing to render.
             if (bytes.length === 0) return;
             const block = this.blocks.findById(row.oid);
             if (!block) return;
