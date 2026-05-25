@@ -160,3 +160,33 @@ describe("indexRunsById", () => {
         expect(indexRunsById([]).size).toBe(0);
     });
 });
+
+describe("runId stability (timestamp-keyed)", () => {
+    function userAt(text: string, timestamp: number): PiAgentMessage {
+        return { role: "user", content: [{ type: "text", text }], timestamp };
+    }
+
+    it("derives runId from the user message timestamp, not the index", () => {
+        const runs = slicePiRuns([userAt("hi", 1000), assistant("yo", "stop")]);
+        expect(runs[0].runId).toBe("run-1000");
+    });
+
+    it("keeps the same runId when the message is re-indexed", () => {
+        // The bug: the agent_end snapshot (or a mid-stream subscribe)
+        // shifts a user message's array index. A positional id would
+        // change and desync the frozen timeline block; the timestamp id
+        // must not.
+        const u = userAt("question", 1234);
+        const beforeShift = slicePiRuns([u, assistant("a", "stop")]);
+        const afterShift = slicePiRuns([
+            userAt("earlier", 500),
+            assistant("b", "stop"),
+            u, // same message, now at a later index
+            assistant("a", "stop"),
+        ]);
+        const matchedBefore = beforeShift.find((r) => r.userMessage === u);
+        const matchedAfter = afterShift.find((r) => r.userMessage === u);
+        expect(matchedBefore?.runId).toBe("run-1234");
+        expect(matchedAfter?.runId).toBe("run-1234"); // unchanged despite re-index
+    });
+});

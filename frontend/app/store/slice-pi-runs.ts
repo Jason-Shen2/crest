@@ -6,19 +6,23 @@
 // agent block in the timeline: user prompt + every subsequent
 // non-user message until the next user message or end of array.
 //
-// Pure function; runId is derived deterministically from the user
-// message's position in the array. Stable enough for React keying
-// within a session — the messages array only grows during normal
-// streaming, and even when compaction truncates older entries the
-// resulting re-render simply rebuilds the block list with the new
-// indices (we never persist runIds anywhere).
+// Pure function. runId is derived from the user message's *timestamp*,
+// not its array index, on purpose: an agent timeline block freezes the
+// runId it was created with, while agentRunsById is rebuilt from the
+// current array on every change. The `agent_end` event replaces the
+// whole array with the authoritative session snapshot, and the renderer
+// subscribes mid-stream — both can shift a message's index. A positional
+// id ("run-0") then desyncs (frozen block id vs recomputed map key) and
+// the block sticks on "…loading agent run…" forever. The timestamp is
+// assigned once in the main process and travels unchanged through every
+// event and the snapshot, so block id and map key always agree.
 
 import type { PiAgentMessage } from "./use-pi-chat";
 
 export type PiRunStatus = "streaming" | "done" | "error";
 
 export interface PiRun {
-    /** Stable id derived from the user message's position. Format: "run-{idx}". */
+    /** Stable id derived from the user message's timestamp. Format: "run-{ts}". */
     runId: string;
     /** Index of the user message within the source messages array. */
     userMessageIndex: number;
@@ -57,7 +61,10 @@ export function slicePiRuns(messages: PiAgentMessage[]): PiRun[] {
         }
         const { status, errorMessage } = deriveStatus(responseMessages);
         runs.push({
-            runId: `run-${i}`,
+            // Timestamp = stable identity (see file header). Fall back to
+            // the index only if a message somehow lacks one — main always
+            // stamps messages, so this is belt-and-suspenders.
+            runId: `run-${msg.timestamp ?? i}`,
             userMessageIndex: i,
             userMessage: msg,
             responseMessages,
