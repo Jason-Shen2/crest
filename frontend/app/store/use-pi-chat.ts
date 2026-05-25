@@ -82,8 +82,10 @@ export interface PiAgentEvent {
     type: string;
     /** message_start / message_update / message_end / turn_end carry this. */
     message?: PiAgentMessage;
-    /** agent_end carries this. */
+    /** agent_end + snapshot carry this. */
     messages?: PiAgentMessage[];
+    /** snapshot carries the owner's run status (idle/streaming/error). */
+    status?: string;
     /** turn_end carries this. */
     toolResults?: PiAgentMessage[];
     /** message_update carries this. */
@@ -249,6 +251,18 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             const event = raw as PiAgentEvent;
             setMessages((prev) => reducePiChatEvent(prev, event));
             switch (event.type) {
+                case "snapshot": {
+                    // Replayed once on (re)subscribe: seed status from the
+                    // owner so a renderer that attaches mid-stream reflects
+                    // "streaming" instead of a stale "idle". reducePiChatEvent
+                    // already mirrored the messages above.
+                    const snapStatus = event.status as UsePiChatStatus | undefined;
+                    if (snapStatus) {
+                        setStatus(snapStatus);
+                        setErrorMessage(snapStatus === "error" ? "agent error" : undefined);
+                    }
+                    break;
+                }
                 case "agent_start":
                 case "turn_start":
                     setStatus("streaming");
