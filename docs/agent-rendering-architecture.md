@@ -136,36 +136,80 @@ applying the same three principles:
    is `{role, content, timestamp}` (no separate id field) and the TUI
    keys finer-grained units by `content.id`.
 
-### Why not adopt pi's `AgentSession` wholesale
+### The owner: pi's `AgentSession` *pattern*, at the harness layer
 
-`AgentSession` lives in pi's `coding-agent` package, which crest did not
-vendor (only `agent` + `ai`). It pulls in `session-manager`, runtime,
-extensions, etc. The three principles above capture what we need without
-that surface. Adopting `AgentSession` (and collapsing the renderer to a
-single mirrored conversation model with the block list referencing
-exchanges purely by stable id for *positioning*) is the cleaner long-term
-end state — tracked as deferred below.
+pi exposes the agent at two levels:
+
+- **`Agent`** (`packages/.../agent.ts`) — the low-level loop. Exposes
+  **synchronous** `state.messages` and `state.isStreaming`, plus
+  `subscribe` / `prompt` / `steer` / `followUp`.
+- **`AgentHarness`** (`harness/agent-harness.ts`) — a batteries-included
+  wrapper that owns a `Session` (JSONL persistence), manages the
+  steer/followUp queues, and is **event-only**: it has *no* synchronous
+  `messages` getter; the transcript surfaces through the event stream
+  (`message_start/update/end`, `agent_end` with the full array) plus
+  `queue_update` (steer + followUp arrays).
+
+pi's own coding-agent wraps the **`Agent`** in an `AgentSession`
+(`core/agent-session.ts:157` `agent: Agent`, `:336` `subscribe`, `:811`
+`get messages() { return this.agent.state.messages }`). `AgentSession`
+is an **owner/aggregator**: subscribe once, own the authoritative
+transcript + queues, persist, and re-emit to the UI — which works because
+the TUI is in the *same process* and can read `state.messages`
+synchronously.
+
+crest consumes the **`AgentHarness`**, and that is the correct layer for
+an embedder: the renderer is in another process and **cannot read
+synchronous state across IPC anyway**, so an event-driven source fits
+*better* than `Agent`'s sync-state model, and the harness already bundles
+persistence + queues. Vendoring `coding-agent`'s `AgentSession` wholesale
+would be wrong — it drags in `extensions/`, `export-html/`,
+`slash-commands`, `settings-manager`, `theme`, `model-registry`,
+`compaction`, etc. (a CLI app's worth of surface).
+
+What crest was missing was not the harness layer — it was the **owner**.
+Harness events were scattered into a loose `Map` (updated only on
+`agent_end`, so stale mid-turn) and concurrent sends were handled by
+*catching* `AgentHarnessError("busy")`. So crest applies the
+`AgentSession` *pattern* at the harness layer: a single per-session owner,
+`PaneAgentSession` (`emain/agent/pane-agent-session.ts`), that subscribes
+to the harness once, owns the transcript + queue + status, and decides
+send routing from its own tracked state.
 
 ---
 
 ## 4. Implementation map
 
-- `emain/agent-ipc.ts`
-  - `sessionMessages: Map<path, AgentMessage[]>` — per-session
-    authoritative transcript cache.
-  - `ensurePaneHarness` attaches an internal `harness.subscribe` (before
-    `prompt()` is ever called) that updates the cache on `agent_end`
-    (full authoritative array per turn).
-  - `agent:subscribe` replays the cached transcript as a `snapshot` event
-    to the newly-subscribed sender.
-  - `agent:send` concurrency: tries `harness.prompt(text)`; if the harness
-    rejects with `AgentHarnessError.code === "busy"` (a turn is already
-    streaming), routes the message to `harness.followUp(text)` so it runs
-    after the current turn — pi's intended concurrent-send path (queue,
-    not interrupt). pi drains its own follow-up queue.
+- `emain/agent/pane-agent-session.ts` — **the owner.** One
+  `PaneAgentSession` per session JSONL path. Subscribes to the harness
+  once at construction (before any `prompt()`), so it never misses events.
+  - Owns `messages`: appends on `message_start`, replaces the tail on
+    `message_update` / `message_end`, reconciles to the authoritative
+    array on `agent_end`.
+  - Mirrors `steerQueue` / `followUpQueue` from the harness's own
+    `queue_update` events.
+  - Tracks `status` (idle / streaming / error) + `errorMessage`.
+  - `getSnapshot()` returns the owned state for replay.
+  - `send(text)` routes prompt-vs-followUp from a **synchronously tracked
+    `running` flag** — not by catching a busy error. `prompt()` flips the
+    harness phase synchronously (`agent-harness.ts:606`) and `followUp()`
+    only guards on idle, so a same-tick burst routes deterministically:
+    first send starts the run, the rest queue via `followUp`.
+  - Re-emits the harness event stream to its own subscribers and clears
+    `running` on `agent_end` / `abort` / prompt-settle.
+- `emain/agent-ipc.ts` — thin IPC ↔ owner adapter.
+  - `sessionCache: Map<path, PaneAgentSession>` (was a harness cache + a
+    separate transcript `Map`).
+  - `agent:send` → `session.send(text)`.
+  - `agent:subscribe` → `session.subscribe(cb)`, then replays
+    `session.getSnapshot()` as a `snapshot` event (messages + status +
+    queues) so a late/re-subscribing renderer mirrors the owned state —
+    including a turn that is *mid-stream*, not just completed.
+  - `agent:abort` → `session.abort()`.
 - `frontend/app/store/use-pi-chat.ts`
-  - `reducePiChatEvent` handles a `snapshot` event by replacing
-    `messages` with the authoritative array (no status side-effects).
+  - `reducePiChatEvent` handles `snapshot` by replacing `messages` with
+    the authoritative array; the subscribe callback also seeds `status`
+    from the snapshot so a mid-stream re-subscribe reflects "streaming".
 - `frontend/app/store/slice-pi-runs.ts`
   - `runId = run-${userMessage.timestamp}` (stable; not positional).
 - `frontend/app/term/render/block-list-element.tsx`
@@ -176,16 +220,18 @@ end state — tracked as deferred below.
 
 ## 5. Deferred / known-separate
 
-- **Concurrent-send UX polish.** The functional fix is done (send-while-
-  streaming routes to `followUp`, queuing after the current turn — see §4).
-  Remaining polish: surface the queued message(s) in the UI (pi emits a
-  queue-update via `AgentSession`; we use the raw harness so we'd track it
-  ourselves), and optionally a "Stop" affordance. Warp instead *interrupts*
-  (cancels the in-flight turn) with no queue — we chose pi's queue model on
-  purpose so in-flight tool calls / output aren't discarded.
-- **Full `AgentSession` adoption** (vendor it; collapse the renderer to a
-  single mirrored conversation model; block list positions by stable id
-  only). The end state closest to pi/Warp; not required to fix the bugs.
+- **Concurrent-send UX (renderer).** The owner already mirrors the queues
+  (`queue_update`) and forwards them in the snapshot + live stream, so the
+  data is on the renderer side. Remaining: `usePiChat` exposing the queued
+  messages and the UI rendering a "queued" chip + a "Stop" affordance.
+  Warp instead *interrupts* (cancels the in-flight turn) with no queue — we
+  chose pi's queue model on purpose so in-flight tool calls / output aren't
+  discarded.
+- **Renderer single-model collapse.** Main now has a clean owner; the
+  renderer still derives runs from the mirrored array via `slicePiRuns`
+  and references them from timeline blocks by stable `runId`. Collapsing
+  this to one mirrored conversation model (block list positions by stable
+  id only) is a further simplification, not a correctness fix.
 - **`read` image branch** and other pi-tool gaps (see
   `docs/agent-runtime-architecture.md`).
 
@@ -195,9 +241,13 @@ end state — tracked as deferred below.
 
 - [x] Principles documented with evidence (this doc).
 - [x] Runs keyed by stable message timestamp (`slice-pi-runs.ts`).
-- [x] Snapshot-on-subscribe (`agent-ipc.ts` cache + replay;
-      `use-pi-chat.ts` snapshot reducer). Unit-tested.
-- [x] Concurrent send → `followUp` queue instead of a busy error
-      (`agent-ipc.ts`).
+- [x] **Owner introduced** — `PaneAgentSession` owns the transcript +
+      queue + status; `agent-ipc` is a thin IPC↔owner adapter. The loose
+      transcript `Map` and the catch-`busy` control flow are gone.
+      Unit-tested (`pane-agent-session.test.ts`, 12 cases).
+- [x] Snapshot-on-subscribe replays the owned state (messages + status +
+      queues), valid mid-stream — not just on completed turns.
+- [x] Concurrent send routed from the owner's tracked run state (queue via
+      `followUp`), no exception-as-control-flow.
 - [ ] Verified against the stuck-loading + concurrent-send repros in the
       running app.

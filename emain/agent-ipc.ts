@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // agent-ipc.ts — Electron main IPC surface for the integrated agent
-// runtime. Holds the harness cache (Map<sessionPath, PaneHarness>),
-// registers ipcMain handlers, and fans pi AgentHarness events out to
-// per-sender subscribers via a single "agent:event" channel.
+// runtime. Holds the per-session owner cache (Map<sessionPath,
+// PaneAgentSession>), registers ipcMain handlers, and fans each owner's
+// event stream out to per-sender subscribers via a single "agent:event"
+// channel. The owner — not this layer — holds the authoritative
+// conversation state and decides send routing; this layer is the thin
+// IPC ↔ owner adapter. See emain/agent/pane-agent-session.ts.
 //
 // See docs/agent-runtime-architecture.md §2 for the topology and
 // §6 for the per-pane lifecycle this layer implements.
@@ -35,7 +38,8 @@ import * as electron from "electron";
 
 import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
-import { buildPaneHarness, type PaneHarness } from "./agent/harness-factory";
+import { buildPaneHarness } from "./agent/harness-factory";
+import { PaneAgentSession } from "./agent/pane-agent-session";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { getDefaultTools } from "./agent/tools";
@@ -45,22 +49,18 @@ import {
     listSessionsForCwd,
     openPaneSession,
 } from "./agent/sessions";
-import { AgentHarnessError, type JsonlSessionMetadata } from "./agent/harness/types";
-import type { AgentMessage, ThinkingLevel } from "./agent/types";
+import type { JsonlSessionMetadata } from "./agent/harness/types";
+import type { ThinkingLevel } from "./agent/types";
 
-// Per-pane harness instances, keyed by session JSONL path (the natural
-// session identity — same path always reopens the same conversation).
-const harnessCache = new Map<string, PaneHarness>();
-
-// Authoritative per-session transcript (the source of truth the renderer
-// mirrors). Maintained by an internal harness subscription attached at
-// build time — BEFORE prompt() runs — so it never misses events, even for
-// a turn that completes before the renderer subscribes. Replayed as a
-// `snapshot` to each new subscriber. See docs/agent-rendering-architecture.md.
-const sessionMessages = new Map<string, AgentMessage[]>();
+// Per-pane conversation OWNERS, keyed by session JSONL path (the natural
+// session identity — same path always reopens the same conversation). The
+// PaneAgentSession owns the authoritative transcript + queue state and is
+// the single thing this IPC layer forwards to renderers; see
+// docs/agent-rendering-architecture.md.
+const sessionCache = new Map<string, PaneAgentSession>();
 
 // Per-(sender, sessionPath) subscriptions. The value is the unsubscribe
-// fn returned by PaneHarness.harness.subscribe(). On sender destroy we
+// fn returned by PaneAgentSession.subscribe(). On sender destroy we
 // walk this map and release everything that sender held.
 type SubKey = string; // `${senderId}:${sessionPath}`
 const subscriptions = new Map<SubKey, () => void>();
@@ -147,16 +147,16 @@ async function resolveApiKey(opts: SendOptions): Promise<string | undefined> {
     return undefined;
 }
 
-async function ensurePaneHarness(
+async function ensurePaneSession(
     metadata: JsonlSessionMetadata,
     opts: SendOptions,
-): Promise<PaneHarness> {
-    const existing = harnessCache.get(metadata.path);
+): Promise<PaneAgentSession> {
+    const existing = sessionCache.get(metadata.path);
     if (existing) {
         existing.update(buildPromptInputs(opts));
         return existing;
     }
-    const session = await openPaneSession(metadata);
+    const piSession = await openPaneSession(metadata);
     // Resolve the provider API key once for this session's harness: a
     // literal token wins, else look up the secret in safeStorage. pi-ai
     // would otherwise fall back to provider env vars (which crest doesn't
@@ -175,7 +175,7 @@ async function ensurePaneHarness(
             `(tokenSecretName=${opts.tokenSecretName ?? "-"})`,
     );
     const pane = buildPaneHarness({
-        session,
+        session: piSession,
         model,
         thinkingLevel: opts.reasoning,
         promptInputs: buildPromptInputs(opts),
@@ -194,17 +194,13 @@ async function ensurePaneHarness(
                   : { allowAll: true },
         ),
     });
-    harnessCache.set(metadata.path, pane);
-    // Maintain the authoritative transcript from inside main, attached now
-    // (before any prompt() runs) so it never misses events. agent_end
-    // carries the full conversation after each turn — that's our snapshot
-    // source for late/re-subscribing renderers.
-    pane.harness.subscribe((ev) => {
-        if (ev.type === "agent_end" && Array.isArray(ev.messages)) {
-            sessionMessages.set(metadata.path, ev.messages as AgentMessage[]);
-        }
-    });
-    return pane;
+    // Wrap the harness in the per-session owner. Its constructor attaches
+    // the harness subscription NOW (before any prompt() runs), so it owns
+    // the authoritative transcript + queue state from the first event on —
+    // never missing a turn that finishes before a renderer subscribes.
+    const owner = new PaneAgentSession(metadata.path, pane);
+    sessionCache.set(metadata.path, owner);
+    return owner;
 }
 
 function releaseSubscription(key: SubKey): void {
@@ -262,62 +258,55 @@ export function registerAgentIpcHandlers(): void {
                     `textLen=${opts.text?.length ?? 0}`,
             );
             const { metadata } = await ensureSession(opts);
-            const pane = await ensurePaneHarness(metadata, opts);
-            // Concurrent sends: pi's harness rejects a second prompt() while
-            // a turn is streaming (code "busy"). That's by design — pi wants
-            // followUp() (queue after the current turn) or steer() instead of
-            // interrupting. So: try prompt(); if busy, route to followUp so
-            // the message runs after the current turn completes (pi drains
-            // its own follow-up queue). See docs/agent-rendering-architecture.md.
-            // Fire-and-forget: real LLM errors surface via the event stream's
-            // stop reason; we only log unexpected wiring throws.
-            void pane.harness.prompt(opts.text).catch((err) => {
-                if (err instanceof AgentHarnessError && err.code === "busy") {
-                    void pane.harness.followUp(opts.text).catch((e) => {
-                        console.error(`[agent-ipc] followUp error for ${metadata.path}:`, e);
-                    });
-                    return;
-                }
-                console.error(`[agent-ipc] prompt error for ${metadata.path}:`, err);
-            });
+            const session = await ensurePaneSession(metadata, opts);
+            // The owner decides prompt-vs-followUp from its own tracked run
+            // state (concurrent send → queue after the current turn, pi's
+            // intended path — not interrupt). Errors surface via the event
+            // stream's stop reason; the owner logs unexpected wiring throws.
+            session.send(opts.text);
             return { sessionMetadata: metadata };
         },
     );
 
     electron.ipcMain.on("agent:abort", (_event, sessionPath: string) => {
         if (typeof sessionPath !== "string" || !sessionPath) return;
-        const pane = harnessCache.get(sessionPath);
-        // AgentHarness.abort() returns a Promise<AbortResult>; we don't
-        // need to await it here — caller fired an abort intent, not a
-        // synchronous request for completion.
-        if (pane) void pane.harness.abort();
+        // Fire an abort intent at the owner — not a synchronous request for
+        // completion. The owner forwards to the harness.
+        sessionCache.get(sessionPath)?.abort();
     });
 
     electron.ipcMain.on("agent:subscribe", (event, sessionPath: string) => {
         if (typeof sessionPath !== "string" || !sessionPath) return;
-        const pane = harnessCache.get(sessionPath);
-        // Subscribe-before-send is legal: the harness may not exist yet.
+        const session = sessionCache.get(sessionPath);
+        // Subscribe-before-send is legal: the owner may not exist yet.
         // Renderer should retry subscribe after the first `agent:send`
         // returns. For v1 we drop early subscribes silently; future
         // improvement is a pending-subs queue keyed by sessionPath.
-        if (!pane) return;
+        if (!session) return;
         const key: SubKey = `${event.sender.id}:${sessionPath}`;
         if (subscriptions.has(key)) return;
-        const unsub = pane.harness.subscribe((agentEvent) => {
+        const unsub = session.subscribe((agentEvent) => {
             if (event.sender.isDestroyed()) return;
             event.sender.send("agent:event", { sessionPath, event: agentEvent });
         });
         subscriptions.set(key, unsub);
-        // Seed the new subscriber with the authoritative transcript so a
-        // late/re-subscribing renderer never misses pre-subscribe history
-        // (e.g. a turn that finished before the renderer subscribed). The
-        // renderer reduces `snapshot` by replacing its mirror. Sent after
-        // attaching the live listener so no event in between is dropped.
-        const snapshot = sessionMessages.get(sessionPath);
-        if (snapshot && !event.sender.isDestroyed()) {
+        // Seed the new subscriber with the owned state so a late/
+        // re-subscribing renderer mirrors the authoritative conversation
+        // (including a turn that finished — or is mid-stream — before it
+        // subscribed) instead of reconstructing it from a partial stream.
+        // The renderer reduces `snapshot` by replacing its mirror. Sent
+        // after attaching the live listener so no event in between is lost.
+        if (!event.sender.isDestroyed()) {
+            const snapshot = session.getSnapshot();
             event.sender.send("agent:event", {
                 sessionPath,
-                event: { type: "snapshot", messages: snapshot },
+                event: {
+                    type: "snapshot",
+                    messages: snapshot.messages,
+                    status: snapshot.status,
+                    steer: snapshot.steerQueue,
+                    followUp: snapshot.followUpQueue,
+                },
             });
         }
         let set = subscriptionsBySender.get(event.sender.id);
@@ -352,13 +341,12 @@ export function _resetAgentIpcForTests(): void {
     }
     subscriptions.clear();
     subscriptionsBySender.clear();
-    for (const pane of harnessCache.values()) {
+    for (const session of sessionCache.values()) {
         try {
-            void pane.harness.abort();
+            session.dispose();
         } catch {
             // ignore
         }
     }
-    harnessCache.clear();
-    sessionMessages.clear();
+    sessionCache.clear();
 }
