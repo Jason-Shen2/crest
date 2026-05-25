@@ -250,6 +250,16 @@ export const BlockListElement = memo(
                                 // or pane re-opened pre-history-load).
                                 // Render a thin placeholder rather than
                                 // disappearing entries from the timeline.
+                                // Diagnostic: if this persists, the block's
+                                // frozen runId no longer matches any recomputed
+                                // map key (an id-derivation drift). Log both so
+                                // the mismatch is visible in DevTools.
+                                console.warn(
+                                    "[agent] no run for block",
+                                    runId,
+                                    "available run ids:",
+                                    agentRunsById ? Array.from(agentRunsById.keys()) : null,
+                                );
                                 return (
                                     <div key={block.id} data-block-oid={block.id}>
                                         <div
