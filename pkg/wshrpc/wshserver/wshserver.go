@@ -1501,6 +1501,22 @@ func (ws *WshServer) GetCmdBlocksCommand(ctx context.Context, data wshrpc.Comman
 	return cmdblock.GetByBlockID(ctx, data.BlockID, data.Limit)
 }
 
+// GetCmdBlockOutputCommand returns the durable per-block output snapshot for a
+// finished command (Warp's blocks.stylized_output model). The frontend reads
+// this on history rehydrate instead of slicing the shared term file, which is
+// reset/wrapped across shell restarts. Empty data64 means no snapshot (e.g. a
+// row from before the output_data column existed).
+func (ws *WshServer) GetCmdBlockOutputCommand(ctx context.Context, data wshrpc.CommandGetCmdBlockOutputData) (*wshrpc.CmdBlockOutputResponse, error) {
+	if data.OID == "" {
+		return nil, fmt.Errorf("oid is required")
+	}
+	out, err := cmdblock.GetOutputData(ctx, data.OID)
+	if err != nil {
+		return nil, err
+	}
+	return &wshrpc.CmdBlockOutputResponse{Data64: base64.StdEncoding.EncodeToString(out)}, nil
+}
+
 func (ws *WshServer) GetShellHistoryCommand(ctx context.Context, data wshrpc.CommandGetShellHistoryData) (*wshrpc.ShellHistoryResponse, error) {
 	return &wshrpc.ShellHistoryResponse{
 		Lines: cmdblock.LoadShellHistory(data.Shell, data.Limit),

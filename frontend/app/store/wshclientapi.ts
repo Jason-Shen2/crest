@@ -426,6 +426,12 @@ export class RpcApiType {
         return client.wshRpcCall("getbuilderstatus", data, opts);
     }
 
+    // command "getcmdblockoutput" [call]
+    GetCmdBlockOutputCommand(client: WshClient, data: CommandGetCmdBlockOutputData, opts?: RpcOpts): Promise<CmdBlockOutputResponse> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "getcmdblockoutput", data, opts);
+        return client.wshRpcCall("getcmdblockoutput", data, opts);
+    }
+
     // command "getcmdblocks" [call]
     GetCmdBlocksCommand(client: WshClient, data: CommandGetCmdBlocksData, opts?: RpcOpts): Promise<CmdBlock[]> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "getcmdblocks", data, opts);

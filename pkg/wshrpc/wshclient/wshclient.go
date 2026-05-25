@@ -424,6 +424,12 @@ func GetBuilderStatusCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpt
 	return resp, err
 }
 
+// command "getcmdblockoutput", wshserver.GetCmdBlockOutputCommand
+func GetCmdBlockOutputCommand(w *wshutil.WshRpc, data wshrpc.CommandGetCmdBlockOutputData, opts *wshrpc.RpcOpts) (*wshrpc.CmdBlockOutputResponse, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.CmdBlockOutputResponse](w, "getcmdblockoutput", data, opts)
+	return resp, err
+}
+
 // command "getcmdblocks", wshserver.GetCmdBlocksCommand
 func GetCmdBlocksCommand(w *wshutil.WshRpc, data wshrpc.CommandGetCmdBlocksData, opts *wshrpc.RpcOpts) ([]*cbtypes.CmdBlock, error) {
 	resp, err := sendRpcRequestCallHelper[[]*cbtypes.CmdBlock](w, "getcmdblocks", data, opts)

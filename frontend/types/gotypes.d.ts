@@ -269,6 +269,11 @@ declare global {
         body: string;
     };
 
+    // wshrpc.CmdBlockOutputResponse
+    type CmdBlockOutputResponse = {
+        data64: string;
+    };
+
     // wshrpc.CommandAuthenticateJobManagerData
     type CommandAuthenticateJobManagerData = {
         jobid: string;
@@ -452,6 +457,11 @@ declare global {
         info: FileInfo;
         byterange?: string;
         streammeta: StreamMeta;
+    };
+
+    // wshrpc.CommandGetCmdBlockOutputData
+    type CommandGetCmdBlockOutputData = {
+        oid: string;
     };
 
     // wshrpc.CommandGetCmdBlocksData
