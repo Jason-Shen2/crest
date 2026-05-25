@@ -582,8 +582,16 @@ function buildParams(
 			openRouterParams.reasoning = {
 				effort: model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort,
 			};
-		} else if (model.thinkingLevelMap?.off !== null) {
-			openRouterParams.reasoning = { effort: model.thinkingLevelMap?.off ?? "none" };
+		} else if (typeof model.thinkingLevelMap?.off === "string") {
+			// Only force-disable when the model EXPLICITLY maps "off" to a
+			// disable value. For models without that mapping (e.g. dynamically
+			// listed OpenRouter reasoning models like minimax/* free), DON'T
+			// send a disable: many require reasoning and reject any disable
+			// with "400 Reasoning is mandatory for this endpoint and cannot be
+			// disabled". Omitting the field lets the endpoint use its default
+			// (reasoning on). Matches the generic reasoning_effort path below,
+			// which already only emits an off-value when it's an explicit string.
+			openRouterParams.reasoning = { effort: model.thinkingLevelMap.off };
 		}
 	} else if (compat.thinkingFormat === "together" && model.reasoning) {
 		const togetherParams = params as Omit<typeof params, "reasoning_effort"> & {
