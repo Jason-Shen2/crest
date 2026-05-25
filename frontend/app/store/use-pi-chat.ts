@@ -86,6 +86,9 @@ export interface PiAgentEvent {
     messages?: PiAgentMessage[];
     /** snapshot carries the owner's run status (idle/streaming/error). */
     status?: string;
+    /** queue_update + snapshot carry the pending queues (user messages). */
+    steer?: PiAgentMessage[];
+    followUp?: PiAgentMessage[];
     /** turn_end carries this. */
     toolResults?: PiAgentMessage[];
     /** message_update carries this. */
@@ -148,6 +151,13 @@ export interface UsePiChatReturn {
     status: UsePiChatStatus;
     errorMessage: string | undefined;
     sessionMetadata: AgentSessionMeta | undefined;
+    /**
+     * Messages waiting to run after the current turn — concurrent sends are
+     * queued via the harness's steer/followUp queues (not run in parallel).
+     * Mirrored from the owner's `queue_update` events; ordered steer-first
+     * (injected sooner) then followUp. Empty while idle / nothing pending.
+     */
+    queuedMessages: PiAgentMessage[];
     send: (text: string) => Promise<void>;
     abort: () => void;
 }
@@ -227,6 +237,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [messages, setMessages] = useState<PiAgentMessage[]>([]);
     const [status, setStatus] = useState<UsePiChatStatus>("idle");
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
+    const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
     const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(
         opts.initialSession,
     );
@@ -266,8 +277,15 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                         setStatus(snapStatus);
                         setErrorMessage(snapStatus === "error" ? "agent error" : undefined);
                     }
+                    setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
                     break;
                 }
+                case "queue_update":
+                    // Authoritative pending-queue state from the owner; the
+                    // harness emits this on every enqueue AND drain, so the
+                    // mirror stays exact (empty when nothing is pending).
+                    setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
+                    break;
                 case "agent_start":
                 case "turn_start":
                     setStatus("streaming");
@@ -282,6 +300,10 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                     break;
                 }
                 case "agent_end":
+                case "abort":
+                    // Run finished or was stopped. abort() also clears the
+                    // queues and emits queue_update, so queuedMessages empties
+                    // on its own; here we just settle the status.
                     setStatus("idle");
                     break;
                 default:
@@ -337,7 +359,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     }, [sessionPath]);
 
     return useMemo(
-        () => ({ messages, status, errorMessage, sessionMetadata, send, abort }),
-        [messages, status, errorMessage, sessionMetadata, send, abort],
+        () => ({ messages, status, errorMessage, sessionMetadata, queuedMessages, send, abort }),
+        [messages, status, errorMessage, sessionMetadata, queuedMessages, send, abort],
     );
 }
