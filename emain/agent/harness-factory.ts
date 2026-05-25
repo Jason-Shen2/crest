@@ -39,6 +39,17 @@ export interface BuildPaneHarnessOptions {
      * docs/agent-runtime-architecture.md §7.9.
      */
     toolCallHook?: ToolCallHook;
+    /**
+     * Resolves the API key (+ optional headers) for the model's
+     * provider. pi-ai calls this per request; without it, pi-ai falls
+     * back to provider env vars (e.g. OPENROUTER_API_KEY), which crest
+     * doesn't set — keys live in the safeStorage secret store. The IPC
+     * layer resolves the key (literal token or secretstore lookup) and
+     * passes it here.
+     */
+    getApiKeyAndHeaders?: (
+        model: Model<Api>,
+    ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
 }
 
 export interface PaneHarness {
@@ -70,6 +81,7 @@ export function buildPaneHarness(opts: BuildPaneHarnessOptions): PaneHarness {
         // construction — picker model changes mid-conversation also work
         // because pi's AgentHarness threads this through every turn.
         systemPrompt: () => buildSystemPrompt(inputs),
+        getApiKeyAndHeaders: opts.getApiKeyAndHeaders,
     });
     if (opts.toolCallHook) {
         // AgentHarness gates tool execution via the typed "tool_call"
