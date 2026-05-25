@@ -39,6 +39,7 @@ import { buildPaneHarness, type PaneHarness } from "./agent/harness-factory";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { getDefaultTools } from "./agent/tools";
+import { getSecret } from "./aiconfig/secrets";
 import {
     createPaneSession,
     listSessionsForCwd,
@@ -71,6 +72,15 @@ interface SendOptions {
     model: string;
     /** Reasoning level, when the model supports it. */
     reasoning?: ThinkingLevel;
+    /**
+     * Credential reference resolved by the renderer's ai-resolver.
+     * Exactly one is typically set: a literal `token` (testing / unauthed
+     * local endpoints) or a `tokenSecretName` to look up in the
+     * safeStorage secret store. Main resolves these into the actual API
+     * key passed to pi-ai — the renderer never sees the plaintext key.
+     */
+    token?: string;
+    tokenSecretName?: string;
     /** Optional pane context. */
     gitBranch?: string;
     recentCmds?: string[];
@@ -117,6 +127,19 @@ async function ensureSession(opts: SendOptions): Promise<{
     return { metadata, isNew: true };
 }
 
+async function resolveApiKey(opts: SendOptions): Promise<string | undefined> {
+    const literal = opts.token?.trim();
+    if (literal) return literal;
+    if (opts.tokenSecretName) {
+        const value = await getSecret(opts.tokenSecretName);
+        if (value) return value;
+    }
+    // No credential resolved — let pi-ai try its own env-var fallback
+    // (returning undefined means we don't override it). The provider's
+    // own "no API key" error surfaces to the renderer if that also fails.
+    return undefined;
+}
+
 async function ensurePaneHarness(
     metadata: JsonlSessionMetadata,
     opts: SendOptions,
@@ -127,12 +150,30 @@ async function ensurePaneHarness(
         return existing;
     }
     const session = await openPaneSession(metadata);
+    // Resolve the provider API key once for this session's harness: a
+    // literal token wins, else look up the secret in safeStorage. pi-ai
+    // would otherwise fall back to provider env vars (which crest doesn't
+    // set), failing with "No API key for provider: <provider>".
+    const apiKey = await resolveApiKey(opts);
+    const model = resolveModelOrThrow(opts.provider, opts.model);
+    // Diagnostic: the agent's LLM request goes out from the MAIN process
+    // (Node fetch in pi-ai), so it never shows in the renderer's Network
+    // tab. Log the resolved model config (never the key itself) so the
+    // provider/model/baseUrl/key wiring is verifiable from the main
+    // console (the `task electron:quickdev` terminal).
+    console.log(
+        `[agent-ipc] send → provider=${model.provider} model=${model.id} api=${model.api} ` +
+            `baseUrl=${(model as { baseUrl?: string }).baseUrl ?? "(provider default)"} ` +
+            `reasoning=${opts.reasoning ?? "off"} apiKey=${apiKey ? "present" : "MISSING"} ` +
+            `(tokenSecretName=${opts.tokenSecretName ?? "-"})`,
+    );
     const pane = buildPaneHarness({
         session,
-        model: resolveModelOrThrow(opts.provider, opts.model),
+        model,
         thinkingLevel: opts.reasoning,
         promptInputs: buildPromptInputs(opts),
         tools: getDefaultTools(opts.cwd),
+        getApiKeyAndHeaders: apiKey == null ? undefined : async () => ({ apiKey }),
         // Bench mode (eval harness sets CREST_AGENT_BENCH=1) bypasses
         // the allowlist entirely. Otherwise: v1 defaults to allowAll
         // when the renderer didn't pass an allowedTools list (no
@@ -195,6 +236,15 @@ export function registerAgentIpcHandlers(): void {
             _event,
             opts: SendOptions,
         ): Promise<{ sessionMetadata: JsonlSessionMetadata }> => {
+            // Per-send trace of the renderer-supplied selection (the
+            // harness build logs the fully-resolved model on first send;
+            // an existing session reuses it and skips that log).
+            console.log(
+                `[agent-ipc] agent:send provider=${opts.provider} model=${opts.model} ` +
+                    `reasoning=${opts.reasoning ?? "off"} ` +
+                    `cred=${opts.token ? "token" : opts.tokenSecretName ? `secret:${opts.tokenSecretName}` : "NONE"} ` +
+                    `textLen=${opts.text?.length ?? 0}`,
+            );
             const { metadata } = await ensureSession(opts);
             const pane = await ensurePaneHarness(metadata, opts);
             // Fire-and-forget: pi emits errors via the assistant-message
