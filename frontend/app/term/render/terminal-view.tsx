@@ -20,7 +20,8 @@ import { resolveAIConfig } from "@/app/store/ai-resolver";
 import { AgentSelection, ResolveError, ResolvedAIConfig } from "@/app/store/ai-types";
 import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { indexRunsById, type PiRun } from "@/app/store/slice-pi-runs";
-import { AgentChatHost, type AgentChatHostApi } from "./agent-chat-host";
+import { AgentChatHost, type AgentChatHostApi, type AgentHostState } from "./agent-chat-host";
+import { AgentActivityBar } from "./agent-activity-bar";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
 import { BlockListElement } from "./block-list-element";
@@ -360,6 +361,15 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
     const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
         agentApiRef.current = api;
+    }, []);
+    // Reactive agent state (status + pending queue) for the activity bar above
+    // the input. The host's onReady api is imperative; this is the live view.
+    const [agentState, setAgentState] = useState<AgentHostState>({
+        status: "idle",
+        queuedMessages: [],
+    });
+    const onAgentStop = useCallback(() => {
+        agentApiRef.current?.abort();
     }, []);
     const persistedAgentSession = useOrefMetaKeyAtom(
         WOS.makeORef("block", outerBlockId),
@@ -791,6 +801,7 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                 selectionError={aiConfigError}
                 onReady={onAgentHostReady}
                 onRunsChange={onAgentRunsUpdate}
+                onStateChange={setAgentState}
                 onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
             />
             {error && (
@@ -818,6 +829,15 @@ export const TerminalView = memo(({ outerBlockId, fontSize = 12, topSlot, overla
                 top of the input editor.  Without this the input's border-t
                 hugs the last command's stdout. */}
             <div className="mt-2.5" />
+            {/* Persistent agent activity strip (warp orchestration pill bar):
+                streaming + Stop + queued messages, kept above the input so
+                Stop is always reachable regardless of how long the agent's
+                output is. Renders nothing when idle with no queue. */}
+            <AgentActivityBar
+                status={agentState.status}
+                queuedMessages={agentState.queuedMessages}
+                onStop={onAgentStop}
+            />
             <CmdBlockInput
                 cwd={liveCwd}
                 home={home}

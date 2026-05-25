@@ -19,8 +19,10 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { slicePiRuns, type PiRun } from "@/app/store/slice-pi-runs";
 import {
+    type PiAgentMessage,
     type UsePiChatModel,
     type UsePiChatPaneContext,
+    type UsePiChatStatus,
     usePiChat,
 } from "@/app/store/use-pi-chat";
 import type { ResolveError } from "@/app/store/ai-types";
@@ -48,10 +50,22 @@ export interface AgentChatHostProps {
     onReady?: (api: AgentChatHostApi) => void;
     /** Called on every runs change so the parent can feed AgentBlockElement via BlockListElement. */
     onRunsChange?: (runs: PiRun[]) => void;
+    /**
+     * Called when the agent's live status or pending queue changes. Drives the
+     * activity bar above the input (streaming indicator + Stop + queued chips).
+     */
+    onStateChange?: (state: AgentHostState) => void;
     /** Per-pane tool allowlist; undefined = main defaults to allowAll (v1). */
     allowedTools?: string[];
     /** Notification atom setter — surface user-facing errors when send can't proceed. */
     onUserError?: (message: string) => void;
+}
+
+/** Reactive agent state surfaced to the parent for the activity bar. */
+export interface AgentHostState {
+    status: UsePiChatStatus;
+    /** Messages queued behind the current run (ordered steer-first). */
+    queuedMessages: PiAgentMessage[];
 }
 
 /** Functions exposed via onReady for the input bar / parent. */
@@ -74,6 +88,7 @@ export function AgentChatHost({
     selectionError,
     onReady,
     onRunsChange,
+    onStateChange,
     allowedTools,
     onUserError,
 }: AgentChatHostProps) {
@@ -130,6 +145,13 @@ export function AgentChatHost({
     onReadyRef.current = onReady;
     const onUserErrorRef = useRef(onUserError);
     onUserErrorRef.current = onUserError;
+
+    // Surface live status + pending queue to the parent (the activity bar).
+    const onStateChangeRef = useRef(onStateChange);
+    onStateChangeRef.current = onStateChange;
+    useEffect(() => {
+        onStateChangeRef.current?.({ status: chat.status, queuedMessages: chat.queuedMessages });
+    }, [chat.status, chat.queuedMessages]);
 
     // One-shot wiring of the API. Stable identity so re-renders don't
     // tear down whatever the parent stored.

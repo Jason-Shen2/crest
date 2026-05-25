@@ -70,6 +70,16 @@ describe("reducePiChatEvent", () => {
         expect(out).toBe(accumulated);
     });
 
+    it("queue_update leaves the message array untouched (queue is separate state)", () => {
+        const existing: PiAgentMessage[] = [{ role: "user", content: [{ type: "text", text: "q" }] }];
+        const out = reducePiChatEvent(existing, {
+            type: "queue_update",
+            steer: [],
+            followUp: [{ role: "user", content: [{ type: "text", text: "queued" }] }],
+        });
+        expect(out).toBe(existing);
+    });
+
     it("snapshot seeds the mirror with main's authoritative transcript", () => {
         // Sent once on (re)subscribe. A renderer that missed the first
         // turn's events (subscribed late) must back-fill from this so its
