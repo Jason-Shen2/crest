@@ -113,6 +113,34 @@ export function isPinned(cfg: UserConfig | null, provider: string, model: string
     return cfg.pinned.some((p) => p.provider === provider && p.model === model);
 }
 
+// setDefaultSelection — make (provider, model, reasoning) the GLOBAL default
+// model in ai.json, shared across every pane (the model picker is a global
+// selector, not per-block). Read-modify-write like togglePinned; the atom
+// refreshes via writeAIUserConfig so all open inputs update. The credential
+// isn't stored here — it's resolved per-provider from config.providers — so
+// switching provider/model is safe. Throws on RPC/IO failure.
+export async function setDefaultSelection(sel: {
+    provider: string;
+    model: string;
+    reasoning?: string;
+}): Promise<void> {
+    const state = globalStore.get(aiUserConfigAtom);
+    if (state.status !== "ok" || !state.config) {
+        throw new Error("ai.json not loaded — cannot set default model");
+    }
+    const cfg = state.config;
+    const next: UserConfig = {
+        ...cfg,
+        default: {
+            ...cfg.default,
+            provider: sel.provider,
+            model: sel.model,
+            reasoning: sel.reasoning,
+        },
+    };
+    await writeAIUserConfig(next);
+}
+
 // togglePinned — flips pinned membership for (provider, model) and
 // persists the new ai.json. The atom is refreshed by writeAIUserConfig
 // so consumers automatically see the new state on the next render.
