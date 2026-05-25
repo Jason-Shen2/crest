@@ -47,19 +47,14 @@ export const AgentBlockElement = memo(
             <div
                 onClick={onSelect}
                 className={cn(
-                    // Same border family as shell blocks (block-element.tsx:439,
-                    // warp draw_border_between_blocks): fg-overlay-2 bottom
-                    // divider + a 5px left flag-pole, transparent by default and
-                    // red on error so a failed agent run reads like a failed
-                    // command. Keeps the inter-block boundary consistent.
-                    "relative border-b border-fg-overlay-2 border-l-[5px] border-l-transparent font-sans transition-colors",
+                    // Match the shell block's inter-block divider
+                    // (block-element.tsx:439, warp draw_border_between_blocks):
+                    // a 1px fg-overlay-2 bottom border. No left flag-pole here.
+                    "relative border-b border-fg-overlay-2 font-sans",
                     selected && "bg-fg-overlay-1/30",
-                    isError && !selected && "border-l-[var(--ansi-red)]",
                 )}
                 style={{
-                    // Trim the left padding by the flag-pole width so content
-                    // stays at the same x as before (5px border + 11px = 16px).
-                    paddingLeft: `${HORIZONTAL_PAD_PX - 5}px`,
+                    paddingLeft: `${HORIZONTAL_PAD_PX}px`,
                     paddingRight: `${HORIZONTAL_PAD_PX}px`,
                     paddingTop: `${VERTICAL_PAD_PX}px`,
                     paddingBottom: `${VERTICAL_PAD_PX}px`,
