@@ -79,15 +79,47 @@ describe("PaneAgentSession — owned transcript", () => {
         expect((messages[1] as { content: { text: string }[] }).content[0].text).toBe("final");
     });
 
-    it("reconciles to the authoritative array on agent_end", () => {
+    it("seeds the transcript from persisted history (reopened session)", () => {
+        const fake = makeFakeHarness();
+        const history = [user("old q"), assistant("old a", "stop")];
+        const owner = new PaneAgentSession("/s", fake.pane, history);
+        expect(owner.getSnapshot().messages).toBe(history);
+    });
+
+    it("does NOT clobber the accumulated transcript on agent_end (run-scoped)", () => {
+        // The bug: agent_end.messages carries only the CURRENT run's
+        // messages, not the whole conversation. Replacing on agent_end wiped
+        // prior runs → their blocks went "…loading agent run…". The owner
+        // must keep the incrementally-built array.
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
-        // Stream a partial, then agent_end hands over the full transcript
-        // (e.g. with timestamps assigned) — the owner adopts it wholesale.
-        fake.emit({ type: "message_start", message: user("q") });
-        const authoritative = [user("q"), assistant("a", "stop")];
-        fake.emit({ type: "agent_end", messages: authoritative });
-        expect(owner.getSnapshot().messages).toBe(authoritative);
+        fake.emit({ type: "message_start", message: user("q1") });
+        fake.emit({ type: "message_start", message: assistant("a1") });
+        fake.emit({ type: "message_end", message: assistant("a1", "stop") });
+        // agent_end for run 1 carries only run-1 messages — fine, matches.
+        fake.emit({ type: "agent_end", messages: [user("q1"), assistant("a1", "stop")] });
+        expect(owner.getSnapshot().messages).toHaveLength(2);
+    });
+
+    it("accumulates messages across multiple runs (run-scoped agent_end ignored)", () => {
+        const fake = makeFakeHarness();
+        const owner = new PaneAgentSession("/s", fake.pane);
+        // Run 1
+        fake.emit({ type: "message_start", message: user("q1") });
+        fake.emit({ type: "message_end", message: user("q1") });
+        fake.emit({ type: "message_start", message: assistant("a1") });
+        fake.emit({ type: "message_end", message: assistant("a1", "stop") });
+        fake.emit({ type: "agent_end", messages: [user("q1"), assistant("a1", "stop")] });
+        // Run 2 — agent_end here is run-scoped ([q2, a2]); must NOT drop q1/a1.
+        fake.emit({ type: "message_start", message: user("q2") });
+        fake.emit({ type: "message_end", message: user("q2") });
+        fake.emit({ type: "message_start", message: assistant("a2") });
+        fake.emit({ type: "message_end", message: assistant("a2", "stop") });
+        fake.emit({ type: "agent_end", messages: [user("q2"), assistant("a2", "stop")] });
+        const { messages } = owner.getSnapshot();
+        expect(messages).toHaveLength(4);
+        expect((messages[0] as { content: { text: string }[] }).content[0].text).toBe("q1");
+        expect((messages[2] as { content: { text: string }[] }).content[0].text).toBe("q2");
     });
 });
 

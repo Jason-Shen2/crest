@@ -183,9 +183,18 @@ send routing from its own tracked state.
 - `emain/agent/pane-agent-session.ts` — **the owner.** One
   `PaneAgentSession` per session JSONL path. Subscribes to the harness
   once at construction (before any `prompt()`), so it never misses events.
-  - Owns `messages`: appends on `message_start`, replaces the tail on
-    `message_update` / `message_end`, reconciles to the authoritative
-    array on `agent_end`.
+  - Owns `messages`: seeded from the persisted session at construction
+    (so reopened conversations show history), then appends on
+    `message_start` and replaces the tail on `message_update` /
+    `message_end`. **`agent_end` does NOT replace the array** — its
+    `messages` field is *run-scoped* (only the latest `prompt()`'s
+    messages; `agent-loop.ts` builds it as `[...prompts]` + responses, not
+    the whole conversation). Replacing on `agent_end` was the second
+    incarnation of the "…loading agent run…" bug: after a 2nd send the
+    transcript collapsed to just that run, so every prior run's block lost
+    its run in the map. The live `message_start/_end` stream already
+    accumulates the full transcript, so `agent_end` is only a run-lifecycle
+    signal (status → idle, clear `running`).
   - Mirrors `steerQueue` / `followUpQueue` from the harness's own
     `queue_update` events.
   - Tracks `status` (idle / streaming / error) + `errorMessage`.
@@ -207,9 +216,11 @@ send routing from its own tracked state.
     including a turn that is *mid-stream*, not just completed.
   - `agent:abort` → `session.abort()`.
 - `frontend/app/store/use-pi-chat.ts`
-  - `reducePiChatEvent` handles `snapshot` by replacing `messages` with
-    the authoritative array; the subscribe callback also seeds `status`
-    from the snapshot so a mid-stream re-subscribe reflects "streaming".
+  - `reducePiChatEvent` replaces `messages` only on `snapshot` (the owner's
+    full accumulated array); `agent_end` is a no-op for messages (same
+    run-scoped reasoning as the owner). The subscribe callback also seeds
+    `status` from the snapshot so a mid-stream re-subscribe reflects
+    "streaming".
 - `frontend/app/store/slice-pi-runs.ts`
   - `runId = run-${userMessage.timestamp}` (stable; not positional).
 - `frontend/app/term/render/block-list-element.tsx`

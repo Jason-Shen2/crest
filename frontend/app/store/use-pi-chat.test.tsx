@@ -51,16 +51,23 @@ describe("reducePiChatEvent", () => {
         expect(after2).toEqual([final]);
     });
 
-    it("agent_end replaces the full transcript with the authoritative snapshot", () => {
-        const final: PiAgentMessage[] = [
-            { role: "user", content: [{ type: "text", text: "q" }] },
-            { role: "assistant", content: [{ type: "text", text: "a" }] },
+    it("agent_end does NOT replace the transcript (its messages are run-scoped)", () => {
+        // agent_end.messages carries only the latest run's messages, not the
+        // whole conversation — so replacing on agent_end would wipe prior
+        // runs ("…loading agent run…"). The message_start/_end stream already
+        // appended this run's messages, so the reducer leaves state untouched.
+        const accumulated: PiAgentMessage[] = [
+            { role: "user", content: [{ type: "text", text: "q1" }] },
+            { role: "assistant", content: [{ type: "text", text: "a1" }] },
+            { role: "user", content: [{ type: "text", text: "q2" }] },
+            { role: "assistant", content: [{ type: "text", text: "a2" }] },
         ];
-        const out = reducePiChatEvent(
-            [{ role: "user", content: [{ type: "text", text: "drift" }] }],
-            { type: "agent_end", messages: final },
-        );
-        expect(out).toEqual(final);
+        const runScoped: PiAgentMessage[] = [
+            { role: "user", content: [{ type: "text", text: "q2" }] },
+            { role: "assistant", content: [{ type: "text", text: "a2" }] },
+        ];
+        const out = reducePiChatEvent(accumulated, { type: "agent_end", messages: runScoped });
+        expect(out).toBe(accumulated);
     });
 
     it("snapshot seeds the mirror with main's authoritative transcript", () => {

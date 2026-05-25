@@ -203,16 +203,21 @@ export function reducePiChatEvent(
             next[next.length - 1] = event.message;
             return next;
         }
-        case "snapshot":
-        case "agent_end": {
+        case "snapshot": {
             if (!event.messages) return messages;
-            // Authoritative transcript from main — replace the local
-            // mirror to reconcile any drift / back-fill missed history.
-            // `snapshot` is sent once on (re)subscribe so a renderer that
-            // subscribed after a turn already streamed still gets the full
-            // conversation (see docs/agent-rendering-architecture.md).
+            // The owner's FULL accumulated transcript, sent once on
+            // (re)subscribe so a renderer that attached late still mirrors
+            // the whole conversation. Replace to reconcile any drift /
+            // back-fill missed history (see docs/agent-rendering-architecture.md).
             return event.messages;
         }
+        case "agent_end":
+            // agent_end.messages is RUN-SCOPED (only the latest prompt()'s
+            // messages, not the whole conversation — agent-loop.ts builds it
+            // as `[...prompts]` + responses). Replacing here would wipe every
+            // prior run ("…loading agent run…"). The message_start/_end
+            // stream already appended this run's messages, so do nothing.
+            return messages;
         default:
             return messages;
     }

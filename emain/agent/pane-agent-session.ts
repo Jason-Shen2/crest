@@ -80,9 +80,13 @@ export class PaneAgentSession {
     listeners = new Set<PaneSessionListener>();
     unsubscribeHarness: () => void;
 
-    constructor(path: string, pane: PaneHarness) {
+    constructor(path: string, pane: PaneHarness, initialMessages: AgentMessage[] = []) {
         this.path = path;
         this.pane = pane;
+        // Seed the transcript from the persisted session so a REOPENED
+        // conversation shows its history. A fresh session passes []. New
+        // messages then accumulate via the live stream on top of this.
+        this.messages = initialMessages;
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
@@ -141,10 +145,14 @@ export class PaneAgentSession {
                 return;
             }
             case "agent_end": {
-                // Authoritative transcript for the whole run — reconcile any
-                // drift from the streamed deltas.
-                const messages = (event as { messages?: AgentMessage[] }).messages;
-                if (Array.isArray(messages)) this.messages = messages;
+                // NOTE: agent_end.messages is RUN-SCOPED — only this
+                // prompt()'s new messages (agent-loop.ts builds it as
+                // `[...prompts]` + responses), NOT the full conversation. So
+                // we must NOT replace `this.messages` with it; doing so wipes
+                // every prior run (the "…loading agent run…" bug). The live
+                // message_start/message_end stream already accumulated the
+                // full transcript on top of the seeded history. agent_end is
+                // only a run-lifecycle signal here.
                 this.running = false;
                 if (this.status !== "error") this.status = "idle";
                 return;
