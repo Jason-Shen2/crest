@@ -35,18 +35,10 @@ export interface AgentBlockElementProps {
     fontSize?: number;
     /** Click handler to mark this block as selected. */
     onSelect?: () => void;
-    /**
-     * Stop the in-progress run. Shown as a bar at the BOTTOM of the block
-     * while streaming — mirrors warp's orchestration pill bar Stop, which is
-     * anchored to the conversation and shown only in-progress
-     * (orchestration_pill_bar.rs:471/945). Bottom (not header) so it sits
-     * right where the latest output is streaming, no scrolling up to reach it.
-     */
-    onStop?: () => void;
 }
 
 export const AgentBlockElement = memo(
-    ({ run, selected, fontSize = 13, onSelect, onStop }: AgentBlockElementProps) => {
+    ({ run, selected, fontSize = 13, onSelect }: AgentBlockElementProps) => {
         const userText = useMemo(() => extractText(run.userMessage), [run.userMessage]);
         const isStreaming = run.status === "streaming";
         const isError = run.status === "error";
@@ -80,32 +72,6 @@ export const AgentBlockElement = memo(
                         style={{ fontSize: `${fontSize - 1}px` }}
                     >
                         Error: {run.errorMessage}
-                    </div>
-                )}
-                {isStreaming && onStop && (
-                    <div className="mt-2.5 flex items-center gap-2">
-                        <span
-                            className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-foreground/20 border-t-foreground/70"
-                            aria-hidden
-                        />
-                        <span className="text-[12px] text-foreground/55">Working…</span>
-                        <button
-                            type="button"
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onStop();
-                            }}
-                            aria-label="Stop the agent"
-                            title="Stop the agent (clears any queued messages)"
-                            className={cn(
-                                "ml-auto inline-flex items-center gap-1.5 rounded-[6px] border border-white/25 bg-white/[0.08]",
-                                "px-2 py-0.5 text-[12px] text-foreground/85 transition-colors cursor-pointer",
-                                "hover:bg-white/[0.14] hover:text-foreground",
-                            )}
-                        >
-                            <span className="h-2 w-2 rounded-[2px] bg-current" aria-hidden />
-                            Stop
-                        </button>
                     </div>
                 )}
             </div>
