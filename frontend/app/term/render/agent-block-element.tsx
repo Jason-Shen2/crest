@@ -79,7 +79,7 @@ export const AgentBlockElement = memo(
                         style={{ fontSize: `${fontSize - 1}px` }}
                     >
                         <UIcon
-                            name="alert-circle"
+                            name="alert-triangle"
                             size={fontSize}
                             className="mt-0.5 shrink-0 text-rose-400"
                         />
