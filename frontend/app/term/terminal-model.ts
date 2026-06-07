@@ -43,7 +43,6 @@ import {
 } from "./render/selection";
 
 const DefaultCols = 120;
-const ResyncIntervalMs = 10_000;
 // Auto-collapse threshold — finished blocks with more output rows than
 // this start collapsed.
 //
@@ -132,7 +131,6 @@ export class TerminalModel {
 
     // Subscriptions cleanup
     private unsubs: (() => void)[] = [];
-    private resyncTimer: ReturnType<typeof setInterval> | null = null;
     private disposed = false;
 
     // ---------- atoms ----------
@@ -387,10 +385,6 @@ export class TerminalModel {
             }
         }
         this.unsubs = [];
-        if (this.resyncTimer != null) {
-            clearInterval(this.resyncTimer);
-            this.resyncTimer = null;
-        }
     }
 
     // ---------- public API (RPC outbound) ----------
@@ -783,9 +777,6 @@ export class TerminalModel {
             // Resync failure isn't fatal — the shell may already be running.
         }
         await this.fetchInitial();
-        // Periodic safety-net poll.  wps events should keep us in sync but
-        // a one-shot drop would otherwise leave the block list stale.
-        this.resyncTimer = setInterval(() => this.fetchInitial(), ResyncIntervalMs);
     }
 
     private async fetchInitial(): Promise<void> {
@@ -931,7 +922,6 @@ export class TerminalModel {
 
     private applyClear(e: CmdBlockClearEvent): void {
         if (!e.throughoid) {
-            // Clear everything before now.
             const last = this.blocks.last();
             if (!last) return;
             const idx = this.blocks.indexOf(last.id);

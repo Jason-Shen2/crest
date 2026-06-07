@@ -149,7 +149,7 @@ function GitStatsBadge({ adds, dels }: { adds?: number; dels?: number }) {
     const hasDels = dels != null && dels > 0;
     if (!hasAdds && !hasDels) return null;
     return (
-        <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-sm bg-fg-overlay-1 px-1.5 py-[1px] text-[10px] font-medium tabular-nums">
+        <span className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-sm bg-fg-overlay-1 px-1.5 py-[1px] text-[12px] font-medium tabular-nums">
             {hasAdds && <span style={{ color: "var(--color-add-strong)" }}>+{adds}</span>}
             {hasDels && <span style={{ color: "var(--color-remove-strong)" }}>−{dels}</span>}
         </span>
@@ -359,7 +359,7 @@ export function VTab({
                     <TabBadges
                         badges={badges}
                         flagColor={flagColor}
-                        className="static top-auto left-auto z-auto m-0 flex h-6 w-6 translate-y-0 items-center justify-center p-0 [&_i]:text-[12px]"
+                        className="static top-auto left-auto z-auto m-0 flex h-6 w-6 translate-y-0 items-center justify-center p-0 [&_i]:text-[15px]"
                     />
                 ) : (
                     // Warp neutral icons use NEUTRAL_GLYPH_RATIO = 16/24
@@ -390,7 +390,7 @@ export function VTab({
                     <div
                         ref={editableRef}
                         className={cn(
-                            "overflow-hidden whitespace-nowrap text-[12px] leading-tight",
+                            "overflow-hidden whitespace-nowrap text-[13px] leading-tight",
                             !isEditable && "text-ellipsis",
                             isEditable && "rounded-[2px] bg-fg-overlay-3 px-[3px] outline-none"
                         )}
@@ -405,7 +405,7 @@ export function VTab({
                         {tab.name}
                     </div>
                 ) : (
-                    <PathText text={tab.name} className="text-[12px] leading-tight" title={tab.name} />
+                    <PathText text={tab.name} className="text-[13px] leading-tight" title={tab.name} />
                 )}
 
                 {/* Line 2 — subtitle.  Compact: 10px sub_text; Expanded:
@@ -416,7 +416,7 @@ export function VTab({
                         text={tab.subtitle}
                         className={cn(
                             "leading-tight text-sub-text",
-                            isCompact ? "text-[10px]" : "text-[12px]"
+                            isCompact ? "text-[12px]" : "text-[13px]"
                         )}
                         title={tab.subtitle}
                     />
@@ -428,7 +428,7 @@ export function VTab({
                     Fixed height so toggling stats doesn't resize the row
                     (warp `METADATA_ROW_HEIGHT = BADGE_ICON_SIZE + 2`). */}
                 {showMetadataRow && (
-                    <div className="flex h-[14px] items-center justify-between gap-2 overflow-hidden text-[10px] leading-tight text-sub-text">
+                    <div className="flex h-[14px] items-center justify-between gap-2 overflow-hidden text-[12px] leading-tight text-sub-text">
                         <div className="min-w-0 flex-1 overflow-hidden">
                             {tab.metadataLeftKind === "branch" && tab.metadataLeftValue && (
                                 <span className="inline-flex max-w-full items-center gap-0.5 text-[#b8f2c0]">
@@ -439,7 +439,7 @@ export function VTab({
                             {tab.metadataLeftKind === "workingdir" && tab.metadataLeftValue && (
                                 <PathText
                                     text={tab.metadataLeftValue}
-                                    className="block max-w-full text-[10px] text-sub-text"
+                                    className="block max-w-full text-[12px] text-sub-text"
                                     title={tab.metadataLeftValue}
                                 />
                             )}

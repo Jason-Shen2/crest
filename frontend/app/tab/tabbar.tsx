@@ -576,7 +576,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
             {showAppMenuButton && (
                 <div
                     ref={appMenuButtonRef}
-                    className="flex items-center justify-center pr-1.5 text-[26px] select-none cursor-pointer text-secondary hover:text-primary"
+                    className="flex items-center justify-center pr-1.5 text-[30px] select-none cursor-pointer text-secondary hover:text-primary"
                     style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                     onClick={onEllipsisClick}
                 >
@@ -627,7 +627,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
             <button
                 ref={addBtnRef}
                 title="Add Tab"
-                className={`flex h-[22px] px-2 mb-1 mx-1 items-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[12px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
+                className={`flex h-[22px] px-2 mb-1 mx-1 items-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[15px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                 onClick={handleAddTab}
             >

@@ -95,7 +95,7 @@ export const CmdBlockHeader = memo(
                     // bottom padding — command flows straight into the
                     // output container below.
                     "flex flex-col gap-1 px-3 pt-2 pb-0",
-                    "text-[12px] leading-tight"
+                    "text-[13px] leading-tight"
                 )}
             >
                 {/* Row 1: env / cwd / branch / (duration) — all muted.
@@ -117,7 +117,7 @@ export const CmdBlockHeader = memo(
                     )}
                     {branch && (
                         <span className="inline-flex shrink-0 items-center gap-0.5" title={branch}>
-                            <UIcon name="git-branch-02" size={11} className="opacity-70" />
+                            <UIcon name="git-branch-02" size={13} className="opacity-70" />
                             <span className="max-w-[120px] truncate">{branch}</span>
                         </span>
                     )}
@@ -129,7 +129,7 @@ export const CmdBlockHeader = memo(
                     {state === "running" && (
                         <UIcon
                             name="clock-loader"
-                            size={11}
+                            size={13}
                             className="animate-spin"
                             title="Running"
                         />
@@ -139,8 +139,8 @@ export const CmdBlockHeader = memo(
                             className="inline-flex shrink-0 items-center gap-1 text-[var(--color-term-error)]"
                             title={`Exit ${exitCode}`}
                         >
-                            <UIcon name="x-circle" size={11} />
-                            <span className="font-mono text-[10px] tabular-nums">
+                            <UIcon name="x-circle" size={13} />
+                            <span className="font-mono text-[12px] tabular-nums">
                                 {formatExitCode(exitCode!)}
                             </span>
                         </span>
@@ -161,7 +161,7 @@ export const CmdBlockHeader = memo(
                     background or static blocks). */}
                 {cmd && (
                     <div
-                        className="min-w-0 truncate font-mono text-[var(--ansi-yellow)]"
+                        className="min-w-0 truncate font-mono text-[16px] text-[var(--ansi-yellow)]"
                         title={cmd}
                     >
                         {cmd}

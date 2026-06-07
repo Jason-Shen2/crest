@@ -129,10 +129,10 @@ export interface CmdBlockInputProps {
 // (universal_developer_input.rs:924) which derives UI sizes from a base
 // of 10 px scaled by a UI-specific scalar.  We hard-code crest's values:
 // =========================================================================
-const UI_FONT_PX = 12;       // chrome text (chips, segmented labels)
-const UI_HELP_FONT_PX = 11;  // top help row hints (slightly smaller)
-const UI_BUTTON_PX = 26;     // chip/button height — comfortable click target
-const UI_ICON_PX = 14;       // icon size inside buttons
+const UI_FONT_PX = 15;       // chrome text (chips, segmented labels)
+const UI_HELP_FONT_PX = 13;  // top help row hints (slightly smaller)
+const UI_BUTTON_PX = 30;     // chip/button height — comfortable click target
+const UI_ICON_PX = 17;       // icon size inside buttons
 const UI_GAP_PX = 6;         // gap between adjacent chrome elements
 const UI_CHIP_RADIUS_PX = 6; // chip corner radius (warp uses ~6 for chips)
 
@@ -1165,7 +1165,7 @@ export const CmdBlockInput = memo(
         onSelectionChange,
         onOpenAIConfigFile,
         placeholder,
-        fontSize = 12,
+        fontSize = 16,
         banner,
         promptAlert,
         onFilesDropped,

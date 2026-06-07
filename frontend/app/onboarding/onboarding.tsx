@@ -105,7 +105,7 @@ const InitPage = ({
                             </a>
                         </div>
                         <div className="flex flex-col items-start gap-1 flex-1">
-                            <div className="text-foreground text-base leading-[18px]">Support us on GitHub</div>
+                            <div className="text-foreground text-default leading-[18px]">Support us on GitHub</div>
                             <div className="text-secondary leading-5">
                                 We're <i>open source</i>, <i>open-model</i>, and committed to providing a free terminal
                                 for individual users. Please show your support by giving us a star on{" "}
@@ -133,7 +133,7 @@ const InitPage = ({
                             </a>
                         </div>
                         <div className="flex flex-col items-start gap-1 flex-1">
-                            <div className="text-foreground text-base leading-[18px]">Join our Community</div>
+                            <div className="text-foreground text-default leading-[18px]">Join our Community</div>
                             <div className="text-secondary leading-5">
                                 Get help, submit feature requests, report bugs, or just chat with fellow terminal
                                 enthusiasts.

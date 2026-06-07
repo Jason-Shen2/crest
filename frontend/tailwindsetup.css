@@ -59,9 +59,23 @@
         -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji",
         "Segoe UI Emoji";
 
-    --text-xxs: 10px;
-    --text-title: 18px;
-    --text-default: 14px;
+    /* Custom + Tailwind text-size tokens. Sizes are calibrated to match warp
+       at the user's preferred setting (125% zoom, mono 13) — i.e. warp's UI
+       body 12px renders at 15px, mono 13px renders at 16px. That target is
+       baked in here so crest at 100% electron zoom matches that visual scale.
+       Hierarchy (px): xxs 12 → ui-body 15 → xs 13 → sm 16 → default 16 →
+       base 18 → lg 20 → xl 22 → title 22. */
+    --text-xxs: 12px;
+    --text-ui-body: 15px;
+    --text-default: 16px;
+    --text-title: 22px;
+    /* Override Tailwind defaults so the existing text-xs/sm/base/lg/xl
+       utilities scale up to the same baseline without per-site migration. */
+    --text-xs: 13px;
+    --text-sm: 16px;
+    --text-base: 18px;
+    --text-lg: 20px;
+    --text-xl: 22px;
 
     --radius: 8px;
 

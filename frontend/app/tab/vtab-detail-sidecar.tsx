@@ -252,20 +252,20 @@ export function VtabDetailSidecar({
             <div className="flex items-center gap-2">
                 <UIcon name={headerIcon} size={16} className="text-secondary" />
                 <div className="flex min-w-0 flex-1 flex-col">
-                    <div className="truncate text-[13px] font-medium text-foreground" title={headerTitle}>
+                    <div className="truncate text-[15px] font-medium text-foreground" title={headerTitle}>
                         {headerTitle}
                     </div>
                     {/* In panes mode, surface the parent tab name on a
                         second line so the user can still see which tab
                         this pane belongs to. */}
                     {isPaneMode && !isAutoNamed && tabName && (
-                        <div className="truncate text-[10px] text-secondary" title={tabName}>
+                        <div className="truncate text-[12px] text-secondary" title={tabName}>
                             in {tabName}
                         </div>
                     )}
                 </div>
                 {runningKind && (
-                    <span className="inline-flex items-center gap-1 rounded bg-fg-overlay-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-secondary">
+                    <span className="inline-flex items-center gap-1 rounded bg-fg-overlay-2 px-1.5 py-0.5 text-[12px] uppercase tracking-wide text-secondary">
                         <span className="h-1.5 w-1.5 rounded-full bg-accent" />
                         {AgentLabels[runningKind]}
                     </span>
@@ -277,16 +277,16 @@ export function VtabDetailSidecar({
                 this specific pane, not just the parent tab. */}
             {isPaneMode && view && view !== "term" && view !== "termblocks" && (
                 <div className="flex flex-col gap-1">
-                    <div className="text-[10px] uppercase tracking-wide text-secondary">View</div>
-                    <div className="text-[12px] text-foreground">{viewToName(view)}</div>
+                    <div className="text-[12px] uppercase tracking-wide text-secondary">View</div>
+                    <div className="text-[15px] text-foreground">{viewToName(view)}</div>
                 </div>
             )}
 
             {isPaneMode && view === "preview" && filePath && (
                 <div className="flex flex-col gap-1">
-                    <div className="text-[10px] uppercase tracking-wide text-secondary">File</div>
+                    <div className="text-[12px] uppercase tracking-wide text-secondary">File</div>
                     <div
-                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[12px] text-foreground"
+                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
                         title={filePath}
                     >
                         {filePath}
@@ -296,9 +296,9 @@ export function VtabDetailSidecar({
 
             {isPaneMode && view === "web" && webUrl && (
                 <div className="flex flex-col gap-1">
-                    <div className="text-[10px] uppercase tracking-wide text-secondary">URL</div>
+                    <div className="text-[12px] uppercase tracking-wide text-secondary">URL</div>
                     <div
-                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[12px] text-foreground"
+                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
                         title={webUrl}
                     >
                         {webUrl}
@@ -308,11 +308,11 @@ export function VtabDetailSidecar({
 
             {cwd && (
                 <div className="flex flex-col gap-1">
-                    <div className="text-[10px] uppercase tracking-wide text-secondary">
+                    <div className="text-[12px] uppercase tracking-wide text-secondary">
                         Working directory
                     </div>
                     <div
-                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[12px] text-foreground"
+                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
                         title={cwd}
                     >
                         {cwdShort}
@@ -322,13 +322,13 @@ export function VtabDetailSidecar({
 
             {isRepo && (
                 <div className="flex flex-col gap-1">
-                    <div className="text-[10px] uppercase tracking-wide text-secondary">Git</div>
-                    <div className="flex items-center gap-2 text-[12px] text-foreground">
+                    <div className="text-[12px] uppercase tracking-wide text-secondary">Git</div>
+                    <div className="flex items-center gap-2 text-[15px] text-foreground">
                         <UIcon name="git-branch-02" size={12} className="text-secondary" />
                         <span className="truncate">{branch || "(no branch)"}</span>
                     </div>
                     {(adds > 0 || dels > 0 || changedFiles > 0) && (
-                        <div className="flex items-center gap-3 text-[11px] tabular-nums text-secondary">
+                        <div className="flex items-center gap-3 text-[13px] tabular-nums text-secondary">
                             {changedFiles > 0 && (
                                 <span>
                                     {changedFiles} file{changedFiles === 1 ? "" : "s"}
@@ -345,7 +345,7 @@ export function VtabDetailSidecar({
                 </div>
             )}
 
-            <div className="flex items-center gap-3 border-t border-fg-overlay-1 pt-2 text-[11px] text-secondary">
+            <div className="flex items-center gap-3 border-t border-fg-overlay-1 pt-2 text-[13px] text-secondary">
                 <span>
                     {blockCount} block{blockCount === 1 ? "" : "s"}
                 </span>

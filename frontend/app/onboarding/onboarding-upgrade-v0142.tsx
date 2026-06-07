@@ -20,7 +20,7 @@ const UpgradeOnboardingModal_v0_14_2_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-bell"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">Block &amp; Tab Badges</div>
+                    <div className="text-foreground text-default font-semibold leading-[18px]">Block &amp; Tab Badges</div>
                     <div className="text-secondary leading-5">
                         <ul className="list-disc list-outside space-y-1 pl-5">
                             <li>
@@ -60,7 +60,7 @@ const UpgradeOnboardingModal_v0_14_2_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-folder-open"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">Other Changes</div>
+                    <div className="text-foreground text-default font-semibold leading-[18px]">Other Changes</div>
                     <div className="text-secondary leading-5">
                         <ul className="list-disc list-outside space-y-1 pl-5">
                             <li>

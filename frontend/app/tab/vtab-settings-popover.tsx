@@ -109,7 +109,7 @@ function RadioRow({ selected, label, onClick, rightSlot }: RadioRowProps) {
         <button
             type="button"
             onClick={onClick}
-            className="flex w-full cursor-pointer items-center gap-2 px-4 py-[3px] text-left text-[12px] text-foreground hover:bg-fg-overlay-1"
+            className="flex w-full cursor-pointer items-center gap-2 px-4 py-[3px] text-left text-[15px] text-foreground hover:bg-fg-overlay-1"
         >
             <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                 {selected && <UIcon name="check" size={14} />}
@@ -134,7 +134,7 @@ function ToggleRow({ enabled, label, onClick, infoTooltip }: ToggleRowProps) {
         <button
             type="button"
             onClick={onClick}
-            className="flex w-full cursor-pointer items-center gap-2 px-4 py-[3px] text-left text-[12px] text-foreground hover:bg-fg-overlay-1"
+            className="flex w-full cursor-pointer items-center gap-2 px-4 py-[3px] text-left text-[15px] text-foreground hover:bg-fg-overlay-1"
         >
             <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                 {enabled && <UIcon name="check" size={14} />}
@@ -150,7 +150,7 @@ function ToggleRow({ enabled, label, onClick, infoTooltip }: ToggleRowProps) {
 }
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
-    return <div className="mb-1 px-4 pt-2 text-[12px] text-secondary">{children}</div>;
+    return <div className="mb-1 px-4 pt-2 text-[15px] text-secondary">{children}</div>;
 }
 
 function Divider() {
@@ -230,14 +230,14 @@ export function VtabSettingsPopover({ onClose, anchorRect }: VtabSettingsPopover
                     onClick={() => setConfig("vtab:granularity", "panes")}
                     ariaLabel="Panes"
                 >
-                    <span className="text-[12px]">Panes</span>
+                    <span className="text-[15px]">Panes</span>
                 </Segment>
                 <Segment
                     selected={granularity === "tabs"}
                     onClick={() => setConfig("vtab:granularity", "tabs")}
                     ariaLabel="Tabs"
                 >
-                    <span className="text-[12px]">Tabs</span>
+                    <span className="text-[15px]">Tabs</span>
                 </Segment>
             </div>
 

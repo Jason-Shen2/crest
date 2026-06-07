@@ -16,7 +16,7 @@ const UpgradeOnboardingModal_v0_13_0_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-sparkles"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">Local AI & BYOK</div>
+                    <div className="text-foreground text-default font-semibold leading-[18px]">Local AI & BYOK</div>
                     <div className="text-secondary leading-5">
                         <ul className="list-disc list-outside space-y-1 pl-5">
                             <li>
@@ -43,7 +43,7 @@ const UpgradeOnboardingModal_v0_13_0_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-sliders"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">Configuration Widget</div>
+                    <div className="text-foreground text-default font-semibold leading-[18px]">Configuration Widget</div>
                     <div className="text-secondary leading-5">
                         <ul className="list-disc list-outside space-y-1 pl-5">
                             <li>
@@ -67,7 +67,7 @@ const UpgradeOnboardingModal_v0_13_0_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-terminal"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">Terminal Updates</div>
+                    <div className="text-foreground text-default font-semibold leading-[18px]">Terminal Updates</div>
                     <div className="text-secondary leading-5">
                         <ul className="list-disc list-outside space-y-1 pl-5">
                             <li>

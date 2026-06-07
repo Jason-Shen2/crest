@@ -16,7 +16,7 @@ const UpgradeOnboardingModal_v0_13_1_Content = () => {
                     <i className="text-[24px] text-accent fa-brands fa-windows"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">
+                    <div className="text-foreground text-default font-semibold leading-[18px]">
                         Windows Platform Enhancements
                     </div>
                     <div className="text-secondary leading-5">
@@ -45,7 +45,7 @@ const UpgradeOnboardingModal_v0_13_1_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-sparkles"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">Wave AI Updates</div>
+                    <div className="text-foreground text-default font-semibold leading-[18px]">Wave AI Updates</div>
                     <div className="text-secondary leading-5">
                         <ul className="list-disc list-outside space-y-1 pl-5">
                             <li>
@@ -66,7 +66,7 @@ const UpgradeOnboardingModal_v0_13_1_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-terminal"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">Terminal Improvements</div>
+                    <div className="text-foreground text-default font-semibold leading-[18px]">Terminal Improvements</div>
                     <div className="text-secondary leading-5">
                         <ul className="list-disc list-outside space-y-1 pl-5">
                             <li>

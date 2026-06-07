@@ -68,7 +68,7 @@ const UpgradeMinorWelcomePage = ({ onStarClick, onAlreadyStarred, onMaybeLater }
                     <div className="w-full max-w-[550px] border-t border-border my-2"></div>
 
                     <div className="flex flex-col items-center gap-3 text-center max-w-[550px]">
-                        <div className="text-foreground text-base">Thanks for being an early Wave adopter! ⭐</div>
+                        <div className="text-foreground text-default">Thanks for being an early Wave adopter! ⭐</div>
                         <div className="text-secondary text-sm text-left">
                             A GitHub star shows your support for Wave (and open-source) and helps us reach more
                             developers.

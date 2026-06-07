@@ -114,7 +114,7 @@ const WorkspaceEditorComponent = ({
             <ColorSelector selectedColor={color} colors={colors} onSelect={onColorChange} />
             <IconSelector selectedIcon={icon} icons={icons} onSelect={onIconChange} />
             <div className="delete-ws-btn-wrapper">
-                <Button className="ghost red text-[12px] bold" onClick={onDeleteWorkspace}>
+                <Button className="ghost red text-[15px] bold" onClick={onDeleteWorkspace}>
                     Delete workspace
                 </Button>
             </div>
