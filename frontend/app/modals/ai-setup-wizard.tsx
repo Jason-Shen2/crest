@@ -1,13 +1,12 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// AISetupWizard — 3-step modal that gets a fresh user from zero
+// AISetupWizard — 2-step modal that gets a fresh user from zero
 // configuration to "ready to send agent messages" without ever
 // touching ~/.config/crest/ai.json by hand.
 //
 // Step 1: pick providers (catalog list with checkboxes)
 // Step 2: paste API key for each selected provider
-// Step 3: pick default model (provider + model + optional reasoning)
 //
 // On submit: writes ai.json via getApi().ai.writeUserConfig AND saves
 // keys to OS keychain via SetSecretsCommand. Both happen atomically
@@ -15,26 +14,29 @@
 // write ai.json (the user can re-enter keys without losing provider
 // selection).
 
+import { CATALOG } from "@/app/store/ai-catalog";
+import type { AIUserConfig } from "@/app/store/ai-types";
 import { aiUserConfigAtom, reloadAIUserConfig, writeAIUserConfig } from "@/app/store/ai-user-config";
-import { CATALOG, ModelEntry, ProviderEntry, ReasoningLevel } from "@/app/store/ai-catalog";
 import { modalsModel } from "@/app/store/modalmodel";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import type { AIUserConfig } from "@/app/store/ai-types";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { useCallback, useMemo, useState } from "react";
 
 import { Modal } from "./modal";
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2;
+
+const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
+    openrouter: "openrouter/auto",
+};
 
 interface SelectionState {
     providers: Set<string>; // ids of selected catalog providers
     keys: Map<string, string>; // provider id → API key
     defaultProvider: string;
     defaultModel: string;
-    defaultReasoning?: ReasoningLevel;
 }
 
 const AISetupWizardV = ({ onClose }: { onClose: () => void }) => {
@@ -57,9 +59,8 @@ const AISetupWizardV = ({ onClose }: { onClose: () => void }) => {
         }
         return true;
     }, [state.providers, state.keys]);
-    const step3Valid = !!state.defaultProvider && !!state.defaultModel;
 
-    const canAdvance = step === 1 ? step1Valid : step === 2 ? step2Valid : step3Valid;
+    const canAdvance = step === 1 ? step1Valid : step2Valid;
 
     // ---------- actions ----------
     const toggleProvider = (pid: string) => {
@@ -67,8 +68,6 @@ const AISetupWizardV = ({ onClose }: { onClose: () => void }) => {
             const next = new Set(s.providers);
             if (next.has(pid)) next.delete(pid);
             else next.add(pid);
-            // Cascade — if we drop the provider currently selected as
-            // default, clear that field.
             let defaultProvider = s.defaultProvider;
             let defaultModel = s.defaultModel;
             if (!next.has(defaultProvider)) {
@@ -87,41 +86,29 @@ const AISetupWizardV = ({ onClose }: { onClose: () => void }) => {
         });
     };
 
-    const pickDefault = (provider: string, model: string, reasoning?: ReasoningLevel) => {
-        setState((s) => ({
-            ...s,
-            defaultProvider: provider,
-            defaultModel: model,
-            defaultReasoning: reasoning,
-        }));
-    };
-
     const handleNext = useCallback(() => {
         if (!canAdvance) return;
         setError("");
         if (step === 1) {
             // Seed defaults for step 2: keys default to empty strings.
-            // Seed defaults for step 3: first selected provider, its first model.
+            // Default model is intentionally automatic: the user can change it later
+            // from the picker, so setup only asks for provider credentials.
             setState((s) => {
                 const firstProvider = [...s.providers][0];
                 const provider = CATALOG.find((p) => p.id === firstProvider);
-                const firstModel = provider?.models[0];
                 return {
                     ...s,
                     defaultProvider: s.defaultProvider || firstProvider || "",
-                    defaultModel: s.defaultModel || firstModel?.id || "",
+                    defaultModel: s.defaultModel || getDefaultModelId(provider),
                 };
             });
             setStep(2);
-        } else if (step === 2) {
-            setStep(3);
         }
     }, [canAdvance, step]);
 
     const handleBack = useCallback(() => {
         setError("");
         if (step === 2) setStep(1);
-        else if (step === 3) setStep(2);
     }, [step]);
 
     const handleSubmit = useCallback(async () => {
@@ -142,12 +129,17 @@ const AISetupWizardV = ({ onClose }: { onClose: () => void }) => {
                 const key = (state.keys.get(pid) ?? "").trim();
                 if (key) secrets[meta.tokenSecretName] = key;
             }
+            const firstProvider = state.defaultProvider || [...state.providers][0] || "";
+            const providerMeta = CATALOG.find((p) => p.id === firstProvider);
+            const firstModel = state.defaultModel || getDefaultModelId(providerMeta);
+            if (!firstProvider || !firstModel) {
+                throw new Error("No default model is available for the selected provider.");
+            }
             const config: AIUserConfig = {
                 providers,
                 default: {
-                    provider: state.defaultProvider,
-                    model: state.defaultModel,
-                    ...(state.defaultReasoning ? { reasoning: state.defaultReasoning } : {}),
+                    provider: firstProvider,
+                    model: firstModel,
                 },
             };
             // Save keys first so a partial failure leaves the user with
@@ -169,19 +161,11 @@ const AISetupWizardV = ({ onClose }: { onClose: () => void }) => {
     }, [canAdvance, state, onClose]);
 
     // ---------- step body ----------
-    let body: React.ReactNode;
-    if (step === 1) body = <Step1 providers={state.providers} onToggle={toggleProvider} />;
-    else if (step === 2)
-        body = <Step2 providers={state.providers} keys={state.keys} onSetKey={setKey} />;
-    else
-        body = (
-            <Step3
-                providers={state.providers}
-                pick={pickDefault}
-                defaultProvider={state.defaultProvider}
-                defaultModel={state.defaultModel}
-                defaultReasoning={state.defaultReasoning}
-            />
+    const body =
+        step === 1 ? (
+            <Step1 providers={state.providers} onToggle={toggleProvider} />
+        ) : (
+            <Step2 providers={state.providers} keys={state.keys} onSetKey={setKey} />
         );
 
     return (
@@ -217,12 +201,7 @@ const Header = ({ step }: { step: Step }) => (
     <div className="border-b border-fg-overlay-2 px-6 py-4">
         <div className="text-[16px] font-semibold text-foreground">Set up AI agent</div>
         <div className="mt-1 text-[12px] text-secondary/70">
-            Step {step} of 3 —{" "}
-            {step === 1
-                ? "Pick providers you have API keys for"
-                : step === 2
-                    ? "Paste your API keys"
-                    : "Pick the default model"}
+            Step {step} of 2 — {step === 1 ? "Pick providers you have API keys for" : "Paste your API keys"}
         </div>
     </div>
 );
@@ -262,7 +241,7 @@ const Footer = ({ step, canAdvance, submitting, onBack, onNext, onSubmit, onCanc
                     ← Back
                 </button>
             )}
-            {step < 3 ? (
+            {step < 2 ? (
                 <button
                     type="button"
                     onClick={onNext}
@@ -313,7 +292,9 @@ const Step1 = ({ providers, onToggle }: Step1Props) => {
             <div className="flex flex-col gap-2">
                 <div className="rounded border border-fg-overlay-2/60 bg-fg-overlay-1/30 px-3 py-4 text-center text-[12px] text-secondary/75">
                     All catalog providers are already configured. Edit
-                    <code className="mx-1 rounded bg-fg-overlay-2/50 px-1 py-0.5 font-mono text-[11px]">~/.config/crest/ai.json</code>
+                    <code className="mx-1 rounded bg-fg-overlay-2/50 px-1 py-0.5 font-mono text-[11px]">
+                        ~/.config/crest/ai.json
+                    </code>
                     to rotate keys or add custom endpoints.
                 </div>
             </div>
@@ -360,9 +341,7 @@ const Step2 = ({ providers, keys, onSetKey }: Step2Props) => (
             if (!meta) return null;
             return (
                 <div key={pid} className="flex flex-col gap-1">
-                    <div className="text-[13px] font-medium text-foreground">
-                        {meta.displayName}
-                    </div>
+                    <div className="text-[13px] font-medium text-foreground">{meta.displayName}</div>
                     <input
                         type="password"
                         value={keys.get(pid) ?? ""}
@@ -378,119 +357,9 @@ const Step2 = ({ providers, keys, onSetKey }: Step2Props) => (
     </div>
 );
 
-// =========================================================================
-// Step 3 — pick default model
-// =========================================================================
-
-interface Step3Props {
-    providers: Set<string>;
-    pick: (provider: string, model: string, reasoning?: ReasoningLevel) => void;
-    defaultProvider: string;
-    defaultModel: string;
-    defaultReasoning?: ReasoningLevel;
-}
-
-const Step3 = ({ providers, pick, defaultProvider, defaultModel, defaultReasoning }: Step3Props) => {
-    const providerEntries = useMemo(
-        () => CATALOG.filter((p) => providers.has(p.id)),
-        [providers]
-    );
-    const currentProvider: ProviderEntry | undefined = providerEntries.find(
-        (p) => p.id === defaultProvider
-    );
-    const currentModel: ModelEntry | undefined = currentProvider?.models.find(
-        (m) => m.id === defaultModel
-    );
-    const reasoningLevels = currentModel?.reasoningLevels;
-
-    return (
-        <div className="flex flex-col gap-4">
-            <div className="text-[12px] text-secondary/75">
-                This is the model used when no per-pane override is set. You can change it any
-                time from the picker chip.
-            </div>
-
-            <div className="flex flex-col gap-1">
-                <label className="text-[11px] uppercase tracking-wider text-secondary/65">
-                    Provider
-                </label>
-                <select
-                    value={defaultProvider}
-                    onChange={(e) => {
-                        const p = providerEntries.find((pp) => pp.id === e.target.value);
-                        pick(e.target.value, p?.models[0]?.id ?? "", undefined);
-                    }}
-                    className="rounded border border-fg-overlay-3 bg-background/60 px-2 py-1.5 text-[12px] text-foreground outline-none focus:border-[var(--ansi-blue)]/60"
-                >
-                    {providerEntries.map((p) => (
-                        <option key={p.id} value={p.id}>
-                            {p.displayName}
-                        </option>
-                    ))}
-                </select>
-            </div>
-
-            <div className="flex flex-col gap-1">
-                <label className="text-[11px] uppercase tracking-wider text-secondary/65">
-                    Model
-                </label>
-                <select
-                    value={defaultModel}
-                    onChange={(e) => pick(defaultProvider, e.target.value, undefined)}
-                    className="rounded border border-fg-overlay-3 bg-background/60 px-2 py-1.5 text-[12px] text-foreground outline-none focus:border-[var(--ansi-blue)]/60"
-                >
-                    {currentProvider?.models.map((m) => (
-                        <option key={m.id} value={m.id}>
-                            {m.displayName} ({formatContext(m.contextWindow)})
-                        </option>
-                    ))}
-                </select>
-            </div>
-
-            {reasoningLevels && reasoningLevels.length > 0 && (
-                <div className="flex flex-col gap-1">
-                    <label className="text-[11px] uppercase tracking-wider text-secondary/65">
-                        Reasoning effort
-                    </label>
-                    <div className="flex gap-1">
-                        {reasoningLevels.map((lvl) => (
-                            <button
-                                key={lvl}
-                                type="button"
-                                onClick={() => pick(defaultProvider, defaultModel, lvl)}
-                                className={cn(
-                                    "cursor-pointer rounded border px-2 py-1 text-[12px] transition-colors",
-                                    defaultReasoning === lvl
-                                        ? "border-[var(--ansi-yellow)]/60 bg-[var(--ansi-yellow)]/15 text-[var(--ansi-yellow)]"
-                                        : "border-fg-overlay-3 bg-transparent text-foreground/80 hover:bg-fg-overlay-2/60"
-                                )}
-                            >
-                                {lvl}
-                            </button>
-                        ))}
-                        <button
-                            type="button"
-                            onClick={() => pick(defaultProvider, defaultModel, undefined)}
-                            className={cn(
-                                "cursor-pointer rounded border px-2 py-1 text-[12px] transition-colors",
-                                !defaultReasoning
-                                    ? "border-fg-overlay-3 bg-fg-overlay-2/60 text-foreground"
-                                    : "border-fg-overlay-3 bg-transparent text-foreground/60 hover:bg-fg-overlay-2/60"
-                            )}
-                        >
-                            default
-                        </button>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-};
-
-function formatContext(tokens: number): string {
-    if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M ctx`;
-    if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k ctx`;
-    return `${tokens} ctx`;
+function getDefaultModelId(provider: (typeof CATALOG)[number] | undefined): string {
+    if (!provider) return "";
+    return provider.models[0]?.id ?? DEFAULT_MODEL_BY_PROVIDER[provider.id] ?? "";
 }
 
 // =========================================================================

@@ -16,8 +16,8 @@ import * as keyutil from "../frontend/util/keyutil";
 // On Windows, it will store to %LOCALAPPDATA%/crest/electron
 app.setName("crest/electron");
 
-const isDev = !app.isPackaged;
-const isDevVite = isDev && process.env.ELECTRON_RENDERER_URL;
+const isDev = !app.isPackaged || process.env.NODE_ENV_ELECTRON_VITE === "development";
+const isDevVite = isDev && !!process.env.ELECTRON_RENDERER_URL;
 console.log(`Running in ${isDev ? "development" : "production"} mode`);
 if (isDev) {
     process.env[WaveDevVarName] = "1";

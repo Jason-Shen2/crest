@@ -32,6 +32,8 @@
 
 import { Tooltip } from "@/app/element/tooltip";
 import { UIcon } from "@/app/element/ui-icon";
+import { globalStore } from "@/app/store/jotaiStore";
+import { atoms } from "@/store/global";
 import { cn } from "@/util/util";
 import {
     FloatingPortal,
@@ -44,8 +46,6 @@ import {
     useInteractions,
     useRole,
 } from "@floating-ui/react";
-import { atoms } from "@/store/global";
-import { globalStore } from "@/app/store/jotaiStore";
 import { useAtomValue } from "jotai";
 import { Pin } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -68,7 +68,7 @@ import {
     providersWithCredentials,
     refreshProviderModels,
 } from "@/app/store/ai-provider-models";
-import { AgentSelection, AIUserConfig, UserCustomEndpointModel, UserCustomModel } from "@/app/store/ai-types";
+import { AIUserConfig, AgentSelection, UserCustomEndpointModel, UserCustomModel } from "@/app/store/ai-types";
 import { AIUserConfigStatus, isPinned, togglePinned } from "@/app/store/ai-user-config";
 
 const POPOVER_WIDTH_PX = 340;
@@ -105,7 +105,7 @@ export interface ModelPickerPopoverProps {
 type TabKind = "pinned" | "provider" | "add";
 
 interface TabSpec {
-    id: string;       // "pinned" | providerId | "__add"
+    id: string; // "pinned" | providerId | "__add"
     kind: TabKind;
     label: string;
     icon: React.ReactNode;
@@ -167,10 +167,7 @@ export const ModelPickerPopover = memo(
         const searchRef = useRef<HTMLInputElement>(null);
         const listRef = useRef<HTMLDivElement>(null);
 
-        const configuredProviders = useMemo(
-            () => providersWithCredentials(userConfig),
-            [userConfig]
-        );
+        const configuredProviders = useMemo(() => providersWithCredentials(userConfig), [userConfig]);
 
         const tabs = useMemo<TabSpec[]>(
             () => buildTabs(configuredProviders, userConfig),
@@ -184,9 +181,7 @@ export const ModelPickerPopover = memo(
         useEffect(() => {
             if (!open) return;
             const want =
-                (selection && configuredProviders.includes(selection.provider)
-                    ? selection.provider
-                    : null) ??
+                (selection && configuredProviders.includes(selection.provider) ? selection.provider : null) ??
                 configuredProviders[0] ??
                 "pinned";
             setActiveTab((cur) => (tabs.some((t) => t.id === cur) ? cur : want));
@@ -309,20 +304,17 @@ export const ModelPickerPopover = memo(
             [onSelectionChange, onOpenChange]
         );
 
-        const handlePinToggle = useCallback(
-            async (row: PickRow) => {
-                try {
-                    await togglePinned(row.selection.provider, row.selection.model);
-                } catch (e) {
-                    // Surface in the console — the picker is too thin for a
-                    // toast surface, and a failed pin doesn't block the
-                    // user from selecting the model.
-                    // eslint-disable-next-line no-console
-                    console.error("toggle pin failed:", e);
-                }
-            },
-            []
-        );
+        const handlePinToggle = useCallback(async (row: PickRow) => {
+            try {
+                await togglePinned(row.selection.provider, row.selection.model);
+            } catch (e) {
+                // Surface in the console — the picker is too thin for a
+                // toast surface, and a failed pin doesn't block the
+                // user from selecting the model.
+                // eslint-disable-next-line no-console
+                console.error("toggle pin failed:", e);
+            }
+        }, []);
 
         const handleRefresh = useCallback(() => {
             if (activeTabSpec?.kind === "provider" && activeTabSpec.providerId) {
@@ -335,8 +327,7 @@ export const ModelPickerPopover = memo(
                 const switchable = tabs.filter((t) => t.kind !== "add");
                 if (switchable.length === 0) return;
                 const curIdx = switchable.findIndex((t) => t.id === activeTab);
-                const nextIdx =
-                    (curIdx + dir + switchable.length) % switchable.length;
+                const nextIdx = (curIdx + dir + switchable.length) % switchable.length;
                 setActiveTab(switchable[nextIdx].id);
                 setQuery("");
             },
@@ -404,10 +395,14 @@ export const ModelPickerPopover = memo(
                         status={userConfigStatus}
                         error={userConfigError}
                         configuredCount={configuredProviders.length}
-                        onOpenConfigFile={onOpenConfigFile ? () => {
-                            onOpenChange(false);
-                            onOpenConfigFile();
-                        } : undefined}
+                        onOpenConfigFile={
+                            onOpenConfigFile
+                                ? () => {
+                                      onOpenChange(false);
+                                      onOpenConfigFile();
+                                  }
+                                : undefined
+                        }
                     />
 
                     <ProfilesStrip
@@ -476,59 +471,55 @@ interface ConfigBannerProps {
     onOpenConfigFile?: () => void;
 }
 
-const ConfigBanner = memo(
-    ({ status, error, configuredCount, onOpenConfigFile }: ConfigBannerProps) => {
-        if (status === "ok" && configuredCount > 0) return null;
-        if (status === "loading") {
-            return (
-                <div
-                    className="border-b border-fg-overlay-2 bg-fg-overlay-1/40 px-3 py-2 text-secondary/70"
-                    style={{ fontSize: `${SEARCH_FONT_PX}px` }}
-                >
-                    Loading config…
-                </div>
-            );
-        }
-        const isMissing = status === "missing" || (status === "ok" && configuredCount === 0);
-        const title = isMissing
-            ? "Set up your AI provider"
-            : status === "malformed"
-                ? "Config file is malformed"
-                : "Failed to load AI config";
-        const body = isMissing
-            ? "Pick a provider, paste your API key, choose a default model — takes 30 seconds."
-            : error ?? "Unknown error.";
-        const buttonLabel = isMissing ? "Get started" : "Edit ai.json";
+const ConfigBanner = memo(({ status, error, configuredCount, onOpenConfigFile }: ConfigBannerProps) => {
+    if (status === "ok" && configuredCount > 0) return null;
+    if (status === "loading") {
         return (
             <div
-                className={cn(
-                    "border-b px-3 py-2 font-sans",
-                    isMissing
-                        ? "border-amber-400/40 bg-amber-500/10 text-amber-200"
-                        : "border-rose-500/40 bg-rose-500/10 text-rose-300"
-                )}
+                className="border-b border-fg-overlay-2 bg-fg-overlay-1/40 px-3 py-2 text-secondary/70"
                 style={{ fontSize: `${SEARCH_FONT_PX}px` }}
             >
-                <div className="font-semibold">{title}</div>
-                <div className="mt-0.5 text-foreground/70">{body}</div>
-                {onOpenConfigFile && (
-                    <button
-                        type="button"
-                        onClick={onOpenConfigFile}
-                        className={cn(
-                            "mt-1.5 inline-flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 font-medium",
-                            isMissing
-                                ? "bg-amber-400 text-black hover:bg-amber-300"
-                                : "border border-fg-overlay-3 text-foreground/85 hover:bg-fg-overlay-2/60"
-                        )}
-                    >
-                        {buttonLabel}
-                    </button>
-                )}
+                Loading config…
             </div>
         );
     }
-);
+    const isMissing = status === "missing" || (status === "ok" && configuredCount === 0);
+    const title = isMissing
+        ? "Set up your AI provider"
+        : status === "malformed"
+          ? "Config file is malformed"
+          : "Failed to load AI config";
+    const body = isMissing ? "Pick a provider and paste your API key — takes 30 seconds." : (error ?? "Unknown error.");
+    const buttonLabel = isMissing ? "Get started" : "Edit ai.json";
+    return (
+        <div
+            className={cn(
+                "border-b px-3 py-2 font-sans",
+                isMissing
+                    ? "border-amber-400/40 bg-amber-500/10 text-amber-200"
+                    : "border-rose-500/40 bg-rose-500/10 text-rose-300"
+            )}
+            style={{ fontSize: `${SEARCH_FONT_PX}px` }}
+        >
+            <div className="font-semibold">{title}</div>
+            <div className="mt-0.5 text-foreground/70">{body}</div>
+            {onOpenConfigFile && (
+                <button
+                    type="button"
+                    onClick={onOpenConfigFile}
+                    className={cn(
+                        "mt-1.5 inline-flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 font-medium",
+                        isMissing
+                            ? "bg-amber-400 text-black hover:bg-amber-300"
+                            : "border border-fg-overlay-3 text-foreground/85 hover:bg-fg-overlay-2/60"
+                    )}
+                >
+                    {buttonLabel}
+                </button>
+            )}
+        </div>
+    );
+});
 ConfigBanner.displayName = "ConfigBanner";
 
 // =========================================================================
@@ -664,8 +655,8 @@ const TabBar = memo(
                                         isActive
                                             ? "bg-fg-overlay-2 text-foreground"
                                             : isAdd
-                                                ? "border border-dashed border-fg-overlay-3 text-secondary/80 hover:border-fg-overlay-3 hover:bg-fg-overlay-2/45 hover:text-foreground/95"
-                                                : "text-secondary/80 hover:bg-fg-overlay-2/45 hover:text-foreground/95"
+                                              ? "border border-dashed border-fg-overlay-3 text-secondary/80 hover:border-fg-overlay-3 hover:bg-fg-overlay-2/45 hover:text-foreground/95"
+                                              : "text-secondary/80 hover:bg-fg-overlay-2/45 hover:text-foreground/95"
                                     )}
                                     style={{
                                         fontSize: `${SEARCH_FONT_PX}px`,
@@ -787,11 +778,9 @@ const TabContent = memo(
 
         // Provider tab errors live above the list so the user can still
         // pick the cached/catalog fallback rows visible below.
-        const showProviderError =
-            tab.kind === "provider" && liveState.status === "error" && liveState.error;
+        const showProviderError = tab.kind === "provider" && liveState.status === "error" && liveState.error;
 
-        const showLoading =
-            tab.kind === "provider" && liveState.status === "loading" && rows.length === 0;
+        const showLoading = tab.kind === "provider" && liveState.status === "loading" && rows.length === 0;
 
         const pinnedEmpty = tab.kind === "pinned" && allRowsCount === 0;
 
@@ -839,10 +828,7 @@ const TabContent = memo(
                 {rows.map((row, idx) => {
                     const isSelected = sameSelection(row.selection, selection);
                     const showReasoningRow =
-                        !sidecarMode &&
-                        isSelected &&
-                        row.reasoningLevels &&
-                        row.reasoningLevels.length > 0;
+                        !sidecarMode && isSelected && row.reasoningLevels && row.reasoningLevels.length > 0;
                     const pinned = isPinned(userConfig, row.selection.provider, row.selection.model);
                     return (
                         <div key={row.key}>
@@ -894,7 +880,18 @@ interface PickerRowProps {
 }
 
 const PickerRow = memo(
-    ({ row, idx, active, selected, pinned, showProviderBadge, sidecarMode, onHover, onPick, onPinToggle }: PickerRowProps) => {
+    ({
+        row,
+        idx,
+        active,
+        selected,
+        pinned,
+        showProviderBadge,
+        sidecarMode,
+        onHover,
+        onPick,
+        onPinToggle,
+    }: PickerRowProps) => {
         // Pin chip stays out of the layout when neither hovered nor
         // pinned — that's what the user expects ("only show on hover").
         // We reserve its slot with a placeholder so the check icon
@@ -926,11 +923,7 @@ const PickerRow = memo(
                             className="truncate font-sans text-secondary/65"
                             style={{ fontSize: `${HEADER_FONT_PX + 1}px`, lineHeight: 1.2 }}
                         >
-                            {showProviderBadge && (
-                                <span className="text-secondary/85">
-                                    {row.providerId} ·{" "}
-                                </span>
-                            )}
+                            {showProviderBadge && <span className="text-secondary/85">{row.providerId} · </span>}
                             {row.subtitle}
                         </span>
                     )}
@@ -983,18 +976,12 @@ const PickerRow = memo(
                                 : "text-secondary/50 hover:bg-fg-overlay-2/60 hover:text-foreground/85"
                         )}
                     >
-                        <Pin
-                            size={ICON_PX - 1}
-                            strokeWidth={2}
-                            fill={pinned ? "currentColor" : "none"}
-                        />
+                        <Pin size={ICON_PX - 1} strokeWidth={2} fill={pinned ? "currentColor" : "none"} />
                     </button>
                 ) : row.pinnable ? (
                     <span className="inline-block shrink-0" style={{ width: `${ICON_PX + 3}px` }} />
                 ) : null}
-                {selected && (
-                    <UIcon name="check" size={ICON_PX} className="shrink-0 text-[var(--ansi-green)]" />
-                )}
+                {selected && <UIcon name="check" size={ICON_PX} className="shrink-0 text-[var(--ansi-green)]" />}
             </div>
         );
     }
@@ -1090,22 +1077,32 @@ const HintFooter = memo(({ showTabHint }: { showTabHint: boolean }) => (
         style={{ fontSize: `${HEADER_FONT_PX + 1}px` }}
     >
         <span className="inline-flex items-center gap-1.5">
-            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">↑</kbd>
-            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">↓</kbd>
+            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">
+                ↑
+            </kbd>
+            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">
+                ↓
+            </kbd>
             <span>navigate</span>
         </span>
         {showTabHint && (
             <span className="inline-flex items-center gap-1.5">
-                <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">⇥</kbd>
+                <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">
+                    ⇥
+                </kbd>
                 <span>switch tab</span>
             </span>
         )}
         <span className="inline-flex items-center gap-1.5">
-            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">↵</kbd>
+            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">
+                ↵
+            </kbd>
             <span>select</span>
         </span>
         <span className="inline-flex items-center gap-1.5">
-            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1.5">esc</kbd>
+            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1.5">
+                esc
+            </kbd>
             <span>dismiss</span>
         </span>
     </div>
@@ -1118,18 +1115,13 @@ HintFooter.displayName = "HintFooter";
 
 const ModelDetailCard = memo(({ row }: { row: PickRow }) => {
     const d = row.detail;
-    const ctxLabel = d.contextWindow
-        ? `${d.contextWindow.toLocaleString()} tokens`
-        : undefined;
+    const ctxLabel = d.contextWindow ? `${d.contextWindow.toLocaleString()} tokens` : undefined;
     return (
         <div className="max-w-[320px] font-sans">
             <div className="font-semibold text-foreground" style={{ fontSize: `${SEARCH_FONT_PX}px` }}>
                 {row.displayName}
             </div>
-            <div
-                className="mt-0.5 font-mono text-secondary/75"
-                style={{ fontSize: `${HEADER_FONT_PX + 1}px` }}
-            >
+            <div className="mt-0.5 font-mono text-secondary/75" style={{ fontSize: `${HEADER_FONT_PX + 1}px` }}>
                 {d.providerLabel} · {d.modelId}
             </div>
             {d.description && (
@@ -1141,9 +1133,7 @@ const ModelDetailCard = memo(({ row }: { row: PickRow }) => {
                 </div>
             )}
             <div className="mt-2 flex flex-col gap-0.5" style={{ fontSize: `${HEADER_FONT_PX + 1}px` }}>
-                {ctxLabel && (
-                    <DetailRow label="Context window" value={ctxLabel} />
-                )}
+                {ctxLabel && <DetailRow label="Context window" value={ctxLabel} />}
                 {d.capabilities && d.capabilities.length > 0 && (
                     <DetailRow label="Capabilities" value={d.capabilities.join(", ")} />
                 )}
@@ -1195,143 +1185,119 @@ interface SidecarPanelProps {
 const SIDECAR_FONT_PX = 12;
 const SIDECAR_SECTION_FONT_PX = 10;
 
-const SidecarPanel = memo(
-    ({ row, currentReasoning, showProvider, onPickReasoning }: SidecarPanelProps) => {
-        if (!row) {
-            return (
-                <div
-                    className="flex h-full items-center justify-center px-4 py-6 text-center font-sans text-secondary/60"
-                    style={{ fontSize: `${SIDECAR_FONT_PX}px` }}
-                >
-                    Hover a model to see details
-                </div>
-            );
-        }
-        const d = row.detail;
-        const ctxLabel = d.contextWindow ? formatTokenCount(d.contextWindow) : undefined;
-        const outputLabel =
-            d.maxOutputTokens && d.maxOutputTokens !== d.contextWindow
-                ? formatTokenCount(d.maxOutputTokens)
-                : undefined;
-        const promptPrice = formatPricePerMillion(d.promptCostPerToken);
-        const completionPrice = formatPricePerMillion(d.completionCostPerToken);
-        const imagePrice = formatImagePrice(d.imageCostPerImage);
-        const hasPricing = !!(promptPrice || completionPrice || imagePrice);
-        const modalityLabel = formatModalities(d.inputModalities);
-
+const SidecarPanel = memo(({ row, currentReasoning, showProvider, onPickReasoning }: SidecarPanelProps) => {
+    if (!row) {
         return (
             <div
-                className="flex h-full flex-col gap-3 overflow-y-auto px-4 py-3 font-sans"
+                className="flex h-full items-center justify-center px-4 py-6 text-center font-sans text-secondary/60"
                 style={{ fontSize: `${SIDECAR_FONT_PX}px` }}
             >
-                <div className="flex flex-col gap-1">
-                    <div
-                        className="font-semibold text-foreground"
-                        style={{ fontSize: "14px", lineHeight: 1.3 }}
-                    >
-                        {row.displayName}
-                    </div>
-                    <div
-                        className="break-all font-mono text-secondary/80"
-                        style={{ fontSize: `${SIDECAR_FONT_PX - 1}px`, lineHeight: 1.4 }}
-                    >
-                        {d.modelId}
-                    </div>
-                    {showProvider && (
-                        <div className="mt-1 inline-flex">
-                            <span
-                                className="rounded border border-fg-overlay-3 bg-fg-overlay-2/40 px-1.5 py-0.5 font-sans text-foreground/85"
-                                style={{ fontSize: `${SIDECAR_SECTION_FONT_PX}px` }}
-                            >
-                                {d.providerLabel}
-                            </span>
-                        </div>
-                    )}
-                </div>
-
-                {d.description && (
-                    <SidecarDescription text={d.description} rowKey={row.key} />
-                )}
-
-                {d.reasoningLevels && d.reasoningLevels.length > 0 && (
-                    <SidecarSection label="Reasoning">
-                        <div className="flex flex-wrap gap-1.5">
-                            {d.reasoningLevels.map((lvl) => (
-                                <button
-                                    key={lvl}
-                                    type="button"
-                                    onMouseDown={(e) => {
-                                        e.preventDefault();
-                                        onPickReasoning(row, lvl);
-                                    }}
-                                    className={cn(
-                                        "cursor-pointer rounded border px-2.5 py-0.5 font-sans capitalize transition-colors",
-                                        currentReasoning === lvl
-                                            ? "border-[var(--ansi-yellow)]/60 bg-[var(--ansi-yellow)]/15 text-[var(--ansi-yellow)]"
-                                            : "border-fg-overlay-2/60 bg-transparent text-foreground/80 hover:bg-fg-overlay-2/60"
-                                    )}
-                                    style={{ fontSize: `${SIDECAR_FONT_PX}px` }}
-                                >
-                                    {lvl}
-                                </button>
-                            ))}
-                        </div>
-                    </SidecarSection>
-                )}
-
-                {hasPricing && (
-                    <SidecarSection label="Pricing">
-                        <div className="grid grid-cols-2 gap-1.5">
-                            {promptPrice && (
-                                <PriceCard
-                                    label="Prompt"
-                                    {...splitPrice(promptPrice)}
-                                />
-                            )}
-                            {completionPrice && (
-                                <PriceCard
-                                    label="Output"
-                                    {...splitPrice(completionPrice)}
-                                />
-                            )}
-                            {imagePrice && (
-                                <PriceCard
-                                    label="Image"
-                                    {...splitPrice(imagePrice)}
-                                />
-                            )}
-                        </div>
-                    </SidecarSection>
-                )}
-
-                <SidecarSection label="Details">
-                    {/* Tailwind arbitrary grid template needs underscores
-                        for spaces — `[auto_1fr]`, not `[auto,1fr]` — or
-                        the columns collapse to a single column. */}
-                    <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-                        {ctxLabel && <DetailKV label="Context" value={ctxLabel} />}
-                        {outputLabel && <DetailKV label="Max output" value={outputLabel} />}
-                        {modalityLabel && <DetailKV label="Modality" value={modalityLabel} />}
-                        {d.capabilities && d.capabilities.length > 0 && (
-                            <DetailKV label="Capabilities" value={d.capabilities.join(", ")} />
-                        )}
-                        {d.tokenizer && <DetailKV label="Tokenizer" value={d.tokenizer} />}
-                        {d.isModerated && <DetailKV label="Moderated" value="Yes" />}
-                    </div>
-                </SidecarSection>
-
-                {row.needsCredentials && (
-                    <div
-                        className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1.5 text-amber-200"
-                        style={{ fontSize: `${SIDECAR_FONT_PX}px` }}
-                    >
-                        Add an API key for {d.providerLabel} to use this model.
-                    </div>
-                )}
+                Hover a model to see details
             </div>
         );
     }
-);
+    const d = row.detail;
+    const ctxLabel = d.contextWindow ? formatTokenCount(d.contextWindow) : undefined;
+    const outputLabel =
+        d.maxOutputTokens && d.maxOutputTokens !== d.contextWindow ? formatTokenCount(d.maxOutputTokens) : undefined;
+    const promptPrice = formatPricePerMillion(d.promptCostPerToken);
+    const completionPrice = formatPricePerMillion(d.completionCostPerToken);
+    const imagePrice = formatImagePrice(d.imageCostPerImage);
+    const hasPricing = !!(promptPrice || completionPrice || imagePrice);
+    const modalityLabel = formatModalities(d.inputModalities);
+
+    return (
+        <div
+            className="flex h-full flex-col gap-3 overflow-y-auto px-4 py-3 font-sans"
+            style={{ fontSize: `${SIDECAR_FONT_PX}px` }}
+        >
+            <div className="flex flex-col gap-1">
+                <div className="font-semibold text-foreground" style={{ fontSize: "14px", lineHeight: 1.3 }}>
+                    {row.displayName}
+                </div>
+                <div
+                    className="break-all font-mono text-secondary/80"
+                    style={{ fontSize: `${SIDECAR_FONT_PX - 1}px`, lineHeight: 1.4 }}
+                >
+                    {d.modelId}
+                </div>
+                {showProvider && (
+                    <div className="mt-1 inline-flex">
+                        <span
+                            className="rounded border border-fg-overlay-3 bg-fg-overlay-2/40 px-1.5 py-0.5 font-sans text-foreground/85"
+                            style={{ fontSize: `${SIDECAR_SECTION_FONT_PX}px` }}
+                        >
+                            {d.providerLabel}
+                        </span>
+                    </div>
+                )}
+            </div>
+
+            {d.description && <SidecarDescription text={d.description} rowKey={row.key} />}
+
+            {d.reasoningLevels && d.reasoningLevels.length > 0 && (
+                <SidecarSection label="Reasoning">
+                    <div className="flex flex-wrap gap-1.5">
+                        {d.reasoningLevels.map((lvl) => (
+                            <button
+                                key={lvl}
+                                type="button"
+                                onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    onPickReasoning(row, lvl);
+                                }}
+                                className={cn(
+                                    "cursor-pointer rounded border px-2.5 py-0.5 font-sans capitalize transition-colors",
+                                    currentReasoning === lvl
+                                        ? "border-[var(--ansi-yellow)]/60 bg-[var(--ansi-yellow)]/15 text-[var(--ansi-yellow)]"
+                                        : "border-fg-overlay-2/60 bg-transparent text-foreground/80 hover:bg-fg-overlay-2/60"
+                                )}
+                                style={{ fontSize: `${SIDECAR_FONT_PX}px` }}
+                            >
+                                {lvl}
+                            </button>
+                        ))}
+                    </div>
+                </SidecarSection>
+            )}
+
+            {hasPricing && (
+                <SidecarSection label="Pricing">
+                    <div className="grid grid-cols-2 gap-1.5">
+                        {promptPrice && <PriceCard label="Prompt" {...splitPrice(promptPrice)} />}
+                        {completionPrice && <PriceCard label="Output" {...splitPrice(completionPrice)} />}
+                        {imagePrice && <PriceCard label="Image" {...splitPrice(imagePrice)} />}
+                    </div>
+                </SidecarSection>
+            )}
+
+            <SidecarSection label="Details">
+                {/* Tailwind arbitrary grid template needs underscores
+                        for spaces — `[auto_1fr]`, not `[auto,1fr]` — or
+                        the columns collapse to a single column. */}
+                <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                    {ctxLabel && <DetailKV label="Context" value={ctxLabel} />}
+                    {outputLabel && <DetailKV label="Max output" value={outputLabel} />}
+                    {modalityLabel && <DetailKV label="Modality" value={modalityLabel} />}
+                    {d.capabilities && d.capabilities.length > 0 && (
+                        <DetailKV label="Capabilities" value={d.capabilities.join(", ")} />
+                    )}
+                    {d.tokenizer && <DetailKV label="Tokenizer" value={d.tokenizer} />}
+                    {d.isModerated && <DetailKV label="Moderated" value="Yes" />}
+                </div>
+            </SidecarSection>
+
+            {row.needsCredentials && (
+                <div
+                    className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-1.5 text-amber-200"
+                    style={{ fontSize: `${SIDECAR_FONT_PX}px` }}
+                >
+                    Add an API key for {d.providerLabel} to use this model.
+                </div>
+            )}
+        </div>
+    );
+});
 SidecarPanel.displayName = "SidecarPanel";
 
 // SidecarDescription — collapsible description block. Defaults to a
@@ -1380,9 +1346,7 @@ const SidecarDescription = memo(({ text, rowKey }: { text: string; rowKey: strin
     // without relying on -webkit-line-clamp (whose interaction with
     // scrollHeight in Blink is browser-version dependent).
     const fadeMask =
-        !expanded && overflows
-            ? "linear-gradient(to bottom, black calc(100% - 18px), transparent)"
-            : undefined;
+        !expanded && overflows ? "linear-gradient(to bottom, black calc(100% - 18px), transparent)" : undefined;
 
     return (
         <div>
@@ -1392,9 +1356,7 @@ const SidecarDescription = memo(({ text, rowKey }: { text: string; rowKey: strin
                 style={{
                     fontSize: `${SIDECAR_FONT_PX}px`,
                     lineHeight: 1.5,
-                    maxHeight: expanded
-                        ? `${EXPANDED_DESC_MAX_HEIGHT_PX}px`
-                        : `${COLLAPSED_DESC_MAX_HEIGHT_PX}px`,
+                    maxHeight: expanded ? `${EXPANDED_DESC_MAX_HEIGHT_PX}px` : `${COLLAPSED_DESC_MAX_HEIGHT_PX}px`,
                     overflowY: expanded ? "auto" : "hidden",
                     maskImage: fadeMask,
                     WebkitMaskImage: fadeMask,
@@ -1420,58 +1382,51 @@ const SidecarDescription = memo(({ text, rowKey }: { text: string; rowKey: strin
 });
 SidecarDescription.displayName = "SidecarDescription";
 
-const SidecarSection = memo(
-    ({ label, children }: { label: string; children: React.ReactNode }) => (
-        <div className="flex flex-col gap-2">
-            {/* Section header sits inside a thin divider so it reads as
+const SidecarSection = memo(({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex flex-col gap-2">
+        {/* Section header sits inside a thin divider so it reads as
                 a real separator instead of competing with the per-row
                 uppercase labels (PROMPT / OUTPUT / IMAGE) inside the
                 pricing cards below. */}
-            <div className="flex items-center gap-2">
-                <span
-                    className="font-sans font-semibold uppercase tracking-[0.12em] text-foreground/85"
-                    style={{ fontSize: `${SIDECAR_SECTION_FONT_PX + 1}px` }}
-                >
-                    {label}
-                </span>
-                <span className="h-px flex-1 bg-fg-overlay-2/70" />
-            </div>
-            {children}
+        <div className="flex items-center gap-2">
+            <span
+                className="font-sans font-semibold uppercase tracking-[0.12em] text-foreground/85"
+                style={{ fontSize: `${SIDECAR_SECTION_FONT_PX + 1}px` }}
+            >
+                {label}
+            </span>
+            <span className="h-px flex-1 bg-fg-overlay-2/70" />
         </div>
-    )
-);
+        {children}
+    </div>
+));
 SidecarSection.displayName = "SidecarSection";
 
 // PriceCard — pricing renders as small "stat cards" so dollar amounts
 // pop visually and aren't confused with the plain-text details rows.
 // 2-up grid; each card is uppercase label + big mono amount + tiny
 // "per 1M tokens" / "per image" suffix.
-const PriceCard = memo(
-    ({ label, amount, suffix }: { label: string; amount: string; suffix?: string }) => (
-        <div className="rounded-md border border-fg-overlay-3/60 bg-fg-overlay-2/25 px-2 py-1.5">
-            <div
-                className="font-sans uppercase tracking-wider text-secondary/65"
-                style={{ fontSize: `${SIDECAR_SECTION_FONT_PX}px` }}
-            >
-                {label}
-            </div>
-            <div
-                className="font-mono font-semibold text-foreground"
-                style={{ fontSize: "13px", lineHeight: 1.2 }}
-            >
-                {amount}
-            </div>
-            {suffix && (
-                <div
-                    className="font-sans text-secondary/65"
-                    style={{ fontSize: `${SIDECAR_SECTION_FONT_PX}px`, lineHeight: 1.3 }}
-                >
-                    {suffix}
-                </div>
-            )}
+const PriceCard = memo(({ label, amount, suffix }: { label: string; amount: string; suffix?: string }) => (
+    <div className="rounded-md border border-fg-overlay-3/60 bg-fg-overlay-2/25 px-2 py-1.5">
+        <div
+            className="font-sans uppercase tracking-wider text-secondary/65"
+            style={{ fontSize: `${SIDECAR_SECTION_FONT_PX}px` }}
+        >
+            {label}
         </div>
-    )
-);
+        <div className="font-mono font-semibold text-foreground" style={{ fontSize: "13px", lineHeight: 1.2 }}>
+            {amount}
+        </div>
+        {suffix && (
+            <div
+                className="font-sans text-secondary/65"
+                style={{ fontSize: `${SIDECAR_SECTION_FONT_PX}px`, lineHeight: 1.3 }}
+            >
+                {suffix}
+            </div>
+        )}
+    </div>
+));
 PriceCard.displayName = "PriceCard";
 
 // DetailKV — details renders as a compact 2-column grid (label · value)
@@ -1479,10 +1434,7 @@ PriceCard.displayName = "PriceCard";
 // parent owns the grid so labels and values share an alignment column.
 const DetailKV = memo(({ label, value }: { label: string; value: string }) => (
     <>
-        <div
-            className="text-secondary/70"
-            style={{ fontSize: `${SIDECAR_FONT_PX}px`, lineHeight: 1.4 }}
-        >
+        <div className="text-secondary/70" style={{ fontSize: `${SIDECAR_FONT_PX}px`, lineHeight: 1.4 }}>
             {label}
         </div>
         <div
@@ -1590,18 +1542,11 @@ function buildPinnedRows(catalog: ProviderEntry[], userConfig: AIUserConfig | nu
         const provider = catalog.find((p) => p.id === pin.provider);
         const customEp = userConfig?.custom_endpoints?.[pin.provider];
         const catalogModel = provider ? findModel(provider.id, pin.model) : undefined;
-        const customModel = userConfig?.custom_models?.find(
-            (m) => m.provider === pin.provider && m.id === pin.model
-        );
+        const customModel = userConfig?.custom_models?.find((m) => m.provider === pin.provider && m.id === pin.model);
         const endpointModel = customEp?.models.find((m) => m.id === pin.model);
         const displayName =
-            catalogModel?.displayName ??
-            customModel?.displayname ??
-            endpointModel?.displayName ??
-            pin.model;
-        const icon =
-            provider?.icon ??
-            (customEp?.icon || "code-02");
+            catalogModel?.displayName ?? customModel?.displayname ?? endpointModel?.displayName ?? pin.model;
+        const icon = provider?.icon ?? (customEp?.icon || "code-02");
         const subtitle =
             (catalogModel && modelSubtitle(catalogModel)) ||
             (customModel && customModelSubtitle(customModel)) ||
@@ -1614,14 +1559,8 @@ function buildPinnedRows(catalog: ProviderEntry[], userConfig: AIUserConfig | nu
         const detail: ModelDetail = {
             modelId: pin.model,
             providerLabel: providerDisplayName(pin.provider, userConfig),
-            description:
-                catalogModel?.description ??
-                customModel?.description ??
-                endpointModel?.description,
-            contextWindow:
-                catalogModel?.contextWindow ??
-                customModel?.contextwindow ??
-                endpointModel?.contextWindow,
+            description: catalogModel?.description ?? customModel?.description ?? endpointModel?.description,
+            contextWindow: catalogModel?.contextWindow ?? customModel?.contextwindow ?? endpointModel?.contextWindow,
             capabilities:
                 catalogModel?.capabilities ??
                 (customModel?.capabilities as Capability[] | undefined) ??
@@ -1690,18 +1629,8 @@ function buildProviderRows(
         const custom = customByModelId.get(id);
         const endpointDef = endpointByModelId.get(id);
 
-        const displayName =
-            cat?.displayName ??
-            custom?.displayname ??
-            endpointDef?.displayName ??
-            live?.name ??
-            id;
-        const context =
-            cat?.contextWindow ??
-            custom?.contextwindow ??
-            endpointDef?.contextWindow ??
-            live?.context ??
-            0;
+        const displayName = cat?.displayName ?? custom?.displayname ?? endpointDef?.displayName ?? live?.name ?? id;
+        const context = cat?.contextWindow ?? custom?.contextwindow ?? endpointDef?.contextWindow ?? live?.context ?? 0;
         const capabilities: Capability[] =
             cat?.capabilities ??
             (custom?.capabilities as Capability[] | undefined) ??
@@ -1725,11 +1654,7 @@ function buildProviderRows(
             detail: {
                 modelId: id,
                 providerLabel: providerDisplayName(providerId, userConfig),
-                description:
-                    cat?.description ??
-                    custom?.description ??
-                    endpointDef?.description ??
-                    live?.description,
+                description: cat?.description ?? custom?.description ?? endpointDef?.description ?? live?.description,
                 contextWindow: context || undefined,
                 capabilities,
                 reasoningLevels,
@@ -1738,9 +1663,7 @@ function buildProviderRows(
                 completionCostPerToken: live?.completioncost || undefined,
                 imageCostPerImage: live?.imagecost || undefined,
                 inputModalities:
-                    live?.inputmodalities && live.inputmodalities.length > 0
-                        ? live.inputmodalities
-                        : undefined,
+                    live?.inputmodalities && live.inputmodalities.length > 0 ? live.inputmodalities : undefined,
                 tokenizer: live?.tokenizer || undefined,
                 isModerated: live?.ismoderated || undefined,
             },
@@ -1757,11 +1680,7 @@ function buildProviderRows(
     return out;
 }
 
-function composeSubtitle(
-    context: number,
-    capabilities: Capability[],
-    description?: string
-): string {
+function composeSubtitle(context: number, capabilities: Capability[], description?: string): string {
     const parts: string[] = [];
     if (context > 0) parts.push(formatContext(context));
     if (capabilities.length > 0) parts.push(capabilities.join(" · "));
@@ -1778,11 +1697,7 @@ function modelSubtitle(model: ModelEntry): string {
     return composeSubtitle(model.contextWindow, model.capabilities, model.description);
 }
 
-function customModelSubtitle(cm: {
-    capabilities: string[];
-    contextwindow: number;
-    description?: string;
-}): string {
+function customModelSubtitle(cm: { capabilities: string[]; contextwindow: number; description?: string }): string {
     return composeSubtitle(cm.contextwindow, cm.capabilities as Capability[], cm.description);
 }
 
@@ -1797,11 +1712,7 @@ function endpointModelSubtitle(
             return "";
         }
     })();
-    const tail = composeSubtitle(
-        model.contextWindow,
-        model.capabilities as Capability[],
-        model.description
-    );
+    const tail = composeSubtitle(model.contextWindow, model.capabilities as Capability[], model.description);
     return [host, tail].filter(Boolean).join(" · ");
 }
 
@@ -1816,12 +1727,7 @@ function filterRows(query: string, rows: PickRow[]): PickRow[] {
     const q = query.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) => {
-        const hay = [
-            r.displayName,
-            r.subtitle,
-            r.selection.provider,
-            r.selection.model,
-        ]
+        const hay = [r.displayName, r.subtitle, r.selection.provider, r.selection.model]
             .filter(Boolean)
             .join(" ")
             .toLowerCase();
@@ -1838,11 +1744,7 @@ function searchPlaceholder(tab: TabSpec | undefined): string {
 
 function sameSelection(a: AgentSelection, b: AgentSelection | null): boolean {
     if (!b) return false;
-    return (
-        a.provider === b.provider &&
-        a.model === b.model &&
-        (a.reasoning ?? null) === (b.reasoning ?? null)
-    );
+    return a.provider === b.provider && a.model === b.model && (a.reasoning ?? null) === (b.reasoning ?? null);
 }
 
 // =========================================================================
@@ -1910,10 +1812,7 @@ export const ModelPickerInline = memo(
         const listRef = useRef<HTMLDivElement>(null);
         const rootRef = useRef<HTMLDivElement>(null);
 
-        const configuredProviders = useMemo(
-            () => providersWithCredentials(userConfig),
-            [userConfig]
-        );
+        const configuredProviders = useMemo(() => providersWithCredentials(userConfig), [userConfig]);
 
         const tabs = useMemo<TabSpec[]>(
             () => buildTabs(configuredProviders, userConfig),
@@ -1925,9 +1824,7 @@ export const ModelPickerInline = memo(
         useEffect(() => {
             if (!open) return;
             const want =
-                (selection && configuredProviders.includes(selection.provider)
-                    ? selection.provider
-                    : null) ??
+                (selection && configuredProviders.includes(selection.provider) ? selection.provider : null) ??
                 configuredProviders[0] ??
                 "pinned";
             setActiveTab((cur) => (tabs.some((t) => t.id === cur) ? cur : want));
@@ -2049,10 +1946,7 @@ export const ModelPickerInline = memo(
                 const onMove = (mv: MouseEvent) => {
                     const next = Math.min(
                         INLINE_BODY_HEIGHT_MAX_PX,
-                        Math.max(
-                            INLINE_BODY_HEIGHT_MIN_PX,
-                            startHeight - (mv.clientY - startY)
-                        )
+                        Math.max(INLINE_BODY_HEIGHT_MIN_PX, startHeight - (mv.clientY - startY))
                     );
                     setBodyHeight(next);
                 };
@@ -2135,11 +2029,7 @@ export const ModelPickerInline = memo(
         const showSidecarProvider = activeTabSpec?.kind !== "provider";
 
         return (
-            <div
-                ref={rootRef}
-                className="border-t border-fg-overlay-2 bg-fg-overlay-1/40 font-sans"
-                role="listbox"
-            >
+            <div ref={rootRef} className="border-t border-fg-overlay-2 bg-fg-overlay-1/40 font-sans" role="listbox">
                 <ConfigBanner
                     status={userConfigStatus}
                     error={userConfigError}
@@ -2180,10 +2070,7 @@ export const ModelPickerInline = memo(
                     Height is user-resizable via the drag handle in the
                     header — clamped to [MIN, MAX] in handleResizeStart. */}
                 <div className="flex" style={{ height: `${bodyHeight}px` }}>
-                    <div
-                        ref={listRef}
-                        className="flex min-w-0 flex-1 flex-col overflow-y-auto"
-                    >
+                    <div ref={listRef} className="flex min-w-0 flex-1 flex-col overflow-y-auto">
                         <TabContent
                             tab={activeTabSpec}
                             rows={filtered}

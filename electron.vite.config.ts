@@ -141,14 +141,25 @@ export default defineConfig({
             // Default: resolve edgeflowjs from node_modules (the published
             // npm package). With EDGEFLOW_LINK=1, alias it to the sibling
             // repo's source for instant iteration. See EDGEFLOW_LOCAL above.
-            alias: USE_LOCAL_EDGEFLOW
-                ? [
-                      {
-                          find: /^edgeflowjs$/,
-                          replacement: path.resolve(EDGEFLOW_LOCAL, "src/index.ts"),
-                      },
-                  ]
-                : [],
+            alias: [
+                { find: "@/app", replacement: path.resolve(__dirname, "frontend/app") },
+                { find: "@/builder", replacement: path.resolve(__dirname, "frontend/builder") },
+                { find: "@/util", replacement: path.resolve(__dirname, "frontend/util") },
+                { find: "@/layout", replacement: path.resolve(__dirname, "frontend/layout") },
+                { find: "@/store", replacement: path.resolve(__dirname, "frontend/app/store") },
+                { find: "@/view", replacement: path.resolve(__dirname, "frontend/app/view") },
+                { find: "@/element", replacement: path.resolve(__dirname, "frontend/app/element") },
+                { find: "@/shadcn", replacement: path.resolve(__dirname, "frontend/app/shadcn") },
+                { find: "@/preview", replacement: path.resolve(__dirname, "frontend/preview") },
+                ...(USE_LOCAL_EDGEFLOW
+                    ? [
+                          {
+                              find: /^edgeflowjs$/,
+                              replacement: path.resolve(EDGEFLOW_LOCAL, "src/index.ts"),
+                          },
+                      ]
+                    : []),
+            ],
         },
         // ES-module workers. edgeflowjs's onnx backend keeps a dynamic
         // `import('onnxruntime-web/wasm')` as an auto-load fallback (we
