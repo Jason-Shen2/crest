@@ -355,7 +355,7 @@ const SettingsFloatingWindow = memo(
                             </div>
                             <div className="text-sm whitespace-nowrap">{item.label}</div>
                             {item.hasError && (
-                                <i className="fa fa-solid fa-circle-exclamation text-error text-[14px] ml-auto"></i>
+                                <i className="fa fa-solid fa-circle-exclamation text-error text-[16px] ml-auto"></i>
                             )}
                         </div>
                     ))}
@@ -496,7 +496,7 @@ const Widgets = memo(() => {
                                     <div className="relative">
                                         <i className={makeIconClass("gear", true)}></i>
                                         {hasConfigErrors && (
-                                            <i className="fa fa-solid fa-circle-exclamation text-error absolute top-0 right-0 text-[10px] pointer-events-none"></i>
+                                            <i className="fa fa-solid fa-circle-exclamation text-error absolute top-0 right-0 text-[12px] pointer-events-none"></i>
                                         )}
                                     </div>
                                 </Tooltip>
@@ -544,7 +544,7 @@ const Widgets = memo(() => {
                                         <i className={makeIconClass("gear", true)}></i>
                                         {hasConfigErrors && (
                                             <i
-                                                className={`fa fa-solid fa-circle-exclamation text-error absolute top-0 right-[-4px] pointer-events-none ${mode === "normal" ? "text-[14px]" : "text-[12px]"}`}
+                                                className={`fa fa-solid fa-circle-exclamation text-error absolute top-0 right-[-4px] pointer-events-none ${mode === "normal" ? "text-[16px]" : "text-[14px]"}`}
                                             ></i>
                                         )}
                                     </div>

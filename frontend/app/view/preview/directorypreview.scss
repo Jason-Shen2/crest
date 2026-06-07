@@ -37,7 +37,7 @@
                 display: flex;
                 min-width: var(--min-row-width);
                 padding: 4px 6px;
-                font-size: 0.75rem;
+                font-size: 13px;
 
                 .dir-table-head-cell {
                     flex: 0 0 auto;
@@ -154,7 +154,7 @@
                         white-space: nowrap;
                         padding: 0.25rem;
                         cursor: default;
-                        font-size: 12px;
+                        font-size: 15px;
                         flex: 0 0 auto;
 
                         &.col-size {
@@ -173,7 +173,7 @@
                         .dir-table-lastmod {
                             color: var(--secondary-text-color);
                             font-family: Hack;
-                            font-size: 11px;
+                            font-size: 13px;
                         }
 
                         .dir-table-name {

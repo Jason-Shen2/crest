@@ -87,12 +87,12 @@ const InlineInput = memo(({ depth, placeholder, onCommit, onCancel }: {
     const ref = useRef<HTMLInputElement>(null);
     useEffect(() => { ref.current?.focus(); }, []);
     return (
-        <div className="flex items-center gap-1 h-[22px]" style={{ paddingLeft: depth * 12 + 22 }}>
+        <div className="flex items-center gap-1 h-[26px]" style={{ paddingLeft: depth * 12 + 22 }}>
             <input
                 ref={ref}
                 type="text"
                 placeholder={placeholder}
-                className="flex-1 bg-accent/10 border border-accent/40 rounded px-1.5 text-[12px] text-primary outline-none min-w-0"
+                className="flex-1 bg-accent/10 border border-accent/40 rounded px-1.5 text-[15px] text-primary outline-none min-w-0"
                 style={{ height: 18 }}
                 onKeyDown={(e) => {
                     if (e.key === "Enter") onCommit(e.currentTarget.value);
@@ -200,7 +200,7 @@ const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
 
     return (
         <div
-            className={`flex items-center gap-1 h-[22px] pr-2 cursor-pointer select-none text-[13px] ${
+            className={`flex items-center gap-1 h-[26px] pr-2 cursor-pointer select-none text-[15px] ${
                 selected ? "bg-accent/20" : "hover:bg-white/5"
             }`}
             style={{ paddingLeft: depth * 12 + 6 }}
@@ -214,7 +214,7 @@ const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
             onContextMenu={onContextMenu}
             title={path}
         >
-            <span className="w-3 shrink-0 text-secondary text-[9px] flex items-center justify-center">
+            <span className="w-3 shrink-0 text-secondary text-[11px] flex items-center justify-center">
                 {isDir ? (
                     <i
                         className="fa fa-solid fa-chevron-right"
@@ -230,14 +230,14 @@ const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
 Row.displayName = "Row";
 
 const LoadingRow = memo(({ depth }: { depth: number }) => (
-    <div className="flex items-center h-[22px] text-[12px] text-secondary italic" style={{ paddingLeft: depth * 12 + 22 }}>
+    <div className="flex items-center h-[26px] text-[15px] text-secondary italic" style={{ paddingLeft: depth * 12 + 22 }}>
         Loading…
     </div>
 ));
 LoadingRow.displayName = "LoadingRow";
 
 const ErrorRow = memo(({ depth, error }: { depth: number; error: string }) => (
-    <div className="flex items-center h-[22px] text-[12px] text-error truncate" style={{ paddingLeft: depth * 12 + 22 }} title={error}>
+    <div className="flex items-center h-[26px] text-[15px] text-error truncate" style={{ paddingLeft: depth * 12 + 22 }} title={error}>
         {error}
     </div>
 ));
@@ -300,10 +300,10 @@ export const FileExplorerTree = memo(() => {
     }, [rootChildren, expanded, loadingPaths, errorMap, selectedPath, version, editing]);
 
     if (rootLoading && !rootChildren) {
-        return <div className="px-3 py-2 text-[12px] text-secondary italic">Loading…</div>;
+        return <div className="px-3 py-2 text-[15px] text-secondary italic">Loading…</div>;
     }
     if (rootErr && !rootChildren) {
-        return <div className="px-3 py-2 text-[12px] text-error" title={rootErr}>{rootErr}</div>;
+        return <div className="px-3 py-2 text-[15px] text-error" title={rootErr}>{rootErr}</div>;
     }
     if (!rootChildren) return null;
 

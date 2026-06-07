@@ -45,20 +45,20 @@ export const FileExplorer = memo(() => {
         <div className="flex flex-col h-full w-full bg-black/20 text-primary overflow-hidden">
             <div className="flex items-center justify-between h-7 px-2 border-b border-white/10 shrink-0">
                 <span
-                    className="uppercase text-[11px] text-secondary tracking-wide truncate"
+                    className="uppercase text-[13px] text-secondary tracking-wide truncate"
                     title={root}
                 >
                     {prettyRoot(root)}
                 </span>
                 <div className="flex gap-0.5 shrink-0 text-secondary">
                     <button type="button" title="New File" onClick={onNewFile} className="cursor-pointer px-1 hover:text-primary transition-colors">
-                        <i className="fa fa-solid fa-file-circle-plus fa-fw text-[11px]" />
+                        <i className="fa fa-solid fa-file-circle-plus fa-fw text-[13px]" />
                     </button>
                     <button type="button" title="New Folder" onClick={onNewFolder} className="cursor-pointer px-1 hover:text-primary transition-colors">
-                        <i className="fa fa-solid fa-folder-plus fa-fw text-[11px]" />
+                        <i className="fa fa-solid fa-folder-plus fa-fw text-[13px]" />
                     </button>
                     <button type="button" title="Close" onClick={onClose} className="cursor-pointer px-1 hover:text-primary transition-colors">
-                        <i className="fa fa-solid fa-xmark fa-fw text-[11px]" />
+                        <i className="fa fa-solid fa-xmark fa-fw text-[13px]" />
                     </button>
                 </div>
             </div>

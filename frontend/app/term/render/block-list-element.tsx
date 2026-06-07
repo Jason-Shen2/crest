@@ -51,7 +51,7 @@ export interface BlockListElementProps {
 export const BlockListElement = memo(
     ({
         model,
-        fontSize = 12,
+        fontSize = 16,
         home,
         onCopyBlock,
         onAskAI,
@@ -182,7 +182,7 @@ export const BlockListElement = memo(
             <div className="relative min-h-0 flex-1">
                 <div
                     ref={scrollRef}
-                    className="absolute inset-0 overflow-y-auto"
+                    className="absolute inset-0 overflow-y-auto overflow-x-hidden"
                     onScroll={handleScroll}
                     onClick={(e) => {
                         if (e.target === e.currentTarget) model.clearSelection();

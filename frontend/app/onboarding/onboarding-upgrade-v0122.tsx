@@ -16,7 +16,7 @@ const UpgradeOnboardingModal_v0_12_2_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-file-pen"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">Wave AI File Editing</div>
+                    <div className="text-foreground text-default font-semibold leading-[18px]">Wave AI File Editing</div>
                     <div className="text-secondary leading-5">
                         <ul className="list-disc list-outside space-y-1 pl-5">
                             <li>
@@ -40,7 +40,7 @@ const UpgradeOnboardingModal_v0_12_2_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-sparkles"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">
+                    <div className="text-foreground text-default font-semibold leading-[18px]">
                         Additional AI Improvements
                     </div>
                     <div className="text-secondary leading-5">
@@ -61,7 +61,7 @@ const UpgradeOnboardingModal_v0_12_2_Content = () => {
                     <i className="text-[24px] text-accent fa-solid fa-wrench"></i>
                 </div>
                 <div className="flex flex-col items-start gap-2 flex-1">
-                    <div className="text-foreground text-base font-semibold leading-[18px]">
+                    <div className="text-foreground text-default font-semibold leading-[18px]">
                         Bug Fixes & Improvements
                     </div>
                     <div className="text-secondary leading-5">

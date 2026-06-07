@@ -79,7 +79,7 @@ function useContextChipModel(outerBlockId: string): ContextChipModel {
 }
 
 export const TerminalView = memo(
-    ({ outerBlockId, fontSize = 12, topSlot, overlaySlot, replaceContent }: TerminalViewProps) => {
+    ({ outerBlockId, fontSize = 16, topSlot, overlaySlot, replaceContent }: TerminalViewProps) => {
         const model = useTerminalModel(outerBlockId);
         const loading = useAtomValue(model.loadingAtom);
         const error = useAtomValue(model.errorAtom);

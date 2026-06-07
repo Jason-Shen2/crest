@@ -907,7 +907,7 @@ function ControlBar({ query, onQueryChange, onNewTab, onSettingsClick, settingsA
                     value={query}
                     onChange={(e) => onQueryChange(e.target.value)}
                     placeholder="Search tabs"
-                    className="min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-secondary/50"
+                    className="min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-secondary/50"
                     aria-label="Search tabs"
                 />
                 {query && (
@@ -1532,10 +1532,10 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                           );
                       })}
                 {orderedTabIds.length === 0 && (
-                    <div className="px-4 py-3 text-[12px] text-secondary/80 italic">No tabs open</div>
+                    <div className="px-4 py-3 text-[15px] text-secondary/80 italic">No tabs open</div>
                 )}
                 {orderedTabIds.length > 0 && normalizedQuery.length > 0 && matchedSet.size === 0 && (
-                    <div className="px-4 py-3 text-[12px] text-secondary/80 italic">
+                    <div className="px-4 py-3 text-[15px] text-secondary/80 italic">
                         {granularity === "panes"
                             ? "No panes match your search."
                             : "No tabs match your search."}
