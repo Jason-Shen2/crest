@@ -26,7 +26,7 @@ export interface GridElementProps {
     // this, React has no way to know the (mutable) grid changed.
     revision: number;
     className?: string;
-    // fontSize in px.  Drives row height (1.4× ratio).  Defaults to 12.
+    // fontSize in px.  Drives row height (1.4× ratio).  Defaults to 16.
     fontSize?: number;
     // OSC 8 link-click callback.  Threaded down to CellRun where each <a>
     // wraps its `onClick` around it.  Optional — when omitted, links are
@@ -44,7 +44,7 @@ export const GridElement = memo(
         source,
         revision: _revision,
         className,
-        fontSize = 12,
+        fontSize = 16,
         onLinkClick,
         visibleRowIndicesOverride,
     }: GridElementProps) => {

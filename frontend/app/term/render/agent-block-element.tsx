@@ -38,7 +38,7 @@ export interface AgentBlockElementProps {
 }
 
 export const AgentBlockElement = memo(
-    ({ run, selected, fontSize = 13, onSelect }: AgentBlockElementProps) => {
+    ({ run, selected, fontSize = 16, onSelect }: AgentBlockElementProps) => {
         const userText = useMemo(() => extractText(run.userMessage), [run.userMessage]);
         const isStreaming = run.status === "streaming";
         const isError = run.status === "error";

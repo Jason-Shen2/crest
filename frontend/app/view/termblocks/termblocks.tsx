@@ -41,7 +41,7 @@ export class TermBlocksViewModel implements ViewModel {
             const override = get(metaAtom);
             if (typeof override === "number") return override;
             const fallback = get(settingAtom);
-            return typeof fallback === "number" ? fallback : 12;
+            return typeof fallback === "number" ? fallback : 16;
         });
     }
 

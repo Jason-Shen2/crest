@@ -225,7 +225,7 @@ export function VtabContextMenu({ items, position, onClose }: VtabContextMenuPro
                                 item.click();
                                 onClose();
                             }}
-                            className="flex w-full cursor-pointer items-center px-3 py-[3px] text-left text-[12px] text-foreground hover:bg-fg-overlay-1"
+                            className="flex w-full cursor-pointer items-center px-3 py-[3px] text-left text-[15px] text-foreground hover:bg-fg-overlay-1"
                         >
                             {item.label}
                         </button>
