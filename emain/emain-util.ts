@@ -98,7 +98,7 @@ export function handleCtrlShiftState(sender: Electron.WebContents, waveEvent: Wa
 }
 
 export function shNavHandler(event: Electron.Event<Electron.WebContentsWillNavigateEventParams>, url: string) {
-    const isDev = !electron.app.isPackaged;
+    const isDev = !electron.app.isPackaged || process.env.NODE_ENV_ELECTRON_VITE === "development";
     if (
         isDev &&
         (url.startsWith("http://127.0.0.1:5173/index.html") ||
