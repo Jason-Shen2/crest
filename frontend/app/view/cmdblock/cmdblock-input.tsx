@@ -27,8 +27,10 @@
 
 import { Tooltip } from "@/app/element/tooltip";
 import { UIcon } from "@/app/element/ui-icon";
+import { isMacOS } from "@/util/platformutil";
 import { cn } from "@/util/util";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CornerDownLeft } from "lucide-react";
+import { memo, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatPromptCwd } from "./cmdblock-status";
 import { ModelPickerInline, ModelPickerPopover } from "./model-picker-popover";
 import { ProviderEntry } from "@/app/store/ai-catalog";
@@ -66,10 +68,6 @@ export interface CmdBlockInputProps {
     onContextWindowClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
     // Active kubectl context name (warp KubernetesContext chip).
     kubernetesContext?: string;
-    // Fast-forward (auto-approve tool calls) toggle.  Threaded only when
-    // the agent backend supports it — gates visibility.
-    fastForwardOn?: boolean;
-    onFastForwardToggle?: () => void;
     // Voice input — threaded only when the feature is wired.
     onVoiceInput?: () => void;
     voiceRecording?: boolean;
@@ -79,7 +77,7 @@ export interface CmdBlockInputProps {
     // existing content (otherwise the stale effective mode would persist
     // until the next keystroke).
     onModeChange: (next: InputMode, currentText?: string) => void;
-    onSubmit: (text: string, mode: InputMode) => void;
+    onSubmit: (text: string, mode: InputMode) => boolean | void;
     submitting?: boolean;
     disabled?: boolean;
     // Label shown on the model chip.  Computed by the parent from
@@ -101,6 +99,7 @@ export interface CmdBlockInputProps {
     // ui_font_family / monospace_ui_scalar split
     // (universal_developer_input.rs:924).
     fontSize?: number;
+    focusRequest?: number;
     banner?: React.ReactNode;
     promptAlert?: React.ReactNode;
     onFilesDropped?: (files: File[]) => void;
@@ -135,6 +134,55 @@ const UI_BUTTON_PX = 30;     // chip/button height — comfortable click target
 const UI_ICON_PX = 17;       // icon size inside buttons
 const UI_GAP_PX = 6;         // gap between adjacent chrome elements
 const UI_CHIP_RADIUS_PX = 6; // chip corner radius (warp uses ~6 for chips)
+
+export function shouldFocusCmdBlockEditor(activeElement: Element | null, container: HTMLElement | null): boolean {
+    if (!activeElement) return true;
+    if (container?.contains(activeElement)) return true;
+    const tagName = activeElement.tagName.toLowerCase();
+    if (tagName === "input" || tagName === "textarea" || tagName === "select") return false;
+    if ((activeElement as HTMLElement).isContentEditable) return false;
+    return true;
+}
+
+export type EditorEnterAction = "submit" | "submit-override";
+
+export interface EditorEnterKeyLike {
+    key: string;
+    shiftKey?: boolean;
+    altKey?: boolean;
+    metaKey?: boolean;
+    ctrlKey?: boolean;
+}
+
+export function resolveEditorEnterAction(e: EditorEnterKeyLike): EditorEnterAction | null {
+    if (e.key !== "Enter") return null;
+    if (e.shiftKey || e.altKey) return null;
+    if (e.metaKey || e.ctrlKey) return "submit-override";
+    return "submit";
+}
+
+export function resolveShortcutOverrideMode(current: "terminal" | "agent"): "terminal" | "agent" {
+    return current === "terminal" ? "agent" : "terminal";
+}
+
+export function resolveSubmitMode(mode: InputMode, effectiveMode?: "terminal" | "agent"): "terminal" | "agent" {
+    if (mode === "auto") return effectiveMode ?? "agent";
+    if (mode === "terminal") return "terminal";
+    return "agent";
+}
+
+export function shouldShowAgentShellShortcutHint(mode: InputMode, text: string): boolean {
+    if (mode !== "agent") return false;
+    return text.trim().length > 0;
+}
+
+export function getAgentShellShortcutModifierKey(isMac: boolean): string {
+    return isMac ? "⌘" : "⌃";
+}
+
+export function shouldClearInputAfterSubmit(result: boolean | void): boolean {
+    return result !== false;
+}
 
 // =========================================================================
 // HelpRow — kbd hint strip at TOP of the input.  Warp screenshot shows
@@ -174,9 +222,10 @@ interface ShellPrefixHintRowProps {
 // =========================================================================
 interface AgentHintRowProps {
     rightSlot?: React.ReactNode;
+    showShellShortcutHint?: boolean;
 }
 
-const AgentHintRow = memo(({ rightSlot }: AgentHintRowProps) => (
+const AgentHintRow = memo(({ rightSlot, showShellShortcutHint }: AgentHintRowProps) => (
     <div
         className="flex items-center gap-x-2 font-sans leading-none text-secondary/70"
         style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
@@ -185,10 +234,30 @@ const AgentHintRow = memo(({ rightSlot }: AgentHintRowProps) => (
             <UIcon name="stars-01" size={UI_HELP_FONT_PX} />
             <span>agent mode</span>
         </span>
+        {showShellShortcutHint && (
+            <ShortcutOverrideHint targetMode="terminal" />
+        )}
         {rightSlot && <div className="ml-auto flex shrink-0 items-center">{rightSlot}</div>}
     </div>
 ));
 AgentHintRow.displayName = "AgentHintRow";
+
+interface ShortcutOverrideHintProps {
+    targetMode: "terminal" | "agent";
+}
+
+const ShortcutOverrideHint = memo(({ targetMode }: ShortcutOverrideHintProps) => (
+    <span className="ml-2 inline-flex items-center gap-1.5 text-secondary/65">
+        <span className="inline-flex items-center gap-[3px]">
+            <Kbd char={getAgentShellShortcutModifierKey(isMacOS())} />
+            <KbdIcon>
+                <CornerDownLeft size={UI_HELP_FONT_PX + 1} strokeWidth={2} />
+            </KbdIcon>
+        </span>
+        <span>overwrite to {targetMode === "terminal" ? "shell command" : "agent"}</span>
+    </span>
+));
+ShortcutOverrideHint.displayName = "ShortcutOverrideHint";
 
 const ShellPrefixHintRow = memo(({ rightSlot }: ShellPrefixHintRowProps) => (
     <div
@@ -226,6 +295,21 @@ const Kbd = memo(({ char }: { char: string }) => {
     );
 });
 Kbd.displayName = "Kbd";
+
+const KbdIcon = memo(({ children }: { children: React.ReactNode }) => (
+    <kbd
+        className="inline-flex items-center justify-center rounded-[5px] bg-fg-overlay-2/70 font-sans text-secondary/85"
+        style={{
+            height: `${UI_HELP_FONT_PX + 7}px`,
+            minWidth: `${UI_HELP_FONT_PX + 7}px`,
+            padding: 0,
+            lineHeight: 1,
+        }}
+    >
+        {children}
+    </kbd>
+));
+KbdIcon.displayName = "KbdIcon";
 
 const Hint = memo(({ keys, label }: { keys: string[]; label: string }) => (
     <span className="inline-flex items-center gap-1.5">
@@ -300,12 +384,14 @@ WithTooltip.displayName = "WithTooltip";
 interface AutodetectHintRowProps {
     effectiveMode: "terminal" | "agent";
     rightSlot?: React.ReactNode;
+    showShortcutOverrideHint?: boolean;
 }
 
-const AutodetectHintRow = memo(({ effectiveMode, rightSlot }: AutodetectHintRowProps) => {
+const AutodetectHintRow = memo(({ effectiveMode, rightSlot, showShortcutOverrideHint }: AutodetectHintRowProps) => {
     const label = effectiveMode === "terminal" ? "shell command" : "natural language";
     const accent =
         effectiveMode === "terminal" ? "text-[var(--ansi-blue)]" : "text-[var(--ansi-yellow)]";
+    const shortcutTarget = resolveShortcutOverrideMode(effectiveMode);
     return (
         <div
             className="flex items-center gap-x-2 font-sans leading-none text-secondary/70"
@@ -315,6 +401,7 @@ const AutodetectHintRow = memo(({ effectiveMode, rightSlot }: AutodetectHintRowP
                 <UIcon name="lightning-02" size={UI_HELP_FONT_PX} />
                 <span>autodetected {label}</span>
             </span>
+            {showShortcutOverrideHint && <ShortcutOverrideHint targetMode={shortcutTarget} />}
             <span className="text-secondary/45">— click Auto to override</span>
             {rightSlot && <div className="ml-auto flex shrink-0 items-center">{rightSlot}</div>}
         </div>
@@ -588,45 +675,6 @@ const ContextWindowUsageChip = memo(
 );
 ContextWindowUsageChip.displayName = "ContextWindowUsageChip";
 
-// FastForwardToggle — warp AgentToolbarItemKind::FastForwardToggle.  A
-// toggle button that lets the agent auto-approve tool calls.  Renders
-// only when the parent threads `fastForwardOn != null` (gates visibility
-// on whether the agent backend supports it at all).
-interface FastForwardToggleProps {
-    on?: boolean;
-    onToggle?: () => void;
-}
-
-const FastForwardToggle = memo(({ on, onToggle }: FastForwardToggleProps) => {
-    if (on == null || onToggle == null) return null;
-    // Wording mirrors warp agent_input_footer/mod.rs:133-134:
-    //   FAST_FORWARD_ON_TOOLTIP  = "Turn off auto-approve all agent actions"
-    //   FAST_FORWARD_OFF_TOOLTIP = "Auto-approve all agent actions for this task"
-    const label = on
-        ? "Turn off auto-approve all agent actions"
-        : "Auto-approve all agent actions for this task";
-    return (
-        <WithTooltip label={label}>
-            <button
-                type="button"
-                onClick={onToggle}
-                style={{ width: `${UI_BUTTON_PX}px`, height: `${UI_BUTTON_PX}px` }}
-                className={cn(
-                    "flex shrink-0 cursor-pointer items-center justify-center rounded-[6px] border transition-colors",
-                    on
-                        ? "border-[var(--ansi-green)]/60 bg-[var(--ansi-green)]/15 text-[var(--ansi-green)]"
-                        : "border-white/25 bg-white/[0.08] text-foreground/85 hover:bg-white/[0.14] hover:text-foreground"
-                )}
-                aria-pressed={on}
-                aria-label={label}
-            >
-                <UIcon name="refresh-cw-04" size={UI_ICON_PX} />
-            </button>
-        </WithTooltip>
-    );
-});
-FastForwardToggle.displayName = "FastForwardToggle";
-
 // VoiceInputBtn — warp AgentToolbarItemKind::VoiceInput.  Stubbed: only
 // renders when the parent threads `onVoiceInput` (= the feature is wired).
 interface VoiceInputBtnProps {
@@ -649,10 +697,10 @@ VoiceInputBtn.displayName = "VoiceInputBtn";
 
 // =========================================================================
 // AutoToggle — single binary toggle replacing the Terminal | Agent | Auto
-// SegmentedControl.  crest's keyboard model now treats ↵ as shell and
-// ⌘↵ as agent by default; Auto is an opt-in that lets NLD reroute ↵ to
-// agent when natural-language input is detected.  Visual: pill button,
-// fills with the NLD accent (yellow) when on, dim outline when off.
+// SegmentedControl.  Auto is an opt-in that lets NLD reroute ↵ based on
+// the detected input type; Cmd/Ctrl+↵ is the one-shot shell override.
+// Visual: pill button, fills with the NLD accent (yellow) when on, dim
+// outline when off.
 // =========================================================================
 interface AutoToggleProps {
     on: boolean;
@@ -767,9 +815,12 @@ interface EditorProps {
     value: string;
     onChange: (next: string) => void;
     onSubmit: () => void;
+    onSubmitOverride: () => void;
     placeholder?: string;
     disabled?: boolean;
     fontSize: number;
+    focusRequest: number;
+    focusContainerRef: RefObject<HTMLElement>;
     onSlashCommandHint?: (open: boolean) => void;
     onAtCommandHint?: (open: boolean) => void;
     onHistoryPrev?: () => boolean;
@@ -786,9 +837,12 @@ const Editor = memo(({
     value,
     onChange,
     onSubmit,
+    onSubmitOverride,
     placeholder,
     disabled,
     fontSize,
+    focusRequest,
+    focusContainerRef,
     onSlashCommandHint,
     onAtCommandHint,
     onHistoryPrev,
@@ -818,6 +872,20 @@ const Editor = memo(({
         }
     }, [value]);
 
+    useEffect(() => {
+        const el = ref.current;
+        if (!el || disabled) return;
+        if (!shouldFocusCmdBlockEditor(document.activeElement, focusContainerRef.current)) return;
+        el.focus({ preventScroll: true });
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const sel = window.getSelection();
+        if (!sel) return;
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }, [focusRequest, disabled, focusContainerRef]);
+
     const flush = useCallback(() => {
         const el = ref.current;
         if (!el) return;
@@ -833,7 +901,13 @@ const Editor = memo(({
     const handleKeyDown = useCallback(
         (e: React.KeyboardEvent<HTMLDivElement>) => {
             if (disabled) return;
-            if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+            const enterAction = resolveEditorEnterAction(e);
+            if (enterAction === "submit-override") {
+                e.preventDefault();
+                onSubmitOverride();
+                return;
+            }
+            if (enterAction === "submit") {
                 // When a slash / @ menu is open, ↵ commits the highlighted
                 // row instead of submitting the editor buffer.
                 if (menuOpen && onMenuAccept?.()) {
@@ -884,7 +958,7 @@ const Editor = memo(({
                 }
             }
         },
-        [disabled, onSubmit, onCancelMenus, onHistoryPrev, onHistoryNext, menuOpen, onMenuNavigate, onMenuAccept]
+        [disabled, onSubmit, onSubmitOverride, onCancelMenus, onHistoryPrev, onHistoryNext, menuOpen, onMenuNavigate, onMenuAccept]
     );
 
     const lineHeight = Math.round(fontSize * 1.4);
@@ -952,12 +1026,12 @@ interface InlineCommand {
     description: string;
     icon: string;
     // Optional alternate keystroke chips shown in the trailing slot
-    // when this row is selected (warp: `/agent or ⌘↵`).
+    // when this row is selected.
     altKeys?: string[];
 }
 
 const SlashCommands: InlineCommand[] = [
-    { name: "/agent", icon: "stars-01", description: "Send input to the agent", altKeys: ["⌘", "↵"] },
+    { name: "/agent", icon: "stars-01", description: "Send input to the agent" },
     { name: "/model", icon: "stars-01", description: "Pick the AI model" },
     { name: "/terminal", icon: "terminal", description: "Switch input to shell mode" },
     { name: "/auto", icon: "lightning-02", description: "Auto-detect shell vs natural language" },
@@ -998,7 +1072,7 @@ function filterCommands(query: string, items: InlineCommand[]): InlineCommand[] 
 //   ┌─────────────────────────────────────────────────────┐
 //   │ /COMMANDS                                       ⋮⋮  │  header
 //   ├─────────────────────────────────────────────────────┤
-//   │ ☰  /agent or ⌘↵     Send input to the agent         │  ← selected
+//   │ ☰  /agent           Send input to the agent         │  ← selected
 //   │ ▷  /terminal        Switch input to shell mode      │
 //   │ …                                                   │
 //   ├─────────────────────────────────────────────────────┤
@@ -1147,8 +1221,6 @@ export const CmdBlockInput = memo(
         maxTokens,
         onContextWindowClick,
         kubernetesContext,
-        fastForwardOn,
-        onFastForwardToggle,
         onVoiceInput,
         voiceRecording,
         mode,
@@ -1166,6 +1238,7 @@ export const CmdBlockInput = memo(
         onOpenAIConfigFile,
         placeholder,
         fontSize = 16,
+        focusRequest: externalFocusRequest = 0,
         banner,
         promptAlert,
         onFilesDropped,
@@ -1209,6 +1282,10 @@ export const CmdBlockInput = memo(
         const [slashOpen, setSlashOpen] = useState(false);
         const [atOpen, setAtOpen] = useState(false);
         const [modelPickerOpen, setModelPickerOpen] = useState(false);
+        const showAgentShellShortcutHint = shouldShowAgentShellShortcutHint(
+            mode,
+            text
+        );
         const modelChipRef = useRef<HTMLButtonElement>(null);
         const chipLabel = modelDisplayLabel || "Pick model";
         // hasModelPicker — true whenever the parent wires a write path.
@@ -1248,6 +1325,8 @@ export const CmdBlockInput = memo(
         const draftRef = useRef("");
         const containerRef = useRef<HTMLDivElement>(null);
         const fileInputRef = useRef<HTMLInputElement>(null);
+        const [focusRequest, setFocusRequest] = useState(0);
+        const requestEditorFocus = useCallback(() => setFocusRequest((prev) => prev + 1), []);
 
         useEffect(() => {
             const el = containerRef.current;
@@ -1266,11 +1345,19 @@ export const CmdBlockInput = memo(
             };
         }, []);
 
+        useEffect(() => {
+            if (disabled || submitting) return;
+            if (modelPickerOpen || slashOpen || atOpen) return;
+            requestEditorFocus();
+        }, [externalFocusRequest, disabled, submitting, modelPickerOpen, slashOpen, atOpen, requestEditorFocus]);
+
         const submitWith = useCallback(
             (resolved: "terminal" | "agent", payload: string) => {
                 if (disabled || submitting) return;
                 if (!payload) return;
-                onSubmit(payload, resolved);
+                const result = onSubmit(payload, resolved);
+                if (!shouldClearInputAfterSubmit(result)) return;
+                requestEditorFocus();
                 setText("");
                 setSlashOpen(false);
                 setAtOpen(false);
@@ -1287,7 +1374,7 @@ export const CmdBlockInput = memo(
                     });
                 }
             },
-            [disabled, submitting, onSubmit, externalHistory]
+            [disabled, submitting, onSubmit, externalHistory, requestEditorFocus]
         );
 
         // Default ↵ — `!` prefix always wins (strip and send to shell).
@@ -1314,10 +1401,18 @@ export const CmdBlockInput = memo(
                 submitWith("terminal", payload);
                 return;
             }
-            const resolved: "terminal" | "agent" =
-                mode === "auto" ? effectiveMode ?? "agent" : mode === "terminal" ? "terminal" : "agent";
-            submitWith(resolved, trimmedTail);
+            submitWith(resolveSubmitMode(mode, effectiveMode), trimmedTail);
         }, [submitWith, mode, effectiveMode, text, hasModelPicker]);
+
+        const submitOverride = useCallback(() => {
+            const trimmedTail = text.replace(/\s+$/g, "");
+            if (!trimmedTail) return;
+            const shellPrefixMatch = /^\s*!(.*)$/s.exec(trimmedTail);
+            const payload = shellPrefixMatch ? shellPrefixMatch[1].replace(/^\s+/, "") : trimmedTail;
+            if (!payload) return;
+            const currentMode = shellPrefixMatch ? "terminal" : resolveSubmitMode(mode, effectiveMode);
+            submitWith(resolveShortcutOverrideMode(currentMode), payload);
+        }, [submitWith, mode, effectiveMode, text]);
 
         // History navigation — return true when consumed so the editor
         // suppresses the default caret motion.
@@ -1555,9 +1650,13 @@ export const CmdBlockInput = memo(
                             <AutodetectHintRow
                                 effectiveMode={effectiveMode ?? "agent"}
                                 rightSlot={topRightSlot}
+                                showShortcutOverrideHint
                             />
                         ) : showAgentHint ? (
-                            <AgentHintRow rightSlot={topRightSlot} />
+                            <AgentHintRow
+                                rightSlot={topRightSlot}
+                                showShellShortcutHint={showAgentShellShortcutHint}
+                            />
                         ) : (
                             <HelpRow rightSlot={topRightSlot} />
                         )}
@@ -1570,9 +1669,12 @@ export const CmdBlockInput = memo(
                         value={text}
                         onChange={handleTextChange}
                         onSubmit={submit}
+                        onSubmitOverride={submitOverride}
                         placeholder={placeholderText}
                         disabled={disabled || submitting}
                         fontSize={fontSize}
+                        focusRequest={focusRequest}
+                        focusContainerRef={containerRef}
                         onSlashCommandHint={setSlashOpen}
                         onAtCommandHint={setAtOpen}
                         onHistoryPrev={historyPrev}
@@ -1661,7 +1763,6 @@ export const CmdBlockInput = memo(
                                 onOpenConfigFile={onOpenAIConfigFile}
                             />
                         )}
-                        <FastForwardToggle on={fastForwardOn} onToggle={onFastForwardToggle} />
                         <VoiceInputBtn onVoiceInput={onVoiceInput} recording={voiceRecording} />
                         <IconButton
                             icon="plus"
