@@ -22,6 +22,7 @@ func MakePromptStarted(ctx context.Context, blockID string, promptOffset int64, 
 	cb := &CmdBlock{
 		OID:          uuid.NewString(),
 		BlockID:      blockID,
+		Kind:         KindShell,
 		State:        StatePrompt,
 		PromptOffset: promptOffset,
 		TsPromptNs:   now,
@@ -33,17 +34,47 @@ func MakePromptStarted(ctx context.Context, blockID string, promptOffset int64, 
 	err := wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
 		cb.Seq = tx.GetInt64(`SELECT COALESCE(MAX(seq), 0) + 1 FROM db_cmdblock WHERE blockid = ?`, blockID)
 		tx.Exec(`INSERT INTO db_cmdblock
-			(oid, blockid, seq, state, cmd, cwd, shell_type, exit_code, duration_ms,
+			(oid, blockid, seq, kind, state, cmd, cwd, shell_type, exit_code, duration_ms,
 			 prompt_offset, cmd_offset, output_start_offset, output_end_offset,
 			 ts_prompt_ns, ts_cmd_ns, ts_done_ns, agent_session_id, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			cb.OID, cb.BlockID, cb.Seq, cb.State,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cb.OID, cb.BlockID, cb.Seq, cb.Kind, cb.State,
 			nilableString(cb.Cmd), nilableString(cb.Cwd), nilableString(cb.ShellType),
 			nilableInt64(cb.ExitCode), nilableInt64(cb.DurationMs),
 			cb.PromptOffset, nilableInt64(cb.CmdOffset),
 			nilableInt64(cb.OutputStartOffset), nilableInt64(cb.OutputEndOffset),
 			cb.TsPromptNs, nilableInt64(cb.TsCmdNs), nilableInt64(cb.TsDoneNs),
 			nilableString(cb.AgentSessionID), cb.CreatedAt)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cb, nil
+}
+
+func AppendAgentRun(ctx context.Context, blockID string, sessionPath string, runID string) (*CmdBlock, error) {
+	now := time.Now().UnixNano()
+	cb := &CmdBlock{
+		OID:              uuid.NewString(),
+		BlockID:          blockID,
+		Kind:             KindAgent,
+		State:            "static",
+		PromptOffset:     0,
+		TsPromptNs:       now,
+		CreatedAt:        now,
+		AgentRunID:       &runID,
+		AgentSessionPath: &sessionPath,
+	}
+	err := wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
+		if tx.Get(cb, `SELECT * FROM db_cmdblock WHERE blockid = ? AND kind = ? AND agent_run_id = ?`, blockID, KindAgent, runID) {
+			return nil
+		}
+		cb.Seq = tx.GetInt64(`SELECT COALESCE(MAX(seq), 0) + 1 FROM db_cmdblock WHERE blockid = ?`, blockID)
+		tx.Exec(`INSERT INTO db_cmdblock
+			(oid, blockid, seq, kind, state, prompt_offset, ts_prompt_ns, agent_run_id, agent_session_path, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cb.OID, cb.BlockID, cb.Seq, cb.Kind, cb.State, cb.PromptOffset, cb.TsPromptNs, runID, sessionPath, cb.CreatedAt)
 		return nil
 	})
 	if err != nil {

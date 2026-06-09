@@ -73,6 +73,7 @@ export class TermViewModel implements ViewModel {
     readonly noPadding = jotai.atom(true);
 
     readonly termFontSizeAtom: jotai.Atom<number>;
+    readonly focusRequestAtom = jotai.atom(0);
 
     // Durable-session UI surface.  `termConfigedDurable` is a real atom
     // reading block.meta["term:durable"]; `termDurableStatus` is the
@@ -148,6 +149,11 @@ export class TermViewModel implements ViewModel {
         }
     }
 
+    giveFocus(): boolean {
+        globalStore.set(this.focusRequestAtom, (prev) => prev + 1);
+        return true;
+    }
+
     dispose(): void {
         this.disposed = true;
     }
@@ -164,6 +170,7 @@ export class TermViewModel implements ViewModel {
 // docs/term-engine-migration.md (Track B).
 const TermViewAdapter: React.FC<{ model: TermViewModel }> = ({ model }) => {
     const fontSize = useAtomValue(model.termFontSizeAtom);
+    const focusRequest = useAtomValue(model.focusRequestAtom);
     const blockId = model.blockId;
     const termMode = useAtomValue(getBlockMetaKeyAtom(blockId, "term:mode")) as string | undefined;
     const vdomBlockId = useAtomValue(getBlockMetaKeyAtom(blockId, "term:vdomblockid")) as string | undefined;
@@ -190,6 +197,7 @@ const TermViewAdapter: React.FC<{ model: TermViewModel }> = ({ model }) => {
         <TerminalView
             outerBlockId={blockId}
             fontSize={fontSize}
+            focusRequest={focusRequest}
             replaceContent={replaceContent}
             topSlot={topSlot}
         />

@@ -14,8 +14,7 @@
 // + tool cards interleaved), optional error footer.
 
 import { UIcon } from "@/app/element/ui-icon";
-import type { PiAgentMessage } from "@/app/store/use-pi-chat";
-import type { PiRun, PiRunStatus } from "@/app/store/slice-pi-runs";
+import type { PiAgentMessage, PiRun, PiRunStatus } from "@/app/store/use-pi-chat";
 import { cn } from "@/util/util";
 import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
@@ -97,7 +96,8 @@ AgentBlockElement.displayName = "AgentBlockElement";
 // =========================================================================
 // extractText — concat text parts from a pi AgentMessage.content array.
 // =========================================================================
-function extractText(message: PiAgentMessage): string {
+function extractText(message: PiAgentMessage | undefined): string {
+    if (!message) return "";
     const parts = message.content;
     if (!parts) return "";
     const out: string[] = [];
@@ -136,6 +136,21 @@ const AssistantContent = memo(
             for (const msg of responseMessages) {
                 if (msg.role !== "toolResult") continue;
                 if (!msg.content) continue;
+                const messageToolUseId =
+                    typeof msg.toolUseId === "string"
+                        ? msg.toolUseId
+                        : typeof msg.toolCallId === "string"
+                          ? msg.toolCallId
+                          : "";
+                if (messageToolUseId) {
+                    map.set(messageToolUseId, {
+                        toolUseId: messageToolUseId,
+                        content: msg.content as PiToolResultContent["content"],
+                        details: msg.details,
+                        isError: msg.isError === true,
+                    });
+                    continue;
+                }
                 for (const c of msg.content) {
                     if (c.type !== "toolResult") continue;
                     const toolUseId =
@@ -148,6 +163,7 @@ const AssistantContent = memo(
                     map.set(toolUseId, {
                         toolUseId,
                         content: c.content as PiToolResultContent["content"],
+                        details: c.details,
                         isError: c.isError === true,
                     });
                 }
@@ -176,13 +192,31 @@ const AssistantContent = memo(
                     const call: PiToolCall = {
                         id: String(c.id ?? ""),
                         name: String(c.name ?? ""),
-                        input: c.input,
+                        input: c.input != null ? c.input : c.arguments,
                     };
                     const result = resultsByCallId.get(call.id);
                     rendered.push(<ToolCallCard key={`tool-${call.id}`} call={call} result={result} />);
                     continue;
                 }
-                // Other content types (image, etc.) — ignore in v1.
+                if (c.type === "thinking" && typeof c.thinking === "string") {
+                    flushText();
+                    rendered.push(
+                        <ThinkingBlock
+                            key={`thinking-${keyIdx++}`}
+                            text={c.thinking}
+                            fontSize={fontSize}
+                            emptyText={streaming ? "Thinking..." : "Reasoning content is not available."}
+                        />
+                    );
+                    continue;
+                }
+                if (c.type === "image") {
+                    const src = imageContentSrc(c);
+                    if (!src) continue;
+                    flushText();
+                    rendered.push(<AssistantImage key={`image-${keyIdx++}`} src={src} />);
+                    continue;
+                }
             }
         }
         flushText();
@@ -204,6 +238,47 @@ const AssistantContent = memo(
     },
 );
 AssistantContent.displayName = "AssistantContent";
+
+function imageContentSrc(content: { [field: string]: unknown }): string {
+    const data = typeof content.data === "string" ? content.data : "";
+    if (!data) return "";
+    if (data.startsWith("data:image/")) return data;
+    const mimeType = typeof content.mimeType === "string" && content.mimeType ? content.mimeType : "image/png";
+    return `data:${mimeType};base64,${data}`;
+}
+
+interface ThinkingBlockProps {
+    text: string;
+    fontSize: number;
+    emptyText: string;
+}
+
+const ThinkingBlock = memo(({ text, fontSize, emptyText }: ThinkingBlockProps) => {
+    const displayText = text.trim() ? text : emptyText;
+    return (
+        <details className="my-2 rounded border border-fg-overlay-2 bg-fg-overlay-1/25 px-2 py-1.5">
+            <summary className="cursor-pointer select-none text-[11px] font-semibold uppercase tracking-wide text-secondary/80">
+                Thinking
+            </summary>
+            <div
+                className="mt-1.5 whitespace-pre-wrap break-words text-secondary/90"
+                style={{ fontSize: `${Math.max(12, fontSize - 1)}px`, lineHeight: 1.45 }}
+            >
+                {displayText}
+            </div>
+        </details>
+    );
+});
+ThinkingBlock.displayName = "ThinkingBlock";
+
+const AssistantImage = memo(({ src }: { src: string }) => (
+    <img
+        src={src}
+        alt=""
+        className="my-2 max-h-[420px] max-w-full rounded border border-fg-overlay-2 object-contain"
+    />
+));
+AssistantImage.displayName = "AssistantImage";
 
 // =========================================================================
 // AssistantMarkdown — render a text chunk through react-markdown.

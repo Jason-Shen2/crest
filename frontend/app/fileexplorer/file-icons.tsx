@@ -28,7 +28,6 @@ import {
     siGraphql,
     siHtml5,
     siJavascript,
-    siJson,
     siMarkdown,
     siNodedotjs,
     siNpm,
@@ -113,6 +112,8 @@ function Brand({ data, color, size = 16, ...rest }: BrandProps) {
     );
 }
 
+const sv = (color: string) => ({ fill: "none", stroke: color, strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const });
+
 export const TsIcon: FC<IconProps> = (p) => <Brand {...p} data={siTypescript} />;
 export const TsxIcon: FC<IconProps> = (p) => <Brand {...p} data={siTypescript} />;
 export const JsIcon: FC<IconProps> = (p) => <Brand {...p} data={siJavascript} />;
@@ -120,7 +121,14 @@ export const JsxIcon: FC<IconProps> = (p) => <Brand {...p} data={siJavascript} /
 export const ReactTsIcon: FC<IconProps> = (p) => <Brand {...p} data={siReact} />;
 export const ReactJsIcon: FC<IconProps> = (p) => <Brand {...p} data={siReact} />;
 export const MdIcon: FC<IconProps> = (p) => <Brand {...p} data={siMarkdown} color="#c7c7d9" />;
-export const JsonIcon: FC<IconProps> = (p) => <Brand {...p} data={siJson} />;
+export const JsonIcon: FC<IconProps> = ({ size = 16, ...rest }) => (
+    <Svg size={size} {...rest}>
+        <path {...sv("#f59e0b")} d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z" />
+        <path {...sv("#f59e0b")} d="M14 2v6h6" />
+        <path {...sv("#f59e0b")} d="M9 10.5c-1 0-1.5.7-1.5 1.5v.6c0 .5-.3.9-.8.9.5 0 .8.4.8.9v.6c0 .8.5 1.5 1.5 1.5" />
+        <path {...sv("#f59e0b")} d="M15 10.5c1 0 1.5.7 1.5 1.5v.6c0 .5.3.9.8.9-.5 0-.8.4-.8.9v.6c0 .8-.5 1.5-1.5 1.5" />
+    </Svg>
+);
 export const YamlIcon: FC<IconProps> = (p) => <Brand {...p} data={siYaml} />;
 export const TomlIcon: FC<IconProps> = (p) => <Brand {...p} data={siToml} />;
 export const XmlIcon: FC<IconProps> = (p) => <Brand {...p} data={siXml} />;
@@ -158,8 +166,6 @@ export const GraphqlIcon: FC<IconProps> = (p) => <Brand {...p} data={siGraphql} 
 export const ProtobufIcon: FC<IconProps> = (p) => <FileIcon {...p} />; // no simple-icons entry
 
 // ---- Lucide line icons with accent colour ----
-
-const sv = (color: string) => ({ fill: "none", stroke: color, strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const });
 
 export const ReadmeIcon: FC<IconProps> = ({ size = 16, ...rest }) => (
     <Svg size={size} {...rest}>

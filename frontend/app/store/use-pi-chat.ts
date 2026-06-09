@@ -68,7 +68,23 @@ export type PiAgentMessage = PiAgentMessageBase & {
     stopReason?: string;
     errorMessage?: string;
     usage?: unknown;
+    // ToolResultMessage fields live at the message top level in pi.
+    toolCallId?: string;
+    toolUseId?: string;
+    toolName?: string;
+    details?: unknown;
+    isError?: boolean;
 };
+
+export type PiRunStatus = "streaming" | "done" | "error";
+
+export interface PiRun {
+    runId: string;
+    userMessage?: PiAgentMessage;
+    responseMessages: PiAgentMessage[];
+    status: PiRunStatus;
+    errorMessage?: string;
+}
 
 /**
  * Mirror of pi's AgentEvent + AgentHarnessEvent at the renderer
@@ -84,6 +100,8 @@ export interface PiAgentEvent {
     message?: PiAgentMessage;
     /** agent_end + snapshot carry this. */
     messages?: PiAgentMessage[];
+    /** snapshot carries main-owned runs keyed by stable run id. */
+    runs?: PiRun[];
     /** snapshot carries the owner's run status (idle/streaming/error). */
     status?: string;
     /** queue_update + snapshot carry the pending queues (user messages). */
@@ -142,12 +160,15 @@ export interface UsePiChatOptions {
     modelSelection: UsePiChatModel;
     /** Optional tool allowlist; when omitted, main defaults to allowAll. */
     allowedTools?: string[];
+    /** Parent terminal block ID for timeline marker persistence (Phase 1). */
+    blockId?: string;
 }
 
 export type UsePiChatStatus = "idle" | "streaming" | "error";
 
 export interface UsePiChatReturn {
     messages: PiAgentMessage[];
+    runs: PiRun[];
     status: UsePiChatStatus;
     errorMessage: string | undefined;
     sessionMetadata: AgentSessionMeta | undefined;
@@ -165,7 +186,7 @@ export interface UsePiChatReturn {
 interface AgentApiSurface {
     createSession: (cwd: string) => Promise<AgentSessionMeta>;
     listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
-    send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta }>;
+    send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
     abort: (sessionPath: string) => void;
     subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;
 }
@@ -174,6 +195,13 @@ function getAgentApi(): AgentApiSurface | undefined {
     if (typeof window === "undefined") return undefined;
     const api = (window as unknown as { api?: { agent?: AgentApiSurface } }).api;
     return api?.agent;
+}
+
+export function resolveAbortSessionPath(
+    sessionMetadata: AgentSessionMeta | undefined,
+    activeSessionPath: string,
+): string {
+    return sessionMetadata?.path || activeSessionPath;
 }
 
 /**
@@ -233,28 +261,50 @@ export function reducePiChatEvent(
     }
 }
 
+export function reducePiRunsEvent(runs: PiRun[], event: PiAgentEvent): PiRun[] {
+    if (!event.runs) return runs;
+    return event.runs;
+}
+
+export function indexRunsById(runs: PiRun[]): Map<string, PiRun> {
+    const map = new Map<string, PiRun>();
+    for (const run of runs) map.set(run.runId, run);
+    return map;
+}
+
 export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [messages, setMessages] = useState<PiAgentMessage[]>([]);
+    const [runs, setRuns] = useState<PiRun[]>([]);
     const [status, setStatus] = useState<UsePiChatStatus>("idle");
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
     const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
     const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(
         opts.initialSession,
     );
+    const sessionMetadataRef = useRef<AgentSessionMeta | undefined>(opts.initialSession);
+    const activeSessionPathRef = useRef(opts.initialSession?.path ?? "");
 
     // Refs hold the latest values without re-subscribing.
     const onSessionMintedRef = useRef(opts.onSessionMinted);
     const paneContextRef = useRef(opts.paneContext);
     const modelSelectionRef = useRef(opts.modelSelection);
     const allowedToolsRef = useRef(opts.allowedTools);
+    const blockIdRef = useRef(opts.blockId);
     useEffect(() => {
         onSessionMintedRef.current = opts.onSessionMinted;
         paneContextRef.current = opts.paneContext;
         modelSelectionRef.current = opts.modelSelection;
         allowedToolsRef.current = opts.allowedTools;
+        blockIdRef.current = opts.blockId;
     }, [opts.onSessionMinted, opts.paneContext, opts.modelSelection, opts.allowedTools]);
 
     const sessionPath = sessionMetadata?.path;
+    useEffect(() => {
+        sessionMetadataRef.current = sessionMetadata;
+        if (sessionMetadata?.path) {
+            activeSessionPathRef.current = sessionMetadata.path;
+        }
+    }, [sessionMetadata]);
 
     // Subscribe to the session's event stream — only after we have a
     // sessionPath. Pre-session sends are still possible; they mint a
@@ -266,6 +316,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         const unsubscribe = api.subscribe(sessionPath, (raw) => {
             const event = raw as PiAgentEvent;
             setMessages((prev) => reducePiChatEvent(prev, event));
+            setRuns((prev) => reducePiRunsEvent(prev, event));
             switch (event.type) {
                 case "snapshot": {
                     // Replayed once on (re)subscribe: seed status from the
@@ -321,11 +372,18 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 setErrorMessage("Electron agent IPC not available (window.api.agent missing)");
                 return;
             }
-            setStatus("streaming");
             setErrorMessage(undefined);
             try {
+                let sendSessionMetadata = sessionMetadata;
+                if (!sendSessionMetadata) {
+                    sendSessionMetadata = await api.createSession(paneContextRef.current.cwd);
+                    activeSessionPathRef.current = sendSessionMetadata.path;
+                } else {
+                    activeSessionPathRef.current = sendSessionMetadata.path;
+                }
                 const result = await api.send({
-                    sessionMetadata: sessionMetadata ?? null,
+                    sessionMetadata: sendSessionMetadata,
+                    blockId: blockIdRef.current,
                     cwd: paneContextRef.current.cwd,
                     text,
                     provider: modelSelectionRef.current.provider,
@@ -338,6 +396,8 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                     connection: paneContextRef.current.connection,
                     allowedTools: allowedToolsRef.current,
                 });
+                setStatus("streaming");
+                activeSessionPathRef.current = result.sessionMetadata.path;
                 // If main minted a new session for us, surface it to
                 // the consumer so they can persist it to block.meta.
                 if (!sessionMetadata || sessionMetadata.path !== result.sessionMetadata.path) {
@@ -354,12 +414,16 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
 
     const abort = useCallback((): void => {
         const api = getAgentApi();
-        if (!api || !sessionPath) return;
-        api.abort(sessionPath);
-    }, [sessionPath]);
+        const abortSessionPath = resolveAbortSessionPath(
+            sessionMetadataRef.current,
+            activeSessionPathRef.current,
+        );
+        if (!api || !abortSessionPath) return;
+        api.abort(abortSessionPath);
+    }, []);
 
     return useMemo(
-        () => ({ messages, status, errorMessage, sessionMetadata, queuedMessages, send, abort }),
-        [messages, status, errorMessage, sessionMetadata, queuedMessages, send, abort],
+        () => ({ messages, runs, status, errorMessage, sessionMetadata, queuedMessages, send, abort }),
+        [messages, runs, status, errorMessage, sessionMetadata, queuedMessages, send, abort],
     );
 }

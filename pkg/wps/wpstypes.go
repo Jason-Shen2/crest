@@ -37,6 +37,7 @@ const (
 	Event_CmdBlockAltScreen   = "cmdblock:altscreen"   // type: *cbtypes.CmdBlockAltScreenEvent
 	Event_CmdBlockClear       = "cmdblock:clear"       // type: *cbtypes.CmdBlockClearEvent
 	Event_CmdBlockNotify      = "cmdblock:notify"      // type: *cbtypes.CmdBlockNotifyEvent
+	Event_AgentNotification   = "agent:notification"   // type: *AgentNotificationEvent
 )
 
 var AllEvents []string = []string{
@@ -62,6 +63,7 @@ var AllEvents []string = []string{
 	Event_CmdBlockAltScreen,
 	Event_CmdBlockClear,
 	Event_CmdBlockNotify,
+	Event_AgentNotification,
 }
 
 type WaveEvent struct {
@@ -95,4 +97,14 @@ type WSFileEventData struct {
 	FileName string `json:"filename"`
 	FileOp   string `json:"fileop"`
 	Data64   string `json:"data64"`
+}
+
+type AgentNotificationEvent struct {
+	Source    string `json:"source,omitempty"` // "crest-agent" or "agent-cli"
+	Kind      string `json:"kind,omitempty"`   // "completed", "needs-action", "failed", or "info"
+	AgentName string `json:"agentname,omitempty"`
+	BlockID   string `json:"blockid,omitempty"`
+	TabID     string `json:"tabid,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Body      string `json:"body"`
 }

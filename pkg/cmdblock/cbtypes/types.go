@@ -13,6 +13,9 @@ const (
 	StatePrompt  = "prompt"
 	StateRunning = "running"
 	StateDone    = "done"
+
+	KindShell = "shell"
+	KindAgent = "agent"
 )
 
 // CmdBlockChunkEvent is published on cmdblock:chunk while a cmdblock row is
@@ -71,6 +74,7 @@ type CmdBlock struct {
 	OID               string  `db:"oid" json:"oid"`
 	BlockID           string  `db:"blockid" json:"blockid"`
 	Seq               int64   `db:"seq" json:"seq"`
+	Kind              string  `db:"kind" json:"kind,omitempty"`
 	State             string  `db:"state" json:"state"`
 	Cmd               *string `db:"cmd" json:"cmd,omitempty"`
 	Cwd               *string `db:"cwd" json:"cwd,omitempty"`
@@ -85,6 +89,8 @@ type CmdBlock struct {
 	TsCmdNs           *int64  `db:"ts_cmd_ns" json:"tscmdns,omitempty"`
 	TsDoneNs          *int64  `db:"ts_done_ns" json:"tsdonens,omitempty"`
 	AgentSessionID    *string `db:"agent_session_id" json:"agentsessionid,omitempty"`
+	AgentRunID        *string `db:"agent_run_id" json:"agentrunid,omitempty"`
+	AgentSessionPath  *string `db:"agent_session_path" json:"agentsessionpath,omitempty"`
 	CreatedAt         int64   `db:"created_at" json:"createdat"`
 	// Durable per-block output snapshot. Excluded from JSON (never sent in the
 	// live row/chunk events — those stream output directly); fetched on demand

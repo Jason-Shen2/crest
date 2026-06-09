@@ -95,6 +95,12 @@ export async function openPaneSession(
     return getSessionsRepo().open(metadata);
 }
 
+export async function openPaneSessionByPath(
+    sessionPath: string,
+): Promise<Session<JsonlSessionMetadata>> {
+    return getSessionsRepo().openPath(sessionPath);
+}
+
 /**
  * List recent sessions for a cwd, newest first (sorted by pi's repo).
  * Used by the "you have past conversations in this project" banner
