@@ -117,14 +117,15 @@ export class Blocks {
     // runId is the pi-side identifier (currently "run-{i}" from
     // slicePiRuns). The block holds it as the only piece of agent
     // state; all message data lives on the React side.
-    appendAgentBlock(runId: string, height: number = 0): Block {
+    appendAgentBlock(runId: string, height: number = 0, opts?: { id?: BlockId; sessionPath?: string; createdAt?: number }): Block {
         const ref: AgentBlockRef = {
             runId,
-            createdAt: Date.now(),
+            sessionPath: opts?.sessionPath,
+            createdAt: opts?.createdAt ?? Date.now(),
         };
         // Use runId as the BlockId core; prefix keeps agent-vs-shell
         // ID origins visually distinguishable in logs / dev tools.
-        const blockId = `agent_${runId}`;
+        const blockId = opts?.id ?? `agent_${runId}`;
         const cols = this.list[this.list.length - 1]?.outputGrid?.cols() ?? 80;
         const block = new Block({
             id: blockId,

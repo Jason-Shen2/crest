@@ -38,6 +38,15 @@ import type { AgentHarnessEvent } from "./harness/types";
 import type { AgentMessage } from "./types";
 
 export type PaneSessionStatus = "idle" | "streaming" | "error";
+export type AgentRunStatus = "streaming" | "done" | "error";
+
+export interface AgentRun {
+    runId: string;
+    userMessage?: AgentMessage;
+    responseMessages: AgentMessage[];
+    status: AgentRunStatus;
+    errorMessage?: string;
+}
 
 /**
  * The owned conversation state at a point in time. Replayed to every new
@@ -46,6 +55,7 @@ export type PaneSessionStatus = "idle" | "streaming" | "error";
  */
 export interface PaneSessionSnapshot {
     messages: AgentMessage[];
+    runs: AgentRun[];
     steerQueue: AgentMessage[];
     followUpQueue: AgentMessage[];
     status: PaneSessionStatus;
@@ -66,10 +76,13 @@ export class PaneAgentSession {
     pane: PaneHarness;
 
     messages: AgentMessage[] = [];
+    runs: AgentRun[] = [];
     steerQueue: AgentMessage[] = [];
     followUpQueue: AgentMessage[] = [];
     status: PaneSessionStatus = "idle";
     errorMessage: string | undefined;
+    activeRunId: string | undefined;
+    pendingRunIds: string[] = [];
 
     // Synchronous send-routing gate. Flipped true the instant we call
     // prompt() (which itself flips the harness phase synchronously), so a
@@ -124,6 +137,7 @@ export class PaneAgentSession {
                 const message = (event as { message?: AgentMessage }).message;
                 if (!message) return;
                 this.messages = [...this.messages, message];
+                this.applyMessageStartToRun(message);
                 return;
             }
             case "message_update":
@@ -142,6 +156,7 @@ export class PaneAgentSession {
                     this.errorMessage =
                         (message as { errorMessage?: string }).errorMessage ?? "agent error";
                 }
+                this.applyMessageUpdateToRun(message, event.type === "message_end");
                 return;
             }
             case "agent_end": {
@@ -154,6 +169,7 @@ export class PaneAgentSession {
                 // full transcript on top of the seeded history. agent_end is
                 // only a run-lifecycle signal here.
                 this.running = false;
+                this.finishActiveRun();
                 if (this.status !== "error") this.status = "idle";
                 return;
             }
@@ -164,6 +180,7 @@ export class PaneAgentSession {
             }
             case "abort": {
                 this.running = false;
+                this.finishActiveRun();
                 if (this.status !== "error") this.status = "idle";
                 return;
             }
@@ -175,6 +192,7 @@ export class PaneAgentSession {
     getSnapshot(): PaneSessionSnapshot {
         return {
             messages: this.messages,
+            runs: this.runs,
             steerQueue: this.steerQueue,
             followUpQueue: this.followUpQueue,
             status: this.status,
@@ -198,12 +216,15 @@ export class PaneAgentSession {
      * harness phase synchronously too, so a followUp issued right after
      * never hits the idle guard.
      */
-    send(text: string): void {
+    send(runId: string, text: string): void {
+        this.ensureRun(runId);
         if (this.running) {
+            this.pendingRunIds = [...this.pendingRunIds, runId];
             void this.pane.harness.followUp(text).catch((err) => this.onSendError("followUp", err));
             return;
         }
         this.running = true;
+        this.activeRunId = runId;
         void this.pane.harness
             .prompt(text)
             .catch((err) => this.onSendError("prompt", err))
@@ -230,6 +251,76 @@ export class PaneAgentSession {
         this.running = false;
         this.status = "error";
         this.errorMessage = err instanceof Error ? err.message : String(err);
+        const run = this.getActiveRun();
+        if (run) {
+            run.status = "error";
+            run.errorMessage = this.errorMessage;
+            this.runs = this.runs.map((r) => (r.runId === run.runId ? run : r));
+        }
         console.error(`[pane-session] ${where} error for ${this.path}:`, err);
+    }
+
+    private ensureRun(runId: string): AgentRun {
+        const existing = this.runs.find((run) => run.runId === runId);
+        if (existing) return existing;
+        const run: AgentRun = { runId, responseMessages: [], status: "streaming" };
+        this.runs = [...this.runs, run];
+        return run;
+    }
+
+    private getActiveRun(): AgentRun | undefined {
+        if (!this.activeRunId) return undefined;
+        return this.runs.find((run) => run.runId === this.activeRunId);
+    }
+
+    private setRun(nextRun: AgentRun): void {
+        this.runs = this.runs.map((run) => (run.runId === nextRun.runId ? nextRun : run));
+    }
+
+    private applyMessageStartToRun(message: AgentMessage): void {
+        const role = (message as { role?: string }).role;
+        if (role === "user" && !this.activeRunId) {
+            const nextRunId = this.pendingRunIds.shift();
+            if (nextRunId) this.activeRunId = nextRunId;
+        }
+        const run = this.getActiveRun();
+        if (!run) return;
+        if (role === "user") {
+            this.setRun({ ...run, userMessage: message, status: "streaming", errorMessage: undefined });
+            return;
+        }
+        this.setRun({
+            ...run,
+            responseMessages: [...run.responseMessages, message],
+            status: "streaming",
+            errorMessage: undefined,
+        });
+    }
+
+    private applyMessageUpdateToRun(message: AgentMessage, isEnd: boolean): void {
+        const role = (message as { role?: string }).role;
+        const run = this.getActiveRun();
+        if (!run) return;
+        if (role === "user") {
+            this.setRun({ ...run, userMessage: message });
+            return;
+        }
+        const responseMessages = run.responseMessages.length === 0 ? [message] : run.responseMessages.slice();
+        responseMessages[responseMessages.length - 1] = message;
+        const errored = isEnd && isErroredAssistant(message);
+        this.setRun({
+            ...run,
+            responseMessages,
+            status: errored ? "error" : run.status,
+            errorMessage: errored ? ((message as { errorMessage?: string }).errorMessage ?? "agent error") : run.errorMessage,
+        });
+    }
+
+    private finishActiveRun(): void {
+        const run = this.getActiveRun();
+        if (run && run.status !== "error") {
+            this.setRun({ ...run, status: "done" });
+        }
+        this.activeRunId = undefined;
     }
 }

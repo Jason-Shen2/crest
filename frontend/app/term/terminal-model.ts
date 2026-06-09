@@ -55,6 +55,11 @@ const DefaultCols = 120;
 // long uncollapsed blocks.
 const AutoCollapseRowThreshold = 200;
 
+function createdAtNsToMs(createdAtNs?: number): number {
+    if (createdAtNs == null) return Date.now();
+    return Math.floor(createdAtNs / 1_000_000);
+}
+
 // ScrollPosition — enumerates the three modes used for auto-scroll vs.
 // "user is reading history" behavior.
 export type ScrollPosition =
@@ -428,35 +433,6 @@ export class TerminalModel {
         });
     }
 
-    // ---------- agent message flow ----------
-    //
-    // Pattern: useChat (TerminalView) owns the request lifecycle and the
-    // transient message stream; TerminalModel owns the *block-level* state
-    // (one agent block per exchange).  The three methods below are the
-    // narrow API the host calls to keep them in sync.
-    //
-    // Order of operations on a turn:
-    //   1. submitAgentMessage(text) → appends an agent block, returns its
-    //      exchangeId.  The host passes the exchangeId as useChat's
-    //      message id so deltas can be correlated back to the block.
-    //   2. applyAgentDelta(id, delta) on every assistant-text chunk.
-    //   3. applyAgentStatus(id, "done" | "error") on terminal events.
-
-    // appendAgentRun — add an agent-kind block to the timeline that
-    // points at a pi run. Called from AgentChatHost when usePiChat
-    // sees a new user message land. The runId is the slicePiRuns
-    // identifier ("run-{i}"); rendering looks up the run's messages
-    // via the same slicer at render time.
-    appendAgentRun(runId: string): void {
-        if (!runId) return;
-        // Idempotent: skip if a block for this run already exists.
-        // Handles the case where AgentChatHost's effect re-fires on
-        // the same messages snapshot.
-        if (this.blocks.findById(`agent_${runId}`)) return;
-        this.blocks.appendAgentBlock(runId);
-        this.bumpRevision();
-    }
-
     // getRecentCommands — last n submitted commands (oldest → newest).
     // Fed into the agent system prompt as conversational context (warp's
     // `recent_cmds` field on the agent request body).
@@ -800,6 +776,10 @@ export class TerminalModel {
 
     private applyRow(row: CmdBlock): void {
         if (!row.oid) return;
+        if ((row as { kind?: string }).kind === "agent") {
+            this.applyAgentRow(row);
+            return;
+        }
         const block = this.ensureBlock(row.oid, row.seq, row.state, row);
         // Update metadata.  We don't overwrite cell data — only the
         // out-of-band fields the parser doesn't see.
@@ -823,6 +803,19 @@ export class TerminalModel {
             void this.fetchOutputFor(row);
         }
 
+        this.bumpRevision();
+    }
+
+    private applyAgentRow(row: CmdBlock): void {
+        const runId = (row as { agentrunid?: string }).agentrunid;
+        if (!runId) return;
+        const sessionPath = (row as { agentsessionpath?: string }).agentsessionpath;
+        if (this.blocks.findById(row.oid)) return;
+        this.blocks.appendAgentBlock(runId, 0, {
+            id: row.oid,
+            sessionPath,
+            createdAt: createdAtNsToMs(row.createdat),
+        });
         this.bumpRevision();
     }
 
@@ -950,7 +943,7 @@ export class TerminalModel {
             id: oid,
             seq: seq < 0 ? 0 : seq,
             cols: this.cols,
-            creationTs: row?.createdat != null ? row.createdat * 1000 : Date.now(),
+            creationTs: createdAtNsToMs(row?.createdat),
         });
         // Apply initial metadata from the row, if we have it.
         if (row) {

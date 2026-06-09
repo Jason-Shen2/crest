@@ -3,15 +3,21 @@
 
 import { globalStore } from "@/app/store/jotaiStore";
 import { TabCmdStateStore } from "@/app/store/tabcmdstate";
-import { waveEventSubscribeSingle } from "@/app/store/wps";
 import * as WOS from "@/app/store/wos";
+import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { atoms, getApi, refocusNode } from "@/store/global";
 import * as jotai from "jotai";
 import { ToastModel } from "./toast-model";
 
-export type AppNotification = {
+export type AgentNotificationSource = "crest-agent" | "agent-cli";
+export type AgentNotificationKind = "completed" | "needs-action" | "failed" | "info";
+
+export type AgentNotification = {
     id: string;
-    blockId: string;
+    source: AgentNotificationSource;
+    kind: AgentNotificationKind;
+    agentName?: string;
+    blockId?: string;
     tabId?: string;
     title?: string;
     body: string;
@@ -19,8 +25,10 @@ export type AppNotification = {
     read: boolean;
 };
 
+export type AppNotification = AgentNotification;
+
 const MAX_NOTIFICATIONS = 50;
-const CliAgentTitle = "warp://cli-agent";
+const AgentNotificationTitle = "crest://agent-notification";
 
 type CliAgentPayload = {
     agent?: string;
@@ -37,12 +45,27 @@ type CliAgentPayload = {
 };
 
 type NormalizedNotification = {
+    source: AgentNotificationSource;
+    kind: AgentNotificationKind;
+    agentName?: string;
+    blockId?: string;
+    tabId?: string;
     title?: string;
     body: string;
 };
 
+export type AgentNotificationEventPayload = {
+    source?: string;
+    kind?: string;
+    agentname?: string;
+    blockid?: string;
+    tabid?: string;
+    title?: string;
+    body?: string;
+};
+
 function parseCliAgentPayload(title: string | undefined, body: string): CliAgentPayload | null {
-    if (!title?.startsWith(CliAgentTitle)) {
+    if (!title?.startsWith(AgentNotificationTitle)) {
         return null;
     }
     try {
@@ -83,13 +106,25 @@ function isCliAgentCompletionEvent(eventName: string): boolean {
     );
 }
 
-// Warp/Claude-style CLI agents can emit a stream of lifecycle notifications
-// (session_start, turn_start, etc.). Those are noisy in Crest; only surface
-// completion or explicit user-attention events.
+function isCliAgentFailedEvent(eventName: string): boolean {
+    return /(error|failed|blocked|abort|aborted|cancel|cancelled)/.test(eventName);
+}
+
+function isAgentNotificationSource(source: string | undefined): source is AgentNotificationSource {
+    return source === "crest-agent" || source === "agent-cli";
+}
+
+function isAgentNotificationKind(kind: string | undefined): kind is AgentNotificationKind {
+    return kind === "completed" || kind === "needs-action" || kind === "failed" || kind === "info";
+}
+
+// Agent CLIs can emit a stream of lifecycle notifications (session_start,
+// turn_start, etc.). Those are noisy in Crest; only surface completion or
+// explicit user-attention events.
 export function normalizeCmdBlockNotification(title: string | undefined, body: string): NormalizedNotification | null {
     const payload = parseCliAgentPayload(title, body);
     if (payload == null) {
-        return { title: title || undefined, body };
+        return { source: "agent-cli", kind: "info", title: title || undefined, body };
     }
 
     const eventName = payload.event?.trim().toLowerCase() ?? "";
@@ -100,36 +135,74 @@ export function normalizeCmdBlockNotification(title: string | undefined, body: s
         payload.approval_required === true ||
         (eventName !== "" && isCliAgentUserActionEvent(eventName));
     const isCompletion = eventName !== "" && isCliAgentCompletionEvent(eventName);
+    const isFailed = eventName !== "" && isCliAgentFailedEvent(eventName);
     if (!needsUserAction && !isCompletion && eventName !== "") {
         return null;
     }
 
     const agentName = formatCliAgentName(payload.agent);
     const detail =
-        payload.message?.trim() ||
-        payload.summary?.trim() ||
-        payload.body?.trim() ||
-        payload.error?.trim() ||
-        "";
+        payload.message?.trim() || payload.summary?.trim() || payload.body?.trim() || payload.error?.trim() || "";
 
     if (detail !== "") {
-        return { title: agentName, body: detail };
+        return {
+            source: "agent-cli",
+            kind: needsUserAction ? "needs-action" : isFailed ? "failed" : isCompletion ? "completed" : "info",
+            agentName,
+            title: agentName,
+            body: detail,
+        };
     }
     if (needsUserAction) {
-        return { title: agentName, body: `${agentName} needs your attention` };
+        return {
+            source: "agent-cli",
+            kind: "needs-action",
+            agentName,
+            title: agentName,
+            body: `${agentName} needs your attention`,
+        };
     }
     if (isCompletion) {
-        return { title: agentName, body: `${agentName} task finished` };
+        return {
+            source: "agent-cli",
+            kind: isFailed ? "failed" : "completed",
+            agentName,
+            title: agentName,
+            body: `${agentName} task finished`,
+        };
     }
     if (eventName !== "") {
-        return { title: agentName, body: `${agentName}: ${eventName.replace(/[_-]+/g, " ")}` };
+        return {
+            source: "agent-cli",
+            kind: "info",
+            agentName,
+            title: agentName,
+            body: `${agentName}: ${eventName.replace(/[_-]+/g, " ")}`,
+        };
     }
-    return { title: agentName, body };
+    return { source: "agent-cli", kind: "info", agentName, title: agentName, body };
+}
+
+export function normalizeAgentNotificationEvent(
+    event: AgentNotificationEventPayload | undefined
+): NormalizedNotification | null {
+    if (!event?.body) return null;
+    const normalized: NormalizedNotification = {
+        source: isAgentNotificationSource(event.source) ? event.source : "crest-agent",
+        kind: isAgentNotificationKind(event.kind) ? event.kind : "info",
+        body: event.body,
+    };
+    if (event.agentname) normalized.agentName = event.agentname;
+    if (event.blockid) normalized.blockId = event.blockid;
+    if (event.tabid) normalized.tabId = event.tabid;
+    if (event.title || event.agentname) normalized.title = event.title || event.agentname;
+    return normalized;
 }
 
 export class NotificationsModel {
     private static instance: NotificationsModel | null = null;
-    private unsubscribe: (() => void) | null = null;
+    private unsubscribeCmdBlock: (() => void) | null = null;
+    private unsubscribeAgent: (() => void) | null = null;
 
     notificationsAtom: jotai.PrimitiveAtom<AppNotification[]>;
     unreadCountAtom: jotai.Atom<number>;
@@ -144,7 +217,7 @@ export class NotificationsModel {
     // still surface as toasts + populate the feed).
     ensureSubscribed(): void {
         TabCmdStateStore.getInstance().ensureSubscribed();
-        if (this.unsubscribe) return;
+        if (this.unsubscribeCmdBlock && this.unsubscribeAgent) return;
         this.subscribe();
     }
 
@@ -156,52 +229,78 @@ export class NotificationsModel {
     }
 
     private subscribe(): void {
-        this.unsubscribe = waveEventSubscribeSingle({
-            eventType: "cmdblock:notify",
-            handler: (event) => {
-                const ev = event.data as CmdBlockNotifyEvent | undefined;
-                if (!ev?.blockid || !ev.body) return;
-                const normalized = normalizeCmdBlockNotification(ev.title, ev.body);
-                if (normalized == null) return;
+        if (!this.unsubscribeCmdBlock) {
+            this.unsubscribeCmdBlock = waveEventSubscribeSingle({
+                eventType: "cmdblock:notify",
+                handler: (event) => {
+                    const ev = event.data as CmdBlockNotifyEvent | undefined;
+                    if (!ev?.blockid || !ev.body) return;
+                    const normalized = normalizeCmdBlockNotification(ev.title, ev.body);
+                    if (normalized == null) return;
 
-                // Skip when the user is already looking at this block's tab —
-                // the agent output is visible inline; no need for an alert.
-                const activeTabId = globalStore.get(atoms.staticTabId);
-                const activeTabAtom = WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", activeTabId));
-                const activeTab = globalStore.get(activeTabAtom);
-                if (activeTab?.blockids?.includes(ev.blockid)) return;
+                    // Skip when the user is already looking at this block's tab —
+                    // the agent output is visible inline; no need for an alert.
+                    const activeTabId = globalStore.get(atoms.staticTabId);
+                    const activeTabAtom = WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", activeTabId));
+                    const activeTab = globalStore.get(activeTabAtom);
+                    if (activeTab?.blockids?.includes(ev.blockid)) return;
 
-                // Best-effort: find which tab owns this block so clicking the
-                // notification can switch tabs.
-                let tabId: string | undefined;
-                const ws = globalStore.get(atoms.workspace);
-                for (const tid of ws?.tabids ?? []) {
-                    const tabAtom = WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tid));
-                    const tab = globalStore.get(tabAtom);
-                    if (tab?.blockids?.includes(ev.blockid)) {
-                        tabId = tid;
-                        break;
+                    // Best-effort: find which tab owns this block so clicking the
+                    // notification can switch tabs.
+                    let tabId: string | undefined;
+                    const ws = globalStore.get(atoms.workspace);
+                    for (const tid of ws?.tabids ?? []) {
+                        const tabAtom = WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tid));
+                        const tab = globalStore.get(tabAtom);
+                        if (tab?.blockids?.includes(ev.blockid)) {
+                            tabId = tid;
+                            break;
+                        }
                     }
-                }
 
-                const now = Date.now();
-                const note: AppNotification = {
-                    id: `${ev.blockid}:${now}:${Math.random().toString(36).slice(2, 7)}`,
-                    blockId: ev.blockid,
-                    tabId,
-                    title: normalized.title,
-                    body: normalized.body,
-                    ts: now,
-                    read: false,
-                };
+                    this.pushNotification({
+                        ...normalized,
+                        blockId: ev.blockid,
+                        tabId,
+                    });
+                },
+            });
+        }
 
-                const current = globalStore.get(this.notificationsAtom);
-                const next = [note, ...current].slice(0, MAX_NOTIFICATIONS);
-                globalStore.set(this.notificationsAtom, next);
+        if (!this.unsubscribeAgent) {
+            this.unsubscribeAgent = waveEventSubscribeSingle({
+                eventType: "agent:notification",
+                handler: (event) => {
+                    const normalized = normalizeAgentNotificationEvent(
+                        event.data as AgentNotificationEventPayload | undefined
+                    );
+                    if (normalized == null) return;
+                    this.pushNotification(normalized);
+                },
+            });
+        }
+    }
 
-                ToastModel.getInstance().push(note);
-            },
-        });
+    private pushNotification(normalized: NormalizedNotification): void {
+        const now = Date.now();
+        const note: AppNotification = {
+            id: `${normalized.blockId ?? normalized.source}:${now}:${Math.random().toString(36).slice(2, 7)}`,
+            source: normalized.source,
+            kind: normalized.kind,
+            agentName: normalized.agentName,
+            blockId: normalized.blockId,
+            tabId: normalized.tabId,
+            title: normalized.title,
+            body: normalized.body,
+            ts: now,
+            read: false,
+        };
+
+        const current = globalStore.get(this.notificationsAtom);
+        const next = [note, ...current].slice(0, MAX_NOTIFICATIONS);
+        globalStore.set(this.notificationsAtom, next);
+
+        ToastModel.getInstance().push(note);
     }
 
     markRead(id: string): void {
@@ -222,7 +321,8 @@ export class NotificationsModel {
         globalStore.set(this.notificationsAtom, []);
     }
 
-    focusBlock(blockId: string, tabId?: string): void {
+    focusBlock(blockId: string | undefined, tabId?: string): void {
+        if (!blockId) return;
         const activeTabId = globalStore.get(atoms.staticTabId);
         if (tabId && tabId !== activeTabId) {
             // Switch to the tab that owns this block, then focus it once the

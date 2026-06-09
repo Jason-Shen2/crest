@@ -99,6 +99,11 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 		return toSession(storage);
 	}
 
+	async openPath(filePath: string): Promise<Session<JsonlSessionMetadata>> {
+		const metadata = await loadJsonlSessionMetadata(this.fs, filePath);
+		return this.open(metadata);
+	}
+
 	async list(options: JsonlSessionListOptions = {}): Promise<JsonlSessionMetadata[]> {
 		const dirs = options.cwd ? [await this.getSessionDir(options.cwd)] : await this.listSessionDirs();
 		const sessions: JsonlSessionMetadata[] = [];

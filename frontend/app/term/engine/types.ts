@@ -338,6 +338,8 @@ export type AgentBlockStatus = "streaming" | "done" | "error";
 export interface AgentBlockRef {
     /** Stable id from slicePiRuns (currently "run-{i}"). */
     runId: string;
+    /** Persisted JSONL session path that owns the run's messages. */
+    sessionPath?: string;
     /** ms since epoch — UI metadata only ("5s ago" etc.). */
     createdAt: number;
 }

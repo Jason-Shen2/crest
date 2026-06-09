@@ -18,7 +18,13 @@ import {
     defaultSessionsDir,
     listSessionsForCwd,
     openPaneSession,
+    openPaneSessionByPath,
 } from "./sessions";
+import type { AgentMessage } from "./types";
+
+function user(text: string): AgentMessage {
+    return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;
+}
 
 describe("sessions — JsonlSessionRepo wiring", () => {
     let tmpRoot: string;
@@ -60,6 +66,18 @@ describe("sessions — JsonlSessionRepo wiring", () => {
         expect(reopenedMeta.id).toBe(created.metadata.id);
         expect(reopenedMeta.path).toBe(created.metadata.path);
         expect(reopenedMeta.cwd).toBe("/tmp/proj-b");
+    });
+
+    it("openPaneSessionByPath reopens a session when only the JSONL path is known", async () => {
+        const created = await createPaneSession("/tmp/proj-path-only");
+        await created.session.appendMessage(user("persisted q"));
+
+        const reopened = await openPaneSessionByPath(created.metadata.path);
+        const context = await reopened.buildContext();
+
+        expect(context.messages).toHaveLength(1);
+        expect(context.messages[0].role).toBe("user");
+        expect((context.messages[0] as { content: { text: string }[] }).content[0].text).toBe("persisted q");
     });
 
     it("listSessionsForCwd returns only sessions for the given cwd, newest first", async () => {

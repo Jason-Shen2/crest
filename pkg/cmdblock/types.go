@@ -13,4 +13,7 @@ const (
 	StatePrompt  = cbtypes.StatePrompt
 	StateRunning = cbtypes.StateRunning
 	StateDone    = cbtypes.StateDone
+
+	KindShell = cbtypes.KindShell
+	KindAgent = cbtypes.KindAgent
 )
