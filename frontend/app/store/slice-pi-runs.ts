@@ -19,6 +19,8 @@
 
 import type { PiAgentMessage } from "./use-pi-chat";
 
+const LegacyPositionalRunIdMax = 1_000_000_000_000;
+
 export type PiRunStatus = "streaming" | "done" | "error";
 
 export interface PiRun {
@@ -105,4 +107,19 @@ export function indexRunsById(runs: PiRun[]): Map<string, PiRun> {
     const map = new Map<string, PiRun>();
     for (const r of runs) map.set(r.runId, r);
     return map;
+}
+
+export function findRunByPersistedId(runsById: Map<string, PiRun>, persistedRunId: string): PiRun | undefined {
+    const exact = runsById.get(persistedRunId);
+    if (exact) return exact;
+
+    const match = /^run-(\d+)$/.exec(persistedRunId);
+    if (!match) return undefined;
+    const legacyIndex = Number(match[1]);
+    if (!Number.isSafeInteger(legacyIndex) || legacyIndex >= LegacyPositionalRunIdMax) return undefined;
+
+    for (const run of runsById.values()) {
+        if (run.userMessageIndex === legacyIndex) return run;
+    }
+    return undefined;
 }

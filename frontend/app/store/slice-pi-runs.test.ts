@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { indexRunsById, slicePiRuns } from "./slice-pi-runs";
+import { findRunByPersistedId, indexRunsById, slicePiRuns } from "./slice-pi-runs";
 import type { PiAgentMessage } from "./use-pi-chat";
 
 function user(text: string): PiAgentMessage {
@@ -188,5 +188,18 @@ describe("runId stability (timestamp-keyed)", () => {
         const matchedAfter = afterShift.find((r) => r.userMessage === u);
         expect(matchedBefore?.runId).toBe("run-1234");
         expect(matchedAfter?.runId).toBe("run-1234"); // unchanged despite re-index
+    });
+
+    it("resolves legacy positional run ids against timestamp-keyed runs", () => {
+        const runs = slicePiRuns([
+            userAt("earlier", 500),
+            assistant("b", "stop"),
+            userAt("question", 1234),
+            assistant("a", "stop"),
+        ]);
+        const idx = indexRunsById(runs);
+        const matched = findRunByPersistedId(idx, "run-2");
+        expect(matched?.runId).toBe("run-1234");
+        expect(matched?.userMessage.content[0].text).toBe("question");
     });
 });

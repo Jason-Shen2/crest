@@ -18,6 +18,7 @@
 
 import { TerminalView } from "@/app/term/render/terminal-view";
 import { getBlockMetaKeyAtom, getSettingsKeyAtom } from "@/app/store/global";
+import { globalStore } from "@/app/store/jotaiStore";
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
 
@@ -30,6 +31,7 @@ export class TermBlocksViewModel implements ViewModel {
     readonly noPadding = jotai.atom(true);
 
     readonly termFontSizeAtom: jotai.Atom<number>;
+    readonly focusRequestAtom = jotai.atom(0);
 
     disposed = false;
 
@@ -49,6 +51,11 @@ export class TermBlocksViewModel implements ViewModel {
         return TerminalViewAdapter as unknown as ViewComponent;
     }
 
+    giveFocus(): boolean {
+        globalStore.set(this.focusRequestAtom, (prev) => prev + 1);
+        return true;
+    }
+
     dispose(): void {
         this.disposed = true;
     }
@@ -59,6 +66,7 @@ export class TermBlocksViewModel implements ViewModel {
 // TerminalView, pulling just the two pieces of state the view needs.
 const TerminalViewAdapter: React.FC<{ model: TermBlocksViewModel }> = ({ model }) => {
     const fontSize = useAtomValue(model.termFontSizeAtom);
-    return <TerminalView outerBlockId={model.blockId} fontSize={fontSize} />;
+    const focusRequest = useAtomValue(model.focusRequestAtom);
+    return <TerminalView outerBlockId={model.blockId} fontSize={fontSize} focusRequest={focusRequest} />;
 };
 TerminalViewAdapter.displayName = "TerminalViewAdapter";

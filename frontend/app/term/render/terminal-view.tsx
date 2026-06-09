@@ -13,7 +13,7 @@ import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { globalStore } from "@/app/store/jotaiStore";
 import { modalsModel } from "@/app/store/modalmodel";
 import { ObjectService } from "@/app/store/services";
-import { indexRunsById, type PiRun } from "@/app/store/slice-pi-runs";
+import { indexRunsById, type PiRun } from "@/app/store/use-pi-chat";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import { atoms, getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { cn } from "@/util/util";
@@ -32,6 +32,7 @@ import { PaletteContext, PaletteOverrides } from "./palette-context";
 export interface TerminalViewProps {
     outerBlockId: string;
     fontSize?: number;
+    focusRequest?: number;
     // Optional content that mounts *above* the block list — used by the
     // "term" view type when block.meta has `term:vdomtoolbarblockid` set,
     // surfacing a VDom subblock as a toolbar strip.
@@ -79,7 +80,7 @@ function useContextChipModel(outerBlockId: string): ContextChipModel {
 }
 
 export const TerminalView = memo(
-    ({ outerBlockId, fontSize = 16, topSlot, overlaySlot, replaceContent }: TerminalViewProps) => {
+    ({ outerBlockId, fontSize = 16, focusRequest = 0, topSlot, overlaySlot, replaceContent }: TerminalViewProps) => {
         const model = useTerminalModel(outerBlockId);
         const loading = useAtomValue(model.loadingAtom);
         const error = useAtomValue(model.errorAtom);
@@ -337,11 +338,6 @@ export const TerminalView = memo(
             [nld, commandHistory]
         );
         const [submitting, setSubmitting] = useState(false);
-        // Fast-forward (agent auto-approve) toggle — local-only state for now.
-        // Persistence and actual agent-backend coupling come once the agent
-        // tool-call gate is wired (warp's FastForwardToggle.set_active equiv).
-        const [fastForwardOn, setFastForwardOn] = useState(false);
-        const toggleFastForward = useCallback(() => setFastForwardOn((v) => !v), []);
 
         // ---------- agent wiring ----------
         //
@@ -420,26 +416,18 @@ export const TerminalView = memo(
         );
 
         const onSubmit = useCallback(
-            async (text: string, mode: "terminal" | "agent") => {
+            (text: string, mode: InputMode) => {
                 if (!text) return;
                 if (mode === "agent") {
                     const api = agentApiRef.current;
                     if (!api) {
-                        // Host not yet mounted (first render or remount
-                        // mid-construction). Drop silently — the user can
-                        // retry; a more elegant fix is to queue but v1
-                        // keeps it simple.
-                        return;
+                        globalStore.set(model.notificationAtom, "Agent is still starting. Try again in a moment.");
+                        return false;
                     }
-                    api.send(text);
-                    return;
+                    return api.send(text);
                 }
                 setSubmitting(true);
-                try {
-                    await model.submitInput(text);
-                } finally {
-                    setSubmitting(false);
-                }
+                void model.submitInput(text).finally(() => setSubmitting(false));
             },
             [model]
         );
@@ -751,7 +739,6 @@ export const TerminalView = memo(
                     {topSlot}
                     <FindBar model={model} />
                     <AgentChatHost
-                        model={model}
                         outerBlockId={outerBlockId}
                         sessionMetadata={persistedAgentSession}
                         onSessionMinted={onSessionMintedHandler}
@@ -837,14 +824,13 @@ export const TerminalView = memo(
                         kubernetesContext={chipValues.kubernetesContext}
                         sshHost={sshHost}
                         sshUser={sshUser}
-                        fastForwardOn={fastForwardOn}
-                        onFastForwardToggle={toggleFastForward}
                         mode={inputMode}
                         onModeChange={setInputMode}
                         onSubmit={onSubmit}
                         submitting={submitting}
                         disabled={isRunning && !inAltScreen ? false : false}
                         fontSize={fontSize}
+                        focusRequest={focusRequest}
                         history={commandHistory}
                         onTextChange={onInputTextChange}
                         effectiveMode={effectiveMode}

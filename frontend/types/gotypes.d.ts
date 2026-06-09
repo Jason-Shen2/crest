@@ -51,6 +51,17 @@ declare global {
         conn?: {[key: string]: number};
     };
 
+    // wps.AgentNotificationEvent
+    type AgentNotificationEvent = {
+        source?: string;
+        kind?: string;
+        agentname?: string;
+        blockid?: string;
+        tabid?: string;
+        title?: string;
+        body: string;
+    };
+
     // waveobj.AgentSelectionMeta
     type AgentSelectionMeta = {
         provider: string;
@@ -223,6 +234,7 @@ declare global {
         oid: string;
         blockid: string;
         seq: number;
+        kind?: string;
         state: string;
         cmd?: string;
         cwd?: string;
@@ -237,6 +249,8 @@ declare global {
         tscmdns?: number;
         tsdonens?: number;
         agentsessionid?: string;
+        agentrunid?: string;
+        agentsessionpath?: string;
         createdat: number;
     };
 
@@ -272,6 +286,13 @@ declare global {
     // wshrpc.CmdBlockOutputResponse
     type CmdBlockOutputResponse = {
         data64: string;
+    };
+
+    // wshrpc.CommandAppendAgentRunData
+    type CommandAppendAgentRunData = {
+        blockid: string;
+        sessionpath: string;
+        runid: string;
     };
 
     // wshrpc.CommandAuthenticateJobManagerData

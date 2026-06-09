@@ -155,7 +155,7 @@ declare global {
         agent: {
             createSession: (cwd: string) => Promise<AgentSessionMeta>;
             listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
-            send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta }>;
+            send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
             subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;

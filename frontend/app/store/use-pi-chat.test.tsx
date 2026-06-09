@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { type PiAgentMessage, reducePiChatEvent } from "./use-pi-chat";
+import { type PiAgentMessage, reducePiChatEvent, reducePiRunsEvent, resolveAbortSessionPath } from "./use-pi-chat";
 
 describe("reducePiChatEvent", () => {
     it("appends a user message_start", () => {
@@ -112,5 +112,60 @@ describe("reducePiChatEvent", () => {
         const start: PiAgentMessage[] = [{ role: "user", content: [] }];
         expect(reducePiChatEvent(start, { type: "tool_execution_start" })).toBe(start);
         expect(reducePiChatEvent(start, { type: "something_we_dont_handle" })).toBe(start);
+    });
+});
+
+describe("reducePiRunsEvent", () => {
+    it("mirrors runs from main-owned snapshot state", () => {
+        const run = {
+            runId: "run-owned",
+            userMessage: { role: "user", content: [{ type: "text", text: "q" }] } as PiAgentMessage,
+            responseMessages: [
+                { role: "assistant", content: [{ type: "text", text: "a" }], stopReason: "stop" } as PiAgentMessage,
+            ],
+            status: "done" as const,
+        };
+
+        const out = reducePiRunsEvent([], { type: "snapshot", runs: [run] });
+
+        expect(out).toEqual([run]);
+    });
+
+    it("keeps the same run reference for non-snapshot events", () => {
+        const runs = [
+            {
+                runId: "run-owned",
+                userMessage: { role: "user", content: [] } as PiAgentMessage,
+                responseMessages: [],
+                status: "streaming" as const,
+            },
+        ];
+
+        expect(reducePiRunsEvent(runs, { type: "message_start", message: runs[0].userMessage })).toBe(runs);
+    });
+
+    it("mirrors runs from live events when main attaches owned run state", () => {
+        const run = {
+            runId: "run-live",
+            userMessage: { role: "user", content: [{ type: "text", text: "q" }] } as PiAgentMessage,
+            responseMessages: [],
+            status: "streaming" as const,
+        };
+
+        const out = reducePiRunsEvent([], { type: "message_start", message: run.userMessage, runs: [run] });
+
+        expect(out).toEqual([run]);
+    });
+});
+
+describe("resolveAbortSessionPath", () => {
+    it("uses the active in-flight session path before React state commits metadata", () => {
+        expect(resolveAbortSessionPath(undefined, "/tmp/agent.jsonl")).toBe("/tmp/agent.jsonl");
+    });
+
+    it("prefers committed session metadata over the in-flight path", () => {
+        expect(resolveAbortSessionPath({ path: "/tmp/committed.jsonl" } as AgentSessionMeta, "/tmp/inflight.jsonl")).toBe(
+            "/tmp/committed.jsonl",
+        );
     });
 });

@@ -1,10 +1,10 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// AgentChatHost — bridges usePiChat to TerminalModel. Owns the React
-// hook lifecycle for one pane's agent session; watches the messages
-// array, slices into runs, and calls model.appendAgentRun for each
-// newly-seen runId so the timeline gets a marker block.
+// AgentChatHost — owns the React hook lifecycle for one pane's agent
+// session. It watches the message array, slices it into runs, and
+// persists marker rows so TerminalModel can rehydrate them like shell
+// cmdblocks.
 //
 // Replaces the pre-pi version which mounted @ai-sdk/react useChat and
 // translated UIMessage parts into ai-sdk's WaveUIDataToolUse shape
@@ -15,11 +15,11 @@
 // Returns null — purely a state-bridge component. UI lives in
 // AgentBlockElement (mounted by BlockListElement per agent block).
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 
-import { slicePiRuns, type PiRun } from "@/app/store/slice-pi-runs";
 import {
     type PiAgentMessage,
+    type PiRun,
     type UsePiChatModel,
     type UsePiChatPaneContext,
     type UsePiChatStatus,
@@ -27,10 +27,7 @@ import {
 } from "@/app/store/use-pi-chat";
 import type { ResolveError } from "@/app/store/ai-types";
 
-import { TerminalModel } from "../terminal-model";
-
 export interface AgentChatHostProps {
-    model: TerminalModel;
     outerBlockId: string;
     /** Persisted session metadata from block.meta["agent:session"]. Undefined → first send mints one. */
     sessionMetadata?: AgentSessionMeta;
@@ -71,7 +68,7 @@ export interface AgentHostState {
 /** Functions exposed via onReady for the input bar / parent. */
 export interface AgentChatHostApi {
     /** Send a user prompt. Idempotent if called twice with the same text — pi will queue. */
-    send: (text: string) => void;
+    send: (text: string) => boolean;
     /** Abort the in-flight run, if any. */
     abort: () => void;
     /** Snapshot of runs for diagnostics / future selectors. */
@@ -79,8 +76,7 @@ export interface AgentChatHostApi {
 }
 
 export function AgentChatHost({
-    model,
-    outerBlockId: _outerBlockId,
+    outerBlockId,
     sessionMetadata,
     onSessionMinted,
     modelSelection,
@@ -108,22 +104,17 @@ export function AgentChatHost({
         paneContext,
         modelSelection: effectiveSelection,
         allowedTools,
+        blockId: outerBlockId,
     });
 
-    // Derive runs once per messages change, then announce newly-seen
-    // runIds to TerminalModel so it appends marker blocks.
-    const runs = useMemo(() => slicePiRuns(chat.messages), [chat.messages]);
-    const seenRunIds = useRef<Set<string>>(new Set());
+    const runs = chat.runs;
     const onRunsChangeRef = useRef(onRunsChange);
     onRunsChangeRef.current = onRunsChange;
+    const onUserErrorRef = useRef(onUserError);
+    onUserErrorRef.current = onUserError;
     useEffect(() => {
-        for (const run of runs) {
-            if (seenRunIds.current.has(run.runId)) continue;
-            seenRunIds.current.add(run.runId);
-            model.appendAgentRun(run.runId);
-        }
         onRunsChangeRef.current?.(runs);
-    }, [runs, model]);
+    }, [runs]);
 
     // Expose the send/abort API to the parent via onReady. Refs keep
     // the callback closure stable across renders while still reading
@@ -143,9 +134,6 @@ export function AgentChatHost({
 
     const onReadyRef = useRef(onReady);
     onReadyRef.current = onReady;
-    const onUserErrorRef = useRef(onUserError);
-    onUserErrorRef.current = onUserError;
-
     // Surface live status + pending queue to the parent (the activity bar).
     const onStateChangeRef = useRef(onStateChange);
     onStateChangeRef.current = onStateChange;
@@ -159,7 +147,7 @@ export function AgentChatHost({
         const api: AgentChatHostApi = {
             send: (text) => {
                 const trimmed = text.trim();
-                if (!trimmed) return;
+                if (!trimmed) return false;
                 // Block sends when no model is resolved (e.g. ai.json
                 // missing, no API key). Surface the resolver error so
                 // the user sees a specific reason rather than nothing.
@@ -168,9 +156,10 @@ export function AgentChatHost({
                         selectionErrorRef.current?.message ??
                         "AI is not configured. Open the model picker to set up a provider and pick a model.";
                     onUserErrorRef.current?.(msg);
-                    return;
+                    return false;
                 }
                 void sendRef.current(trimmed);
+                return true;
             },
             abort: () => {
                 abortRef.current();

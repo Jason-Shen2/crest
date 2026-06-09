@@ -44,6 +44,7 @@ var WaveEventDataTypes = map[string]reflect.Type{
 	wps.Event_CmdBlockAltScreen:   reflect.TypeOf((*cbtypes.CmdBlockAltScreenEvent)(nil)),
 	wps.Event_CmdBlockClear:       reflect.TypeOf((*cbtypes.CmdBlockClearEvent)(nil)),
 	wps.Event_CmdBlockNotify:      reflect.TypeOf((*cbtypes.CmdBlockNotifyEvent)(nil)),
+	wps.Event_AgentNotification:   reflect.TypeOf((*wps.AgentNotificationEvent)(nil)),
 }
 
 func getWaveEventDataTSType(eventName string, tsTypesMap map[reflect.Type]string) string {
@@ -84,7 +85,7 @@ func GenerateWaveEventTypes(tsTypesMap map[reflect.Type]string) string {
 	buf.WriteString("} & (\n")
 	for idx, eventName := range wps.AllEvents {
 		if idx > 0 {
-			buf.WriteString(" | \n")
+			buf.WriteString(" |\n")
 		}
 		buf.WriteString(fmt.Sprintf("    { event: %s; data?: %s; }", strconv.Quote(eventName), getWaveEventDataTSType(eventName, tsTypesMap)))
 	}

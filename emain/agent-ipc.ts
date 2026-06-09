@@ -39,6 +39,7 @@ import * as electron from "electron";
 import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
 import { buildPaneHarness } from "./agent/harness-factory";
+import { uuidv7 } from "./agent/harness/session/uuid";
 import { PaneAgentSession } from "./agent/pane-agent-session";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
@@ -48,9 +49,12 @@ import {
     createPaneSession,
     listSessionsForCwd,
     openPaneSession,
+    openPaneSessionByPath,
 } from "./agent/sessions";
 import type { JsonlSessionMetadata } from "./agent/harness/types";
 import type { ThinkingLevel } from "./agent/types";
+import { RpcApi } from "../frontend/app/store/wshclientapi";
+import { ElectronWshClient } from "./emain-wsh";
 
 // Per-pane conversation OWNERS, keyed by session JSONL path (the natural
 // session identity — same path always reopens the same conversation). The
@@ -65,10 +69,13 @@ const sessionCache = new Map<string, PaneAgentSession>();
 type SubKey = string; // `${senderId}:${sessionPath}`
 const subscriptions = new Map<SubKey, () => void>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
+const pendingSubscriptions = new Map<SubKey, { sender: electron.WebContents; sessionPath: string }>();
 
 interface SendOptions {
     /** Existing session, if any. null on first send → main mints a fresh one. */
     sessionMetadata?: JsonlSessionMetadata | null;
+    /** Parent terminal block ID for timeline marker persistence. */
+    blockId: string;
     /** Pane's current cwd. Drives system prompt + tool execution dir. */
     cwd: string;
     /** Prompt text. */
@@ -203,26 +210,112 @@ async function ensurePaneSession(
     const seed = await piSession.buildContext();
     const owner = new PaneAgentSession(metadata.path, pane, seed.messages ?? []);
     sessionCache.set(metadata.path, owner);
+    attachPendingSubscribers(metadata.path, owner);
     return owner;
 }
 
 function releaseSubscription(key: SubKey): void {
     const unsub = subscriptions.get(key);
-    if (!unsub) return;
-    try {
-        unsub();
-    } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("[agent-ipc] unsubscribe error:", err);
+    if (unsub) {
+        try {
+            unsub();
+        } catch (err) {
+            console.error("[agent-ipc] unsubscribe error:", err);
+        }
+        subscriptions.delete(key);
     }
-    subscriptions.delete(key);
+    pendingSubscriptions.delete(key);
 }
 
 function releaseAllForSender(senderId: number): void {
     const keys = subscriptionsBySender.get(senderId);
-    if (!keys) return;
-    for (const key of keys) releaseSubscription(key);
-    subscriptionsBySender.delete(senderId);
+    if (keys) {
+        for (const key of keys) releaseSubscription(key);
+        subscriptionsBySender.delete(senderId);
+    }
+    for (const [key, pending] of pendingSubscriptions) {
+        if (pending.sender.id === senderId) pendingSubscriptions.delete(key);
+    }
+}
+
+function trackSenderKey(sender: electron.WebContents, key: SubKey): void {
+    let set = subscriptionsBySender.get(sender.id);
+    if (!set) {
+        set = new Set();
+        subscriptionsBySender.set(sender.id, set);
+        sender.once("destroyed", () => releaseAllForSender(sender.id));
+    }
+    set.add(key);
+}
+
+async function sendPersistedSnapshot(
+    sender: electron.WebContents,
+    sessionPath: string,
+): Promise<void> {
+    try {
+        const session = await openPaneSessionByPath(sessionPath);
+        const context = await session.buildContext();
+        if (sender.isDestroyed()) return;
+        sender.send("agent:event", {
+            sessionPath,
+            event: {
+                type: "snapshot",
+                messages: context.messages,
+                runs: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+            },
+        });
+    } catch (err) {
+        console.error(`[agent-ipc] persisted snapshot error for ${sessionPath}:`, err);
+    }
+}
+
+function subscribeToOwner(
+    sender: electron.WebContents,
+    sessionPath: string,
+    session: PaneAgentSession,
+): void {
+    const key: SubKey = `${sender.id}:${sessionPath}`;
+    pendingSubscriptions.delete(key);
+    if (subscriptions.has(key)) return;
+    const unsub = session.subscribe((agentEvent) => {
+        if (sender.isDestroyed()) return;
+        sender.send("agent:event", {
+            sessionPath,
+            event: {
+                ...agentEvent,
+                runs: session.getSnapshot().runs,
+            },
+        });
+    });
+    subscriptions.set(key, unsub);
+    trackSenderKey(sender, key);
+    const snapshot = session.getSnapshot();
+    if (sender.isDestroyed()) return;
+    sender.send("agent:event", {
+        sessionPath,
+        event: {
+            type: "snapshot",
+            messages: snapshot.messages,
+            runs: snapshot.runs,
+            status: snapshot.status,
+            steer: snapshot.steerQueue,
+            followUp: snapshot.followUpQueue,
+        },
+    });
+}
+
+function attachPendingSubscribers(sessionPath: string, session: PaneAgentSession): void {
+    for (const [key, sender] of pendingSubscriptions) {
+        if (sender.sessionPath !== sessionPath) continue;
+        if (sender.sender.isDestroyed()) {
+            pendingSubscriptions.delete(key);
+            continue;
+        }
+        subscribeToOwner(sender.sender, sessionPath, session);
+    }
 }
 
 /**
@@ -250,10 +343,7 @@ export function registerAgentIpcHandlers(): void {
         async (
             _event,
             opts: SendOptions,
-        ): Promise<{ sessionMetadata: JsonlSessionMetadata }> => {
-            // Per-send trace of the renderer-supplied selection (the
-            // harness build logs the fully-resolved model on first send;
-            // an existing session reuses it and skips that log).
+        ): Promise<{ sessionMetadata: JsonlSessionMetadata; runId: string }> => {
             console.log(
                 `[agent-ipc] agent:send provider=${opts.provider} model=${opts.model} ` +
                     `reasoning=${opts.reasoning ?? "off"} ` +
@@ -262,12 +352,26 @@ export function registerAgentIpcHandlers(): void {
             );
             const { metadata } = await ensureSession(opts);
             const session = await ensurePaneSession(metadata, opts);
-            // The owner decides prompt-vs-followUp from its own tracked run
-            // state (concurrent send → queue after the current turn, pi's
-            // intended path — not interrupt). Errors surface via the event
-            // stream's stop reason; the owner logs unexpected wiring throws.
-            session.send(opts.text);
-            return { sessionMetadata: metadata };
+
+            // Phase 1: main owns run identity. Generate a stable runId
+            // (uuidv7 — time-ordered, globally unique, no coordination)
+            // and persist the timeline marker row BEFORE starting the
+            // prompt. The renderer no longer derives or persists run IDs.
+            const runId = `run-${uuidv7()}`;
+            if (opts.blockId) {
+                try {
+                    await RpcApi.AppendAgentRunCommand(ElectronWshClient, {
+                        blockid: opts.blockId,
+                        sessionpath: metadata.path,
+                        runid: runId,
+                    });
+                } catch (err) {
+                    console.error(`[agent-ipc] failed to persist timeline marker:`, err);
+                }
+            }
+
+            session.send(runId, opts.text);
+            return { sessionMetadata: metadata, runId };
         },
     );
 
@@ -281,44 +385,16 @@ export function registerAgentIpcHandlers(): void {
     electron.ipcMain.on("agent:subscribe", (event, sessionPath: string) => {
         if (typeof sessionPath !== "string" || !sessionPath) return;
         const session = sessionCache.get(sessionPath);
-        // Subscribe-before-send is legal: the owner may not exist yet.
-        // Renderer should retry subscribe after the first `agent:send`
-        // returns. For v1 we drop early subscribes silently; future
-        // improvement is a pending-subs queue keyed by sessionPath.
-        if (!session) return;
-        const key: SubKey = `${event.sender.id}:${sessionPath}`;
-        if (subscriptions.has(key)) return;
-        const unsub = session.subscribe((agentEvent) => {
-            if (event.sender.isDestroyed()) return;
-            event.sender.send("agent:event", { sessionPath, event: agentEvent });
-        });
-        subscriptions.set(key, unsub);
-        // Seed the new subscriber with the owned state so a late/
-        // re-subscribing renderer mirrors the authoritative conversation
-        // (including a turn that finished — or is mid-stream — before it
-        // subscribed) instead of reconstructing it from a partial stream.
-        // The renderer reduces `snapshot` by replacing its mirror. Sent
-        // after attaching the live listener so no event in between is lost.
-        if (!event.sender.isDestroyed()) {
-            const snapshot = session.getSnapshot();
-            event.sender.send("agent:event", {
-                sessionPath,
-                event: {
-                    type: "snapshot",
-                    messages: snapshot.messages,
-                    status: snapshot.status,
-                    steer: snapshot.steerQueue,
-                    followUp: snapshot.followUpQueue,
-                },
-            });
+        if (!session) {
+            const key: SubKey = `${event.sender.id}:${sessionPath}`;
+            if (!pendingSubscriptions.has(key)) {
+                pendingSubscriptions.set(key, { sender: event.sender, sessionPath });
+                trackSenderKey(event.sender, key);
+            }
+            void sendPersistedSnapshot(event.sender, sessionPath);
+            return;
         }
-        let set = subscriptionsBySender.get(event.sender.id);
-        if (!set) {
-            set = new Set();
-            subscriptionsBySender.set(event.sender.id, set);
-            event.sender.once("destroyed", () => releaseAllForSender(event.sender.id));
-        }
-        set.add(key);
+        subscribeToOwner(event.sender, sessionPath, session);
     });
 
     electron.ipcMain.on("agent:unsubscribe", (event, sessionPath: string) => {

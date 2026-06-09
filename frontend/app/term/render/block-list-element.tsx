@@ -18,6 +18,7 @@
 // queries that already exist on Blocks.
 
 import { UIcon } from "@/app/element/ui-icon";
+import type { PiRun } from "@/app/store/use-pi-chat";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { FindMatch, TerminalModel } from "../terminal-model";
@@ -45,7 +46,7 @@ export interface BlockListElementProps {
     // Agent blocks (kind === "agent") look up their messages here at
     // render time. When a runId is missing from the map, the block
     // renders an empty/streaming placeholder.
-    agentRunsById?: Map<string, import("@/app/store/slice-pi-runs").PiRun>;
+    agentRunsById?: Map<string, PiRun>;
 }
 
 export const BlockListElement = memo(
@@ -197,7 +198,7 @@ export const BlockListElement = memo(
                         // unconcerned with agent payloads.
                         if (block.kind === "agent") {
                             const runId = block.agentRef?.runId;
-                            const run = runId ? agentRunsById?.get(runId) : undefined;
+                            const run = runId && agentRunsById ? agentRunsById.get(runId) : undefined;
                             if (!run) {
                                 // Marker block exists but run data hasn't
                                 // landed yet (first message_start in flight,

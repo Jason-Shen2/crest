@@ -123,6 +123,53 @@ describe("PaneAgentSession — owned transcript", () => {
     });
 });
 
+describe("PaneAgentSession — owned runs", () => {
+    it("builds a completed run keyed by the main-owned run id", () => {
+        const fake = makeFakeHarness();
+        const owner = new PaneAgentSession("/s", fake.pane);
+        const q = user("hello");
+        const partial = assistant("hel");
+        const final = assistant("hello back", "stop");
+
+        owner.send("run-a", "hello");
+        fake.emit({ type: "message_start", message: q });
+        fake.emit({ type: "message_start", message: partial });
+        fake.emit({ type: "message_end", message: final });
+        fake.emit({ type: "agent_end", messages: [q, final] });
+
+        expect(owner.getSnapshot().runs).toEqual([
+            {
+                runId: "run-a",
+                userMessage: q,
+                responseMessages: [final],
+                status: "done",
+            },
+        ]);
+    });
+
+    it("marks the active run errored from an errored assistant message", () => {
+        const fake = makeFakeHarness();
+        const owner = new PaneAgentSession("/s", fake.pane);
+        const q = user("hello");
+        const final = assistant("", "error", "rate limited");
+
+        owner.send("run-err", "hello");
+        fake.emit({ type: "message_start", message: q });
+        fake.emit({ type: "message_start", message: assistant("") });
+        fake.emit({ type: "message_end", message: final });
+
+        expect(owner.getSnapshot().runs).toEqual([
+            {
+                runId: "run-err",
+                userMessage: q,
+                responseMessages: [final],
+                status: "error",
+                errorMessage: "rate limited",
+            },
+        ]);
+    });
+});
+
 describe("PaneAgentSession — status tracking", () => {
     it("goes streaming on agent_start and idle on agent_end", () => {
         const fake = makeFakeHarness();
@@ -165,8 +212,8 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
     it("first send prompts; a concurrent send queues via followUp", () => {
         const fake = makeFakeHarness(); // prompt() stays pending → running stays true
         const owner = new PaneAgentSession("/s", fake.pane);
-        owner.send("a");
-        owner.send("b");
+        owner.send("run-a", "a");
+        owner.send("run-b", "b");
         expect(fake.calls.prompt).toEqual(["a"]);
         expect(fake.calls.followUp).toEqual(["b"]);
     });
@@ -174,9 +221,9 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
     it("after the run ends (agent_end), the next send prompts again", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
-        owner.send("a");
+        owner.send("run-a", "a");
         fake.emit({ type: "agent_end", messages: [] }); // clears running
-        owner.send("c");
+        owner.send("run-c", "c");
         expect(fake.calls.prompt).toEqual(["a", "c"]);
         expect(fake.calls.followUp).toEqual([]);
     });
@@ -185,13 +232,13 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
         const fake = makeFakeHarness();
         fake.setPromptResult(() => Promise.reject(new Error("boom")));
         const owner = new PaneAgentSession("/s", fake.pane);
-        owner.send("a");
+        owner.send("run-a", "a");
         await flush();
         const snap = owner.getSnapshot();
         expect(snap.status).toBe("error");
         expect(snap.errorMessage).toBe("boom");
         // running was cleared → the next send prompts (doesn't deadlock on followUp).
-        owner.send("b");
+        owner.send("run-b", "b");
         expect(fake.calls.prompt).toEqual(["a", "b"]);
     });
 });

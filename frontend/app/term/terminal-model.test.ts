@@ -37,8 +37,11 @@ vi.mock("@/app/store/wshclientapi", () => ({
 }));
 
 import { globalStore } from "@/app/store/jotaiStore";
+import { RpcApi } from "@/app/store/wshclientapi";
 
 import { TerminalModel } from "./terminal-model";
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("TerminalModel agent surface", () => {
     let model: TerminalModel;
@@ -51,33 +54,31 @@ describe("TerminalModel agent surface", () => {
         model.dispose();
     });
 
-    it("appendAgentRun appends an agent-kind block keyed by `agent_${runId}`", () => {
-        model.appendAgentRun("run-0");
-        const block = model.getBlocks().findById("agent_run-0");
+    it("rehydrates persisted agent rows from GetCmdBlocksCommand", async () => {
+        model.dispose();
+        vi.mocked(RpcApi.GetCmdBlocksCommand).mockResolvedValueOnce([
+            {
+                oid: "agent-row-1",
+                blockid: "outer-1",
+                seq: 1,
+                kind: "agent",
+                state: "static",
+                agentrunid: "run-123",
+                agentsessionpath: "/tmp/session.jsonl",
+                promptoffset: 0,
+                tspromptns: 1,
+                createdat: 1,
+            } as unknown as CmdBlock,
+        ]);
+
+        model = new TerminalModel("outer-1", 80);
+        await flush();
+
+        const block = model.getBlocks().findById("agent-row-1");
         expect(block).toBeDefined();
         expect(block!.kind).toBe("agent");
-        expect(block!.agentRef?.runId).toBe("run-0");
-    });
-
-    it("appendAgentRun is idempotent — second call with the same runId is a no-op", () => {
-        model.appendAgentRun("run-0");
-        const countBefore = model.getBlocks().length();
-        model.appendAgentRun("run-0");
-        expect(model.getBlocks().length()).toBe(countBefore);
-    });
-
-    it("appendAgentRun bumps revision so subscribers re-render", () => {
-        const before = globalStore.get(model.revisionAtom);
-        model.appendAgentRun("run-x");
-        const after = globalStore.get(model.revisionAtom);
-        expect(after).toBeGreaterThan(before);
-    });
-
-    it("appendAgentRun on an empty runId is a no-op", () => {
-        const before = globalStore.get(model.revisionAtom);
-        model.appendAgentRun("");
-        const after = globalStore.get(model.revisionAtom);
-        expect(after).toBe(before);
+        expect(block!.agentRef?.runId).toBe("run-123");
+        expect(block!.agentRef?.sessionPath).toBe("/tmp/session.jsonl");
     });
 
     it("getRecentCommands returns the last N entries from commandHistoryAtom", () => {
