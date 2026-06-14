@@ -92,6 +92,49 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).toContain('data-tool-callid="tc1"');
     });
 
+    it("defaults tool-call runs to progress view while preserving assistant content", () => {
+        const html = renderToStaticMarkup(
+            <AgentBlockElement
+                run={makeRun(
+                    [],
+                    [
+                        {
+                            role: "assistant",
+                            content: [
+                                { type: "text", text: "Before **tools**." },
+                                { type: "thinking", thinking: "Need to inspect the code." },
+                                {
+                                    type: "toolCall",
+                                    id: "grep-1",
+                                    name: "grep",
+                                    input: { pattern: "AgentProgressView", path: "frontend/app/term/render" },
+                                },
+                                { type: "image", data: "abc123", mimeType: "image/png" },
+                                { type: "text", text: "After tools." },
+                            ],
+                        },
+                        {
+                            role: "toolResult",
+                            toolCallId: "grep-1",
+                            toolName: "grep",
+                            content: [{ type: "text", text: "agent-progress-view.tsx" }],
+                            isError: false,
+                        },
+                    ]
+                )}
+            />
+        );
+
+        expect(html).toContain('data-agent-progress-view="true"');
+        expect(html).toContain('data-agent-progress-technical-details="true"');
+        expect(html).toContain('data-tool-callid="grep-1"');
+        expect(html).toContain("Before <strong>tools</strong>.");
+        expect(html).toContain("Thinking");
+        expect(html).toContain("Need to inspect the code.");
+        expect(html).toContain('src="data:image/png;base64,abc123"');
+        expect(html).toContain("After tools.");
+    });
+
     it("renders shell tool calls as readable inline action headers", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
