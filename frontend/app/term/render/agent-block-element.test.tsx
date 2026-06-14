@@ -90,6 +90,8 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).toContain("Run command");
         expect(html).toContain("Ran command.");
         expect(html).toContain("done");
+        expect(html).toContain('data-agent-progress-technical-details-toggle="true"');
+        expect(html).toContain("View technical calls/details");
         expect(html).not.toContain('data-agent-progress-technical-details="true"');
         expect(html).not.toContain('data-tool-name="shell_exec"');
         expect(html).not.toContain('data-tool-callid="tc1"');
@@ -130,6 +132,8 @@ describe("AgentBlockElement content rendering", () => {
 
         expect(html).toContain('data-agent-progress-view="true"');
         expect(html).toContain("Explore implementation");
+        expect(html).toContain('data-agent-progress-technical-details-toggle="true"');
+        expect(html).toContain("View technical calls/details");
         expect(html).not.toContain('data-agent-progress-technical-details="true"');
         expect(html).not.toContain('data-tool-name="grep"');
         expect(html).not.toContain('data-tool-callid="grep-1"');

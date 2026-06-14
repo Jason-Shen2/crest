@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { cn } from "@/util/util";
+import { useState } from "react";
 
 import type { AgentProgress, AgentProgressActionGroup, AgentProgressStage } from "./agent-progress";
 import { ToolCallCard } from "./tool-call-card";
@@ -12,6 +13,10 @@ export interface AgentProgressViewProps {
 }
 
 export function AgentProgressView({ progress, showTechnicalDetails = false }: AgentProgressViewProps) {
+    const [technicalDetailsOpen, setTechnicalDetailsOpen] = useState(showTechnicalDetails);
+    const technicalGroups = progress.stages.flatMap((stage) => stage.actionGroups);
+    const hasTechnicalDetails = technicalGroups.some((group) => group.toolCalls.length > 0);
+
     if (progress.stages.length === 0) {
         return (
             <section className="rounded-xl border border-[#25434a] bg-[#16282d] p-4" data-agent-progress-view="true">
@@ -27,16 +32,25 @@ export function AgentProgressView({ progress, showTechnicalDetails = false }: Ag
                     <StageOverview key={stage.id} stage={stage} />
                 ))}
             </div>
-            {showTechnicalDetails && (
+            {hasTechnicalDetails && (
+                <button
+                    type="button"
+                    aria-expanded={technicalDetailsOpen}
+                    data-agent-progress-technical-details-toggle="true"
+                    onClick={() => setTechnicalDetailsOpen((open) => !open)}
+                    className="cursor-pointer rounded border border-[#25434a] bg-[#102024] px-3 py-1.5 text-xs font-medium text-secondary transition-colors hover:bg-[#1b3338] hover:text-[#f0f3f3]"
+                >
+                    {technicalDetailsOpen ? "Hide technical calls/details" : "View technical calls/details"}
+                </button>
+            )}
+            {technicalDetailsOpen && hasTechnicalDetails && (
                 <div className="space-y-3" data-agent-progress-technical-details="true">
                     <div className="text-xs font-medium uppercase tracking-[0.18em] text-secondary">
                         Technical details
                     </div>
-                    {progress.stages.flatMap((stage) =>
-                        stage.actionGroups.map((group) => (
-                            <TechnicalGroup key={group.id} group={group} />
-                        ))
-                    )}
+                    {technicalGroups.map((group) => (
+                        <TechnicalGroup key={group.id} group={group} />
+                    ))}
                 </div>
             )}
         </section>
