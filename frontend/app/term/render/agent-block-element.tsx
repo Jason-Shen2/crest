@@ -67,7 +67,7 @@ export const AgentBlockElement = memo(
             >
                 <AgentBlockHeader status={run.status} />
                 <UserMessage text={userText} fontSize={fontSize} />
-                {progress && <AgentProgressView progress={progress} showTechnicalDetails />}
+                {progress && <AgentProgressView progress={progress} />}
                 <AssistantContent
                     responseMessages={run.responseMessages}
                     streaming={isStreaming}
