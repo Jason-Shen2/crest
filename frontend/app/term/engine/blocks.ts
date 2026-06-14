@@ -102,7 +102,7 @@ export class Blocks {
         this.pinnedToBottomId = pinnedId;
     }
 
-    // appendAgentBlock — factory for agent-kind blocks. Mirrors warp's
+    // appendAgentBlock — factory for agent timeline blocks. Mirrors warp's
     // `BlockList::append_item_to_blocklist` (blocks.rs:1074): blocks are
     // added in call order with no timestamp reordering. push() keeps the
     // pinned prompt block last (see pinnedToBottomId), so the agent block
@@ -111,12 +111,12 @@ export class Blocks {
     // The returned Block carries an outputGrid + headerGrid for shape
     // uniformity with shell blocks, but neither grid is ever written
     // into (BlockHandler no-ops for kind === "agent"). Rendering goes
-    // through AgentBlockElement which looks up the run's messages by
+    // through AgentBlockElement which looks up the main-owned run by
     // agentRef.runId from usePiChat state.
     //
-    // runId is the pi-side identifier (currently "run-{i}" from
-    // slicePiRuns). The block holds it as the only piece of agent
-    // state; all message data lives on the React side.
+    // runId is minted by Electron main when it creates the agent run and
+    // corresponding timeline row. The block holds it as the only piece of
+    // agent state; all message data lives in PaneAgentSession/usePiChat.
     appendAgentBlock(runId: string, height: number = 0, opts?: { id?: BlockId; sessionPath?: string; createdAt?: number }): Block {
         const ref: AgentBlockRef = {
             runId,

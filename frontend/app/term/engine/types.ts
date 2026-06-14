@@ -321,22 +321,22 @@ export type BlockKind = "shell" | "agent";
 //   error     — the request errored; the body carries the error message
 export type AgentBlockStatus = "streaming" | "done" | "error";
 
-// AgentBlockRef — thin marker that ties a Block (kind === "agent") to
-// a pi run. The actual message data (user prompt, assistant content,
-// tool calls / results, status, error) lives in usePiChat's React
-// state and is looked up by runId at render time.
+// AgentBlockRef — thin timeline ref that ties a Block (kind === "agent")
+// to a main-owned AgentRun. The actual message data (user prompt,
+// assistant content, tool calls / results, status, error) lives in
+// PaneAgentSession and is mirrored through usePiChat by runId.
 //
 // This replaces the old fat AgentPayload (which carried assistantText
 // / status / errorMessage etc. and was mutated via Block.appendAgentText
 // / setAgentStatus from the ai-sdk useChat bridge). After the pi
-// migration, all of that state lives on the React side; the engine
-// just remembers WHICH run this block represents and WHEN it was
-// appended (for timeline ordering).
+// migration, all of that state lives in the agent session owner; the
+// engine just remembers WHICH run this timeline item represents and
+// WHEN it was appended.
 //
 // See docs/agent-runtime-architecture.md §5 — agent state on the
 // React side, not in the engine.
 export interface AgentBlockRef {
-    /** Stable id from slicePiRuns (currently "run-{i}"). */
+    /** Stable id minted by Electron main for the owned AgentRun. */
     runId: string;
     /** Persisted JSONL session path that owns the run's messages. */
     sessionPath?: string;

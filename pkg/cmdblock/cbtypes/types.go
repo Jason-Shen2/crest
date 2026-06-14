@@ -62,14 +62,14 @@ type CmdBlockNotifyEvent struct {
 	Body    string `json:"body"`
 }
 
-// CmdBlock is one shell-command lifecycle tracked inside a terminal block.
+// CmdBlock is the legacy storage row for one terminal timeline item.
 //
-// Each row covers the span from OSC 16162;A (prompt appeared) to OSC 16162;D
-// (command done). The offsets index the parent block's BlockFile_Term for the
-// LIVE view; OutputData is the durable per-block snapshot of the command's
-// output, captured at completion (Warp's blocks.stylized_output model) and
-// used for history rehydrate — immune to the shared term file being reset or
-// wrapped. See db/migrations-wstore/000013_cmdblock_output.up.sql.
+// Shell rows cover the span from OSC 16162;A (prompt appeared) to OSC 16162;D
+// (command done). Agent rows are static timeline references to a main-owned
+// AgentRun. The database table is still named db_cmdblock for compatibility,
+// but callers should treat this as the timeline index row, not as the agent
+// content store. Shell offsets index the parent block's BlockFile_Term for the
+// LIVE view; OutputData is the durable per-block snapshot of command output.
 type CmdBlock struct {
 	OID               string  `db:"oid" json:"oid"`
 	BlockID           string  `db:"blockid" json:"blockid"`

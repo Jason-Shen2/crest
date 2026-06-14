@@ -188,7 +188,7 @@ interface AgentApiSurface {
     listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
     send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
     abort: (sessionPath: string) => void;
-    subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;
+    subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
 }
 
 function getAgentApi(): AgentApiSurface | undefined {
@@ -272,6 +272,15 @@ export function indexRunsById(runs: PiRun[]): Map<string, PiRun> {
     return map;
 }
 
+export function adoptInitialSessionMetadata(
+    current: AgentSessionMeta | undefined,
+    incoming: AgentSessionMeta | undefined,
+): AgentSessionMeta | undefined {
+    if (!incoming?.path) return current;
+    if (current?.path === incoming.path) return current;
+    return incoming;
+}
+
 export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [messages, setMessages] = useState<PiAgentMessage[]>([]);
     const [runs, setRuns] = useState<PiRun[]>([]);
@@ -296,7 +305,11 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         modelSelectionRef.current = opts.modelSelection;
         allowedToolsRef.current = opts.allowedTools;
         blockIdRef.current = opts.blockId;
-    }, [opts.onSessionMinted, opts.paneContext, opts.modelSelection, opts.allowedTools]);
+    }, [opts.onSessionMinted, opts.paneContext, opts.modelSelection, opts.allowedTools, opts.blockId]);
+
+    useEffect(() => {
+        setSessionMetadata((current) => adoptInitialSessionMetadata(current, opts.initialSession));
+    }, [opts.initialSession?.path]);
 
     const sessionPath = sessionMetadata?.path;
     useEffect(() => {
@@ -360,7 +373,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 default:
                     break;
             }
-        });
+        }, { blockId: blockIdRef.current });
         return unsubscribe;
     }, [sessionPath]);
 

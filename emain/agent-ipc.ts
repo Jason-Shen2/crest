@@ -40,7 +40,7 @@ import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
 import { buildPaneHarness } from "./agent/harness-factory";
 import { uuidv7 } from "./agent/harness/session/uuid";
-import { PaneAgentSession } from "./agent/pane-agent-session";
+import { buildPersistedRunsFromSessionEntries, PaneAgentSession } from "./agent/pane-agent-session";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { getDefaultTools } from "./agent/tools";
@@ -69,7 +69,7 @@ const sessionCache = new Map<string, PaneAgentSession>();
 type SubKey = string; // `${senderId}:${sessionPath}`
 const subscriptions = new Map<SubKey, () => void>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
-const pendingSubscriptions = new Map<SubKey, { sender: electron.WebContents; sessionPath: string }>();
+const pendingSubscriptions = new Map<SubKey, { sender: electron.WebContents; sessionPath: string; blockId?: string }>();
 
 interface SendOptions {
     /** Existing session, if any. null on first send → main mints a fresh one. */
@@ -208,7 +208,12 @@ async function ensurePaneSession(
     // Seed it with the persisted transcript so a reopened session shows its
     // history (a fresh session's buildContext is empty).
     const seed = await piSession.buildContext();
-    const owner = new PaneAgentSession(metadata.path, pane, seed.messages ?? []);
+    let initialRuns = [];
+    if (opts.blockId) {
+        const rows = await RpcApi.GetCmdBlocksCommand(ElectronWshClient, { blockid: opts.blockId });
+        initialRuns = buildPersistedRunsFromSessionEntries(await piSession.getBranch(), rows ?? []);
+    }
+    const owner = new PaneAgentSession(metadata.path, pane, seed.messages ?? [], initialRuns);
     sessionCache.set(metadata.path, owner);
     attachPendingSubscribers(metadata.path, owner);
     return owner;
@@ -251,17 +256,23 @@ function trackSenderKey(sender: electron.WebContents, key: SubKey): void {
 async function sendPersistedSnapshot(
     sender: electron.WebContents,
     sessionPath: string,
+    blockId?: string,
 ): Promise<void> {
     try {
         const session = await openPaneSessionByPath(sessionPath);
         const context = await session.buildContext();
+        let runs = [];
+        if (blockId) {
+            const rows = await RpcApi.GetCmdBlocksCommand(ElectronWshClient, { blockid: blockId });
+            runs = buildPersistedRunsFromSessionEntries(await session.getBranch(), rows ?? []);
+        }
         if (sender.isDestroyed()) return;
         sender.send("agent:event", {
             sessionPath,
             event: {
                 type: "snapshot",
                 messages: context.messages,
-                runs: [],
+                runs,
                 status: "idle",
                 steer: [],
                 followUp: [],
@@ -382,16 +393,16 @@ export function registerAgentIpcHandlers(): void {
         sessionCache.get(sessionPath)?.abort();
     });
 
-    electron.ipcMain.on("agent:subscribe", (event, sessionPath: string) => {
+    electron.ipcMain.on("agent:subscribe", (event, sessionPath: string, opts?: { blockId?: string }) => {
         if (typeof sessionPath !== "string" || !sessionPath) return;
         const session = sessionCache.get(sessionPath);
         if (!session) {
             const key: SubKey = `${event.sender.id}:${sessionPath}`;
             if (!pendingSubscriptions.has(key)) {
-                pendingSubscriptions.set(key, { sender: event.sender, sessionPath });
+                pendingSubscriptions.set(key, { sender: event.sender, sessionPath, blockId: opts?.blockId });
                 trackSenderKey(event.sender, key);
             }
-            void sendPersistedSnapshot(event.sender, sessionPath);
+            void sendPersistedSnapshot(event.sender, sessionPath, opts?.blockId);
             return;
         }
         subscribeToOwner(event.sender, sessionPath, session);

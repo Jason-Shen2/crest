@@ -79,6 +79,7 @@ describe("TerminalModel agent surface", () => {
         expect(block!.kind).toBe("agent");
         expect(block!.agentRef?.runId).toBe("run-123");
         expect(block!.agentRef?.sessionPath).toBe("/tmp/session.jsonl");
+        expect(model.getFirstAgentSessionPath()).toBe("/tmp/session.jsonl");
     });
 
     it("getRecentCommands returns the last N entries from commandHistoryAtom", () => {
