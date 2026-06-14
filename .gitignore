@@ -42,6 +42,7 @@ docsite/
 .kilo-format-temp-*
 .superpowers
 docs/superpowers
+.worktrees
 .claude
 ROADMAP.md
 ROADMAP-v2.md
