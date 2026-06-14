@@ -136,9 +136,10 @@ export function deriveAgentProgress(run: PiRun): AgentProgress {
 
 function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
     const stages: AgentProgressStage[] = [];
+    const stageIdCounts = new Map<string, number>();
     for (const item of classified) {
         const prev = stages[stages.length - 1];
-        if (prev?.id === item.descriptor.id) {
+        if (prev?.title === item.descriptor.title) {
             const group = prev.actionGroups[prev.actionGroups.length - 1];
             group.toolCalls.push(item.call);
             group.status = mergeStatus(group.toolCalls);
@@ -147,8 +148,9 @@ function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
             continue;
         }
 
+        const id = makeStageId(item.descriptor.id, stageIdCounts);
         const group: AgentProgressActionGroup = {
-            id: `${item.descriptor.id}-group-${stages.length + 1}`,
+            id: `${id}-group-1`,
             title: item.descriptor.groupTitle,
             summary: summarizeGroup(item.descriptor, item.call.status),
             status: item.call.status,
@@ -156,7 +158,7 @@ function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
             toolCalls: [item.call],
         };
         const stage: AgentProgressStage = {
-            id: item.descriptor.id,
+            id,
             title: item.descriptor.title,
             status: item.call.status,
             summary: summarizeStage(item.descriptor, item.call.status),
@@ -168,6 +170,12 @@ function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
         stages.push(stage);
     }
     return stages;
+}
+
+function makeStageId(baseId: string, counts: Map<string, number>): string {
+    const next = (counts.get(baseId) ?? 0) + 1;
+    counts.set(baseId, next);
+    return next === 1 ? baseId : `${baseId}-${next}`;
 }
 
 function applyStageDerivedFields(stage: AgentProgressStage, descriptor: StageDescriptor): void {
@@ -201,8 +209,8 @@ function summarizeGroup(descriptor: StageDescriptor, status: AgentProgressStatus
 }
 
 function mergeStatus(items: Array<{ status: AgentProgressStatus }>): AgentProgressStatus {
-    if (items.some((item) => item.status === "failed")) return "failed";
     if (items.some((item) => item.status === "running")) return "running";
+    if (items.some((item) => item.status === "failed")) return "failed";
     if (items.length === 0) return "pending";
     return "done";
 }
