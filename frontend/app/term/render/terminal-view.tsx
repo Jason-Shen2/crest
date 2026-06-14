@@ -360,6 +360,17 @@ export const TerminalView = memo(
             agentApiRef.current?.abort();
         }, []);
         const persistedAgentSession = useOrefMetaKeyAtom(WOS.makeORef("block", outerBlockId), "agent:session");
+        const timelineAgentSessionPath = useMemo(() => model.getFirstAgentSessionPath(), [model, revision]);
+        const agentSession = useMemo<AgentSessionMeta | undefined>(() => {
+            if (persistedAgentSession?.path) return persistedAgentSession;
+            if (!timelineAgentSessionPath) return undefined;
+            return {
+                id: "",
+                createdAt: "",
+                cwd: liveCwd,
+                path: timelineAgentSessionPath,
+            };
+        }, [persistedAgentSession, timelineAgentSessionPath, liveCwd]);
         const onSessionMintedHandler = useCallback(
             (meta: AgentSessionMeta) => {
                 void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
@@ -740,7 +751,7 @@ export const TerminalView = memo(
                     <FindBar model={model} />
                     <AgentChatHost
                         outerBlockId={outerBlockId}
-                        sessionMetadata={persistedAgentSession}
+                        sessionMetadata={agentSession}
                         onSessionMinted={onSessionMintedHandler}
                         modelSelection={
                             resolvedAIConfig

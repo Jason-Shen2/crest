@@ -55,6 +55,8 @@ export interface BuildPaneHarnessOptions {
 export interface PaneHarness {
     /** The underlying pi AgentHarness. Use directly for subscribe/prompt/abort. */
     readonly harness: AgentHarness;
+    appendCustomEntry(customType: string, data?: unknown): Promise<void>;
+    promptWithCustomEntry(customType: string, data: unknown, text: string): Promise<unknown>;
     /**
      * Refresh pane state. Mutates the harness's env.cwd (so tool
      * execution targets the latest dir) and the system-prompt input
@@ -91,6 +93,9 @@ export function buildPaneHarness(opts: BuildPaneHarnessOptions): PaneHarness {
     }
     return {
         harness,
+        appendCustomEntry: (customType: string, data?: unknown) => harness.appendCustomEntry(customType, data),
+        promptWithCustomEntry: (customType: string, data: unknown, text: string) =>
+            harness.promptWithCustomEntry(customType, data, text),
         update(next: SystemPromptInputs): void {
             inputs = next;
             env.cwd = next.cwd;

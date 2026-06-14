@@ -5,7 +5,7 @@
 // and drives the engine from Go-side wps events.  Mirrors warp's
 // `terminal_model.rs`, scaled down for the Electron event model:
 //
-//   wps cmdblock:row     → ensure-block + apply metadata
+//   wps cmdblock:row     → timeline row + apply metadata
 //   wps cmdblock:chunk   → ansiParser.feed(bytes) routed at block target
 //   wps cmdblock:altscreen → block.enterAltScreen / exitAltScreen
 //   wps cmdblock:clear   → Blocks.truncateBefore
@@ -54,6 +54,12 @@ const DefaultCols = 120;
 // warp also has, threshold 70px overhang) so users can still navigate
 // long uncollapsed blocks.
 const AutoCollapseRowThreshold = 200;
+
+type TimelineStorageRow = CmdBlock;
+type AgentTimelineStorageRow = CmdBlock & {
+    agentrunid?: string;
+    agentsessionpath?: string;
+};
 
 function createdAtNsToMs(createdAtNs?: number): number {
     if (createdAtNs == null) return Date.now();
@@ -634,6 +640,14 @@ export class TerminalModel {
         return this.blocks;
     }
 
+    getFirstAgentSessionPath(): string | undefined {
+        for (const block of this.blocks.all()) {
+            const sessionPath = block.agentRef?.sessionPath;
+            if (sessionPath) return sessionPath;
+        }
+        return undefined;
+    }
+
     getRevision(): number {
         return globalStore.get(this.revisionAtom);
     }
@@ -704,7 +718,7 @@ export class TerminalModel {
                 scope,
                 handler: (ev) => {
                     const row = ev.data as CmdBlock | undefined;
-                    if (row) this.applyRow(row);
+                    if (row) this.applyTimelineRow(row);
                 },
             })
         );
@@ -763,7 +777,7 @@ export class TerminalModel {
             if (this.disposed) return;
             // Go returns null instead of an empty array when there are no
             // blocks, so guard the iteration.
-            for (const row of rows ?? []) this.applyRow(row);
+            for (const row of rows ?? []) this.applyTimelineRow(row);
             globalStore.set(this.loadingAtom, false);
         } catch (e: any) {
             if (this.disposed) return;
@@ -774,30 +788,24 @@ export class TerminalModel {
 
     // ---------- event appliers ----------
 
-    private applyRow(row: CmdBlock): void {
+    private applyTimelineRow(row: TimelineStorageRow): void {
         if (!row.oid) return;
         if ((row as { kind?: string }).kind === "agent") {
-            this.applyAgentRow(row);
+            this.applyAgentTimelineRow(row as AgentTimelineStorageRow);
             return;
         }
+        this.applyShellTimelineRow(row);
+    }
+
+    private applyShellTimelineRow(row: TimelineStorageRow): void {
         const block = this.ensureBlock(row.oid, row.seq, row.state, row);
-        // Update metadata.  We don't overwrite cell data — only the
-        // out-of-band fields the parser doesn't see.
         block.pwd = row.cwd ?? block.pwd;
         block.cmd = row.cmd ?? block.cmd;
         block.agentSessionId = row.agentsessionid ?? block.agentSessionId;
         if (row.exitcode != null) block.exitCode = row.exitcode;
         const nextState = mapState(row.state, row.exitcode);
-        // Drive lifecycle transitions when Go's state string changes, but
-        // only forwards.  OSC 133 markers inside the chunk stream remain
-        // the source of truth for cursor anchors; Go's state is a backstop
-        // for cases where shell integration isn't configured.
         this.advanceState(block, nextState);
 
-        // For finished blocks loaded from history, fetch the recorded
-        // output bytes from the outer block's "term" file and feed them
-        // through the parser so the cell grid is populated.  Live (still
-        // running) blocks receive bytes via cmdblock:chunk events instead.
         if (!this.historicalOutputLoaded.has(row.oid) && row.state !== "running") {
             this.historicalOutputLoaded.add(row.oid);
             void this.fetchOutputFor(row);
@@ -806,10 +814,10 @@ export class TerminalModel {
         this.bumpRevision();
     }
 
-    private applyAgentRow(row: CmdBlock): void {
-        const runId = (row as { agentrunid?: string }).agentrunid;
+    private applyAgentTimelineRow(row: AgentTimelineStorageRow): void {
+        const runId = row.agentrunid;
         if (!runId) return;
-        const sessionPath = (row as { agentsessionpath?: string }).agentsessionpath;
+        const sessionPath = row.agentsessionpath;
         if (this.blocks.findById(row.oid)) return;
         this.blocks.appendAgentBlock(runId, 0, {
             id: row.oid,

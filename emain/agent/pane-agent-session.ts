@@ -35,10 +35,12 @@
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { PaneHarness } from "./harness-factory";
 import type { AgentHarnessEvent } from "./harness/types";
+import type { SessionTreeEntry } from "./harness/types";
 import type { AgentMessage } from "./types";
 
 export type PaneSessionStatus = "idle" | "streaming" | "error";
 export type AgentRunStatus = "streaming" | "done" | "error";
+export const AgentRunSessionEntryType = "agent_run";
 
 export interface AgentRun {
     runId: string;
@@ -46,6 +48,15 @@ export interface AgentRun {
     responseMessages: AgentMessage[];
     status: AgentRunStatus;
     errorMessage?: string;
+}
+
+export interface AgentTimelineRef {
+    agentrunid?: string;
+    seq?: number;
+}
+
+interface AgentRunSessionEntryData {
+    runId?: string;
 }
 
 /**
@@ -71,6 +82,88 @@ function isErroredAssistant(message: AgentMessage): boolean {
     );
 }
 
+export function buildPersistedRunsFromTimeline(
+    messages: AgentMessage[],
+    timelineRefs: AgentTimelineRef[],
+): AgentRun[] {
+    const refs = timelineRefs
+        .filter((ref) => ref.agentrunid)
+        .slice()
+        .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    const runs: AgentRun[] = [];
+    let current: AgentRun | undefined;
+    let refIndex = 0;
+
+    for (const message of messages) {
+        const role = (message as { role?: string }).role;
+        if (role === "user") {
+            const ref = refs[refIndex++];
+            if (!ref?.agentrunid) {
+                current = undefined;
+                continue;
+            }
+            current = {
+                runId: ref.agentrunid,
+                userMessage: message,
+                responseMessages: [],
+                status: "done",
+            };
+            runs.push(current);
+            continue;
+        }
+        if (!current) continue;
+        current.responseMessages = [...current.responseMessages, message];
+        if (isErroredAssistant(message)) {
+            current.status = "error";
+            current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
+        }
+    }
+
+    return runs;
+}
+
+function getRunIdFromSessionEntry(entry: SessionTreeEntry): string | undefined {
+    if (entry.type !== "custom") return undefined;
+    if (entry.customType !== AgentRunSessionEntryType) return undefined;
+    const data = entry.data as AgentRunSessionEntryData | undefined;
+    return typeof data?.runId === "string" && data.runId ? data.runId : undefined;
+}
+
+export function buildPersistedRunsFromSessionEntries(
+    entries: SessionTreeEntry[],
+    timelineRefs: AgentTimelineRef[] = [],
+): AgentRun[] {
+    const runs: AgentRun[] = [];
+    const messages: AgentMessage[] = [];
+    let current: AgentRun | undefined;
+
+    for (const entry of entries) {
+        const runId = getRunIdFromSessionEntry(entry);
+        if (runId) {
+            current = { runId, responseMessages: [], status: "done" };
+            runs.push(current);
+            continue;
+        }
+        if (entry.type !== "message") continue;
+        const message = entry.message as AgentMessage;
+        messages.push(message);
+        if (!current) continue;
+        const role = (message as { role?: string }).role;
+        if (role === "user" && !current.userMessage) {
+            current.userMessage = message;
+            continue;
+        }
+        current.responseMessages = [...current.responseMessages, message];
+        if (isErroredAssistant(message)) {
+            current.status = "error";
+            current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
+        }
+    }
+
+    if (runs.length > 0) return runs;
+    return buildPersistedRunsFromTimeline(messages, timelineRefs);
+}
+
 export class PaneAgentSession {
     readonly path: string;
     pane: PaneHarness;
@@ -93,13 +186,14 @@ export class PaneAgentSession {
     listeners = new Set<PaneSessionListener>();
     unsubscribeHarness: () => void;
 
-    constructor(path: string, pane: PaneHarness, initialMessages: AgentMessage[] = []) {
+    constructor(path: string, pane: PaneHarness, initialMessages: AgentMessage[] = [], initialRuns: AgentRun[] = []) {
         this.path = path;
         this.pane = pane;
         // Seed the transcript from the persisted session so a REOPENED
         // conversation shows its history. A fresh session passes []. New
         // messages then accumulate via the live stream on top of this.
         this.messages = initialMessages;
+        this.runs = initialRuns;
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
@@ -225,12 +319,7 @@ export class PaneAgentSession {
         }
         this.running = true;
         this.activeRunId = runId;
-        void this.pane.harness
-            .prompt(text)
-            .catch((err) => this.onSendError("prompt", err))
-            .finally(() => {
-                this.running = false;
-            });
+        void this.startPromptRun(runId, text);
     }
 
     abort(): void {
@@ -258,6 +347,16 @@ export class PaneAgentSession {
             this.runs = this.runs.map((r) => (r.runId === run.runId ? run : r));
         }
         console.error(`[pane-session] ${where} error for ${this.path}:`, err);
+    }
+
+    private async startPromptRun(runId: string, text: string): Promise<void> {
+        try {
+            await this.pane.promptWithCustomEntry(AgentRunSessionEntryType, { runId }, text);
+        } catch (err) {
+            this.onSendError("prompt", err);
+        } finally {
+            this.running = false;
+        }
     }
 
     private ensureRun(runId: string): AgentRun {

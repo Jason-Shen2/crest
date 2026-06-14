@@ -150,15 +150,16 @@ contextBridge.exposeInMainWorld("api", {
             ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
         send: (opts: unknown) => ipcRenderer.invoke("agent:send", opts),
         abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
-        subscribe: (sessionPath: string, callback: (event: unknown) => void): (() => void) => {
+        subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }): (() => void) => {
             let entry = agentEventCallbacks.get(sessionPath);
             if (!entry) {
                 entry = new Set();
                 agentEventCallbacks.set(sessionPath, entry);
-                // First subscriber for this path → tell main to start forwarding.
-                ipcRenderer.send("agent:subscribe", sessionPath);
+                entry.add(callback);
+                ipcRenderer.send("agent:subscribe", sessionPath, opts);
+            } else {
+                entry.add(callback);
             }
-            entry.add(callback);
             return () => {
                 const cur = agentEventCallbacks.get(sessionPath);
                 if (!cur) return;

@@ -158,7 +158,7 @@ declare global {
             send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
-            subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;
+            subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
         };
     };
 
@@ -194,6 +194,7 @@ declare global {
     type AgentSendOptions = {
         /** Existing session metadata, or null to have main mint a new one. */
         sessionMetadata?: AgentSessionMeta | null;
+        blockId: string;
         cwd: string;
         text: string;
         provider: string;
