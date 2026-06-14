@@ -396,4 +396,48 @@ describe("AgentProgressView", () => {
         expect(html).toContain('data-tool-name="grep"');
         expect(html).toContain("ToolCallCard");
     });
+
+    it("renders running current action and recent actions in the overview", () => {
+        const progress = deriveAgentProgress(
+            makeRun(
+                [
+                    {
+                        role: "assistant",
+                        content: [
+                            {
+                                type: "toolCall",
+                                id: "grep-1",
+                                name: "grep",
+                                input: { pattern: "AgentProgressView", path: "frontend/app" },
+                            },
+                            {
+                                type: "toolCall",
+                                id: "read-1",
+                                name: "read_text_file",
+                                input: { path: "frontend/app/term/render/agent-progress-view.tsx" },
+                            },
+                        ],
+                    },
+                    {
+                        role: "toolResult",
+                        toolCallId: "grep-1",
+                        toolName: "grep",
+                        content: [{ type: "text", text: "agent-progress-view.tsx" }],
+                        isError: false,
+                    },
+                ],
+                "streaming"
+            )
+        );
+
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress }));
+
+        expect(html).toContain('data-agent-progress-status="running"');
+        expect(html).toContain('data-agent-progress-current-action="true"');
+        expect(html).toContain("Inspecting project files.");
+        expect(html).toContain('data-agent-progress-recent-action="grep-1"');
+        expect(html).toContain('data-agent-progress-recent-action="read-1"');
+        expect(html).toContain('data-agent-progress-recent-action-status="done"');
+        expect(html).toContain('data-agent-progress-recent-action-status="running"');
+    });
 });

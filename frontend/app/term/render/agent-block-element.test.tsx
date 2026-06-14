@@ -246,6 +246,28 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).not.toContain("Invalid regex pattern");
     });
 
+    it("auto-expands failed tool cards to show error details", () => {
+        const html = renderToStaticMarkup(
+            <ToolCallCard
+                call={{
+                    id: "tc1",
+                    name: "grep",
+                    input: { pattern: "(", path: "frontend/app" },
+                }}
+                result={{
+                    content: [{ type: "text", text: "Invalid regex pattern: unterminated group" }],
+                    isError: true,
+                }}
+            />
+        );
+
+        expect(html).toContain('data-tool-status="error"');
+        expect(html).toContain('aria-expanded="true"');
+        expect(html).toContain('data-tool-detail-body="true"');
+        expect(html).toContain('data-tool-detail-section="result"');
+        expect(html).toContain("Invalid regex pattern: unterminated group");
+    });
+
     it("renders file discovery tools with Warp file-glob wording", () => {
         const html = renderToStaticMarkup(
             <ToolCallCard

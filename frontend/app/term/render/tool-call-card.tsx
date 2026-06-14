@@ -4,7 +4,7 @@ import { UIcon } from "@/app/element/ui-icon";
 import { getApi } from "@/app/store/global";
 import { cn } from "@/util/util";
 import type { MouseEvent, ReactNode } from "react";
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 
 export interface PiToolCall {
     id: string;
@@ -642,7 +642,7 @@ function modificationDiff(result: PiToolResultContent | undefined): string {
 export const ToolCallCard = memo(({ call, result, defaultExpanded = false }: ToolCallCardProps) => {
     const status = deriveStatus(result);
     const { icon, accent } = describeStatus(status);
-    const [expanded, setExpanded] = useState(defaultExpanded);
+    const [expanded, setExpanded] = useState(defaultExpanded || status === "error");
     const tool = useMemo(() => describeTool(call), [call]);
     const title = useMemo(() => displayTitle(call, tool), [call, tool]);
     const resultText = useMemo(() => renderResultText(result), [result]);
@@ -652,6 +652,11 @@ export const ToolCallCard = memo(({ call, result, defaultExpanded = false }: Too
     const hasModifyDiff = tool.kind === "modify" && Boolean(modifyDiff);
     const modifyPath = objectString(call.input, ["path", "file", "filepath"]);
     const headerTitle = tool.kind === "modify" ? title : tool.title;
+
+    useEffect(() => {
+        if (status !== "error") return;
+        setExpanded(true);
+    }, [status]);
 
     return (
         <div

@@ -69,11 +69,20 @@ function StageOverview({ stage }: { stage: AgentProgressStage }) {
                         </span>
                     </div>
                     <p className="mt-1 text-sm text-secondary">{stage.summary}</p>
-                    {stage.currentAction && <p className="mt-2 text-xs text-secondary">{stage.currentAction}</p>}
+                    {stage.currentAction && (
+                        <p className="mt-2 text-xs text-secondary" data-agent-progress-current-action="true">
+                            {stage.currentAction}
+                        </p>
+                    )}
                     {stage.recentActions.length > 0 && (
                         <ul className="mt-2 space-y-1">
                             {stage.recentActions.map((action) => (
-                                <li key={action.id} className="text-xs text-secondary">
+                                <li
+                                    key={action.id}
+                                    className="text-xs text-secondary"
+                                    data-agent-progress-recent-action={action.id}
+                                    data-agent-progress-recent-action-status={action.status}
+                                >
                                     {action.title}
                                 </li>
                             ))}
