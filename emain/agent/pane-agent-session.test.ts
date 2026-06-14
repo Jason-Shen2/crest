@@ -4,15 +4,21 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { PaneHarness } from "./harness-factory";
-import { PaneAgentSession } from "./pane-agent-session";
+import {
+    AgentRunSessionEntryType,
+    buildPersistedRunsFromSessionEntries,
+    buildPersistedRunsFromTimeline,
+    PaneAgentSession,
+} from "./pane-agent-session";
 import type { AgentMessage } from "./types";
+import type { SessionTreeEntry } from "./harness/types";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
 // test drive the event stream via emit(). Mirrors the only surface
 // PaneAgentSession touches.
 function makeFakeHarness() {
     const listeners = new Set<(event: unknown) => void>();
-    const calls = { prompt: [] as string[], followUp: [] as string[], abort: 0 };
+    const calls = { prompt: [] as string[], followUp: [] as string[], custom: [] as unknown[], abort: 0 };
     let promptResult: () => Promise<unknown> = () => new Promise(() => {}); // pending forever by default
     const harness = {
         subscribe(listener: (event: unknown) => void) {
@@ -25,7 +31,17 @@ function makeFakeHarness() {
         },
         followUp(text: string) {
             calls.followUp.push(text);
+            if (calls.prompt.length === 0) return Promise.reject(new Error("followUp before prompt"));
             return Promise.resolve();
+        },
+        appendCustomEntry(customType: string, data?: unknown) {
+            calls.custom.push({ customType, data });
+            return Promise.resolve();
+        },
+        promptWithCustomEntry(customType: string, data: unknown, text: string) {
+            calls.custom.push({ customType, data });
+            calls.prompt.push(text);
+            return promptResult();
         },
         abort() {
             calls.abort += 1;
@@ -41,7 +57,12 @@ function makeFakeHarness() {
         setPromptResult(fn: () => Promise<unknown>) {
             promptResult = fn;
         },
-        pane: { harness, update: vi.fn() } as unknown as PaneHarness,
+        pane: {
+            harness,
+            appendCustomEntry: harness.appendCustomEntry,
+            promptWithCustomEntry: harness.promptWithCustomEntry,
+            update: vi.fn(),
+        } as unknown as PaneHarness,
     };
 }
 
@@ -147,6 +168,17 @@ describe("PaneAgentSession — owned runs", () => {
         ]);
     });
 
+    it("records the run boundary in the session before starting the prompt", async () => {
+        const fake = makeFakeHarness();
+        const owner = new PaneAgentSession("/s", fake.pane);
+
+        owner.send("run-a", "hello");
+        await flush();
+
+        expect(fake.calls.custom).toEqual([{ customType: AgentRunSessionEntryType, data: { runId: "run-a" } }]);
+        expect(fake.calls.prompt).toEqual(["hello"]);
+    });
+
     it("marks the active run errored from an errored assistant message", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
@@ -166,6 +198,64 @@ describe("PaneAgentSession — owned runs", () => {
                 status: "error",
                 errorMessage: "rate limited",
             },
+        ]);
+    });
+});
+
+describe("buildPersistedRunsFromTimeline", () => {
+    it("rebuilds done runs keyed by persisted timeline run ids", () => {
+        const q1 = user("q1");
+        const a1 = assistant("a1", "stop");
+        const q2 = user("q2");
+        const a2 = assistant("a2", "stop");
+
+        const runs = buildPersistedRunsFromTimeline([q1, a1, q2, a2], [
+            { agentrunid: "run-1", seq: 1 },
+            { agentrunid: "run-2", seq: 2 },
+        ]);
+
+        expect(runs).toEqual([
+            { runId: "run-1", userMessage: q1, responseMessages: [a1], status: "done" },
+            { runId: "run-2", userMessage: q2, responseMessages: [a2], status: "done" },
+        ]);
+    });
+
+    it("rebuilds runs from session run-boundary entries instead of inferring from user-message position", () => {
+        const q1 = user("q1");
+        const a1 = assistant("a1", "stop");
+        const q2 = user("q2");
+        const a2 = assistant("a2", "stop");
+        const entries: SessionTreeEntry[] = [
+            {
+                type: "custom",
+                id: "run-entry-1",
+                parentId: null,
+                timestamp: "2026-01-01T00:00:00.000Z",
+                customType: AgentRunSessionEntryType,
+                data: { runId: "run-1" },
+            },
+            { type: "message", id: "m1", parentId: "run-entry-1", timestamp: "2026-01-01T00:00:01.000Z", message: q1 },
+            { type: "message", id: "m2", parentId: "m1", timestamp: "2026-01-01T00:00:02.000Z", message: a1 },
+            {
+                type: "custom",
+                id: "run-entry-2",
+                parentId: "m2",
+                timestamp: "2026-01-01T00:00:03.000Z",
+                customType: AgentRunSessionEntryType,
+                data: { runId: "run-2" },
+            },
+            { type: "message", id: "m3", parentId: "run-entry-2", timestamp: "2026-01-01T00:00:04.000Z", message: q2 },
+            { type: "message", id: "m4", parentId: "m3", timestamp: "2026-01-01T00:00:05.000Z", message: a2 },
+        ];
+
+        const runs = buildPersistedRunsFromSessionEntries(entries, [
+            { agentrunid: "wrong-positional-run-1", seq: 1 },
+            { agentrunid: "wrong-positional-run-2", seq: 2 },
+        ]);
+
+        expect(runs).toEqual([
+            { runId: "run-1", userMessage: q1, responseMessages: [a1], status: "done" },
+            { runId: "run-2", userMessage: q2, responseMessages: [a2], status: "done" },
         ]);
     });
 });
@@ -209,21 +299,24 @@ describe("PaneAgentSession — queue mirror", () => {
 });
 
 describe("PaneAgentSession — send routing (no catch-busy)", () => {
-    it("first send prompts; a concurrent send queues via followUp", () => {
+    it("first send prompts; a concurrent send queues via followUp", async () => {
         const fake = makeFakeHarness(); // prompt() stays pending → running stays true
         const owner = new PaneAgentSession("/s", fake.pane);
         owner.send("run-a", "a");
         owner.send("run-b", "b");
+        await flush();
         expect(fake.calls.prompt).toEqual(["a"]);
         expect(fake.calls.followUp).toEqual(["b"]);
+        expect(owner.getSnapshot().status).toBe("idle");
     });
 
-    it("after the run ends (agent_end), the next send prompts again", () => {
+    it("after the run ends (agent_end), the next send prompts again", async () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
         owner.send("run-a", "a");
         fake.emit({ type: "agent_end", messages: [] }); // clears running
         owner.send("run-c", "c");
+        await flush();
         expect(fake.calls.prompt).toEqual(["a", "c"]);
         expect(fake.calls.followUp).toEqual([]);
     });
@@ -239,6 +332,7 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
         expect(snap.errorMessage).toBe("boom");
         // running was cleared → the next send prompts (doesn't deadlock on followUp).
         owner.send("run-b", "b");
+        await flush();
         expect(fake.calls.prompt).toEqual(["a", "b"]);
     });
 });

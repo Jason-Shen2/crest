@@ -86,8 +86,8 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("Ran command");
         expect(html).toContain("echo hi");
+        expect(html).toContain('data-tool-title="echo hi"');
         expect(html).toContain('data-tool-status="done"');
         expect(html).toContain('data-tool-callid="tc1"');
     });
@@ -123,10 +123,9 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("Ran command");
-        expect(html).toContain("Completed");
         expect(html).toContain("npm test -- frontend/app/term/render/agent-block-element.test.tsx");
-        expect(html).toContain('data-tool-title="Ran command"');
+        expect(html).toContain('data-tool-action=""');
+        expect(html).toContain('data-tool-title="npm test -- frontend/app/term/render/agent-block-element.test.tsx"');
     });
 
     it("summarizes namespaced command tools without dumping JSON into the header", () => {
@@ -151,8 +150,8 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("Running command");
         expect(html).toContain("npm run lint");
+        expect(html).toContain('data-tool-title="npm run lint"');
         expect(html).toContain("functions.exec_command");
         expect(html).not.toContain("yield_time_ms");
     });
@@ -186,9 +185,31 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("Search failed");
-        expect(html).toContain("Failed");
+        expect(html).toContain("Grepping for");
+        expect(html).toContain("ToolCallCard");
+        expect(html).toContain('data-tool-status="error"');
+        expect(html).toContain('data-tool-action=""');
         expect(html).toContain("Invalid regex pattern");
+    });
+
+    it("renders file discovery tools with Warp file-glob wording", () => {
+        const html = renderToStaticMarkup(
+            <ToolCallCard
+                call={{
+                    id: "tc1",
+                    name: "find",
+                    input: { pattern: "*.tsx", path: "frontend/app" },
+                }}
+                result={{
+                    content: [{ type: "text", text: "frontend/app/term/render/tool-call-card.tsx" }],
+                    isError: false,
+                }}
+            />
+        );
+
+        expect(html).toContain('data-tool-kind="find"');
+        expect(html).toContain('data-tool-title="Finding files that match *.tsx in frontend/app"');
+        expect(html).not.toContain("Grepping for *.tsx");
     });
 
     it("renders write tool details as a file preview instead of escaped JSON", () => {
@@ -210,10 +231,15 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
+        expect(html).toContain('data-tool-title="main.go"');
         expect(html).toContain("main.go");
+        expect(html).toContain('data-tool-detail-body="true"');
+        expect(html).toContain('data-tool-detail-section="content"');
+        expect(html).toContain('data-tool-file-chip="main.go"');
         expect(html).toContain("package main");
         expect(html).toContain("fmt.Println");
         expect(html).toContain("Successfully wrote 64 bytes to main.go");
+        expect(html).not.toContain('data-tool-diff-tabs="true"');
         expect(html).not.toContain("&quot;content&quot;");
         expect(html).not.toContain("\\n\\nimport");
     });
@@ -261,6 +287,58 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).not.toContain("oldText");
     });
 
+    it("renders completed edit diffs with Warp-style card chrome and hunk navigation", () => {
+        const html = renderToStaticMarkup(
+            <ToolCallCard
+                defaultExpanded
+                call={{
+                    id: "tc1",
+                    name: "edit",
+                    input: {
+                        path: ".gitconfig",
+                        title: "Update .gitconfig with ByteDance Codebase configuration",
+                    },
+                }}
+                result={{
+                    content: [{ type: "text", text: "Successfully updated .gitconfig" }],
+                    details: {
+                        diff: [
+                            "@@ -0,0 +1,11 @@",
+                            "+[user]",
+                            "+    email = zhenxing.shen@bytedance.com",
+                            "+    name = zhenxing.shen",
+                            "+[url \"git\"]",
+                            "+    insteadOf = git://git.byted.org/",
+                            "+[credential \"https://code.byted.org\"]",
+                            "+    username = zhenxing.shen",
+                            "+[url \"ssh://zhenxing.shen@git.byted.org:29418\"]",
+                            "+    insteadOf = https://git.byted.org",
+                            "+[url \"git@code.byted.org:\"]",
+                            "+    insteadOf = https://code.byted.org/",
+                        ].join("\n"),
+                    },
+                    isError: false,
+                }}
+            />
+        );
+
+        expect(html).toContain('data-warp-tool-card="true"');
+        expect(html).toContain('data-tool-title="Update .gitconfig with ByteDance Codebase configuration"');
+        expect(html).toContain("Update .gitconfig with ByteDance Codebase configuration");
+        expect(html).toContain('data-diff-stat-added="11"');
+        expect(html).toContain("+11");
+        expect(html).toContain('data-warp-diff-file-bar="true"');
+        expect(html).toContain(".gitconfig");
+        expect(html).toContain('data-diff-new-line="1"');
+        expect(html).toContain('data-diff-new-line="11"');
+        expect(html).toContain('data-warp-added-gutter="true"');
+        expect(html).toContain('data-warp-hunk-nav="true"');
+        expect(html).toContain("Hunk:");
+        expect(html).toContain("1/1");
+        expect(html).toContain("Previous");
+        expect(html).toContain("Next");
+    });
+
     it("renders rich activity feed metadata for completed command calls", () => {
         const html = renderToStaticMarkup(
             <ToolCallCard
@@ -278,10 +356,8 @@ describe("AgentBlockElement content rendering", () => {
 
         expect(html).toContain('data-tool-activity="true"');
         expect(html).toContain('data-tool-kind="command"');
-        expect(html).toContain("Ran command");
-        expect(html).toContain("2 lines output");
-        expect(html).toContain("Details");
-        expect(html).not.toContain("View details");
+        expect(html).toContain('data-tool-title="npm test"');
+        expect(html).toContain('data-tool-action=""');
     });
 
     it("renders rich activity feed metadata for completed file edits", () => {
@@ -300,11 +376,10 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("Edited file");
+        expect(html).toContain('data-tool-title="tool-call-card.tsx"');
         expect(html).toContain("+2");
         expect(html).toContain("-1");
-        expect(html).toContain("View diff");
-        expect(html).toContain('data-tool-action="View diff"');
+        expect(html).toContain('data-tool-action=""');
     });
 
     it("keeps structured edit input inspectable when no diff is available", () => {

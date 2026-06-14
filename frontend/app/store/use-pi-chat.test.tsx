@@ -10,7 +10,13 @@
 
 import { describe, expect, it } from "vitest";
 
-import { type PiAgentMessage, reducePiChatEvent, reducePiRunsEvent, resolveAbortSessionPath } from "./use-pi-chat";
+import {
+    adoptInitialSessionMetadata,
+    type PiAgentMessage,
+    reducePiChatEvent,
+    reducePiRunsEvent,
+    resolveAbortSessionPath,
+} from "./use-pi-chat";
 
 describe("reducePiChatEvent", () => {
     it("appends a user message_start", () => {
@@ -156,6 +162,7 @@ describe("reducePiRunsEvent", () => {
 
         expect(out).toEqual([run]);
     });
+
 });
 
 describe("resolveAbortSessionPath", () => {
@@ -167,5 +174,19 @@ describe("resolveAbortSessionPath", () => {
         expect(resolveAbortSessionPath({ path: "/tmp/committed.jsonl" } as AgentSessionMeta, "/tmp/inflight.jsonl")).toBe(
             "/tmp/committed.jsonl",
         );
+    });
+});
+
+describe("adoptInitialSessionMetadata", () => {
+    it("adopts a session path that arrives after the hook mounted", () => {
+        const incoming = { path: "/tmp/session.jsonl", id: "s1", cwd: "/tmp", createdAt: "" } as AgentSessionMeta;
+
+        expect(adoptInitialSessionMetadata(undefined, incoming)).toBe(incoming);
+    });
+
+    it("keeps current session when no incoming session exists", () => {
+        const current = { path: "/tmp/current.jsonl", id: "s1", cwd: "/tmp", createdAt: "" } as AgentSessionMeta;
+
+        expect(adoptInitialSessionMetadata(current, undefined)).toBe(current);
     });
 });

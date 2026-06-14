@@ -615,6 +615,27 @@ export class AgentHarness<
 		}
 	}
 
+	async promptWithCustomEntry(
+		customType: string,
+		data: unknown,
+		text: string,
+		options?: { images?: ImageContent[] },
+	): Promise<AssistantMessage> {
+		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
+		this.phase = "turn";
+		const finishRunPromise = this.startRunPromise();
+		try {
+			await this.session.appendCustomEntry(customType, data);
+			const turnState = await this.createTurnState();
+			return await this.executeTurn(turnState, text, options);
+		} catch (error) {
+			this.phase = "idle";
+			throw normalizeHarnessError(error, "unknown");
+		} finally {
+			finishRunPromise();
+		}
+	}
+
 	async skill(name: string, additionalInstructions?: string): Promise<AssistantMessage> {
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
 		this.phase = "turn";
@@ -673,6 +694,14 @@ export class AgentHarness<
 			} else {
 				this.pendingSessionWrites.push({ type: "message", message });
 			}
+		} catch (error) {
+			throw normalizeHarnessError(error, "session");
+		}
+	}
+
+	async appendCustomEntry(customType: string, data?: unknown): Promise<void> {
+		try {
+			await this.session.appendCustomEntry(customType, data);
 		} catch (error) {
 			throw normalizeHarnessError(error, "session");
 		}
