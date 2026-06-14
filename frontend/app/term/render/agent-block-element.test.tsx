@@ -52,7 +52,7 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).toContain("Reasoning content is not available.");
     });
 
-    it("renders pi tool calls with arguments and top-level tool results", () => {
+    it("renders pi tool-call runs as progress overview without raw technical details", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
                 run={makeRun(
@@ -86,13 +86,16 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("echo hi");
-        expect(html).toContain('data-tool-title="echo hi"');
-        expect(html).toContain('data-tool-status="done"');
-        expect(html).toContain('data-tool-callid="tc1"');
+        expect(html).toContain('data-agent-progress-view="true"');
+        expect(html).toContain("Run command");
+        expect(html).toContain("Ran command.");
+        expect(html).toContain("done");
+        expect(html).not.toContain('data-agent-progress-technical-details="true"');
+        expect(html).not.toContain('data-tool-name="shell_exec"');
+        expect(html).not.toContain('data-tool-callid="tc1"');
     });
 
-    it("defaults tool-call runs to progress view while preserving assistant content", () => {
+    it("defaults tool-call runs to progress overview while preserving assistant content", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
                 run={makeRun(
@@ -126,8 +129,10 @@ describe("AgentBlockElement content rendering", () => {
         );
 
         expect(html).toContain('data-agent-progress-view="true"');
-        expect(html).toContain('data-agent-progress-technical-details="true"');
-        expect(html).toContain('data-tool-callid="grep-1"');
+        expect(html).toContain("Explore implementation");
+        expect(html).not.toContain('data-agent-progress-technical-details="true"');
+        expect(html).not.toContain('data-tool-name="grep"');
+        expect(html).not.toContain('data-tool-callid="grep-1"');
         expect(html).toContain("Before <strong>tools</strong>.");
         expect(html).toContain("Thinking");
         expect(html).toContain("Need to inspect the code.");
@@ -135,7 +140,7 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).toContain("After tools.");
     });
 
-    it("renders shell tool calls as readable inline action headers", () => {
+    it("summarizes shell tool calls as validation progress without raw command details", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
                 run={makeRun(
@@ -166,12 +171,14 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("npm test -- frontend/app/term/render/agent-block-element.test.tsx");
-        expect(html).toContain('data-tool-action=""');
-        expect(html).toContain('data-tool-title="npm test -- frontend/app/term/render/agent-block-element.test.tsx"');
+        expect(html).toContain("Verify result");
+        expect(html).toContain("Ran validation.");
+        expect(html).not.toContain("npm test -- frontend/app/term/render/agent-block-element.test.tsx");
+        expect(html).not.toContain('data-tool-action=""');
+        expect(html).not.toContain('data-tool-name="shell_exec"');
     });
 
-    it("summarizes namespaced command tools without dumping JSON into the header", () => {
+    it("summarizes namespaced command tools without exposing raw tool metadata", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
                 run={makeRun(
@@ -193,13 +200,15 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("npm run lint");
-        expect(html).toContain('data-tool-title="npm run lint"');
-        expect(html).toContain("functions.exec_command");
+        expect(html).toContain("Verify result");
+        expect(html).toContain("Running validation.");
+        expect(html).not.toContain("npm run lint");
+        expect(html).not.toContain('data-tool-title="npm run lint"');
+        expect(html).not.toContain("functions.exec_command");
         expect(html).not.toContain("yield_time_ms");
     });
 
-    it("shows error result previews in collapsed tool call headers", () => {
+    it("summarizes failed tool results without raw tool previews", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
                 run={makeRun(
@@ -228,11 +237,13 @@ describe("AgentBlockElement content rendering", () => {
             />
         );
 
-        expect(html).toContain("Grepping for");
-        expect(html).toContain("ToolCallCard");
-        expect(html).toContain('data-tool-status="error"');
-        expect(html).toContain('data-tool-action=""');
-        expect(html).toContain("Invalid regex pattern");
+        expect(html).toContain("Explore implementation");
+        expect(html).toContain("Could not inspect project files.");
+        expect(html).toContain("Failed");
+        expect(html).not.toContain("Grepping for");
+        expect(html).not.toContain("ToolCallCard");
+        expect(html).not.toContain('data-tool-status="error"');
+        expect(html).not.toContain("Invalid regex pattern");
     });
 
     it("renders file discovery tools with Warp file-glob wording", () => {
