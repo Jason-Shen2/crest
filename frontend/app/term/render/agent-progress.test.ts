@@ -209,4 +209,106 @@ describe("deriveAgentProgress", () => {
             },
         });
     });
+
+    it("keeps a stage running while a later call in the same stage is still pending", () => {
+        const progress = deriveAgentProgress(
+            makeRun(
+                [
+                    {
+                        role: "assistant",
+                        content: [
+                            {
+                                type: "toolCall",
+                                id: "grep-failed",
+                                name: "grep",
+                                input: { pattern: "(", path: "frontend/app" },
+                            },
+                            {
+                                type: "toolCall",
+                                id: "read-running",
+                                name: "read_text_file",
+                                input: { path: "frontend/app/term/render/agent-progress.ts" },
+                            },
+                        ],
+                    },
+                    {
+                        role: "toolResult",
+                        toolCallId: "grep-failed",
+                        toolName: "grep",
+                        content: [{ type: "text", text: "Invalid regex pattern" }],
+                        isError: true,
+                    },
+                ],
+                "streaming",
+            ),
+        );
+
+        expect(progress.stages[0]).toMatchObject({
+            title: "Explore implementation",
+            status: "running",
+            currentAction: "Inspecting project files.",
+        });
+        expect(progress.stages[0].actionGroups[0]).toMatchObject({
+            status: "running",
+            summary: "Inspecting project files.",
+        });
+    });
+
+    it("generates unique ids for non-contiguous stages of the same kind", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "read-before",
+                            name: "read_text_file",
+                            input: { path: "frontend/app/term/render/agent-block-element.tsx" },
+                        },
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit",
+                            input: { path: "frontend/app/term/render/agent-progress.ts" },
+                        },
+                        {
+                            type: "toolCall",
+                            id: "read-after",
+                            name: "read_text_file",
+                            input: { path: "frontend/app/term/render/agent-progress.test.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "read-before",
+                    toolName: "read_text_file",
+                    content: [{ type: "text", text: "before" }],
+                    isError: false,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "read-after",
+                    toolName: "read_text_file",
+                    content: [{ type: "text", text: "after" }],
+                    isError: false,
+                },
+            ]),
+        );
+
+        expect(progress.stages.map((stage) => stage.title)).toEqual([
+            "Explore implementation",
+            "Modify files",
+            "Explore implementation",
+        ]);
+        expect(new Set(progress.stages.map((stage) => stage.id)).size).toBe(progress.stages.length);
+    });
 });
