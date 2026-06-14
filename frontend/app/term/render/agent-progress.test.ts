@@ -1,10 +1,13 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { PiRun } from "@/app/store/use-pi-chat";
 import { deriveAgentProgress } from "./agent-progress";
+import { AgentProgressView } from "./agent-progress-view";
 
 function makeRun(responseMessages: PiRun["responseMessages"], status: PiRun["status"] = "done"): PiRun {
     return {
@@ -310,5 +313,87 @@ describe("deriveAgentProgress", () => {
             "Explore implementation",
         ]);
         expect(new Set(progress.stages.map((stage) => stage.id)).size).toBe(progress.stages.length);
+    });
+});
+
+describe("AgentProgressView", () => {
+    it("renders the default overview without exposing raw tool names", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "grep-1",
+                            name: "grep",
+                            input: { pattern: "ToolCallCard", path: "frontend/app" },
+                        },
+                        {
+                            type: "toolCall",
+                            id: "test-1",
+                            name: "functions.exec_command",
+                            input: { cmd: "npm test -- --run frontend/app/term/render/agent-progress.test.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "grep-1",
+                    toolName: "grep",
+                    content: [{ type: "text", text: "ToolCallCard" }],
+                    isError: false,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "test-1",
+                    toolName: "functions.exec_command",
+                    content: [{ type: "text", text: "1 passed" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress }));
+
+        expect(html).toContain("Explore implementation");
+        expect(html).toContain("Verify result");
+        expect(html).not.toContain("grep");
+        expect(html).not.toContain("functions.exec_command");
+        expect(html).not.toContain("ToolCallCard");
+    });
+
+    it("keeps ToolCallCard available in technical details", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "grep-1",
+                            name: "grep",
+                            input: { pattern: "ToolCallCard", path: "frontend/app" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "grep-1",
+                    toolName: "grep",
+                    content: [{ type: "text", text: "frontend/app/term/render/tool-call-card.tsx" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        const html = renderToStaticMarkup(
+            createElement(AgentProgressView, { progress, showTechnicalDetails: true })
+        );
+
+        expect(html).toContain('data-agent-progress-technical-details="true"');
+        expect(html).toContain('data-tool-callid="grep-1"');
+        expect(html).toContain('data-tool-name="grep"');
+        expect(html).toContain("ToolCallCard");
     });
 });
