@@ -358,12 +358,14 @@ describe("AgentProgressView", () => {
 
         expect(html).toContain("Explore implementation");
         expect(html).toContain("Verify result");
+        expect(html).toContain('data-agent-progress-technical-details-toggle="true"');
+        expect(html).toContain("View technical calls/details");
         expect(html).not.toContain("grep");
         expect(html).not.toContain("functions.exec_command");
         expect(html).not.toContain("ToolCallCard");
     });
 
-    it("keeps ToolCallCard available in technical details", () => {
+    it("renders ToolCallCard after technical details are expanded", () => {
         const progress = deriveAgentProgress(
             makeRun([
                 {
@@ -391,6 +393,9 @@ describe("AgentProgressView", () => {
             createElement(AgentProgressView, { progress, showTechnicalDetails: true })
         );
 
+        expect(html).toContain('data-agent-progress-technical-details-toggle="true"');
+        expect(html).toContain('aria-expanded="true"');
+        expect(html).toContain("Hide technical calls/details");
         expect(html).toContain('data-agent-progress-technical-details="true"');
         expect(html).toContain('data-tool-callid="grep-1"');
         expect(html).toContain('data-tool-name="grep"');
