@@ -20,6 +20,8 @@ import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { deriveAgentProgress } from "./agent-progress";
+import { AgentProgressView } from "./agent-progress-view";
 import { type PiToolCall, type PiToolResultContent, ToolCallCard } from "./tool-call-card";
 
 const HORIZONTAL_PAD_PX = 16;
@@ -41,6 +43,8 @@ export const AgentBlockElement = memo(
         const userText = useMemo(() => extractText(run.userMessage), [run.userMessage]);
         const isStreaming = run.status === "streaming";
         const isError = run.status === "error";
+        const hasToolCalls = useMemo(() => runHasToolCalls(run), [run]);
+        const progress = useMemo(() => (hasToolCalls ? deriveAgentProgress(run) : undefined), [hasToolCalls, run]);
 
         return (
             <div
@@ -63,10 +67,12 @@ export const AgentBlockElement = memo(
             >
                 <AgentBlockHeader status={run.status} />
                 <UserMessage text={userText} fontSize={fontSize} />
+                {progress && <AgentProgressView progress={progress} showTechnicalDetails />}
                 <AssistantContent
                     responseMessages={run.responseMessages}
                     streaming={isStreaming}
                     fontSize={fontSize}
+                    renderToolCalls={!hasToolCalls}
                 />
                 {isError && run.errorMessage && (
                     // Warp's error style (block/view_impl/common.rs:3013): a row
@@ -109,6 +115,10 @@ function extractText(message: PiAgentMessage | undefined): string {
     return out.join("");
 }
 
+function runHasToolCalls(run: PiRun): boolean {
+    return run.responseMessages.some((msg) => msg.content?.some((content) => content.type === "toolCall"));
+}
+
 // =========================================================================
 // AssistantContent — walk the run's response messages in order, render
 // text from assistant messages as markdown, render toolCall blocks as
@@ -119,6 +129,7 @@ interface AssistantContentProps {
     responseMessages: PiAgentMessage[];
     streaming: boolean;
     fontSize: number;
+    renderToolCalls: boolean;
 }
 
 interface PiToolResultLite extends PiToolResultContent {
@@ -126,7 +137,7 @@ interface PiToolResultLite extends PiToolResultContent {
 }
 
 const AssistantContent = memo(
-    ({ responseMessages, streaming, fontSize }: AssistantContentProps) => {
+    ({ responseMessages, streaming, fontSize, renderToolCalls }: AssistantContentProps) => {
         // Index toolResults by toolUseId for O(1) lookup. Pi places
         // tool results in dedicated messages (role: "toolResult"); each
         // message's content array may carry multiple toolResult entries
@@ -189,6 +200,9 @@ const AssistantContent = memo(
                 }
                 if (c.type === "toolCall") {
                     flushText();
+                    if (!renderToolCalls) {
+                        continue;
+                    }
                     const call: PiToolCall = {
                         id: String(c.id ?? ""),
                         name: String(c.name ?? ""),
