@@ -291,4 +291,22 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
 
         expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(false);
     });
+
+    it("syncs legacy code review visibility for direct right panel state changes", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+
+        model.openRightTool("codeReview");
+
+        expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(true);
+
+        model.closeRightTool("codeReview");
+
+        expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(false);
+
+        model.openRightTool("codeReview");
+        model.setRightToolPanelVisible(false);
+
+        expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(false);
+    });
 });
