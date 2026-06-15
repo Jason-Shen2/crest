@@ -265,4 +265,30 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
             activeTool: undefined,
         });
     });
+
+    it("syncs legacy code review visibility when hydrating right panel state", () => {
+        setWorkspace("ws-a", {
+            [RightToolPanelMetaKey]: {
+                ...DefaultRightToolPanelState,
+                visible: true,
+                openedTools: ["codeReview"],
+                activeTool: "codeReview",
+            },
+        });
+        const model = WorkspaceLayoutModel.getInstance();
+
+        expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(true);
+
+        setWorkspace("ws-b", {
+            [RightToolPanelMetaKey]: {
+                ...DefaultRightToolPanelState,
+                visible: true,
+                openedTools: ["editor"],
+                activeTool: "editor",
+            },
+        });
+        expect(model.getRightToolPanelState().activeTool).toBe("editor");
+
+        expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(false);
+    });
 });
