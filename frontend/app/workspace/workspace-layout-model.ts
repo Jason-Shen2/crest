@@ -373,7 +373,12 @@ class WorkspaceLayoutModel {
     setRightToolPanelVisible(visible: boolean): void {
         const state = this.getRightToolPanelState();
         if (state.visible === visible) return;
-        this.setRightToolPanelState({ ...state, visible, magnified: visible ? state.magnified : false });
+        this.setRightToolPanelState({
+            ...state,
+            visible,
+            focused: visible ? state.focused : false,
+            magnified: visible ? state.magnified : false,
+        });
     }
 
     setRightToolPanelWidth(widthPx: number): void {
