@@ -115,7 +115,7 @@ const WorkspaceElem = memo(() => {
         [workspaceLayoutModel]
     );
     const showRightToolPanelLayout = rightToolPanelState.visible && !rightToolPanelState.magnified;
-    const showRightToolPanelToggle = !rightToolPanelState.visible;
+    const showRightToolPanelToggle = !rightToolPanelState.visible && !rightToolPanelState.magnified;
 
     return (
         <div className="flex flex-col w-full flex-grow overflow-hidden">
