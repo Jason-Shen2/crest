@@ -229,6 +229,17 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).not.toContain("data-legacy-resize-handle");
     });
 
+    it("renders the right panel as a workspace chrome sibling after the main tab content", () => {
+        const markup = renderToStaticMarkup(<Workspace />);
+        const mainContentIndex = markup.indexOf("<main>Main Tab Content</main>");
+        const rightResizeIndex = markup.indexOf('aria-label="Resize left"');
+        const rightPanelIndex = markup.indexOf('aria-label="Right tool panel"');
+
+        expect(mainContentIndex).toBeGreaterThanOrEqual(0);
+        expect(rightResizeIndex).toBeGreaterThan(mainContentIndex);
+        expect(rightPanelIndex).toBeGreaterThan(rightResizeIndex);
+    });
+
     it("does not mount ws-a code review content during ws-b first render before effect hydration", () => {
         jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
             otype: "workspace",
@@ -343,6 +354,11 @@ describe("Workspace right tool panel integration", () => {
         const collapsedMarkup = renderToStaticMarkup(<Workspace />);
         expect(collapsedMarkup).toContain('aria-label="Show right tool panel"');
         expect(collapsedMarkup).not.toContain('aria-label="Right tool panel"');
+
+        const mainContentIndex = collapsedMarkup.indexOf("<main>Main Tab Content</main>");
+        const collapsedToggleIndex = collapsedMarkup.indexOf('aria-label="Show right tool panel"');
+        expect(mainContentIndex).toBeGreaterThanOrEqual(0);
+        expect(collapsedToggleIndex).toBeGreaterThan(mainContentIndex);
 
         mockLayout.rightToolPanelAtom = jotai.atom({
             ...DefaultRightToolPanelState,
