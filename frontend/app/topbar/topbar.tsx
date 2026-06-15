@@ -14,6 +14,7 @@ import { isMacOS, isMacOSTahoeOrLater } from "@/util/platformutil";
 import { FloatingPortal, flip, offset, shift, useClick, useDismiss, useFloating, useInteractions } from "@floating-ui/react";
 import { useAtomValue } from "jotai";
 import { memo } from "react";
+import { getCodeReviewButtonActive, openCodeReviewFromTopBar } from "./topbar-code-review";
 import "./topbar.scss";
 
 // ---- Generic icon button ----
@@ -117,16 +118,15 @@ const RightPanelButtons = memo(() => {
         workspace?.oid ?? "",
         hydratedRightToolPanelState
     );
-    const codeReviewActive = rightToolPanelState.visible && rightToolPanelState.openedTools.includes("codeReview");
+    const codeReviewActive = getCodeReviewButtonActive(rightToolPanelState);
 
     return (
         <>
-            {/* Code Review: toggles right sidebar */}
             <ToolbarButton
                 icon="fa-code-branch"
                 label="Code Review"
                 active={codeReviewActive}
-                onClick={() => layoutModel.setCodeReviewVisible(!codeReviewActive)}
+                onClick={() => openCodeReviewFromTopBar(layoutModel)}
             />
 
             {/* Notifications: floating popover */}
