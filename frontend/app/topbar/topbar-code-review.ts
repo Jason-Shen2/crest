@@ -5,6 +5,7 @@ import type { RightToolPanelState } from "@/app/workspace/right-tool-panel-state
 
 type CodeReviewToolOpener = {
     openRightTool: (tool: "codeReview") => void;
+    setRightToolPanelFocused: (focused: boolean) => void;
 };
 
 export function getCodeReviewButtonActive(state: Pick<RightToolPanelState, "visible" | "activeTool">): boolean {
@@ -12,5 +13,6 @@ export function getCodeReviewButtonActive(state: Pick<RightToolPanelState, "visi
 }
 
 export function openCodeReviewFromTopBar(layoutModel: CodeReviewToolOpener): void {
+    layoutModel.setRightToolPanelFocused(false);
     layoutModel.openRightTool("codeReview");
 }
