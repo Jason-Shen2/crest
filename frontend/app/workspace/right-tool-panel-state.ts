@@ -90,7 +90,13 @@ export function normalizeRightToolPanelState(value: unknown, windowWidth: number
 
 export function openRightTool(state: RightToolPanelState, tool: RightToolId): RightToolPanelState {
     const openedTools = state.openedTools.includes(tool) ? state.openedTools : [...state.openedTools, tool];
-    return { ...state, visible: true, openedTools, activeTool: tool };
+    return {
+        ...state,
+        visible: true,
+        openedTools,
+        activeTool: tool,
+        focused: state.visible ? state.focused : false,
+    };
 }
 
 export function selectRightTool(state: RightToolPanelState, tool: RightToolId): RightToolPanelState {
