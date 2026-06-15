@@ -20,6 +20,7 @@ const mockLayout = vi.hoisted(() => {
         codeReviewVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
         codeReviewWideAtom: null as jotai.PrimitiveAtom<boolean>,
         rightToolPanelAtom: null as jotai.PrimitiveAtom<RightToolPanelState>,
+        tabContentMock: null as any,
         model: null as any,
     };
     return state;
@@ -151,7 +152,10 @@ vi.mock("@/app/tab/tabbar", () => ({
 }));
 
 vi.mock("@/app/tab/tabcontent", () => ({
-    TabContent: () => <main>Main Tab Content</main>,
+    TabContent: (props: { onFocusCapture?: () => void }) => {
+        mockLayout.tabContentMock?.(props);
+        return <main>Main Tab Content</main>;
+    },
 }));
 
 vi.mock("@/app/tab/vtabbar", () => ({
@@ -185,6 +189,7 @@ describe("Workspace right tool panel integration", () => {
             activeTool: "codeReview",
         });
         mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+        mockLayout.tabContentMock = vi.fn();
     });
 
     it("renders the right tool panel in workspace chrome instead of the legacy code review PanelGroup", () => {
@@ -266,5 +271,17 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).toContain('aria-label="Magnified right tool panel"');
         expect(markup).not.toContain('aria-label="Right tool panel"');
         expect(markup).not.toContain('aria-label="Resize left"');
+        expect(markup).not.toContain('aria-label="Show right tool panel"');
+    });
+
+    it("clears right tool focus when focus returns to the main tab content", () => {
+        renderToStaticMarkup(<Workspace />);
+
+        const tabContentProps = mockLayout.tabContentMock.mock.calls[0][0];
+        expect(tabContentProps.onFocusCapture).toBeTypeOf("function");
+
+        tabContentProps.onFocusCapture();
+
+        expect(mockLayout.model.setRightToolPanelFocused).toHaveBeenCalledWith(false);
     });
 });
