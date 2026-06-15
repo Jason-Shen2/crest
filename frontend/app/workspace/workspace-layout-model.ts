@@ -202,9 +202,11 @@ class WorkspaceLayoutModel {
     hydrateRightToolPanelFromWorkspace(): void {
         const workspaceId = this.getWorkspaceId();
         const savedRightToolPanel = globalStore.get(this.getRightToolPanelMetaAtom());
+        const normalizedState = normalizeRightToolPanelState(savedRightToolPanel, getRightToolPanelWindowWidth());
+        globalStore.set(this.rightToolPanelAtom, normalizedState);
         globalStore.set(
-            this.rightToolPanelAtom,
-            normalizeRightToolPanelState(savedRightToolPanel, getRightToolPanelWindowWidth())
+            this.codeReviewVisibleAtom,
+            normalizedState.visible && normalizedState.openedTools.includes("codeReview")
         );
         this.hydratedRightToolPanelWorkspaceId = workspaceId;
     }
