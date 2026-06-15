@@ -10,6 +10,8 @@ export interface AgentProgressAction {
     id: string;
     title: string;
     status: AgentProgressStatus;
+    summary: string;
+    detail?: string;
 }
 
 export interface AgentTechnicalCall {
@@ -32,6 +34,7 @@ export interface AgentProgressActionGroup {
     summary: string;
     status: AgentProgressStatus;
     risk?: AgentRiskLevel;
+    actions: AgentProgressAction[];
     toolCalls: AgentTechnicalCall[];
 }
 
@@ -142,6 +145,7 @@ function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
         if (prev?.title === item.descriptor.title) {
             const group = prev.actionGroups[prev.actionGroups.length - 1];
             group.toolCalls.push(item.call);
+            group.actions.push(makeAction(item.descriptor, item.call));
             group.status = mergeStatus(group.toolCalls);
             group.summary = summarizeGroup(item.descriptor, group.status);
             applyStageDerivedFields(prev, item.descriptor);
@@ -155,6 +159,7 @@ function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
             summary: summarizeGroup(item.descriptor, item.call.status),
             status: item.call.status,
             risk: item.descriptor.risk,
+            actions: [makeAction(item.descriptor, item.call)],
             toolCalls: [item.call],
         };
         const stage: AgentProgressStage = {
@@ -186,14 +191,42 @@ function applyStageDerivedFields(stage: AgentProgressStage, descriptor: StageDes
         stage.status === "running"
             ? stage.actionGroups
                   .flatMap((group) =>
-                      group.toolCalls.map((call) => ({
-                          id: call.id,
+                      group.actions.map((action) => ({
+                          id: action.id,
                           title: descriptor.actionTitle,
-                          status: call.status,
+                          status: action.status,
                       }))
                   )
                   .slice(-3)
             : [];
+}
+
+function makeAction(descriptor: StageDescriptor, call: AgentTechnicalCall): AgentProgressAction {
+    if (descriptor.risk === "file-edit") {
+        const detail = fileEvidence(call.input) || undefined;
+        const summary = fileEditActionSummary(call.status, detail);
+        return {
+            id: call.id,
+            title: summary,
+            status: call.status,
+            summary,
+            detail,
+        };
+    }
+    const summary = summarizeGroup(descriptor, call.status);
+    return {
+        id: call.id,
+        title: summary,
+        status: call.status,
+        summary,
+    };
+}
+
+function fileEditActionSummary(status: AgentProgressStatus, detail?: string): string {
+    const target = detail ? basename(detail) : "file";
+    if (status === "running") return `Updating ${target}`;
+    if (status === "failed") return `Could not update ${target}`;
+    return `Updated ${target}`;
 }
 
 function summarizeStage(descriptor: StageDescriptor, status: AgentProgressStatus): string {
@@ -292,13 +325,9 @@ function isReadOnlyTool(name: string): boolean {
 }
 
 function isEditTool(name: string): boolean {
-    return [
-        /^write$/,
-        /^edit$/,
-        /(^|[._:-])write/,
-        /(^|[._:-])edit/,
-        /(^|[._:-])apply[_-]?patch$/,
-    ].some((pattern) => pattern.test(name));
+    return [/^write$/, /^edit$/, /(^|[._:-])write/, /(^|[._:-])edit/, /(^|[._:-])apply[_-]?patch$/].some((pattern) =>
+        pattern.test(name)
+    );
 }
 
 function isCommandTool(name: string): boolean {
@@ -319,6 +348,24 @@ function inputCommand(input: unknown): string {
     if (typeof input === "string") return input;
     if (!input || typeof input !== "object") return "";
     return stringField(input, "command") || stringField(input, "cmd");
+}
+
+function fileEvidence(input: unknown): string {
+    const directPath =
+        stringField(input, "path") ||
+        stringField(input, "file") ||
+        stringField(input, "filepath") ||
+        stringField(input, "file_path") ||
+        stringField(input, "filePath");
+    if (directPath) return directPath;
+    const patchText = typeof input === "string" ? input : stringField(input, "text");
+    const match = patchText.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/m);
+    return match?.[1]?.trim() ?? "";
+}
+
+function basename(path: string): string {
+    const normalized = path.replace(/\\/g, "/");
+    return normalized.split("/").filter(Boolean).at(-1) ?? path;
 }
 
 function stringField(input: unknown, field: string): string {

@@ -52,7 +52,7 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).toContain("Reasoning content is not available.");
     });
 
-    it("renders pi tool-call runs as progress overview without raw technical details", () => {
+    it("renders pi tool-call runs as a cardless progress rail without raw metadata", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
                 run={makeRun(
@@ -87,17 +87,24 @@ describe("AgentBlockElement content rendering", () => {
         );
 
         expect(html).toContain('data-agent-progress-view="true"');
+        expect(html).toContain('data-agent-progress-rail="true"');
+        expect(html).toContain('data-agent-progress-stage-rail-line="true"');
+        expect(html).toContain('data-agent-progress-stage-row="run-command"');
+        expect(html).toContain('data-agent-progress-stage-toggle="run-command"');
+        expect(html).toContain('aria-expanded="false"');
         expect(html).toContain("Run command");
         expect(html).toContain("Ran command.");
         expect(html).toContain("done");
-        expect(html).toContain('data-agent-progress-technical-details-toggle="true"');
-        expect(html).toContain("View technical calls/details");
+        expect(html).not.toContain('data-agent-progress-card="true"');
+        expect(html).not.toContain('data-agent-progress-technical-details-toggle="true"');
+        expect(html).not.toContain("View technical calls/details");
         expect(html).not.toContain('data-agent-progress-technical-details="true"');
         expect(html).not.toContain('data-tool-name="shell_exec"');
         expect(html).not.toContain('data-tool-callid="tc1"');
+        expect(html).not.toContain("echo hi");
     });
 
-    it("defaults tool-call runs to progress overview while preserving assistant content", () => {
+    it("defaults tool-call runs to stage toggles while preserving assistant content", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
                 run={makeRun(
@@ -131,12 +138,18 @@ describe("AgentBlockElement content rendering", () => {
         );
 
         expect(html).toContain('data-agent-progress-view="true"');
+        expect(html).toContain('data-agent-progress-rail="true"');
+        expect(html).toContain('data-agent-progress-stage-row="explore-implementation"');
+        expect(html).toContain('data-agent-progress-stage-toggle="explore-implementation"');
+        expect(html).toContain('data-agent-progress-stage-chevron="explore-implementation"');
         expect(html).toContain("Explore implementation");
-        expect(html).toContain('data-agent-progress-technical-details-toggle="true"');
-        expect(html).toContain("View technical calls/details");
+        expect(html).not.toContain('data-agent-progress-card="true"');
+        expect(html).not.toContain('data-agent-progress-technical-details-toggle="true"');
+        expect(html).not.toContain("View technical calls/details");
         expect(html).not.toContain('data-agent-progress-technical-details="true"');
         expect(html).not.toContain('data-tool-name="grep"');
         expect(html).not.toContain('data-tool-callid="grep-1"');
+        expect(html).not.toContain("AgentProgressView");
         expect(html).toContain("Before <strong>tools</strong>.");
         expect(html).toContain("Thinking");
         expect(html).toContain("Need to inspect the code.");
