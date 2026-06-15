@@ -111,7 +111,13 @@ const RightPanelButtons = memo(() => {
     const notifModel = NotificationsModel.getInstance();
     const ghActivePanel = useAtomValue(ghModel.activePanelAtom);
     const notifUnread = useAtomValue(notifModel.unreadCountAtom);
-    const codeReviewVisible = useAtomValue(layoutModel.codeReviewVisibleAtom);
+    const workspace = useAtomValue(atoms.workspace);
+    const hydratedRightToolPanelState = useAtomValue(layoutModel.rightToolPanelAtom);
+    const rightToolPanelState = layoutModel.getRightToolPanelStateForWorkspace(
+        workspace?.oid ?? "",
+        hydratedRightToolPanelState
+    );
+    const codeReviewActive = rightToolPanelState.visible && rightToolPanelState.openedTools.includes("codeReview");
 
     return (
         <>
@@ -119,8 +125,8 @@ const RightPanelButtons = memo(() => {
             <ToolbarButton
                 icon="fa-code-branch"
                 label="Code Review"
-                active={codeReviewVisible}
-                onClick={() => layoutModel.setCodeReviewVisible(!codeReviewVisible)}
+                active={codeReviewActive}
+                onClick={() => layoutModel.setCodeReviewVisible(!codeReviewActive)}
             />
 
             {/* Notifications: floating popover */}
