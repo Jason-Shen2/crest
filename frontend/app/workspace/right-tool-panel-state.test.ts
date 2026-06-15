@@ -41,6 +41,21 @@ describe("right tool panel state", () => {
         expect(state.width).toBeLessThanOrEqual(Math.floor(1200 * MaxRightToolPanelWidthRatio));
     });
 
+    it("normalizes malformed persisted state without throwing", () => {
+        expect(normalizeRightToolPanelState(null as any, 1200)).toMatchObject({
+            visible: true,
+            width: 400,
+            openedTools: [],
+            activeTool: undefined,
+            toolState: {},
+            focused: false,
+            magnified: false,
+        });
+        expect(normalizeRightToolPanelState("bad-state" as any, 1200).openedTools).toEqual([]);
+        expect(normalizeRightToolPanelState({ openedTools: "editor" } as any, 1200).openedTools).toEqual([]);
+        expect(normalizeRightToolPanelState({ openedTools: 42 } as any, 1200).openedTools).toEqual([]);
+    });
+
     it("opens each outer tool at most once and activates it", () => {
         const first = openRightTool(DefaultRightToolPanelState, "editor");
         const second = openRightTool(first, "browser");

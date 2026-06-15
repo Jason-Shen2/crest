@@ -14,7 +14,6 @@ export type RightToolPanelState = {
 };
 
 export const RightToolIds: RightToolId[] = ["editor", "browser", "terminal", "codeReview"];
-export const RightToolPanelMetaKey = "layout:righttoolpanel";
 export const DefaultRightToolPanelWidth = 400;
 export const MinRightToolPanelWidth = 320;
 export const MaxRightToolPanelWidthRatio = 0.7;
@@ -49,9 +48,18 @@ export function clampRightToolPanelWidth(width: unknown, windowWidth: number): n
     return clamp(numericWidth, MinRightToolPanelWidth, getRightToolPanelMaxWidth(windowWidth));
 }
 
-export function normalizeRightToolPanelState(value: Partial<RightToolPanelState>, windowWidth: number): RightToolPanelState {
+function normalizeInputState(value: unknown): Partial<RightToolPanelState> {
+    if (value == null || typeof value !== "object") {
+        return {};
+    }
+    return value as Partial<RightToolPanelState>;
+}
+
+export function normalizeRightToolPanelState(value: unknown, windowWidth: number): RightToolPanelState {
+    const input = normalizeInputState(value);
     const openedTools: RightToolId[] = [];
-    for (const tool of value.openedTools ?? []) {
+    const incomingOpenedTools = Array.isArray(input.openedTools) ? input.openedTools : [];
+    for (const tool of incomingOpenedTools) {
         if (!isRightToolId(tool) || openedTools.includes(tool)) {
             continue;
         }
@@ -59,10 +67,10 @@ export function normalizeRightToolPanelState(value: Partial<RightToolPanelState>
     }
 
     const activeTool =
-        isRightToolId(value.activeTool) && openedTools.includes(value.activeTool) ? value.activeTool : openedTools[0];
+        isRightToolId(input.activeTool) && openedTools.includes(input.activeTool) ? input.activeTool : openedTools[0];
 
     const toolState: Partial<Record<RightToolId, unknown>> = {};
-    const incomingToolState = value.toolState ?? {};
+    const incomingToolState = normalizeInputState(input.toolState);
     for (const tool of RightToolIds) {
         if (Object.prototype.hasOwnProperty.call(incomingToolState, tool)) {
             toolState[tool] = incomingToolState[tool];
@@ -70,8 +78,8 @@ export function normalizeRightToolPanelState(value: Partial<RightToolPanelState>
     }
 
     return {
-        visible: typeof value.visible === "boolean" ? value.visible : DefaultRightToolPanelState.visible,
-        width: clampRightToolPanelWidth(value.width, windowWidth),
+        visible: typeof input.visible === "boolean" ? input.visible : DefaultRightToolPanelState.visible,
+        width: clampRightToolPanelWidth(input.width, windowWidth),
         openedTools,
         activeTool,
         toolState,
