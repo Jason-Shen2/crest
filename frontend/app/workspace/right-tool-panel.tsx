@@ -15,7 +15,8 @@ export type RightToolPanelProps = {
     onOpenTool: (tool: RightToolId) => void;
     onSelectTool: (tool: RightToolId) => void;
     onCloseTool: (tool: RightToolId) => void;
-    onFocusChange?: (focused: boolean) => void;
+    onHide: () => void;
+    onFocusPanel: () => void;
     className?: string;
 };
 
@@ -42,7 +43,36 @@ const RightToolMetadataById: Record<RightToolId, RightToolMetadata> = {
     },
 };
 
-function RightToolLauncher({ onOpenTool }: { onOpenTool: (tool: RightToolId) => void }) {
+export type RightToolLauncherProps = {
+    supportedTools?: RightToolId[];
+    onOpenTool: (tool: RightToolId) => void;
+};
+
+export type RightToolTabsProps = {
+    activeTool?: RightToolId;
+    openedTools: RightToolId[];
+    onSelectTool: (tool: RightToolId) => void;
+    onCloseTool: (tool: RightToolId) => void;
+};
+
+export type RightToolContentProps = {
+    activeTool?: RightToolId;
+};
+
+export type RightToolCollapsedToggleProps = {
+    onShow: () => void;
+    onFocusPanel: () => void;
+    className?: string;
+};
+
+export type RightToolPanelMagnifiedOverlayProps = Pick<
+    RightToolPanelProps,
+    "state" | "onSelectTool" | "onCloseTool" | "onFocusPanel"
+> & {
+    className?: string;
+};
+
+export function RightToolLauncher({ supportedTools = RightToolIds, onOpenTool }: RightToolLauncherProps) {
     return (
         <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
             <div>
@@ -50,7 +80,7 @@ function RightToolLauncher({ onOpenTool }: { onOpenTool: (tool: RightToolId) => 
                 <div className="mt-1 text-xs text-secondary">Open one tool per type and switch between tabs here.</div>
             </div>
             <div className="grid w-full grid-cols-2 gap-3">
-                {RightToolIds.map((tool) => {
+                {supportedTools.map((tool) => {
                     const metadata = RightToolMetadataById[tool];
                     return (
                         <button
@@ -69,17 +99,7 @@ function RightToolLauncher({ onOpenTool }: { onOpenTool: (tool: RightToolId) => 
     );
 }
 
-function RightToolTabs({
-    activeTool,
-    openedTools,
-    onSelectTool,
-    onCloseTool,
-}: {
-    activeTool?: RightToolId;
-    openedTools: RightToolId[];
-    onSelectTool: (tool: RightToolId) => void;
-    onCloseTool: (tool: RightToolId) => void;
-}) {
+export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTool }: RightToolTabsProps) {
     if (openedTools.length === 0) {
         return null;
     }
@@ -120,7 +140,7 @@ function RightToolTabs({
     );
 }
 
-function RightToolContent({ activeTool }: { activeTool?: RightToolId }) {
+export function RightToolContent({ activeTool }: RightToolContentProps) {
     if (activeTool == null) {
         return <RightToolLauncher onOpenTool={() => null} />;
     }
@@ -136,12 +156,67 @@ function RightToolContent({ activeTool }: { activeTool?: RightToolId }) {
     );
 }
 
+export function RightToolCollapsedToggle({ onShow, onFocusPanel, className }: RightToolCollapsedToggleProps) {
+    return (
+        <button
+            type="button"
+            aria-label="Show right tool panel"
+            className={cn(
+                "flex h-full w-8 shrink-0 cursor-pointer items-center justify-center border-l border-border bg-panelbg text-xs text-secondary hover:bg-hoverbg hover:text-white",
+                className
+            )}
+            onClick={onShow}
+            onFocus={onFocusPanel}
+        >
+            <span className="-rotate-90 whitespace-nowrap">Tools</span>
+        </button>
+    );
+}
+
+export function RightToolPanelMagnifiedOverlay({
+    state,
+    onSelectTool,
+    onCloseTool,
+    onFocusPanel,
+    className,
+}: RightToolPanelMagnifiedOverlayProps) {
+    if (!state.visible || !state.magnified || state.openedTools.length === 0) {
+        return null;
+    }
+    return (
+        <div
+            aria-label="Magnified right tool panel"
+            role="dialog"
+            className={cn(
+                "fixed inset-8 z-50 flex flex-col rounded-lg border border-border bg-panelbg shadow-2xl",
+                className
+            )}
+            tabIndex={0}
+            onFocus={onFocusPanel}
+        >
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
+            </div>
+            <RightToolTabs
+                activeTool={state.activeTool}
+                openedTools={state.openedTools}
+                onSelectTool={onSelectTool}
+                onCloseTool={onCloseTool}
+            />
+            <div className="min-h-0 flex-1 overflow-hidden">
+                <RightToolContent activeTool={state.activeTool} />
+            </div>
+        </div>
+    );
+}
+
 export function RightToolPanel({
     state,
     onOpenTool,
     onSelectTool,
     onCloseTool,
-    onFocusChange,
+    onHide,
+    onFocusPanel,
     className,
 }: RightToolPanelProps) {
     if (!state.visible) {
@@ -154,11 +229,18 @@ export function RightToolPanel({
             className={cn("flex h-full shrink-0 flex-col border-l border-border bg-panelbg", className)}
             style={{ width: state.width }}
             tabIndex={0}
-            onFocus={() => onFocusChange?.(true)}
-            onBlur={() => onFocusChange?.(false)}
+            onFocus={onFocusPanel}
         >
             <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
                 <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
+                <button
+                    type="button"
+                    aria-label="Hide right tool panel"
+                    className="cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
+                    onClick={onHide}
+                >
+                    <i className="fa-solid fa-chevron-right" />
+                </button>
             </div>
             <RightToolTabs
                 activeTool={state.activeTool}
