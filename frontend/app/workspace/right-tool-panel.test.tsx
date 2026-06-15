@@ -1,8 +1,9 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { isValidElement, ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
     RightToolCollapsedToggle,
     RightToolContent,
@@ -12,6 +13,12 @@ import {
     RightToolTabs,
 } from "./right-tool-panel";
 import { DefaultRightToolPanelState, RightToolPanelState } from "./right-tool-panel-state";
+
+type TestElementProps = {
+    "aria-label"?: string;
+    children?: ReactNode;
+    onClick?: () => void;
+};
 
 function renderPanel(state: RightToolPanelState): string {
     return renderToStaticMarkup(
@@ -24,6 +31,24 @@ function renderPanel(state: RightToolPanelState): string {
             onFocusPanel={() => null}
         />
     );
+}
+
+function findElementByAriaLabel(node: ReactNode, ariaLabel: string): ReactElement<TestElementProps> {
+    if (Array.isArray(node)) {
+        for (const child of node) {
+            const found = findElementByAriaLabel(child, ariaLabel);
+            if (found != null) {
+                return found;
+            }
+        }
+    }
+    if (!isValidElement<TestElementProps>(node)) {
+        return undefined;
+    }
+    if (node.props["aria-label"] === ariaLabel) {
+        return node;
+    }
+    return findElementByAriaLabel(node.props.children, ariaLabel);
 }
 
 describe("RightToolPanel", () => {
@@ -127,5 +152,27 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-label="Exit magnified right tool panel"');
         expect(markup).toContain("Editor Tool");
         expect(markup).toContain('aria-label="Select Browser"');
+    });
+
+    it("calls onExit when the magnified overlay exit button is pressed", () => {
+        const onExit = vi.fn();
+        const overlay = RightToolPanelMagnifiedOverlay({
+            state: {
+                ...DefaultRightToolPanelState,
+                openedTools: ["editor"],
+                activeTool: "editor",
+                magnified: true,
+            },
+            onSelectTool: () => null,
+            onCloseTool: () => null,
+            onFocusPanel: () => null,
+            onExit,
+        });
+        const exitButton = findElementByAriaLabel(overlay, "Exit magnified right tool panel");
+
+        expect(exitButton.props.onClick).toBeTypeOf("function");
+        exitButton.props.onClick?.();
+
+        expect(onExit).toHaveBeenCalledTimes(1);
     });
 });
