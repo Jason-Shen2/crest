@@ -153,7 +153,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
 
         expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
             visible: false,
-            width: 840,
+            width: 620,
             openedTools: ["editor"],
             activeTool: "editor",
             focused: true,
@@ -161,13 +161,31 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         });
         expect(getPersistedRightToolPanelState()).toEqual({
             visible: false,
-            width: 840,
+            width: 620,
             openedTools: ["editor"],
             activeTool: "editor",
             toolState: {},
         });
         expect(vi.mocked(RpcApi.SetMetaCommand).mock.calls.at(-1)?.[1]).toMatchObject({
             oref: "workspace:ws-a",
+        });
+    });
+
+    it("reserves visible left panels and the main content floor when clamping right panel width", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+        globalStore.set(model.vtabVisibleAtom, true);
+        globalStore.set(model.vtabWidthAtom, 248);
+        globalStore.set(model.fileExplorerVisibleAtom, true);
+        globalStore.set(model.fileExplorerWidthAtom, 260);
+
+        expect(model.getRightToolPanelMaxWidth(1200, true, 248, true, 260)).toBe(372);
+
+        model.setRightToolPanelWidth(99999);
+
+        expect(globalStore.get(model.rightToolPanelAtom).width).toBe(372);
+        expect(getPersistedRightToolPanelState()).toMatchObject({
+            width: 372,
         });
     });
 
@@ -308,5 +326,26 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         model.setRightToolPanelVisible(false);
 
         expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(false);
+    });
+
+    it("toggles magnify only for a focused visible right panel with opened tools", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+
+        expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
+        expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(false);
+
+        model.openRightTool("editor");
+        expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
+
+        model.setRightToolPanelFocused(true);
+        expect(model.toggleFocusedRightToolPanelMagnified()).toBe(true);
+        expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(true);
+
+        expect(model.toggleFocusedRightToolPanelMagnified()).toBe(true);
+        expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(false);
+
+        model.setRightToolPanelVisible(false);
+        expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
     });
 });
