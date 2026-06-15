@@ -119,10 +119,12 @@ describe("RightToolPanel parts", () => {
                 onSelectTool={() => null}
                 onCloseTool={() => null}
                 onFocusPanel={() => null}
+                onExit={() => null}
             />
         );
 
         expect(markup).toContain('aria-label="Magnified right tool panel"');
+        expect(markup).toContain('aria-label="Exit magnified right tool panel"');
         expect(markup).toContain("Editor Tool");
         expect(markup).toContain('aria-label="Select Browser"');
     });

@@ -69,6 +69,7 @@ export type RightToolPanelMagnifiedOverlayProps = Pick<
     RightToolPanelProps,
     "state" | "onSelectTool" | "onCloseTool" | "onFocusPanel"
 > & {
+    onExit: () => void;
     className?: string;
 };
 
@@ -178,6 +179,7 @@ export function RightToolPanelMagnifiedOverlay({
     onSelectTool,
     onCloseTool,
     onFocusPanel,
+    onExit,
     className,
 }: RightToolPanelMagnifiedOverlayProps) {
     if (!state.visible || !state.magnified || state.openedTools.length === 0) {
@@ -196,6 +198,14 @@ export function RightToolPanelMagnifiedOverlay({
         >
             <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
                 <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
+                <button
+                    type="button"
+                    aria-label="Exit magnified right tool panel"
+                    className="cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
+                    onClick={onExit}
+                >
+                    <i className="fa-solid fa-down-left-and-up-right-to-center" />
+                </button>
             </div>
             <RightToolTabs
                 activeTool={state.activeTool}
