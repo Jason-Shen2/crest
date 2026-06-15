@@ -3,6 +3,7 @@
 
 import { globalStore } from "@/app/store/jotaiStore";
 import { RpcApi } from "@/app/store/wshclientapi";
+import { openCodeReviewFromTopBar } from "@/app/topbar/topbar-code-review";
 import * as jotai from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultRightToolPanelState } from "./right-tool-panel-state";
@@ -387,5 +388,35 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
 
         model.setRightToolPanelVisible(false);
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
+    });
+
+    it("clears focus when hiding and requires real panel focus after a non-panel reopen for Cmd+M", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+
+        model.openRightTool("codeReview");
+        model.setRightToolPanelFocused(true);
+        model.setRightToolPanelVisible(false);
+
+        expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
+            visible: false,
+            focused: false,
+            magnified: false,
+        });
+
+        openCodeReviewFromTopBar(model);
+
+        expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
+            visible: true,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+            focused: false,
+        });
+        expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
+
+        model.setRightToolPanelFocused(true);
+
+        expect(model.toggleFocusedRightToolPanelMagnified()).toBe(true);
+        expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(true);
     });
 });

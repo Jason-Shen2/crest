@@ -68,6 +68,23 @@ describe("right tool panel state", () => {
         expect(third.activeTool).toBe("editor");
     });
 
+    it("does not carry stale focus when a hidden panel is reopened by a non-panel entry", () => {
+        const state = {
+            ...DefaultRightToolPanelState,
+            visible: false,
+            focused: true,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview" as const,
+        };
+
+        expect(openRightTool(state, "codeReview")).toMatchObject({
+            visible: true,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+            focused: false,
+        });
+    });
+
     it("selects only opened tools", () => {
         const state = openRightTool(DefaultRightToolPanelState, "terminal");
 
