@@ -370,6 +370,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
     it("toggles Cmd+M only for a focused visible right panel and clears block magnify on activation", () => {
         setWorkspace("ws-a");
         const model = WorkspaceLayoutModel.getInstance();
+        globalStore.set(model.codeReviewWideAtom, true);
 
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
         expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(false);
@@ -382,6 +383,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(true);
         expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(true);
         expect(mockGlobal.layoutModel.magnifyNodeToggle).toHaveBeenCalledWith("node-a");
+        expect(globalStore.get(model.codeReviewWideAtom)).toBe(false);
 
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(true);
         expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(false);
