@@ -12,6 +12,7 @@ const mockLayout = vi.hoisted(() => {
     const state = {
         staticTabIdAtom: null as jotai.PrimitiveAtom<string>,
         workspaceAtom: null as jotai.PrimitiveAtom<Workspace>,
+        isFullScreenAtom: null as jotai.PrimitiveAtom<boolean>,
         tabBarSettingAtom: null as jotai.PrimitiveAtom<string>,
         vtabVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
         fileExplorerVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
@@ -47,12 +48,14 @@ vi.mock("@/store/global", async () => {
         tabids: ["tab-a"],
         activetabid: "tab-a",
     } as Workspace);
+    mockLayout.isFullScreenAtom = jotaiActual.atom(false);
     mockLayout.tabBarSettingAtom = jotaiActual.atom("top");
 
     return {
         atoms: {
             staticTabId: mockLayout.staticTabIdAtom,
             workspace: mockLayout.workspaceAtom,
+            isFullScreen: mockLayout.isFullScreenAtom,
         },
         getSettingsKeyAtom: () => mockLayout.tabBarSettingAtom,
     };
@@ -130,6 +133,20 @@ vi.mock("@/app/notifications/notifications-model", () => ({
     NotificationsModel: {
         getInstance: () => ({
             ensureSubscribed: vi.fn(),
+            unreadCountAtom: jotai.atom(0),
+        }),
+    },
+}));
+
+vi.mock("@/app/notifications/notifications-panel", () => ({
+    NotificationsPanel: () => <div>Notifications Panel</div>,
+}));
+
+vi.mock("@/app/github/github-model", () => ({
+    GitHubModel: {
+        getInstance: () => ({
+            activePanelAtom: jotai.atom(null),
+            togglePanel: vi.fn(),
         }),
     },
 }));
@@ -153,8 +170,13 @@ vi.mock("@/app/tab/vtabbar", () => ({
     VTabBar: () => <div>Vertical Tabs</div>,
 }));
 
-vi.mock("@/app/topbar/topbar", () => ({
-    TopBar: () => <div>Top Bar</div>,
+vi.mock("@/app/tab/workspaceswitcher", () => ({
+    WorkspaceSwitcher: () => <div>Workspace Switcher</div>,
+}));
+
+vi.mock("@/util/platformutil", () => ({
+    isMacOS: () => false,
+    isMacOSTahoeOrLater: () => false,
 }));
 
 vi.mock("@/app/workspace/resize-handle", () => ({
@@ -241,6 +263,33 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).not.toContain("Git Review Sidebar");
         expect(markup).not.toContain('aria-label="Right tool panel"');
         expect(markup).toContain('aria-label="Show right tool panel"');
+    });
+
+    it("renders the TopBar Code Review button inactive on the first ws-b render when ws-a left it active", () => {
+        jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
+            otype: "workspace",
+            oid: "ws-b",
+            version: 1,
+            meta: {},
+            tabids: ["tab-b"],
+            activetabid: "tab-b",
+        } as Workspace);
+        mockLayout.model.getRightToolPanelStateForWorkspace = vi.fn((workspaceId: string, state: RightToolPanelState) => {
+            if (workspaceId !== "ws-b") {
+                return state;
+            }
+            return {
+                ...DefaultRightToolPanelState,
+                visible: false,
+                openedTools: [],
+                activeTool: undefined,
+            };
+        });
+
+        const markup = renderToStaticMarkup(<Workspace />);
+
+        expect(markup).toContain("fa-code-branch");
+        expect(markup).not.toContain("text-accent bg-white/10");
     });
 
     it("clamps the right tool resize budget after visible left panels and the main content floor", () => {
