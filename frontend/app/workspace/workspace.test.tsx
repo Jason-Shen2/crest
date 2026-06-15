@@ -1,0 +1,225 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import * as jotai from "jotai";
+import { renderToStaticMarkup } from "react-dom/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { DefaultRightToolPanelState, RightToolPanelState } from "./right-tool-panel-state";
+import { Workspace } from "./workspace";
+
+const mockLayout = vi.hoisted(() => {
+    const state = {
+        staticTabIdAtom: null as jotai.PrimitiveAtom<string>,
+        workspaceAtom: null as jotai.PrimitiveAtom<Workspace>,
+        tabBarSettingAtom: null as jotai.PrimitiveAtom<string>,
+        vtabVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
+        fileExplorerVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
+        vtabWidthAtom: null as jotai.PrimitiveAtom<number>,
+        fileExplorerWidthAtom: null as jotai.PrimitiveAtom<number>,
+        codeReviewVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
+        codeReviewWideAtom: null as jotai.PrimitiveAtom<boolean>,
+        rightToolPanelAtom: null as jotai.PrimitiveAtom<RightToolPanelState>,
+        model: null as any,
+    };
+    return state;
+});
+
+const defaultRightToolPanelState = vi.hoisted(() => ({
+    visible: true,
+    width: 400,
+    openedTools: [],
+    activeTool: undefined,
+    toolState: {},
+    focused: false,
+    magnified: false,
+}));
+
+vi.mock("react", async () => {
+    const reactActual = await vi.importActual<typeof import("react")>("react");
+    return {
+        ...reactActual,
+        useEffect: (effect: () => void | (() => void)) => {
+            effect();
+        },
+    };
+});
+
+vi.mock("@/store/global", async () => {
+    const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
+    mockLayout.staticTabIdAtom = jotaiActual.atom("tab-a");
+    mockLayout.workspaceAtom = jotaiActual.atom({
+        otype: "workspace",
+        oid: "ws-a",
+        version: 1,
+        meta: {},
+        tabids: ["tab-a"],
+        activetabid: "tab-a",
+    } as Workspace);
+    mockLayout.tabBarSettingAtom = jotaiActual.atom("top");
+
+    return {
+        atoms: {
+            staticTabId: mockLayout.staticTabIdAtom,
+            workspace: mockLayout.workspaceAtom,
+        },
+        getSettingsKeyAtom: () => mockLayout.tabBarSettingAtom,
+    };
+});
+
+vi.mock("@/app/workspace/workspace-layout-model", async () => {
+    const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
+    mockLayout.vtabVisibleAtom = jotaiActual.atom(false);
+    mockLayout.fileExplorerVisibleAtom = jotaiActual.atom(false);
+    mockLayout.vtabWidthAtom = jotaiActual.atom(248);
+    mockLayout.fileExplorerWidthAtom = jotaiActual.atom(260);
+    mockLayout.codeReviewVisibleAtom = jotaiActual.atom(true);
+    mockLayout.codeReviewWideAtom = jotaiActual.atom(false);
+    mockLayout.rightToolPanelAtom = jotaiActual.atom({
+        ...defaultRightToolPanelState,
+        width: 420,
+        openedTools: ["codeReview"],
+        activeTool: "codeReview",
+    });
+    mockLayout.model = {
+        vtabVisibleAtom: mockLayout.vtabVisibleAtom,
+        fileExplorerVisibleAtom: mockLayout.fileExplorerVisibleAtom,
+        vtabWidthAtom: mockLayout.vtabWidthAtom,
+        fileExplorerWidthAtom: mockLayout.fileExplorerWidthAtom,
+        codeReviewVisibleAtom: mockLayout.codeReviewVisibleAtom,
+        codeReviewWideAtom: mockLayout.codeReviewWideAtom,
+        rightToolPanelAtom: mockLayout.rightToolPanelAtom,
+        hydrateRightToolPanelFromWorkspace: vi.fn(),
+        setVTabVisible: vi.fn(),
+        getVTabMinWidth: () => 200,
+        getVTabMaxWidth: () => 360,
+        getFileExplorerMinWidth: () => 180,
+        getFileExplorerMaxWidth: () => 500,
+        setVTabWidth: vi.fn(),
+        setFileExplorerWidth: vi.fn(),
+        setRightToolPanelVisible: vi.fn(),
+        setRightToolPanelWidth: vi.fn(),
+        openRightTool: vi.fn(),
+        selectRightTool: vi.fn(),
+        closeRightTool: vi.fn(),
+        setRightToolPanelFocused: vi.fn(),
+        setRightToolPanelMagnified: vi.fn(),
+    };
+
+    return {
+        WorkspaceLayoutModel: {
+            getInstance: () => mockLayout.model,
+        },
+    };
+});
+
+vi.mock("@/app/element/errorboundary", () => ({
+    ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+vi.mock("@/app/element/quickelems", () => ({
+    CenteredDiv: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+
+vi.mock("@/app/fileexplorer/file-explorer", () => ({
+    FileExplorer: () => <div>File Explorer</div>,
+}));
+
+vi.mock("@/app/modals/modalsrenderer", () => ({
+    ModalsRenderer: () => <div>Modals</div>,
+}));
+
+vi.mock("@/app/notifications/notification-toast", () => ({
+    NotificationToastStacker: () => <div>Notifications</div>,
+}));
+
+vi.mock("@/app/notifications/notifications-model", () => ({
+    NotificationsModel: {
+        getInstance: () => ({
+            ensureSubscribed: vi.fn(),
+        }),
+    },
+}));
+
+vi.mock("@/app/codereview/git-panel", () => ({
+    GitReviewSidebar: () => <div>Git Review Sidebar</div>,
+}));
+
+vi.mock("@/app/tab/tabbar", () => ({
+    TabBar: () => <div>Tab Bar</div>,
+}));
+
+vi.mock("@/app/tab/tabcontent", () => ({
+    TabContent: () => <main>Main Tab Content</main>,
+}));
+
+vi.mock("@/app/tab/vtabbar", () => ({
+    VTabBar: () => <div>Vertical Tabs</div>,
+}));
+
+vi.mock("@/app/topbar/topbar", () => ({
+    TopBar: () => <div>Top Bar</div>,
+}));
+
+vi.mock("@/app/workspace/resize-handle", () => ({
+    ResizeHandle: ({ side }: { side?: string }) => <div aria-label={`Resize ${side ?? "right"}`} />,
+}));
+
+vi.mock("react-resizable-panels", () => ({
+    PanelGroup: ({ children }: { children: React.ReactNode }) => <div data-legacy-panel-group="true">{children}</div>,
+    Panel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    PanelResizeHandle: () => <div data-legacy-resize-handle="true" />,
+}));
+
+describe("Workspace right tool panel integration", () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockLayout.rightToolPanelAtom = jotai.atom({
+            ...DefaultRightToolPanelState,
+            width: 420,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+        });
+        mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+    });
+
+    it("renders the right tool panel in workspace chrome instead of the legacy code review PanelGroup", () => {
+        const markup = renderToStaticMarkup(<Workspace />);
+
+        expect(mockLayout.model.hydrateRightToolPanelFromWorkspace).toHaveBeenCalled();
+        expect(markup).toContain('aria-label="Right tool panel"');
+        expect(markup).toContain('style="width:420px"');
+        expect(markup).toContain('aria-label="Select Code Review"');
+        expect(markup).toContain("Git Review Sidebar");
+        expect(markup).toContain('aria-label="Resize left"');
+        expect(markup).not.toContain("data-legacy-panel-group");
+        expect(markup).not.toContain("data-legacy-resize-handle");
+    });
+
+    it("renders the collapsed toggle and magnified overlay from workspace state", () => {
+        mockLayout.rightToolPanelAtom = jotai.atom({
+            ...DefaultRightToolPanelState,
+            visible: false,
+            openedTools: ["editor"],
+            activeTool: "editor",
+            magnified: true,
+        });
+        mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+
+        const collapsedMarkup = renderToStaticMarkup(<Workspace />);
+        expect(collapsedMarkup).toContain('aria-label="Show right tool panel"');
+        expect(collapsedMarkup).not.toContain('aria-label="Right tool panel"');
+
+        mockLayout.rightToolPanelAtom = jotai.atom({
+            ...DefaultRightToolPanelState,
+            openedTools: ["editor"],
+            activeTool: "editor",
+            magnified: true,
+        });
+        mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+
+        const magnifiedMarkup = renderToStaticMarkup(<Workspace />);
+        expect(magnifiedMarkup).toContain('aria-label="Magnified right tool panel"');
+        expect(magnifiedMarkup).toContain('aria-label="Exit magnified right tool panel"');
+    });
+});

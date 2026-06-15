@@ -7,18 +7,22 @@ import { FileExplorer } from "@/app/fileexplorer/file-explorer";
 import { ModalsRenderer } from "@/app/modals/modalsrenderer";
 import { NotificationToastStacker } from "@/app/notifications/notification-toast";
 import { NotificationsModel } from "@/app/notifications/notifications-model";
-import { GitReviewSidebar } from "@/app/codereview/git-panel";
 import { TabBar } from "@/app/tab/tabbar";
 import { TabContent } from "@/app/tab/tabcontent";
 import { VTabBar } from "@/app/tab/vtabbar";
 import { TopBar } from "@/app/topbar/topbar";
 import { ResizeHandle } from "@/app/workspace/resize-handle";
+import {
+    RightToolCollapsedToggle,
+    RightToolPanel,
+    RightToolPanelMagnifiedOverlay,
+} from "@/app/workspace/right-tool-panel";
+import { getRightToolPanelMaxWidth, MinRightToolPanelWidth } from "@/app/workspace/right-tool-panel-state";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { atoms, getSettingsKeyAtom } from "@/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect } from "react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 // Workspace layout — warp parity (see app/src/workspace/view.rs:19448
 // `render_panels`).  Left panels are absolute-px widths in a flex row;
@@ -43,8 +47,7 @@ const WorkspaceElem = memo(() => {
     const fileExplorerVisible = useAtomValue(workspaceLayoutModel.fileExplorerVisibleAtom);
     const vtabWidth = useAtomValue(workspaceLayoutModel.vtabWidthAtom);
     const fileExplorerWidth = useAtomValue(workspaceLayoutModel.fileExplorerWidthAtom);
-    const codeReviewVisible = useAtomValue(workspaceLayoutModel.codeReviewVisibleAtom);
-    const codeReviewWide = useAtomValue(workspaceLayoutModel.codeReviewWideAtom);
+    const rightToolPanelState = useAtomValue(workspaceLayoutModel.rightToolPanelAtom);
 
     // VTab visibility derives from the tabbar-position setting — same
     // semantics as the legacy model.  Setting persists at the app level;
@@ -54,35 +57,47 @@ const WorkspaceElem = memo(() => {
         workspaceLayoutModel.setVTabVisible(showLeftTabBar);
     }, [showLeftTabBar, workspaceLayoutModel]);
 
+    useEffect(() => {
+        workspaceLayoutModel.hydrateRightToolPanelFromWorkspace();
+    }, [workspaceLayoutModel, ws.oid]);
+
     // ResizeHandle reads `maxFn()` on every pointermove so a window
     // resize mid-drag updates the bound (warp's `with_bounds_callback`).
     // Each closure also captures the *other* panel's visibility/width so
     // shrinking the FE doesn't let the VTab steal the budget.
     const vtabMaxFn = useCallback(
-        () =>
-            workspaceLayoutModel.getVTabMaxWidth(
-                window.innerWidth,
-                fileExplorerVisible,
-                fileExplorerWidth
-            ),
+        () => workspaceLayoutModel.getVTabMaxWidth(window.innerWidth, fileExplorerVisible, fileExplorerWidth),
         [workspaceLayoutModel, fileExplorerVisible, fileExplorerWidth]
     );
     const fileExplorerMaxFn = useCallback(
-        () =>
-            workspaceLayoutModel.getFileExplorerMaxWidth(
-                window.innerWidth,
-                vtabVisible,
-                vtabWidth
-            ),
+        () => workspaceLayoutModel.getFileExplorerMaxWidth(window.innerWidth, vtabVisible, vtabWidth),
         [workspaceLayoutModel, vtabVisible, vtabWidth]
     );
 
-    const onVTabResize = useCallback(
-        (px: number) => workspaceLayoutModel.setVTabWidth(px),
-        [workspaceLayoutModel]
-    );
+    const onVTabResize = useCallback((px: number) => workspaceLayoutModel.setVTabWidth(px), [workspaceLayoutModel]);
     const onFileExplorerResize = useCallback(
         (px: number) => workspaceLayoutModel.setFileExplorerWidth(px),
+        [workspaceLayoutModel]
+    );
+    const rightToolPanelMaxFn = useCallback(() => getRightToolPanelMaxWidth(window.innerWidth), []);
+    const onRightToolPanelResize = useCallback(
+        (px: number) => workspaceLayoutModel.setRightToolPanelWidth(px),
+        [workspaceLayoutModel]
+    );
+    const onRightToolPanelHide = useCallback(
+        () => workspaceLayoutModel.setRightToolPanelVisible(false),
+        [workspaceLayoutModel]
+    );
+    const onRightToolPanelShow = useCallback(
+        () => workspaceLayoutModel.setRightToolPanelVisible(true),
+        [workspaceLayoutModel]
+    );
+    const onRightToolPanelFocus = useCallback(
+        () => workspaceLayoutModel.setRightToolPanelFocused(true),
+        [workspaceLayoutModel]
+    );
+    const onRightToolPanelExitMagnified = useCallback(
+        () => workspaceLayoutModel.setRightToolPanelMagnified(false),
         [workspaceLayoutModel]
     );
 
@@ -97,10 +112,7 @@ const WorkspaceElem = memo(() => {
                         `if vertical_tabs_active { add child }`). */}
                     {vtabVisible && showLeftTabBar && (
                         <>
-                            <div
-                                className="shrink-0 h-full overflow-hidden"
-                                style={{ width: `${vtabWidth}px` }}
-                            >
+                            <div className="shrink-0 h-full overflow-hidden" style={{ width: `${vtabWidth}px` }}>
                                 <VTabBar workspace={ws} />
                             </div>
                             <ResizeHandle
@@ -140,47 +152,40 @@ const WorkspaceElem = memo(() => {
                             <CenteredDiv>No Active Tab</CenteredDiv>
                         ) : (
                             <div className="relative flex-1 min-h-0 w-full">
-                                <PanelGroup direction="horizontal" className="h-full w-full">
-                                    <Panel
-                                        id="tab-content"
-                                        order={0}
-                                        defaultSize={codeReviewVisible && !codeReviewWide ? 65 : 100}
-                                        minSize={25}
-                                    >
-                                        <div className="relative flex flex-row w-full h-full overflow-hidden">
-                                            <TabContent
-                                                key={tabId}
-                                                tabId={tabId}
-                                                noTopPadding={showLeftTabBar && isMacOS()}
-                                            />
-                                        </div>
-                                    </Panel>
-                                    {codeReviewVisible && !codeReviewWide && (
-                                        <>
-                                            <PanelResizeHandle className="bg-transparent hover:bg-zinc-500/20 transition-colors w-0.5" />
-                                            <Panel
-                                                id="code-review"
-                                                order={1}
-                                                defaultSize={35}
-                                                minSize={20}
-                                                maxSize={70}
-                                                className="overflow-hidden"
-                                            >
-                                                <div className="w-full h-full overflow-hidden">
-                                                    <GitReviewSidebar />
-                                                </div>
-                                            </Panel>
-                                        </>
-                                    )}
-                                </PanelGroup>
-                                {codeReviewVisible && codeReviewWide && (
-                                    <div className="absolute inset-0 z-10 backdrop-blur-xl bg-black/30">
-                                        <GitReviewSidebar />
-                                    </div>
-                                )}
+                                <div className="relative flex flex-row w-full h-full overflow-hidden">
+                                    <TabContent key={tabId} tabId={tabId} noTopPadding={showLeftTabBar && isMacOS()} />
+                                </div>
                             </div>
                         )}
                     </div>
+                    {rightToolPanelState.visible ? (
+                        <>
+                            <ResizeHandle
+                                width={rightToolPanelState.width}
+                                min={MinRightToolPanelWidth}
+                                maxFn={rightToolPanelMaxFn}
+                                onResize={onRightToolPanelResize}
+                                side="left"
+                            />
+                            <RightToolPanel
+                                state={rightToolPanelState}
+                                onOpenTool={(tool) => workspaceLayoutModel.openRightTool(tool)}
+                                onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
+                                onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
+                                onHide={onRightToolPanelHide}
+                                onFocusPanel={onRightToolPanelFocus}
+                            />
+                        </>
+                    ) : (
+                        <RightToolCollapsedToggle onShow={onRightToolPanelShow} onFocusPanel={onRightToolPanelFocus} />
+                    )}
+                    <RightToolPanelMagnifiedOverlay
+                        state={rightToolPanelState}
+                        onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
+                        onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
+                        onFocusPanel={onRightToolPanelFocus}
+                        onExit={onRightToolPanelExitMagnified}
+                    />
                     <ModalsRenderer />
                 </ErrorBoundary>
             </div>

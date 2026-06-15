@@ -4,6 +4,11 @@
 import { isValidElement, ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/app/codereview/git-panel", () => ({
+    GitReviewSidebar: () => <div>Git Review Sidebar</div>,
+}));
+
 import {
     RightToolCollapsedToggle,
     RightToolContent,
@@ -121,8 +126,7 @@ describe("RightToolPanel parts", () => {
     it("renders the active tool content as a standalone export", () => {
         const markup = renderToStaticMarkup(<RightToolContent activeTool="codeReview" />);
 
-        expect(markup).toContain("Code Review Tool");
-        expect(markup).toContain("Review code changes");
+        expect(markup).toContain("Git Review Sidebar");
     });
 
     it("renders a collapsed toggle for restoring the panel", () => {

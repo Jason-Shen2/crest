@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { GitReviewSidebar } from "@/app/codereview/git-panel";
 import { cn } from "@/util/util";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
 
@@ -144,6 +145,9 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
 export function RightToolContent({ activeTool }: RightToolContentProps) {
     if (activeTool == null) {
         return <RightToolLauncher onOpenTool={() => null} />;
+    }
+    if (activeTool === "codeReview") {
+        return <GitReviewSidebar />;
     }
     const metadata = RightToolMetadataById[activeTool];
     return (
