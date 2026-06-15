@@ -153,6 +153,10 @@ describe("RightToolPanel parts", () => {
         );
 
         expect(markup).toContain('aria-label="Magnified right tool panel"');
+        expect(markup).toContain('aria-label="Dismiss magnified right tool panel"');
+        expect(markup).toContain("--magnified-block-opacity:0.6");
+        expect(markup).toContain("--magnified-block-blur:10px");
+        expect(markup).toContain("var(--zindex-layout-magnified-node");
         expect(markup).toContain('aria-label="Exit magnified right tool panel"');
         expect(markup).toContain("Editor Tool");
         expect(markup).toContain('aria-label="Select Browser"');
@@ -176,6 +180,28 @@ describe("RightToolPanel parts", () => {
 
         expect(exitButton.props.onClick).toBeTypeOf("function");
         exitButton.props.onClick?.();
+
+        expect(onExit).toHaveBeenCalledTimes(1);
+    });
+
+    it("calls onExit when the magnified overlay backdrop is pressed", () => {
+        const onExit = vi.fn();
+        const overlay = RightToolPanelMagnifiedOverlay({
+            state: {
+                ...DefaultRightToolPanelState,
+                openedTools: ["editor"],
+                activeTool: "editor",
+                magnified: true,
+            },
+            onSelectTool: () => null,
+            onCloseTool: () => null,
+            onFocusPanel: () => null,
+            onExit,
+        });
+        const backdrop = findElementByAriaLabel(overlay, "Dismiss magnified right tool panel");
+
+        expect(backdrop.props.onClick).toBeTypeOf("function");
+        backdrop.props.onClick?.();
 
         expect(onExit).toHaveBeenCalledTimes(1);
     });
