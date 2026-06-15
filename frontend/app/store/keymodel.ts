@@ -385,6 +385,20 @@ function appHandleKeyDown(waveEvent: WaveKeyboardEvent): boolean {
     return false;
 }
 
+function handleMagnifyToggle(): boolean {
+    const workspaceLayoutModel = WorkspaceLayoutModel.getInstance();
+    if (workspaceLayoutModel.toggleFocusedRightToolPanelMagnified()) {
+        return true;
+    }
+
+    const layoutModel = getLayoutModelForStaticTab();
+    const focusedNode = globalStore.get(layoutModel.focusedNode);
+    if (focusedNode != null) {
+        layoutModel.magnifyNodeToggle(focusedNode.id);
+    }
+    return true;
+}
+
 function registerControlShiftStateUpdateHandler() {
     getApi().onControlShiftStateUpdate((state: boolean) => {
         if (state) {
@@ -472,12 +486,7 @@ function registerGlobalKeys() {
         return true;
     });
     globalKeyMap.set("Cmd:m", () => {
-        const layoutModel = getLayoutModelForStaticTab();
-        const focusedNode = globalStore.get(layoutModel.focusedNode);
-        if (focusedNode != null) {
-            layoutModel.magnifyNodeToggle(focusedNode.id);
-        }
-        return true;
+        return handleMagnifyToggle();
     });
     globalKeyMap.set("Ctrl:Shift:ArrowUp", () => {
         const disableCtrlShiftArrows = globalStore.get(getSettingsKeyAtom("app:disablectrlshiftarrows"));
@@ -695,6 +704,7 @@ export {
     globalRefocus,
     globalRefocusWithTimeout,
     handleCmdN,
+    handleMagnifyToggle,
     handleSplitHorizontal,
     handleSplitVertical,
     registerBuilderGlobalKeys,

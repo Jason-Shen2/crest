@@ -1,24 +1,16 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { UIcon } from "@/app/element/ui-icon";
 import { ContextMenuModel } from "@/app/store/contextmenu";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
-import { UIcon } from "@/app/element/ui-icon";
-import { cn, fireAndForget } from "@/util/util";
 import { getApi } from "@/store/global";
+import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bundledLanguages, codeToHtml } from "shiki/bundle/web";
-import {
-    DiffLine,
-    DiffMode,
-    FileStats,
-    GitChangedFile,
-    GitModel,
-    ReviewComment,
-    statusGroup,
-} from "./git-model";
+import { DiffLine, DiffMode, FileStats, GitChangedFile, GitModel, ReviewComment, statusGroup } from "./git-model";
 
 const ShikiTheme = "github-dark-high-contrast";
 const FileSidebar_DefaultWidth = 250;
@@ -117,6 +109,17 @@ const HeaderIconButton = memo(
 );
 HeaderIconButton.displayName = "HeaderIconButton";
 
+export function CodeReviewPanelMagnifyButton({ magnified, onToggle }: { magnified: boolean; onToggle: () => void }) {
+    return (
+        <HeaderIconButton
+            icon={magnified ? "minimize-01" : "maximize-01"}
+            title={magnified ? "Collapse panel" : "Maximize panel"}
+            active={magnified}
+            onClick={onToggle}
+        />
+    );
+}
+
 // ---- Status badge label (modified / added / deleted / renamed) ----
 function statusLabel(status: string): { label: string; color: string } | null {
     const g = statusGroup(status);
@@ -129,17 +132,7 @@ function statusLabel(status: string): { label: string; color: string } | null {
 
 // ---- Stat badge: `+494 −0` ----
 const StatBadge = memo(
-    ({
-        add,
-        del,
-        loading,
-        muted,
-    }: {
-        add: number;
-        del: number;
-        loading?: boolean;
-        muted?: boolean;
-    }) => {
+    ({ add, del, loading, muted }: { add: number; del: number; loading?: boolean; muted?: boolean }) => {
         if (loading) {
             return <span className="h-4 w-[60px] shrink-0 animate-pulse rounded-sm bg-fg-overlay-1" />;
         }
@@ -284,10 +277,10 @@ const DiffLineRow = memo(
                     />
                 )}
                 <span className="w-9 shrink-0 select-none pl-2 pr-1 text-right text-[10px] tabular-nums text-secondary/45">
-                    {isAdd ? "" : oldNum ?? ""}
+                    {isAdd ? "" : (oldNum ?? "")}
                 </span>
                 <span className="relative w-9 shrink-0 select-none pr-2 text-right text-[10px] tabular-nums text-secondary/45">
-                    {isDel ? "" : newNum ?? ""}
+                    {isDel ? "" : (newNum ?? "")}
                     {onAddComment && targetLine != null && (
                         <button
                             type="button"
@@ -315,15 +308,7 @@ const DiffLineRow = memo(
 DiffLineRow.displayName = "DiffLineRow";
 
 // ---- Inline comment composer at a specific line ----
-function LineCommentComposer({
-    path,
-    line,
-    onClose,
-}: {
-    path: string;
-    line: number | null;
-    onClose: () => void;
-}) {
+function LineCommentComposer({ path, line, onClose }: { path: string; line: number | null; onClose: () => void }) {
     const [body, setBody] = useState("");
     const inputRef = useRef<HTMLTextAreaElement>(null);
     useEffect(() => {
@@ -477,11 +462,7 @@ const FileCard = memo(({ file, expanded, selected, loading, stats, diff, comment
                 onClick={() => fireAndForget(() => model.toggleExpand(file.path))}
             >
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors group-hover:bg-fg-overlay-2">
-                    <UIcon
-                        name={expanded ? "chevron-down" : "chevron-right"}
-                        size={11}
-                        className="text-secondary"
-                    />
+                    <UIcon name={expanded ? "chevron-down" : "chevron-right"} size={11} className="text-secondary" />
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[12px]" title={file.path}>
                     {dirPath && <span className="text-sub-text">{dirPath}/</span>}
@@ -547,11 +528,7 @@ const FileCard = memo(({ file, expanded, selected, loading, stats, diff, comment
             </div>
             {/* File-level comment composer */}
             {composerLine === "file" && (
-                <LineCommentComposer
-                    path={file.path}
-                    line={null}
-                    onClose={() => setComposerLine(null)}
-                />
+                <LineCommentComposer path={file.path} line={null} onClose={() => setComposerLine(null)} />
             )}
             {/* File-level inline comments */}
             {comments.filter((c) => c.line == null).length > 0 && (
@@ -576,9 +553,7 @@ const FileCard = memo(({ file, expanded, selected, loading, stats, diff, comment
                                     : item.line.type === "remove"
                                       ? item.oldNum
                                       : item.newNum;
-                            const lineComments = comments.filter(
-                                (c) => c.line != null && c.line === lineNumber
-                            );
+                            const lineComments = comments.filter((c) => c.line != null && c.line === lineNumber);
                             return (
                                 <Fragment key={i}>
                                     <DiffLineRow
@@ -759,11 +734,7 @@ function CommentsPanel({ comments }: { comments: ReviewComment[] }) {
                 onClick={() => setOpen(!open)}
                 className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-[12px] hover:bg-fg-overlay-1"
             >
-                <UIcon
-                    name={open ? "chevron-down" : "chevron-right"}
-                    size={11}
-                    className="text-secondary"
-                />
+                <UIcon name={open ? "chevron-down" : "chevron-right"} size={11} className="text-secondary" />
                 <span className="font-medium text-foreground">
                     {comments.length} comment{comments.length === 1 ? "" : "s"}
                 </span>
@@ -836,7 +807,7 @@ export const GitReviewSidebar = memo(() => {
     }, []);
 
     const layoutModel = WorkspaceLayoutModel.getInstance();
-    const isWide = useAtomValue(layoutModel.codeReviewWideAtom);
+    const rightToolPanelState = useAtomValue(layoutModel.rightToolPanelAtom);
 
     // File sidebar width — local to the panel (per-tab persistence is a polish item).
     const [sidebarWidth, setSidebarWidth] = useState(FileSidebar_DefaultWidth);
@@ -867,13 +838,14 @@ export const GitReviewSidebar = memo(() => {
                     {isRepo && (
                         <>
                             <UIcon name="git-branch-02" size={14} className="shrink-0 text-secondary" />
-                            <span
-                                className="truncate text-[14px] font-semibold text-foreground"
-                                title={branch}
-                            >
+                            <span className="truncate text-[14px] font-semibold text-foreground" title={branch}>
                                 {branch || "—"}
                             </span>
-                            <StatBadge add={totalAdd} del={totalDel} loading={loading && totalAdd === 0 && totalDel === 0} />
+                            <StatBadge
+                                add={totalAdd}
+                                del={totalDel}
+                                loading={loading && totalAdd === 0 && totalDel === 0}
+                            />
                             <span className="shrink-0 text-[11px] tabular-nums text-secondary/70">
                                 {fileCount} file{fileCount === 1 ? "" : "s"}
                             </span>
@@ -916,10 +888,9 @@ export const GitReviewSidebar = memo(() => {
                             }}
                         />
                     )}
-                    <HeaderIconButton
-                        icon={isWide ? "minimize-01" : "maximize-01"}
-                        title={isWide ? "Collapse panel" : "Maximize panel"}
-                        onClick={() => globalStore.set(layoutModel.codeReviewWideAtom, !isWide)}
+                    <CodeReviewPanelMagnifyButton
+                        magnified={rightToolPanelState.magnified}
+                        onToggle={() => layoutModel.setRightToolPanelMagnified(!rightToolPanelState.magnified)}
                     />
                     <HeaderIconButton
                         icon="x-close"
