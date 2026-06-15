@@ -17,7 +17,7 @@ import {
     RightToolPanel,
     RightToolPanelMagnifiedOverlay,
 } from "@/app/workspace/right-tool-panel";
-import { getRightToolPanelMaxWidth, MinRightToolPanelWidth } from "@/app/workspace/right-tool-panel-state";
+import { MinRightToolPanelWidth } from "@/app/workspace/right-tool-panel-state";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { atoms, getSettingsKeyAtom } from "@/store/global";
 import { isMacOS } from "@/util/platformutil";
@@ -79,7 +79,17 @@ const WorkspaceElem = memo(() => {
         (px: number) => workspaceLayoutModel.setFileExplorerWidth(px),
         [workspaceLayoutModel]
     );
-    const rightToolPanelMaxFn = useCallback(() => getRightToolPanelMaxWidth(window.innerWidth), []);
+    const rightToolPanelMaxFn = useCallback(
+        () =>
+            workspaceLayoutModel.getRightToolPanelMaxWidth(
+                window.innerWidth,
+                vtabVisible,
+                vtabWidth,
+                fileExplorerVisible,
+                fileExplorerWidth
+            ),
+        [workspaceLayoutModel, vtabVisible, vtabWidth, fileExplorerVisible, fileExplorerWidth]
+    );
     const onRightToolPanelResize = useCallback(
         (px: number) => workspaceLayoutModel.setRightToolPanelWidth(px),
         [workspaceLayoutModel]
@@ -158,7 +168,7 @@ const WorkspaceElem = memo(() => {
                             </div>
                         )}
                     </div>
-                    {rightToolPanelState.visible ? (
+                    {rightToolPanelState.visible && !rightToolPanelState.magnified ? (
                         <>
                             <ResizeHandle
                                 width={rightToolPanelState.width}

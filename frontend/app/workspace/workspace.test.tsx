@@ -95,6 +95,7 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
         getVTabMaxWidth: () => 360,
         getFileExplorerMinWidth: () => 180,
         getFileExplorerMaxWidth: () => 500,
+        getRightToolPanelMaxWidth: () => 840,
         setVTabWidth: vi.fn(),
         setFileExplorerWidth: vi.fn(),
         setRightToolPanelVisible: vi.fn(),
@@ -162,7 +163,9 @@ vi.mock("@/app/topbar/topbar", () => ({
 }));
 
 vi.mock("@/app/workspace/resize-handle", () => ({
-    ResizeHandle: ({ side }: { side?: string }) => <div aria-label={`Resize ${side ?? "right"}`} />,
+    ResizeHandle: ({ side, maxFn }: { side?: string; maxFn?: () => number }) => (
+        <div aria-label={`Resize ${side ?? "right"}`} data-max={maxFn?.()} />
+    ),
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -174,6 +177,7 @@ vi.mock("react-resizable-panels", () => ({
 describe("Workspace right tool panel integration", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        vi.stubGlobal("window", { innerWidth: 1200 });
         mockLayout.rightToolPanelAtom = jotai.atom({
             ...DefaultRightToolPanelState,
             width: 420,
@@ -194,6 +198,31 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).toContain('aria-label="Resize left"');
         expect(markup).not.toContain("data-legacy-panel-group");
         expect(markup).not.toContain("data-legacy-resize-handle");
+    });
+
+    it("clamps the right tool resize budget after visible left panels and the main content floor", () => {
+        mockLayout.vtabVisibleAtom = jotai.atom(true);
+        mockLayout.fileExplorerVisibleAtom = jotai.atom(true);
+        mockLayout.vtabWidthAtom = jotai.atom(248);
+        mockLayout.fileExplorerWidthAtom = jotai.atom(260);
+        mockLayout.model.vtabVisibleAtom = mockLayout.vtabVisibleAtom;
+        mockLayout.model.fileExplorerVisibleAtom = mockLayout.fileExplorerVisibleAtom;
+        mockLayout.model.vtabWidthAtom = mockLayout.vtabWidthAtom;
+        mockLayout.model.fileExplorerWidthAtom = mockLayout.fileExplorerWidthAtom;
+        mockLayout.model.getRightToolPanelMaxWidth = vi.fn(
+            (
+                windowWidth: number,
+                vtabVisible: boolean,
+                vtabWidth: number,
+                fileExplorerVisible: boolean,
+                fileExplorerWidth: number
+            ) => windowWidth - (vtabVisible ? vtabWidth : 0) - (fileExplorerVisible ? fileExplorerWidth : 0) - 320
+        );
+
+        const markup = renderToStaticMarkup(<Workspace />);
+
+        expect(mockLayout.model.getRightToolPanelMaxWidth).toHaveBeenCalledWith(1200, true, 248, true, 260);
+        expect(markup).toContain('aria-label="Resize left" data-max="372"');
     });
 
     it("renders the collapsed toggle and magnified overlay from workspace state", () => {
@@ -221,5 +250,21 @@ describe("Workspace right tool panel integration", () => {
         const magnifiedMarkup = renderToStaticMarkup(<Workspace />);
         expect(magnifiedMarkup).toContain('aria-label="Magnified right tool panel"');
         expect(magnifiedMarkup).toContain('aria-label="Exit magnified right tool panel"');
+    });
+
+    it("renders only the magnified overlay, not the normal right panel, while magnified", () => {
+        mockLayout.rightToolPanelAtom = jotai.atom({
+            ...DefaultRightToolPanelState,
+            openedTools: ["editor"],
+            activeTool: "editor",
+            magnified: true,
+        });
+        mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+
+        const markup = renderToStaticMarkup(<Workspace />);
+
+        expect(markup).toContain('aria-label="Magnified right tool panel"');
+        expect(markup).not.toContain('aria-label="Right tool panel"');
+        expect(markup).not.toContain('aria-label="Resize left"');
     });
 });

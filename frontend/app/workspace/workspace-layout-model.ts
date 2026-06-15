@@ -36,7 +36,9 @@ import type { RightToolId, RightToolPanelState } from "./right-tool-panel-state"
 import {
     closeRightTool,
     DefaultRightToolPanelState,
+    getRightToolPanelMaxWidth as getRightToolPanelStateMaxWidth,
     makePersistedRightToolPanelState,
+    MinRightToolPanelWidth,
     normalizeRightToolPanelState,
     openRightTool,
     selectRightTool,
@@ -264,6 +266,19 @@ class WorkspaceLayoutModel {
         return Math.max(FileExplorer_MinWidth, Math.min(hardMax, budget));
     }
 
+    getRightToolPanelMaxWidth(
+        windowWidth: number,
+        vtabVisible: boolean,
+        vtabWidth: number,
+        fileExplorerVisible: boolean,
+        fileExplorerWidth: number
+    ): number {
+        const leftSidePx = (vtabVisible ? vtabWidth : 0) + (fileExplorerVisible ? fileExplorerWidth : 0);
+        const hardMax = getRightToolPanelStateMaxWidth(windowWidth);
+        const budget = windowWidth - leftSidePx - Content_MinWidth;
+        return Math.max(MinRightToolPanelWidth, Math.min(hardMax, budget));
+    }
+
     // ---- Public getters ----
 
     getVTabVisible(): boolean {
@@ -351,7 +366,23 @@ class WorkspaceLayoutModel {
 
     setRightToolPanelWidth(widthPx: number): void {
         const state = this.getRightToolPanelState();
-        this.setRightToolPanelState(setRightToolPanelStateWidth(state, widthPx, getRightToolPanelWindowWidth()));
+        const vtabVisible = globalStore.get(this.vtabVisibleAtom);
+        const vtabWidth = globalStore.get(this.vtabWidthAtom);
+        const fileExplorerVisible = globalStore.get(this.fileExplorerVisibleAtom);
+        const fileExplorerWidth = globalStore.get(this.fileExplorerWidthAtom);
+        const maxWidth = this.getRightToolPanelMaxWidth(
+            getRightToolPanelWindowWidth(),
+            vtabVisible,
+            vtabWidth,
+            fileExplorerVisible,
+            fileExplorerWidth
+        );
+        const nextState = setRightToolPanelStateWidth(
+            state,
+            Math.min(widthPx, maxWidth),
+            getRightToolPanelWindowWidth()
+        );
+        this.setRightToolPanelState(nextState);
     }
 
     openRightTool(tool: RightToolId): void {
@@ -392,7 +423,17 @@ class WorkspaceLayoutModel {
     setRightToolPanelMagnified(magnified: boolean): void {
         const state = this.getRightToolPanelState();
         if (state.magnified === magnified) return;
+        globalStore.set(this.codeReviewWideAtom, false);
         this.setRightToolPanelState({ ...state, magnified }, false);
+    }
+
+    toggleFocusedRightToolPanelMagnified(): boolean {
+        const state = this.getRightToolPanelState();
+        if (!state.visible || !state.focused || state.openedTools.length === 0) {
+            return false;
+        }
+        this.setRightToolPanelMagnified(!state.magnified);
+        return true;
     }
 
     // ---- AI panel stubs (UI removed; keep API for older callers) ----
