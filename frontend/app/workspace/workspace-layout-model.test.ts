@@ -259,6 +259,38 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         });
     });
 
+    it("reads a target workspace right tool panel state without mutating the singleton atom", () => {
+        setWorkspace("ws-a", {
+            [RightToolPanelMetaKey]: {
+                ...DefaultRightToolPanelState,
+                openedTools: ["codeReview"],
+                activeTool: "codeReview",
+            },
+        });
+        const model = WorkspaceLayoutModel.getInstance();
+        const wsAState = globalStore.get(model.rightToolPanelAtom);
+        setWorkspace("ws-b", {
+            [RightToolPanelMetaKey]: {
+                ...DefaultRightToolPanelState,
+                visible: false,
+                openedTools: [],
+                activeTool: undefined,
+            },
+        });
+
+        const wsBState = model.getRightToolPanelStateForWorkspace("ws-b", wsAState);
+
+        expect(wsBState).toMatchObject({
+            visible: false,
+            openedTools: [],
+            activeTool: undefined,
+        });
+        expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+        });
+    });
+
     it("bridges setCodeReviewVisible to the right tool panel codeReview tool", () => {
         setWorkspace("ws-a");
         const model = WorkspaceLayoutModel.getInstance();

@@ -168,11 +168,15 @@ class WorkspaceLayoutModel {
         return getOrefMetaKeyAtom(WOS.makeORef("workspace", this.getWorkspaceId()), "layout:fileexplorerwidth");
     }
 
-    private getRightToolPanelMetaAtom(): jotai.Atom<Partial<RightToolPanelState>> {
+    private getRightToolPanelMetaAtomForWorkspace(workspaceId: string): jotai.Atom<Partial<RightToolPanelState>> {
         return getOrefMetaKeyAtom(
-            WOS.makeORef("workspace", this.getWorkspaceId()),
+            WOS.makeORef("workspace", workspaceId),
             RightToolPanelMetaKey as keyof MetaType
         ) as jotai.Atom<Partial<RightToolPanelState>>;
+    }
+
+    private getRightToolPanelMetaAtom(): jotai.Atom<Partial<RightToolPanelState>> {
+        return this.getRightToolPanelMetaAtomForWorkspace(this.getWorkspaceId());
     }
 
     private initializeFromMeta(): void {
@@ -292,6 +296,14 @@ class WorkspaceLayoutModel {
     getRightToolPanelState(): RightToolPanelState {
         this.ensureRightToolPanelWorkspaceCurrent();
         return globalStore.get(this.rightToolPanelAtom);
+    }
+
+    getRightToolPanelStateForWorkspace(workspaceId: string, hydratedState: RightToolPanelState): RightToolPanelState {
+        if (this.hydratedRightToolPanelWorkspaceId === workspaceId) {
+            return hydratedState;
+        }
+        const savedRightToolPanel = globalStore.get(this.getRightToolPanelMetaAtomForWorkspace(workspaceId));
+        return normalizeRightToolPanelState(savedRightToolPanel, getRightToolPanelWindowWidth());
     }
 
     // ---- Toggle / visibility ----
