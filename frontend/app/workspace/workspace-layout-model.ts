@@ -204,10 +204,7 @@ class WorkspaceLayoutModel {
         const savedRightToolPanel = globalStore.get(this.getRightToolPanelMetaAtom());
         const normalizedState = normalizeRightToolPanelState(savedRightToolPanel, getRightToolPanelWindowWidth());
         globalStore.set(this.rightToolPanelAtom, normalizedState);
-        globalStore.set(
-            this.codeReviewVisibleAtom,
-            normalizedState.visible && normalizedState.openedTools.includes("codeReview")
-        );
+        this.syncLegacyCodeReviewVisible(normalizedState);
         this.hydratedRightToolPanelWorkspaceId = workspaceId;
     }
 
@@ -232,9 +229,14 @@ class WorkspaceLayoutModel {
     private setRightToolPanelState(state: RightToolPanelState, persist = true): void {
         this.ensureRightToolPanelWorkspaceCurrent();
         globalStore.set(this.rightToolPanelAtom, state);
+        this.syncLegacyCodeReviewVisible(state);
         if (persist) {
             this.persistRightToolPanelState(state);
         }
+    }
+
+    private syncLegacyCodeReviewVisible(state: RightToolPanelState): void {
+        globalStore.set(this.codeReviewVisibleAtom, state.visible && state.openedTools.includes("codeReview"));
     }
 
     // ---- Width clamps ----
