@@ -3,6 +3,7 @@
 
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
 import { cn } from "@/util/util";
+import type { CSSProperties } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
 
 type RightToolMetadata = {
@@ -189,36 +190,52 @@ export function RightToolPanelMagnifiedOverlay({
     if (!state.visible || !state.magnified || state.openedTools.length === 0) {
         return null;
     }
+    const overlayStyle = {
+        "--magnified-block-opacity": 0.6,
+        "--magnified-block-blur": "10px",
+    } as CSSProperties;
     return (
-        <div
-            aria-label="Magnified right tool panel"
-            role="dialog"
-            className={cn(
-                "fixed inset-8 z-50 flex flex-col rounded-lg border border-border bg-panelbg shadow-2xl",
-                className
-            )}
-            tabIndex={0}
-            onFocus={onFocusPanel}
-        >
-            <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
-                <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
-                <button
-                    type="button"
-                    aria-label="Exit magnified right tool panel"
-                    className="cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
-                    onClick={onExit}
-                >
-                    <i className="fa-solid fa-down-left-and-up-right-to-center" />
-                </button>
-            </div>
-            <RightToolTabs
-                activeTool={state.activeTool}
-                openedTools={state.openedTools}
-                onSelectTool={onSelectTool}
-                onCloseTool={onCloseTool}
+        <div className="fixed inset-0 z-[var(--zindex-layout-magnified-node-backdrop)]" style={overlayStyle}>
+            <button
+                type="button"
+                aria-label="Dismiss magnified right tool panel"
+                className="absolute inset-0 cursor-default"
+                style={{
+                    backgroundColor: "rgb(from var(--block-bg-color) r g b / var(--magnified-block-opacity))",
+                    backdropFilter: "blur(var(--magnified-block-blur))",
+                }}
+                onClick={onExit}
             />
-            <div className="min-h-0 flex-1 overflow-hidden">
-                <RightToolContent activeTool={state.activeTool} />
+            <div
+                aria-label="Magnified right tool panel"
+                role="dialog"
+                className={cn(
+                    "fixed inset-8 z-[var(--zindex-layout-magnified-node)] flex flex-col rounded-lg border border-border bg-panelbg shadow-2xl",
+                    className
+                )}
+                tabIndex={0}
+                onFocus={onFocusPanel}
+            >
+                <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
+                    <button
+                        type="button"
+                        aria-label="Exit magnified right tool panel"
+                        className="cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
+                        onClick={onExit}
+                    >
+                        <i className="fa-solid fa-down-left-and-up-right-to-center" />
+                    </button>
+                </div>
+                <RightToolTabs
+                    activeTool={state.activeTool}
+                    openedTools={state.openedTools}
+                    onSelectTool={onSelectTool}
+                    onCloseTool={onCloseTool}
+                />
+                <div className="min-h-0 flex-1 overflow-hidden">
+                    <RightToolContent activeTool={state.activeTool} />
+                </div>
             </div>
         </div>
     );
