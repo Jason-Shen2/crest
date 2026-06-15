@@ -15,6 +15,9 @@ function makeModel(initialState: RightToolPanelState) {
         openRightTool(tool: "codeReview") {
             state = openRightTool(state, tool);
         },
+        setRightToolPanelFocused(focused: boolean) {
+            state = { ...state, focused };
+        },
     };
 }
 
@@ -48,6 +51,25 @@ describe("TopBar code review button", () => {
 
         expect(model.state.openedTools).toEqual(["browser", "codeReview"]);
         expect(model.state.activeTool).toBe("codeReview");
+    });
+
+    it("clears stale right panel focus before opening codeReview from outside the panel", () => {
+        const model = makeModel({
+            ...DefaultRightToolPanelState,
+            visible: true,
+            focused: true,
+            openedTools: ["browser", "codeReview"],
+            activeTool: "browser",
+        });
+
+        openCodeReviewFromTopBar(model);
+
+        expect(model.state).toMatchObject({
+            visible: true,
+            openedTools: ["browser", "codeReview"],
+            activeTool: "codeReview",
+            focused: false,
+        });
     });
 
     it("does not duplicate the codeReview tab when clicked repeatedly", () => {
