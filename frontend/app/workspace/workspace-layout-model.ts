@@ -32,6 +32,16 @@ import { getLayoutModelForStaticTab } from "@/layout/lib/layoutModelHooks";
 import { atoms, getOrefMetaKeyAtom, getSettingsKeyAtom, refocusNode } from "@/store/global";
 import * as jotai from "jotai";
 import { debounce } from "lodash-es";
+import type { RightToolId, RightToolPanelState } from "./right-tool-panel-state";
+import {
+    closeRightTool,
+    DefaultRightToolPanelState,
+    makePersistedRightToolPanelState,
+    normalizeRightToolPanelState,
+    openRightTool,
+    selectRightTool,
+    setRightToolPanelWidth as setRightToolPanelStateWidth,
+} from "./right-tool-panel-state";
 
 // Width constants — warp parity.
 //   warp/drive/panel.rs:38           MIN_SIDEBAR_WIDTH      = 250.
@@ -52,10 +62,16 @@ const FileExplorer_MaxWidthRatio = 0.5;
 // take more than (window - this) px.  Matches the spirit of warp's
 // max_width clamp without needing a runtime window-size callback.
 const Content_MinWidth = 320;
+const RightToolPanelWindowWidthFallback = 1200;
+export const RightToolPanelMetaKey = "layout:righttoolpanel";
 
 function clamp(value: number, min: number, max: number): number {
     if (max < min) return min;
     return Math.max(min, Math.min(value, max));
+}
+
+function getRightToolPanelWindowWidth(): number {
+    return globalThis.window?.innerWidth ?? RightToolPanelWindowWidthFallback;
 }
 
 class WorkspaceLayoutModel {
@@ -74,6 +90,7 @@ class WorkspaceLayoutModel {
     // Legacy: AI panel was removed but external callers still import the
     // atom + setter.  Keep them as harmless no-ops.
     panelVisibleAtom: jotai.PrimitiveAtom<boolean>;
+    rightToolPanelAtom: jotai.PrimitiveAtom<RightToolPanelState>;
 
     private debouncedPersistVTabWidth: () => void;
     private debouncedPersistFileExplorerWidth: () => void;
@@ -86,6 +103,7 @@ class WorkspaceLayoutModel {
         this.codeReviewVisibleAtom = jotai.atom(false);
         this.codeReviewWideAtom = jotai.atom(false);
         this.panelVisibleAtom = jotai.atom(false);
+        this.rightToolPanelAtom = jotai.atom({ ...DefaultRightToolPanelState });
 
         this.initializeFromMeta();
 
@@ -125,6 +143,10 @@ class WorkspaceLayoutModel {
         return WorkspaceLayoutModel.instance;
     }
 
+    static resetInstance(): void {
+        WorkspaceLayoutModel.instance = null;
+    }
+
     // ---- Meta / persistence helpers ----
 
     private getWorkspaceId(): string {
@@ -143,6 +165,13 @@ class WorkspaceLayoutModel {
         return getOrefMetaKeyAtom(WOS.makeORef("workspace", this.getWorkspaceId()), "layout:fileexplorerwidth");
     }
 
+    private getRightToolPanelMetaAtom(): jotai.Atom<Partial<RightToolPanelState>> {
+        return getOrefMetaKeyAtom(
+            WOS.makeORef("workspace", this.getWorkspaceId()),
+            RightToolPanelMetaKey as keyof MetaType
+        ) as jotai.Atom<Partial<RightToolPanelState>>;
+    }
+
     private initializeFromMeta(): void {
         try {
             const savedVTabWidth = globalStore.get(this.getVTabBarWidthAtom());
@@ -158,16 +187,42 @@ class WorkspaceLayoutModel {
                 // Initial FE width clamp is min-only; the runtime max
                 // depends on the live window width, which the view
                 // re-clamps on drag.
-                globalStore.set(
-                    this.fileExplorerWidthAtom,
-                    Math.max(FileExplorer_MinWidth, savedFileExplorerWidth)
-                );
+                globalStore.set(this.fileExplorerWidthAtom, Math.max(FileExplorer_MinWidth, savedFileExplorerWidth));
             }
             const tabBarPosition = globalStore.get(getSettingsKeyAtom("app:tabbar")) ?? "top";
             const showLeftTabBar = tabBarPosition === "left" && !isBuilderWindow();
             globalStore.set(this.vtabVisibleAtom, showLeftTabBar);
+            this.hydrateRightToolPanelFromWorkspace();
         } catch (e) {
             console.warn("Failed to initialize from tab meta:", e);
+        }
+    }
+
+    hydrateRightToolPanelFromWorkspace(): void {
+        const savedRightToolPanel = globalStore.get(this.getRightToolPanelMetaAtom());
+        globalStore.set(
+            this.rightToolPanelAtom,
+            normalizeRightToolPanelState(savedRightToolPanel, getRightToolPanelWindowWidth())
+        );
+    }
+
+    private persistRightToolPanelState(state: RightToolPanelState): void {
+        try {
+            RpcApi.SetMetaCommand(TabRpcClient, {
+                oref: WOS.makeORef("workspace", this.getWorkspaceId()),
+                meta: {
+                    [RightToolPanelMetaKey]: makePersistedRightToolPanelState(state),
+                } as MetaType,
+            });
+        } catch (e) {
+            console.warn("Failed to persist right tool panel state:", e);
+        }
+    }
+
+    private setRightToolPanelState(state: RightToolPanelState, persist = true): void {
+        globalStore.set(this.rightToolPanelAtom, state);
+        if (persist) {
+            this.persistRightToolPanelState(state);
         }
     }
 
@@ -204,6 +259,10 @@ class WorkspaceLayoutModel {
 
     getFileExplorerVisible(): boolean {
         return globalStore.get(this.fileExplorerVisibleAtom);
+    }
+
+    getRightToolPanelState(): RightToolPanelState {
+        return globalStore.get(this.rightToolPanelAtom);
     }
 
     // ---- Toggle / visibility ----
@@ -261,6 +320,60 @@ class WorkspaceLayoutModel {
 
     getCodeReviewVisible(): boolean {
         return globalStore.get(this.codeReviewVisibleAtom);
+    }
+
+    // ---- Right tool panel (workspace-scoped, persisted in workspace meta) ----
+
+    setRightToolPanelVisible(visible: boolean): void {
+        const state = this.getRightToolPanelState();
+        if (state.visible === visible) return;
+        this.setRightToolPanelState({ ...state, visible });
+    }
+
+    setRightToolPanelWidth(widthPx: number): void {
+        const state = this.getRightToolPanelState();
+        this.setRightToolPanelState(setRightToolPanelStateWidth(state, widthPx, getRightToolPanelWindowWidth()));
+    }
+
+    openRightTool(tool: RightToolId): void {
+        this.setRightToolPanelState(openRightTool(this.getRightToolPanelState(), tool));
+    }
+
+    selectRightTool(tool: RightToolId): void {
+        const state = this.getRightToolPanelState();
+        const nextState = selectRightTool(state, tool);
+        if (nextState === state) return;
+        this.setRightToolPanelState(nextState);
+    }
+
+    closeRightTool(tool: RightToolId): void {
+        const state = this.getRightToolPanelState();
+        const nextState = closeRightTool(state, tool);
+        if (nextState === state) return;
+        this.setRightToolPanelState(nextState);
+    }
+
+    setRightToolState(tool: RightToolId, toolState: unknown): void {
+        const state = this.getRightToolPanelState();
+        this.setRightToolPanelState({
+            ...state,
+            toolState: {
+                ...state.toolState,
+                [tool]: toolState,
+            },
+        });
+    }
+
+    setRightToolPanelFocused(focused: boolean): void {
+        const state = this.getRightToolPanelState();
+        if (state.focused === focused) return;
+        this.setRightToolPanelState({ ...state, focused }, false);
+    }
+
+    setRightToolPanelMagnified(magnified: boolean): void {
+        const state = this.getRightToolPanelState();
+        if (state.magnified === magnified) return;
+        this.setRightToolPanelState({ ...state, magnified }, false);
     }
 
     // ---- AI panel stubs (UI removed; keep API for older callers) ----
