@@ -83,6 +83,8 @@ export interface FindMatch {
     endCol: number;
 }
 
+export type AgentChatStatus = "idle" | "streaming" | "error";
+
 // Map the `state` string Go emits on CmdBlock rows onto our lifecycle enum.
 // Go's vocabulary has drifted a bit over time so we accept several spellings
 // and fall back to "waiting-for-input" rather than throwing.
@@ -209,20 +211,16 @@ export class TerminalModel {
     //   agentPostureAtom       — crest-specific (permission posture; warp
     //                             uses BlocklistAIPermissions for this)
     //
-    // The TerminalModel owns the *persistent* agent state (status, chat id,
-    // permission posture); the transient message buffer is owned by
-    // ai-sdk's useChat hook in TerminalView.  applyAgentDelta /
-    // applyAgentStatus are the bridge between the two — useChat's onChunk
-    // calls these so the corresponding agent block mutates and the UI
-    // re-renders via the standard revision bump.
+    // The TerminalModel owns the persistent agent surface (visibility,
+    // status, chat/session id, model override, permission posture). The
+    // transient message buffer and per-run content live in usePiChat /
+    // AgentChatHost; agent blocks are marker rows that point at those runs.
 
-    readonly agentVisibleAtom = jotai.atom(false) as jotai.PrimitiveAtom<boolean>;
+    readonly agentVisibleAtom = jotai.atom(true) as jotai.PrimitiveAtom<boolean>;
     readonly agentPostureAtom = jotai.atom("default") as jotai.PrimitiveAtom<string>;
-    // Post-pi migration: per-exchange agent state (messages, status,
-    // error) lives on the React side in usePiChat. TerminalModel no
-    // longer owns assistantText / parts / status atoms — agent blocks
-    // are thin markers (Block.agentRef) that point at a pi runId; the
-    // renderer looks up message data via slicePiRuns.
+    readonly agentChatStatusAtom = jotai.atom<AgentChatStatus>("idle") as jotai.PrimitiveAtom<AgentChatStatus>;
+    readonly agentChatIdAtom = jotai.atom("") as jotai.PrimitiveAtom<string>;
+    readonly agentModelOverrideAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
 
     constructor(outerBlockId: string, cols: number = DefaultCols) {
         this.outerBlockId = outerBlockId;
@@ -437,6 +435,26 @@ export class TerminalModel {
             blockid: this.outerBlockId,
             termsize: { rows, cols },
         });
+    }
+
+    setAgentVisible(visible: boolean): void {
+        globalStore.set(this.agentVisibleAtom, visible);
+    }
+
+    setAgentPosture(posture: string): void {
+        globalStore.set(this.agentPostureAtom, posture);
+    }
+
+    setAgentChatStatus(status: AgentChatStatus): void {
+        globalStore.set(this.agentChatStatusAtom, status);
+    }
+
+    setAgentChatId(chatId: string): void {
+        globalStore.set(this.agentChatIdAtom, chatId);
+    }
+
+    setAgentModelOverride(modelId: string | null): void {
+        globalStore.set(this.agentModelOverrideAtom, modelId);
     }
 
     // getRecentCommands — last n submitted commands (oldest → newest).

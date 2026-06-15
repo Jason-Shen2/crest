@@ -88,4 +88,24 @@ describe("TerminalModel agent surface", () => {
         expect(model.getRecentCommands(10)).toEqual(["a", "b", "c", "d", "e"]);
         expect(model.getRecentCommands(0)).toEqual([]);
     });
+
+    it("owns agent chat state atoms and updates them through model methods", () => {
+        expect(globalStore.get(model.agentVisibleAtom)).toBe(true);
+        expect(globalStore.get(model.agentPostureAtom)).toBe("default");
+        expect(globalStore.get(model.agentChatStatusAtom)).toBe("idle");
+        expect(globalStore.get(model.agentChatIdAtom)).toBe("");
+        expect(globalStore.get(model.agentModelOverrideAtom)).toBeNull();
+
+        model.setAgentVisible(false);
+        model.setAgentPosture("bench");
+        model.setAgentChatStatus("streaming");
+        model.setAgentChatId("session-1");
+        model.setAgentModelOverride("claude-sonnet");
+
+        expect(globalStore.get(model.agentVisibleAtom)).toBe(false);
+        expect(globalStore.get(model.agentPostureAtom)).toBe("bench");
+        expect(globalStore.get(model.agentChatStatusAtom)).toBe("streaming");
+        expect(globalStore.get(model.agentChatIdAtom)).toBe("session-1");
+        expect(globalStore.get(model.agentModelOverrideAtom)).toBe("claude-sonnet");
+    });
 });
