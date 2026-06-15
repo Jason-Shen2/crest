@@ -94,6 +94,7 @@ class WorkspaceLayoutModel {
 
     private debouncedPersistVTabWidth: () => void;
     private debouncedPersistFileExplorerWidth: () => void;
+    private hydratedRightToolPanelWorkspaceId = "";
 
     private constructor() {
         this.vtabVisibleAtom = jotai.atom(false);
@@ -199,11 +200,18 @@ class WorkspaceLayoutModel {
     }
 
     hydrateRightToolPanelFromWorkspace(): void {
+        const workspaceId = this.getWorkspaceId();
         const savedRightToolPanel = globalStore.get(this.getRightToolPanelMetaAtom());
         globalStore.set(
             this.rightToolPanelAtom,
             normalizeRightToolPanelState(savedRightToolPanel, getRightToolPanelWindowWidth())
         );
+        this.hydratedRightToolPanelWorkspaceId = workspaceId;
+    }
+
+    private ensureRightToolPanelWorkspaceCurrent(): void {
+        if (this.hydratedRightToolPanelWorkspaceId === this.getWorkspaceId()) return;
+        this.hydrateRightToolPanelFromWorkspace();
     }
 
     private persistRightToolPanelState(state: RightToolPanelState): void {
@@ -220,6 +228,7 @@ class WorkspaceLayoutModel {
     }
 
     private setRightToolPanelState(state: RightToolPanelState, persist = true): void {
+        this.ensureRightToolPanelWorkspaceCurrent();
         globalStore.set(this.rightToolPanelAtom, state);
         if (persist) {
             this.persistRightToolPanelState(state);
@@ -262,6 +271,7 @@ class WorkspaceLayoutModel {
     }
 
     getRightToolPanelState(): RightToolPanelState {
+        this.ensureRightToolPanelWorkspaceCurrent();
         return globalStore.get(this.rightToolPanelAtom);
     }
 
@@ -316,6 +326,11 @@ class WorkspaceLayoutModel {
 
     setCodeReviewVisible(visible: boolean): void {
         globalStore.set(this.codeReviewVisibleAtom, visible);
+        if (visible) {
+            this.openRightTool("codeReview");
+            return;
+        }
+        this.closeRightTool("codeReview");
     }
 
     getCodeReviewVisible(): boolean {
