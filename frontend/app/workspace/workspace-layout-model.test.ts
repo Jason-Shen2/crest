@@ -194,4 +194,75 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(globalStore.get(model.rightToolPanelAtom).openedTools).toEqual(["browser"]);
         expect(globalStore.get(model.rightToolPanelAtom).activeTool).toBe("browser");
     });
+
+    it("automatically hydrates before reads and writes when the workspace changes", () => {
+        setWorkspace("ws-a", {
+            [RightToolPanelMetaKey]: {
+                ...DefaultRightToolPanelState,
+                openedTools: ["editor"],
+                activeTool: "editor",
+            },
+        });
+        const model = WorkspaceLayoutModel.getInstance();
+        expect(model.getRightToolPanelState().activeTool).toBe("editor");
+
+        setWorkspace("ws-b", {
+            [RightToolPanelMetaKey]: {
+                ...DefaultRightToolPanelState,
+                openedTools: ["browser"],
+                activeTool: "browser",
+            },
+        });
+
+        expect(model.getRightToolPanelState().activeTool).toBe("browser");
+
+        setWorkspace("ws-c", {
+            [RightToolPanelMetaKey]: {
+                ...DefaultRightToolPanelState,
+                openedTools: ["terminal"],
+                activeTool: "terminal",
+            },
+        });
+
+        model.openRightTool("terminal");
+
+        expect(getPersistedRightToolPanelState()).toMatchObject({
+            openedTools: ["terminal"],
+            activeTool: "terminal",
+        });
+        expect(vi.mocked(RpcApi.SetMetaCommand).mock.calls.at(-1)?.[1]).toMatchObject({
+            oref: "workspace:ws-c",
+        });
+    });
+
+    it("bridges setCodeReviewVisible to the right tool panel codeReview tool", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+
+        model.setCodeReviewVisible(true);
+
+        expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(true);
+        expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
+            visible: true,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+        });
+        expect(getPersistedRightToolPanelState()).toMatchObject({
+            visible: true,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+        });
+
+        model.setCodeReviewVisible(false);
+
+        expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(false);
+        expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
+            openedTools: [],
+            activeTool: undefined,
+        });
+        expect(getPersistedRightToolPanelState()).toMatchObject({
+            openedTools: [],
+            activeTool: undefined,
+        });
+    });
 });
