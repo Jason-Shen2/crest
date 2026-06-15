@@ -23,15 +23,18 @@ describe("right tool panel state", () => {
     });
 
     it("normalizes unknown and duplicate tools from persisted state", () => {
-        const state = normalizeRightToolPanelState({
-            visible: true,
-            width: 99999,
-            openedTools: ["editor", "editor", "bad-tool", "browser"],
-            activeTool: "bad-tool",
-            toolState: { editor: { path: "a.ts" }, "bad-tool": { x: 1 } },
-            focused: true,
-            magnified: true,
-        } as any, 1200);
+        const state = normalizeRightToolPanelState(
+            {
+                visible: true,
+                width: 99999,
+                openedTools: ["editor", "editor", "bad-tool", "browser"],
+                activeTool: "bad-tool",
+                toolState: { editor: { path: "a.ts" }, "bad-tool": { x: 1 } },
+                focused: true,
+                magnified: true,
+            } as any,
+            1200
+        );
 
         expect(state.openedTools).toEqual(["editor", "browser"]);
         expect(state.activeTool).toBe("editor");
@@ -88,6 +91,20 @@ describe("right tool panel state", () => {
         const afterEditor = closeRightTool(afterBrowser, "editor");
         expect(afterEditor.openedTools).toEqual([]);
         expect(afterEditor.activeTool).toBeUndefined();
+    });
+
+    it("clears magnified when closing the last open tool so the launcher panel can render", () => {
+        const state = {
+            ...openRightTool(DefaultRightToolPanelState, "editor"),
+            magnified: true,
+        };
+
+        const afterEditor = closeRightTool(state, "editor");
+
+        expect(afterEditor.openedTools).toEqual([]);
+        expect(afterEditor.activeTool).toBeUndefined();
+        expect(afterEditor.visible).toBe(true);
+        expect(afterEditor.magnified).toBe(false);
     });
 
     it("clamps width to a usable right panel range", () => {

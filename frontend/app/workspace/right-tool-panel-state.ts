@@ -110,7 +110,7 @@ export function closeRightTool(state: RightToolPanelState, tool: RightToolId): R
     if (activeTool === tool) {
         activeTool = openedTools[Math.max(0, idx - 1)];
     }
-    return { ...state, openedTools, activeTool };
+    return { ...state, openedTools, activeTool, magnified: openedTools.length > 0 ? state.magnified : false };
 }
 
 export function setRightToolPanelWidth(
