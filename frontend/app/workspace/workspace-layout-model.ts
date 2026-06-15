@@ -361,7 +361,7 @@ class WorkspaceLayoutModel {
     setRightToolPanelVisible(visible: boolean): void {
         const state = this.getRightToolPanelState();
         if (state.visible === visible) return;
-        this.setRightToolPanelState({ ...state, visible });
+        this.setRightToolPanelState({ ...state, visible, magnified: visible ? state.magnified : false });
     }
 
     setRightToolPanelWidth(widthPx: number): void {
@@ -422,9 +422,20 @@ class WorkspaceLayoutModel {
 
     setRightToolPanelMagnified(magnified: boolean): void {
         const state = this.getRightToolPanelState();
+        if (magnified && (!state.visible || state.openedTools.length === 0)) return;
         if (state.magnified === magnified) return;
         globalStore.set(this.codeReviewWideAtom, false);
+        if (magnified) {
+            this.clearMagnifiedLayoutNode();
+        }
         this.setRightToolPanelState({ ...state, magnified }, false);
+    }
+
+    private clearMagnifiedLayoutNode(): void {
+        const layoutModel = getLayoutModelForStaticTab();
+        const magnifiedNodeId = layoutModel.magnifiedNodeId;
+        if (magnifiedNodeId == null) return;
+        layoutModel.magnifyNodeToggle(magnifiedNodeId);
     }
 
     toggleFocusedRightToolPanelMagnified(): boolean {
