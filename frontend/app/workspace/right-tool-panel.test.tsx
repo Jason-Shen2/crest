@@ -3,12 +3,26 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { RightToolPanel } from "./right-tool-panel";
+import {
+    RightToolCollapsedToggle,
+    RightToolContent,
+    RightToolLauncher,
+    RightToolPanel,
+    RightToolPanelMagnifiedOverlay,
+    RightToolTabs,
+} from "./right-tool-panel";
 import { DefaultRightToolPanelState, RightToolPanelState } from "./right-tool-panel-state";
 
 function renderPanel(state: RightToolPanelState): string {
     return renderToStaticMarkup(
-        <RightToolPanel state={state} onOpenTool={() => null} onSelectTool={() => null} onCloseTool={() => null} />
+        <RightToolPanel
+            state={state}
+            onOpenTool={() => null}
+            onSelectTool={() => null}
+            onCloseTool={() => null}
+            onHide={() => null}
+            onFocusPanel={() => null}
+        />
     );
 }
 
@@ -23,6 +37,7 @@ describe("RightToolPanel", () => {
         expect(markup).toContain("Terminal");
         expect(markup).toContain("Code Review");
         expect(markup).toContain("width:400px");
+        expect(markup).toContain('aria-label="Hide right tool panel"');
     });
 
     it("renders opened tabs and the active tool content", () => {
@@ -46,5 +61,69 @@ describe("RightToolPanel", () => {
         });
 
         expect(markup).toBe("");
+    });
+});
+
+describe("RightToolPanel parts", () => {
+    it("exports launcher cards for the supported tools only", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolLauncher supportedTools={["editor", "codeReview"]} onOpenTool={() => null} />
+        );
+
+        expect(markup).toContain("Editor");
+        expect(markup).toContain("Code Review");
+        expect(markup).not.toContain("Browser");
+        expect(markup).not.toContain("Terminal");
+    });
+
+    it("marks active tabs and renders close buttons", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolTabs
+                openedTools={["editor", "browser"]}
+                activeTool="browser"
+                onSelectTool={() => null}
+                onCloseTool={() => null}
+            />
+        );
+
+        expect(markup).toContain('aria-label="Select Editor"');
+        expect(markup).toContain('aria-label="Select Browser"');
+        expect(markup).toContain('aria-current="page"');
+        expect(markup).toContain('aria-label="Close Editor"');
+        expect(markup).toContain('aria-label="Close Browser"');
+    });
+
+    it("renders the active tool content as a standalone export", () => {
+        const markup = renderToStaticMarkup(<RightToolContent activeTool="codeReview" />);
+
+        expect(markup).toContain("Code Review Tool");
+        expect(markup).toContain("Review code changes");
+    });
+
+    it("renders a collapsed toggle for restoring the panel", () => {
+        const markup = renderToStaticMarkup(<RightToolCollapsedToggle onShow={() => null} onFocusPanel={() => null} />);
+
+        expect(markup).toContain('aria-label="Show right tool panel"');
+        expect(markup).toContain("Tools");
+    });
+
+    it("renders a magnified overlay around the active right tool", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolPanelMagnifiedOverlay
+                state={{
+                    ...DefaultRightToolPanelState,
+                    openedTools: ["editor", "browser"],
+                    activeTool: "editor",
+                    magnified: true,
+                }}
+                onSelectTool={() => null}
+                onCloseTool={() => null}
+                onFocusPanel={() => null}
+            />
+        );
+
+        expect(markup).toContain('aria-label="Magnified right tool panel"');
+        expect(markup).toContain("Editor Tool");
+        expect(markup).toContain('aria-label="Select Browser"');
     });
 });
