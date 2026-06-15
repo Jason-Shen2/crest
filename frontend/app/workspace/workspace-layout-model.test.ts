@@ -14,6 +14,11 @@ const mockGlobal = vi.hoisted(() => ({
     metaValues: new Map<string, Record<string, any>>(),
     settingsAtoms: new Map<string, jotai.PrimitiveAtom<any>>(),
     refocusNode: vi.fn(),
+    layoutModel: {
+        focusedNode: null as jotai.PrimitiveAtom<any>,
+        magnifiedNodeId: undefined as string | undefined,
+        magnifyNodeToggle: vi.fn(),
+    },
 }));
 
 vi.mock("@/store/global", async () => {
@@ -67,10 +72,9 @@ vi.mock("@/app/store/wshrpcutil", () => ({
 
 vi.mock("@/layout/lib/layoutModelHooks", async () => {
     const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
+    mockGlobal.layoutModel.focusedNode = jotaiActual.atom(null) as jotai.PrimitiveAtom<any>;
     return {
-        getLayoutModelForStaticTab: () => ({
-            focusedNode: jotaiActual.atom(null),
-        }),
+        getLayoutModelForStaticTab: () => mockGlobal.layoutModel,
     };
 });
 
@@ -112,6 +116,8 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         mockGlobal.metaAtoms.clear();
         mockGlobal.metaValues.clear();
         mockGlobal.settingsAtoms.clear();
+        mockGlobal.layoutModel.magnifiedNodeId = undefined;
+        mockGlobal.layoutModel.magnifyNodeToggle.mockClear();
         WorkspaceLayoutModel.resetInstance();
     });
 
@@ -157,7 +163,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
             openedTools: ["editor"],
             activeTool: "editor",
             focused: true,
-            magnified: true,
+            magnified: false,
         });
         expect(getPersistedRightToolPanelState()).toEqual({
             visible: false,
@@ -328,7 +334,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(false);
     });
 
-    it("toggles magnify only for a focused visible right panel with opened tools", () => {
+    it("toggles Cmd+M only for a focused visible right panel and clears block magnify on activation", () => {
         setWorkspace("ws-a");
         const model = WorkspaceLayoutModel.getInstance();
 
@@ -339,8 +345,10 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
 
         model.setRightToolPanelFocused(true);
+        mockGlobal.layoutModel.magnifiedNodeId = "node-a";
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(true);
         expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(true);
+        expect(mockGlobal.layoutModel.magnifyNodeToggle).toHaveBeenCalledWith("node-a");
 
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(true);
         expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(false);

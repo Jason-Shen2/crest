@@ -230,13 +230,26 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).toContain('aria-label="Resize left" data-max="372"');
     });
 
-    it("renders the collapsed toggle and magnified overlay from workspace state", () => {
+    it("renders the collapsed toggle only when hidden and non-magnified", () => {
         mockLayout.rightToolPanelAtom = jotai.atom({
             ...DefaultRightToolPanelState,
             visible: false,
             openedTools: ["editor"],
             activeTool: "editor",
             magnified: true,
+        });
+        mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+
+        const hiddenMagnifiedMarkup = renderToStaticMarkup(<Workspace />);
+        expect(hiddenMagnifiedMarkup).not.toContain('aria-label="Show right tool panel"');
+        expect(hiddenMagnifiedMarkup).not.toContain('aria-label="Right tool panel"');
+        expect(hiddenMagnifiedMarkup).not.toContain('aria-label="Magnified right tool panel"');
+
+        mockLayout.rightToolPanelAtom = jotai.atom({
+            ...DefaultRightToolPanelState,
+            visible: false,
+            openedTools: ["editor"],
+            activeTool: "editor",
         });
         mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
 
