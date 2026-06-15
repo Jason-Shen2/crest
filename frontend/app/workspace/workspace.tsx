@@ -47,7 +47,11 @@ const WorkspaceElem = memo(() => {
     const fileExplorerVisible = useAtomValue(workspaceLayoutModel.fileExplorerVisibleAtom);
     const vtabWidth = useAtomValue(workspaceLayoutModel.vtabWidthAtom);
     const fileExplorerWidth = useAtomValue(workspaceLayoutModel.fileExplorerWidthAtom);
-    const rightToolPanelState = useAtomValue(workspaceLayoutModel.rightToolPanelAtom);
+    const hydratedRightToolPanelState = useAtomValue(workspaceLayoutModel.rightToolPanelAtom);
+    const rightToolPanelState = workspaceLayoutModel.getRightToolPanelStateForWorkspace(
+        ws.oid,
+        hydratedRightToolPanelState
+    );
 
     // VTab visibility derives from the tabbar-position setting — same
     // semantics as the legacy model.  Setting persists at the app level;

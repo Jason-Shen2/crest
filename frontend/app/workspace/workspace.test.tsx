@@ -36,16 +36,6 @@ const defaultRightToolPanelState = vi.hoisted(() => ({
     magnified: false,
 }));
 
-vi.mock("react", async () => {
-    const reactActual = await vi.importActual<typeof import("react")>("react");
-    return {
-        ...reactActual,
-        useEffect: (effect: () => void | (() => void)) => {
-            effect();
-        },
-    };
-});
-
 vi.mock("@/store/global", async () => {
     const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
     mockLayout.staticTabIdAtom = jotaiActual.atom("tab-a");
@@ -90,6 +80,7 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
         codeReviewVisibleAtom: mockLayout.codeReviewVisibleAtom,
         codeReviewWideAtom: mockLayout.codeReviewWideAtom,
         rightToolPanelAtom: mockLayout.rightToolPanelAtom,
+        getRightToolPanelStateForWorkspace: vi.fn((_workspaceId: string, state: RightToolPanelState) => state),
         hydrateRightToolPanelFromWorkspace: vi.fn(),
         setVTabVisible: vi.fn(),
         getVTabMinWidth: () => 200,
@@ -189,13 +180,24 @@ describe("Workspace right tool panel integration", () => {
             activeTool: "codeReview",
         });
         mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+        mockLayout.model.getRightToolPanelStateForWorkspace = vi.fn(
+            (_workspaceId: string, state: RightToolPanelState) => state
+        );
+        jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
+            otype: "workspace",
+            oid: "ws-a",
+            version: 1,
+            meta: {},
+            tabids: ["tab-a"],
+            activetabid: "tab-a",
+        } as Workspace);
         mockLayout.tabContentMock = vi.fn();
     });
 
     it("renders the right tool panel in workspace chrome instead of the legacy code review PanelGroup", () => {
         const markup = renderToStaticMarkup(<Workspace />);
 
-        expect(mockLayout.model.hydrateRightToolPanelFromWorkspace).toHaveBeenCalled();
+        expect(mockLayout.model.hydrateRightToolPanelFromWorkspace).not.toHaveBeenCalled();
         expect(markup).toContain('aria-label="Right tool panel"');
         expect(markup).toContain('style="width:420px"');
         expect(markup).toContain('aria-label="Select Code Review"');
@@ -203,6 +205,42 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).toContain('aria-label="Resize left"');
         expect(markup).not.toContain("data-legacy-panel-group");
         expect(markup).not.toContain("data-legacy-resize-handle");
+    });
+
+    it("does not mount ws-a code review content during ws-b first render before effect hydration", () => {
+        jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
+            otype: "workspace",
+            oid: "ws-b",
+            version: 1,
+            meta: {},
+            tabids: ["tab-b"],
+            activetabid: "tab-b",
+        } as Workspace);
+        mockLayout.model.getRightToolPanelStateForWorkspace = vi.fn((workspaceId: string, state: RightToolPanelState) => {
+            if (workspaceId !== "ws-b") {
+                return state;
+            }
+            return {
+                ...DefaultRightToolPanelState,
+                visible: false,
+                openedTools: [],
+                activeTool: undefined,
+            };
+        });
+
+        const markup = renderToStaticMarkup(<Workspace />);
+
+        expect(mockLayout.model.getRightToolPanelStateForWorkspace).toHaveBeenCalledWith(
+            "ws-b",
+            expect.objectContaining({
+                openedTools: ["codeReview"],
+                activeTool: "codeReview",
+            })
+        );
+        expect(mockLayout.model.hydrateRightToolPanelFromWorkspace).not.toHaveBeenCalled();
+        expect(markup).not.toContain("Git Review Sidebar");
+        expect(markup).not.toContain('aria-label="Right tool panel"');
+        expect(markup).toContain('aria-label="Show right tool panel"');
     });
 
     it("clamps the right tool resize budget after visible left panels and the main content floor", () => {
