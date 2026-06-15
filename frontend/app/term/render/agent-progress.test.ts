@@ -57,7 +57,7 @@ describe("deriveAgentProgress", () => {
                     content: [{ type: "text", text: "source" }],
                     isError: false,
                 },
-            ]),
+            ])
         );
 
         expect(progress.stages).toHaveLength(1);
@@ -115,7 +115,7 @@ describe("deriveAgentProgress", () => {
                     content: [{ type: "text", text: "1 passed" }],
                     isError: false,
                 },
-            ]),
+            ])
         );
 
         expect(progress.stages.map((stage) => stage.title)).toEqual(["Modify files", "Verify result"]);
@@ -136,6 +136,208 @@ describe("deriveAgentProgress", () => {
         });
     });
 
+    it("derives compact file summary and detail for edit child actions without raw output", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit_text_file",
+                            input: { path: "frontend/app/term/render/agent-progress.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit_text_file",
+                    content: [
+                        {
+                            type: "text",
+                            text: "*** Begin Patch\n*** Update File: frontend/app/term/render/agent-progress.ts\nraw diff output",
+                        },
+                    ],
+                    isError: false,
+                },
+            ])
+        );
+
+        expect(progress.stages[0].actionGroups[0]).toMatchObject({
+            actions: [
+                {
+                    id: "edit-1",
+                    summary: "Updated agent-progress.ts",
+                    detail: "frontend/app/term/render/agent-progress.ts",
+                    status: "done",
+                },
+            ],
+        });
+        expect(progress.stages[0].actionGroups[0].actions[0]).not.toHaveProperty("canViewDiff");
+    });
+
+    it("uses status-specific file-edit child action wording", () => {
+        const progress = deriveAgentProgress(
+            makeRun(
+                [
+                    {
+                        role: "assistant",
+                        content: [
+                            {
+                                type: "toolCall",
+                                id: "edit-running",
+                                name: "edit_text_file",
+                                input: { path: "frontend/app/term/render/agent-progress.ts" },
+                            },
+                            {
+                                type: "toolCall",
+                                id: "edit-failed",
+                                name: "edit_text_file",
+                                input: { path: "frontend/app/term/render/agent-progress-view.tsx" },
+                            },
+                            {
+                                type: "toolCall",
+                                id: "edit-done",
+                                name: "edit_text_file",
+                                input: { path: "frontend/app/term/render/agent-progress.test.ts" },
+                            },
+                        ],
+                    },
+                    {
+                        role: "toolResult",
+                        toolCallId: "edit-failed",
+                        toolName: "edit_text_file",
+                        content: [{ type: "text", text: "could not patch" }],
+                        isError: true,
+                    },
+                    {
+                        role: "toolResult",
+                        toolCallId: "edit-done",
+                        toolName: "edit_text_file",
+                        content: [{ type: "text", text: "patched" }],
+                        isError: false,
+                    },
+                ],
+                "streaming"
+            )
+        );
+
+        expect(progress.stages[0].actionGroups[0].actions).toEqual([
+            expect.objectContaining({
+                id: "edit-running",
+                summary: "Updating agent-progress.ts",
+                title: "Updating agent-progress.ts",
+                status: "running",
+            }),
+            expect.objectContaining({
+                id: "edit-failed",
+                summary: "Could not update agent-progress-view.tsx",
+                title: "Could not update agent-progress-view.tsx",
+                status: "failed",
+            }),
+            expect.objectContaining({
+                id: "edit-done",
+                summary: "Updated agent-progress.test.ts",
+                title: "Updated agent-progress.test.ts",
+                status: "done",
+            }),
+        ]);
+    });
+
+    it("derives file details from alternate edit inputs and omits diff when no file detail exists", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-file-path",
+                            name: "edit_text_file",
+                            input: { file_path: "frontend/app/term/render/agent-progress-view.tsx" },
+                        },
+                        {
+                            type: "toolCall",
+                            id: "edit-filePath",
+                            name: "edit_text_file",
+                            input: { filePath: "frontend/app/term/render/agent-progress.test.ts" },
+                        },
+                        {
+                            type: "toolCall",
+                            id: "edit-text-patch",
+                            name: "functions.apply_patch",
+                            input: {
+                                text: "*** Begin Patch\n*** Update File: frontend/app/term/render/agent-progress.ts\nraw diff output",
+                            },
+                        },
+                        {
+                            type: "toolCall",
+                            id: "edit-no-file",
+                            name: "edit_text_file",
+                            input: { oldText: "before", newText: "after" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-file-path",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-filePath",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-text-patch",
+                    toolName: "functions.apply_patch",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-no-file",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        expect(progress.stages[0].actionGroups[0].actions).toEqual([
+            expect.objectContaining({
+                id: "edit-file-path",
+                summary: "Updated agent-progress-view.tsx",
+                detail: "frontend/app/term/render/agent-progress-view.tsx",
+            }),
+            expect.objectContaining({
+                id: "edit-filePath",
+                summary: "Updated agent-progress.test.ts",
+                detail: "frontend/app/term/render/agent-progress.test.ts",
+            }),
+            expect.objectContaining({
+                id: "edit-text-patch",
+                summary: "Updated agent-progress.ts",
+                detail: "frontend/app/term/render/agent-progress.ts",
+            }),
+            expect.objectContaining({
+                id: "edit-no-file",
+                summary: "Updated file",
+                detail: undefined,
+            }),
+        ]);
+        for (const action of progress.stages[0].actionGroups[0].actions) {
+            expect(action).not.toHaveProperty("canViewDiff");
+        }
+    });
+
     it("marks a stage running when the current tool call has no result and exposes recent actions", () => {
         const progress = deriveAgentProgress(
             makeRun(
@@ -152,8 +354,8 @@ describe("deriveAgentProgress", () => {
                         ],
                     },
                 ],
-                "streaming",
-            ),
+                "streaming"
+            )
         );
 
         expect(progress.stages[0]).toMatchObject({
@@ -191,7 +393,7 @@ describe("deriveAgentProgress", () => {
                     content: [{ type: "text", text: "expected 1 to equal 2" }],
                     isError: true,
                 },
-            ]),
+            ])
         );
 
         expect(progress.stages[0]).toMatchObject({
@@ -242,8 +444,8 @@ describe("deriveAgentProgress", () => {
                         isError: true,
                     },
                 ],
-                "streaming",
-            ),
+                "streaming"
+            )
         );
 
         expect(progress.stages[0]).toMatchObject({
@@ -304,7 +506,7 @@ describe("deriveAgentProgress", () => {
                     content: [{ type: "text", text: "after" }],
                     isError: false,
                 },
-            ]),
+            ])
         );
 
         expect(progress.stages.map((stage) => stage.title)).toEqual([
@@ -317,7 +519,150 @@ describe("deriveAgentProgress", () => {
 });
 
 describe("AgentProgressView", () => {
-    it("renders the default overview without exposing raw tool names", () => {
+    it("renders progress as a cardless activity rail without redundant success labels", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit",
+                            input: { path: "two_sum.py" },
+                        },
+                        {
+                            type: "toolCall",
+                            id: "test-1",
+                            name: "functions.exec_command",
+                            input: { cmd: "npm test -- --run frontend/app/term/render/agent-progress.test.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "test-1",
+                    toolName: "functions.exec_command",
+                    content: [{ type: "text", text: "1 passed" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress }));
+
+        expect(html).toContain('class="py-1"');
+        expect(html).toContain('data-agent-progress-rail="true"');
+        expect(html).toContain('data-agent-progress-stage-rail-line="true"');
+        expect(html).toContain('class="space-y-0.5"');
+        expect(html).toContain('data-agent-progress-stage-row="modify-files"');
+        expect(html).toContain('data-agent-progress-stage-row="verify-result"');
+        expect(html).not.toContain('data-agent-progress-card="true"');
+        expect(html).not.toContain("rounded-xl border border-[#25434a] bg-[#16282d] p-4");
+        expect(html).not.toContain(">Done<");
+        expect(html).not.toContain("View technical calls/details");
+    });
+
+    it("renders readable labels only for failed and running stages", () => {
+        const html = renderToStaticMarkup(
+            createElement(AgentProgressView, {
+                progress: {
+                    stages: [
+                        {
+                            id: "failed-stage",
+                            title: "Verify result",
+                            status: "failed",
+                            summary: "Validation failed.",
+                            recentActions: [],
+                            actionGroups: [],
+                        },
+                        {
+                            id: "running-stage",
+                            title: "Explore implementation",
+                            status: "running",
+                            summary: "Inspecting project files.",
+                            recentActions: [],
+                            actionGroups: [],
+                        },
+                        {
+                            id: "done-stage",
+                            title: "Modify files",
+                            status: "done",
+                            summary: "Updated files.",
+                            recentActions: [],
+                            actionGroups: [],
+                        },
+                        {
+                            id: "pending-stage",
+                            title: "Run command",
+                            status: "pending",
+                            summary: "Waiting to run command.",
+                            recentActions: [],
+                            actionGroups: [],
+                        },
+                    ],
+                },
+            })
+        );
+
+        expect(html).toContain('data-agent-progress-status-label="failed-stage"');
+        expect(html).toContain(">Failed<");
+        expect(html).toContain('data-agent-progress-status-label="running-stage"');
+        expect(html).toContain(">Running<");
+        expect(html).not.toContain('data-agent-progress-status-label="done-stage"');
+        expect(html).not.toContain('data-agent-progress-status-label="pending-stage"');
+        expect(html).not.toContain(">Done<");
+        expect(html).not.toContain(">Completed<");
+        expect(html).not.toContain(">Not run<");
+    });
+
+    it("places the stage expansion control next to the stage title", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit",
+                            input: { path: "two_sum.py" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress }));
+        const titleRowIndex = html.indexOf('data-agent-progress-stage-title-row="modify-files"');
+        const toggleIndex = html.indexOf('data-agent-progress-stage-toggle="modify-files"');
+        const chevronIndex = html.indexOf('data-agent-progress-stage-chevron="modify-files"');
+        const summaryIndex = html.indexOf("Updated files.", titleRowIndex);
+        const toggleEndIndex = html.indexOf("</button>", toggleIndex);
+
+        expect(titleRowIndex).toBeGreaterThanOrEqual(0);
+        expect(toggleIndex).toBeGreaterThan(titleRowIndex);
+        expect(chevronIndex).toBeGreaterThan(titleRowIndex);
+        expect(chevronIndex).toBeLessThan(toggleEndIndex);
+        expect(chevronIndex).toBeLessThan(summaryIndex);
+        expect(html).not.toContain('data-agent-progress-row-end-chevron="modify-files"');
+    });
+
+    it("renders the default overview as stage toggles without global technical details", () => {
         const progress = deriveAgentProgress(
             makeRun([
                 {
@@ -358,14 +703,18 @@ describe("AgentProgressView", () => {
 
         expect(html).toContain("Explore implementation");
         expect(html).toContain("Verify result");
-        expect(html).toContain('data-agent-progress-technical-details-toggle="true"');
-        expect(html).toContain("View technical calls/details");
+        expect(html).toContain('data-agent-progress-rail="true"');
+        expect(html).toContain('data-agent-progress-stage-toggle="explore-implementation"');
+        expect(html).toContain('data-agent-progress-stage-toggle="verify-result"');
+        expect(html).not.toContain('data-agent-progress-technical-details-toggle="true"');
+        expect(html).not.toContain("View technical calls/details");
+        expect(html).not.toContain('data-agent-progress-technical-details="true"');
         expect(html).not.toContain("grep");
         expect(html).not.toContain("functions.exec_command");
         expect(html).not.toContain("ToolCallCard");
     });
 
-    it("renders ToolCallCard after technical details are expanded", () => {
+    it("keeps raw technical cards hidden in the progress UI path", () => {
         const progress = deriveAgentProgress(
             makeRun([
                 {
@@ -389,17 +738,135 @@ describe("AgentProgressView", () => {
             ])
         );
 
-        const html = renderToStaticMarkup(
-            createElement(AgentProgressView, { progress, showTechnicalDetails: true })
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress, showTechnicalDetails: true }));
+
+        expect(html).toContain('data-agent-progress-rail="true"');
+        expect(html).toContain('data-agent-progress-stage-toggle="explore-implementation"');
+        expect(html).toContain('data-agent-progress-stage-details="explore-implementation"');
+        expect(html).not.toContain('data-agent-progress-technical-details-toggle="true"');
+        expect(html).not.toContain("Hide technical calls/details");
+        expect(html).not.toContain('data-agent-progress-technical-details="true"');
+        expect(html).not.toContain('data-tool-callid="grep-1"');
+        expect(html).not.toContain('data-tool-name="grep"');
+        expect(html).not.toContain("ToolCallCard");
+    });
+
+    it("renders compact summary and non-action detail evidence for expanded file-edit child actions without raw output or tool cards", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit_text_file",
+                            input: { path: "frontend/app/term/render/agent-progress.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit_text_file",
+                    content: [
+                        {
+                            type: "text",
+                            text: "*** Begin Patch\n*** Update File: frontend/app/term/render/agent-progress.ts\nraw diff output",
+                        },
+                    ],
+                    isError: false,
+                },
+            ])
         );
 
-        expect(html).toContain('data-agent-progress-technical-details-toggle="true"');
-        expect(html).toContain('aria-expanded="true"');
-        expect(html).toContain("Hide technical calls/details");
-        expect(html).toContain('data-agent-progress-technical-details="true"');
-        expect(html).toContain('data-tool-callid="grep-1"');
-        expect(html).toContain('data-tool-name="grep"');
-        expect(html).toContain("ToolCallCard");
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress, showTechnicalDetails: true }));
+
+        expect(html).toContain('data-agent-progress-stage-details="modify-files"');
+        expect(html).toContain('data-agent-progress-action-summary="edit-1"');
+        expect(html).toContain('data-agent-progress-action-detail="edit-1"');
+        expect(html).toContain('data-agent-progress-action-evidence="edit-1"');
+        expect(html).toContain("Updated agent-progress.ts");
+        expect(html).toContain("frontend/app/term/render/agent-progress.ts");
+        expect(html).not.toContain("View diff");
+        expect(html).not.toContain('data-agent-progress-action-diff="edit-1"');
+        expect(html).not.toContain('>agent-progress.ts</span><span class="ml-1');
+        expect(html).not.toContain(">Updated file</span>");
+        expect(html).not.toContain("*** Begin Patch");
+        expect(html).not.toContain("raw diff output");
+        expect(html).not.toContain('data-tool-callid="edit-1"');
+        expect(html).not.toContain('data-tool-name="edit_text_file"');
+        expect(html).not.toContain("ToolCallCard");
+    });
+
+    it("omits evidence detail when a file-edit child action has no file detail", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-no-file",
+                            name: "edit_text_file",
+                            input: { oldText: "before", newText: "after" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-no-file",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "raw edit output" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress, showTechnicalDetails: true }));
+
+        expect(html).toContain('data-agent-progress-action-summary="edit-no-file"');
+        expect(html).toContain("Updated file");
+        expect(html).not.toContain('data-agent-progress-action-detail="edit-no-file"');
+        expect(html).not.toContain('data-agent-progress-action-diff="edit-no-file"');
+        expect(html).not.toContain('data-agent-progress-action-evidence="edit-no-file"');
+        expect(html).not.toContain("View diff");
+        expect(html).not.toContain("raw edit output");
+        expect(html).not.toContain("ToolCallCard");
+    });
+
+    it("does not render validation evidence in expanded validation stages", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "test-1",
+                            name: "functions.exec_command",
+                            input: { cmd: "npm test -- --run frontend/app/term/render/agent-progress.test.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "test-1",
+                    toolName: "functions.exec_command",
+                    content: [{ type: "text", text: "16 passed" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress, showTechnicalDetails: true }));
+
+        expect(html).toContain('data-agent-progress-stage-details="verify-result"');
+        expect(html).not.toContain('data-agent-progress-action-summary="test-1"');
+        expect(html).not.toContain('data-agent-progress-action-detail="test-1"');
+        expect(html).not.toContain('data-agent-progress-action-evidence="test-1"');
+        expect(html).not.toContain("16 passed");
+        expect(html).not.toContain("ToolCallCard");
     });
 
     it("renders running current action and recent actions in the overview", () => {
