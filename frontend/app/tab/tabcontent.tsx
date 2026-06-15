@@ -17,7 +17,13 @@ const tileGapSizeAtom = atom((get) => {
     return settings["window:tilegapsize"];
 });
 
-const TabContent = React.memo(({ tabId, noTopPadding }: { tabId: string; noTopPadding?: boolean }) => {
+type TabContentProps = {
+    tabId: string;
+    noTopPadding?: boolean;
+    onFocusCapture?: React.FocusEventHandler<HTMLDivElement>;
+};
+
+const TabContent = React.memo(({ tabId, noTopPadding, onFocusCapture }: TabContentProps) => {
     const oref = useMemo(() => WOS.makeORef("tab", tabId), [tabId]);
     const loadingAtom = useMemo(() => WOS.getWaveObjectLoadingAtom(oref), [oref]);
     const tabLoading = useAtomValue(loadingAtom);
@@ -67,7 +73,12 @@ const TabContent = React.memo(({ tabId, noTopPadding }: { tabId: string; noTopPa
     }
 
     return (
-        <div className={`flex flex-row flex-grow min-h-0 w-full items-center justify-center overflow-hidden relative ${noTopPadding ? "" : "pt-[3px]"} pr-[3px]`}>
+        <div
+            className={`flex flex-row flex-grow min-h-0 w-full items-center justify-center overflow-hidden relative ${
+                noTopPadding ? "" : "pt-[3px]"
+            } pr-[3px]`}
+            onFocusCapture={onFocusCapture}
+        >
             {innerContent}
         </div>
     );
