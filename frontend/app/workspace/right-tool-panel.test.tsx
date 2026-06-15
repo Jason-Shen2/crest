@@ -5,6 +5,26 @@ import { isValidElement, ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+const mockSettings = vi.hoisted(() => ({
+    atoms: new Map<string, import("jotai").PrimitiveAtom<unknown>>(),
+}));
+
+vi.mock("@/store/global", async () => {
+    const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
+    return {
+        getSettingsKeyAtom: (key: string) => {
+            let settingAtom = mockSettings.atoms.get(key);
+            if (settingAtom != null) {
+                return settingAtom;
+            }
+            const value = key === "window:magnifiedblockopacity" ? 0.72 : 4;
+            settingAtom = jotaiActual.atom(value);
+            mockSettings.atoms.set(key, settingAtom);
+            return settingAtom;
+        },
+    };
+});
+
 vi.mock("@/app/codereview/git-panel", () => ({
     GitReviewSidebar: () => <div>Git Review Sidebar</div>,
 }));
@@ -15,6 +35,7 @@ import {
     RightToolLauncher,
     RightToolPanel,
     RightToolPanelMagnifiedOverlay,
+    RightToolPanelMagnifiedOverlayView,
     RightToolTabs,
 } from "./right-tool-panel";
 import { DefaultRightToolPanelState, RightToolPanelState } from "./right-tool-panel-state";
@@ -154,8 +175,8 @@ describe("RightToolPanel parts", () => {
 
         expect(markup).toContain('aria-label="Magnified right tool panel"');
         expect(markup).toContain('aria-label="Dismiss magnified right tool panel"');
-        expect(markup).toContain("--magnified-block-opacity:0.6");
-        expect(markup).toContain("--magnified-block-blur:10px");
+        expect(markup).toContain("--magnified-block-opacity:0.72");
+        expect(markup).toContain("--magnified-block-blur:4px");
         expect(markup).toContain("var(--zindex-layout-magnified-node");
         expect(markup).toContain('aria-label="Exit magnified right tool panel"');
         expect(markup).toContain("Editor Tool");
@@ -164,7 +185,7 @@ describe("RightToolPanel parts", () => {
 
     it("calls onExit when the magnified overlay exit button is pressed", () => {
         const onExit = vi.fn();
-        const overlay = RightToolPanelMagnifiedOverlay({
+        const overlay = RightToolPanelMagnifiedOverlayView({
             state: {
                 ...DefaultRightToolPanelState,
                 openedTools: ["editor"],
@@ -175,6 +196,8 @@ describe("RightToolPanel parts", () => {
             onCloseTool: () => null,
             onFocusPanel: () => null,
             onExit,
+            magnifiedBlockOpacity: 0.72,
+            magnifiedBlockBlur: 4,
         });
         const exitButton = findElementByAriaLabel(overlay, "Exit magnified right tool panel");
 
@@ -186,7 +209,7 @@ describe("RightToolPanel parts", () => {
 
     it("calls onExit when the magnified overlay backdrop is pressed", () => {
         const onExit = vi.fn();
-        const overlay = RightToolPanelMagnifiedOverlay({
+        const overlay = RightToolPanelMagnifiedOverlayView({
             state: {
                 ...DefaultRightToolPanelState,
                 openedTools: ["editor"],
@@ -197,6 +220,8 @@ describe("RightToolPanel parts", () => {
             onCloseTool: () => null,
             onFocusPanel: () => null,
             onExit,
+            magnifiedBlockOpacity: 0.72,
+            magnifiedBlockBlur: 4,
         });
         const backdrop = findElementByAriaLabel(overlay, "Dismiss magnified right tool panel");
 

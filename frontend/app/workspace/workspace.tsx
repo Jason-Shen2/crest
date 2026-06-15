@@ -106,10 +106,16 @@ const WorkspaceElem = memo(() => {
         () => workspaceLayoutModel.setRightToolPanelFocused(true),
         [workspaceLayoutModel]
     );
+    const onMainWorkspaceFocus = useCallback(
+        () => workspaceLayoutModel.setRightToolPanelFocused(false),
+        [workspaceLayoutModel]
+    );
     const onRightToolPanelExitMagnified = useCallback(
         () => workspaceLayoutModel.setRightToolPanelMagnified(false),
         [workspaceLayoutModel]
     );
+    const showRightToolPanelLayout = rightToolPanelState.visible && !rightToolPanelState.magnified;
+    const showRightToolPanelToggle = !rightToolPanelState.visible;
 
     return (
         <div className="flex flex-col w-full flex-grow overflow-hidden">
@@ -163,12 +169,17 @@ const WorkspaceElem = memo(() => {
                         ) : (
                             <div className="relative flex-1 min-h-0 w-full">
                                 <div className="relative flex flex-row w-full h-full overflow-hidden">
-                                    <TabContent key={tabId} tabId={tabId} noTopPadding={showLeftTabBar && isMacOS()} />
+                                    <TabContent
+                                        key={tabId}
+                                        tabId={tabId}
+                                        noTopPadding={showLeftTabBar && isMacOS()}
+                                        onFocusCapture={onMainWorkspaceFocus}
+                                    />
                                 </div>
                             </div>
                         )}
                     </div>
-                    {rightToolPanelState.visible && !rightToolPanelState.magnified ? (
+                    {showRightToolPanelLayout ? (
                         <>
                             <ResizeHandle
                                 width={rightToolPanelState.width}
@@ -186,9 +197,9 @@ const WorkspaceElem = memo(() => {
                                 onFocusPanel={onRightToolPanelFocus}
                             />
                         </>
-                    ) : (
+                    ) : showRightToolPanelToggle ? (
                         <RightToolCollapsedToggle onShow={onRightToolPanelShow} onFocusPanel={onRightToolPanelFocus} />
-                    )}
+                    ) : null}
                     <RightToolPanelMagnifiedOverlay
                         state={rightToolPanelState}
                         onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}

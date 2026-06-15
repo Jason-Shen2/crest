@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
+import { getSettingsKeyAtom } from "@/store/global";
 import { cn } from "@/util/util";
+import { useAtomValue } from "jotai";
 import type { CSSProperties } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
 
@@ -73,6 +75,11 @@ export type RightToolPanelMagnifiedOverlayProps = Pick<
 > & {
     onExit: () => void;
     className?: string;
+};
+
+export type RightToolPanelMagnifiedOverlayViewProps = RightToolPanelMagnifiedOverlayProps & {
+    magnifiedBlockOpacity: number;
+    magnifiedBlockBlur: number;
 };
 
 export function RightToolLauncher({ supportedTools = RightToolIds, onOpenTool }: RightToolLauncherProps) {
@@ -187,12 +194,39 @@ export function RightToolPanelMagnifiedOverlay({
     onExit,
     className,
 }: RightToolPanelMagnifiedOverlayProps) {
+    const magnifiedBlockOpacity = useAtomValue(getSettingsKeyAtom("window:magnifiedblockopacity")) ?? 0.6;
+    const magnifiedBlockBlur = useAtomValue(getSettingsKeyAtom("window:magnifiedblockblurprimarypx")) ?? 10;
+
+    return (
+        <RightToolPanelMagnifiedOverlayView
+            state={state}
+            onSelectTool={onSelectTool}
+            onCloseTool={onCloseTool}
+            onFocusPanel={onFocusPanel}
+            onExit={onExit}
+            className={className}
+            magnifiedBlockOpacity={magnifiedBlockOpacity}
+            magnifiedBlockBlur={magnifiedBlockBlur}
+        />
+    );
+}
+
+export function RightToolPanelMagnifiedOverlayView({
+    state,
+    onSelectTool,
+    onCloseTool,
+    onFocusPanel,
+    onExit,
+    className,
+    magnifiedBlockOpacity,
+    magnifiedBlockBlur,
+}: RightToolPanelMagnifiedOverlayViewProps) {
     if (!state.visible || !state.magnified || state.openedTools.length === 0) {
         return null;
     }
     const overlayStyle = {
-        "--magnified-block-opacity": 0.6,
-        "--magnified-block-blur": "10px",
+        "--magnified-block-opacity": magnifiedBlockOpacity,
+        "--magnified-block-blur": `${magnifiedBlockBlur}px`,
     } as CSSProperties;
     return (
         <div className="fixed inset-0 z-[var(--zindex-layout-magnified-node-backdrop)]" style={overlayStyle}>
