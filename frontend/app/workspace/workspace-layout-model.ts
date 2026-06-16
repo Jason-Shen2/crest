@@ -381,7 +381,7 @@ class WorkspaceLayoutModel {
         });
     }
 
-    setRightToolPanelWidth(widthPx: number): void {
+    private makeRightToolPanelWidthState(widthPx: number): RightToolPanelState {
         const state = this.getRightToolPanelState();
         const vtabVisible = globalStore.get(this.vtabVisibleAtom);
         const vtabWidth = globalStore.get(this.vtabWidthAtom);
@@ -399,7 +399,15 @@ class WorkspaceLayoutModel {
             Math.min(widthPx, maxWidth),
             getRightToolPanelWindowWidth()
         );
-        this.setRightToolPanelState(nextState);
+        return nextState;
+    }
+
+    previewRightToolPanelWidth(widthPx: number): void {
+        this.setRightToolPanelState(this.makeRightToolPanelWidthState(widthPx), false);
+    }
+
+    setRightToolPanelWidth(widthPx: number): void {
+        this.setRightToolPanelState(this.makeRightToolPanelWidthState(widthPx));
     }
 
     openRightTool(tool: RightToolId): void {
