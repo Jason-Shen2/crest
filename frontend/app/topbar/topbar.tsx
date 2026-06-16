@@ -14,6 +14,8 @@ import { isMacOS, isMacOSTahoeOrLater } from "@/util/platformutil";
 import { FloatingPortal, flip, offset, shift, useClick, useDismiss, useFloating, useInteractions } from "@floating-ui/react";
 import { useAtomValue } from "jotai";
 import { memo } from "react";
+import type { PointerEventHandler } from "react";
+import { getCodeReviewButtonActive, openCodeReviewFromTopBar } from "./topbar-code-review";
 import "./topbar.scss";
 
 // ---- Generic icon button ----
@@ -111,16 +113,21 @@ const RightPanelButtons = memo(() => {
     const notifModel = NotificationsModel.getInstance();
     const ghActivePanel = useAtomValue(ghModel.activePanelAtom);
     const notifUnread = useAtomValue(notifModel.unreadCountAtom);
-    const codeReviewVisible = useAtomValue(layoutModel.codeReviewVisibleAtom);
+    const workspace = useAtomValue(atoms.workspace);
+    const hydratedRightToolPanelState = useAtomValue(layoutModel.rightToolPanelAtom);
+    const rightToolPanelState = layoutModel.getRightToolPanelStateForWorkspace(
+        workspace?.oid ?? "",
+        hydratedRightToolPanelState
+    );
+    const codeReviewActive = getCodeReviewButtonActive(rightToolPanelState);
 
     return (
         <>
-            {/* Code Review: toggles right sidebar */}
             <ToolbarButton
                 icon="fa-code-branch"
                 label="Code Review"
-                active={codeReviewVisible}
-                onClick={() => layoutModel.setCodeReviewVisible(!codeReviewVisible)}
+                active={codeReviewActive}
+                onClick={() => openCodeReviewFromTopBar(layoutModel)}
             />
 
             {/* Notifications: floating popover */}
@@ -191,8 +198,12 @@ const SearchTrigger = memo(() => (
 ));
 SearchTrigger.displayName = "SearchTrigger";
 
+type TopBarProps = {
+    onPointerDownCapture?: PointerEventHandler<HTMLDivElement>;
+};
+
 // ---- TopBar ----
-export const TopBar = memo(() => {
+export const TopBar = memo(({ onPointerDownCapture }: TopBarProps) => {
     const mac = isMacOS();
     const tahoe = isMacOSTahoeOrLater();
     const isFullScreen = useAtomValue(atoms.isFullScreen);
@@ -201,6 +212,7 @@ export const TopBar = memo(() => {
         <div
             className="flex items-center h-9 shrink-0 w-full border-b border-white/5 select-none"
             style={{ WebkitAppRegion: "drag", backdropFilter: "blur(20px)", background: "rgba(0,0,0,0.35)" } as React.CSSProperties}
+            onPointerDownCapture={onPointerDownCapture}
         >
             {mac && !isFullScreen && <div className="topbar-traffic-spacer" data-tahoe={tahoe ? "1" : "0"} />}
 
