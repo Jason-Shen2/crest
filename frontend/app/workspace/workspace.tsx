@@ -22,8 +22,8 @@ import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { atoms, getSettingsKeyAtom } from "@/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { useAtomValue } from "jotai";
-import { memo, useCallback, useEffect } from "react";
 import type { PointerEvent } from "react";
+import { memo, useCallback, useEffect } from "react";
 
 const RightToolPanelRootSelector = '[data-right-tool-panel-root="true"]';
 
@@ -155,52 +155,49 @@ const WorkspaceElem = memo(() => {
             <TopBar onPointerDownCapture={onWorkspaceChromePointerDownCapture} />
             {!showLeftTabBar && <TabBar key={ws.oid} workspace={ws} noTabs={false} />}
             <div className="flex flex-row flex-grow overflow-hidden min-h-0">
-                <ErrorBoundary key={tabId}>
-                    {/* Left panel 1: vertical tab bar.  Absent from the
+                {/* Left panel 1: vertical tab bar.  Absent from the
                         flex row when hidden — warp pattern (view.rs:19466
                         `if vertical_tabs_active { add child }`). */}
-                    {vtabVisible && showLeftTabBar && (
-                        <>
-                            <div className="shrink-0 h-full overflow-hidden" style={{ width: `${vtabWidth}px` }}>
-                                <VTabBar workspace={ws} />
-                            </div>
-                            <ResizeHandle
-                                width={vtabWidth}
-                                min={workspaceLayoutModel.getVTabMinWidth()}
-                                maxFn={vtabMaxFn}
-                                onResize={onVTabResize}
-                                side="right"
-                            />
-                        </>
-                    )}
+                {vtabVisible && showLeftTabBar && (
+                    <>
+                        <div className="shrink-0 h-full overflow-hidden" style={{ width: `${vtabWidth}px` }}>
+                            <VTabBar workspace={ws} />
+                        </div>
+                        <ResizeHandle
+                            width={vtabWidth}
+                            min={workspaceLayoutModel.getVTabMinWidth()}
+                            maxFn={vtabMaxFn}
+                            onResize={onVTabResize}
+                            side="right"
+                        />
+                    </>
+                )}
 
-                    {/* Left panel 2: file explorer.  Same pattern. */}
-                    {fileExplorerVisible && (
-                        <>
-                            <div
-                                className="shrink-0 h-full overflow-hidden"
-                                style={{ width: `${fileExplorerWidth}px` }}
-                            >
-                                {tabId !== "" && <FileExplorer />}
-                            </div>
-                            <ResizeHandle
-                                width={fileExplorerWidth}
-                                min={workspaceLayoutModel.getFileExplorerMinWidth()}
-                                maxFn={fileExplorerMaxFn}
-                                onResize={onFileExplorerResize}
-                                side="right"
-                            />
-                        </>
-                    )}
+                {/* Left panel 2: file explorer.  Same pattern. */}
+                {fileExplorerVisible && (
+                    <>
+                        <div className="shrink-0 h-full overflow-hidden" style={{ width: `${fileExplorerWidth}px` }}>
+                            {tabId !== "" && <FileExplorer />}
+                        </div>
+                        <ResizeHandle
+                            width={fileExplorerWidth}
+                            min={workspaceLayoutModel.getFileExplorerMinWidth()}
+                            maxFn={fileExplorerMaxFn}
+                            onResize={onFileExplorerResize}
+                            side="right"
+                        />
+                    </>
+                )}
 
-                    {/* Content column — flex-1 absorbs the remaining width
+                {/* Content column — flex-1 absorbs the remaining width
                         on window resize.  warp: `Shrinkable::new(1.0, terminal_view)`
                         in render_panels (view.rs:19503). */}
-                    <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
-                        {tabId === "" ? (
-                            <CenteredDiv>No Active Tab</CenteredDiv>
-                        ) : (
-                            <div className="relative flex-1 min-h-0 w-full">
+                <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
+                    {tabId === "" ? (
+                        <CenteredDiv>No Active Tab</CenteredDiv>
+                    ) : (
+                        <div className="relative flex-1 min-h-0 w-full">
+                            <ErrorBoundary key={tabId}>
                                 <div className="relative flex flex-row w-full h-full overflow-hidden">
                                     <TabContent
                                         key={tabId}
@@ -209,42 +206,42 @@ const WorkspaceElem = memo(() => {
                                         onFocusCapture={onMainWorkspaceFocus}
                                     />
                                 </div>
-                            </div>
-                        )}
-                    </div>
-                    {showRightToolPanelLayout ? (
-                        <>
-                            <ResizeHandle
-                                width={rightToolPanelState.width}
-                                min={MinRightToolPanelWidth}
-                                maxFn={rightToolPanelMaxFn}
-                                onResize={onRightToolPanelResize}
-                                onResizeEnd={onRightToolPanelResizeEnd}
-                                side="left"
-                            />
-                            <RightToolPanel
-                                state={rightToolPanelState}
-                                onOpenTool={(tool) => workspaceLayoutModel.openRightTool(tool)}
-                                onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
-                                onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
-                                onHide={onRightToolPanelHide}
-                                onFocusPanel={onRightToolPanelFocus}
-                                onBlurPanel={onMainWorkspaceFocus}
-                            />
-                        </>
-                    ) : showRightToolPanelToggle ? (
-                        <RightToolCollapsedToggle onShow={onRightToolPanelShow} onFocusPanel={onRightToolPanelFocus} />
-                    ) : null}
-                    <RightToolPanelMagnifiedOverlay
-                        state={rightToolPanelState}
-                        onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
-                        onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
-                        onFocusPanel={onRightToolPanelFocus}
-                        onBlurPanel={onMainWorkspaceFocus}
-                        onExit={onRightToolPanelExitMagnified}
-                    />
-                    <ModalsRenderer />
-                </ErrorBoundary>
+                            </ErrorBoundary>
+                        </div>
+                    )}
+                </div>
+                {showRightToolPanelLayout ? (
+                    <>
+                        <ResizeHandle
+                            width={rightToolPanelState.width}
+                            min={MinRightToolPanelWidth}
+                            maxFn={rightToolPanelMaxFn}
+                            onResize={onRightToolPanelResize}
+                            onResizeEnd={onRightToolPanelResizeEnd}
+                            side="left"
+                        />
+                        <RightToolPanel
+                            state={rightToolPanelState}
+                            onOpenTool={(tool) => workspaceLayoutModel.openRightTool(tool)}
+                            onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
+                            onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
+                            onHide={onRightToolPanelHide}
+                            onFocusPanel={onRightToolPanelFocus}
+                            onBlurPanel={onMainWorkspaceFocus}
+                        />
+                    </>
+                ) : showRightToolPanelToggle ? (
+                    <RightToolCollapsedToggle onShow={onRightToolPanelShow} onFocusPanel={onRightToolPanelFocus} />
+                ) : null}
+                <RightToolPanelMagnifiedOverlay
+                    state={rightToolPanelState}
+                    onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
+                    onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
+                    onFocusPanel={onRightToolPanelFocus}
+                    onBlurPanel={onMainWorkspaceFocus}
+                    onExit={onRightToolPanelExitMagnified}
+                />
+                <ModalsRenderer />
             </div>
             <NotificationToastStacker />
         </div>

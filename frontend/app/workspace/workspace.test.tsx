@@ -113,7 +113,13 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
 });
 
 vi.mock("@/app/element/errorboundary", () => ({
-    ErrorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    ErrorBoundary: ({ children }: { children: React.ReactNode }) => (
+        <>
+            <span data-workspace-error-boundary-start="true" />
+            {children}
+            <span data-workspace-error-boundary-end="true" />
+        </>
+    ),
 }));
 
 vi.mock("@/app/element/quickelems", () => ({
@@ -264,6 +270,22 @@ describe("Workspace right tool panel integration", () => {
         expect(rightPanelIndex).toBeGreaterThan(rightResizeIndex);
     });
 
+    it("keeps right tool panel chrome outside the tab-keyed boundary so tab switches do not remount tool content", () => {
+        const markup = renderToStaticMarkup(<Workspace />);
+        const boundaryStart = markup.indexOf('data-workspace-error-boundary-start="true"');
+        const boundaryEnd = markup.indexOf('data-workspace-error-boundary-end="true"');
+        const boundaryContent = markup.slice(boundaryStart, boundaryEnd);
+
+        expect(boundaryStart).toBeGreaterThanOrEqual(0);
+        expect(boundaryEnd).toBeGreaterThan(boundaryStart);
+        expect(boundaryContent).toContain("<main>Main Tab Content</main>");
+        expect(boundaryContent).not.toContain('aria-label="Resize left"');
+        expect(boundaryContent).not.toContain('aria-label="Right tool panel"');
+        expect(boundaryContent).not.toContain("Git Review Sidebar");
+        expect(markup).toContain('aria-label="Right tool panel"');
+        expect(markup).toContain("Git Review Sidebar");
+    });
+
     it("does not mount ws-a code review content during ws-b first render before effect hydration", () => {
         jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
             otype: "workspace",
@@ -273,17 +295,19 @@ describe("Workspace right tool panel integration", () => {
             tabids: ["tab-b"],
             activetabid: "tab-b",
         } as Workspace);
-        mockLayout.model.getRightToolPanelStateForWorkspace = vi.fn((workspaceId: string, state: RightToolPanelState) => {
-            if (workspaceId !== "ws-b") {
-                return state;
+        mockLayout.model.getRightToolPanelStateForWorkspace = vi.fn(
+            (workspaceId: string, state: RightToolPanelState) => {
+                if (workspaceId !== "ws-b") {
+                    return state;
+                }
+                return {
+                    ...DefaultRightToolPanelState,
+                    visible: false,
+                    openedTools: [],
+                    activeTool: undefined,
+                };
             }
-            return {
-                ...DefaultRightToolPanelState,
-                visible: false,
-                openedTools: [],
-                activeTool: undefined,
-            };
-        });
+        );
 
         const markup = renderToStaticMarkup(<Workspace />);
 
@@ -309,17 +333,19 @@ describe("Workspace right tool panel integration", () => {
             tabids: ["tab-b"],
             activetabid: "tab-b",
         } as Workspace);
-        mockLayout.model.getRightToolPanelStateForWorkspace = vi.fn((workspaceId: string, state: RightToolPanelState) => {
-            if (workspaceId !== "ws-b") {
-                return state;
+        mockLayout.model.getRightToolPanelStateForWorkspace = vi.fn(
+            (workspaceId: string, state: RightToolPanelState) => {
+                if (workspaceId !== "ws-b") {
+                    return state;
+                }
+                return {
+                    ...DefaultRightToolPanelState,
+                    visible: false,
+                    openedTools: [],
+                    activeTool: undefined,
+                };
             }
-            return {
-                ...DefaultRightToolPanelState,
-                visible: false,
-                openedTools: [],
-                activeTool: undefined,
-            };
-        });
+        );
 
         const markup = renderToStaticMarkup(<Workspace />);
 
