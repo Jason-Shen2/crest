@@ -286,6 +286,33 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).toContain("Git Review Sidebar");
     });
 
+    it("keeps the magnified right tool overlay outside the tab-keyed boundary", () => {
+        mockLayout.rightToolPanelAtom = jotai.atom({
+            ...DefaultRightToolPanelState,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+            magnified: true,
+        });
+        mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+
+        const markup = renderToStaticMarkup(<Workspace />);
+        const boundaryStart = markup.indexOf('data-workspace-error-boundary-start="true"');
+        const boundaryEnd = markup.indexOf('data-workspace-error-boundary-end="true"');
+        const overlayIndex = markup.indexOf('aria-label="Magnified right tool panel"');
+        const boundaryContent = markup.slice(boundaryStart, boundaryEnd);
+
+        expect(boundaryStart).toBeGreaterThanOrEqual(0);
+        expect(boundaryEnd).toBeGreaterThan(boundaryStart);
+        expect(overlayIndex).toBeGreaterThan(boundaryEnd);
+        expect(boundaryContent).toContain("<main>Main Tab Content</main>");
+        expect(boundaryContent).not.toContain('aria-label="Magnified right tool panel"');
+        expect(boundaryContent).not.toContain('aria-label="Exit magnified right tool panel"');
+        expect(boundaryContent).not.toContain("Git Review Sidebar");
+        expect(markup).toContain('aria-label="Magnified right tool panel"');
+        expect(markup).toContain('aria-label="Exit magnified right tool panel"');
+        expect(markup).toContain("Git Review Sidebar");
+    });
+
     it("does not mount ws-a code review content during ws-b first render before effect hydration", () => {
         jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
             otype: "workspace",
