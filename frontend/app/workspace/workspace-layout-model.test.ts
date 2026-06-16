@@ -196,6 +196,25 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         });
     });
 
+    it("previews right panel drag widths without persisting until resize end", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+        vi.mocked(RpcApi.SetMetaCommand).mockClear();
+
+        model.previewRightToolPanelWidth(430);
+        model.previewRightToolPanelWidth(440);
+
+        expect(globalStore.get(model.rightToolPanelAtom).width).toBe(440);
+        expect(vi.mocked(RpcApi.SetMetaCommand)).not.toHaveBeenCalled();
+
+        model.setRightToolPanelWidth(440);
+
+        expect(vi.mocked(RpcApi.SetMetaCommand)).toHaveBeenCalledTimes(1);
+        expect(getPersistedRightToolPanelState()).toMatchObject({
+            width: 440,
+        });
+    });
+
     it("rehydrates right tool panel state when the current workspace changes", () => {
         setWorkspace("ws-a", {
             [RightToolPanelMetaKey]: {
