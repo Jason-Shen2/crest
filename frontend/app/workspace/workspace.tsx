@@ -23,6 +23,21 @@ import { atoms, getSettingsKeyAtom } from "@/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect } from "react";
+import type { PointerEvent } from "react";
+
+const RightToolPanelRootSelector = '[data-right-tool-panel-root="true"]';
+
+type ClosestEventTarget = EventTarget & {
+    closest?: (selector: string) => Element | null;
+};
+
+export function shouldClearRightToolPanelFocusForTarget(target: EventTarget | null): boolean {
+    const closest = (target as ClosestEventTarget)?.closest;
+    if (typeof closest !== "function") {
+        return true;
+    }
+    return closest.call(target, RightToolPanelRootSelector) == null;
+}
 
 // Workspace layout — warp parity (see app/src/workspace/view.rs:19448
 // `render_panels`).  Left panels are absolute-px widths in a flex row;
@@ -95,6 +110,10 @@ const WorkspaceElem = memo(() => {
         [workspaceLayoutModel, vtabVisible, vtabWidth, fileExplorerVisible, fileExplorerWidth]
     );
     const onRightToolPanelResize = useCallback(
+        (px: number) => workspaceLayoutModel.previewRightToolPanelWidth(px),
+        [workspaceLayoutModel]
+    );
+    const onRightToolPanelResizeEnd = useCallback(
         (px: number) => workspaceLayoutModel.setRightToolPanelWidth(px),
         [workspaceLayoutModel]
     );
@@ -114,6 +133,13 @@ const WorkspaceElem = memo(() => {
         () => workspaceLayoutModel.setRightToolPanelFocused(false),
         [workspaceLayoutModel]
     );
+    const onWorkspaceChromePointerDownCapture = useCallback(
+        (event: PointerEvent<HTMLDivElement>) => {
+            if (!shouldClearRightToolPanelFocusForTarget(event.target)) return;
+            workspaceLayoutModel.setRightToolPanelFocused(false);
+        },
+        [workspaceLayoutModel]
+    );
     const onRightToolPanelExitMagnified = useCallback(
         () => workspaceLayoutModel.setRightToolPanelMagnified(false),
         [workspaceLayoutModel]
@@ -122,8 +148,11 @@ const WorkspaceElem = memo(() => {
     const showRightToolPanelToggle = !rightToolPanelState.visible && !rightToolPanelState.magnified;
 
     return (
-        <div className="flex flex-col w-full flex-grow overflow-hidden">
-            <TopBar />
+        <div
+            className="flex flex-col w-full flex-grow overflow-hidden"
+            onPointerDownCapture={onWorkspaceChromePointerDownCapture}
+        >
+            <TopBar onPointerDownCapture={onWorkspaceChromePointerDownCapture} />
             {!showLeftTabBar && <TabBar key={ws.oid} workspace={ws} noTabs={false} />}
             <div className="flex flex-row flex-grow overflow-hidden min-h-0">
                 <ErrorBoundary key={tabId}>
@@ -190,6 +219,7 @@ const WorkspaceElem = memo(() => {
                                 min={MinRightToolPanelWidth}
                                 maxFn={rightToolPanelMaxFn}
                                 onResize={onRightToolPanelResize}
+                                onResizeEnd={onRightToolPanelResizeEnd}
                                 side="left"
                             />
                             <RightToolPanel
@@ -199,6 +229,7 @@ const WorkspaceElem = memo(() => {
                                 onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
                                 onHide={onRightToolPanelHide}
                                 onFocusPanel={onRightToolPanelFocus}
+                                onBlurPanel={onMainWorkspaceFocus}
                             />
                         </>
                     ) : showRightToolPanelToggle ? (
@@ -209,6 +240,7 @@ const WorkspaceElem = memo(() => {
                         onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
                         onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
                         onFocusPanel={onRightToolPanelFocus}
+                        onBlurPanel={onMainWorkspaceFocus}
                         onExit={onRightToolPanelExitMagnified}
                     />
                     <ModalsRenderer />

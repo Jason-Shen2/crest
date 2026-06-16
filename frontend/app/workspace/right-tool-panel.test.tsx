@@ -44,6 +44,7 @@ type TestElementProps = {
     "aria-label"?: string;
     children?: ReactNode;
     onClick?: () => void;
+    onBlurCapture?: (event: { currentTarget: { contains: (node: unknown) => boolean }; relatedTarget: unknown }) => void;
 };
 
 function renderPanel(state: RightToolPanelState): string {
@@ -55,6 +56,7 @@ function renderPanel(state: RightToolPanelState): string {
             onCloseTool={() => null}
             onHide={() => null}
             onFocusPanel={() => null}
+            onBlurPanel={() => null}
         />
     );
 }
@@ -113,6 +115,32 @@ describe("RightToolPanel", () => {
 
         expect(markup).toBe("");
     });
+
+    it("clears panel focus when focus leaves the right panel", () => {
+        const onBlurPanel = vi.fn();
+        const panel = RightToolPanel({
+            state: {
+                ...DefaultRightToolPanelState,
+                openedTools: ["editor"],
+                activeTool: "editor",
+            },
+            onOpenTool: () => null,
+            onSelectTool: () => null,
+            onCloseTool: () => null,
+            onHide: () => null,
+            onFocusPanel: () => null,
+            onBlurPanel,
+        });
+        const panelRoot = findElementByAriaLabel(panel, "Right tool panel");
+
+        expect(panelRoot.props.onBlurCapture).toBeTypeOf("function");
+        panelRoot.props.onBlurCapture?.({
+            currentTarget: { contains: () => false },
+            relatedTarget: {},
+        });
+
+        expect(onBlurPanel).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe("RightToolPanel parts", () => {
@@ -169,6 +197,7 @@ describe("RightToolPanel parts", () => {
                 onSelectTool={() => null}
                 onCloseTool={() => null}
                 onFocusPanel={() => null}
+                onBlurPanel={() => null}
                 onExit={() => null}
             />
         );
@@ -195,6 +224,7 @@ describe("RightToolPanel parts", () => {
             onSelectTool: () => null,
             onCloseTool: () => null,
             onFocusPanel: () => null,
+            onBlurPanel: () => null,
             onExit,
             magnifiedBlockOpacity: 0.72,
             magnifiedBlockBlur: 4,
@@ -219,6 +249,7 @@ describe("RightToolPanel parts", () => {
             onSelectTool: () => null,
             onCloseTool: () => null,
             onFocusPanel: () => null,
+            onBlurPanel: () => null,
             onExit,
             magnifiedBlockOpacity: 0.72,
             magnifiedBlockBlur: 4,

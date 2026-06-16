@@ -22,6 +22,8 @@ const mockLayout = vi.hoisted(() => {
         codeReviewWideAtom: null as jotai.PrimitiveAtom<boolean>,
         rightToolPanelAtom: null as jotai.PrimitiveAtom<RightToolPanelState>,
         tabContentMock: null as any,
+        topBarProps: null as any,
+        rightResizeHandleProps: null as any,
         model: null as any,
     };
     return state;
@@ -93,6 +95,7 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
         getRightToolPanelMaxWidth: () => 840,
         setVTabWidth: vi.fn(),
         setFileExplorerWidth: vi.fn(),
+        previewRightToolPanelWidth: vi.fn(),
         setRightToolPanelVisible: vi.fn(),
         setRightToolPanelWidth: vi.fn(),
         openRightTool: vi.fn(),
@@ -159,6 +162,17 @@ vi.mock("@/app/tab/tabbar", () => ({
     TabBar: () => <div>Tab Bar</div>,
 }));
 
+vi.mock("@/app/topbar/topbar", () => ({
+    TopBar: (props: { onPointerDownCapture?: React.PointerEventHandler<HTMLDivElement> }) => {
+        mockLayout.topBarProps = props;
+        return (
+            <div data-testid="topbar" onPointerDownCapture={props.onPointerDownCapture}>
+                <i className="fa-code-branch" />
+            </div>
+        );
+    },
+}));
+
 vi.mock("@/app/tab/tabcontent", () => ({
     TabContent: (props: { onFocusCapture?: () => void }) => {
         mockLayout.tabContentMock?.(props);
@@ -180,9 +194,17 @@ vi.mock("@/util/platformutil", () => ({
 }));
 
 vi.mock("@/app/workspace/resize-handle", () => ({
-    ResizeHandle: ({ side, maxFn }: { side?: string; maxFn?: () => number }) => (
-        <div aria-label={`Resize ${side ?? "right"}`} data-max={maxFn?.()} />
-    ),
+    ResizeHandle: (props: {
+        side?: string;
+        maxFn?: () => number;
+        onResize?: (next: number) => void;
+        onResizeEnd?: (final: number) => void;
+    }) => {
+        if (props.side === "left") {
+            mockLayout.rightResizeHandleProps = props;
+        }
+        return <div aria-label={`Resize ${props.side ?? "right"}`} data-max={props.maxFn?.()} />;
+    },
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -214,6 +236,8 @@ describe("Workspace right tool panel integration", () => {
             activetabid: "tab-a",
         } as Workspace);
         mockLayout.tabContentMock = vi.fn();
+        mockLayout.topBarProps = null;
+        mockLayout.rightResizeHandleProps = null;
     });
 
     it("renders the right tool panel in workspace chrome instead of the legacy code review PanelGroup", () => {
@@ -399,5 +423,36 @@ describe("Workspace right tool panel integration", () => {
         tabContentProps.onFocusCapture();
 
         expect(mockLayout.model.setRightToolPanelFocused).toHaveBeenCalledWith(false);
+    });
+
+    it("clears stale right tool focus when TopBar chrome is clicked before Cmd+M fallback", () => {
+        renderToStaticMarkup(<Workspace />);
+
+        expect(mockLayout.topBarProps.onPointerDownCapture).toBeTypeOf("function");
+
+        mockLayout.topBarProps.onPointerDownCapture({
+            target: {
+                closest: () => null,
+            },
+        });
+
+        expect(mockLayout.model.setRightToolPanelFocused).toHaveBeenCalledWith(false);
+    });
+
+    it("previews right tool width during drag and persists only when resize ends", () => {
+        renderToStaticMarkup(<Workspace />);
+
+        expect(mockLayout.rightResizeHandleProps.onResize).toBeTypeOf("function");
+        expect(mockLayout.rightResizeHandleProps.onResizeEnd).toBeTypeOf("function");
+
+        mockLayout.rightResizeHandleProps.onResize(430);
+        mockLayout.rightResizeHandleProps.onResize(440);
+        mockLayout.rightResizeHandleProps.onResizeEnd(440);
+
+        expect(mockLayout.model.previewRightToolPanelWidth).toHaveBeenCalledTimes(2);
+        expect(mockLayout.model.previewRightToolPanelWidth).toHaveBeenNthCalledWith(1, 430);
+        expect(mockLayout.model.previewRightToolPanelWidth).toHaveBeenNthCalledWith(2, 440);
+        expect(mockLayout.model.setRightToolPanelWidth).toHaveBeenCalledTimes(1);
+        expect(mockLayout.model.setRightToolPanelWidth).toHaveBeenCalledWith(440);
     });
 });

@@ -5,7 +5,7 @@ import { GitReviewSidebar } from "@/app/codereview/git-panel";
 import { getSettingsKeyAtom } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
-import type { CSSProperties } from "react";
+import type { CSSProperties, FocusEvent } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
 
 type RightToolMetadata = {
@@ -21,6 +21,7 @@ export type RightToolPanelProps = {
     onCloseTool: (tool: RightToolId) => void;
     onHide: () => void;
     onFocusPanel: () => void;
+    onBlurPanel: () => void;
     className?: string;
 };
 
@@ -71,7 +72,7 @@ export type RightToolCollapsedToggleProps = {
 
 export type RightToolPanelMagnifiedOverlayProps = Pick<
     RightToolPanelProps,
-    "state" | "onSelectTool" | "onCloseTool" | "onFocusPanel"
+    "state" | "onSelectTool" | "onCloseTool" | "onFocusPanel" | "onBlurPanel"
 > & {
     onExit: () => void;
     className?: string;
@@ -191,6 +192,7 @@ export function RightToolPanelMagnifiedOverlay({
     onSelectTool,
     onCloseTool,
     onFocusPanel,
+    onBlurPanel,
     onExit,
     className,
 }: RightToolPanelMagnifiedOverlayProps) {
@@ -203,6 +205,7 @@ export function RightToolPanelMagnifiedOverlay({
             onSelectTool={onSelectTool}
             onCloseTool={onCloseTool}
             onFocusPanel={onFocusPanel}
+            onBlurPanel={onBlurPanel}
             onExit={onExit}
             className={className}
             magnifiedBlockOpacity={magnifiedBlockOpacity}
@@ -216,6 +219,7 @@ export function RightToolPanelMagnifiedOverlayView({
     onSelectTool,
     onCloseTool,
     onFocusPanel,
+    onBlurPanel,
     onExit,
     className,
     magnifiedBlockOpacity,
@@ -247,8 +251,13 @@ export function RightToolPanelMagnifiedOverlayView({
                     "fixed inset-8 z-[var(--zindex-layout-magnified-node)] flex flex-col rounded-lg border border-border bg-panelbg shadow-2xl",
                     className
                 )}
+                data-right-tool-panel-root="true"
                 tabIndex={0}
                 onFocus={onFocusPanel}
+                onBlurCapture={(event) => {
+                    if (!didFocusLeaveCurrentTarget(event)) return;
+                    onBlurPanel();
+                }}
             >
                 <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
                     <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
@@ -282,6 +291,7 @@ export function RightToolPanel({
     onCloseTool,
     onHide,
     onFocusPanel,
+    onBlurPanel,
     className,
 }: RightToolPanelProps) {
     if (!state.visible) {
@@ -292,9 +302,14 @@ export function RightToolPanel({
         <aside
             aria-label="Right tool panel"
             className={cn("flex h-full shrink-0 flex-col border-l border-border bg-panelbg", className)}
+            data-right-tool-panel-root="true"
             style={{ width: state.width }}
             tabIndex={0}
             onFocus={onFocusPanel}
+            onBlurCapture={(event) => {
+                if (!didFocusLeaveCurrentTarget(event)) return;
+                onBlurPanel();
+            }}
         >
             <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
                 <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
@@ -322,4 +337,8 @@ export function RightToolPanel({
             </div>
         </aside>
     );
+}
+
+function didFocusLeaveCurrentTarget(event: FocusEvent<HTMLElement>): boolean {
+    return !event.currentTarget.contains(event.relatedTarget as Node);
 }
