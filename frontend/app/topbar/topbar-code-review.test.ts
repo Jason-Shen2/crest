@@ -89,21 +89,15 @@ describe("TopBar code review button", () => {
 
     it("marks the button active only for the visible active codeReview tab", () => {
         expect(getCodeReviewButtonActive({
-            ...DefaultRightToolPanelState,
             visible: true,
-            openedTools: ["codeReview"],
             activeTool: "codeReview",
         })).toBe(true);
         expect(getCodeReviewButtonActive({
-            ...DefaultRightToolPanelState,
             visible: false,
-            openedTools: ["codeReview"],
             activeTool: "codeReview",
         })).toBe(false);
         expect(getCodeReviewButtonActive({
-            ...DefaultRightToolPanelState,
             visible: true,
-            openedTools: ["browser", "codeReview"],
             activeTool: "browser",
         })).toBe(false);
     });

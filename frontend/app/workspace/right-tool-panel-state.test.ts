@@ -12,6 +12,7 @@ import {
     selectRightTool,
     setRightToolPanelWidth,
 } from "./right-tool-panel-state";
+import type { RightToolPanelState } from "./right-tool-panel-state";
 
 describe("right tool panel state", () => {
     it("defaults to visible with no opened tools", () => {
@@ -69,12 +70,12 @@ describe("right tool panel state", () => {
     });
 
     it("does not carry stale focus when a hidden panel is reopened by a non-panel entry", () => {
-        const state = {
+        const state: RightToolPanelState = {
             ...DefaultRightToolPanelState,
             visible: false,
             focused: true,
             openedTools: ["codeReview"],
-            activeTool: "codeReview" as const,
+            activeTool: "codeReview",
         };
 
         expect(openRightTool(state, "codeReview")).toMatchObject({
