@@ -19,7 +19,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/junegunn/fzf v0.65.2
 	github.com/kevinburke/ssh_config v1.2.0
-	github.com/mattn/go-sqlite3 v1.14.40
+	github.com/mattn/go-sqlite3 v1.14.45
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/s-zx/crest/tsunami v0.12.3
 	github.com/sawka/txwrap v0.2.0
