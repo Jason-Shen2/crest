@@ -8,6 +8,7 @@ import { useEffect, useMemo } from "react";
 import { languageClientManager } from "./lsp/language-client-manager";
 import { MonacoModelRegistry } from "./monaco-model-registry";
 import type { RightEditorModel } from "./right-editor-model";
+import type { RightEditorOpenFile } from "./right-editor-types";
 
 function basename(path: string): string {
     const idx = path.lastIndexOf("/");
@@ -21,6 +22,23 @@ type RightEditorWorkbenchProps = {
 export function shouldStartRightEditorLsp(language: string, workspaceRoot: string): boolean {
     if (!workspaceRoot) return false;
     return language === "typescript" || language === "javascript";
+}
+
+type LspLifecycleManager = {
+    acquireClient: (input: { workspaceRoot: string; language: string }) => () => void;
+};
+
+export function acquireRightEditorLspForActiveFile(input: {
+    activeFile: RightEditorOpenFile;
+    workspaceRoot: string;
+    lspManager: LspLifecycleManager;
+}): (() => void) | undefined {
+    if (!input.activeFile) return undefined;
+    if (!shouldStartRightEditorLsp(input.activeFile.language, input.workspaceRoot)) return undefined;
+    return input.lspManager.acquireClient({
+        workspaceRoot: input.workspaceRoot,
+        language: input.activeFile.language,
+    });
 }
 
 export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
@@ -38,14 +56,11 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
     }, [activeFile?.path, activeFile?.uri, activeFile?.language, text]);
 
     useEffect(() => {
-        if (!activeFile) return;
-        if (!shouldStartRightEditorLsp(activeFile.language, state.workspaceRoot)) return;
-        fireAndForget(() =>
-            languageClientManager.ensureClient({
-                workspaceRoot: state.workspaceRoot,
-                language: activeFile.language,
-            })
-        );
+        return acquireRightEditorLspForActiveFile({
+            activeFile,
+            workspaceRoot: state.workspaceRoot,
+            lspManager: languageClientManager,
+        });
     }, [state.workspaceRoot, activeFile?.language]);
 
     if (!activeFile) {
