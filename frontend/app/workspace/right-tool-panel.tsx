@@ -67,6 +67,14 @@ export type RightToolContentProps = {
     activeTool?: RightToolId;
 };
 
+function disposeRightEditorModelPath(path: string): void {
+    void import("@/app/righteditor/monaco-model-registry")
+        .then(({ MonacoModelRegistry }) => {
+            MonacoModelRegistry.getInstance().disposePath(path);
+        })
+        .catch(() => undefined);
+}
+
 export type RightToolPanelMagnifiedOverlayProps = Pick<
     RightToolPanelProps,
     "state" | "onSelectTool" | "onCloseTool" | "onFocusPanel" | "onBlurPanel"
@@ -153,7 +161,13 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
         return <RightToolLauncher onOpenTool={() => null} />;
     }
     if (activeTool === "editor") {
-        return <RightEditorWorkbench model={RightEditorModel.getInstance(RightEditorProductionRpc)} />;
+        return (
+            <RightEditorWorkbench
+                model={RightEditorModel.getInstance(RightEditorProductionRpc, {
+                    disposeModelPath: disposeRightEditorModelPath,
+                })}
+            />
+        );
     }
     if (activeTool === "codeReview") {
         return <GitReviewSidebar />;
