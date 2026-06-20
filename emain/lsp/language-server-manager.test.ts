@@ -1,6 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { LanguageServerManager } from "./language-server-manager";
 
+function makeChild() {
+    const handlers = new Map<string, () => void>();
+    return {
+        child: {
+            stdin: {},
+            stdout: {},
+            stderr: {},
+            kill: vi.fn(),
+            on: vi.fn((event: string, handler: () => void) => {
+                handlers.set(event, handler);
+            }),
+        },
+        emit: (event: string) => handlers.get(event)?.(),
+    };
+}
+
 describe("LanguageServerManager", () => {
     it("resolves typescript language server command", () => {
         const manager = new LanguageServerManager({ spawn: vi.fn() as any });
@@ -11,12 +27,55 @@ describe("LanguageServerManager", () => {
     });
 
     it("reuses one process per workspace root and language", () => {
-        const spawn = vi.fn(() => ({ stdin: {}, stdout: {}, stderr: {}, kill: vi.fn(), on: vi.fn() }));
+        const spawn = vi.fn(() => makeChild().child);
         const manager = new LanguageServerManager({ spawn: spawn as any });
 
         manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
         manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
 
         expect(spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it("clears the cached process when a child process emits error", () => {
+        const first = makeChild();
+        const second = makeChild();
+        const spawn = vi.fn().mockReturnValueOnce(first.child).mockReturnValueOnce(second.child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        first.emit("error");
+        const restarted = manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+
+        expect(spawn).toHaveBeenCalledTimes(2);
+        expect(restarted).toBe(second.child);
+    });
+
+    it("stops and clears one cached process", () => {
+        const spawned = makeChild();
+        const spawn = vi.fn(() => spawned.child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        manager.stop({ workspaceRoot: "/repo", language: "typescript" });
+        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+
+        expect(spawned.child.kill).toHaveBeenCalledTimes(1);
+        expect(spawn).toHaveBeenCalledTimes(2);
+    });
+
+    it("stops and clears all cached processes", () => {
+        const first = makeChild();
+        const second = makeChild();
+        const spawn = vi.fn().mockReturnValueOnce(first.child).mockReturnValueOnce(second.child).mockReturnValue(makeChild().child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        manager.getOrStart({ workspaceRoot: "/repo", language: "javascript" });
+        manager.stopAll();
+        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+
+        expect(first.child.kill).toHaveBeenCalledTimes(1);
+        expect(second.child.kill).toHaveBeenCalledTimes(1);
+        expect(spawn).toHaveBeenCalledTimes(3);
     });
 });
