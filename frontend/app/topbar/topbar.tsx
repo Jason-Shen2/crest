@@ -15,7 +15,7 @@ import { FloatingPortal, flip, offset, shift, useClick, useDismiss, useFloating,
 import { useAtomValue } from "jotai";
 import { memo } from "react";
 import type { PointerEventHandler } from "react";
-import { getCodeReviewButtonActive, openCodeReviewFromTopBar } from "./topbar-code-review";
+import { getRightPanelButtonActive, toggleRightPanelFromTopBar } from "./topbar-right-panel";
 import "./topbar.scss";
 
 // ---- Generic icon button ----
@@ -119,15 +119,15 @@ const RightPanelButtons = memo(() => {
         workspace?.oid ?? "",
         hydratedRightToolPanelState
     );
-    const codeReviewActive = getCodeReviewButtonActive(rightToolPanelState);
+    const rightPanelActive = getRightPanelButtonActive(rightToolPanelState);
 
     return (
         <>
             <ToolbarButton
-                icon="fa-code-branch"
-                label="Code Review"
-                active={codeReviewActive}
-                onClick={() => openCodeReviewFromTopBar(layoutModel)}
+                icon="fa-table-columns"
+                label="Toggle Right Panel"
+                active={rightPanelActive}
+                onClick={() => toggleRightPanelFromTopBar(layoutModel, rightToolPanelState.visible)}
             />
 
             {/* Notifications: floating popover */}

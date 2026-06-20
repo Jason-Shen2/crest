@@ -30,7 +30,6 @@ vi.mock("@/app/codereview/git-panel", () => ({
 }));
 
 import {
-    RightToolCollapsedToggle,
     RightToolContent,
     RightToolLauncher,
     RightToolPanel,
@@ -176,13 +175,6 @@ describe("RightToolPanel parts", () => {
         const markup = renderToStaticMarkup(<RightToolContent activeTool="codeReview" />);
 
         expect(markup).toContain("Git Review Sidebar");
-    });
-
-    it("renders a collapsed toggle for restoring the panel", () => {
-        const markup = renderToStaticMarkup(<RightToolCollapsedToggle onShow={() => null} onFocusPanel={() => null} />);
-
-        expect(markup).toContain('aria-label="Show right tool panel"');
-        expect(markup).toContain("Tools");
     });
 
     it("renders a magnified overlay around the active right tool", () => {
