@@ -167,6 +167,28 @@ export class RightEditorModel {
         this.disposeModelPath(path);
     }
 
+    handleFileRenamed(oldPath: string, newPath: string): void {
+        const state = this.getStateNow();
+        globalStore.set(this.stateAtom, {
+            ...state,
+            activePath: state.activePath === oldPath ? newPath : state.activePath,
+            openFiles: state.openFiles.map((file) =>
+                file.path === oldPath
+                    ? {
+                          ...file,
+                          path: newPath,
+                          uri: pathToFileUri(newPath),
+                          language: getRightEditorLanguage(newPath),
+                      }
+                    : file
+            ),
+        });
+    }
+
+    handleFileDeleted(path: string): void {
+        this.closeFile(path);
+    }
+
     private patchFile(path: string, patch: Partial<RightEditorOpenFile>): void {
         const state = this.getStateNow();
         globalStore.set(this.stateAtom, {

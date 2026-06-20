@@ -38,7 +38,12 @@ vi.mock("./lsp/language-client-manager", () => ({
 }));
 
 import { RightEditorModel } from "./right-editor-model";
-import { acquireRightEditorLspForActiveFile, RightEditorWorkbench, shouldStartRightEditorLsp } from "./right-editor-workbench";
+import {
+    acquireRightEditorLspForActiveFile,
+    closeRightEditorFileWithConfirmation,
+    RightEditorWorkbench,
+    shouldStartRightEditorLsp,
+} from "./right-editor-workbench";
 
 const rpc = {
     readFile: vi.fn(async () => ({ text: "const x = 1;", readonly: false })),
@@ -139,5 +144,29 @@ describe("RightEditorWorkbench", () => {
 
         expect(lspManager.acquireClient).not.toHaveBeenCalled();
         expect(cleanup).toBeUndefined();
+    });
+
+    it("asks before closing a dirty file", () => {
+        const closeFile = vi.fn();
+        const confirmDiscard = vi.fn(() => false);
+
+        closeRightEditorFileWithConfirmation({
+            file: {
+                path: "/repo/src/app.ts",
+                uri: "file:///repo/src/app.ts",
+                language: "typescript",
+                readonly: false,
+                savedText: "saved",
+                dirtyText: "dirty",
+                saveStatus: "idle",
+                error: null,
+            },
+            name: "app.ts",
+            closeFile,
+            confirmDiscard,
+        });
+
+        expect(confirmDiscard).toHaveBeenCalledWith('Discard changes to "app.ts"?');
+        expect(closeFile).not.toHaveBeenCalled();
     });
 });
