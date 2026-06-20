@@ -16,7 +16,17 @@ type RightEditorModelDeps = {
 };
 
 function pathToFileUri(path: string): string {
-    return `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+    const normalizedPath = path.replace(/\\/g, "/");
+    const driveMatch = /^([A-Za-z]:)(\/.*)?$/.exec(normalizedPath);
+    if (driveMatch) {
+        const [, drive, rest = ""] = driveMatch;
+        const encodedRest = rest
+            .split("/")
+            .map((part) => encodeURIComponent(part))
+            .join("/");
+        return `file:///${drive}${encodedRest}`;
+    }
+    return `file://${normalizedPath.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 export class RightEditorModel {
