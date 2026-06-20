@@ -120,6 +120,18 @@ describe("FileExplorerModel", () => {
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/lib/a.ts")?.dirtyText).toBe("dirty");
     });
 
+    it("does not create a right editor model when syncing a rename with no open editor", async () => {
+        const model = FileExplorerModel.getInstance();
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+        await model.commitRename("/repo/a.ts", "b.ts");
+
+        expect(vi.mocked(RpcApi.FileMoveCommand)).toHaveBeenCalled();
+        expect(RightEditorModel.hasInstance()).toBe(false);
+        expect(consoleError).not.toHaveBeenCalled();
+        consoleError.mockRestore();
+    });
+
     it("syncs successful deletes to the right editor", async () => {
         const model = FileExplorerModel.getInstance();
         globalStore.set(model.rootAtom, "/repo");
@@ -142,6 +154,18 @@ describe("FileExplorerModel", () => {
         expect(vi.mocked(RpcApi.FileDeleteCommand)).toHaveBeenCalled();
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src/a.ts")).toBeUndefined();
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src-not-child/b.ts")).toBeDefined();
+    });
+
+    it("does not create a right editor model when syncing a delete with no open editor", async () => {
+        const model = FileExplorerModel.getInstance();
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+        await model.deleteFile("/repo/a.ts");
+
+        expect(vi.mocked(RpcApi.FileDeleteCommand)).toHaveBeenCalled();
+        expect(RightEditorModel.hasInstance()).toBe(false);
+        expect(consoleError).not.toHaveBeenCalled();
+        consoleError.mockRestore();
     });
 });
 

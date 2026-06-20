@@ -64,6 +64,14 @@ export class RightEditorModel {
         return RightEditorModel.instance;
     }
 
+    static hasInstance(): boolean {
+        return RightEditorModel.instance != null;
+    }
+
+    static getExistingInstance(): RightEditorModel | null {
+        return RightEditorModel.instance;
+    }
+
     static resetInstance(): void {
         RightEditorModel.instance = null;
     }
