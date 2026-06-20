@@ -44,6 +44,7 @@ export class LanguageServerManager {
             stdio: "pipe",
         });
         child.on("exit", () => this.processes.delete(key));
+        child.on("error", () => this.processes.delete(key));
         this.processes.set(key, child);
         return child;
     }
