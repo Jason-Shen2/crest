@@ -41,6 +41,7 @@ import { RightEditorModel } from "./right-editor-model";
 import {
     acquireRightEditorLspForActiveFile,
     closeRightEditorFileWithConfirmation,
+    handleRightEditorKeyDown,
     RightEditorWorkbench,
     shouldStartRightEditorLsp,
 } from "./right-editor-workbench";
@@ -50,8 +51,29 @@ const rpc = {
     writeFile: vi.fn(async () => undefined),
 };
 
+type KeyDownEvent = {
+    browserEvent: {
+        key: string;
+        metaKey: boolean;
+        ctrlKey: boolean;
+    };
+    preventDefault: () => void;
+    stopPropagation: () => void;
+};
+
 function renderWithStore(element: ReactElement): string {
     return renderToStaticMarkup(<Provider store={globalStore}>{element}</Provider>);
+}
+
+function mountCapturedEditor(): (event: KeyDownEvent) => void {
+    let keyDownHandler: (event: KeyDownEvent) => void;
+    mockWorkbench.codeEditorProps[0].onMount({
+        onKeyDown: (handler: (event: KeyDownEvent) => void) => {
+            keyDownHandler = handler;
+            return { dispose: vi.fn() };
+        },
+    });
+    return keyDownHandler;
 }
 
 describe("RightEditorWorkbench", () => {
@@ -59,6 +81,7 @@ describe("RightEditorWorkbench", () => {
         RightEditorModel.resetInstance();
         mockWorkbench.codeEditorProps = [];
         mockWorkbench.getOrCreateModel.mockClear();
+        vi.unstubAllGlobals();
     });
 
     it("renders an empty state when no file is open", () => {
@@ -168,5 +191,64 @@ describe("RightEditorWorkbench", () => {
 
         expect(confirmDiscard).toHaveBeenCalledWith('Discard changes to "app.ts"?');
         expect(closeFile).not.toHaveBeenCalled();
+    });
+
+    it("handles primary save and close shortcuts for the active file", () => {
+        const saveFile = vi.fn();
+        const closeFile = vi.fn();
+        const saveHandler = (keybind: string) =>
+            handleRightEditorKeyDown({
+                key: keybind.slice(keybind.lastIndexOf(":") + 1),
+                metaKey: keybind.startsWith("Cmd:"),
+                ctrlKey: keybind.startsWith("Ctrl:"),
+                activePath: "/repo/src/app.ts",
+                saveFile,
+                closeFile,
+            });
+        const closeHandler = saveHandler;
+
+        expect(saveHandler("Cmd:s")).toBe(true);
+        expect(closeHandler("Cmd:w")).toBe(true);
+        expect(saveHandler("Cmd:m")).toBe(false);
+        expect(saveFile).toHaveBeenCalledWith("/repo/src/app.ts");
+        expect(closeFile).toHaveBeenCalledWith("/repo/src/app.ts");
+    });
+
+    it("keeps a dirty active file open when Cmd+W discard confirmation is canceled", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/src/app.ts", "/repo");
+        model.updateText("/repo/src/app.ts", "dirty");
+        const confirmSpy = vi.fn(() => false);
+        vi.stubGlobal("window", { confirm: confirmSpy });
+        renderWithStore(<RightEditorWorkbench model={model} />);
+
+        const keyDownHandler = mountCapturedEditor();
+        keyDownHandler({
+            browserEvent: { key: "w", metaKey: false, ctrlKey: true },
+            preventDefault: vi.fn(),
+            stopPropagation: vi.fn(),
+        });
+
+        expect(confirmSpy).toHaveBeenCalledWith('Discard changes to "app.ts"?');
+        expect(model.getOpenFileNow("/repo/src/app.ts")).toBeTruthy();
+    });
+
+    it("closes a dirty active file when Cmd+W discard confirmation is accepted", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/src/app.ts", "/repo");
+        model.updateText("/repo/src/app.ts", "dirty");
+        const confirmSpy = vi.fn(() => true);
+        vi.stubGlobal("window", { confirm: confirmSpy });
+        renderWithStore(<RightEditorWorkbench model={model} />);
+
+        const keyDownHandler = mountCapturedEditor();
+        keyDownHandler({
+            browserEvent: { key: "w", metaKey: true, ctrlKey: false },
+            preventDefault: vi.fn(),
+            stopPropagation: vi.fn(),
+        });
+
+        expect(confirmSpy).toHaveBeenCalledWith('Discard changes to "app.ts"?');
+        expect(model.getOpenFileNow("/repo/src/app.ts")).toBeFalsy();
     });
 });
