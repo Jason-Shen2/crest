@@ -37,9 +37,10 @@ interface CodeEditorProps {
     fileName?: string;
     onChange?: (text: string) => void;
     onMount?: (monacoPtr: MonacoTypes.editor.IStandaloneCodeEditor, monaco: typeof MonacoModule) => () => void;
+    model?: MonacoTypes.editor.ITextModel;
 }
 
-export function CodeEditor({ blockId, text, language, fileName, readonly, onChange, onMount }: CodeEditorProps) {
+export function CodeEditor({ blockId, text, language, fileName, readonly, onChange, onMount, model }: CodeEditorProps) {
     const divRef = useRef<HTMLDivElement>(null);
     const unmountRef = useRef<() => void>(null);
     const minimapEnabled = useOverrideConfigAtom(blockId, "editor:minimapenabled") ?? false;
@@ -103,6 +104,7 @@ export function CodeEditor({ blockId, text, language, fileName, readonly, onChan
                     onMount={handleEditorOnMount}
                     path={editorPath}
                     language={language}
+                    model={model}
                 />
             </div>
         </div>
