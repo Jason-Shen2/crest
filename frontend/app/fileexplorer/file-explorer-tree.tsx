@@ -113,6 +113,95 @@ type RowProps = {
     root: string;
 };
 
+type FileExplorerContextMenuInput = {
+    model: Pick<
+        FileExplorerModel,
+        | "cdToDir"
+        | "deleteFile"
+        | "openFile"
+        | "openInNewTab"
+        | "startNewFile"
+        | "startNewFolder"
+        | "startRename"
+    >;
+    finfo: FileInfo;
+    root: string;
+};
+
+export function buildFileExplorerContextMenu({ model, finfo, root }: FileExplorerContextMenuInput): ContextMenuItem[] {
+    const path = finfo.path;
+    const name = finfo.name ?? finfo.path;
+    const isDir = finfo.isdir ?? false;
+    const menu: ContextMenuItem[] = [];
+
+    if (isDir) {
+        menu.push({
+            label: "New File",
+            click: () => model.startNewFile(path),
+        });
+        menu.push({
+            label: "New Folder",
+            click: () => model.startNewFolder(path),
+        });
+        menu.push({ type: "separator" });
+    }
+
+    if (isDir) {
+        menu.push({
+            label: "cd to directory",
+            click: () => model.cdToDir(path),
+        });
+    }
+
+    if (!isDir) {
+        menu.push({
+            label: "Open in Right Editor",
+            click: () => fireAndForget(() => model.openFile(finfo)),
+        });
+    }
+
+    menu.push({
+        label: "Open in Main Area",
+        click: () =>
+            fireAndForget(() =>
+                isDir ? model.openInNewTab(path) : createBlock({ meta: { view: "preview", file: path, connection: "" } })
+            ),
+    });
+
+    menu.push({
+        label: "Reveal in Finder",
+        click: () => getApi().openNativePath(isDir ? path : finfo.dir ?? path),
+    });
+
+    menu.push({ type: "separator" });
+
+    menu.push({ label: "Rename", click: () => model.startRename(path, name) });
+    menu.push({
+        label: "Delete",
+        click: () => {
+            if (window.confirm(`Delete "${name}"?`)) {
+                fireAndForget(() => model.deleteFile(path));
+            }
+        },
+    });
+
+    menu.push({ type: "separator" });
+
+    menu.push({
+        label: "Copy Path",
+        click: () => navigator.clipboard.writeText(path),
+    });
+    menu.push({
+        label: "Copy Relative Path",
+        click: () => {
+            const rel = path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+            navigator.clipboard.writeText(rel);
+        },
+    });
+
+    return menu;
+}
+
 const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
     const { path, name, depth, isDir, finfo, expanded, selected } = item;
     const model = FileExplorerModel.getInstance();
@@ -123,66 +212,7 @@ const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
     const onContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        const menu: ContextMenuItem[] = [];
-
-        if (isDir) {
-            menu.push({
-                label: "New File",
-                click: () => model.startNewFile(path),
-            });
-            menu.push({
-                label: "New Folder",
-                click: () => model.startNewFolder(path),
-            });
-            menu.push({ type: "separator" });
-        }
-
-        if (isDir) {
-            menu.push({
-                label: "cd to directory",
-                click: () => model.cdToDir(path),
-            });
-        }
-
-        menu.push({
-            label: "Open in new tab",
-            click: () => fireAndForget(() =>
-                isDir
-                    ? model.openInNewTab(path)
-                    : createBlock({ meta: { view: "preview", file: path, connection: "" } })
-            ),
-        });
-
-        menu.push({
-            label: "Reveal in Finder",
-            click: () => getApi().openNativePath(isDir ? path : finfo.dir ?? path),
-        });
-
-        menu.push({ type: "separator" });
-
-        menu.push({ label: "Rename", click: () => model.startRename(path, name) });
-        menu.push({
-            label: "Delete",
-            click: () => {
-                if (window.confirm(`Delete "${name}"?`)) {
-                    fireAndForget(() => model.deleteFile(path));
-                }
-            },
-        });
-
-        menu.push({ type: "separator" });
-
-        menu.push({
-            label: "Copy Path",
-            click: () => navigator.clipboard.writeText(path),
-        });
-        menu.push({
-            label: "Copy Relative Path",
-            click: () => {
-                const rel = path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
-                navigator.clipboard.writeText(rel);
-            },
-        });
+        const menu = buildFileExplorerContextMenu({ model, finfo, root });
 
         ContextMenuModel.getInstance().showContextMenu(menu, e);
     };
