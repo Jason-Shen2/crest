@@ -292,6 +292,7 @@ export class FileExplorerModel {
                 srcuri: formatRemoteUri(oldPath, "local"),
                 desturi: formatRemoteUri(newPath, "local"),
             });
+            RightEditorModel.getInstance().handleFileRenamed(oldPath, newPath);
         } catch (e) {
             console.error("rename failed:", e);
         }
@@ -329,6 +330,7 @@ export class FileExplorerModel {
                 path: formatRemoteUri(path, "local"),
                 recursive: true,
             });
+            RightEditorModel.getInstance().handleFileDeleted(path);
         } catch (e) {
             console.error("delete failed:", e);
         }

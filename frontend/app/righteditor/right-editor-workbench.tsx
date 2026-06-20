@@ -41,6 +41,19 @@ export function acquireRightEditorLspForActiveFile(input: {
     });
 }
 
+export function closeRightEditorFileWithConfirmation(input: {
+    file: RightEditorOpenFile;
+    name: string;
+    closeFile: (path: string) => void;
+    confirmDiscard?: (message: string) => boolean;
+}): void {
+    const confirmDiscard = input.confirmDiscard ?? ((message: string) => window.confirm(message));
+    if (input.file.dirtyText != null && !confirmDiscard(`Discard changes to "${input.name}"?`)) {
+        return;
+    }
+    input.closeFile(input.file.path);
+}
+
 export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
     const state = useAtomValue(model.stateAtom);
     const activeFile = state.openFiles.find((file) => file.path === state.activePath);
@@ -101,7 +114,13 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                                 type="button"
                                 aria-label={`Close ${name}`}
                                 className="cursor-pointer px-1.5 py-1 text-muted hover:text-white"
-                                onClick={() => model.closeFile(file.path)}
+                                onClick={() =>
+                                    closeRightEditorFileWithConfirmation({
+                                        file,
+                                        name,
+                                        closeFile: (path) => model.closeFile(path),
+                                    })
+                                }
                             >
                                 <i className="fa-solid fa-xmark" />
                             </button>
