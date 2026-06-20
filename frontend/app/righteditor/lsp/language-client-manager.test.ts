@@ -11,4 +11,20 @@ describe("LanguageClientManager", () => {
 
         expect(transportFactory).toHaveBeenCalledTimes(1);
     });
+
+    it("reuses one pending transport for concurrent requests", async () => {
+        let resolveTransport: (transport: { dispose: () => void }) => void;
+        const transportPromise = new Promise<{ dispose: () => void }>((resolve) => {
+            resolveTransport = resolve;
+        });
+        const transportFactory = vi.fn(async () => transportPromise);
+        const manager = new LanguageClientManager({ transportFactory });
+
+        const first = manager.ensureClient({ workspaceRoot: "/repo", language: "typescript" });
+        const second = manager.ensureClient({ workspaceRoot: "/repo", language: "typescript" });
+        resolveTransport!({ dispose: vi.fn() });
+        await Promise.all([first, second]);
+
+        expect(transportFactory).toHaveBeenCalledTimes(1);
+    });
 });
