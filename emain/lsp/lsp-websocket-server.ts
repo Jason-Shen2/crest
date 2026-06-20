@@ -14,8 +14,7 @@ export type ParsedLspRequest = {
 };
 
 type LanguageServerManagerLike = {
-    getOrStart: (input: ParsedLspRequest) => ChildProcessWithoutNullStreams;
-    stopAll: () => void;
+    startSession: (input: ParsedLspRequest) => ChildProcessWithoutNullStreams;
 };
 
 export function parseLspRequest(urlText: string): ParsedLspRequest {
@@ -46,6 +45,7 @@ export class LspWebSocketBridge {
     private server: WebSocketServer = null;
     private url: string = null;
     private readonly clients = new Set<WebSocket>();
+    private readonly sessionCleanups = new Set<() => void>();
 
     constructor(deps: { languageServerManager?: LanguageServerManagerLike } = {}) {
         this.languageServerManager = deps.languageServerManager ?? new LanguageServerManager();
@@ -71,7 +71,9 @@ export class LspWebSocketBridge {
         const server = this.server;
         this.server = null;
         this.url = null;
-        this.languageServerManager.stopAll();
+        for (const cleanup of Array.from(this.sessionCleanups)) {
+            cleanup();
+        }
         for (const client of this.clients) {
             client.terminate();
         }
@@ -93,7 +95,7 @@ export class LspWebSocketBridge {
         ws.on("close", () => this.clients.delete(ws));
         let child: ChildProcessWithoutNullStreams;
         try {
-            child = this.languageServerManager.getOrStart(parseLspRequest(urlText));
+            child = this.languageServerManager.startSession(parseLspRequest(urlText));
         } catch (e: any) {
             ws.close(1008, e?.message ?? String(e));
             return;
@@ -107,7 +109,11 @@ export class LspWebSocketBridge {
             wsReader.listen((message) => void lspWriter.write(message)),
             lspReader.listen((message) => void wsWriter.write(message)),
         ];
-        ws.on("close", () => {
+        let cleanedUp = false;
+        const cleanup = () => {
+            if (cleanedUp) return;
+            cleanedUp = true;
+            this.sessionCleanups.delete(cleanup);
             for (const disposable of disposables) {
                 disposable.dispose();
             }
@@ -115,6 +121,9 @@ export class LspWebSocketBridge {
             wsWriter.dispose();
             lspReader.dispose();
             lspWriter.dispose();
-        });
+            child.kill();
+        };
+        this.sessionCleanups.add(cleanup);
+        ws.on("close", cleanup);
     }
 }

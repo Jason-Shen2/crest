@@ -76,6 +76,34 @@ describe("LanguageServerManager", () => {
         expect(spawn).toHaveBeenCalledTimes(1);
     });
 
+    it("starts independent sessions without reusing cached processes", () => {
+        const first = makeChild();
+        const second = makeChild();
+        const spawn = vi.fn().mockReturnValueOnce(first.child).mockReturnValueOnce(second.child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        const firstSession = manager.startSession({ workspaceRoot: "/repo", language: "typescript" });
+        const secondSession = manager.startSession({ workspaceRoot: "/repo", language: "typescript" });
+
+        expect(spawn).toHaveBeenCalledTimes(2);
+        expect(firstSession).toBe(first.child);
+        expect(secondSession).toBe(second.child);
+    });
+
+    it("does not stop independent sessions through the cached process stop path", () => {
+        const session = makeChild();
+        const cached = makeChild();
+        const spawn = vi.fn().mockReturnValueOnce(session.child).mockReturnValueOnce(cached.child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        manager.startSession({ workspaceRoot: "/repo", language: "typescript" });
+        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        manager.stopAll();
+
+        expect(session.child.kill).not.toHaveBeenCalled();
+        expect(cached.child.kill).toHaveBeenCalledTimes(1);
+    });
+
     it("clears the cached process when a child process emits error", () => {
         const first = makeChild();
         const second = makeChild();
