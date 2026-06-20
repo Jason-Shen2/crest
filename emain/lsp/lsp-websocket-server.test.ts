@@ -1,15 +1,17 @@
+import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { StreamMessageWriter } from "vscode-jsonrpc/node";
+import type { RequestMessage, ResponseMessage } from "vscode-jsonrpc";
 import WebSocket from "ws";
 import { describe, expect, it, vi } from "vitest";
 import { LspWebSocketBridge, parseLspRequest } from "./lsp-websocket-server";
 
 function makeStreamChild() {
-    return {
+    return Object.assign(new EventEmitter(), {
         stdin: new PassThrough(),
         stdout: new PassThrough(),
         kill: vi.fn(),
-    };
+    });
 }
 
 describe("parseLspRequest", () => {
@@ -43,7 +45,8 @@ describe("LspWebSocketBridge", () => {
         const client = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
         await new Promise<void>((resolve) => client.once("open", resolve));
 
-        client.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }));
+        const initializeMessage: RequestMessage = { jsonrpc: "2.0", id: 1, method: "initialize", params: {} };
+        client.send(JSON.stringify(initializeMessage));
         await vi.waitFor(() => {
             expect(stdioPayload).toContain("Content-Length:");
         });
@@ -52,7 +55,8 @@ describe("LspWebSocketBridge", () => {
         const responsePromise = new Promise<string>((resolve) => {
             client.once("message", (data) => resolve(data.toString()));
         });
-        await new StreamMessageWriter(stdout).write({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } });
+        const initializeResponse: ResponseMessage = { jsonrpc: "2.0", id: 1, result: { capabilities: {} } };
+        await new StreamMessageWriter(stdout).write(initializeResponse);
         await expect(responsePromise).resolves.toBe('{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}');
 
         client.close();
@@ -110,6 +114,46 @@ describe("LspWebSocketBridge", () => {
 
         firstClient.close();
         secondClient.close();
+        await bridge.stop();
+    });
+
+    it("closes and cleans up the websocket when the language server exits", async () => {
+        const child = makeStreamChild();
+        const languageServerManager = {
+            startSession: vi.fn(() => child),
+        };
+        const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
+        const url = await bridge.start();
+        const client = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
+        await new Promise<void>((resolve) => client.once("open", resolve));
+
+        child.emit("exit", 0, null);
+
+        await vi.waitFor(() => {
+            expect(client.readyState).toBe(WebSocket.CLOSED);
+            expect(child.stdout.listenerCount("data")).toBe(0);
+        });
+        expect(child.kill).not.toHaveBeenCalled();
+        await bridge.stop();
+    });
+
+    it("closes and cleans up the websocket when the language server errors", async () => {
+        const child = makeStreamChild();
+        const languageServerManager = {
+            startSession: vi.fn(() => child),
+        };
+        const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
+        const url = await bridge.start();
+        const client = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
+        await new Promise<void>((resolve) => client.once("open", resolve));
+
+        child.emit("error", new Error("ls failed"));
+
+        await vi.waitFor(() => {
+            expect(client.readyState).toBe(WebSocket.CLOSED);
+            expect(child.stdout.listenerCount("data")).toBe(0);
+        });
+        expect(child.kill).not.toHaveBeenCalled();
         await bridge.stop();
     });
 });

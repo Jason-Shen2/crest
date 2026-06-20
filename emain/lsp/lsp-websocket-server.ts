@@ -17,6 +17,8 @@ type LanguageServerManagerLike = {
     startSession: (input: ParsedLspRequest) => ChildProcessWithoutNullStreams;
 };
 
+type SessionCleanup = (opts?: { killChild: boolean; closeWebSocket: boolean }) => void;
+
 export function parseLspRequest(urlText: string): ParsedLspRequest {
     const url = new URL(urlText, "ws://127.0.0.1");
     const language = url.searchParams.get("language");
@@ -45,7 +47,7 @@ export class LspWebSocketBridge {
     private server: WebSocketServer = null;
     private url: string = null;
     private readonly clients = new Set<WebSocket>();
-    private readonly sessionCleanups = new Set<() => void>();
+    private readonly sessionCleanups = new Set<SessionCleanup>();
 
     constructor(deps: { languageServerManager?: LanguageServerManagerLike } = {}) {
         this.languageServerManager = deps.languageServerManager ?? new LanguageServerManager();
@@ -110,10 +112,17 @@ export class LspWebSocketBridge {
             lspReader.listen((message) => void wsWriter.write(message)),
         ];
         let cleanedUp = false;
-        const cleanup = () => {
+        const closeWebSocket = () => {
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close();
+            }
+        };
+        const cleanup: SessionCleanup = (opts = { killChild: true, closeWebSocket: false }) => {
             if (cleanedUp) return;
             cleanedUp = true;
             this.sessionCleanups.delete(cleanup);
+            child.off("exit", onChildExit);
+            child.off("error", onChildError);
             for (const disposable of disposables) {
                 disposable.dispose();
             }
@@ -121,9 +130,18 @@ export class LspWebSocketBridge {
             wsWriter.dispose();
             lspReader.dispose();
             lspWriter.dispose();
-            child.kill();
+            if (opts.killChild) {
+                child.kill();
+            }
+            if (opts.closeWebSocket) {
+                closeWebSocket();
+            }
         };
+        const onChildExit = () => cleanup({ killChild: false, closeWebSocket: true });
+        const onChildError = () => cleanup({ killChild: false, closeWebSocket: true });
         this.sessionCleanups.add(cleanup);
-        ws.on("close", cleanup);
+        child.once("exit", onChildExit);
+        child.once("error", onChildError);
+        ws.on("close", () => cleanup({ killChild: true, closeWebSocket: false }));
     }
 }
