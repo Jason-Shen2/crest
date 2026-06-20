@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import path from "node:path";
 import { LanguageServerManager } from "./language-server-manager";
 
 function makeChild() {
@@ -19,9 +20,23 @@ function makeChild() {
 
 describe("LanguageServerManager", () => {
     it("resolves typescript language server command", () => {
-        const manager = new LanguageServerManager({ spawn: vi.fn() as any });
+        const manager = new LanguageServerManager({ commandExists: () => false, spawn: vi.fn() as any });
         expect(manager.resolveCommand("typescript")).toEqual({
             command: "typescript-language-server",
+            args: ["--stdio"],
+        });
+    });
+
+    it("resolves typescript language server from app node_modules when available", () => {
+        const appRoot = "/app";
+        const manager = new LanguageServerManager({
+            appRoot,
+            commandExists: (candidate) => candidate === path.join(appRoot, "node_modules", ".bin", "typescript-language-server"),
+            spawn: vi.fn() as any,
+        });
+
+        expect(manager.resolveCommand("typescript")).toEqual({
+            command: path.join(appRoot, "node_modules", ".bin", "typescript-language-server"),
             args: ["--stdio"],
         });
     });
