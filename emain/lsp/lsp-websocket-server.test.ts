@@ -1,4 +1,5 @@
-import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { StreamMessageWriter } from "vscode-jsonrpc/node";
 import WebSocket from "ws";
 import { describe, expect, it, vi } from "vitest";
 import { LspWebSocketBridge, parseLspRequest } from "./lsp-websocket-server";
@@ -17,10 +18,15 @@ describe("parseLspRequest", () => {
 });
 
 describe("LspWebSocketBridge", () => {
-    it("forwards websocket messages to language server stdio and cleans up stdout listeners", async () => {
-        const stdout = new EventEmitter();
+    it("translates websocket JSON messages to LSP stdio framing and cleans up stdout listeners", async () => {
+        const stdin = new PassThrough();
+        const stdout = new PassThrough();
+        let stdioPayload = "";
+        stdin.on("data", (data) => {
+            stdioPayload += data.toString();
+        });
         const child = {
-            stdin: { write: vi.fn() },
+            stdin,
             stdout,
         };
         const languageServerManager = {
@@ -32,17 +38,17 @@ describe("LspWebSocketBridge", () => {
         const client = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
         await new Promise<void>((resolve) => client.once("open", resolve));
 
-        client.send("client-message");
+        client.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }));
         await vi.waitFor(() => {
-            expect(child.stdin.write).toHaveBeenCalledTimes(1);
+            expect(stdioPayload).toContain("Content-Length:");
         });
-        expect(child.stdin.write.mock.calls[0][0].toString()).toBe("client-message");
+        expect(stdioPayload).toContain('"method":"initialize"');
 
         const responsePromise = new Promise<string>((resolve) => {
             client.once("message", (data) => resolve(data.toString()));
         });
-        stdout.emit("data", Buffer.from("server-message"));
-        await expect(responsePromise).resolves.toBe("server-message");
+        await new StreamMessageWriter(stdout).write({ jsonrpc: "2.0", id: 1, result: { capabilities: {} } });
+        await expect(responsePromise).resolves.toBe('{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}');
 
         client.close();
         await vi.waitFor(() => {
@@ -53,8 +59,8 @@ describe("LspWebSocketBridge", () => {
 
     it("closes active websocket clients when the bridge stops", async () => {
         const child = {
-            stdin: { write: vi.fn() },
-            stdout: new EventEmitter(),
+            stdin: new PassThrough(),
+            stdout: new PassThrough(),
         };
         const languageServerManager = {
             getOrStart: vi.fn(() => child),

@@ -3,6 +3,8 @@
 
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { AddressInfo } from "node:net";
+import { StreamMessageReader, StreamMessageWriter, type Disposable } from "vscode-jsonrpc/node";
+import { type IWebSocket, WebSocketMessageReader, WebSocketMessageWriter } from "vscode-ws-jsonrpc";
 import { WebSocket, WebSocketServer } from "ws";
 import { LanguageServerManager } from "./language-server-manager";
 
@@ -23,6 +25,20 @@ export function parseLspRequest(urlText: string): ParsedLspRequest {
     if (!language) throw new Error("Missing language");
     if (!workspaceRoot) throw new Error("Missing workspaceRoot");
     return { language, workspaceRoot };
+}
+
+function makeJsonRpcWebSocket(ws: WebSocket): IWebSocket {
+    return {
+        send: (content) => ws.send(content),
+        onMessage: (cb) => ws.on("message", (data) => cb(data.toString())),
+        onError: (cb) => ws.on("error", cb),
+        onClose: (cb) => ws.on("close", (code, reason) => cb(code, reason.toString())),
+        dispose: () => {
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close();
+            }
+        },
+    };
 }
 
 export class LspWebSocketBridge {
@@ -82,14 +98,23 @@ export class LspWebSocketBridge {
             ws.close(1008, e?.message ?? String(e));
             return;
         }
-        const stdoutHandler = (data: Buffer) => {
-            if (ws.readyState !== WebSocket.OPEN) return;
-            ws.send(data);
-        };
-        child.stdout.on("data", stdoutHandler);
-        ws.on("message", (data) => child.stdin.write(data));
+        const jsonRpcWebSocket = makeJsonRpcWebSocket(ws);
+        const wsReader = new WebSocketMessageReader(jsonRpcWebSocket);
+        const wsWriter = new WebSocketMessageWriter(jsonRpcWebSocket);
+        const lspReader = new StreamMessageReader(child.stdout);
+        const lspWriter = new StreamMessageWriter(child.stdin);
+        const disposables: Disposable[] = [
+            wsReader.listen((message) => void lspWriter.write(message)),
+            lspReader.listen((message) => void wsWriter.write(message)),
+        ];
         ws.on("close", () => {
-            child.stdout.off("data", stdoutHandler);
+            for (const disposable of disposables) {
+                disposable.dispose();
+            }
+            wsReader.dispose();
+            wsWriter.dispose();
+            lspReader.dispose();
+            lspWriter.dispose();
         });
     }
 }
