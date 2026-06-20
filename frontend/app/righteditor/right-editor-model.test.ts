@@ -8,6 +8,16 @@ function makeRpc() {
     };
 }
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((promiseResolve, promiseReject) => {
+        resolve = promiseResolve;
+        reject = promiseReject;
+    });
+    return { promise, resolve, reject };
+}
+
 describe("RightEditorModel", () => {
     beforeEach(() => {
         RightEditorModel.resetInstance();
@@ -39,5 +49,39 @@ describe("RightEditorModel", () => {
         expect(rpc.writeFile).toHaveBeenCalledWith("/repo/src/app.ts", "changed");
         expect(model.getOpenFileNow("/repo/src/app.ts")?.savedText).toBe("changed");
         expect(model.getOpenFileNow("/repo/src/app.ts")?.dirtyText).toBeNull();
+    });
+
+    it("preserves newer edits made while a save is pending", async () => {
+        const save = deferred<void>();
+        const rpc = makeRpc();
+        rpc.writeFile.mockReturnValueOnce(save.promise);
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/src/app.ts", "/repo");
+
+        model.updateText("/repo/src/app.ts", "first change");
+        const savePromise = model.saveFile("/repo/src/app.ts");
+        model.updateText("/repo/src/app.ts", "second change");
+        save.resolve();
+        await savePromise;
+
+        expect(rpc.writeFile).toHaveBeenCalledWith("/repo/src/app.ts", "first change");
+        expect(model.getOpenFileNow("/repo/src/app.ts")?.savedText).toBe("first change");
+        expect(model.getOpenFileNow("/repo/src/app.ts")?.dirtyText).toBe("second change");
+    });
+
+    it("dedupes concurrent opens for the same file", async () => {
+        const read = deferred<{ text: string; readonly: boolean }>();
+        const rpc = makeRpc();
+        rpc.readFile.mockReturnValue(read.promise);
+        const model = RightEditorModel.getInstance(rpc);
+
+        const firstOpen = model.openFile("/repo/src/app.ts", "/repo");
+        const secondOpen = model.openFile("/repo/src/app.ts", "/repo");
+        read.resolve({ text: "initial", readonly: false });
+        await Promise.all([firstOpen, secondOpen]);
+
+        expect(rpc.readFile).toHaveBeenCalledTimes(1);
+        expect(model.getStateNow().openFiles).toHaveLength(1);
+        expect(model.getStateNow().activePath).toBe("/repo/src/app.ts");
     });
 });
