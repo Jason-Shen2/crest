@@ -3,11 +3,10 @@
 
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
+import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
 import { RightEditorWorkbench } from "@/app/righteditor/right-editor-workbench";
-import { RpcApi } from "@/app/store/wshclientapi";
-import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { getSettingsKeyAtom } from "@/store/global";
-import { base64ToString, cn, stringToBase64 } from "@/util/util";
+import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import type { CSSProperties, FocusEvent } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
@@ -49,24 +48,6 @@ const RightToolMetadataById: Record<RightToolId, RightToolMetadata> = {
         label: "Code Review",
         icon: "fa-solid fa-code-compare",
         description: "Review code changes in a dedicated tool tab.",
-    },
-};
-
-const RightEditorProductionRpc = {
-    readFile: async (path: string) => {
-        const fileData = await RpcApi.FileReadCommand(TabRpcClient, {
-            info: { path },
-        });
-        return {
-            text: fileData?.data64 ? base64ToString(fileData.data64) : "",
-            readonly: fileData?.info?.readonly ?? false,
-        };
-    },
-    writeFile: async (path: string, text: string) => {
-        await RpcApi.FileWriteCommand(TabRpcClient, {
-            info: { path },
-            data64: stringToBase64(text),
-        });
     },
 };
 
