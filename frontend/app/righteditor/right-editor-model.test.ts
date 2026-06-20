@@ -122,6 +122,26 @@ describe("RightEditorModel", () => {
         expect(model.getOpenFileNow("/repo/b.ts")?.dirtyText).toBe("dirty");
     });
 
+    it("renames open child file paths when a directory is renamed", async () => {
+        const migrateModelPath = vi.fn();
+        const model = RightEditorModel.getInstance(makeRpc(), { migrateModelPath });
+        await model.openFile("/repo/src/a.ts", "/repo");
+        await model.openFile("/repo/src/nested/b.ts", "/repo");
+        await model.openFile("/repo/src-not-child/c.ts", "/repo");
+        model.updateText("/repo/src/nested/b.ts", "dirty");
+
+        model.handleFileRenamed("/repo/src", "/repo/lib");
+
+        expect(model.getOpenFileNow("/repo/src/a.ts")).toBeUndefined();
+        expect(model.getOpenFileNow("/repo/lib/a.ts")?.language).toBe("typescript");
+        expect(model.getOpenFileNow("/repo/lib/nested/b.ts")?.dirtyText).toBe("dirty");
+        expect(model.getOpenFileNow("/repo/src-not-child/c.ts")).toBeDefined();
+        expect(model.getStateNow().activePath).toBe("/repo/src-not-child/c.ts");
+        expect(migrateModelPath).toHaveBeenCalledWith("/repo/src/a.ts", "/repo/lib/a.ts");
+        expect(migrateModelPath).toHaveBeenCalledWith("/repo/src/nested/b.ts", "/repo/lib/nested/b.ts");
+        expect(migrateModelPath).not.toHaveBeenCalledWith("/repo/src-not-child/c.ts", expect.any(String));
+    });
+
     it("closes an open file when deleted", async () => {
         const model = RightEditorModel.getInstance(makeRpc());
         await model.openFile("/repo/a.ts", "/repo");
@@ -129,5 +149,23 @@ describe("RightEditorModel", () => {
         model.handleFileDeleted("/repo/a.ts");
 
         expect(model.getStateNow().openFiles).toHaveLength(0);
+    });
+
+    it("closes open child files when a directory is deleted", async () => {
+        const disposeModelPath = vi.fn();
+        const model = RightEditorModel.getInstance(makeRpc(), { disposeModelPath });
+        await model.openFile("/repo/src/a.ts", "/repo");
+        await model.openFile("/repo/src/nested/b.ts", "/repo");
+        await model.openFile("/repo/src-not-child/c.ts", "/repo");
+
+        model.handleFileDeleted("/repo/src");
+
+        expect(model.getOpenFileNow("/repo/src/a.ts")).toBeUndefined();
+        expect(model.getOpenFileNow("/repo/src/nested/b.ts")).toBeUndefined();
+        expect(model.getOpenFileNow("/repo/src-not-child/c.ts")).toBeDefined();
+        expect(model.getStateNow().activePath).toBe("/repo/src-not-child/c.ts");
+        expect(disposeModelPath).toHaveBeenCalledWith("/repo/src/a.ts");
+        expect(disposeModelPath).toHaveBeenCalledWith("/repo/src/nested/b.ts");
+        expect(disposeModelPath).not.toHaveBeenCalledWith("/repo/src-not-child/c.ts");
     });
 });
