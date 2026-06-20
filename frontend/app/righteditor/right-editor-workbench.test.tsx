@@ -31,8 +31,14 @@ vi.mock("./monaco-model-registry", () => ({
     },
 }));
 
+vi.mock("./lsp/language-client-manager", () => ({
+    languageClientManager: {
+        ensureClient: vi.fn(async () => undefined),
+    },
+}));
+
 import { RightEditorModel } from "./right-editor-model";
-import { RightEditorWorkbench } from "./right-editor-workbench";
+import { RightEditorWorkbench, shouldStartRightEditorLsp } from "./right-editor-workbench";
 
 const rpc = {
     readFile: vi.fn(async () => ({ text: "const x = 1;", readonly: false })),
@@ -76,5 +82,12 @@ describe("RightEditorWorkbench", () => {
             language: "typescript",
         });
         expect(mockWorkbench.codeEditorProps[0].model).toBe(mockWorkbench.registryModel);
+    });
+
+    it("starts LSP only for JavaScript and TypeScript files with a workspace root", () => {
+        expect(shouldStartRightEditorLsp("typescript", "/repo")).toBe(true);
+        expect(shouldStartRightEditorLsp("javascript", "/repo")).toBe(true);
+        expect(shouldStartRightEditorLsp("typescript", "")).toBe(false);
+        expect(shouldStartRightEditorLsp("json", "/repo")).toBe(false);
     });
 });
