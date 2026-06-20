@@ -19,6 +19,7 @@ type LanguageClientManagerDeps = {
 export class LanguageClientManager {
     private readonly deps: LanguageClientManagerDeps;
     private readonly transports = new Map<ClientKey, DisposableTransport>();
+    private readonly pendingTransports = new Map<ClientKey, Promise<DisposableTransport>>();
 
     constructor(deps: LanguageClientManagerDeps) {
         this.deps = deps;
@@ -27,7 +28,21 @@ export class LanguageClientManager {
     async ensureClient(input: EnsureClientInput): Promise<void> {
         const key = this.makeKey(input);
         if (this.transports.has(key)) return;
-        this.transports.set(key, await this.deps.transportFactory(input));
+        const pendingTransport = this.pendingTransports.get(key);
+        if (pendingTransport) {
+            await pendingTransport;
+            return;
+        }
+        const transportPromise = this.deps.transportFactory(input).then((transport) => {
+            this.transports.set(key, transport);
+            return transport;
+        });
+        this.pendingTransports.set(key, transportPromise);
+        try {
+            await transportPromise;
+        } finally {
+            this.pendingTransports.delete(key);
+        }
     }
 
     stopClient(input: EnsureClientInput): void {
@@ -36,6 +51,7 @@ export class LanguageClientManager {
         if (!transport) return;
         transport.dispose();
         this.transports.delete(key);
+        this.pendingTransports.delete(key);
     }
 
     stopAll(): void {
@@ -43,6 +59,7 @@ export class LanguageClientManager {
             transport.dispose();
         }
         this.transports.clear();
+        this.pendingTransports.clear();
     }
 
     private makeKey(input: EnsureClientInput): ClientKey {
