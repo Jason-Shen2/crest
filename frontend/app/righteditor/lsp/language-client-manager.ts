@@ -1,6 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { RightEditorLspStatus } from "../right-editor-types";
+
 type ClientKey = string;
 
 type EnsureClientInput = {
@@ -25,6 +27,7 @@ export class LanguageClientManager {
     private readonly deps: LanguageClientManagerDeps;
     private readonly transports = new Map<ClientKey, DisposableTransport>();
     private readonly pendingTransports = new Map<ClientKey, PendingTransport>();
+    private readonly statusByKey = new Map<ClientKey, RightEditorLspStatus>();
 
     constructor(deps: LanguageClientManagerDeps) {
         this.deps = deps;
@@ -52,13 +55,31 @@ export class LanguageClientManager {
             stopped: false,
         };
         this.pendingTransports.set(key, pendingTransportEntry);
+        this.setStatus(input, "starting", null);
         try {
             await transportPromise;
+            if (!pendingTransportEntry.stopped) {
+                this.setStatus(input, "running", null);
+            }
+        } catch (e: any) {
+            this.setStatus(input, "error", e?.message ?? String(e));
+            throw e;
         } finally {
             if (this.pendingTransports.get(key) === pendingTransportEntry) {
                 this.pendingTransports.delete(key);
             }
         }
+    }
+
+    getStatus(input: EnsureClientInput): RightEditorLspStatus {
+        return (
+            this.statusByKey.get(this.makeKey(input)) ?? {
+                workspaceRoot: input.workspaceRoot,
+                language: input.language,
+                state: "stopped",
+                message: null,
+            }
+        );
     }
 
     stopClient(input: EnsureClientInput): void {
@@ -69,9 +90,11 @@ export class LanguageClientManager {
             this.pendingTransports.delete(key);
         }
         const transport = this.transports.get(key);
-        if (!transport) return;
-        transport.dispose();
-        this.transports.delete(key);
+        if (transport) {
+            transport.dispose();
+            this.transports.delete(key);
+        }
+        this.setStatus(input, "stopped", null);
     }
 
     stopAll(): void {
@@ -83,9 +106,26 @@ export class LanguageClientManager {
         }
         this.transports.clear();
         this.pendingTransports.clear();
+        this.statusByKey.clear();
+    }
+
+    private setStatus(input: EnsureClientInput, state: RightEditorLspStatus["state"], message: string | null): void {
+        this.statusByKey.set(this.makeKey(input), {
+            workspaceRoot: input.workspaceRoot,
+            language: input.language,
+            state,
+            message,
+        });
     }
 
     private makeKey(input: EnsureClientInput): ClientKey {
         return `${input.workspaceRoot}\u0000${input.language}`;
     }
 }
+
+export const languageClientManager = new LanguageClientManager({
+    transportFactory: async (input) => {
+        const { createLspWebSocketTransport } = await import("./lsp-transport");
+        return createLspWebSocketTransport(input);
+    },
+});

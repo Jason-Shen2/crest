@@ -4,7 +4,8 @@
 import { CodeEditor } from "@/app/view/codeeditor/codeeditor";
 import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
+import { languageClientManager } from "./lsp/language-client-manager";
 import { MonacoModelRegistry } from "./monaco-model-registry";
 import type { RightEditorModel } from "./right-editor-model";
 
@@ -16,6 +17,11 @@ function basename(path: string): string {
 type RightEditorWorkbenchProps = {
     model: RightEditorModel;
 };
+
+export function shouldStartRightEditorLsp(language: string, workspaceRoot: string): boolean {
+    if (!workspaceRoot) return false;
+    return language === "typescript" || language === "javascript";
+}
 
 export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
     const state = useAtomValue(model.stateAtom);
@@ -30,6 +36,17 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
             language: activeFile.language,
         });
     }, [activeFile?.path, activeFile?.uri, activeFile?.language, text]);
+
+    useEffect(() => {
+        if (!activeFile) return;
+        if (!shouldStartRightEditorLsp(activeFile.language, state.workspaceRoot)) return;
+        fireAndForget(() =>
+            languageClientManager.ensureClient({
+                workspaceRoot: state.workspaceRoot,
+                language: activeFile.language,
+            })
+        );
+    }, [state.workspaceRoot, activeFile?.language]);
 
     if (!activeFile) {
         return (
