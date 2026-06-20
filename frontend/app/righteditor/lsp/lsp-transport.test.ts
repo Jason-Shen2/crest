@@ -7,11 +7,13 @@ const TransportMocks = vi.hoisted(() => {
     const disposeClient = vi.fn(async () => undefined);
     const setModelMarkers = vi.fn();
     const getModel = vi.fn((uri) => ({ uri }));
+    const ensureMonacoVscodeServices = vi.fn(async () => undefined);
     return {
         startClient,
         disposeClient,
         setModelMarkers,
         getModel,
+        ensureMonacoVscodeServices,
         clientConstructor: vi.fn(function (this: any) {
             this.start = startClient;
             this.dispose = disposeClient;
@@ -44,6 +46,10 @@ vi.mock("monaco-editor", () => ({
 
 vi.mock("monaco-languageclient", () => ({
     MonacoLanguageClient: TransportMocks.clientConstructor,
+}));
+
+vi.mock("@/app/monaco/monaco-env", () => ({
+    ensureMonacoVscodeServices: TransportMocks.ensureMonacoVscodeServices,
 }));
 
 vi.mock("vscode-ws-jsonrpc", () => ({
@@ -91,6 +97,7 @@ describe("createLspWebSocketTransport", () => {
         TransportMocks.disposeClient.mockClear();
         TransportMocks.setModelMarkers.mockClear();
         TransportMocks.getModel.mockClear();
+        TransportMocks.ensureMonacoVscodeServices.mockClear();
         TransportMocks.clientConstructor.mockClear();
         TransportMocks.readerConstructor.mockClear();
         TransportMocks.writerConstructor.mockClear();
@@ -153,6 +160,10 @@ describe("createLspWebSocketTransport", () => {
                     documentSelector: [{ scheme: "file", language: "typescript" }],
                 }),
             })
+        );
+        expect(TransportMocks.ensureMonacoVscodeServices).toHaveBeenCalledTimes(1);
+        expect(TransportMocks.ensureMonacoVscodeServices.mock.invocationCallOrder[0]).toBeLessThan(
+            TransportMocks.startClient.mock.invocationCallOrder[0]
         );
         expect(TransportMocks.startClient).toHaveBeenCalledTimes(1);
 

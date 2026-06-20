@@ -21,7 +21,12 @@ type RightEditorWorkbenchProps = {
 
 export function shouldStartRightEditorLsp(language: string, workspaceRoot: string): boolean {
     if (!workspaceRoot) return false;
-    return language === "typescript" || language === "javascript";
+    return (
+        language === "typescript" ||
+        language === "typescriptreact" ||
+        language === "javascript" ||
+        language === "javascriptreact"
+    );
 }
 
 type LspLifecycleManager = {
@@ -34,9 +39,10 @@ export function acquireRightEditorLspForActiveFile(input: {
     lspManager: LspLifecycleManager;
 }): (() => void) | undefined {
     if (!input.activeFile) return undefined;
-    if (!shouldStartRightEditorLsp(input.activeFile.language, input.workspaceRoot)) return undefined;
+    const workspaceRoot = input.activeFile.workspaceRoot || input.workspaceRoot;
+    if (!shouldStartRightEditorLsp(input.activeFile.language, workspaceRoot)) return undefined;
     return input.lspManager.acquireClient({
-        workspaceRoot: input.workspaceRoot,
+        workspaceRoot,
         language: input.activeFile.language,
     });
 }
@@ -95,10 +101,10 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
     useEffect(() => {
         return acquireRightEditorLspForActiveFile({
             activeFile,
-            workspaceRoot: state.workspaceRoot,
+            workspaceRoot: activeFile?.workspaceRoot ?? state.workspaceRoot,
             lspManager: languageClientManager,
         });
-    }, [state.workspaceRoot, activeFile?.language]);
+    }, [state.workspaceRoot, activeFile?.workspaceRoot, activeFile?.language]);
 
     if (!activeFile) {
         return (

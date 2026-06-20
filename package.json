@@ -69,6 +69,11 @@
     },
     "dependencies": {
         "@anthropic-ai/sdk": "^0.91.1",
+        "@codingame/monaco-vscode-api": "25.1.2",
+        "@codingame/monaco-vscode-configuration-service-override": "25.1.2",
+        "@codingame/monaco-vscode-languages-service-override": "25.1.2",
+        "@codingame/monaco-vscode-log-service-override": "25.1.2",
+        "@codingame/monaco-vscode-model-service-override": "25.1.2",
         "@floating-ui/react": "^0.27.16",
         "@google/genai": "^1.52.0",
         "@observablehq/plot": "^0.6.17",

@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import * as monaco from "monaco-editor";
+import getConfigurationServiceOverride from "@codingame/monaco-vscode-configuration-service-override";
+import getLanguagesServiceOverride from "@codingame/monaco-vscode-languages-service-override";
+import getLogServiceOverride from "@codingame/monaco-vscode-log-service-override";
+import getModelServiceOverride from "@codingame/monaco-vscode-model-service-override";
+import { initialize as initializeMonacoVscodeApi } from "@codingame/monaco-vscode-api/services";
 import "monaco-editor/esm/vs/language/css/monaco.contribution";
 import "monaco-editor/esm/vs/language/html/monaco.contribution";
 import "monaco-editor/esm/vs/language/json/monaco.contribution";
@@ -17,6 +22,7 @@ import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
 import ymlWorker from "./yamlworker?worker";
 
 let monacoConfigured = false;
+let monacoVscodeServicesPromise: Promise<void> = null;
 
 window.MonacoEnvironment = {
     getWorker(_, label) {
@@ -32,18 +38,36 @@ window.MonacoEnvironment = {
         if (label === "html" || label === "handlebars" || label === "razor") {
             return new htmlWorker();
         }
-        if (label === "typescript" || label === "javascript") {
+        if (
+            label === "typescript" ||
+            label === "typescriptreact" ||
+            label === "javascript" ||
+            label === "javascriptreact"
+        ) {
             return new tsWorker();
         }
         return new editorWorker();
     },
 };
 
+export function ensureMonacoVscodeServices(): Promise<void> {
+    if (!monacoVscodeServicesPromise) {
+        monacoVscodeServicesPromise = initializeMonacoVscodeApi({
+            ...getLanguagesServiceOverride(),
+            ...getLogServiceOverride(),
+            ...getModelServiceOverride(),
+            ...getConfigurationServiceOverride(),
+        });
+    }
+    return monacoVscodeServicesPromise;
+}
+
 export function loadMonaco() {
     if (monacoConfigured) {
         return;
     }
     monacoConfigured = true;
+    void ensureMonacoVscodeServices();
     monaco.editor.defineTheme("wave-theme-dark", {
         base: "vs-dark",
         inherit: true,

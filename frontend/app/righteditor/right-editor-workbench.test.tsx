@@ -116,7 +116,9 @@ describe("RightEditorWorkbench", () => {
 
     it("starts LSP only for JavaScript and TypeScript files with a workspace root", () => {
         expect(shouldStartRightEditorLsp("typescript", "/repo")).toBe(true);
+        expect(shouldStartRightEditorLsp("typescriptreact", "/repo")).toBe(true);
         expect(shouldStartRightEditorLsp("javascript", "/repo")).toBe(true);
+        expect(shouldStartRightEditorLsp("javascriptreact", "/repo")).toBe(true);
         expect(shouldStartRightEditorLsp("typescript", "")).toBe(false);
         expect(shouldStartRightEditorLsp("json", "/repo")).toBe(false);
     });
@@ -132,6 +134,7 @@ describe("RightEditorWorkbench", () => {
                 path: "/repo/src/app.ts",
                 uri: "file:///repo/src/app.ts",
                 language: "typescript",
+                workspaceRoot: "/repo",
                 readonly: false,
                 savedText: "",
                 dirtyText: null,
@@ -147,6 +150,30 @@ describe("RightEditorWorkbench", () => {
         expect(release).toHaveBeenCalledTimes(1);
     });
 
+    it("acquires LSP with the active file workspace root", () => {
+        const lspManager = {
+            acquireClient: vi.fn(() => vi.fn()),
+        };
+
+        acquireRightEditorLspForActiveFile({
+            activeFile: {
+                path: "/repo-a/src/app.ts",
+                uri: "file:///repo-a/src/app.ts",
+                language: "typescript",
+                workspaceRoot: "/repo-a",
+                readonly: false,
+                savedText: "",
+                dirtyText: null,
+                saveStatus: "idle",
+                error: null,
+            },
+            workspaceRoot: "/repo-b",
+            lspManager,
+        });
+
+        expect(lspManager.acquireClient).toHaveBeenCalledWith({ workspaceRoot: "/repo-a", language: "typescript" });
+    });
+
     it("does not acquire LSP for unsupported active files", () => {
         const lspManager = {
             acquireClient: vi.fn(() => vi.fn()),
@@ -157,6 +184,7 @@ describe("RightEditorWorkbench", () => {
                 path: "/repo/package.json",
                 uri: "file:///repo/package.json",
                 language: "json",
+                workspaceRoot: "/repo",
                 readonly: false,
                 savedText: "",
                 dirtyText: null,
@@ -180,6 +208,7 @@ describe("RightEditorWorkbench", () => {
                 path: "/repo/src/app.ts",
                 uri: "file:///repo/src/app.ts",
                 language: "typescript",
+                workspaceRoot: "/repo",
                 readonly: false,
                 savedText: "saved",
                 dirtyText: "dirty",
