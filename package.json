@@ -136,6 +136,7 @@
         "tailwind-merge": "^3.5.0",
         "throttle-debounce": "^5.0.2",
         "typebox": "^1.1.38",
+        "typescript-language-server": "^5.3.0",
         "unist-util-visit": "^5.1.0",
         "use-device-pixel-ratio": "^1.1.2",
         "uuid": "^13.0.0",
