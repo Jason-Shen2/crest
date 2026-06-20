@@ -26,6 +26,26 @@ describe("LanguageClientManager", () => {
         });
     });
 
+    it("keeps a shared client running until the last release", async () => {
+        const dispose = vi.fn();
+        const transportFactory = vi.fn(async () => ({ dispose }));
+        const manager = new LanguageClientManager({ transportFactory });
+        const input = { workspaceRoot: "/repo", language: "typescript" };
+
+        const releaseFirst = manager.acquireClient(input);
+        const releaseSecond = manager.acquireClient(input);
+        await manager.ensureClient(input);
+
+        releaseFirst();
+        expect(dispose).not.toHaveBeenCalled();
+        expect(manager.getStatus(input).state).toBe("running");
+
+        releaseSecond();
+
+        expect(dispose).toHaveBeenCalledTimes(1);
+        expect(manager.getStatus(input).state).toBe("stopped");
+    });
+
     it("reuses one pending transport for concurrent requests", async () => {
         let resolveTransport: (transport: { dispose: () => void }) => void;
         const transportPromise = new Promise<{ dispose: () => void }>((resolve) => {

@@ -38,7 +38,7 @@ vi.mock("./lsp/language-client-manager", () => ({
 }));
 
 import { RightEditorModel } from "./right-editor-model";
-import { RightEditorWorkbench, shouldStartRightEditorLsp } from "./right-editor-workbench";
+import { acquireRightEditorLspForActiveFile, RightEditorWorkbench, shouldStartRightEditorLsp } from "./right-editor-workbench";
 
 const rpc = {
     readFile: vi.fn(async () => ({ text: "const x = 1;", readonly: false })),
@@ -89,5 +89,55 @@ describe("RightEditorWorkbench", () => {
         expect(shouldStartRightEditorLsp("javascript", "/repo")).toBe(true);
         expect(shouldStartRightEditorLsp("typescript", "")).toBe(false);
         expect(shouldStartRightEditorLsp("json", "/repo")).toBe(false);
+    });
+
+    it("acquires LSP for supported active files and releases on effect cleanup", () => {
+        const release = vi.fn();
+        const lspManager = {
+            acquireClient: vi.fn(() => release),
+        };
+
+        const cleanup = acquireRightEditorLspForActiveFile({
+            activeFile: {
+                path: "/repo/src/app.ts",
+                uri: "file:///repo/src/app.ts",
+                language: "typescript",
+                readonly: false,
+                savedText: "",
+                dirtyText: null,
+                saveStatus: "idle",
+                error: null,
+            },
+            workspaceRoot: "/repo",
+            lspManager,
+        });
+
+        expect(lspManager.acquireClient).toHaveBeenCalledWith({ workspaceRoot: "/repo", language: "typescript" });
+        cleanup();
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not acquire LSP for unsupported active files", () => {
+        const lspManager = {
+            acquireClient: vi.fn(() => vi.fn()),
+        };
+
+        const cleanup = acquireRightEditorLspForActiveFile({
+            activeFile: {
+                path: "/repo/package.json",
+                uri: "file:///repo/package.json",
+                language: "json",
+                readonly: false,
+                savedText: "",
+                dirtyText: null,
+                saveStatus: "idle",
+                error: null,
+            },
+            workspaceRoot: "/repo",
+            lspManager,
+        });
+
+        expect(lspManager.acquireClient).not.toHaveBeenCalled();
+        expect(cleanup).toBeUndefined();
     });
 });
