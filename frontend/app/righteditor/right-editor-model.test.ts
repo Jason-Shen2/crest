@@ -23,6 +23,16 @@ describe("RightEditorModel", () => {
         RightEditorModel.resetInstance();
     });
 
+    it("reports whether an instance exists without constructing one", () => {
+        expect(RightEditorModel.hasInstance()).toBe(false);
+        expect(RightEditorModel.getExistingInstance()).toBeNull();
+
+        const model = RightEditorModel.getInstance(makeRpc());
+
+        expect(RightEditorModel.hasInstance()).toBe(true);
+        expect(RightEditorModel.getExistingInstance()).toBe(model);
+    });
+
     it("opens a file and makes it active", async () => {
         const rpc = makeRpc();
         const model = RightEditorModel.getInstance(rpc);
