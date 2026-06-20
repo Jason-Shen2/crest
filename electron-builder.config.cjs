@@ -54,7 +54,7 @@ const config = {
         "dist/bin/**/*", // wavesrv and wsh binaries
         "dist/schema/**/*", // schema files for Monaco editor
         "node_modules/typescript-language-server/**",
-        "node_modules/typescript/lib/**",
+        "node_modules/typescript/**",
     ],
     mac: {
         target: [
