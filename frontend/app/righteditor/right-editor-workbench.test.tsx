@@ -56,6 +56,8 @@ type KeyDownEvent = {
         key: string;
         metaKey: boolean;
         ctrlKey: boolean;
+        shiftKey?: boolean;
+        altKey?: boolean;
     };
     preventDefault: () => void;
     stopPropagation: () => void;
@@ -201,6 +203,8 @@ describe("RightEditorWorkbench", () => {
                 key: keybind.slice(keybind.lastIndexOf(":") + 1),
                 metaKey: keybind.startsWith("Cmd:"),
                 ctrlKey: keybind.startsWith("Ctrl:"),
+                shiftKey: false,
+                altKey: false,
                 activePath: "/repo/src/app.ts",
                 saveFile,
                 closeFile,
@@ -214,6 +218,25 @@ describe("RightEditorWorkbench", () => {
         expect(closeFile).toHaveBeenCalledWith("/repo/src/app.ts");
     });
 
+    it("does not close for Cmd+Shift+W", () => {
+        const saveFile = vi.fn();
+        const closeFile = vi.fn();
+
+        const handled = handleRightEditorKeyDown({
+            key: "w",
+            metaKey: true,
+            ctrlKey: false,
+            shiftKey: true,
+            altKey: false,
+            activePath: "/repo/src/app.ts",
+            saveFile,
+            closeFile,
+        });
+
+        expect(handled).toBe(false);
+        expect(closeFile).not.toHaveBeenCalled();
+    });
+
     it("keeps a dirty active file open when Cmd+W discard confirmation is canceled", async () => {
         const model = RightEditorModel.getInstance(rpc);
         await model.openFile("/repo/src/app.ts", "/repo");
@@ -224,7 +247,7 @@ describe("RightEditorWorkbench", () => {
 
         const keyDownHandler = mountCapturedEditor();
         keyDownHandler({
-            browserEvent: { key: "w", metaKey: false, ctrlKey: true },
+            browserEvent: { key: "w", metaKey: false, ctrlKey: true, shiftKey: false, altKey: false },
             preventDefault: vi.fn(),
             stopPropagation: vi.fn(),
         });
@@ -243,7 +266,7 @@ describe("RightEditorWorkbench", () => {
 
         const keyDownHandler = mountCapturedEditor();
         keyDownHandler({
-            browserEvent: { key: "w", metaKey: true, ctrlKey: false },
+            browserEvent: { key: "w", metaKey: true, ctrlKey: false, shiftKey: false, altKey: false },
             preventDefault: vi.fn(),
             stopPropagation: vi.fn(),
         });
