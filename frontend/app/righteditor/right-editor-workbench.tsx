@@ -58,12 +58,15 @@ export function handleRightEditorKeyDown(input: {
     key: string;
     metaKey: boolean;
     ctrlKey: boolean;
+    shiftKey: boolean;
+    altKey: boolean;
     activePath: string | null;
     saveFile: (path: string) => void;
     closeFile: (path: string) => void;
 }): boolean {
     if (!input.activePath) return false;
-    const primary = input.metaKey || input.ctrlKey;
+    const primary = (input.metaKey || input.ctrlKey) && input.metaKey !== input.ctrlKey;
+    if (!primary || input.shiftKey || input.altKey) return false;
     if (primary && input.key.toLowerCase() === "s") {
         input.saveFile(input.activePath);
         return true;
@@ -171,6 +174,8 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                                 key: event.browserEvent.key,
                                 metaKey: event.browserEvent.metaKey,
                                 ctrlKey: event.browserEvent.ctrlKey,
+                                shiftKey: event.browserEvent.shiftKey,
+                                altKey: event.browserEvent.altKey,
                                 activePath: model.getStateNow().activePath,
                                 saveFile: (path) => fireAndForget(() => model.saveFile(path)),
                                 closeFile: (path) => {
