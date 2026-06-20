@@ -36,6 +36,22 @@ describe("RightEditorModel", () => {
         expect(state.openFiles[0].language).toBe("typescript");
     });
 
+    it("creates a file URI for POSIX paths", async () => {
+        const model = RightEditorModel.getInstance(makeRpc());
+
+        await model.openFile("/repo/src/app file.ts", "/repo");
+
+        expect(model.getOpenFileNow("/repo/src/app file.ts")?.uri).toBe("file:///repo/src/app%20file.ts");
+    });
+
+    it("creates a file URI for Windows paths", async () => {
+        const model = RightEditorModel.getInstance(makeRpc());
+
+        await model.openFile("C:\\repo\\src\\app file.ts", "C:\\repo");
+
+        expect(model.getOpenFileNow("C:\\repo\\src\\app file.ts")?.uri).toBe("file:///C:/repo/src/app%20file.ts");
+    });
+
     it("marks a file dirty and saves it", async () => {
         const rpc = makeRpc();
         const model = RightEditorModel.getInstance(rpc);
