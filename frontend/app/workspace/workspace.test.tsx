@@ -173,7 +173,7 @@ vi.mock("@/app/topbar/topbar", () => ({
         mockLayout.topBarProps = props;
         return (
             <div data-testid="topbar" onPointerDownCapture={props.onPointerDownCapture}>
-                <i className="fa-code-branch" />
+                <i className="fa-table-columns" />
             </div>
         );
     },
@@ -348,10 +348,11 @@ describe("Workspace right tool panel integration", () => {
         expect(mockLayout.model.hydrateRightToolPanelFromWorkspace).not.toHaveBeenCalled();
         expect(markup).not.toContain("Git Review Sidebar");
         expect(markup).not.toContain('aria-label="Right tool panel"');
-        expect(markup).toContain('aria-label="Show right tool panel"');
+        expect(markup).not.toContain('aria-label="Show right tool panel"');
+        expect(markup).toContain("fa-table-columns");
     });
 
-    it("renders the TopBar Code Review button inactive on the first ws-b render when ws-a left it active", () => {
+    it("renders the TopBar right panel button inactive on the first ws-b render when ws-a left it visible", () => {
         jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
             otype: "workspace",
             oid: "ws-b",
@@ -376,7 +377,7 @@ describe("Workspace right tool panel integration", () => {
 
         const markup = renderToStaticMarkup(<Workspace />);
 
-        expect(markup).toContain("fa-code-branch");
+        expect(markup).toContain("fa-table-columns");
         expect(markup).not.toContain("text-accent bg-white/10");
     });
 
@@ -405,7 +406,7 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).toContain('aria-label="Resize left" data-max="372"');
     });
 
-    it("renders the collapsed toggle only when hidden and non-magnified", () => {
+    it("does not render an in-content collapsed toggle when the panel is hidden", () => {
         mockLayout.rightToolPanelAtom = jotai.atom({
             ...DefaultRightToolPanelState,
             visible: false,
@@ -429,13 +430,8 @@ describe("Workspace right tool panel integration", () => {
         mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
 
         const collapsedMarkup = renderToStaticMarkup(<Workspace />);
-        expect(collapsedMarkup).toContain('aria-label="Show right tool panel"');
+        expect(collapsedMarkup).not.toContain('aria-label="Show right tool panel"');
         expect(collapsedMarkup).not.toContain('aria-label="Right tool panel"');
-
-        const mainContentIndex = collapsedMarkup.indexOf("<main>Main Tab Content</main>");
-        const collapsedToggleIndex = collapsedMarkup.indexOf('aria-label="Show right tool panel"');
-        expect(mainContentIndex).toBeGreaterThanOrEqual(0);
-        expect(collapsedToggleIndex).toBeGreaterThan(mainContentIndex);
 
         mockLayout.rightToolPanelAtom = jotai.atom({
             ...DefaultRightToolPanelState,

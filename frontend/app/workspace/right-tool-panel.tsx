@@ -64,12 +64,6 @@ export type RightToolContentProps = {
     activeTool?: RightToolId;
 };
 
-export type RightToolCollapsedToggleProps = {
-    onShow: () => void;
-    onFocusPanel: () => void;
-    className?: string;
-};
-
 export type RightToolPanelMagnifiedOverlayProps = Pick<
     RightToolPanelProps,
     "state" | "onSelectTool" | "onCloseTool" | "onFocusPanel" | "onBlurPanel"
@@ -167,23 +161,6 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
             </div>
             <div className="text-xs text-secondary">{metadata.description}</div>
         </div>
-    );
-}
-
-export function RightToolCollapsedToggle({ onShow, onFocusPanel, className }: RightToolCollapsedToggleProps) {
-    return (
-        <button
-            type="button"
-            aria-label="Show right tool panel"
-            className={cn(
-                "flex h-full w-8 shrink-0 cursor-pointer items-center justify-center border-l border-border bg-panelbg text-xs text-secondary hover:bg-hoverbg hover:text-white",
-                className
-            )}
-            onClick={onShow}
-            onFocus={onFocusPanel}
-        >
-            <span className="-rotate-90 whitespace-nowrap">Tools</span>
-        </button>
     );
 }
 
