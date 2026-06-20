@@ -13,7 +13,6 @@ import { VTabBar } from "@/app/tab/vtabbar";
 import { TopBar } from "@/app/topbar/topbar";
 import { ResizeHandle } from "@/app/workspace/resize-handle";
 import {
-    RightToolCollapsedToggle,
     RightToolPanel,
     RightToolPanelMagnifiedOverlay,
 } from "@/app/workspace/right-tool-panel";
@@ -121,10 +120,6 @@ const WorkspaceElem = memo(() => {
         () => workspaceLayoutModel.setRightToolPanelVisible(false),
         [workspaceLayoutModel]
     );
-    const onRightToolPanelShow = useCallback(
-        () => workspaceLayoutModel.setRightToolPanelVisible(true),
-        [workspaceLayoutModel]
-    );
     const onRightToolPanelFocus = useCallback(
         () => workspaceLayoutModel.setRightToolPanelFocused(true),
         [workspaceLayoutModel]
@@ -145,7 +140,6 @@ const WorkspaceElem = memo(() => {
         [workspaceLayoutModel]
     );
     const showRightToolPanelLayout = rightToolPanelState.visible && !rightToolPanelState.magnified;
-    const showRightToolPanelToggle = !rightToolPanelState.visible && !rightToolPanelState.magnified;
 
     return (
         <div
@@ -230,8 +224,6 @@ const WorkspaceElem = memo(() => {
                             onBlurPanel={onMainWorkspaceFocus}
                         />
                     </>
-                ) : showRightToolPanelToggle ? (
-                    <RightToolCollapsedToggle onShow={onRightToolPanelShow} onFocusPanel={onRightToolPanelFocus} />
                 ) : null}
                 <RightToolPanelMagnifiedOverlay
                     state={rightToolPanelState}

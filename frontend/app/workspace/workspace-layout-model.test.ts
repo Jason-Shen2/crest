@@ -3,7 +3,7 @@
 
 import { globalStore } from "@/app/store/jotaiStore";
 import { RpcApi } from "@/app/store/wshclientapi";
-import { openCodeReviewFromTopBar } from "@/app/topbar/topbar-code-review";
+import { toggleRightPanelFromTopBar } from "@/app/topbar/topbar-right-panel";
 import * as jotai from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultRightToolPanelState } from "./right-tool-panel-state";
@@ -425,7 +425,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
             magnified: false,
         });
 
-        openCodeReviewFromTopBar(model);
+        toggleRightPanelFromTopBar(model, false);
 
         expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
             visible: true,
