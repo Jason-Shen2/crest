@@ -19,6 +19,7 @@ export class RightEditorModel {
     private static instance: RightEditorModel | null = null;
     readonly stateAtom: jotai.PrimitiveAtom<RightEditorState>;
     private readonly rpc: RightEditorRpc;
+    private readonly pendingOpenFiles = new Map<string, Promise<void>>();
 
     private constructor(rpc: RightEditorRpc) {
         this.rpc = rpc;
@@ -55,7 +56,31 @@ export class RightEditorModel {
             globalStore.set(this.stateAtom, { ...this.getStateNow(), activePath: path, workspaceRoot });
             return;
         }
+        const pendingOpen = this.pendingOpenFiles.get(path);
+        if (pendingOpen) {
+            await pendingOpen;
+            if (this.getOpenFileNow(path)) {
+                globalStore.set(this.stateAtom, { ...this.getStateNow(), activePath: path, workspaceRoot });
+            }
+            return;
+        }
+        const openPromise = this.readAndOpenFile(path, workspaceRoot);
+        this.pendingOpenFiles.set(path, openPromise);
+        try {
+            await openPromise;
+        } finally {
+            if (this.pendingOpenFiles.get(path) === openPromise) {
+                this.pendingOpenFiles.delete(path);
+            }
+        }
+    }
+
+    private async readAndOpenFile(path: string, workspaceRoot: string): Promise<void> {
         const file = await this.rpc.readFile(path);
+        if (this.getOpenFileNow(path)) {
+            globalStore.set(this.stateAtom, { ...this.getStateNow(), activePath: path, workspaceRoot });
+            return;
+        }
         const openFile: RightEditorOpenFile = {
             path,
             uri: pathToFileUri(path),
@@ -84,7 +109,9 @@ export class RightEditorModel {
         globalStore.set(this.stateAtom, {
             ...state,
             openFiles: state.openFiles.map((file) =>
-                file.path === path ? { ...file, dirtyText: text === file.savedText ? null : text } : file
+                file.path === path
+                    ? { ...file, dirtyText: text === file.savedText && file.saveStatus !== "saving" ? null : text }
+                    : file
             ),
         });
     }
@@ -92,19 +119,22 @@ export class RightEditorModel {
     async saveFile(path: string): Promise<void> {
         const file = this.getOpenFileNow(path);
         if (!file || file.dirtyText == null || file.readonly) return;
+        const textToSave = file.dirtyText;
         this.patchFile(path, { saveStatus: "saving", error: null });
         try {
-            await this.rpc.writeFile(path, file.dirtyText);
+            await this.rpc.writeFile(path, textToSave);
+            const currentFile = this.getOpenFileNow(path);
+            if (!currentFile) return;
             this.patchFile(path, {
-                savedText: file.dirtyText,
-                dirtyText: null,
+                savedText: textToSave,
+                dirtyText: currentFile.dirtyText === textToSave ? null : currentFile.dirtyText,
                 saveStatus: "saved",
                 error: null,
             });
-        } catch (e: any) {
+        } catch (e: unknown) {
             this.patchFile(path, {
                 saveStatus: "error",
-                error: e?.message ?? String(e),
+                error: e instanceof Error ? e.message : String(e),
             });
         }
     }
