@@ -7,6 +7,7 @@ export type RightEditorOpenFile = {
     path: string;
     uri: string;
     language: string;
+    workspaceRoot: string;
     readonly: boolean;
     savedText: string;
     dirtyText: string | null;

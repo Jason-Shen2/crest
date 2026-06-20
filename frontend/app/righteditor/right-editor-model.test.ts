@@ -44,6 +44,17 @@ describe("RightEditorModel", () => {
         expect(state.openFiles).toHaveLength(1);
         expect(state.openFiles[0].savedText).toBe("initial");
         expect(state.openFiles[0].language).toBe("typescript");
+        expect(state.openFiles[0].workspaceRoot).toBe("/repo");
+    });
+
+    it("tracks the workspace root on each open file", async () => {
+        const model = RightEditorModel.getInstance(makeRpc());
+
+        await model.openFile("/repo-a/src/app.ts", "/repo-a");
+        await model.openFile("/repo-b/src/app.ts", "/repo-b");
+
+        expect(model.getOpenFileNow("/repo-a/src/app.ts")?.workspaceRoot).toBe("/repo-a");
+        expect(model.getOpenFileNow("/repo-b/src/app.ts")?.workspaceRoot).toBe("/repo-b");
     });
 
     it("creates a file URI for POSIX paths", async () => {

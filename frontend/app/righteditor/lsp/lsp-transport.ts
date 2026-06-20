@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { ensureMonacoVscodeServices } from "@/app/monaco/monaco-env";
 import { MonacoLanguageClient } from "monaco-languageclient";
 import * as monaco from "monaco-editor";
 import { type IWebSocket, WebSocketMessageReader, WebSocketMessageWriter } from "vscode-ws-jsonrpc";
@@ -110,27 +111,28 @@ export async function createLspWebSocketTransport(input: LspTransportInput): Pro
             const rpcSocket = makeJsonRpcWebSocket(socket);
             const reader = new WebSocketMessageReader(rpcSocket);
             const writer = new WebSocketMessageWriter(rpcSocket);
-            const client = new MonacoLanguageClient({
-                name: `Crest ${input.language} Language Client`,
-                clientOptions: {
-                    documentSelector: [{ scheme: "file", language: input.language }],
-                    errorHandler: {
-                        error: () => ({ action: LanguageClientErrorActionContinue }),
-                        closed: () => ({ action: LanguageClientCloseActionDoNotRestart }),
-                    },
-                    middleware: {
-                        handleDiagnostics: (uri, diagnostics, next) => {
-                            applyLspDiagnosticsToMonacoMarkers(uri as monaco.Uri, diagnostics as LspDiagnostic[]);
-                            next(uri, diagnostics);
+            try {
+                await ensureMonacoVscodeServices();
+                const client = new MonacoLanguageClient({
+                    name: `Crest ${input.language} Language Client`,
+                    clientOptions: {
+                        documentSelector: [{ scheme: "file", language: input.language }],
+                        errorHandler: {
+                            error: () => ({ action: LanguageClientErrorActionContinue }),
+                            closed: () => ({ action: LanguageClientCloseActionDoNotRestart }),
+                        },
+                        middleware: {
+                            handleDiagnostics: (uri, diagnostics, next) => {
+                                applyLspDiagnosticsToMonacoMarkers(uri as monaco.Uri, diagnostics as LspDiagnostic[]);
+                                next(uri, diagnostics);
+                            },
                         },
                     },
-                },
-                messageTransports: {
-                    reader,
-                    writer,
-                },
-            });
-            try {
+                    messageTransports: {
+                        reader,
+                        writer,
+                    },
+                });
                 await client.start();
                 resolve({
                     dispose: () => {

@@ -27,6 +27,19 @@ describe("LanguageServerManager", () => {
         });
     });
 
+    it("uses the typescript language server for TSX and JSX language ids", () => {
+        const manager = new LanguageServerManager({ commandExists: () => false, spawn: vi.fn() as any });
+
+        expect(manager.resolveCommand("typescriptreact")).toEqual({
+            command: "typescript-language-server",
+            args: ["--stdio"],
+        });
+        expect(manager.resolveCommand("javascriptreact")).toEqual({
+            command: "typescript-language-server",
+            args: ["--stdio"],
+        });
+    });
+
     it("resolves typescript language server from app node_modules when available", () => {
         const appRoot = "/app";
         const manager = new LanguageServerManager({

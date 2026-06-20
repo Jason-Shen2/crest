@@ -19,7 +19,7 @@ const ExtensionLanguageMap: Record<string, string> = {
     go: "go",
     html: "html",
     js: "javascript",
-    jsx: "javascript",
+    jsx: "javascriptreact",
     json: "json",
     less: "less",
     md: "markdown",
@@ -28,7 +28,7 @@ const ExtensionLanguageMap: Record<string, string> = {
     scss: "scss",
     sh: "shell",
     ts: "typescript",
-    tsx: "typescript",
+    tsx: "typescriptreact",
     yaml: "yaml",
     yml: "yaml",
 };

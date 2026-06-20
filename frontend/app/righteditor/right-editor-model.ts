@@ -87,14 +87,14 @@ export class RightEditorModel {
     async openFile(path: string, workspaceRoot: string): Promise<void> {
         const existing = this.getOpenFileNow(path);
         if (existing) {
-            globalStore.set(this.stateAtom, { ...this.getStateNow(), activePath: path, workspaceRoot });
+            this.activateOpenFile(path, workspaceRoot);
             return;
         }
         const pendingOpen = this.pendingOpenFiles.get(path);
         if (pendingOpen) {
             await pendingOpen;
             if (this.getOpenFileNow(path)) {
-                globalStore.set(this.stateAtom, { ...this.getStateNow(), activePath: path, workspaceRoot });
+                this.activateOpenFile(path, workspaceRoot);
             }
             return;
         }
@@ -112,13 +112,14 @@ export class RightEditorModel {
     private async readAndOpenFile(path: string, workspaceRoot: string): Promise<void> {
         const file = await this.rpc.readFile(path);
         if (this.getOpenFileNow(path)) {
-            globalStore.set(this.stateAtom, { ...this.getStateNow(), activePath: path, workspaceRoot });
+            this.activateOpenFile(path, workspaceRoot);
             return;
         }
         const openFile: RightEditorOpenFile = {
             path,
             uri: pathToFileUri(path),
             language: getRightEditorLanguage(path),
+            workspaceRoot,
             readonly: file.readonly,
             savedText: file.text,
             dirtyText: null,
@@ -130,6 +131,16 @@ export class RightEditorModel {
             openFiles: [...state.openFiles, openFile],
             activePath: path,
             workspaceRoot,
+        });
+    }
+
+    private activateOpenFile(path: string, workspaceRoot: string): void {
+        const state = this.getStateNow();
+        globalStore.set(this.stateAtom, {
+            ...state,
+            activePath: path,
+            workspaceRoot,
+            openFiles: state.openFiles.map((file) => (file.path === path ? { ...file, workspaceRoot } : file)),
         });
     }
 

@@ -45,7 +45,12 @@ export class LanguageServerManager {
     }
 
     resolveCommand(language: string): LanguageServerCommand | null {
-        if (language === "typescript" || language === "javascript") {
+        if (
+            language === "typescript" ||
+            language === "typescriptreact" ||
+            language === "javascript" ||
+            language === "javascriptreact"
+        ) {
             return this.resolvePackagedCommand("typescript-language-server") ?? {
                 command: this.resolveAppBinCommand("typescript-language-server"),
                 args: ["--stdio"],
