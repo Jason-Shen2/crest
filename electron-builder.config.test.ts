@@ -19,6 +19,6 @@ describe("electron-builder config", () => {
             filter: ["lib/**/*", "package.json"],
         });
         expect(config.asarUnpack).toContain("node_modules/typescript-language-server/**");
-        expect(config.asarUnpack).toContain("node_modules/typescript/lib/**");
+        expect(config.asarUnpack).toContain("node_modules/typescript/**");
     });
 });
