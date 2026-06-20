@@ -107,6 +107,19 @@ describe("FileExplorerModel", () => {
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/b.ts")?.dirtyText).toBe("dirty");
     });
 
+    it("syncs directory renames to open child files in the right editor", async () => {
+        const model = FileExplorerModel.getInstance();
+        globalStore.set(model.rootAtom, "/repo");
+        await RightEditorModel.getInstance(makeTestRpc()).openFile("/repo/src/a.ts", "/repo");
+        RightEditorModel.getInstance().updateText("/repo/src/a.ts", "dirty");
+
+        await model.commitRename("/repo/src", "lib");
+
+        expect(vi.mocked(RpcApi.FileMoveCommand)).toHaveBeenCalled();
+        expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src/a.ts")).toBeUndefined();
+        expect(RightEditorModel.getInstance().getOpenFileNow("/repo/lib/a.ts")?.dirtyText).toBe("dirty");
+    });
+
     it("syncs successful deletes to the right editor", async () => {
         const model = FileExplorerModel.getInstance();
         globalStore.set(model.rootAtom, "/repo");
@@ -116,6 +129,19 @@ describe("FileExplorerModel", () => {
 
         expect(vi.mocked(RpcApi.FileDeleteCommand)).toHaveBeenCalled();
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/a.ts")).toBeUndefined();
+    });
+
+    it("syncs directory deletes to open child files in the right editor", async () => {
+        const model = FileExplorerModel.getInstance();
+        globalStore.set(model.rootAtom, "/repo");
+        await RightEditorModel.getInstance(makeTestRpc()).openFile("/repo/src/a.ts", "/repo");
+        await RightEditorModel.getInstance().openFile("/repo/src-not-child/b.ts", "/repo");
+
+        await model.deleteFile("/repo/src");
+
+        expect(vi.mocked(RpcApi.FileDeleteCommand)).toHaveBeenCalled();
+        expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src/a.ts")).toBeUndefined();
+        expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src-not-child/b.ts")).toBeDefined();
     });
 });
 

@@ -75,6 +75,14 @@ function disposeRightEditorModelPath(path: string): void {
         .catch(() => undefined);
 }
 
+function migrateRightEditorModelPath(oldPath: string, newPath: string): void {
+    void import("@/app/righteditor/monaco-model-registry")
+        .then(({ MonacoModelRegistry }) => {
+            MonacoModelRegistry.getInstance().migratePath(oldPath, newPath);
+        })
+        .catch(() => undefined);
+}
+
 export type RightToolPanelMagnifiedOverlayProps = Pick<
     RightToolPanelProps,
     "state" | "onSelectTool" | "onCloseTool" | "onFocusPanel" | "onBlurPanel"
@@ -165,6 +173,7 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
             <RightEditorWorkbench
                 model={RightEditorModel.getInstance(RightEditorProductionRpc, {
                     disposeModelPath: disposeRightEditorModelPath,
+                    migrateModelPath: migrateRightEditorModelPath,
                 })}
             />
         );
