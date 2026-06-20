@@ -13,6 +13,7 @@ type RightEditorRpc = {
 
 type RightEditorModelDeps = {
     disposeModelPath?: (path: string) => void;
+    migrateModelPath?: (oldPath: string, newPath: string) => void;
 };
 
 function pathToFileUri(path: string): string {
@@ -35,10 +36,12 @@ export class RightEditorModel {
     private readonly rpc: RightEditorRpc;
     private readonly pendingOpenFiles = new Map<string, Promise<void>>();
     private disposeModelPath: (path: string) => void;
+    private migrateModelPath: (oldPath: string, newPath: string) => void;
 
     private constructor(rpc: RightEditorRpc, deps: RightEditorModelDeps = {}) {
         this.rpc = rpc;
         this.disposeModelPath = deps.disposeModelPath ?? (() => undefined);
+        this.migrateModelPath = deps.migrateModelPath ?? (() => undefined);
         this.stateAtom = jotai.atom({
             openFiles: [],
             activePath: null,
@@ -50,8 +53,13 @@ export class RightEditorModel {
         if (!RightEditorModel.instance) {
             if (!rpc) throw new Error("RightEditorModel requires rpc on first construction");
             RightEditorModel.instance = new RightEditorModel(rpc, deps);
-        } else if (deps.disposeModelPath) {
-            RightEditorModel.instance.disposeModelPath = deps.disposeModelPath;
+        } else {
+            if (deps.disposeModelPath) {
+                RightEditorModel.instance.disposeModelPath = deps.disposeModelPath;
+            }
+            if (deps.migrateModelPath) {
+                RightEditorModel.instance.migrateModelPath = deps.migrateModelPath;
+            }
         }
         return RightEditorModel.instance;
     }
@@ -169,24 +177,47 @@ export class RightEditorModel {
 
     handleFileRenamed(oldPath: string, newPath: string): void {
         const state = this.getStateNow();
+        const movedPaths = new Map<string, string>();
+        const openFiles = state.openFiles.map((file) => {
+            if (!isPathOrChild(file.path, oldPath)) {
+                return file;
+            }
+            const nextPath = replacePathPrefix(file.path, oldPath, newPath);
+            movedPaths.set(file.path, nextPath);
+            return {
+                ...file,
+                path: nextPath,
+                uri: pathToFileUri(nextPath),
+                language: getRightEditorLanguage(nextPath),
+            };
+        });
+        for (const [oldFilePath, newFilePath] of movedPaths) {
+            this.migrateModelPath(oldFilePath, newFilePath);
+        }
         globalStore.set(this.stateAtom, {
             ...state,
-            activePath: state.activePath === oldPath ? newPath : state.activePath,
-            openFiles: state.openFiles.map((file) =>
-                file.path === oldPath
-                    ? {
-                          ...file,
-                          path: newPath,
-                          uri: pathToFileUri(newPath),
-                          language: getRightEditorLanguage(newPath),
-                      }
-                    : file
-            ),
+            activePath:
+                state.activePath && isPathOrChild(state.activePath, oldPath)
+                    ? replacePathPrefix(state.activePath, oldPath, newPath)
+                    : state.activePath,
+            openFiles,
         });
     }
 
     handleFileDeleted(path: string): void {
-        this.closeFile(path);
+        const state = this.getStateNow();
+        const firstDeletedIdx = state.openFiles.findIndex((file) => isPathOrChild(file.path, path));
+        if (firstDeletedIdx < 0) return;
+        const deletedFiles = state.openFiles.filter((file) => isPathOrChild(file.path, path));
+        const openFiles = state.openFiles.filter((file) => !isPathOrChild(file.path, path));
+        const activePath =
+            state.activePath && isPathOrChild(state.activePath, path)
+                ? openFiles[Math.min(firstDeletedIdx, openFiles.length - 1)]?.path ?? null
+                : state.activePath;
+        globalStore.set(this.stateAtom, { ...state, openFiles, activePath });
+        for (const file of deletedFiles) {
+            this.disposeModelPath(file.path);
+        }
     }
 
     private patchFile(path: string, patch: Partial<RightEditorOpenFile>): void {
@@ -196,4 +227,13 @@ export class RightEditorModel {
             openFiles: state.openFiles.map((file) => (file.path === path ? { ...file, ...patch } : file)),
         });
     }
+}
+
+function isPathOrChild(path: string, targetPath: string): boolean {
+    return path === targetPath || path.startsWith(`${targetPath}/`);
+}
+
+function replacePathPrefix(path: string, oldPrefix: string, newPrefix: string): string {
+    if (path === oldPrefix) return newPrefix;
+    return `${newPrefix}${path.slice(oldPrefix.length)}`;
 }

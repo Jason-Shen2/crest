@@ -49,6 +49,11 @@ export class MonacoModelRegistry {
         model?.dispose();
     }
 
+    migratePath(oldPath: string, newPath: string): void {
+        this.disposePath(oldPath);
+        this.disposePath(newPath);
+    }
+
     disposeAll(): void {
         for (const path of Array.from(this.modelUrisByPath.keys())) {
             this.disposePath(path);
