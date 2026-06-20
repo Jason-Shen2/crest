@@ -15,7 +15,7 @@ type WaveRuntime = {
 };
 
 function getRuntimeLspWebSocketUrl(): string {
-    const runtime = (globalThis as any).window?.waveRuntime as WaveRuntime | undefined;
+    const runtime = globalThis.window?.waveRuntime as WaveRuntime;
     const baseUrl = runtime?.lspWebSocketUrl;
     if (!baseUrl) {
         throw new Error("LSP WebSocket URL is not available");
