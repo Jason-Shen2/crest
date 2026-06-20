@@ -41,6 +41,31 @@ describe("LanguageServerManager", () => {
         });
     });
 
+    it("resolves packaged typescript language server from unpacked app resources", () => {
+        const resourcesPath = "/Applications/Crest.app/Contents/Resources";
+        const nodeCommand = "/Applications/Crest.app/Contents/MacOS/Crest";
+        const packagedCommand = path.join(
+            resourcesPath,
+            "app.asar.unpacked",
+            "node_modules",
+            "typescript-language-server",
+            "lib",
+            "cli.mjs"
+        );
+        const manager = new LanguageServerManager({
+            resourcesPath,
+            nodeCommand,
+            commandExists: (candidate) => candidate === packagedCommand,
+            spawn: vi.fn() as any,
+        });
+
+        expect(manager.resolveCommand("typescript")).toEqual({
+            command: nodeCommand,
+            args: [packagedCommand, "--stdio"],
+            env: { ELECTRON_RUN_AS_NODE: "1" },
+        });
+    });
+
     it("reuses one process per workspace root and language", () => {
         const spawn = vi.fn(() => makeChild().child);
         const manager = new LanguageServerManager({ spawn: spawn as any });
