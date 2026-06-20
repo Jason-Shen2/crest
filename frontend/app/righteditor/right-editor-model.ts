@@ -3,13 +3,16 @@
 
 import { globalStore } from "@/app/store/jotaiStore";
 import * as jotai from "jotai";
-import { MonacoModelRegistry } from "./monaco-model-registry";
 import { getRightEditorLanguage } from "./right-editor-language";
 import type { RightEditorOpenFile, RightEditorState } from "./right-editor-types";
 
 type RightEditorRpc = {
     readFile: (path: string) => Promise<{ text: string; readonly: boolean }>;
     writeFile: (path: string, text: string) => Promise<void>;
+};
+
+type RightEditorModelDeps = {
+    disposeModelPath?: (path: string) => void;
 };
 
 function pathToFileUri(path: string): string {
@@ -21,9 +24,11 @@ export class RightEditorModel {
     readonly stateAtom: jotai.PrimitiveAtom<RightEditorState>;
     private readonly rpc: RightEditorRpc;
     private readonly pendingOpenFiles = new Map<string, Promise<void>>();
+    private disposeModelPath: (path: string) => void;
 
-    private constructor(rpc: RightEditorRpc) {
+    private constructor(rpc: RightEditorRpc, deps: RightEditorModelDeps = {}) {
         this.rpc = rpc;
+        this.disposeModelPath = deps.disposeModelPath ?? (() => undefined);
         this.stateAtom = jotai.atom({
             openFiles: [],
             activePath: null,
@@ -31,10 +36,12 @@ export class RightEditorModel {
         });
     }
 
-    static getInstance(rpc?: RightEditorRpc): RightEditorModel {
+    static getInstance(rpc?: RightEditorRpc, deps: RightEditorModelDeps = {}): RightEditorModel {
         if (!RightEditorModel.instance) {
             if (!rpc) throw new Error("RightEditorModel requires rpc on first construction");
-            RightEditorModel.instance = new RightEditorModel(rpc);
+            RightEditorModel.instance = new RightEditorModel(rpc, deps);
+        } else if (deps.disposeModelPath) {
+            RightEditorModel.instance.disposeModelPath = deps.disposeModelPath;
         }
         return RightEditorModel.instance;
     }
@@ -147,7 +154,7 @@ export class RightEditorModel {
         const openFiles = state.openFiles.filter((file) => file.path !== path);
         const activePath = state.activePath === path ? openFiles[Math.max(0, idx - 1)]?.path ?? null : state.activePath;
         globalStore.set(this.stateAtom, { ...state, openFiles, activePath });
-        MonacoModelRegistry.getInstance().disposePath(path);
+        this.disposeModelPath(path);
     }
 
     private patchFile(path: string, patch: Partial<RightEditorOpenFile>): void {
