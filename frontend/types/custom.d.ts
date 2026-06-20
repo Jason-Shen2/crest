@@ -74,6 +74,14 @@ declare global {
         windowId: string;
     };
 
+    type WaveRuntime = {
+        lspWebSocketUrl: string;
+    };
+
+    interface Window {
+        waveRuntime?: WaveRuntime;
+    }
+
     type ElectronApi = {
         getAuthKey(): string; // get-auth-key
         getIsDev(): boolean; // get-is-dev

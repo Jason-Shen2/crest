@@ -37,6 +37,10 @@ ipcRenderer.on(
 );
 
 // update type in custom.d.ts (ElectronApi type)
+contextBridge.exposeInMainWorld("waveRuntime", {
+    lspWebSocketUrl: process.env.CREST_LSP_WEBSOCKET_URL ?? "",
+});
+
 contextBridge.exposeInMainWorld("api", {
     getAuthKey: () => ipcRenderer.sendSync("get-auth-key"),
     getIsDev: () => ipcRenderer.sendSync("get-is-dev"),

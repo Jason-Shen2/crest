@@ -28,6 +28,7 @@ import {
 } from "./emain-activity";
 import { initIpcHandlers } from "./emain-ipc";
 import { log } from "./emain-log";
+import { LspWebSocketBridge } from "./lsp/lsp-websocket-server";
 import { initMenuEventSubscriptions, makeAndSetAppMenu, makeDockTaskbar } from "./emain-menu";
 import {
     checkIfRunningUnderARM64Translation,
@@ -64,6 +65,7 @@ let confirmQuit = true;
 
 const waveDataDir = getWaveDataDir();
 const waveConfigDir = getWaveConfigDir();
+const lspWebSocketBridge = new LspWebSocketBridge();
 
 electron.nativeTheme.themeSource = "dark";
 
@@ -299,6 +301,7 @@ electronApp.on("before-quit", (e) => {
     }
     getWaveSrvProc()?.kill("SIGINT");
     shutdownWshrpc();
+    fireAndForget(() => lspWebSocketBridge.stop());
     if (getForceQuit()) {
         return;
     }
@@ -400,6 +403,7 @@ async function appMain() {
     await electronApp.whenReady();
     configureAuthKeyRequestInjection(electron.session.defaultSession);
     initIpcHandlers();
+    process.env.CREST_LSP_WEBSOCKET_URL = await lspWebSocketBridge.start();
 
     await sleep(10); // wait a bit for wavesrv to be ready
     try {
