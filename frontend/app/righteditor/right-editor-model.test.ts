@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RightEditorModel } from "./right-editor-model";
 
+const monacoModelRegistryMock = vi.hoisted(() => ({
+    disposePath: vi.fn(),
+}));
+
+vi.mock("./monaco-model-registry", () => ({
+    MonacoModelRegistry: {
+        getInstance: () => monacoModelRegistryMock,
+    },
+}));
+
 function makeRpc() {
     return {
         readFile: vi.fn(async () => ({ text: "initial", readonly: false })),
@@ -21,6 +31,7 @@ function deferred<T>() {
 describe("RightEditorModel", () => {
     beforeEach(() => {
         RightEditorModel.resetInstance();
+        monacoModelRegistryMock.disposePath.mockReset();
     });
 
     it("opens a file and makes it active", async () => {
@@ -83,5 +94,14 @@ describe("RightEditorModel", () => {
         expect(rpc.readFile).toHaveBeenCalledTimes(1);
         expect(model.getStateNow().openFiles).toHaveLength(1);
         expect(model.getStateNow().activePath).toBe("/repo/src/app.ts");
+    });
+
+    it("disposes the Monaco model when closing a file", async () => {
+        const model = RightEditorModel.getInstance(makeRpc());
+        await model.openFile("/repo/src/app.ts", "/repo");
+
+        model.closeFile("/repo/src/app.ts");
+
+        expect(monacoModelRegistryMock.disposePath).toHaveBeenCalledWith("/repo/src/app.ts");
     });
 });

@@ -3,6 +3,7 @@
 
 import { globalStore } from "@/app/store/jotaiStore";
 import * as jotai from "jotai";
+import { MonacoModelRegistry } from "./monaco-model-registry";
 import { getRightEditorLanguage } from "./right-editor-language";
 import type { RightEditorOpenFile, RightEditorState } from "./right-editor-types";
 
@@ -146,6 +147,7 @@ export class RightEditorModel {
         const openFiles = state.openFiles.filter((file) => file.path !== path);
         const activePath = state.activePath === path ? openFiles[Math.max(0, idx - 1)]?.path ?? null : state.activePath;
         globalStore.set(this.stateAtom, { ...state, openFiles, activePath });
+        MonacoModelRegistry.getInstance().disposePath(path);
     }
 
     private patchFile(path: string, patch: Partial<RightEditorOpenFile>): void {
