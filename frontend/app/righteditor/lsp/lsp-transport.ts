@@ -64,10 +64,10 @@ function makeJsonRpcWebSocket(socket: WebSocket): IWebSocket {
 }
 
 function diagnosticSeverityToMarkerSeverity(severity?: number): monaco.MarkerSeverity {
-    if (severity === 0) return monaco.MarkerSeverity.Error;
-    if (severity === 1) return monaco.MarkerSeverity.Warning;
-    if (severity === 2) return monaco.MarkerSeverity.Info;
-    if (severity === 3) return monaco.MarkerSeverity.Hint;
+    if (severity === 1) return monaco.MarkerSeverity.Error;
+    if (severity === 2) return monaco.MarkerSeverity.Warning;
+    if (severity === 3) return monaco.MarkerSeverity.Info;
+    if (severity === 4) return monaco.MarkerSeverity.Hint;
     return monaco.MarkerSeverity.Info;
 }
 
