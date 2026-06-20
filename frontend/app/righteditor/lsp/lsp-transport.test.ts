@@ -174,30 +174,69 @@ describe("createLspWebSocketTransport", () => {
         await expect(transportPromise).rejects.toThrow("Failed to connect to LSP WebSocket");
     });
 
-    it("maps LSP diagnostics to Monaco markers", () => {
+    it("maps 1-based LSP diagnostic severities to Monaco markers", () => {
         const uri = monaco.Uri.parse("file:///repo/src/app.ts");
 
         applyLspDiagnosticsToMonacoMarkers(uri, [
             {
-                message: "Expected semicolon",
+                message: "Error diagnostic",
                 range: {
                     start: { line: 2, character: 4 },
                     end: { line: 2, character: 9 },
                 },
-                severity: 0,
+                severity: 1,
+                source: "typescript",
+            },
+            {
+                message: "Warning diagnostic",
+                range: {
+                    start: { line: 3, character: 1 },
+                    end: { line: 3, character: 5 },
+                },
+                severity: 2,
+                source: "typescript",
+            },
+            {
+                message: "Info diagnostic",
+                range: {
+                    start: { line: 4, character: 1 },
+                    end: { line: 4, character: 5 },
+                },
+                severity: 3,
+                source: "typescript",
+            },
+            {
+                message: "Hint diagnostic",
+                range: {
+                    start: { line: 5, character: 1 },
+                    end: { line: 5, character: 5 },
+                },
+                severity: 4,
                 source: "typescript",
             },
         ]);
 
         expect(TransportMocks.setModelMarkers).toHaveBeenCalledWith({ uri }, "right-editor-lsp", [
             expect.objectContaining({
-                message: "Expected semicolon",
+                message: "Error diagnostic",
                 severity: monaco.MarkerSeverity.Error,
                 startLineNumber: 3,
                 startColumn: 5,
                 endLineNumber: 3,
                 endColumn: 10,
                 source: "typescript",
+            }),
+            expect.objectContaining({
+                message: "Warning diagnostic",
+                severity: monaco.MarkerSeverity.Warning,
+            }),
+            expect.objectContaining({
+                message: "Info diagnostic",
+                severity: monaco.MarkerSeverity.Info,
+            }),
+            expect.objectContaining({
+                message: "Hint diagnostic",
+                severity: monaco.MarkerSeverity.Hint,
             }),
         ]);
     });
