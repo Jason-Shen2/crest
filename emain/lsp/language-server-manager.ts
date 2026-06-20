@@ -58,19 +58,15 @@ export class LanguageServerManager {
         const key = `${input.workspaceRoot}\u0000${input.language}`;
         const existing = this.processes.get(key);
         if (existing) return existing;
-        const command = this.resolveCommand(input.language);
-        if (!command) {
-            throw new Error(`No language server configured for ${input.language}`);
-        }
-        const child = this.spawn(command.command, command.args, {
-            cwd: input.workspaceRoot,
-            env: command.env ? { ...process.env, ...command.env } : process.env,
-            stdio: "pipe",
-        });
+        const child = this.spawnProcess(input);
         child.on("exit", () => this.processes.delete(key));
         child.on("error", () => this.processes.delete(key));
         this.processes.set(key, child);
         return child;
+    }
+
+    startSession(input: LanguageServerInput): ChildProcessWithoutNullStreams {
+        return this.spawnProcess(input);
     }
 
     stop(input: LanguageServerInput): void {
@@ -97,6 +93,18 @@ export class LanguageServerManager {
             }
         }
         return command;
+    }
+
+    private spawnProcess(input: LanguageServerInput): ChildProcessWithoutNullStreams {
+        const command = this.resolveCommand(input.language);
+        if (!command) {
+            throw new Error(`No language server configured for ${input.language}`);
+        }
+        return this.spawn(command.command, command.args, {
+            cwd: input.workspaceRoot,
+            env: command.env ? { ...process.env, ...command.env } : process.env,
+            stdio: "pipe",
+        });
     }
 
     private resolvePackagedCommand(command: string): LanguageServerCommand | null {
