@@ -54,6 +54,27 @@ export function closeRightEditorFileWithConfirmation(input: {
     input.closeFile(input.file.path);
 }
 
+export function handleRightEditorKeyDown(input: {
+    key: string;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    activePath: string | null;
+    saveFile: (path: string) => void;
+    closeFile: (path: string) => void;
+}): boolean {
+    if (!input.activePath) return false;
+    const primary = input.metaKey || input.ctrlKey;
+    if (primary && input.key.toLowerCase() === "s") {
+        input.saveFile(input.activePath);
+        return true;
+    }
+    if (primary && input.key.toLowerCase() === "w") {
+        input.closeFile(input.activePath);
+        return true;
+    }
+    return false;
+}
+
 export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
     const state = useAtomValue(model.stateAtom);
     const activeFile = state.openFiles.find((file) => file.path === state.activePath);
@@ -144,6 +165,30 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                     language={activeFile.language}
                     readonly={activeFile.readonly}
                     onChange={(nextText) => model.updateText(activeFile.path, nextText)}
+                    onMount={(editor) => {
+                        const keyDownSub = editor.onKeyDown((event) => {
+                            const handled = handleRightEditorKeyDown({
+                                key: event.browserEvent.key,
+                                metaKey: event.browserEvent.metaKey,
+                                ctrlKey: event.browserEvent.ctrlKey,
+                                activePath: model.getStateNow().activePath,
+                                saveFile: (path) => fireAndForget(() => model.saveFile(path)),
+                                closeFile: (path) => {
+                                    const file = model.getOpenFileNow(path);
+                                    if (!file) return;
+                                    closeRightEditorFileWithConfirmation({
+                                        file,
+                                        name: basename(path),
+                                        closeFile: (filePath) => model.closeFile(filePath),
+                                    });
+                                },
+                            });
+                            if (!handled) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                        });
+                        return () => keyDownSub.dispose();
+                    }}
                     model={activeMonacoModel}
                 />
             </div>
