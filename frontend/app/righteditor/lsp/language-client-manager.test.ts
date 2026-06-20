@@ -27,4 +27,44 @@ describe("LanguageClientManager", () => {
 
         expect(transportFactory).toHaveBeenCalledTimes(1);
     });
+
+    it("disposes a pending transport resolved after stopClient", async () => {
+        let resolveTransport: (transport: { dispose: () => void }) => void;
+        const transportPromise = new Promise<{ dispose: () => void }>((resolve) => {
+            resolveTransport = resolve;
+        });
+        const transportFactory = vi.fn(async () => transportPromise);
+        const manager = new LanguageClientManager({ transportFactory });
+
+        const pending = manager.ensureClient({ workspaceRoot: "/repo", language: "typescript" });
+        manager.stopClient({ workspaceRoot: "/repo", language: "typescript" });
+
+        const dispose = vi.fn();
+        resolveTransport!({ dispose });
+        await pending;
+        await manager.ensureClient({ workspaceRoot: "/repo", language: "typescript" });
+
+        expect(dispose).toHaveBeenCalledTimes(1);
+        expect(transportFactory).toHaveBeenCalledTimes(2);
+    });
+
+    it("disposes pending transports resolved after stopAll", async () => {
+        let resolveTransport: (transport: { dispose: () => void }) => void;
+        const transportPromise = new Promise<{ dispose: () => void }>((resolve) => {
+            resolveTransport = resolve;
+        });
+        const transportFactory = vi.fn(async () => transportPromise);
+        const manager = new LanguageClientManager({ transportFactory });
+
+        const pending = manager.ensureClient({ workspaceRoot: "/repo", language: "typescript" });
+        manager.stopAll();
+
+        const dispose = vi.fn();
+        resolveTransport!({ dispose });
+        await pending;
+        await manager.ensureClient({ workspaceRoot: "/repo", language: "typescript" });
+
+        expect(dispose).toHaveBeenCalledTimes(1);
+        expect(transportFactory).toHaveBeenCalledTimes(2);
+    });
 });
