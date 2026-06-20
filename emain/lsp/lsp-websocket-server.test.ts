@@ -25,6 +25,10 @@ describe("parseLspRequest", () => {
     it("rejects missing language", () => {
         expect(() => parseLspRequest("/lsp?workspaceRoot=%2Frepo")).toThrow("Missing language");
     });
+
+    it("rejects requests outside the /lsp endpoint", () => {
+        expect(() => parseLspRequest("/bad?language=typescript&workspaceRoot=%2Frepo")).toThrow("Invalid LSP endpoint");
+    });
 });
 
 describe("LspWebSocketBridge", () => {
@@ -154,6 +158,22 @@ describe("LspWebSocketBridge", () => {
             expect(child.stdout.listenerCount("data")).toBe(0);
         });
         expect(child.kill).not.toHaveBeenCalled();
+        await bridge.stop();
+    });
+
+    it("rejects invalid endpoint paths without starting a language server session", async () => {
+        const languageServerManager = {
+            startSession: vi.fn(),
+        };
+        const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
+        const url = await bridge.start();
+        const client = new WebSocket(`${url}/bad?language=typescript&workspaceRoot=%2Frepo`);
+        await new Promise<void>((resolve) => client.once("open", resolve));
+
+        await vi.waitFor(() => {
+            expect(client.readyState).toBe(WebSocket.CLOSED);
+        });
+        expect(languageServerManager.startSession).not.toHaveBeenCalled();
         await bridge.stop();
     });
 });

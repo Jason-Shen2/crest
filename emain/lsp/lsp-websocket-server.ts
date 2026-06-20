@@ -21,6 +21,7 @@ type SessionCleanup = (opts?: { killChild: boolean; closeWebSocket: boolean }) =
 
 export function parseLspRequest(urlText: string): ParsedLspRequest {
     const url = new URL(urlText, "ws://127.0.0.1");
+    if (url.pathname !== "/lsp") throw new Error("Invalid LSP endpoint");
     const language = url.searchParams.get("language");
     const workspaceRoot = url.searchParams.get("workspaceRoot");
     if (!language) throw new Error("Missing language");
