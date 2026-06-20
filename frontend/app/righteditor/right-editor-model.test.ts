@@ -110,4 +110,24 @@ describe("RightEditorModel", () => {
 
         expect(disposeModelPath).toHaveBeenCalledWith("/repo/src/app.ts");
     });
+
+    it("renames an open file path while preserving dirty text", async () => {
+        const model = RightEditorModel.getInstance(makeRpc());
+        await model.openFile("/repo/a.ts", "/repo");
+        model.updateText("/repo/a.ts", "dirty");
+
+        model.handleFileRenamed("/repo/a.ts", "/repo/b.ts");
+
+        expect(model.getOpenFileNow("/repo/a.ts")).toBeUndefined();
+        expect(model.getOpenFileNow("/repo/b.ts")?.dirtyText).toBe("dirty");
+    });
+
+    it("closes an open file when deleted", async () => {
+        const model = RightEditorModel.getInstance(makeRpc());
+        await model.openFile("/repo/a.ts", "/repo");
+
+        model.handleFileDeleted("/repo/a.ts");
+
+        expect(model.getStateNow().openFiles).toHaveLength(0);
+    });
 });
