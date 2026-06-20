@@ -28,6 +28,7 @@ export class LanguageClientManager {
     private readonly transports = new Map<ClientKey, DisposableTransport>();
     private readonly pendingTransports = new Map<ClientKey, PendingTransport>();
     private readonly statusByKey = new Map<ClientKey, RightEditorLspStatus>();
+    private readonly referenceCounts = new Map<ClientKey, number>();
 
     constructor(deps: LanguageClientManagerDeps) {
         this.deps = deps;
@@ -82,6 +83,24 @@ export class LanguageClientManager {
         );
     }
 
+    acquireClient(input: EnsureClientInput): () => void {
+        const key = this.makeKey(input);
+        this.referenceCounts.set(key, (this.referenceCounts.get(key) ?? 0) + 1);
+        void this.ensureClient(input).catch(() => undefined);
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            const nextCount = (this.referenceCounts.get(key) ?? 0) - 1;
+            if (nextCount > 0) {
+                this.referenceCounts.set(key, nextCount);
+                return;
+            }
+            this.referenceCounts.delete(key);
+            this.stopClient(input);
+        };
+    }
+
     stopClient(input: EnsureClientInput): void {
         const key = this.makeKey(input);
         const pendingTransport = this.pendingTransports.get(key);
@@ -107,6 +126,7 @@ export class LanguageClientManager {
         this.transports.clear();
         this.pendingTransports.clear();
         this.statusByKey.clear();
+        this.referenceCounts.clear();
     }
 
     private setStatus(input: EnsureClientInput, state: RightEditorLspStatus["state"], message: string | null): void {
