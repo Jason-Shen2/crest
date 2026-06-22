@@ -439,8 +439,10 @@ function ChangeReviewMock() {
                                             <div className="flex min-w-0 flex-wrap items-center gap-2">
                                                 <button
                                                     type="button"
-                                                    className="inline-flex max-w-[280px] items-center gap-1 rounded-md border border-secondary/20 bg-white/[0.04] px-1.5 py-1 font-mono text-[11px] leading-none text-[#dcebed] transition-colors hover:border-[var(--accent-color)]/50 hover:bg-[var(--accent-color)]/10 hover:text-white"
-                                                    title={`Open ${file.path}`}
+                                                    disabled
+                                                    aria-disabled="true"
+                                                    className="inline-flex max-w-[280px] cursor-default items-center gap-1 rounded-md border border-secondary/20 bg-white/[0.04] px-1.5 py-1 font-mono text-[11px] leading-none text-[#dcebed]/75"
+                                                    title={`Design reference only; Open file is disabled for ${file.path}.`}
                                                 >
                                                     <svg viewBox="0 0 16 16" fill="none" className="h-3 w-3 shrink-0" aria-hidden="true">
                                                         <path
@@ -465,7 +467,10 @@ function ChangeReviewMock() {
                                                 </span>
                                                 <button
                                                     type="button"
-                                                    className="rounded-md px-1.5 py-0.5 text-[11px] text-secondary transition-colors hover:bg-white/[0.06] hover:text-white"
+                                                    disabled
+                                                    aria-disabled="true"
+                                                    className="cursor-default rounded-md px-1.5 py-0.5 text-[11px] text-secondary/70"
+                                                    title="Design reference only; View diff is disabled."
                                                 >
                                                     View diff
                                                 </button>
@@ -490,7 +495,10 @@ function ChangeReviewMock() {
                                                                 <span className="text-sm font-medium text-[#e8eeee]">{block.title}</span>
                                                                 <button
                                                                     type="button"
-                                                                    className="rounded-md border border-white/10 px-1.5 py-0.5 text-[11px] text-secondary transition-colors hover:border-[var(--accent-color)]/40 hover:bg-[var(--accent-color)]/10 hover:text-white"
+                                                                    disabled
+                                                                    aria-disabled="true"
+                                                                    className="cursor-default rounded-md border border-white/10 px-1.5 py-0.5 text-[11px] text-secondary/70"
+                                                                    title="Design reference only; Explain is disabled."
                                                                 >
                                                                     Explain
                                                                 </button>
@@ -540,14 +548,16 @@ export default function AgentProgressPreview() {
             </div>
 
             <section className="rounded-2xl border border-border bg-panel/60 p-5">
-                <div className="mb-4 font-mono text-xs text-secondary">current progress rail</div>
+                <div className="mb-4 font-mono text-xs text-secondary">production AgentProgressView output</div>
                 <div className="rounded-xl bg-background px-4 py-3">
                     <AgentProgressView progress={mockProgress} showTechnicalDetails />
                 </div>
             </section>
 
             <section className="rounded-2xl border border-border bg-panel/60 p-5">
-                <div className="mb-4 font-mono text-xs text-secondary">proposed change review layer</div>
+                <div className="mb-4 font-mono text-xs text-secondary">
+                    design reference only: custom ChangeReviewMock, not the primary production path
+                </div>
                 <div className="rounded-xl bg-background px-4 py-4">
                     <ChangeReviewMock />
                 </div>
