@@ -23,6 +23,61 @@ function makeRun(responseMessages: PiRun["responseMessages"], status: PiRun["sta
 }
 
 describe("deriveAgentProgress", () => {
+    it("attaches change review derived from edit tool result details", () => {
+        const patch = `--- a/src/app.ts
++++ b/src/app.ts
+@@ -1 +1,2 @@
+ const keep = true;
++const added = true;
+`;
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit_text_file",
+                            input: { path: "src/app.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "patched" }],
+                    details: {
+                        changeOperation: {
+                            id: "op-1",
+                            toolCallId: "edit-1",
+                            kind: "patch",
+                            path: "src/app.ts",
+                            patch,
+                            patchStatus: "complete",
+                        },
+                    },
+                    isError: false,
+                },
+            ])
+        );
+
+        expect(progress.changeReview).toMatchObject({
+            changeSetId: "run-1",
+            changeSet: { id: "run-1", totals: { files: 1, hunks: 1, additions: 1, deletions: 0 } },
+            modules: [],
+            warnings: [],
+        });
+        expect(progress.changeReview?.ungroupedFiles).toEqual([
+            expect.objectContaining({
+                path: "src/app.ts",
+                status: "modified",
+                stats: { hunks: 1, additions: 1, deletions: 0 },
+            }),
+        ]);
+    });
+
     it("groups read-only discovery tool calls into a product-facing exploration stage", () => {
         const progress = deriveAgentProgress(
             makeRun([
