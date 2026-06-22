@@ -1074,6 +1074,76 @@ describe("AgentProgressView", () => {
         expect(html).toContain('title="Explanation is not available yet."');
     });
 
+    it("enables change review hunk actions only when callbacks are provided", () => {
+        const progress = {
+            stages: [
+                {
+                    id: "modify-files",
+                    title: "Modify files",
+                    status: "done" as const,
+                    summary: "Updated files.",
+                    recentActions: [],
+                    actionGroups: [],
+                    risk: "file-edit" as const,
+                },
+            ],
+            changeReview: {
+                changeSetId: "run-1",
+                changeSet: {
+                    id: "run-1",
+                    files: [],
+                    totals: { files: 1, hunks: 1, additions: 1, deletions: 0 },
+                },
+                modules: [],
+                ungroupedFiles: [
+                    {
+                        path: "frontend/app/term/render/agent-progress-view.tsx",
+                        status: "modified" as const,
+                        stats: { hunks: 1, additions: 1, deletions: 0 },
+                        hunks: [
+                            {
+                                id: "frontend/app/term/render/agent-progress-view.tsx:1",
+                                path: "frontend/app/term/render/agent-progress-view.tsx",
+                                oldStart: 10,
+                                oldLines: 1,
+                                newStart: 10,
+                                newLines: 2,
+                                header: "function ChangeReviewHunk",
+                                additions: 1,
+                                deletions: 0,
+                            },
+                        ],
+                    },
+                ],
+                warnings: [],
+            },
+        };
+
+        const disabledHtml = renderToStaticMarkup(createElement(AgentProgressView, { progress, showTechnicalDetails: true }));
+        const enabledHtml = renderToStaticMarkup(
+            createElement(AgentProgressView, {
+                progress,
+                showTechnicalDetails: true,
+                onExplainChange: () => {},
+                onViewDiff: () => {},
+            })
+        );
+
+        expect(disabledHtml).toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(disabledHtml).toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(disabledHtml).toContain('disabled=""');
+        expect(disabledHtml).toContain('aria-disabled="true"');
+        expect(disabledHtml).toContain('title="Diff viewing is not available yet."');
+        expect(disabledHtml).toContain('title="Explanation is not available yet."');
+
+        expect(enabledHtml).toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(enabledHtml).toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(enabledHtml).not.toContain('disabled=""');
+        expect(enabledHtml).not.toContain('aria-disabled="true"');
+        expect(enabledHtml).not.toContain('title="Diff viewing is not available yet."');
+        expect(enabledHtml).not.toContain('title="Explanation is not available yet."');
+    });
+
     it("renders run-level change review only under the first file-edit stage", () => {
         const html = renderToStaticMarkup(
             createElement(AgentProgressView, {
