@@ -125,6 +125,59 @@ describe("write", () => {
         expect(result.details?.patch).toContain("after");
         expect(result.details?.changeOperation.patch).toBe(result.details?.patch);
     });
+
+    it("writes with custom operations that do not provide readFile", async () => {
+        await fs.writeFile(path.join(tmpDir, "virtual.txt"), "existing-on-disk\n");
+        let written = "";
+        const tool = createWriteTool(tmpDir, {
+            operations: {
+                mkdir: async () => {},
+                writeFile: async (_absolutePath, content) => {
+                    written = content;
+                },
+            },
+        });
+
+        const result = await tool.execute("tc-write-no-read", { path: "virtual.txt", content: "new virtual\n" });
+
+        expect(written).toBe("new virtual\n");
+        expect(result.details.patch).toContain("+new virtual");
+        expect(result.details.patch).not.toContain("-existing-on-disk");
+        expect(result.details.changeOperation).toMatchObject({
+            toolCallId: "tc-write-no-read",
+            kind: "write",
+            path: "virtual.txt",
+            patch: result.details.patch,
+        });
+    });
+
+    it("writes when custom readFile throws a non-ENOENT error", async () => {
+        let written = "";
+        const tool = createWriteTool(tmpDir, {
+            operations: {
+                mkdir: async () => {},
+                readFile: async () => {
+                    const error = new Error("permission denied") as Error & { code: string };
+                    error.code = "EACCES";
+                    throw error;
+                },
+                writeFile: async (_absolutePath, content) => {
+                    written = content;
+                },
+            },
+        });
+
+        const result = await tool.execute("tc-write-read-fails", { path: "unreadable.txt", content: "still writes\n" });
+
+        expect(written).toBe("still writes\n");
+        expect(result.details.patch).toContain("+still writes");
+        expect(result.details.changeOperation).toMatchObject({
+            toolCallId: "tc-write-read-fails",
+            kind: "write",
+            path: "unreadable.txt",
+            patch: result.details.patch,
+        });
+    });
 });
 
 describe("edit", () => {
