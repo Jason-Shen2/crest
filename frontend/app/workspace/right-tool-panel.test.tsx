@@ -48,7 +48,7 @@ import { DefaultRightToolPanelState, RightToolPanelState } from "./right-tool-pa
 type TestElementProps = {
     "aria-label"?: string;
     children?: ReactNode;
-    onClick?: () => void;
+    onClick?: (event?: { currentTarget: { closest: (selector: string) => { open: boolean } | null } }) => void;
     onBlurCapture?: (event: {
         currentTarget: { contains: (node: unknown) => boolean };
         relatedTarget: unknown;
@@ -216,14 +216,15 @@ describe("RightToolPanel parts", () => {
 
         expect(markup).toContain("<details");
         expect(markup).toContain("open=\"\"");
-        expect(markup).toContain('role="menu"');
+        expect(markup).not.toContain('role="menu"');
+        expect(markup).not.toContain('role="menuitem"');
         expect(markup).toContain('aria-label="Open Browser right tool"');
         expect(markup).toContain('aria-label="Open Code Review right tool"');
         expect(markup).not.toContain('aria-label="Open Editor right tool"');
         expect(markup).not.toContain('aria-label="Open Terminal right tool"');
     });
 
-    it("calls onOpenTool when an unopened tool menu item is selected", () => {
+    it("calls onOpenTool and closes details when an unopened tool menu item is selected", () => {
         const onOpenTool = vi.fn();
         const menu = RightToolOpenMenu({
             openedTools: ["editor"],
@@ -231,11 +232,17 @@ describe("RightToolPanel parts", () => {
             initiallyOpen: true,
         });
         const browserItem = findElementByAriaLabel(menu, "Open Browser right tool");
+        const details = { open: true };
 
         expect(browserItem.props.onClick).toBeTypeOf("function");
-        browserItem.props.onClick?.();
+        browserItem.props.onClick?.({
+            currentTarget: {
+                closest: (selector: string) => (selector === "details" ? details : null),
+            },
+        });
 
         expect(onOpenTool).toHaveBeenCalledWith("browser");
+        expect(details.open).toBe(false);
     });
 
     it("hides the open button when all right tools are already open", () => {
