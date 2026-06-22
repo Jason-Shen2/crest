@@ -78,12 +78,29 @@ export type PiAgentMessage = PiAgentMessageBase & {
 
 export type PiRunStatus = "streaming" | "done" | "error";
 
+export interface PiChangeOutlineFile {
+    path: string;
+    hunkIds?: string[];
+}
+
+export interface PiChangeOutlineModule {
+    id: string;
+    title: string;
+    summary?: string;
+    files: PiChangeOutlineFile[];
+}
+
+export interface PiChangeOutline {
+    modules?: PiChangeOutlineModule[];
+}
+
 export interface PiRun {
     runId: string;
     userMessage?: PiAgentMessage;
     responseMessages: PiAgentMessage[];
     status: PiRunStatus;
     errorMessage?: string;
+    changeOutline?: PiChangeOutline;
 }
 
 /**
