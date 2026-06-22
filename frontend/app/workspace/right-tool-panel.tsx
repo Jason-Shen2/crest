@@ -149,17 +149,16 @@ export function RightToolTopBar({
                 onSelectTool={onSelectTool}
                 onCloseTool={onCloseTool}
             />
-            <button
-                type="button"
-                aria-label="Open right tool"
-                className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
-                onClick={() => {
-                    if (nextTool == null) return;
-                    onOpenTool(nextTool);
-                }}
-            >
-                <i className="fa-solid fa-plus" />
-            </button>
+            {nextTool != null ? (
+                <button
+                    type="button"
+                    aria-label="Open right tool"
+                    className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
+                    onClick={() => onOpenTool(nextTool)}
+                >
+                    <i className="fa-solid fa-plus" />
+                </button>
+            ) : null}
             {action != null ? (
                 <div aria-label="Right tool panel actions" className="ml-auto flex shrink-0 items-center gap-1">
                     {action}
@@ -316,13 +315,13 @@ export function RightToolPanelMagnifiedOverlayView({
                     onBlurPanel();
                 }}
             >
-                {RightToolTopBar({
-                    activeTool: state.activeTool,
-                    openedTools: state.openedTools,
-                    onOpenTool,
-                    onSelectTool,
-                    onCloseTool,
-                    action: (
+                <RightToolTopBar
+                    activeTool={state.activeTool}
+                    openedTools={state.openedTools}
+                    onOpenTool={onOpenTool}
+                    onSelectTool={onSelectTool}
+                    onCloseTool={onCloseTool}
+                    action={
                         <button
                             type="button"
                             aria-label="Exit magnified right tool panel"
@@ -331,8 +330,8 @@ export function RightToolPanelMagnifiedOverlayView({
                         >
                             <i className="fa-solid fa-down-left-and-up-right-to-center" />
                         </button>
-                    ),
-                })}
+                    }
+                />
                 <div className="min-h-0 flex-1 overflow-hidden">
                     <RightToolContent activeTool={state.activeTool} />
                 </div>
@@ -368,13 +367,13 @@ export function RightToolPanel({
                 onBlurPanel();
             }}
         >
-            {RightToolTopBar({
-                activeTool: state.activeTool,
-                openedTools: state.openedTools,
-                onOpenTool,
-                onSelectTool,
-                onCloseTool,
-                action: (
+            <RightToolTopBar
+                activeTool={state.activeTool}
+                openedTools={state.openedTools}
+                onOpenTool={onOpenTool}
+                onSelectTool={onSelectTool}
+                onCloseTool={onCloseTool}
+                action={
                     <button
                         type="button"
                         aria-label="Hide right tool panel"
@@ -383,8 +382,8 @@ export function RightToolPanel({
                     >
                         <i className="fa-solid fa-chevron-right" />
                     </button>
-                ),
-            })}
+                }
+            />
             <div className="min-h-0 flex-1 overflow-hidden">
                 {hasOpenedTools ? (
                     <RightToolContent activeTool={state.activeTool} />
