@@ -150,7 +150,8 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
         <div className="flex h-full min-h-0 flex-col bg-[#111113]">
             <div
                 aria-label="Right editor file tabs"
-                className="flex h-8 shrink-0 items-stretch overflow-hidden border-b border-[#27272a] bg-[#111113] text-[12px]"
+                data-overflow-behavior="horizontal-scroll"
+                className="flex h-8 shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-[#27272a] bg-[#111113] text-[12px]"
             >
                 {state.openFiles.map((file) => {
                     const active = file.path === activeFile.path;
@@ -184,6 +185,7 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                             <button
                                 type="button"
                                 aria-label={`Close ${file.path}`}
+                                data-close-visibility={active ? "always" : "hover"}
                                 className={cn(
                                     "mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:opacity-100",
                                     active ? "opacity-100" : "opacity-0 group-hover/tab:opacity-100"

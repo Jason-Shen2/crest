@@ -69,6 +69,10 @@ function renderPanel(state: RightToolPanelState): string {
     );
 }
 
+function countMatches(markup: string, pattern: RegExp): number {
+    return markup.match(pattern)?.length ?? 0;
+}
+
 function findElementByAriaLabel(node: ReactNode, ariaLabel: string): ReactElement<TestElementProps> {
     if (Array.isArray(node)) {
         for (const child of node) {
@@ -179,7 +183,12 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-label="Hide right tool panel"');
         expect(markup).toContain("fa-solid fa-chevron-right");
         expect(markup).toContain('aria-current="page"');
-        expect(markup).toContain("ml-0");
+        expect(markup.indexOf('aria-label="Right tool tabs"')).toBeLessThan(
+            markup.indexOf('aria-label="Open right tool"')
+        );
+        expect(markup.indexOf('aria-label="Open right tool"')).toBeLessThan(
+            markup.indexOf('aria-label="Right tool panel actions"')
+        );
         expect(markup).not.toContain(">Tools<");
     });
 
@@ -292,7 +301,7 @@ describe("RightToolPanel parts", () => {
         expect(markup).not.toContain("Terminal");
     });
 
-    it("marks active tabs, uses Trae-style rectangular styling, and reveals close buttons on hover or active", () => {
+    it("marks active tabs, keeps icon labels, and declares close visibility behavior", () => {
         const markup = renderToStaticMarkup(
             <RightToolTabs
                 openedTools={["editor", "browser"]}
@@ -308,15 +317,32 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-current="page"');
         expect(markup).toContain('aria-label="Close Editor"');
         expect(markup).toContain('aria-label="Close Browser"');
-        expect(markup).toContain("h-8");
-        expect(markup).toContain("basis-0");
-        expect(markup).toContain("bg-[#18181b]");
-        expect(markup).toContain("outline-solid");
-        expect(markup).toContain("outline-1");
-        expect(markup).toContain("group-hover/tab:opacity-100");
-        expect(markup).toContain("opacity-0");
-        expect(markup).toContain("opacity-100");
+        expect(markup).toContain('data-close-visibility="hover"');
+        expect(markup).toContain('data-close-visibility="always"');
         expect(markup).toContain("fa-regular fa-pen-to-square");
+    });
+
+    it("keeps every select and close control rendered for many tabs without clipping the tab strip", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolTabs
+                openedTools={["editor", "browser", "terminal", "codeReview"]}
+                activeTool="terminal"
+                onSelectTool={() => null}
+                onCloseTool={() => null}
+            />
+        );
+
+        expect(markup).toContain('data-overflow-behavior="horizontal-scroll"');
+        expect(countMatches(markup, /aria-label="Select /g)).toBe(4);
+        expect(countMatches(markup, /aria-label="Close /g)).toBe(4);
+        expect(markup).toContain('aria-label="Select Editor"');
+        expect(markup).toContain('aria-label="Close Editor"');
+        expect(markup).toContain('aria-label="Select Browser"');
+        expect(markup).toContain('aria-label="Close Browser"');
+        expect(markup).toContain('aria-label="Select Terminal"');
+        expect(markup).toContain('aria-label="Close Terminal"');
+        expect(markup).toContain('aria-label="Select Code Review"');
+        expect(markup).toContain('aria-label="Close Code Review"');
     });
 
     it("renders no tabs when no tools are open", () => {
