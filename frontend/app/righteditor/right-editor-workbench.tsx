@@ -169,8 +169,9 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                         >
                             <button
                                 className="flex min-w-0 cursor-pointer items-center gap-1.5 px-3 py-1.5"
+                                aria-label={`Select ${file.path}`}
                                 onClick={() => model.selectFile(file.path)}
-                                title={suffix ? `${name} ${suffix}` : name}
+                                title={file.path}
                             >
                                 <span className="truncate font-medium">{name}</span>
                                 {suffix ? (
@@ -182,8 +183,9 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                             </button>
                             <button
                                 type="button"
-                                aria-label={`Close ${name}`}
+                                aria-label={`Close ${file.path}`}
                                 className="mr-1 cursor-pointer rounded px-1.5 py-1 text-[#71717a] hover:bg-[#3f3f46] hover:text-[#f4f4f5]"
+                                title={file.path}
                                 onClick={() =>
                                     closeRightEditorFileWithConfirmation({
                                         file,
@@ -236,15 +238,18 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                 />
             </div>
             <div className="flex h-6 shrink-0 items-center justify-between gap-2 border-t border-[#27272a] bg-[#18181b] px-2 text-[11px] text-[#a1a1aa]">
-                <span className="min-w-0 truncate">{activeLabel}</span>
+                <span className="min-w-0 truncate" title={activeFile.path}>
+                    {activeLabel}
+                </span>
                 <div className="flex shrink-0 items-center gap-2">
-                    <span className="max-w-64 truncate">
+                    <span className="max-w-64 truncate" title={activeFile.path}>
                         {activeFile.saveStatus === "error" ? activeFile.error : activeFile.language}
                     </span>
                     <button
                         type="button"
-                        aria-label={`Save ${displayName}`}
+                        aria-label={`Save ${activeFile.path}`}
                         className="cursor-pointer rounded px-1.5 py-0.5 text-[#a1a1aa] hover:bg-[#2f2f35] hover:text-[#f4f4f5]"
+                        title={activeFile.path}
                         onClick={() => fireAndForget(() => model.saveFile(activeFile.path))}
                     >
                         <i className="fa-solid fa-floppy-disk" />

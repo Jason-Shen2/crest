@@ -95,6 +95,10 @@ function getRightEditorFileTabsMarkup(markup: string): string {
     throw new Error("Right editor file tabs markup is missing a closing div");
 }
 
+function getVisibleText(markup: string): string {
+    return markup.replace(/<[^>]*>/g, "");
+}
+
 function mountCapturedEditor(): (event: KeyDownEvent) => void {
     let keyDownHandler: (event: KeyDownEvent) => void;
     mockWorkbench.codeEditorProps[0].onMount({
@@ -127,16 +131,17 @@ describe("RightEditorWorkbench", () => {
 
         const markup = renderWithStore(<RightEditorWorkbench model={model} />);
         expect(markup).toContain('aria-label="Right editor file tabs"');
-        expect(markup).toContain('aria-label="Save app.ts"');
+        expect(markup).toContain('aria-label="Save /repo/test/app.ts"');
         const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
         expect(fileTabsMarkup).toContain("app.ts");
         expect(fileTabsMarkup).toContain("src");
         expect(fileTabsMarkup).toContain("test");
         expect(fileTabsMarkup).toContain("●");
         expect(fileTabsMarkup).not.toContain("Save app.ts");
-        expect(fileTabsMarkup).not.toContain("/repo/");
-        expect(fileTabsMarkup).not.toContain("src/");
-        expect(fileTabsMarkup).not.toContain("test/");
+        const visibleText = getVisibleText(fileTabsMarkup);
+        expect(visibleText).not.toContain("/repo/");
+        expect(visibleText).not.toContain("src/");
+        expect(visibleText).not.toContain("test/");
     });
 
     it("returns relative parent suffixes for right editor tabs", () => {
@@ -162,9 +167,32 @@ describe("RightEditorWorkbench", () => {
         expect(fileTabsMarkup).toContain("app.ts");
         expect(fileTabsMarkup).toContain("src");
         expect(fileTabsMarkup).toContain("test");
-        expect(fileTabsMarkup).not.toContain("/repo/");
-        expect(fileTabsMarkup).not.toContain("src/");
-        expect(fileTabsMarkup).not.toContain("test/");
+        const visibleText = getVisibleText(fileTabsMarkup);
+        expect(visibleText).not.toContain("/repo/");
+        expect(visibleText).not.toContain("src/");
+        expect(visibleText).not.toContain("test/");
+    });
+
+    it("keeps full paths discoverable for same-name tabs without showing them as visible tab text", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo-a/src/app.ts", "/repo-a");
+        await model.openFile("/repo-b/src/app.ts", "/repo-b");
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+        const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
+        const visibleText = getVisibleText(fileTabsMarkup);
+
+        expect(fileTabsMarkup).toContain('title="/repo-a/src/app.ts"');
+        expect(fileTabsMarkup).toContain('aria-label="Select /repo-a/src/app.ts"');
+        expect(fileTabsMarkup).toContain('aria-label="Close /repo-a/src/app.ts"');
+        expect(fileTabsMarkup).toContain('title="/repo-b/src/app.ts"');
+        expect(fileTabsMarkup).toContain('aria-label="Select /repo-b/src/app.ts"');
+        expect(fileTabsMarkup).toContain('aria-label="Close /repo-b/src/app.ts"');
+        expect(markup).toContain('aria-label="Save /repo-b/src/app.ts"');
+        expect(markup).toContain('title="/repo-b/src/app.ts"');
+        expect(markup.match(/title="\/repo-b\/src\/app\.ts"/g)?.length).toBeGreaterThanOrEqual(4);
+        expect(visibleText).not.toContain("/repo-a/");
+        expect(visibleText).not.toContain("/repo-b/");
     });
 
     it("uses the file uri model from MonacoModelRegistry for the active file", async () => {
