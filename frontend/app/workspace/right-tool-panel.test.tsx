@@ -83,6 +83,9 @@ function findElementByAriaLabel(node: ReactNode, ariaLabel: string): ReactElemen
     if (node.props["aria-label"] === ariaLabel) {
         return node;
     }
+    if (typeof node.type === "function") {
+        return findElementByAriaLabel(node.type(node.props), ariaLabel);
+    }
     return findElementByAriaLabel(node.props.children, ariaLabel);
 }
 
@@ -203,6 +206,20 @@ describe("RightToolPanel parts", () => {
 
         expect(onOpenTool).toHaveBeenCalledWith("browser");
         expect(onAction).toHaveBeenCalledTimes(1);
+    });
+
+    it("hides the open button when all right tools are already open", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolTopBar
+                activeTool="editor"
+                openedTools={["editor", "browser", "terminal", "codeReview"]}
+                onOpenTool={() => null}
+                onSelectTool={() => null}
+                onCloseTool={() => null}
+            />
+        );
+
+        expect(markup).not.toContain('aria-label="Open right tool"');
     });
 
     it("exports launcher cards for the supported tools only", () => {
