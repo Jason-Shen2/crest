@@ -329,17 +329,25 @@ function isChangeOperation(value: unknown): value is ChangeOperation {
 
 function parseOldPatchPath(line: string): string {
     if (!line.startsWith("--- ")) return "";
-    const rawPath = line.slice(4).trim();
-    if (!rawPath || rawPath === "/dev/null") return "";
-    return rawPath.replace(/^a\//, "");
+    const path = normalizePatchPath(line.slice(4));
+    if (!path || path === "/dev/null") return "";
+    return path;
 }
 
 function parseNewPatchPath(line: string, fallbackDeletedPath: string): string {
     if (!line.startsWith("+++ ")) return "";
-    const rawPath = line.slice(4).trim();
-    if (!rawPath) return "";
-    if (rawPath === "/dev/null") return fallbackDeletedPath;
-    return rawPath.replace(/^b\//, "");
+    const path = normalizePatchPath(line.slice(4));
+    if (!path) return "";
+    if (path === "/dev/null") return fallbackDeletedPath;
+    return path;
+}
+
+function normalizePatchPath(path: string): string {
+    const token = path.trim().split("\t")[0].trimEnd();
+    if (token.startsWith("a/") || token.startsWith("b/")) {
+        return token.slice(2);
+    }
+    return token;
 }
 
 function getOrCreateFile(

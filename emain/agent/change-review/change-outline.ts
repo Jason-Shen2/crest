@@ -378,7 +378,7 @@ function parseNewPatchPath(line: string, oldPath: string): string {
 }
 
 function normalizePatchPath(path: string): string {
-    const token = path.trim().split(/\s+/)[0];
+    const token = path.trim().split("\t")[0].trimEnd();
     if (token.startsWith("a/") || token.startsWith("b/")) {
         return token.slice(2);
     }

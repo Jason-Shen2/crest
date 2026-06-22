@@ -146,6 +146,25 @@ describe("buildCompactChangeSetJson", () => {
         expect(compact.files[0].stats).toEqual({ hunks: 1, additions: 1, deletions: 1 });
         expect(compact.totals).toEqual({ files: 1, hunks: 1, additions: 1, deletions: 1 });
     });
+
+    it("preserves spaces in patch paths while dropping tab metadata", () => {
+        const patch = `--- a/src/my file.ts\t2026-06-22
++++ b/src/my file.ts\t2026-06-22
+@@ -1 +1 @@
+-old
++new
+`;
+
+        const compact = JSON.parse(
+            buildCompactChangeSetJson([
+                { id: "op-1", kind: "patch", path: "src/my file.ts", patch, patchStatus: "complete" },
+            ])
+        );
+
+        expect(compact.files[0].hunks[0]).toMatchObject({
+            id: "src/my file.ts:1",
+        });
+    });
 });
 
 describe("parseChangeOutlineText", () => {

@@ -229,6 +229,22 @@ describe("parseUnifiedPatchHunks", () => {
             }),
         ]);
     });
+
+    it("preserves spaces in patch paths while dropping tab metadata", () => {
+        const patch = `--- a/src/my file.ts\t2026-06-22
++++ b/src/my file.ts\t2026-06-22
+@@ -1 +1 @@
+-old
++new
+`;
+
+        expect(parseUnifiedPatchHunks(patch)).toEqual([
+            expect.objectContaining({
+                id: "src/my file.ts:1",
+                path: "src/my file.ts",
+            }),
+        ]);
+    });
 });
 
 describe("buildChangeSet", () => {
