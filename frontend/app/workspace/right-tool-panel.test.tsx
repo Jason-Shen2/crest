@@ -36,6 +36,7 @@ vi.mock("@/app/righteditor/right-editor-workbench", () => ({
 import {
     RightToolContent,
     RightToolLauncher,
+    RightToolOpenMenu,
     RightToolPanel,
     RightToolPanelMagnifiedOverlay,
     RightToolPanelMagnifiedOverlayView,
@@ -181,7 +182,7 @@ describe("RightToolPanel parts", () => {
         expect(markup).not.toContain(">Tools<");
     });
 
-    it("calls top bar open and action handlers", () => {
+    it("toggles the open tool menu from a square add button and calls action handlers", () => {
         const onOpenTool = vi.fn();
         const onAction = vi.fn();
         const topBar = RightToolTopBar({
@@ -199,13 +200,42 @@ describe("RightToolPanel parts", () => {
         const openButton = findElementByAriaLabel(topBar, "Open right tool");
         const actionButton = findElementByAriaLabel(topBar, "Hide right tool panel");
 
-        expect(openButton.props.onClick).toBeTypeOf("function");
-        openButton.props.onClick?.();
+        expect(openButton.type).toBe("summary");
+        expect(renderToStaticMarkup(topBar)).toContain("rounded-md");
         expect(actionButton.props.onClick).toBeTypeOf("function");
         actionButton.props.onClick?.();
 
-        expect(onOpenTool).toHaveBeenCalledWith("browser");
+        expect(onOpenTool).not.toHaveBeenCalled();
         expect(onAction).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders an open tool menu with unopened tools only", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolOpenMenu openedTools={["editor", "terminal"]} onOpenTool={() => null} initiallyOpen />
+        );
+
+        expect(markup).toContain("<details");
+        expect(markup).toContain("open=\"\"");
+        expect(markup).toContain('role="menu"');
+        expect(markup).toContain('aria-label="Open Browser right tool"');
+        expect(markup).toContain('aria-label="Open Code Review right tool"');
+        expect(markup).not.toContain('aria-label="Open Editor right tool"');
+        expect(markup).not.toContain('aria-label="Open Terminal right tool"');
+    });
+
+    it("calls onOpenTool when an unopened tool menu item is selected", () => {
+        const onOpenTool = vi.fn();
+        const menu = RightToolOpenMenu({
+            openedTools: ["editor"],
+            onOpenTool,
+            initiallyOpen: true,
+        });
+        const browserItem = findElementByAriaLabel(menu, "Open Browser right tool");
+
+        expect(browserItem.props.onClick).toBeTypeOf("function");
+        browserItem.props.onClick?.();
+
+        expect(onOpenTool).toHaveBeenCalledWith("browser");
     });
 
     it("hides the open button when all right tools are already open", () => {
@@ -220,6 +250,7 @@ describe("RightToolPanel parts", () => {
         );
 
         expect(markup).not.toContain('aria-label="Open right tool"');
+        expect(markup).not.toContain('role="menu"');
     });
 
     it("exports launcher cards for the supported tools only", () => {
@@ -249,7 +280,8 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-current="page"');
         expect(markup).toContain('aria-label="Close Editor"');
         expect(markup).toContain('aria-label="Close Browser"');
-        expect(markup).toContain("rounded-full");
+        expect(markup).toContain("rounded-md");
+        expect(markup).toContain("fa-regular fa-pen-to-square");
     });
 
     it("renders no tabs when no tools are open", () => {
