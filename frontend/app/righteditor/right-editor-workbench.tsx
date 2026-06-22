@@ -10,9 +10,14 @@ import { MonacoModelRegistry } from "./monaco-model-registry";
 import type { RightEditorModel } from "./right-editor-model";
 import type { RightEditorOpenFile } from "./right-editor-types";
 
+function normalizePathSeparators(path: string): string {
+    return path.replace(/\\/g, "/");
+}
+
 function basename(path: string): string {
-    const idx = path.lastIndexOf("/");
-    return idx >= 0 ? path.slice(idx + 1) : path;
+    const normalizedPath = normalizePathSeparators(path);
+    const idx = normalizedPath.lastIndexOf("/");
+    return idx >= 0 ? normalizedPath.slice(idx + 1) : normalizedPath;
 }
 
 type RightEditorWorkbenchProps = {
@@ -20,7 +25,7 @@ type RightEditorWorkbenchProps = {
 };
 
 function trimTrailingSlashes(path: string): string {
-    return path.replace(/\/+$/, "");
+    return normalizePathSeparators(path).replace(/\/+$/, "");
 }
 
 function dirname(path: string): string {
