@@ -309,10 +309,10 @@ function parsePatchHunks(patch: string, fallbackPath: string): CompactHunk[] {
     for (const line of patch.split(/\r?\n/)) {
         const headerMatch = line.match(HunkHeaderRe);
         if (currentHunk && !headerMatch) {
-            if (line.startsWith("+") && !line.startsWith("+++")) {
+            if (line.startsWith("+")) {
                 currentHunk.additions += 1;
                 newLinesRemaining -= 1;
-            } else if (line.startsWith("-") && !line.startsWith("---")) {
+            } else if (line.startsWith("-")) {
                 currentHunk.deletions += 1;
                 oldLinesRemaining -= 1;
             } else if (line.startsWith(" ")) {

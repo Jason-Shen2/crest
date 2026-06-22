@@ -123,6 +123,29 @@ describe("buildCompactChangeSetJson", () => {
             totals: { files: 1, hunks: 1, additions: 1, deletions: 0 },
         });
     });
+
+    it("counts hunk body lines that look like front-end diff headers", () => {
+        const patch = `--- a/frontend/app/component.tsx
++++ b/frontend/app/component.tsx
+@@ -1,2 +1,2 @@ render
+---legacy header-like text
++++modern header-like text
+ context
+`;
+
+        const compact = JSON.parse(
+            buildCompactChangeSetJson([
+                { id: "op-1", kind: "patch", path: "frontend/app/component.tsx", patch, patchStatus: "complete" },
+            ])
+        );
+
+        expect(compact.files[0].hunks[0]).toMatchObject({
+            additions: 1,
+            deletions: 1,
+        });
+        expect(compact.files[0].stats).toEqual({ hunks: 1, additions: 1, deletions: 1 });
+        expect(compact.totals).toEqual({ files: 1, hunks: 1, additions: 1, deletions: 1 });
+    });
 });
 
 describe("parseChangeOutlineText", () => {

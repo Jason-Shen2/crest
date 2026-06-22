@@ -11,7 +11,7 @@ import { mkdir as fsMkdir, readFile as fsReadFile, writeFile as fsWriteFile } fr
 import { dirname } from "node:path";
 import { type Static, Type } from "typebox";
 
-import { type ChangeOperation, makeToolChangeOperation } from "../change-review/change-operation";
+import { type ChangeOperation, type ChangeOperationKind, makeToolChangeOperation } from "../change-review/change-operation";
 import type { AgentTool } from "../types";
 import { generateUnifiedPatch } from "./_edit-diff";
 import { withFileMutationQueue } from "./_file-mutation-queue";
@@ -48,17 +48,17 @@ export interface WriteToolDetails {
 }
 
 type ExistingContentResult =
-    | { status: "complete"; content: string }
+    | { status: "complete"; content: string; exists: boolean }
     | { status: "unavailable"; reason: string };
 
 async function readExistingContent(ops: WriteOperations, absolutePath: string): Promise<ExistingContentResult> {
     const readFile = ops.readFile;
     if (!readFile) return { status: "unavailable", reason: "readFile unavailable" };
     try {
-        return { status: "complete", content: (await readFile(absolutePath)).toString("utf-8") };
+        return { status: "complete", content: (await readFile(absolutePath)).toString("utf-8"), exists: true };
     } catch (error: unknown) {
         if (error instanceof Error && "code" in error && (error as { code: string }).code === "ENOENT") {
-            return { status: "complete", content: "" };
+            return { status: "complete", content: "", exists: false };
         }
         return { status: "unavailable", reason: error instanceof Error ? error.message : String(error) };
     }
@@ -96,6 +96,8 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
                 const patchStatus = previousContent.status;
                 const patchUnavailableReason =
                     previousContent.status === "unavailable" ? previousContent.reason : undefined;
+                const operationKind: ChangeOperationKind =
+                    previousContent.status === "complete" && !previousContent.exists ? "create" : "write";
                 return {
                     content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to ${path}` }],
                     details: {
@@ -104,7 +106,7 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
                         ...(patchUnavailableReason !== undefined ? { patchUnavailableReason } : {}),
                         changeOperation: makeToolChangeOperation({
                             toolCallId,
-                            kind: "write",
+                            kind: operationKind,
                             path,
                             patch,
                             patchStatus,
