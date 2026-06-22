@@ -41,17 +41,26 @@ export interface WriteToolOptions {
 }
 
 export interface WriteToolDetails {
-    patch: string;
+    patch?: string;
+    patchStatus: "complete" | "unavailable";
+    patchUnavailableReason?: string;
     changeOperation: ChangeOperation;
 }
 
-async function readExistingContent(ops: WriteOperations, absolutePath: string): Promise<string> {
+type ExistingContentResult =
+    | { status: "complete"; content: string }
+    | { status: "unavailable"; reason: string };
+
+async function readExistingContent(ops: WriteOperations, absolutePath: string): Promise<ExistingContentResult> {
     const readFile = ops.readFile;
-    if (!readFile) return "";
+    if (!readFile) return { status: "unavailable", reason: "readFile unavailable" };
     try {
-        return (await readFile(absolutePath)).toString("utf-8");
-    } catch {
-        return "";
+        return { status: "complete", content: (await readFile(absolutePath)).toString("utf-8") };
+    } catch (error: unknown) {
+        if (error instanceof Error && "code" in error && (error as { code: string }).code === "ENOENT") {
+            return { status: "complete", content: "" };
+        }
+        return { status: "unavailable", reason: error instanceof Error ? error.message : String(error) };
     }
 }
 
@@ -80,12 +89,27 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
                 throwIfAborted();
                 await ops.writeFile(absolutePath, content);
                 throwIfAborted();
-                const patch = generateUnifiedPatch(path, previousContent, content);
+                const patch =
+                    previousContent.status === "complete"
+                        ? generateUnifiedPatch(path, previousContent.content, content)
+                        : undefined;
+                const patchStatus = previousContent.status;
+                const patchUnavailableReason =
+                    previousContent.status === "unavailable" ? previousContent.reason : undefined;
                 return {
                     content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to ${path}` }],
                     details: {
                         patch,
-                        changeOperation: makeToolChangeOperation({ toolCallId, kind: "write", path, patch }),
+                        patchStatus,
+                        ...(patchUnavailableReason !== undefined ? { patchUnavailableReason } : {}),
+                        changeOperation: makeToolChangeOperation({
+                            toolCallId,
+                            kind: "write",
+                            path,
+                            patch,
+                            patchStatus,
+                            patchUnavailableReason,
+                        }),
                     },
                 };
             });
