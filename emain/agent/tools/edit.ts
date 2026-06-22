@@ -163,7 +163,13 @@ export function createEditTool(
                         diff: diffResult.diff,
                         patch,
                         firstChangedLine: diffResult.firstChangedLine,
-                        changeOperation: makeToolChangeOperation({ toolCallId, kind: "patch", path, patch }),
+                        changeOperation: makeToolChangeOperation({
+                            toolCallId,
+                            kind: "patch",
+                            path,
+                            patch,
+                            patchStatus: "complete",
+                        }),
                     },
                 };
             });
