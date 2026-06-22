@@ -120,10 +120,11 @@ describe("write", () => {
             toolCallId: "tc-write-review",
             kind: "write",
             path: "review.txt",
+            patchStatus: "complete",
+            patch: result.details?.patch,
         });
         expect(result.details?.changeOperation.id).toBeTruthy();
         expect(result.details?.patch).toContain("after");
-        expect(result.details?.changeOperation.patch).toBe(result.details?.patch);
     });
 
     it("writes with custom operations that do not provide readFile", async () => {
@@ -141,14 +142,15 @@ describe("write", () => {
         const result = await tool.execute("tc-write-no-read", { path: "virtual.txt", content: "new virtual\n" });
 
         expect(written).toBe("new virtual\n");
-        expect(result.details.patch).toContain("+new virtual");
-        expect(result.details.patch).not.toContain("-existing-on-disk");
+        expect(result.details.patch).toBeUndefined();
         expect(result.details.changeOperation).toMatchObject({
             toolCallId: "tc-write-no-read",
             kind: "write",
             path: "virtual.txt",
-            patch: result.details.patch,
+            patchStatus: "unavailable",
+            patchUnavailableReason: "readFile unavailable",
         });
+        expect(result.details.changeOperation.patch).toBeUndefined();
     });
 
     it("writes when custom readFile throws a non-ENOENT error", async () => {
@@ -170,13 +172,15 @@ describe("write", () => {
         const result = await tool.execute("tc-write-read-fails", { path: "unreadable.txt", content: "still writes\n" });
 
         expect(written).toBe("still writes\n");
-        expect(result.details.patch).toContain("+still writes");
+        expect(result.details.patch).toBeUndefined();
         expect(result.details.changeOperation).toMatchObject({
             toolCallId: "tc-write-read-fails",
             kind: "write",
             path: "unreadable.txt",
-            patch: result.details.patch,
+            patchStatus: "unavailable",
+            patchUnavailableReason: "permission denied",
         });
+        expect(result.details.changeOperation.patch).toBeUndefined();
     });
 });
 
@@ -258,6 +262,7 @@ describe("edit", () => {
             toolCallId: "tc-edit-review",
             kind: "patch",
             path: "review-edit.txt",
+            patchStatus: "complete",
         });
         expect(result.details?.changeOperation.id).toBeTruthy();
         expect(result.details?.changeOperation.patch).toBe(result.details?.patch);

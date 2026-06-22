@@ -16,6 +16,8 @@ export interface ChangeOperation {
     path: string;
     previousPath?: string;
     patch?: string;
+    patchStatus?: "complete" | "unavailable";
+    patchUnavailableReason?: string;
     beforeContentHash?: string;
     afterContentHash?: string;
 }
@@ -25,6 +27,8 @@ export interface MakeToolChangeOperationInput {
     kind: ChangeOperationKind;
     path: string;
     patch?: string;
+    patchStatus?: "complete" | "unavailable";
+    patchUnavailableReason?: string;
 }
 
 export function makeToolChangeOperation(input: MakeToolChangeOperationInput): ChangeOperation {
@@ -38,5 +42,9 @@ export function makeToolChangeOperation(input: MakeToolChangeOperationInput): Ch
         kind: input.kind,
         path: input.path,
         ...(input.patch !== undefined ? { patch: input.patch } : {}),
+        ...(input.patchStatus !== undefined ? { patchStatus: input.patchStatus } : {}),
+        ...(input.patchUnavailableReason !== undefined
+            ? { patchUnavailableReason: input.patchUnavailableReason }
+            : {}),
     };
 }
