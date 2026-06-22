@@ -29,6 +29,10 @@ vi.mock("@/app/codereview/git-panel", () => ({
     GitReviewSidebar: () => <div>Git Review Sidebar</div>,
 }));
 
+vi.mock("@/app/righteditor/right-editor-workbench", () => ({
+    RightEditorWorkbench: () => <div>Right Editor Workbench</div>,
+}));
+
 import {
     RightToolContent,
     RightToolLauncher,
@@ -43,7 +47,10 @@ type TestElementProps = {
     "aria-label"?: string;
     children?: ReactNode;
     onClick?: () => void;
-    onBlurCapture?: (event: { currentTarget: { contains: (node: unknown) => boolean }; relatedTarget: unknown }) => void;
+    onBlurCapture?: (event: {
+        currentTarget: { contains: (node: unknown) => boolean };
+        relatedTarget: unknown;
+    }) => void;
 };
 
 function renderPanel(state: RightToolPanelState): string {
@@ -200,7 +207,7 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain("--magnified-block-blur:4px");
         expect(markup).toContain("var(--zindex-layout-magnified-node");
         expect(markup).toContain('aria-label="Exit magnified right tool panel"');
-        expect(markup).toContain("Editor Tool");
+        expect(markup).toContain("Right Editor Workbench");
         expect(markup).toContain('aria-label="Select Browser"');
     });
 

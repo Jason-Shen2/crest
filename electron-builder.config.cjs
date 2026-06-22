@@ -29,6 +29,16 @@ const config = {
             to: ".",
             filter: ["package.json"],
         },
+        {
+            from: "node_modules/typescript-language-server",
+            to: "node_modules/typescript-language-server",
+            filter: ["lib/**/*", "package.json"],
+        },
+        {
+            from: "node_modules/typescript",
+            to: "node_modules/typescript",
+            filter: ["lib/**/*", "package.json"],
+        },
         "!node_modules", // We don't need electron-builder to package in Node modules as Vite has already bundled any code that our program is using.
     ],
     extraResources: [
@@ -43,6 +53,8 @@ const config = {
     asarUnpack: [
         "dist/bin/**/*", // wavesrv and wsh binaries
         "dist/schema/**/*", // schema files for Monaco editor
+        "node_modules/typescript-language-server/**",
+        "node_modules/typescript/**",
     ],
     mac: {
         target: [
