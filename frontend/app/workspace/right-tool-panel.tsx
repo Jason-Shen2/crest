@@ -64,10 +64,16 @@ export type RightToolTabsProps = {
 };
 
 export type RightToolTopBarProps = {
-    title: string;
-    actionAriaLabel: string;
-    actionIconClassName: string;
-    onAction: () => void;
+    activeTool?: RightToolId;
+    openedTools: RightToolId[];
+    onOpenTool: (tool: RightToolId) => void;
+    onSelectTool: (tool: RightToolId) => void;
+    onCloseTool: (tool: RightToolId) => void;
+    action: {
+        ariaLabel: string;
+        iconClassName: string;
+        onClick: () => void;
+    };
 };
 
 export type RightToolContentProps = {
@@ -92,7 +98,7 @@ function migrateRightEditorModelPath(oldPath: string, newPath: string): void {
 
 export type RightToolPanelMagnifiedOverlayProps = Pick<
     RightToolPanelProps,
-    "state" | "onSelectTool" | "onCloseTool" | "onFocusPanel" | "onBlurPanel"
+    "state" | "onOpenTool" | "onSelectTool" | "onCloseTool" | "onFocusPanel" | "onBlurPanel"
 > & {
     onExit: () => void;
     className?: string;
@@ -130,28 +136,51 @@ export function RightToolLauncher({ supportedTools = RightToolIds, onOpenTool }:
     );
 }
 
-export function RightToolTopBar({ title, actionAriaLabel, actionIconClassName, onAction }: RightToolTopBarProps) {
+export function RightToolTopBar({
+    activeTool,
+    openedTools,
+    onOpenTool,
+    onSelectTool,
+    onCloseTool,
+    action,
+}: RightToolTopBarProps) {
+    const nextTool = RightToolIds.find((tool) => !openedTools.includes(tool));
     return (
-        <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-secondary">{title}</div>
+        <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1.5">
+            <RightToolTabs
+                activeTool={activeTool}
+                openedTools={openedTools}
+                onSelectTool={onSelectTool}
+                onCloseTool={onCloseTool}
+            />
             <button
                 type="button"
-                aria-label={actionAriaLabel}
-                className="cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
-                onClick={onAction}
+                aria-label="Open right tool"
+                className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
+                onClick={() => {
+                    if (nextTool == null) return;
+                    onOpenTool(nextTool);
+                }}
             >
-                <i className={actionIconClassName} />
+                <i className="fa-solid fa-plus" />
             </button>
+            <div aria-label="Right tool panel actions" className="ml-auto flex shrink-0 items-center gap-1">
+                <button
+                    type="button"
+                    aria-label={action.ariaLabel}
+                    className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
+                    onClick={action.onClick}
+                >
+                    <i className={action.iconClassName} />
+                </button>
+            </div>
         </div>
     );
 }
 
 export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTool }: RightToolTabsProps) {
-    if (openedTools.length === 0) {
-        return null;
-    }
     return (
-        <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
+        <nav aria-label="Right tool tabs" className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
             {openedTools.map((tool) => {
                 const metadata = RightToolMetadataById[tool];
                 const active = tool === activeTool;
@@ -159,15 +188,17 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                     <div
                         key={tool}
                         className={cn(
-                            "flex min-w-0 items-center rounded-md text-xs",
-                            active ? "bg-hoverbg text-white" : "text-secondary hover:bg-hoverbg hover:text-white"
+                            "flex min-w-0 items-center rounded-full border text-xs transition-colors",
+                            active
+                                ? "border-accent/40 bg-accent/10 text-white"
+                                : "border-transparent bg-transparent text-secondary hover:bg-hoverbg hover:text-white"
                         )}
                     >
                         <button
                             type="button"
                             aria-label={`Select ${metadata.label}`}
                             aria-current={active ? "page" : undefined}
-                            className="min-w-0 cursor-pointer truncate px-2 py-1"
+                            className="min-w-0 cursor-pointer truncate py-1 pl-2 pr-1"
                             onClick={() => onSelectTool(tool)}
                         >
                             {metadata.label}
@@ -175,7 +206,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                         <button
                             type="button"
                             aria-label={`Close ${metadata.label}`}
-                            className="cursor-pointer px-1.5 py-1 text-muted hover:text-white"
+                            className="cursor-pointer py-1 pl-1 pr-2 text-muted hover:text-white"
                             onClick={() => onCloseTool(tool)}
                         >
                             <i className="fa-solid fa-xmark" />
@@ -183,7 +214,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                     </div>
                 );
             })}
-        </div>
+        </nav>
     );
 }
 
@@ -218,6 +249,7 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
 
 export function RightToolPanelMagnifiedOverlay({
     state,
+    onOpenTool,
     onSelectTool,
     onCloseTool,
     onFocusPanel,
@@ -231,6 +263,7 @@ export function RightToolPanelMagnifiedOverlay({
     return (
         <RightToolPanelMagnifiedOverlayView
             state={state}
+            onOpenTool={onOpenTool}
             onSelectTool={onSelectTool}
             onCloseTool={onCloseTool}
             onFocusPanel={onFocusPanel}
@@ -245,6 +278,7 @@ export function RightToolPanelMagnifiedOverlay({
 
 export function RightToolPanelMagnifiedOverlayView({
     state,
+    onOpenTool,
     onSelectTool,
     onCloseTool,
     onFocusPanel,
@@ -289,17 +323,17 @@ export function RightToolPanelMagnifiedOverlayView({
                 }}
             >
                 {RightToolTopBar({
-                    title: "Tools",
-                    actionAriaLabel: "Exit magnified right tool panel",
-                    actionIconClassName: "fa-solid fa-down-left-and-up-right-to-center",
-                    onAction: onExit,
+                    activeTool: state.activeTool,
+                    openedTools: state.openedTools,
+                    onOpenTool,
+                    onSelectTool,
+                    onCloseTool,
+                    action: {
+                        ariaLabel: "Exit magnified right tool panel",
+                        iconClassName: "fa-solid fa-down-left-and-up-right-to-center",
+                        onClick: onExit,
+                    },
                 })}
-                <RightToolTabs
-                    activeTool={state.activeTool}
-                    openedTools={state.openedTools}
-                    onSelectTool={onSelectTool}
-                    onCloseTool={onCloseTool}
-                />
                 <div className="min-h-0 flex-1 overflow-hidden">
                     <RightToolContent activeTool={state.activeTool} />
                 </div>
@@ -336,17 +370,17 @@ export function RightToolPanel({
             }}
         >
             {RightToolTopBar({
-                title: "Tools",
-                actionAriaLabel: "Hide right tool panel",
-                actionIconClassName: "fa-solid fa-chevron-right",
-                onAction: onHide,
+                activeTool: state.activeTool,
+                openedTools: state.openedTools,
+                onOpenTool,
+                onSelectTool,
+                onCloseTool,
+                action: {
+                    ariaLabel: "Hide right tool panel",
+                    iconClassName: "fa-solid fa-chevron-right",
+                    onClick: onHide,
+                },
             })}
-            <RightToolTabs
-                activeTool={state.activeTool}
-                openedTools={state.openedTools}
-                onSelectTool={onSelectTool}
-                onCloseTool={onCloseTool}
-            />
             <div className="min-h-0 flex-1 overflow-hidden">
                 {hasOpenedTools ? (
                     <RightToolContent activeTool={state.activeTool} />
