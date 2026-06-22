@@ -37,6 +37,7 @@ export function getRightEditorTabPathSuffix(path: string, workspaceRoot: string)
     const parentPath = dirname(path);
     if (!parentPath) return "";
     const normalizedWorkspaceRoot = trimTrailingSlashes(workspaceRoot);
+    if (workspaceRoot === "/") return stripLeadingSlash(parentPath);
     if (normalizedWorkspaceRoot && parentPath === normalizedWorkspaceRoot) return "";
     if (normalizedWorkspaceRoot && parentPath.startsWith(`${normalizedWorkspaceRoot}/`)) {
         return parentPath.slice(normalizedWorkspaceRoot.length + 1);

@@ -146,6 +146,7 @@ describe("RightEditorWorkbench", () => {
         expect(getRightEditorTabPathSuffix).toBeTypeOf("function");
         expect(getRightEditorTabPathSuffix?.("/repo/src/app.ts", "/repo")).toBe("src");
         expect(getRightEditorTabPathSuffix?.("/repo/packages/web/src/app.ts", "/repo")).toBe("packages/web/src");
+        expect(getRightEditorTabPathSuffix?.("/a/src/app.ts", "/")).toBe("a/src");
         expect(getRightEditorTabPathSuffix?.("/other/src/app.ts", "/repo")).toBe("src");
         expect(getRightEditorTabPathSuffix?.("/repo/app.ts", "/repo")).toBe("");
     });
