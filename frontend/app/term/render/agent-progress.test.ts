@@ -1005,8 +1005,82 @@ describe("AgentProgressView", () => {
         expect(html).toContain("function StageOverview");
         expect(html).toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
         expect(html).toContain("View diff");
+        expect(html).toContain('disabled=""');
+        expect(html).toContain('aria-disabled="true"');
+        expect(html).toContain('title="Diff viewing is not available yet."');
         expect(html).toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
         expect(html).toContain("Explain");
+        expect(html).toContain('title="Explanation is not available yet."');
+    });
+
+    it("renders run-level change review only under the first file-edit stage", () => {
+        const html = renderToStaticMarkup(
+            createElement(AgentProgressView, {
+                showTechnicalDetails: true,
+                progress: {
+                    stages: [
+                        {
+                            id: "modify-files",
+                            title: "Modify files",
+                            status: "done",
+                            summary: "Updated files.",
+                            recentActions: [],
+                            actionGroups: [],
+                            risk: "file-edit",
+                        },
+                        {
+                            id: "modify-files-2",
+                            title: "Modify files",
+                            status: "done",
+                            summary: "Updated more files.",
+                            recentActions: [],
+                            actionGroups: [],
+                            risk: "file-edit",
+                        },
+                    ],
+                    changeReview: {
+                        changeSetId: "run-1",
+                        changeSet: {
+                            id: "run-1",
+                            files: [],
+                            totals: { files: 1, hunks: 1, additions: 1, deletions: 0 },
+                        },
+                        modules: [
+                            {
+                                id: "ui",
+                                title: "UI rendering",
+                                files: [
+                                    {
+                                        path: "frontend/app/term/render/agent-progress-view.tsx",
+                                        status: "modified",
+                                        stats: { hunks: 1, additions: 1, deletions: 0 },
+                                        hunks: [
+                                            {
+                                                id: "frontend/app/term/render/agent-progress-view.tsx:1",
+                                                path: "frontend/app/term/render/agent-progress-view.tsx",
+                                                oldStart: 10,
+                                                oldLines: 1,
+                                                newStart: 10,
+                                                newLines: 2,
+                                                header: "function StageOverview",
+                                                additions: 1,
+                                                deletions: 0,
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                        ungroupedFiles: [],
+                        warnings: [],
+                    },
+                },
+            })
+        );
+
+        expect(html.match(/UI rendering/g)).toHaveLength(1);
+        expect(html).toContain('data-agent-progress-stage-details="modify-files"');
+        expect(html).not.toContain('data-agent-progress-stage-details="modify-files-2"');
     });
 
     it("renders the default overview as stage toggles without global technical details", () => {

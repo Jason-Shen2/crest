@@ -61,11 +61,14 @@ function basename(path: string): string {
 
 export function AgentProgressView({ progress, showTechnicalDetails = false }: AgentProgressViewProps) {
     const env = useWaveEnv<Pick<WaveEnv, "createBlock">>();
+    const changeReviewStageId = firstChangeReviewStageId(progress.stages, progress.changeReview);
     const [openStageIds, setOpenStageIds] = useState<Set<string>>(
         () =>
             new Set(
                 showTechnicalDetails
-                    ? progress.stages.filter((stage) => stageHasDetails(stage, progress.changeReview)).map((stage) => stage.id)
+                    ? progress.stages
+                          .filter((stage) => stageHasDetails(stage, stage.id === changeReviewStageId ? progress.changeReview : undefined))
+                          .map((stage) => stage.id)
                     : []
             )
     );
@@ -108,7 +111,7 @@ export function AgentProgressView({ progress, showTechnicalDetails = false }: Ag
                         <StageOverview
                             key={stage.id}
                             stage={stage}
-                            changeReview={progress.changeReview}
+                            changeReview={stage.id === changeReviewStageId ? progress.changeReview : undefined}
                             isOpen={openStageIds.has(stage.id)}
                             onToggle={() => toggleStage(stage.id)}
                             onOpenFile={openFile}
@@ -235,6 +238,11 @@ function shouldRenderChangeReview(stage: AgentProgressStage, changeReview?: Chan
 
 function hasChangeReviewItems(changeReview: ChangeReview): boolean {
     return changeReview.modules.length > 0 || changeReview.ungroupedFiles.length > 0 || changeReview.warnings.length > 0;
+}
+
+function firstChangeReviewStageId(stages: AgentProgressStage[], changeReview?: ChangeReview): string {
+    if (changeReview == null || !hasChangeReviewItems(changeReview)) return "";
+    return stages.find((stage) => stage.risk === "file-edit")?.id ?? "";
 }
 
 function StageActionGroup({
@@ -452,14 +460,20 @@ function ChangeReviewHunk({ hunk }: { hunk: ChangeSetHunk }) {
             <div className="mt-1 flex flex-wrap gap-1">
                 <button
                     type="button"
-                    className="cursor-pointer rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px] text-[#dcebed] transition-colors hover:border-[var(--accent-color)]/50 hover:text-white"
+                    disabled
+                    aria-disabled="true"
+                    title="Diff viewing is not available yet."
+                    className="cursor-default rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px] text-secondary/70"
                     data-agent-progress-change-hunk-diff={hunk.id}
                 >
                     View diff
                 </button>
                 <button
                     type="button"
-                    className="cursor-pointer rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px] text-[#dcebed] transition-colors hover:border-[var(--accent-color)]/50 hover:text-white"
+                    disabled
+                    aria-disabled="true"
+                    title="Explanation is not available yet."
+                    className="cursor-default rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px] text-secondary/70"
                     data-agent-progress-change-hunk-explain={hunk.id}
                 >
                     Explain
