@@ -12,6 +12,7 @@ import { constants } from "node:fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import { type Static, Type } from "typebox";
 
+import { type ChangeOperation, makeToolChangeOperation } from "../change-review/change-operation";
 import type { AgentTool } from "../types";
 import {
     applyEditsToNormalizedContent,
@@ -55,6 +56,7 @@ export interface EditToolDetails {
     diff: string;
     patch: string;
     firstChangedLine?: number;
+    changeOperation: ChangeOperation;
 }
 
 export interface EditOperations {
@@ -115,7 +117,7 @@ export function createEditTool(
             "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Keep oldText as small as possible while still unique; do not pad with large unchanged regions.",
         parameters: editSchema,
         prepareArguments: prepareEditArguments,
-        async execute(_toolCallId, input, signal) {
+        async execute(toolCallId, input, signal) {
             const { path, edits } = validateEditInput(input);
             const absolutePath = resolveToCwd(path, cwd);
 
@@ -157,7 +159,12 @@ export function createEditTool(
                 const patch = generateUnifiedPatch(path, baseContent, newContent);
                 return {
                     content: [{ type: "text", text: `Successfully replaced ${edits.length} block(s) in ${path}.` }],
-                    details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
+                    details: {
+                        diff: diffResult.diff,
+                        patch,
+                        firstChangedLine: diffResult.firstChangedLine,
+                        changeOperation: makeToolChangeOperation({ toolCallId, kind: "patch", path, patch }),
+                    },
                 };
             });
         },

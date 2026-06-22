@@ -110,6 +110,21 @@ describe("write", () => {
         await tool.execute("tc-1", { path: "ex.txt", content: "after" });
         expect(await fs.readFile(path.join(tmpDir, "ex.txt"), "utf8")).toBe("after");
     });
+
+    it("returns change operation details for review", async () => {
+        await fs.writeFile(path.join(tmpDir, "review.txt"), "before\n");
+        const tool = createWriteTool(tmpDir);
+        const result = await tool.execute("tc-write-review", { path: "review.txt", content: "after\nextra\n" });
+
+        expect(result.details?.changeOperation).toMatchObject({
+            toolCallId: "tc-write-review",
+            kind: "write",
+            path: "review.txt",
+        });
+        expect(result.details?.changeOperation.id).toBeTruthy();
+        expect(result.details?.patch).toContain("after");
+        expect(result.details?.changeOperation.patch).toBe(result.details?.patch);
+    });
 });
 
 describe("edit", () => {
@@ -176,6 +191,24 @@ describe("edit", () => {
         });
         expect(result.details?.diff).toContain("there");
         expect(result.details?.patch).toContain("@@");
+    });
+
+    it("returns change operation details for review", async () => {
+        await fs.writeFile(path.join(tmpDir, "review-edit.txt"), "one\ntwo\nthree\n");
+        const tool = createEditTool(tmpDir);
+        const result = await tool.execute("tc-edit-review", {
+            path: "review-edit.txt",
+            edits: [{ oldText: "two", newText: "TWO\ninserted" }],
+        });
+
+        expect(result.details?.changeOperation).toMatchObject({
+            toolCallId: "tc-edit-review",
+            kind: "patch",
+            path: "review-edit.txt",
+        });
+        expect(result.details?.changeOperation.id).toBeTruthy();
+        expect(result.details?.changeOperation.patch).toBe(result.details?.patch);
+        expect(result.details?.changeOperation.patch).toContain("inserted");
     });
 });
 
