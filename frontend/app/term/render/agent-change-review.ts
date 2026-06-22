@@ -134,24 +134,28 @@ export function parseUnifiedPatchHunks(patch: string): ChangeSetHunk[] {
     let currentPath = "";
     let currentHunk: ChangeSetHunk;
     let pendingOldPath = "";
+    let oldLinesRemaining = 0;
+    let newLinesRemaining = 0;
 
     for (const line of patch.split(/\r?\n/)) {
-        const oldPath = parseOldPatchPath(line);
-        if (oldPath) {
-            pendingOldPath = oldPath;
-            currentHunk = undefined;
-            continue;
-        }
-
-        const nextPath = parseNewPatchPath(line, pendingOldPath);
-        if (nextPath) {
-            currentPath = nextPath;
-            pendingOldPath = "";
-            currentHunk = undefined;
-            continue;
-        }
-
         const headerMatch = line.match(HunkHeaderRe);
+        if (currentHunk && !headerMatch) {
+            if (line.startsWith("+")) {
+                currentHunk.additions += 1;
+                newLinesRemaining -= 1;
+            } else if (line.startsWith("-")) {
+                currentHunk.deletions += 1;
+                oldLinesRemaining -= 1;
+            } else if (line.startsWith(" ")) {
+                oldLinesRemaining -= 1;
+                newLinesRemaining -= 1;
+            }
+            if (oldLinesRemaining <= 0 && newLinesRemaining <= 0) {
+                currentHunk = undefined;
+            }
+            continue;
+        }
+
         if (headerMatch) {
             const path = currentPath || "unknown";
             const nextCount = (hunkCountsByPath.get(path) ?? 0) + 1;
@@ -167,17 +171,27 @@ export function parseUnifiedPatchHunks(patch: string): ChangeSetHunk[] {
                 additions: 0,
                 deletions: 0,
             };
+            oldLinesRemaining = currentHunk.oldLines;
+            newLinesRemaining = currentHunk.newLines;
             hunks.push(currentHunk);
             continue;
         }
 
-        if (!currentHunk) continue;
-        if (line.startsWith("+") && !line.startsWith("+++")) {
-            currentHunk.additions += 1;
+        if (line.startsWith("diff --git ")) {
+            pendingOldPath = "";
             continue;
         }
-        if (line.startsWith("-") && !line.startsWith("---")) {
-            currentHunk.deletions += 1;
+
+        const oldPath = parseOldPatchPath(line);
+        if (oldPath) {
+            pendingOldPath = oldPath;
+            continue;
+        }
+
+        const nextPath = parseNewPatchPath(line, pendingOldPath);
+        if (nextPath) {
+            currentPath = nextPath;
+            pendingOldPath = "";
         }
     }
 

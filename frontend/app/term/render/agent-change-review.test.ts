@@ -207,6 +207,28 @@ describe("parseUnifiedPatchHunks", () => {
             ["src/deleted.ts:1", "src/deleted.ts", 2],
         ]);
     });
+
+    it("does not treat hunk body lines starting like file headers as file headers", () => {
+        const patch = `--- a/src/markdown.md
++++ b/src/markdown.md
+@@ -1,5 +1,5 @@
+ title
+-- list item
+--- deleted source line
+-+++ deleted literal pluses
++replacement
+ footer
+`;
+
+        expect(parseUnifiedPatchHunks(patch)).toEqual([
+            expect.objectContaining({
+                id: "src/markdown.md:1",
+                path: "src/markdown.md",
+                additions: 1,
+                deletions: 3,
+            }),
+        ]);
+    });
 });
 
 describe("buildChangeSet", () => {
