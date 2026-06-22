@@ -23,6 +23,46 @@ function makeRun(responseMessages: PiRun["responseMessages"], status: PiRun["sta
 }
 
 describe("deriveAgentProgress", () => {
+    it("does not expose change review for read-only and command-only tool runs", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "read-1",
+                            name: "read_text_file",
+                            input: { path: "src/app.ts" },
+                        },
+                        {
+                            type: "toolCall",
+                            id: "test-1",
+                            name: "bash",
+                            input: { command: "npm test -- --run src/app.test.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "read-1",
+                    toolName: "read_text_file",
+                    content: [{ type: "text", text: "source" }],
+                    isError: false,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "test-1",
+                    toolName: "bash",
+                    content: [{ type: "text", text: "1 passed" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        expect(progress.changeReview).toBeUndefined();
+    });
+
     it("attaches change review derived from edit tool result details", () => {
         const patch = `--- a/src/app.ts
 +++ b/src/app.ts
