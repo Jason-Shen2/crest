@@ -12,6 +12,41 @@ function createModel(value: string, path: string, language?: string) {
     return monaco.editor.createModel(value, language, uri);
 }
 
+type EditorModelBinding = {
+    model: MonacoTypes.editor.ITextModel;
+    ownsModel: boolean;
+    contentSub: MonacoTypes.IDisposable;
+};
+
+type ReplaceEditorModelInput = {
+    editor: MonacoTypes.editor.IStandaloneCodeEditor;
+    current: EditorModelBinding;
+    nextModel: MonacoTypes.editor.ITextModel;
+    ownsNextModel: boolean;
+    onChange?: (text: string) => void;
+    applyingFromProps: { current: boolean };
+};
+
+export function replaceEditorModel(input: ReplaceEditorModelInput): EditorModelBinding {
+    if (input.current.model === input.nextModel) {
+        return input.current;
+    }
+    input.current.contentSub.dispose();
+    if (input.current.ownsModel) {
+        input.current.model.dispose();
+    }
+    input.editor.setModel(input.nextModel);
+    const contentSub = input.nextModel.onDidChangeContent(() => {
+        if (input.applyingFromProps.current) return;
+        input.onChange?.(input.nextModel.getValue());
+    });
+    return {
+        model: input.nextModel,
+        ownsModel: input.ownsNextModel,
+        contentSub,
+    };
+}
+
 type CodeEditorProps = {
     text: string;
     readonly: boolean;
@@ -20,13 +55,20 @@ type CodeEditorProps = {
     onMount?: (editor: MonacoTypes.editor.IStandaloneCodeEditor, monacoApi: typeof monaco) => () => void;
     path: string;
     options: MonacoTypes.editor.IEditorOptions;
+    model?: MonacoTypes.editor.ITextModel;
 };
 
-export function MonacoCodeEditor({ text, readonly, language, onChange, onMount, path, options }: CodeEditorProps) {
+export function MonacoCodeEditor({ text, readonly, language, onChange, onMount, path, options, model }: CodeEditorProps) {
     const divRef = useRef<HTMLDivElement>(null);
     const editorRef = useRef<MonacoTypes.editor.IStandaloneCodeEditor | null>(null);
     const onUnmountRef = useRef<(() => void) | null>(null);
     const applyingFromProps = useRef(false);
+    const modelBindingRef = useRef<EditorModelBinding>(null);
+    const onChangeRef = useRef(onChange);
+
+    useEffect(() => {
+        onChangeRef.current = onChange;
+    }, [onChange]);
 
     useEffect(() => {
         loadMonaco();
@@ -34,36 +76,60 @@ export function MonacoCodeEditor({ text, readonly, language, onChange, onMount, 
         const el = divRef.current;
         if (!el) return;
 
-        const model = createModel(text, path, language);
-        console.log("[monaco] CREATE MODEL", path, model);
+        const ownsModel = model == null;
+        const editorModel = model ?? createModel(text, path, language);
+        console.log("[monaco] CREATE MODEL", path, editorModel);
 
         const editor = monaco.editor.create(el, {
             ...options,
             readOnly: readonly,
-            model,
+            model: editorModel,
         });
         editorRef.current = editor;
 
-        const sub = model.onDidChangeContent(() => {
+        const contentSub = editorModel.onDidChangeContent(() => {
             if (applyingFromProps.current) return;
-            onChange?.(model.getValue());
+            onChangeRef.current?.(editorModel.getValue());
         });
+        modelBindingRef.current = {
+            model: editorModel,
+            ownsModel,
+            contentSub,
+        };
 
         if (onMount) {
             onUnmountRef.current = onMount(editor, monaco);
         }
 
         return () => {
-            sub.dispose();
+            const binding = modelBindingRef.current;
+            binding?.contentSub.dispose();
             if (onUnmountRef.current) onUnmountRef.current();
             editor.setModel(null);
             editor.dispose();
-            model.dispose();
+            if (binding?.ownsModel) {
+                binding.model.dispose();
+            }
             console.log("[monaco] dispose model");
+            modelBindingRef.current = null;
             editorRef.current = null;
         };
         // mount/unmount only
     }, []);
+
+    useEffect(() => {
+        const editor = editorRef.current;
+        const current = modelBindingRef.current;
+        if (!editor || !current || !model) return;
+        modelBindingRef.current = replaceEditorModel({
+            editor,
+            current,
+            nextModel: model,
+            ownsNextModel: false,
+            onChange: (nextText) => onChangeRef.current?.(nextText),
+            applyingFromProps,
+        });
+    }, [model]);
 
     useEffect(() => {
         const editor = editorRef.current;

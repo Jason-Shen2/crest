@@ -4,6 +4,9 @@
 import { globalStore } from "@/app/store/jotaiStore";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { RightEditorModel } from "@/app/righteditor/right-editor-model";
+import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
+import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { atoms, createBlock, getApi, getFocusedBlockId } from "@/store/global";
 import { fireAndForget, sleep, stringToBase64 } from "@/util/util";
 import { formatRemoteUri } from "@/util/waveutil";
@@ -241,10 +244,9 @@ export class FileExplorerModel {
 
     async openFile(finfo: FileInfo): Promise<void> {
         if (finfo.isdir) { await this.toggleExpand(finfo.path); return; }
-        const blockDef: BlockDef = {
-            meta: { view: "preview", file: finfo.path, connection: "" },
-        };
-        await createBlock(blockDef);
+        const layoutModel = WorkspaceLayoutModel.getInstance();
+        layoutModel.openRightEditorTool();
+        await RightEditorModel.getInstance(RightEditorProductionRpc).openFile(finfo.path, this.getRootNow());
     }
 
     // ---- Inline editing ----
@@ -290,6 +292,7 @@ export class FileExplorerModel {
                 srcuri: formatRemoteUri(oldPath, "local"),
                 desturi: formatRemoteUri(newPath, "local"),
             });
+            RightEditorModel.getExistingInstance()?.handleFileRenamed(oldPath, newPath);
         } catch (e) {
             console.error("rename failed:", e);
         }
@@ -327,6 +330,7 @@ export class FileExplorerModel {
                 path: formatRemoteUri(path, "local"),
                 recursive: true,
             });
+            RightEditorModel.getExistingInstance()?.handleFileDeleted(path);
         } catch (e) {
             console.error("delete failed:", e);
         }

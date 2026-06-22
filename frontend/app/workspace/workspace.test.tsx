@@ -164,6 +164,10 @@ vi.mock("@/app/codereview/git-panel", () => ({
     GitReviewSidebar: () => <div>Git Review Sidebar</div>,
 }));
 
+vi.mock("@/app/righteditor/right-editor-workbench", () => ({
+    RightEditorWorkbench: () => <div>Right Editor Workbench</div>,
+}));
+
 vi.mock("@/app/tab/tabbar", () => ({
     TabBar: () => <div>Tab Bar</div>,
 }));
