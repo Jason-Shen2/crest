@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { PiAgentMessage, PiRun } from "@/app/store/use-pi-chat";
+import { deriveAgentChangeReview, type ChangeReview } from "./agent-change-review";
 
 export type AgentProgressStatus = "pending" | "running" | "done" | "failed" | "skipped";
 export type AgentRiskLevel = "read-only" | "file-edit" | "command" | "network" | "external" | "destructive";
@@ -51,6 +52,7 @@ export interface AgentProgressStage {
 
 export interface AgentProgress {
     stages: AgentProgressStage[];
+    changeReview?: ChangeReview;
 }
 
 interface StageDescriptor {
@@ -134,7 +136,7 @@ export function deriveAgentProgress(run: PiRun): AgentProgress {
     const resultsByCallId = indexToolResults(run.responseMessages);
     const calls = collectToolCalls(run.responseMessages, resultsByCallId);
     const classified = calls.map((call) => ({ descriptor: classifyCall(call), call }));
-    return { stages: buildStages(classified) };
+    return { stages: buildStages(classified), changeReview: deriveAgentChangeReview(run) };
 }
 
 function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
