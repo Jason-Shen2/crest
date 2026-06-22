@@ -110,8 +110,10 @@ describe("RightToolPanel", () => {
         expect(markup).toContain('aria-label="Select Editor"');
         expect(markup).toContain('aria-label="Select Browser"');
         expect(markup).toContain('aria-label="Close Browser"');
+        expect(markup).toContain('aria-label="Open right tool"');
         expect(markup).toContain("Browser Tool");
         expect(markup).not.toContain("Choose a tool to get started");
+        expect(markup).not.toContain(">Tools<");
     });
 
     it("renders nothing when hidden", () => {
@@ -151,35 +153,55 @@ describe("RightToolPanel", () => {
 });
 
 describe("RightToolPanel parts", () => {
-    it("renders a reusable top bar with a title and action button", () => {
+    it("renders a reusable top bar with tabs, open button, and action group", () => {
         const onAction = vi.fn();
         const markup = renderToStaticMarkup(
             <RightToolTopBar
-                title="Tools"
-                actionAriaLabel="Hide right tool panel"
-                actionIconClassName="fa-solid fa-chevron-right"
-                onAction={onAction}
+                activeTool="browser"
+                openedTools={["editor", "browser"]}
+                onOpenTool={() => null}
+                onSelectTool={() => null}
+                onCloseTool={() => null}
+                action={{
+                    ariaLabel: "Hide right tool panel",
+                    iconClassName: "fa-solid fa-chevron-right",
+                    onClick: onAction,
+                }}
             />
         );
 
-        expect(markup).toContain("Tools");
+        expect(markup).toContain('aria-label="Right tool tabs"');
+        expect(markup).toContain('aria-label="Open right tool"');
         expect(markup).toContain('aria-label="Hide right tool panel"');
         expect(markup).toContain("fa-solid fa-chevron-right");
+        expect(markup).toContain('aria-current="page"');
+        expect(markup).not.toContain(">Tools<");
     });
 
-    it("calls onAction when the reusable top bar action button is pressed", () => {
+    it("calls top bar open and action handlers", () => {
+        const onOpenTool = vi.fn();
         const onAction = vi.fn();
         const topBar = RightToolTopBar({
-            title: "Tools",
-            actionAriaLabel: "Hide right tool panel",
-            actionIconClassName: "fa-solid fa-chevron-right",
-            onAction,
+            activeTool: "editor",
+            openedTools: ["editor"],
+            onOpenTool,
+            onSelectTool: () => null,
+            onCloseTool: () => null,
+            action: {
+                ariaLabel: "Hide right tool panel",
+                iconClassName: "fa-solid fa-chevron-right",
+                onClick: onAction,
+            },
         });
+        const openButton = findElementByAriaLabel(topBar, "Open right tool");
         const actionButton = findElementByAriaLabel(topBar, "Hide right tool panel");
 
+        expect(openButton.props.onClick).toBeTypeOf("function");
+        openButton.props.onClick?.();
         expect(actionButton.props.onClick).toBeTypeOf("function");
         actionButton.props.onClick?.();
 
+        expect(onOpenTool).toHaveBeenCalledWith("browser");
         expect(onAction).toHaveBeenCalledTimes(1);
     });
 
@@ -194,7 +216,7 @@ describe("RightToolPanel parts", () => {
         expect(markup).not.toContain("Terminal");
     });
 
-    it("marks active tabs and renders close buttons", () => {
+    it("marks active tabs, uses pill styling, and renders close buttons", () => {
         const markup = renderToStaticMarkup(
             <RightToolTabs
                 openedTools={["editor", "browser"]}
@@ -204,11 +226,34 @@ describe("RightToolPanel parts", () => {
             />
         );
 
+        expect(markup).toContain('aria-label="Right tool tabs"');
         expect(markup).toContain('aria-label="Select Editor"');
         expect(markup).toContain('aria-label="Select Browser"');
         expect(markup).toContain('aria-current="page"');
         expect(markup).toContain('aria-label="Close Editor"');
         expect(markup).toContain('aria-label="Close Browser"');
+        expect(markup).toContain("rounded-full");
+    });
+
+    it("calls select and close handlers from tab pills", () => {
+        const onSelectTool = vi.fn();
+        const onCloseTool = vi.fn();
+        const tabs = RightToolTabs({
+            openedTools: ["editor", "browser"],
+            activeTool: "browser",
+            onSelectTool,
+            onCloseTool,
+        });
+        const selectEditor = findElementByAriaLabel(tabs, "Select Editor");
+        const closeBrowser = findElementByAriaLabel(tabs, "Close Browser");
+
+        expect(selectEditor.props.onClick).toBeTypeOf("function");
+        selectEditor.props.onClick?.();
+        expect(closeBrowser.props.onClick).toBeTypeOf("function");
+        closeBrowser.props.onClick?.();
+
+        expect(onSelectTool).toHaveBeenCalledWith("editor");
+        expect(onCloseTool).toHaveBeenCalledWith("browser");
     });
 
     it("renders the active tool content as a standalone export", () => {
@@ -226,6 +271,7 @@ describe("RightToolPanel parts", () => {
                     activeTool: "editor",
                     magnified: true,
                 }}
+                onOpenTool={() => null}
                 onSelectTool={() => null}
                 onCloseTool={() => null}
                 onFocusPanel={() => null}
@@ -240,8 +286,11 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain("--magnified-block-blur:4px");
         expect(markup).toContain("var(--zindex-layout-magnified-node");
         expect(markup).toContain('aria-label="Exit magnified right tool panel"');
+        expect(markup).toContain('aria-label="Right tool tabs"');
+        expect(markup).toContain('aria-label="Open right tool"');
         expect(markup).toContain("Right Editor Workbench");
         expect(markup).toContain('aria-label="Select Browser"');
+        expect(markup).not.toContain(">Tools<");
     });
 
     it("calls onExit when the magnified overlay exit button is pressed", () => {
@@ -253,6 +302,7 @@ describe("RightToolPanel parts", () => {
                 activeTool: "editor",
                 magnified: true,
             },
+            onOpenTool: () => null,
             onSelectTool: () => null,
             onCloseTool: () => null,
             onFocusPanel: () => null,
@@ -278,6 +328,7 @@ describe("RightToolPanel parts", () => {
                 activeTool: "editor",
                 magnified: true,
             },
+            onOpenTool: () => null,
             onSelectTool: () => null,
             onCloseTool: () => null,
             onFocusPanel: () => null,
