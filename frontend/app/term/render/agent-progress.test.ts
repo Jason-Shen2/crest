@@ -1064,17 +1064,13 @@ describe("AgentProgressView", () => {
         expect(html).toContain("-1");
         expect(html).toContain('data-agent-progress-change-hunk="frontend/app/term/render/agent-progress-view.tsx:1"');
         expect(html).toContain("function StageOverview");
-        expect(html).toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
-        expect(html).toContain("View diff");
-        expect(html).toContain('disabled=""');
-        expect(html).toContain('aria-disabled="true"');
-        expect(html).toContain('title="Diff viewing is not available yet."');
-        expect(html).toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
-        expect(html).toContain("Explain");
-        expect(html).toContain('title="Explanation is not available yet."');
+        expect(html).not.toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(html).not.toContain(">View diff<");
+        expect(html).not.toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(html).not.toContain(">Explain<");
     });
 
-    it("enables change review hunk actions only when callbacks are provided", () => {
+    it("renders change review hunk actions only when callbacks are provided", () => {
         const progress = {
             stages: [
                 {
@@ -1129,15 +1125,15 @@ describe("AgentProgressView", () => {
             })
         );
 
-        expect(disabledHtml).toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
-        expect(disabledHtml).toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
-        expect(disabledHtml).toContain('disabled=""');
-        expect(disabledHtml).toContain('aria-disabled="true"');
-        expect(disabledHtml).toContain('title="Diff viewing is not available yet."');
-        expect(disabledHtml).toContain('title="Explanation is not available yet."');
+        expect(disabledHtml).not.toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(disabledHtml).not.toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(disabledHtml).not.toContain(">View diff<");
+        expect(disabledHtml).not.toContain(">Explain<");
 
         expect(enabledHtml).toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
         expect(enabledHtml).toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(enabledHtml).toContain(">View diff<");
+        expect(enabledHtml).toContain(">Explain<");
         expect(enabledHtml).not.toContain('disabled=""');
         expect(enabledHtml).not.toContain('aria-disabled="true"');
         expect(enabledHtml).not.toContain('title="Diff viewing is not available yet."');
