@@ -63,6 +63,12 @@ export type RightToolTabsProps = {
     onCloseTool: (tool: RightToolId) => void;
 };
 
+export type RightToolOpenMenuProps = {
+    openedTools: RightToolId[];
+    onOpenTool: (tool: RightToolId) => void;
+    initiallyOpen?: boolean;
+};
+
 export type RightToolTopBarProps = {
     activeTool?: RightToolId;
     openedTools: RightToolId[];
@@ -140,7 +146,7 @@ export function RightToolTopBar({
     onCloseTool,
     action,
 }: RightToolTopBarProps) {
-    const nextTool = RightToolIds.find((tool) => !openedTools.includes(tool));
+    const hasAvailableTools = RightToolIds.some((tool) => !openedTools.includes(tool));
     return (
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1.5">
             <RightToolTabs
@@ -149,15 +155,8 @@ export function RightToolTopBar({
                 onSelectTool={onSelectTool}
                 onCloseTool={onCloseTool}
             />
-            {nextTool != null ? (
-                <button
-                    type="button"
-                    aria-label="Open right tool"
-                    className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
-                    onClick={() => onOpenTool(nextTool)}
-                >
-                    <i className="fa-solid fa-plus" />
-                </button>
+            {hasAvailableTools ? (
+                <RightToolOpenMenu openedTools={openedTools} onOpenTool={onOpenTool} />
             ) : null}
             {action != null ? (
                 <div aria-label="Right tool panel actions" className="ml-auto flex shrink-0 items-center gap-1">
@@ -165,6 +164,45 @@ export function RightToolTopBar({
                 </div>
             ) : null}
         </div>
+    );
+}
+
+export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: RightToolOpenMenuProps) {
+    const availableTools = RightToolIds.filter((tool) => !openedTools.includes(tool));
+    if (availableTools.length === 0) {
+        return null;
+    }
+    return (
+        <details className="relative shrink-0" open={initiallyOpen ? true : undefined}>
+            <summary
+                aria-label="Open right tool"
+                className="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded-md border border-border bg-black/20 text-muted transition-colors hover:bg-hoverbg hover:text-white [&::-webkit-details-marker]:hidden"
+            >
+                <i className="fa-solid fa-plus" />
+            </summary>
+            <div
+                role="menu"
+                aria-label="Open right tool menu"
+                className="absolute right-0 top-8 z-50 flex min-w-44 flex-col gap-1 rounded-md border border-border bg-panelbg p-1 shadow-xl"
+            >
+                {availableTools.map((tool) => {
+                    const metadata = RightToolMetadataById[tool];
+                    return (
+                        <button
+                            key={tool}
+                            type="button"
+                            role="menuitem"
+                            aria-label={`Open ${metadata.label} right tool`}
+                            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-secondary transition-colors hover:bg-hoverbg hover:text-white"
+                            onClick={() => onOpenTool(tool)}
+                        >
+                            <i className={cn("w-4 text-center text-[11px]", metadata.icon)} />
+                            <span>{metadata.label}</span>
+                        </button>
+                    );
+                })}
+            </div>
+        </details>
     );
 }
 
@@ -181,20 +219,21 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                     <div
                         key={tool}
                         className={cn(
-                            "flex min-w-0 items-center rounded-full border text-xs transition-colors",
+                            "flex min-w-0 items-center rounded-md border text-xs transition-colors",
                             active
-                                ? "border-accent/40 bg-accent/10 text-white"
-                                : "border-transparent bg-transparent text-secondary hover:bg-hoverbg hover:text-white"
+                                ? "border-border bg-hoverbg text-white"
+                                : "border-transparent bg-black/20 text-secondary hover:border-border hover:bg-hoverbg hover:text-white"
                         )}
                     >
                         <button
                             type="button"
                             aria-label={`Select ${metadata.label}`}
                             aria-current={active ? "page" : undefined}
-                            className="min-w-0 cursor-pointer truncate py-1 pl-2 pr-1"
+                            className="flex min-w-0 cursor-pointer items-center gap-1.5 py-1 pl-2 pr-1"
                             onClick={() => onSelectTool(tool)}
                         >
-                            {metadata.label}
+                            <i className={cn("shrink-0 text-[11px]", metadata.icon)} />
+                            <span className="truncate">{metadata.label}</span>
                         </button>
                         <button
                             type="button"
