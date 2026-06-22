@@ -46,28 +46,30 @@ Mature coding products do not rely purely on free-form model output for code-cha
 - Codex accepts model-authored patch/tool input, then parses and applies it through a strict patch grammar. The displayed diff comes from parsed patch deltas or `git diff`, not from prose.
 - Claude-like editor agents, Cline, Aider, and OpenCode generally use snapshots, editor diffs, tool metadata, or git diffs for changed files and hunks. Model-authored text is used for summaries, completion notes, or commit messages.
 
-Crest should follow the same split: system-derived change evidence is authoritative; agent-authored narrative makes it understandable.
+Crest should follow the same split: edit tools and system bookkeeping produce authoritative change evidence; the agent produces a structured outline that makes those changes understandable.
 
 ## Mental Model
 
-The review pipeline has three named layers:
+The review pipeline has four named layers:
 
-- `ChangeSet`: the authoritative code-change inventory produced from tools, patch application, workspace snapshots, or git diff.
-- `ChangeNarrative`: the agent-authored semantic organization of those changes.
-- `ChangeReview`: the validated UI model produced by merging `ChangeSet` and `ChangeNarrative`.
+- `ChangeOperation`: one atomic edit record produced when an edit tool applies a patch, write, rename, delete, or create operation.
+- `ChangeSet`: the authoritative per-run code-change inventory produced by normalizing and merging `ChangeOperation` records.
+- `ChangeOutline`: the agent-authored review outline that groups real changes by feature/module, file, and meaningful code region.
+- `ChangeReview`: the validated UI model produced by binding `ChangeSet` and `ChangeOutline`.
 
 Flow:
 
 ```text
-Tool edits / patch application / git diff
+Edit tools
+  -> ChangeOperation
   -> ChangeSet
-  -> ChangeNarrative
+  -> ChangeOutline
   -> validate + merge
   -> ChangeReview
   -> Change Review UI
 ```
 
-`ChangeSet` answers "what changed." `ChangeNarrative` answers "how should the user understand it." `ChangeReview` is the safe, renderable result.
+`ChangeOperation` answers "what did this edit tool just apply." `ChangeSet` answers "what did this agent run change." `ChangeOutline` answers "how should the user understand these changes." `ChangeReview` is the safe, renderable result.
 
 ## UI Hierarchy
 
@@ -95,7 +97,7 @@ Each file row should show:
 
 - Clickable file chip using the real path.
 - Add/delete stats from `ChangeSet`.
-- File-level summary from `ChangeNarrative` when valid.
+- File-level summary from `ChangeOutline` when valid.
 - `Open file` entry.
 - `View diff` entry.
 - Expand control only when meaningful code-block summaries exist.
@@ -117,16 +119,31 @@ The block layer is not a replacement for line-by-line diff review. It is a seman
 
 ### Detailed Diff
 
-`View diff` should open the authoritative diff view for that file or hunk. The diff content and line numbers come from `ChangeSet`, not from `ChangeNarrative`.
+`View diff` should open the authoritative diff view for that file or hunk. The diff content and line numbers come from `ChangeSet`, not from `ChangeOutline`.
 
 ## Data Model
 
 The exact TypeScript names can evolve during implementation, but the domain boundaries should remain stable.
 
 ```ts
+interface ChangeOperation {
+    id: string;
+    runId: string;
+    toolCallId?: string;
+    kind: "patch" | "write" | "create" | "delete" | "rename";
+    path: string;
+    previousPath?: string;
+    patch?: string;
+    beforeContentHash?: string;
+    afterContentHash?: string;
+}
+```
+
+```ts
 interface ChangeSet {
     id: string;
-    source: "tool-edits" | "patch" | "snapshot" | "git-diff";
+    runId: string;
+    source: "change-operations" | "snapshot-reconcile" | "git-diff-reconcile";
     baseRef?: string;
     headRef?: string;
     files: ChangeSetFile[];
@@ -155,25 +172,25 @@ interface ChangeSetHunk {
 ```
 
 ```ts
-interface ChangeNarrative {
+interface ChangeOutline {
     changeSetId: string;
-    modules: ChangeNarrativeModule[];
+    modules: ChangeOutlineModule[];
 }
 
-interface ChangeNarrativeModule {
+interface ChangeOutlineModule {
     id?: string;
     title: string;
     summary: string;
-    files: ChangeNarrativeFile[];
+    files: ChangeOutlineFile[];
 }
 
-interface ChangeNarrativeFile {
+interface ChangeOutlineFile {
     path: string;
     summary?: string;
-    hunkGroups?: ChangeNarrativeHunkGroup[];
+    hunkGroups?: ChangeOutlineHunkGroup[];
 }
 
-interface ChangeNarrativeHunkGroup {
+interface ChangeOutlineHunkGroup {
     title: string;
     summary: string;
     impact?: string;
@@ -219,7 +236,7 @@ interface ChangeReviewHunkGroup {
 }
 
 interface ChangeReviewWarning {
-    kind: "missing-narrative" | "unknown-file" | "unknown-hunk" | "empty-module" | "stale-narrative";
+    kind: "missing-outline" | "unknown-file" | "unknown-hunk" | "empty-module" | "stale-outline";
     message: string;
 }
 ```
@@ -235,7 +252,9 @@ interface ChangeReviewWarning {
 - Diff previews and full diff lookup.
 - Whether a file can be opened.
 
-`ChangeNarrative` is allowed to provide:
+`ChangeSet` should primarily be built from `ChangeOperation` records. Workspace snapshots and `git diff` are reconciliation paths for cases where an external command, formatter, interrupted run, or legacy edit path changed files without complete operation records.
+
+`ChangeOutline` is allowed to provide:
 
 - Module grouping.
 - Module titles and summaries.
@@ -243,7 +262,7 @@ interface ChangeReviewWarning {
 - Hunk group titles, summaries, and impact text.
 - Suggested focus for `Explain`.
 
-`ChangeNarrative` is not allowed to provide:
+`ChangeOutline` is not allowed to provide:
 
 - New file paths that are not in `ChangeSet`.
 - Add/delete counts.
@@ -253,23 +272,23 @@ interface ChangeReviewWarning {
 
 ## Merge And Validation
 
-The merge step converts `ChangeSet + ChangeNarrative` into `ChangeReview`.
+The merge step converts `ChangeSet + ChangeOutline` into `ChangeReview`.
 
 Validation rules:
 
-- Ignore narrative files whose paths do not exist in `ChangeSet`.
+- Ignore outline files whose paths do not exist in `ChangeSet`.
 - Ignore hunk IDs that do not exist for that file.
 - Drop modules that contain no valid files after validation.
-- Compute module and hunk-group stats from `ChangeSet`, never from narrative.
+- Compute module and hunk-group stats from `ChangeSet`, never from outline.
 - Put valid changed files that are not referenced by any valid module into `ungroupedFiles`.
-- If the whole narrative is missing or invalid, synthesize a conservative `ChangeReview` grouped by changed file.
-- If the narrative references a stale `changeSetId`, render the `ChangeSet` fallback and record a `stale-narrative` warning.
+- If the whole outline is missing or invalid, synthesize a conservative `ChangeReview` grouped by changed file.
+- If the outline references a stale `changeSetId`, render the `ChangeSet` fallback and record a `stale-outline` warning.
 
 Fallback copy must stay conservative. It may say `Updated frontend/app/term/render/agent-progress-view.tsx`; it must not infer feature intent that the agent did not provide.
 
 ## Agent Authoring Contract
 
-The agent should produce `ChangeNarrative` after meaningful code edits, preferably near the same boundary where it would emit a progress checkpoint for `更新代码`.
+The agent should produce `ChangeOutline` after meaningful code edits, preferably near the same boundary where it would emit a progress checkpoint for `更新代码`.
 
 Authoring rules:
 
@@ -283,6 +302,45 @@ Authoring rules:
 The system prompt should frame this as a review aid, not as an opportunity to narrate private reasoning:
 
 > When you finish meaningful code edits, organize the real changed files into user-facing change review modules. Use only file paths and hunk IDs supplied by the system. Explain the purpose of each module and meaningful code region briefly. Do not invent files, diff stats, or line numbers.
+
+## Model Interaction Flow
+
+The default flow has one additional model interaction after the editing phase. `ChangeReview` itself is not model-generated.
+
+```text
+1. Agent model loop performs the task
+   - reads files
+   - edits files
+   - runs validation
+   - emits progress checkpoints
+
+2. Edit tools record ChangeOperation
+   - no model call
+   - records path, operation kind, patch or before/after identity, toolCallId, and runId
+
+3. ChangeSetBuilder builds ChangeSet
+   - no model call
+   - merges operations, computes hunks and stats, and reconciles formatter or external command edits when needed
+
+4. Outline generation model call creates ChangeOutline
+   - input: user task, compact agent context, progress checkpoints, validation result, and ChangeSet summary
+   - output: module/file/hunk grouping with short explanations
+
+5. System builds ChangeReview
+   - no model call
+   - validates outline references, computes stats from ChangeSet, and fills fallback sections
+
+6. UI renders ChangeReview
+   - modules, files, code blocks, View diff, and Explain
+```
+
+The outline generation call should receive compact evidence, not the entire raw trace:
+
+- Always include user task, changed file paths, file status, add/delete stats, hunk IDs, and short hunk previews.
+- Include progress checkpoints and validation results when they help explain intent.
+- Avoid full raw tool logs, hidden reasoning, and complete long diffs in the default call.
+
+`Explain` is a separate on-demand model interaction. It runs only after the user asks for local detail, using the selected file path, hunk IDs, diff content, and surrounding context.
 
 ## Relationship To Agent Progress
 
@@ -329,12 +387,12 @@ Run switching:
 
 ## Error Handling
 
-Missing narrative:
+Missing outline:
 
 - Render changed files from `ChangeSet` with conservative summaries.
 - Keep `View diff` and `Open file` available.
 
-Partial narrative:
+Partial outline:
 
 - Render valid modules.
 - Put unreferenced changed files into an `Other changes` section.
@@ -356,12 +414,12 @@ Large changes:
 
 Model and merge tests:
 
-- Builds `ChangeReview` from a complete valid narrative.
+- Builds `ChangeReview` from a complete valid outline.
 - Drops unknown file paths.
 - Drops unknown hunk IDs.
 - Computes all stats from `ChangeSet`.
 - Places ungrouped files into fallback sections.
-- Falls back cleanly when narrative is missing or stale.
+- Falls back cleanly when outline is missing or stale.
 
 Renderer tests:
 
@@ -375,15 +433,15 @@ Renderer tests:
 Regression tests:
 
 - Does not render raw tool names as default progress UI.
-- Does not accept narrative-only invented files.
+- Does not accept outline-only invented files.
 - Does not duplicate review content as assistant markdown.
 
 ## Implementation Boundaries
 
 First implementation should focus on a single stable path:
 
-- Derive `ChangeSet` from the existing edit/diff source available after agent file changes.
-- Allow `ChangeNarrative` to be supplied by agent content or run metadata.
+- Derive `ChangeSet` primarily from `ChangeOperation` records produced by edit tools.
+- Allow `ChangeOutline` to be supplied by an outline generation call, agent content, or run metadata.
 - Add a pure merge function that returns `ChangeReview`.
 - Render `ChangeReview` in the existing progress surface or previewed review panel.
 - Keep the current mock hierarchy intact while replacing mock data with validated data.
@@ -393,7 +451,7 @@ The implementation plan can decide whether the richer review UI lives inside `Ag
 ## Open Questions For Implementation Plan
 
 - Which existing Crest layer should own `ChangeSet` extraction for each edit mechanism?
-- Whether `ChangeNarrative` should be emitted inline with assistant content or stored as run metadata.
+- Whether `ChangeOutline` should be emitted by a dedicated outline generation call, inline with assistant content, or stored as run metadata.
 - Whether `View diff` initially opens file-level diff only or supports hunk-level anchoring in the first version.
 - How many code-block summaries should be visible per file before collapsing behind `Show more`.
 
