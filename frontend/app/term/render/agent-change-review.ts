@@ -133,11 +133,20 @@ export function parseUnifiedPatchHunks(patch: string): ChangeSetHunk[] {
     const hunkCountsByPath = new Map<string, number>();
     let currentPath = "";
     let currentHunk: ChangeSetHunk;
+    let pendingOldPath = "";
 
     for (const line of patch.split(/\r?\n/)) {
-        const nextPath = parsePatchPath(line);
+        const oldPath = parseOldPatchPath(line);
+        if (oldPath) {
+            pendingOldPath = oldPath;
+            currentHunk = undefined;
+            continue;
+        }
+
+        const nextPath = parseNewPatchPath(line, pendingOldPath);
         if (nextPath) {
             currentPath = nextPath;
+            pendingOldPath = "";
             currentHunk = undefined;
             continue;
         }
@@ -239,22 +248,31 @@ export function buildChangeReview(changeSet: ChangeSet, outline?: ChangeOutline)
         );
     }
 
+    const groupedWholeFilePaths = new Set<string>();
+    const groupedHunkIds = new Set<string>();
     const modules = (outline?.modules ?? []).map((module) => ({
         id: module.id,
         title: module.title,
         ...(module.summary ? { summary: module.summary } : {}),
         files: module.files.map((outlineFile) => {
             const file = findFile(changeSet, outlineFile.path);
-            const hunks = outlineFile.hunkIds
-                ? outlineFile.hunkIds.map((hunkId) => findHunk(changeSet, hunkId))
-                : file.hunks;
+            if (!outlineFile.hunkIds) {
+                groupedWholeFilePaths.add(file.path);
+                return reviewFile(file, file.hunks);
+            }
+            for (const hunkId of outlineFile.hunkIds) {
+                groupedHunkIds.add(hunkId);
+            }
+            const hunks = outlineFile.hunkIds.map((hunkId) => findHunk(changeSet, hunkId));
             return reviewFile(file, hunks);
         }),
     }));
-    const groupedPaths = new Set(modules.flatMap((module) => module.files.map((file) => file.path)));
-    const ungroupedFiles = changeSet.files
-        .filter((file) => !groupedPaths.has(file.path))
-        .map((file) => reviewFile(file, file.hunks));
+    const ungroupedFiles = changeSet.files.flatMap((file) => {
+        if (groupedWholeFilePaths.has(file.path)) return [];
+        if (file.hunks.length === 0) return [reviewFile(file, file.hunks)];
+        const ungroupedHunks = file.hunks.filter((hunk) => !groupedHunkIds.has(hunk.id));
+        return ungroupedHunks.length === 0 ? [] : [reviewFile(file, ungroupedHunks)];
+    });
     return makeReview(changeSet, modules, ungroupedFiles, []);
 }
 
@@ -295,10 +313,18 @@ function isChangeOperation(value: unknown): value is ChangeOperation {
     return typeof candidate.id === "string" && typeof candidate.kind === "string" && typeof candidate.path === "string";
 }
 
-function parsePatchPath(line: string): string {
-    if (!line.startsWith("+++ ")) return "";
+function parseOldPatchPath(line: string): string {
+    if (!line.startsWith("--- ")) return "";
     const rawPath = line.slice(4).trim();
     if (!rawPath || rawPath === "/dev/null") return "";
+    return rawPath.replace(/^a\//, "");
+}
+
+function parseNewPatchPath(line: string, fallbackDeletedPath: string): string {
+    if (!line.startsWith("+++ ")) return "";
+    const rawPath = line.slice(4).trim();
+    if (!rawPath) return "";
+    if (rawPath === "/dev/null") return fallbackDeletedPath;
     return rawPath.replace(/^b\//, "");
 }
 
