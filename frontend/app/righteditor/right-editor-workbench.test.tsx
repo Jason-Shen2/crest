@@ -99,6 +99,10 @@ function getVisibleText(markup: string): string {
     return markup.replace(/<[^>]*>/g, "");
 }
 
+function countMatches(markup: string, pattern: RegExp): number {
+    return markup.match(pattern)?.length ?? 0;
+}
+
 function mountCapturedEditor(): (event: KeyDownEvent) => void {
     let keyDownHandler: (event: KeyDownEvent) => void;
     mockWorkbench.codeEditorProps[0].onMount({
@@ -167,11 +171,7 @@ describe("RightEditorWorkbench", () => {
         expect(fileTabsMarkup).toContain("app.ts");
         expect(fileTabsMarkup).toContain("src");
         expect(fileTabsMarkup).toContain("test");
-        expect(fileTabsMarkup).toContain("h-8");
-        expect(fileTabsMarkup).toContain("basis-0");
-        expect(fileTabsMarkup).toContain("bg-[#18181b]");
-        expect(fileTabsMarkup).toContain("outline-solid");
-        expect(fileTabsMarkup).toContain("outline-1");
+        expect(fileTabsMarkup).toContain('data-overflow-behavior="horizontal-scroll"');
         const visibleText = getVisibleText(fileTabsMarkup);
         expect(visibleText).not.toContain("/repo/");
         expect(visibleText).not.toContain("src/");
@@ -186,9 +186,33 @@ describe("RightEditorWorkbench", () => {
         const markup = renderWithStore(<RightEditorWorkbench model={model} />);
         const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
 
-        expect(fileTabsMarkup).toContain("group-hover/tab:opacity-100");
-        expect(fileTabsMarkup).toContain("opacity-0");
-        expect(fileTabsMarkup).toContain("opacity-100");
+        expect(fileTabsMarkup).toContain('data-close-visibility="hover"');
+        expect(fileTabsMarkup).toContain('data-close-visibility="always"');
+    });
+
+    it("keeps every file tab select and close control rendered when many tabs are open", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        const paths = [
+            "/repo/src/app.ts",
+            "/repo/test/app.ts",
+            "/repo/docs/readme.md",
+            "/repo/packages/web/index.tsx",
+            "/repo/scripts/build.ts",
+        ];
+        for (const path of paths) {
+            await model.openFile(path, "/repo");
+        }
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+        const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
+
+        expect(fileTabsMarkup).toContain('data-overflow-behavior="horizontal-scroll"');
+        expect(countMatches(fileTabsMarkup, /aria-label="Select /g)).toBe(paths.length);
+        expect(countMatches(fileTabsMarkup, /aria-label="Close /g)).toBe(paths.length);
+        for (const path of paths) {
+            expect(fileTabsMarkup).toContain(`aria-label="Select ${path}"`);
+            expect(fileTabsMarkup).toContain(`aria-label="Close ${path}"`);
+        }
     });
 
     it("keeps full paths discoverable for same-name tabs without showing them as visible tab text", async () => {

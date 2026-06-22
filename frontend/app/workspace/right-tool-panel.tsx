@@ -227,8 +227,9 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
     return (
         <nav
             aria-label="Right tool tabs"
-            className="flex min-w-0 max-w-full items-center gap-1 overflow-hidden"
-            style={{ width: `min(100%, ${openedTools.length * 136}px)` }}
+            data-overflow-behavior="horizontal-scroll"
+            className="flex min-w-0 max-w-full shrink items-center gap-1 overflow-x-auto overflow-y-hidden"
+            style={{ width: "max-content", maxWidth: `min(100%, ${openedTools.length * 136}px)` }}
         >
             {openedTools.map((tool) => {
                 const metadata = RightToolMetadataById[tool];
@@ -256,6 +257,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                         <button
                             type="button"
                             aria-label={`Close ${metadata.label}`}
+                            data-close-visibility={active ? "always" : "hover"}
                             className={cn(
                                 "mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:opacity-100",
                                 active ? "opacity-100" : "opacity-0 group-hover/tab:opacity-100"
