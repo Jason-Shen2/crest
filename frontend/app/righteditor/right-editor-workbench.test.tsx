@@ -73,13 +73,13 @@ function renderWithStore(element: ReactElement): string {
 }
 
 function getRightEditorFileTabsMarkup(markup: string): string {
-    const tabBarStart = markup.indexOf(
-        '<div class="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">'
-    );
-    const saveButtonStart = markup.indexOf('<button type="button" aria-label="Save ', tabBarStart);
+    const labelIndex = markup.indexOf('aria-label="Right editor file tabs"');
+    const tabBarStart = markup.lastIndexOf("<div", labelIndex);
+    const editorStart = markup.indexOf('<div class="min-h-0 flex-1"', labelIndex);
+    expect(labelIndex).toBeGreaterThan(-1);
     expect(tabBarStart).toBeGreaterThan(-1);
-    expect(saveButtonStart).toBeGreaterThan(tabBarStart);
-    return markup.slice(tabBarStart, saveButtonStart);
+    expect(editorStart).toBeGreaterThan(tabBarStart);
+    return markup.slice(tabBarStart, editorStart);
 }
 
 function mountCapturedEditor(): (event: KeyDownEvent) => void {
@@ -109,9 +109,18 @@ describe("RightEditorWorkbench", () => {
     it("renders open file tabs", async () => {
         const model = RightEditorModel.getInstance(rpc);
         await model.openFile("/repo/src/app.ts", "/repo");
+        await model.openFile("/repo/test/app.ts", "/repo");
+        model.updateText("/repo/test/app.ts", "dirty");
+
         const markup = renderWithStore(<RightEditorWorkbench model={model} />);
-        expect(markup).toContain("app.ts");
+        expect(markup).toContain('aria-label="Right editor file tabs"');
         expect(markup).toContain('aria-label="Save app.ts"');
+        const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
+        expect(fileTabsMarkup).toContain("app.ts");
+        expect(fileTabsMarkup).toContain("src");
+        expect(fileTabsMarkup).toContain("test");
+        expect(fileTabsMarkup).toContain("●");
+        expect(fileTabsMarkup).not.toContain("/repo/");
     });
 
     it("returns relative parent suffixes for right editor tabs", () => {
@@ -119,8 +128,8 @@ describe("RightEditorWorkbench", () => {
             .getRightEditorTabPathSuffix;
 
         expect(getRightEditorTabPathSuffix).toBeTypeOf("function");
-        expect(getRightEditorTabPathSuffix?.("/repo/src/app.ts", "/repo")).toBe("src/");
-        expect(getRightEditorTabPathSuffix?.("/repo/packages/web/src/app.ts", "/repo")).toBe("packages/web/src/");
+        expect(getRightEditorTabPathSuffix?.("/repo/src/app.ts", "/repo")).toBe("src");
+        expect(getRightEditorTabPathSuffix?.("/repo/packages/web/src/app.ts", "/repo")).toBe("packages/web/src");
         expect(getRightEditorTabPathSuffix?.("/repo/app.ts", "/repo")).toBe("");
     });
 
@@ -133,8 +142,8 @@ describe("RightEditorWorkbench", () => {
         const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
 
         expect(fileTabsMarkup).toContain("app.ts");
-        expect(fileTabsMarkup).toContain("src/");
-        expect(fileTabsMarkup).toContain("test/");
+        expect(fileTabsMarkup).toContain("src");
+        expect(fileTabsMarkup).toContain("test");
         expect(fileTabsMarkup).not.toContain("/repo/");
     });
 
