@@ -509,8 +509,6 @@ function ChangeReviewHunk({
     onViewDiff?: (params: { filePath: string; hunkIds?: string[] }) => void;
 }) {
     const lineRange = `-${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines}`;
-    const canViewDiff = onViewDiff != null;
-    const canExplainChange = onExplainChange != null;
     return (
         <div className="rounded-md border border-secondary/10 bg-black/10 px-2 py-1" data-agent-progress-change-hunk={hunk.id}>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -519,40 +517,32 @@ function ChangeReviewHunk({
                 <span className="text-[var(--ansi-green)]">+{hunk.additions}</span>
                 <span className="text-rose-300">-{hunk.deletions}</span>
             </div>
-            <div className="mt-1 flex flex-wrap gap-1">
-                <button
-                    type="button"
-                    disabled={!canViewDiff}
-                    aria-disabled={!canViewDiff}
-                    title={canViewDiff ? "View diff for this hunk." : "Diff viewing is not available yet."}
-                    onClick={() => onViewDiff?.({ filePath, hunkIds: [hunk.id] })}
-                    className={cn(
-                        "rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px]",
-                        canViewDiff
-                            ? "cursor-pointer text-secondary transition-colors hover:border-[var(--accent-color)]/50 hover:text-white"
-                            : "cursor-default text-secondary/70"
+            {(onViewDiff || onExplainChange) && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                    {onViewDiff && (
+                        <button
+                            type="button"
+                            title="View diff for this hunk."
+                            onClick={() => onViewDiff({ filePath, hunkIds: [hunk.id] })}
+                            className="rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px] cursor-pointer text-secondary transition-colors hover:border-[var(--accent-color)]/50 hover:text-white"
+                            data-agent-progress-change-hunk-diff={hunk.id}
+                        >
+                            View diff
+                        </button>
                     )}
-                    data-agent-progress-change-hunk-diff={hunk.id}
-                >
-                    View diff
-                </button>
-                <button
-                    type="button"
-                    disabled={!canExplainChange}
-                    aria-disabled={!canExplainChange}
-                    title={canExplainChange ? "Explain this hunk." : "Explanation is not available yet."}
-                    onClick={() => onExplainChange?.({ filePath, hunkIds: [hunk.id] })}
-                    className={cn(
-                        "rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px]",
-                        canExplainChange
-                            ? "cursor-pointer text-secondary transition-colors hover:border-[var(--accent-color)]/50 hover:text-white"
-                            : "cursor-default text-secondary/70"
+                    {onExplainChange && (
+                        <button
+                            type="button"
+                            title="Explain this hunk."
+                            onClick={() => onExplainChange({ filePath, hunkIds: [hunk.id] })}
+                            className="rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px] cursor-pointer text-secondary transition-colors hover:border-[var(--accent-color)]/50 hover:text-white"
+                            data-agent-progress-change-hunk-explain={hunk.id}
+                        >
+                            Explain
+                        </button>
                     )}
-                    data-agent-progress-change-hunk-explain={hunk.id}
-                >
-                    Explain
-                </button>
-            </div>
+                </div>
+            )}
         </div>
     );
 }
