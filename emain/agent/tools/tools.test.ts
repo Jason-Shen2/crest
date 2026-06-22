@@ -96,6 +96,12 @@ describe("write", () => {
         const result = await tool.execute("tc-1", { path: "new.txt", content: "hello" });
         expect(await fs.readFile(path.join(tmpDir, "new.txt"), "utf8")).toBe("hello");
         expect(text(result)).toContain("5 bytes");
+        expect(result.details.changeOperation).toMatchObject({
+            toolCallId: "tc-1",
+            kind: "create",
+            path: "new.txt",
+            patchStatus: "complete",
+        });
     });
 
     it("creates parent directories on demand", async () => {
