@@ -162,11 +162,11 @@ describe("RightToolPanel parts", () => {
                 onOpenTool={() => null}
                 onSelectTool={() => null}
                 onCloseTool={() => null}
-                action={{
-                    ariaLabel: "Hide right tool panel",
-                    iconClassName: "fa-solid fa-chevron-right",
-                    onClick: onAction,
-                }}
+                action={
+                    <button type="button" aria-label="Hide right tool panel" onClick={onAction}>
+                        <i className="fa-solid fa-chevron-right" />
+                    </button>
+                }
             />
         );
 
@@ -187,11 +187,11 @@ describe("RightToolPanel parts", () => {
             onOpenTool,
             onSelectTool: () => null,
             onCloseTool: () => null,
-            action: {
-                ariaLabel: "Hide right tool panel",
-                iconClassName: "fa-solid fa-chevron-right",
-                onClick: onAction,
-            },
+            action: (
+                <button type="button" aria-label="Hide right tool panel" onClick={onAction}>
+                    <i className="fa-solid fa-chevron-right" />
+                </button>
+            ),
         });
         const openButton = findElementByAriaLabel(topBar, "Open right tool");
         const actionButton = findElementByAriaLabel(topBar, "Hide right tool panel");
@@ -233,6 +233,14 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-label="Close Editor"');
         expect(markup).toContain('aria-label="Close Browser"');
         expect(markup).toContain("rounded-full");
+    });
+
+    it("renders no tabs when no tools are open", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolTabs openedTools={[]} onSelectTool={() => null} onCloseTool={() => null} />
+        );
+
+        expect(markup).toBe("");
     });
 
     it("calls select and close handlers from tab pills", () => {

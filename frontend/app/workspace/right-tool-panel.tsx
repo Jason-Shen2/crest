@@ -8,7 +8,7 @@ import { RightEditorWorkbench } from "@/app/righteditor/right-editor-workbench";
 import { getSettingsKeyAtom } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
-import type { CSSProperties, FocusEvent } from "react";
+import type { CSSProperties, FocusEvent, ReactNode } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
 
 type RightToolMetadata = {
@@ -69,11 +69,7 @@ export type RightToolTopBarProps = {
     onOpenTool: (tool: RightToolId) => void;
     onSelectTool: (tool: RightToolId) => void;
     onCloseTool: (tool: RightToolId) => void;
-    action: {
-        ariaLabel: string;
-        iconClassName: string;
-        onClick: () => void;
-    };
+    action?: ReactNode;
 };
 
 export type RightToolContentProps = {
@@ -164,21 +160,19 @@ export function RightToolTopBar({
             >
                 <i className="fa-solid fa-plus" />
             </button>
-            <div aria-label="Right tool panel actions" className="ml-auto flex shrink-0 items-center gap-1">
-                <button
-                    type="button"
-                    aria-label={action.ariaLabel}
-                    className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
-                    onClick={action.onClick}
-                >
-                    <i className={action.iconClassName} />
-                </button>
-            </div>
+            {action != null ? (
+                <div aria-label="Right tool panel actions" className="ml-auto flex shrink-0 items-center gap-1">
+                    {action}
+                </div>
+            ) : null}
         </div>
     );
 }
 
 export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTool }: RightToolTabsProps) {
+    if (openedTools.length === 0) {
+        return null;
+    }
     return (
         <nav aria-label="Right tool tabs" className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
             {openedTools.map((tool) => {
@@ -328,11 +322,16 @@ export function RightToolPanelMagnifiedOverlayView({
                     onOpenTool,
                     onSelectTool,
                     onCloseTool,
-                    action: {
-                        ariaLabel: "Exit magnified right tool panel",
-                        iconClassName: "fa-solid fa-down-left-and-up-right-to-center",
-                        onClick: onExit,
-                    },
+                    action: (
+                        <button
+                            type="button"
+                            aria-label="Exit magnified right tool panel"
+                            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
+                            onClick={onExit}
+                        >
+                            <i className="fa-solid fa-down-left-and-up-right-to-center" />
+                        </button>
+                    ),
                 })}
                 <div className="min-h-0 flex-1 overflow-hidden">
                     <RightToolContent activeTool={state.activeTool} />
@@ -375,11 +374,16 @@ export function RightToolPanel({
                 onOpenTool,
                 onSelectTool,
                 onCloseTool,
-                action: {
-                    ariaLabel: "Hide right tool panel",
-                    iconClassName: "fa-solid fa-chevron-right",
-                    onClick: onHide,
-                },
+                action: (
+                    <button
+                        type="button"
+                        aria-label="Hide right tool panel"
+                        className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
+                        onClick={onHide}
+                    >
+                        <i className="fa-solid fa-chevron-right" />
+                    </button>
+                ),
             })}
             <div className="min-h-0 flex-1 overflow-hidden">
                 {hasOpenedTools ? (
