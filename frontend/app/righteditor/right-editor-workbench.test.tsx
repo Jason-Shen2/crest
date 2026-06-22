@@ -133,6 +133,7 @@ describe("RightEditorWorkbench", () => {
         expect(fileTabsMarkup).toContain("src");
         expect(fileTabsMarkup).toContain("test");
         expect(fileTabsMarkup).toContain("●");
+        expect(fileTabsMarkup).not.toContain("Save app.ts");
         expect(fileTabsMarkup).not.toContain("/repo/");
         expect(fileTabsMarkup).not.toContain("src/");
         expect(fileTabsMarkup).not.toContain("test/");

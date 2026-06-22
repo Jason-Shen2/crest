@@ -19,6 +19,31 @@ type RightEditorWorkbenchProps = {
     model: RightEditorModel;
 };
 
+function trimTrailingSlashes(path: string): string {
+    return path.replace(/\/+$/, "");
+}
+
+function dirname(path: string): string {
+    const normalizedPath = trimTrailingSlashes(path);
+    const idx = normalizedPath.lastIndexOf("/");
+    return idx > 0 ? normalizedPath.slice(0, idx) : "";
+}
+
+function stripLeadingSlash(path: string): string {
+    return path.replace(/^\/+/, "");
+}
+
+export function getRightEditorTabPathSuffix(path: string, workspaceRoot: string): string {
+    const parentPath = dirname(path);
+    if (!parentPath) return "";
+    const normalizedWorkspaceRoot = trimTrailingSlashes(workspaceRoot);
+    if (normalizedWorkspaceRoot && parentPath === normalizedWorkspaceRoot) return "";
+    if (normalizedWorkspaceRoot && parentPath.startsWith(`${normalizedWorkspaceRoot}/`)) {
+        return parentPath.slice(normalizedWorkspaceRoot.length + 1);
+    }
+    return basename(parentPath);
+}
+
 export function shouldStartRightEditorLsp(language: string, workspaceRoot: string): boolean {
     if (!workspaceRoot) return false;
     return (
@@ -116,34 +141,48 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
         );
     }
 
-    const displayName = basename(activeFile.path);
+    const displayName = basename(trimTrailingSlashes(activeFile.path));
+    const activeSuffix = getRightEditorTabPathSuffix(activeFile.path, activeFile.workspaceRoot || state.workspaceRoot);
+    const activeLabel = activeSuffix ? `${displayName} ${activeSuffix}` : displayName;
 
     return (
-        <div className="flex h-full min-h-0 flex-col bg-black/20">
-            <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">
+        <div className="flex h-full min-h-0 flex-col bg-[#111113]">
+            <div
+                aria-label="Right editor file tabs"
+                className="flex h-9 shrink-0 items-stretch overflow-hidden border-b border-[#27272a] bg-[#18181b] text-[12px]"
+            >
                 {state.openFiles.map((file) => {
                     const active = file.path === activeFile.path;
-                    const name = basename(file.path);
+                    const name = basename(trimTrailingSlashes(file.path));
+                    const suffix = getRightEditorTabPathSuffix(file.path, file.workspaceRoot || state.workspaceRoot);
                     const dirty = file.dirtyText != null;
                     return (
                         <div
                             key={file.path}
                             className={cn(
-                                "flex min-w-0 items-center rounded-md text-xs",
-                                active ? "bg-hoverbg text-white" : "text-secondary hover:bg-hoverbg hover:text-white"
+                                "flex min-w-0 max-w-56 items-center border-r border-[#2b2b30]",
+                                active
+                                    ? "bg-[#252529] text-[#f4f4f5]"
+                                    : "text-[#a1a1aa] hover:bg-[#202024] hover:text-[#f4f4f5]"
                             )}
                         >
                             <button
-                                className="min-w-0 cursor-pointer truncate px-2 py-1"
+                                className="flex min-w-0 cursor-pointer items-center gap-1.5 px-3 py-1.5"
                                 onClick={() => model.selectFile(file.path)}
+                                title={suffix ? `${name} ${suffix}` : name}
                             >
-                                {dirty ? "● " : ""}
-                                {name}
+                                <span className="truncate font-medium">{name}</span>
+                                {suffix ? (
+                                    <span className="truncate text-[10px] text-[#71717a]">
+                                        {stripLeadingSlash(suffix)}
+                                    </span>
+                                ) : null}
+                                {dirty ? <span className="text-[#d4d4d8]">●</span> : null}
                             </button>
                             <button
                                 type="button"
                                 aria-label={`Close ${name}`}
-                                className="cursor-pointer px-1.5 py-1 text-muted hover:text-white"
+                                className="mr-1 cursor-pointer rounded px-1.5 py-1 text-[#71717a] hover:bg-[#3f3f46] hover:text-[#f4f4f5]"
                                 onClick={() =>
                                     closeRightEditorFileWithConfirmation({
                                         file,
@@ -157,14 +196,6 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                         </div>
                     );
                 })}
-                <button
-                    type="button"
-                    aria-label={`Save ${displayName}`}
-                    className="ml-auto cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
-                    onClick={() => fireAndForget(() => model.saveFile(activeFile.path))}
-                >
-                    <i className="fa-solid fa-floppy-disk" />
-                </button>
             </div>
             <div className="min-h-0 flex-1">
                 <CodeEditor
@@ -203,9 +234,21 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                     model={activeMonacoModel}
                 />
             </div>
-            <div className="flex h-6 shrink-0 items-center justify-between border-t border-border px-2 text-[11px] text-secondary">
-                <span className="truncate">{activeFile.path}</span>
-                <span>{activeFile.saveStatus === "error" ? activeFile.error : activeFile.language}</span>
+            <div className="flex h-6 shrink-0 items-center justify-between gap-2 border-t border-[#27272a] bg-[#18181b] px-2 text-[11px] text-[#a1a1aa]">
+                <span className="min-w-0 truncate">{activeLabel}</span>
+                <div className="flex shrink-0 items-center gap-2">
+                    <span className="max-w-64 truncate">
+                        {activeFile.saveStatus === "error" ? activeFile.error : activeFile.language}
+                    </span>
+                    <button
+                        type="button"
+                        aria-label={`Save ${displayName}`}
+                        className="cursor-pointer rounded px-1.5 py-0.5 text-[#a1a1aa] hover:bg-[#2f2f35] hover:text-[#f4f4f5]"
+                        onClick={() => fireAndForget(() => model.saveFile(activeFile.path))}
+                    >
+                        <i className="fa-solid fa-floppy-disk" />
+                    </button>
+                </div>
             </div>
         </div>
     );
