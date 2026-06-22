@@ -188,6 +188,25 @@ describe("parseUnifiedPatchHunks", () => {
             },
         ]);
     });
+
+    it("uses the deleted file path for multi-file patches with +++ /dev/null", () => {
+        const multiFilePatch = `--- a/src/kept.ts
++++ b/src/kept.ts
+@@ -1 +1 @@
+-old
++new
+--- a/src/deleted.ts
++++ /dev/null
+@@ -1,2 +0,0 @@
+-gone
+-forever
+`;
+
+        expect(parseUnifiedPatchHunks(multiFilePatch).map((hunk) => [hunk.id, hunk.path, hunk.deletions])).toEqual([
+            ["src/kept.ts:1", "src/kept.ts", 1],
+            ["src/deleted.ts:1", "src/deleted.ts", 2],
+        ]);
+    });
 });
 
 describe("buildChangeSet", () => {
@@ -303,6 +322,37 @@ describe("buildChangeReview", () => {
         ]);
         expect(review.ungroupedFiles.map((file) => file.path)).toEqual(["src/virtual.ts"]);
         expect(review.warnings).toEqual([]);
+    });
+
+    it("keeps remaining file hunks ungrouped when outline references only some hunks", () => {
+        const changeSet = buildChangeSet([
+            {
+                id: "op-1",
+                kind: "patch",
+                path: "src/app.ts",
+                patch: Patch,
+                patchStatus: "complete",
+            },
+        ]);
+
+        const review = buildChangeReview(changeSet, {
+            modules: [
+                {
+                    id: "focused",
+                    title: "Focused review",
+                    files: [{ path: "src/app.ts", hunkIds: ["src/app.ts:2"] }],
+                },
+            ],
+        });
+
+        expect(review.modules[0].files[0].hunks.map((hunk) => hunk.id)).toEqual(["src/app.ts:2"]);
+        expect(review.ungroupedFiles).toEqual([
+            expect.objectContaining({
+                path: "src/app.ts",
+                hunks: [expect.objectContaining({ id: "src/app.ts:1" })],
+                stats: { hunks: 1, additions: 2, deletions: 1 },
+            }),
+        ]);
     });
 
     it("falls back to ungrouped files with warnings when an outline references missing paths or hunks", () => {
