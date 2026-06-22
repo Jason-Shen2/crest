@@ -40,6 +40,7 @@ import {
     RightToolPanelMagnifiedOverlay,
     RightToolPanelMagnifiedOverlayView,
     RightToolTabs,
+    RightToolTopBar,
 } from "./right-tool-panel";
 import { DefaultRightToolPanelState, RightToolPanelState } from "./right-tool-panel-state";
 
@@ -150,6 +151,38 @@ describe("RightToolPanel", () => {
 });
 
 describe("RightToolPanel parts", () => {
+    it("renders a reusable top bar with a title and action button", () => {
+        const onAction = vi.fn();
+        const markup = renderToStaticMarkup(
+            <RightToolTopBar
+                title="Tools"
+                actionAriaLabel="Hide right tool panel"
+                actionIconClassName="fa-solid fa-chevron-right"
+                onAction={onAction}
+            />
+        );
+
+        expect(markup).toContain("Tools");
+        expect(markup).toContain('aria-label="Hide right tool panel"');
+        expect(markup).toContain("fa-solid fa-chevron-right");
+    });
+
+    it("calls onAction when the reusable top bar action button is pressed", () => {
+        const onAction = vi.fn();
+        const topBar = RightToolTopBar({
+            title: "Tools",
+            actionAriaLabel: "Hide right tool panel",
+            actionIconClassName: "fa-solid fa-chevron-right",
+            onAction,
+        });
+        const actionButton = findElementByAriaLabel(topBar, "Hide right tool panel");
+
+        expect(actionButton.props.onClick).toBeTypeOf("function");
+        actionButton.props.onClick?.();
+
+        expect(onAction).toHaveBeenCalledTimes(1);
+    });
+
     it("exports launcher cards for the supported tools only", () => {
         const markup = renderToStaticMarkup(
             <RightToolLauncher supportedTools={["editor", "codeReview"]} onOpenTool={() => null} />
