@@ -190,7 +190,7 @@ export function parseChangeOutlineText(text: string): ChangeOutline {
 
 export async function generateChangeOutline<TApi extends Api = Api>(
     options: GenerateChangeOutlineOptions<TApi>
-): Promise<ChangeOutline> {
+): Promise<ChangeOutline | undefined> {
     const operations =
         options.operations ??
         (options.messages ? extractChangeOperationsFromMessages(options.messages, { runId: options.runId }) : []);
@@ -204,7 +204,7 @@ export async function generateChangeOutline<TApi extends Api = Api>(
         apiKey: options.apiKey,
         headers: options.headers,
         signal: options.signal,
-        maxTokens: options.maxTokens ?? 1024,
+        maxTokens: options.maxTokens ?? 1800,
         temperature: 0,
     };
     const response = await complete(
@@ -220,6 +220,9 @@ export async function generateChangeOutline<TApi extends Api = Api>(
     }
     if (response.stopReason === "error") {
         throw new Error(`Change outline generation failed: ${response.errorMessage || "Unknown error"}`);
+    }
+    if (response.stopReason === "length") {
+        return undefined;
     }
     return parseChangeOutlineText(textFromAssistantMessage(response));
 }

@@ -38,7 +38,7 @@ function toolResult(
     };
 }
 
-function assistantText(text: string): AssistantMessage {
+function assistantText(text: string, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
     return {
         role: "assistant",
         content: [{ type: "text", text }],
@@ -46,7 +46,7 @@ function assistantText(text: string): AssistantMessage {
         provider: "openai",
         model: "fake",
         usage: Usage,
-        stopReason: "stop",
+        stopReason,
         timestamp: 1,
     };
 }
@@ -205,6 +205,28 @@ describe("generateChangeOutline", () => {
         expect(complete).toHaveBeenCalledTimes(1);
         expect(complete.mock.calls[0][0]).toBe(model);
         expect(complete.mock.calls[0][1].systemPrompt).toContain("change outline");
-        expect(complete.mock.calls[0][2]).toMatchObject({ apiKey: "test-key" });
+        expect(complete.mock.calls[0][2]).toMatchObject({ apiKey: "test-key", maxTokens: 1800 });
+    });
+
+    it("returns undefined for truncated model output without parsing partial JSON", async () => {
+        const complete = vi.fn().mockResolvedValue(
+            assistantText(
+                `{
+  "modules": [
+    { "id": "partial", "title": "Looks valid", "files": [{ "path": "src/app.ts" }] }
+  ]
+}`,
+                "length"
+            )
+        );
+        const model = { api: "openai", provider: "openai", id: "fake", contextWindow: 128000 } as unknown as Model;
+
+        const outline = await generateChangeOutline({
+            model,
+            operations: [{ id: "op-1", kind: "write", path: "src/app.ts" }],
+            complete,
+        });
+
+        expect(outline).toBeUndefined();
     });
 });
