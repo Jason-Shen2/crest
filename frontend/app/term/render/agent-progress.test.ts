@@ -794,6 +794,221 @@ describe("AgentProgressView", () => {
         expect(html).not.toContain('data-agent-progress-row-end-chevron="modify-files"');
     });
 
+    it("does not render expansion controls for stages without details", () => {
+        const html = renderToStaticMarkup(
+            createElement(AgentProgressView, {
+                progress: {
+                    stages: [
+                        {
+                            id: "understand-task",
+                            title: "理解任务",
+                            status: "done",
+                            summary: "确认需要实现 two-sum。",
+                            recentActions: [],
+                            actionGroups: [],
+                        },
+                        {
+                            id: "modify-files",
+                            title: "更新代码",
+                            status: "done",
+                            summary: "补齐 two-sum 实现。",
+                            recentActions: [],
+                            actionGroups: [
+                                {
+                                    id: "modify-files-group",
+                                    title: "更新代码",
+                                    summary: "更新 two_sum.py",
+                                    status: "done",
+                                    risk: "file-edit",
+                                    actions: [
+                                        {
+                                            id: "edit-two-sum",
+                                            title: "更新 two_sum.py",
+                                            summary: "更新 two_sum.py",
+                                            detail: "two_sum.py",
+                                            status: "done",
+                                        },
+                                    ],
+                                    toolCalls: [],
+                                },
+                            ],
+                            risk: "file-edit",
+                        },
+                    ],
+                },
+            })
+        );
+
+        expect(html).toContain('data-agent-progress-stage-title="understand-task"');
+        expect(html).not.toContain('data-agent-progress-stage-toggle="understand-task"');
+        expect(html).not.toContain('data-agent-progress-stage-chevron="understand-task"');
+        expect(html).toContain('data-agent-progress-stage-toggle="modify-files"');
+        expect(html).toContain('data-agent-progress-stage-chevron="modify-files"');
+    });
+
+    it("renders stage chevrons as icons instead of text characters", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit_text_file",
+                            input: { path: "two_sum.py" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress }));
+
+        expect(html).toContain('data-agent-progress-stage-chevron="modify-files"');
+        expect(html).toContain("<svg");
+        expect(html).not.toContain("&gt;");
+        expect(html).not.toContain(">v<");
+    });
+
+    it("renders file edit evidence as a clickable file chip", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit_text_file",
+                            input: { path: "two_sum.py" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "patched" }],
+                    isError: false,
+                },
+            ])
+        );
+
+        const html = renderToStaticMarkup(createElement(AgentProgressView, { progress, showTechnicalDetails: true }));
+
+        expect(html).toContain('data-agent-progress-file-link="edit-1"');
+        expect(html).toContain('data-agent-progress-file-path="two_sum.py"');
+        expect(html).toContain("two_sum.py");
+        expect(html).not.toContain("file://two_sum.py");
+        expect(html).not.toContain("`two_sum.py`");
+    });
+
+    it("renders change review modules, files, and hunks under the modify stage", () => {
+        const html = renderToStaticMarkup(
+            createElement(AgentProgressView, {
+                showTechnicalDetails: true,
+                progress: {
+                    stages: [
+                        {
+                            id: "modify-files",
+                            title: "Modify files",
+                            status: "done",
+                            summary: "Updated files.",
+                            recentActions: [],
+                            actionGroups: [],
+                            risk: "file-edit",
+                        },
+                    ],
+                    changeReview: {
+                        changeSetId: "run-1",
+                        changeSet: {
+                            id: "run-1",
+                            files: [],
+                            totals: { files: 2, hunks: 2, additions: 3, deletions: 1 },
+                        },
+                        modules: [
+                            {
+                                id: "ui",
+                                title: "UI rendering",
+                                summary: "Review progress rendering updates.",
+                                files: [
+                                    {
+                                        path: "frontend/app/term/render/agent-progress-view.tsx",
+                                        status: "modified",
+                                        stats: { hunks: 1, additions: 2, deletions: 1 },
+                                        hunks: [
+                                            {
+                                                id: "frontend/app/term/render/agent-progress-view.tsx:1",
+                                                path: "frontend/app/term/render/agent-progress-view.tsx",
+                                                oldStart: 10,
+                                                oldLines: 3,
+                                                newStart: 10,
+                                                newLines: 4,
+                                                header: "function StageOverview",
+                                                additions: 2,
+                                                deletions: 1,
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                        ungroupedFiles: [
+                            {
+                                path: "frontend/app/term/render/agent-progress.test.ts",
+                                status: "modified",
+                                stats: { hunks: 1, additions: 1, deletions: 0 },
+                                hunks: [
+                                    {
+                                        id: "frontend/app/term/render/agent-progress.test.ts:1",
+                                        path: "frontend/app/term/render/agent-progress.test.ts",
+                                        oldStart: 900,
+                                        oldLines: 0,
+                                        newStart: 900,
+                                        newLines: 1,
+                                        header: "AgentProgressView",
+                                        additions: 1,
+                                        deletions: 0,
+                                    },
+                                ],
+                            },
+                        ],
+                        warnings: [],
+                    },
+                },
+            })
+        );
+
+        expect(html).toContain('data-agent-progress-stage-toggle="modify-files"');
+        expect(html).toContain('data-agent-progress-stage-details="modify-files"');
+        expect(html).toContain('data-agent-progress-change-review="run-1"');
+        expect(html).toContain('data-agent-progress-change-module="ui"');
+        expect(html).toContain("UI rendering");
+        expect(html).toContain("Review progress rendering updates.");
+        expect(html).toContain('data-agent-progress-change-module="ungrouped"');
+        expect(html).toContain("Other changes");
+        expect(html).toContain('data-agent-progress-change-file="frontend/app/term/render/agent-progress-view.tsx"');
+        expect(html).toContain('data-agent-progress-change-file="frontend/app/term/render/agent-progress.test.ts"');
+        expect(html).toContain('data-agent-progress-change-file-chip="frontend/app/term/render/agent-progress-view.tsx"');
+        expect(html).toContain("agent-progress-view.tsx");
+        expect(html).toContain("+2");
+        expect(html).toContain("-1");
+        expect(html).toContain('data-agent-progress-change-hunk="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(html).toContain("function StageOverview");
+        expect(html).toContain('data-agent-progress-change-hunk-diff="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(html).toContain("View diff");
+        expect(html).toContain('data-agent-progress-change-hunk-explain="frontend/app/term/render/agent-progress-view.tsx:1"');
+        expect(html).toContain("Explain");
+    });
+
     it("renders the default overview as stage toggles without global technical details", () => {
         const progress = deriveAgentProgress(
             makeRun([
@@ -916,9 +1131,10 @@ describe("AgentProgressView", () => {
 
         expect(html).toContain('data-agent-progress-stage-details="modify-files"');
         expect(html).toContain('data-agent-progress-action-summary="edit-1"');
-        expect(html).toContain('data-agent-progress-action-detail="edit-1"');
+        expect(html).toContain('data-agent-progress-file-link="edit-1"');
+        expect(html).toContain('data-agent-progress-file-path="frontend/app/term/render/agent-progress.ts"');
         expect(html).toContain('data-agent-progress-action-evidence="edit-1"');
-        expect(html).toContain("Updated agent-progress.ts");
+        expect(html).toContain("Updated ");
         expect(html).toContain("frontend/app/term/render/agent-progress.ts");
         expect(html).not.toContain("View diff");
         expect(html).not.toContain('data-agent-progress-action-diff="edit-1"');
