@@ -4,6 +4,8 @@
 import type { PiRun } from "@/app/store/use-pi-chat";
 
 export type ChangeOperationKind = "patch" | "write" | "create" | "delete" | "rename";
+export type ChangeSetFileStatus = "added" | "modified" | "deleted" | "renamed";
+export type ChangeReviewWarningCode = "unknown-file" | "unknown-hunk" | "hunk-file-mismatch";
 
 export interface ChangeOperation {
     id: string;
@@ -19,7 +21,7 @@ export interface ChangeOperation {
     afterContentHash?: string;
 }
 
-export interface AgentChangeHunk {
+export interface ChangeSetHunk {
     id: string;
     path: string;
     oldStart: number;
@@ -31,57 +33,81 @@ export interface AgentChangeHunk {
     deletions: number;
 }
 
-export interface AgentChangeStats {
+export interface ChangeSetStats {
     files: number;
     hunks: number;
     additions: number;
     deletions: number;
 }
 
-export interface AgentChangeFileStats {
+export interface ChangeSetFileStats {
     hunks: number;
     additions: number;
     deletions: number;
 }
 
-export interface AgentChangeFile {
+export interface ChangeSetFile {
     path: string;
+    previousPath?: string;
+    status: ChangeSetFileStatus;
     operations: ChangeOperation[];
-    hunks: AgentChangeHunk[];
-    stats: AgentChangeFileStats;
+    hunks: ChangeSetHunk[];
+    stats: ChangeSetFileStats;
+    patchStatus?: "complete" | "unavailable";
     patchUnavailableReason?: string;
 }
 
-export interface AgentChangeSet {
-    files: AgentChangeFile[];
-    totals: AgentChangeStats;
+export interface ChangeSet {
+    id: string;
+    files: ChangeSetFile[];
+    totals: ChangeSetStats;
 }
 
-export interface AgentChangeReviewOutlineFile {
+export interface ChangeOutlineFile {
     path: string;
     hunkIds?: string[];
 }
 
-export interface AgentChangeReviewOutline {
-    title?: string;
+export interface ChangeOutlineModule {
+    id: string;
+    title: string;
     summary?: string;
-    files?: AgentChangeReviewOutlineFile[];
+    files: ChangeOutlineFile[];
 }
 
-export interface AgentChangeReviewFile {
+export interface ChangeOutline {
+    modules?: ChangeOutlineModule[];
+}
+
+export interface ChangeReviewFile {
     path: string;
-    hunks: AgentChangeHunk[];
-    stats: AgentChangeFileStats;
+    previousPath?: string;
+    status: ChangeSetFileStatus;
+    hunks: ChangeSetHunk[];
+    stats: ChangeSetFileStats;
+    patchStatus?: "complete" | "unavailable";
     patchUnavailableReason?: string;
 }
 
-export interface AgentChangeReview {
+export interface ChangeReviewModule {
+    id: string;
     title: string;
-    summary: string;
-    files: AgentChangeReviewFile[];
-    totals: AgentChangeStats;
-    isFallback: boolean;
-    validationErrors: string[];
+    summary?: string;
+    files: ChangeReviewFile[];
+}
+
+export interface ChangeReviewWarning {
+    code: ChangeReviewWarningCode;
+    message: string;
+    severity: "warning";
+}
+
+export interface ChangeReview {
+    changeSetId: string;
+    changeSet: ChangeSet;
+    modules: ChangeReviewModule[];
+    ungroupedFiles: ChangeReviewFile[];
+    warnings: ChangeReviewWarning[];
 }
 
 const HunkHeaderRe = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
@@ -90,9 +116,11 @@ export function extractChangeOperations(run: PiRun): ChangeOperation[] {
     const operations: ChangeOperation[] = [];
     for (const message of run.responseMessages) {
         if (message.role !== "toolResult") continue;
+        if (message.isError === true) continue;
         appendOperation(operations, operationFromDetails(message.details, run.runId, message.toolCallId));
         for (const content of message.content ?? []) {
             if (content.type !== "toolResult") continue;
+            if (content.isError === true) continue;
             const toolCallId = stringField(content, "toolCallId") || stringField(content, "toolUseId");
             appendOperation(operations, operationFromDetails(content.details, run.runId, toolCallId));
         }
@@ -100,11 +128,11 @@ export function extractChangeOperations(run: PiRun): ChangeOperation[] {
     return operations;
 }
 
-export function parseUnifiedPatchHunks(patch: string): AgentChangeHunk[] {
-    const hunks: AgentChangeHunk[] = [];
+export function parseUnifiedPatchHunks(patch: string): ChangeSetHunk[] {
+    const hunks: ChangeSetHunk[] = [];
     const hunkCountsByPath = new Map<string, number>();
     let currentPath = "";
-    let currentHunk: AgentChangeHunk;
+    let currentHunk: ChangeSetHunk;
 
     for (const line of patch.split(/\r?\n/)) {
         const nextPath = parsePatchPath(line);
@@ -147,20 +175,31 @@ export function parseUnifiedPatchHunks(patch: string): AgentChangeHunk[] {
     return hunks;
 }
 
-export function buildChangeSet(operations: ChangeOperation[]): AgentChangeSet {
-    const filesByPath = new Map<string, AgentChangeFile>();
+export function buildChangeSet(operations: ChangeOperation[]): ChangeSet {
+    const filesByPath = new Map<string, ChangeSetFile>();
     for (const operation of operations) {
-        const file = getOrCreateFile(filesByPath, operation.path);
+        const operationStatus = statusForOperation(operation);
+        const file = getOrCreateFile(filesByPath, operation.path, operationStatus);
         file.operations.push(operation);
+        file.status = operationStatus;
+        file.previousPath = operation.previousPath || file.previousPath;
+        file.patchStatus = operation.patchStatus || file.patchStatus;
         if (operation.patchUnavailableReason && !file.patchUnavailableReason) {
             file.patchUnavailableReason = operation.patchUnavailableReason;
         }
         if (operation.patchStatus === "unavailable" || !operation.patch) continue;
         for (const hunk of parseUnifiedPatchHunks(operation.patch)) {
-            const hunkFile = getOrCreateFile(filesByPath, hunk.path === "unknown" ? operation.path : hunk.path);
+            const hunkFile = getOrCreateFile(
+                filesByPath,
+                hunk.path === "unknown" ? operation.path : hunk.path,
+                operationStatus
+            );
             if (!hunkFile.operations.includes(operation)) {
                 hunkFile.operations.push(operation);
             }
+            hunkFile.status = operationStatus;
+            hunkFile.previousPath = operation.previousPath || hunkFile.previousPath;
+            hunkFile.patchStatus = operation.patchStatus || hunkFile.patchStatus;
             hunkFile.hunks.push(
                 hunk.path === "unknown"
                     ? { ...hunk, path: operation.path, id: `${operation.path}:${hunkFile.hunks.length + 1}` }
@@ -174,6 +213,7 @@ export function buildChangeSet(operations: ChangeOperation[]): AgentChangeSet {
         stats: statsForHunks(file.hunks),
     }));
     return {
+        id: operations[0]?.runId || "changes",
         files,
         totals: {
             files: files.length,
@@ -184,35 +224,52 @@ export function buildChangeSet(operations: ChangeOperation[]): AgentChangeSet {
     };
 }
 
-export function deriveAgentChangeReview(run: PiRun, outline?: AgentChangeReviewOutline): AgentChangeReview {
+export function deriveAgentChangeReview(run: PiRun, outline?: ChangeOutline): ChangeReview {
     return buildChangeReview(buildChangeSet(extractChangeOperations(run)), outline);
 }
 
-export function buildChangeReview(changeSet: AgentChangeSet, outline?: AgentChangeReviewOutline): AgentChangeReview {
-    if (!outline) {
-        return fallbackReview(changeSet, []);
+export function buildChangeReview(changeSet: ChangeSet, outline?: ChangeOutline): ChangeReview {
+    const warnings = validateOutline(changeSet, outline);
+    if (warnings.length > 0) {
+        return makeReview(
+            changeSet,
+            [],
+            changeSet.files.map((file) => reviewFile(file, file.hunks)),
+            warnings
+        );
     }
 
-    const validationErrors = validateOutline(changeSet, outline);
-    if (validationErrors.length > 0) {
-        return fallbackReview(changeSet, validationErrors);
-    }
+    const modules = (outline?.modules ?? []).map((module) => ({
+        id: module.id,
+        title: module.title,
+        ...(module.summary ? { summary: module.summary } : {}),
+        files: module.files.map((outlineFile) => {
+            const file = findFile(changeSet, outlineFile.path);
+            const hunks = outlineFile.hunkIds
+                ? outlineFile.hunkIds.map((hunkId) => findHunk(changeSet, hunkId))
+                : file.hunks;
+            return reviewFile(file, hunks);
+        }),
+    }));
+    const groupedPaths = new Set(modules.flatMap((module) => module.files.map((file) => file.path)));
+    const ungroupedFiles = changeSet.files
+        .filter((file) => !groupedPaths.has(file.path))
+        .map((file) => reviewFile(file, file.hunks));
+    return makeReview(changeSet, modules, ungroupedFiles, []);
+}
 
-    const files = (outline.files ?? changeSet.files).map((outlineFile) => {
-        const file = findFile(changeSet, outlineFile.path);
-        const hunks = outlineFile.hunkIds
-            ? outlineFile.hunkIds.map((hunkId) => findHunk(changeSet, hunkId))
-            : file.hunks;
-        return reviewFile(file, hunks);
-    });
-
+function makeReview(
+    changeSet: ChangeSet,
+    modules: ChangeReviewModule[],
+    ungroupedFiles: ChangeReviewFile[],
+    warnings: ChangeReviewWarning[]
+): ChangeReview {
     return {
-        title: outline.title || "Changed files",
-        summary: outline.summary || summarizeTotals(changeSet.totals),
-        files,
-        totals: changeSet.totals,
-        isFallback: false,
-        validationErrors: [],
+        changeSetId: changeSet.id,
+        changeSet,
+        modules,
+        ungroupedFiles,
+        warnings,
     };
 }
 
@@ -245,11 +302,16 @@ function parsePatchPath(line: string): string {
     return rawPath.replace(/^b\//, "");
 }
 
-function getOrCreateFile(filesByPath: Map<string, AgentChangeFile>, path: string): AgentChangeFile {
+function getOrCreateFile(
+    filesByPath: Map<string, ChangeSetFile>,
+    path: string,
+    status: ChangeSetFileStatus
+): ChangeSetFile {
     let file = filesByPath.get(path);
     if (file) return file;
     file = {
         path,
+        status,
         operations: [],
         hunks: [],
         stats: { hunks: 0, additions: 0, deletions: 0 },
@@ -258,7 +320,14 @@ function getOrCreateFile(filesByPath: Map<string, AgentChangeFile>, path: string
     return file;
 }
 
-function statsForHunks(hunks: AgentChangeHunk[]): AgentChangeFileStats {
+function statusForOperation(operation: ChangeOperation): ChangeSetFileStatus {
+    if (operation.kind === "create") return "added";
+    if (operation.kind === "delete") return "deleted";
+    if (operation.kind === "rename") return "renamed";
+    return "modified";
+}
+
+function statsForHunks(hunks: ChangeSetHunk[]): ChangeSetFileStats {
     return {
         hunks: hunks.length,
         additions: sum(hunks, (hunk) => hunk.additions),
@@ -266,62 +335,57 @@ function statsForHunks(hunks: AgentChangeHunk[]): AgentChangeFileStats {
     };
 }
 
-function validateOutline(changeSet: AgentChangeSet, outline: AgentChangeReviewOutline): string[] {
-    const errors: string[] = [];
-    for (const outlineFile of outline.files ?? []) {
-        if (!findFile(changeSet, outlineFile.path)) {
-            errors.push(`Outline references unknown file "${outlineFile.path}".`);
-        }
-        for (const hunkId of outlineFile.hunkIds ?? []) {
-            const hunk = findHunk(changeSet, hunkId);
-            if (!hunk) {
-                errors.push(`Outline references unknown hunk "${hunkId}".`);
-                continue;
+function validateOutline(changeSet: ChangeSet, outline?: ChangeOutline): ChangeReviewWarning[] {
+    const warnings: ChangeReviewWarning[] = [];
+    for (const module of outline?.modules ?? []) {
+        for (const outlineFile of module.files) {
+            if (!findFile(changeSet, outlineFile.path)) {
+                warnings.push({
+                    code: "unknown-file",
+                    message: `Outline references unknown file "${outlineFile.path}".`,
+                    severity: "warning",
+                });
             }
-            if (hunk.path !== outlineFile.path) {
-                errors.push(`Outline references hunk "${hunkId}" outside file "${outlineFile.path}".`);
+            for (const hunkId of outlineFile.hunkIds ?? []) {
+                const hunk = findHunk(changeSet, hunkId);
+                if (!hunk) {
+                    warnings.push({
+                        code: "unknown-hunk",
+                        message: `Outline references unknown hunk "${hunkId}".`,
+                        severity: "warning",
+                    });
+                    continue;
+                }
+                if (hunk.path !== outlineFile.path) {
+                    warnings.push({
+                        code: "hunk-file-mismatch",
+                        message: `Outline references hunk "${hunkId}" outside file "${outlineFile.path}".`,
+                        severity: "warning",
+                    });
+                }
             }
         }
     }
-    return errors;
+    return warnings;
 }
 
-function fallbackReview(changeSet: AgentChangeSet, validationErrors: string[]): AgentChangeReview {
-    return {
-        title: "Changed files",
-        summary: summarizeTotals(changeSet.totals),
-        files: changeSet.files.map((file) => reviewFile(file, file.hunks)),
-        totals: changeSet.totals,
-        isFallback: true,
-        validationErrors,
-    };
-}
-
-function reviewFile(file: AgentChangeFile, hunks: AgentChangeHunk[]): AgentChangeReviewFile {
+function reviewFile(file: ChangeSetFile, hunks: ChangeSetHunk[]): ChangeReviewFile {
     return {
         path: file.path,
+        ...(file.previousPath ? { previousPath: file.previousPath } : {}),
+        status: file.status,
         hunks,
         stats: statsForHunks(hunks),
+        ...(file.patchStatus ? { patchStatus: file.patchStatus } : {}),
         ...(file.patchUnavailableReason ? { patchUnavailableReason: file.patchUnavailableReason } : {}),
     };
 }
 
-function summarizeTotals(totals: AgentChangeStats): string {
-    return `${totals.files} ${plural(totals.files, "file")} changed with ${totals.additions} ${plural(
-        totals.additions,
-        "addition"
-    )} and ${totals.deletions} ${plural(totals.deletions, "deletion")}.`;
-}
-
-function plural(count: number, singular: string): string {
-    return count === 1 ? singular : `${singular}s`;
-}
-
-function findFile(changeSet: AgentChangeSet, path: string): AgentChangeFile {
+function findFile(changeSet: ChangeSet, path: string): ChangeSetFile {
     return changeSet.files.find((file) => file.path === path);
 }
 
-function findHunk(changeSet: AgentChangeSet, hunkId: string): AgentChangeHunk {
+function findHunk(changeSet: ChangeSet, hunkId: string): ChangeSetHunk {
     return changeSet.files.flatMap((file) => file.hunks).find((hunk) => hunk.id === hunkId);
 }
 
