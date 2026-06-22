@@ -63,6 +63,43 @@ describe("deriveAgentProgress", () => {
         expect(progress.changeReview).toBeUndefined();
     });
 
+    it("does not expose change review for edit tool results without diff hunks or stats", () => {
+        const progress = deriveAgentProgress(
+            makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-noop",
+                            name: "edit_text_file",
+                            input: { path: "a.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-noop",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "patched" }],
+                    details: {
+                        changeOperation: {
+                            id: "op-noop",
+                            toolCallId: "edit-noop",
+                            kind: "patch",
+                            path: "a.ts",
+                            patch: "--- a/a.ts\n+++ b/a.ts\n",
+                            patchStatus: "complete",
+                        },
+                    },
+                    isError: false,
+                },
+            ])
+        );
+
+        expect(progress.changeReview).toBeUndefined();
+    });
+
     it("attaches change review derived from edit tool result details", () => {
         const patch = `--- a/src/app.ts
 +++ b/src/app.ts

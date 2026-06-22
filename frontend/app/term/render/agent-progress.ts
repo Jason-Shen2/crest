@@ -139,8 +139,13 @@ export function deriveAgentProgress(run: PiRun): AgentProgress {
     const changeReview = deriveAgentChangeReview(run);
     return {
         stages: buildStages(classified),
-        ...(changeReview.changeSet.files.length > 0 ? { changeReview } : {}),
+        ...(hasRenderableChangeReview(changeReview) ? { changeReview } : {}),
     };
+}
+
+function hasRenderableChangeReview(changeReview: ChangeReview): boolean {
+    const totals = changeReview.changeSet.totals;
+    return totals.hunks > 0 && (totals.additions > 0 || totals.deletions > 0);
 }
 
 function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
