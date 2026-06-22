@@ -227,6 +227,7 @@ const WorkspaceElem = memo(() => {
                 ) : null}
                 <RightToolPanelMagnifiedOverlay
                     state={rightToolPanelState}
+                    onOpenTool={(tool) => workspaceLayoutModel.openRightTool(tool)}
                     onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
                     onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
                     onFocusPanel={onRightToolPanelFocus}
