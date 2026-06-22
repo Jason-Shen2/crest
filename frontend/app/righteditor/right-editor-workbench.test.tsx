@@ -74,12 +74,25 @@ function renderWithStore(element: ReactElement): string {
 
 function getRightEditorFileTabsMarkup(markup: string): string {
     const labelIndex = markup.indexOf('aria-label="Right editor file tabs"');
-    const tabBarStart = markup.lastIndexOf("<div", labelIndex);
-    const editorStart = markup.indexOf('<div class="min-h-0 flex-1"', labelIndex);
     expect(labelIndex).toBeGreaterThan(-1);
+    const tabBarStart = markup.lastIndexOf("<div", labelIndex);
     expect(tabBarStart).toBeGreaterThan(-1);
-    expect(editorStart).toBeGreaterThan(tabBarStart);
-    return markup.slice(tabBarStart, editorStart);
+
+    const divTagPattern = /<\/?div(?:\s[^>]*)?>/g;
+    divTagPattern.lastIndex = tabBarStart;
+    let depth = 0;
+    let match: RegExpExecArray | null;
+    while ((match = divTagPattern.exec(markup)) != null) {
+        if (match[0].startsWith("</")) {
+            depth--;
+            if (depth === 0) {
+                return markup.slice(tabBarStart, match.index + match[0].length);
+            }
+            continue;
+        }
+        depth++;
+    }
+    throw new Error("Right editor file tabs markup is missing a closing div");
 }
 
 function mountCapturedEditor(): (event: KeyDownEvent) => void {
