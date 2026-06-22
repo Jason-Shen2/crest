@@ -46,12 +46,12 @@ export interface WriteToolDetails {
 }
 
 async function readExistingContent(ops: WriteOperations, absolutePath: string): Promise<string> {
-    const readFile = ops.readFile ?? fsReadFile;
+    const readFile = ops.readFile;
+    if (!readFile) return "";
     try {
         return (await readFile(absolutePath)).toString("utf-8");
-    } catch (error: unknown) {
-        if (error instanceof Error && "code" in error && (error as { code: string }).code === "ENOENT") return "";
-        throw error;
+    } catch {
+        return "";
     }
 }
 
