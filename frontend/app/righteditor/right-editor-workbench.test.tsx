@@ -135,6 +135,7 @@ describe("RightEditorWorkbench", () => {
         expect(fileTabsMarkup).toContain("app.ts");
         expect(fileTabsMarkup).toContain("src/");
         expect(fileTabsMarkup).toContain("test/");
+        expect(fileTabsMarkup).not.toContain("/repo/");
     });
 
     it("uses the file uri model from MonacoModelRegistry for the active file", async () => {
