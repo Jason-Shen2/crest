@@ -136,7 +136,11 @@ export function deriveAgentProgress(run: PiRun): AgentProgress {
     const resultsByCallId = indexToolResults(run.responseMessages);
     const calls = collectToolCalls(run.responseMessages, resultsByCallId);
     const classified = calls.map((call) => ({ descriptor: classifyCall(call), call }));
-    return { stages: buildStages(classified), changeReview: deriveAgentChangeReview(run) };
+    const changeReview = deriveAgentChangeReview(run);
+    return {
+        stages: buildStages(classified),
+        ...(changeReview.changeSet.files.length > 0 ? { changeReview } : {}),
+    };
 }
 
 function buildStages(classified: ClassifiedCall[]): AgentProgressStage[] {
