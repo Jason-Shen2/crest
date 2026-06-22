@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
+import { RightEditorModel } from "@/app/righteditor/right-editor-model";
+import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
+import { RightEditorWorkbench } from "@/app/righteditor/right-editor-workbench";
 import { getSettingsKeyAtom } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
@@ -63,6 +66,22 @@ export type RightToolTabsProps = {
 export type RightToolContentProps = {
     activeTool?: RightToolId;
 };
+
+function disposeRightEditorModelPath(path: string): void {
+    void import("@/app/righteditor/monaco-model-registry")
+        .then(({ MonacoModelRegistry }) => {
+            MonacoModelRegistry.getInstance().disposePath(path);
+        })
+        .catch(() => undefined);
+}
+
+function migrateRightEditorModelPath(oldPath: string, newPath: string): void {
+    void import("@/app/righteditor/monaco-model-registry")
+        .then(({ MonacoModelRegistry }) => {
+            MonacoModelRegistry.getInstance().migratePath(oldPath, newPath);
+        })
+        .catch(() => undefined);
+}
 
 export type RightToolPanelMagnifiedOverlayProps = Pick<
     RightToolPanelProps,
@@ -148,6 +167,16 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
 export function RightToolContent({ activeTool }: RightToolContentProps) {
     if (activeTool == null) {
         return <RightToolLauncher onOpenTool={() => null} />;
+    }
+    if (activeTool === "editor") {
+        return (
+            <RightEditorWorkbench
+                model={RightEditorModel.getInstance(RightEditorProductionRpc, {
+                    disposeModelPath: disposeRightEditorModelPath,
+                    migrateModelPath: migrateRightEditorModelPath,
+                })}
+            />
+        );
     }
     if (activeTool === "codeReview") {
         return <GitReviewSidebar />;

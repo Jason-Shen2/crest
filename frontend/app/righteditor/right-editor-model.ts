@@ -1,0 +1,258 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { globalStore } from "@/app/store/jotaiStore";
+import * as jotai from "jotai";
+import { getRightEditorLanguage } from "./right-editor-language";
+import type { RightEditorOpenFile, RightEditorState } from "./right-editor-types";
+
+type RightEditorRpc = {
+    readFile: (path: string) => Promise<{ text: string; readonly: boolean }>;
+    writeFile: (path: string, text: string) => Promise<void>;
+};
+
+type RightEditorModelDeps = {
+    disposeModelPath?: (path: string) => void;
+    migrateModelPath?: (oldPath: string, newPath: string) => void;
+};
+
+function pathToFileUri(path: string): string {
+    const normalizedPath = path.replace(/\\/g, "/");
+    const driveMatch = /^([A-Za-z]:)(\/.*)?$/.exec(normalizedPath);
+    if (driveMatch) {
+        const [, drive, rest = ""] = driveMatch;
+        const encodedRest = rest
+            .split("/")
+            .map((part) => encodeURIComponent(part))
+            .join("/");
+        return `file:///${drive}${encodedRest}`;
+    }
+    return `file://${normalizedPath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export class RightEditorModel {
+    private static instance: RightEditorModel | null = null;
+    readonly stateAtom: jotai.PrimitiveAtom<RightEditorState>;
+    private readonly rpc: RightEditorRpc;
+    private readonly pendingOpenFiles = new Map<string, Promise<void>>();
+    private disposeModelPath: (path: string) => void;
+    private migrateModelPath: (oldPath: string, newPath: string) => void;
+
+    private constructor(rpc: RightEditorRpc, deps: RightEditorModelDeps = {}) {
+        this.rpc = rpc;
+        this.disposeModelPath = deps.disposeModelPath ?? (() => undefined);
+        this.migrateModelPath = deps.migrateModelPath ?? (() => undefined);
+        this.stateAtom = jotai.atom({
+            openFiles: [],
+            activePath: null,
+            workspaceRoot: "",
+        });
+    }
+
+    static getInstance(rpc?: RightEditorRpc, deps: RightEditorModelDeps = {}): RightEditorModel {
+        if (!RightEditorModel.instance) {
+            if (!rpc) throw new Error("RightEditorModel requires rpc on first construction");
+            RightEditorModel.instance = new RightEditorModel(rpc, deps);
+        } else {
+            if (deps.disposeModelPath) {
+                RightEditorModel.instance.disposeModelPath = deps.disposeModelPath;
+            }
+            if (deps.migrateModelPath) {
+                RightEditorModel.instance.migrateModelPath = deps.migrateModelPath;
+            }
+        }
+        return RightEditorModel.instance;
+    }
+
+    static hasInstance(): boolean {
+        return RightEditorModel.instance != null;
+    }
+
+    static getExistingInstance(): RightEditorModel | null {
+        return RightEditorModel.instance;
+    }
+
+    static resetInstance(): void {
+        RightEditorModel.instance = null;
+    }
+
+    getStateNow(): RightEditorState {
+        return globalStore.get(this.stateAtom);
+    }
+
+    getOpenFileNow(path: string): RightEditorOpenFile | undefined {
+        return this.getStateNow().openFiles.find((file) => file.path === path);
+    }
+
+    async openFile(path: string, workspaceRoot: string): Promise<void> {
+        const existing = this.getOpenFileNow(path);
+        if (existing) {
+            this.activateOpenFile(path, workspaceRoot);
+            return;
+        }
+        const pendingOpen = this.pendingOpenFiles.get(path);
+        if (pendingOpen) {
+            await pendingOpen;
+            if (this.getOpenFileNow(path)) {
+                this.activateOpenFile(path, workspaceRoot);
+            }
+            return;
+        }
+        const openPromise = this.readAndOpenFile(path, workspaceRoot);
+        this.pendingOpenFiles.set(path, openPromise);
+        try {
+            await openPromise;
+        } finally {
+            if (this.pendingOpenFiles.get(path) === openPromise) {
+                this.pendingOpenFiles.delete(path);
+            }
+        }
+    }
+
+    private async readAndOpenFile(path: string, workspaceRoot: string): Promise<void> {
+        const file = await this.rpc.readFile(path);
+        if (this.getOpenFileNow(path)) {
+            this.activateOpenFile(path, workspaceRoot);
+            return;
+        }
+        const openFile: RightEditorOpenFile = {
+            path,
+            uri: pathToFileUri(path),
+            language: getRightEditorLanguage(path),
+            workspaceRoot,
+            readonly: file.readonly,
+            savedText: file.text,
+            dirtyText: null,
+            saveStatus: "idle",
+            error: null,
+        };
+        const state = this.getStateNow();
+        globalStore.set(this.stateAtom, {
+            openFiles: [...state.openFiles, openFile],
+            activePath: path,
+            workspaceRoot,
+        });
+    }
+
+    private activateOpenFile(path: string, workspaceRoot: string): void {
+        const state = this.getStateNow();
+        globalStore.set(this.stateAtom, {
+            ...state,
+            activePath: path,
+            workspaceRoot,
+            openFiles: state.openFiles.map((file) => (file.path === path ? { ...file, workspaceRoot } : file)),
+        });
+    }
+
+    selectFile(path: string): void {
+        if (!this.getOpenFileNow(path)) return;
+        globalStore.set(this.stateAtom, { ...this.getStateNow(), activePath: path });
+    }
+
+    updateText(path: string, text: string): void {
+        const state = this.getStateNow();
+        globalStore.set(this.stateAtom, {
+            ...state,
+            openFiles: state.openFiles.map((file) =>
+                file.path === path
+                    ? { ...file, dirtyText: text === file.savedText && file.saveStatus !== "saving" ? null : text }
+                    : file
+            ),
+        });
+    }
+
+    async saveFile(path: string): Promise<void> {
+        const file = this.getOpenFileNow(path);
+        if (!file || file.dirtyText == null || file.readonly) return;
+        const textToSave = file.dirtyText;
+        this.patchFile(path, { saveStatus: "saving", error: null });
+        try {
+            await this.rpc.writeFile(path, textToSave);
+            const currentFile = this.getOpenFileNow(path);
+            if (!currentFile) return;
+            this.patchFile(path, {
+                savedText: textToSave,
+                dirtyText: currentFile.dirtyText === textToSave ? null : currentFile.dirtyText,
+                saveStatus: "saved",
+                error: null,
+            });
+        } catch (e: unknown) {
+            this.patchFile(path, {
+                saveStatus: "error",
+                error: e instanceof Error ? e.message : String(e),
+            });
+        }
+    }
+
+    closeFile(path: string): void {
+        const state = this.getStateNow();
+        const idx = state.openFiles.findIndex((file) => file.path === path);
+        if (idx < 0) return;
+        const openFiles = state.openFiles.filter((file) => file.path !== path);
+        const activePath = state.activePath === path ? openFiles[Math.max(0, idx - 1)]?.path ?? null : state.activePath;
+        globalStore.set(this.stateAtom, { ...state, openFiles, activePath });
+        this.disposeModelPath(path);
+    }
+
+    handleFileRenamed(oldPath: string, newPath: string): void {
+        const state = this.getStateNow();
+        const movedPaths = new Map<string, string>();
+        const openFiles = state.openFiles.map((file) => {
+            if (!isPathOrChild(file.path, oldPath)) {
+                return file;
+            }
+            const nextPath = replacePathPrefix(file.path, oldPath, newPath);
+            movedPaths.set(file.path, nextPath);
+            return {
+                ...file,
+                path: nextPath,
+                uri: pathToFileUri(nextPath),
+                language: getRightEditorLanguage(nextPath),
+            };
+        });
+        for (const [oldFilePath, newFilePath] of movedPaths) {
+            this.migrateModelPath(oldFilePath, newFilePath);
+        }
+        globalStore.set(this.stateAtom, {
+            ...state,
+            activePath:
+                state.activePath && isPathOrChild(state.activePath, oldPath)
+                    ? replacePathPrefix(state.activePath, oldPath, newPath)
+                    : state.activePath,
+            openFiles,
+        });
+    }
+
+    handleFileDeleted(path: string): void {
+        const state = this.getStateNow();
+        const firstDeletedIdx = state.openFiles.findIndex((file) => isPathOrChild(file.path, path));
+        if (firstDeletedIdx < 0) return;
+        const deletedFiles = state.openFiles.filter((file) => isPathOrChild(file.path, path));
+        const openFiles = state.openFiles.filter((file) => !isPathOrChild(file.path, path));
+        const activePath =
+            state.activePath && isPathOrChild(state.activePath, path)
+                ? openFiles[Math.min(firstDeletedIdx, openFiles.length - 1)]?.path ?? null
+                : state.activePath;
+        globalStore.set(this.stateAtom, { ...state, openFiles, activePath });
+        for (const file of deletedFiles) {
+            this.disposeModelPath(file.path);
+        }
+    }
+
+    private patchFile(path: string, patch: Partial<RightEditorOpenFile>): void {
+        const state = this.getStateNow();
+        globalStore.set(this.stateAtom, {
+            ...state,
+            openFiles: state.openFiles.map((file) => (file.path === path ? { ...file, ...patch } : file)),
+        });
+    }
+}
+
+function isPathOrChild(path: string, targetPath: string): boolean {
+    return path === targetPath || path.startsWith(`${targetPath}/`);
+}
+
+function replacePathPrefix(path: string, oldPrefix: string, newPrefix: string): string {
+    if (path === oldPrefix) return newPrefix;
+    return `${newPrefix}${path.slice(oldPrefix.length)}`;
+}

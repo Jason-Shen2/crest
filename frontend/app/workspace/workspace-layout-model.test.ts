@@ -440,4 +440,20 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(true);
         expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(true);
     });
+
+    it("opens the right editor without focusing the right tool panel", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+        model.openRightTool("codeReview");
+        model.setRightToolPanelFocused(true);
+
+        model.openRightEditorTool();
+
+        expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
+            visible: true,
+            openedTools: ["codeReview", "editor"],
+            activeTool: "editor",
+            focused: false,
+        });
+    });
 });

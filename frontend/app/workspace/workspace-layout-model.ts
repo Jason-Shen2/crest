@@ -414,6 +414,11 @@ class WorkspaceLayoutModel {
         this.setRightToolPanelState(openRightTool(this.getRightToolPanelState(), tool));
     }
 
+    openRightEditorTool(): void {
+        this.openRightTool("editor");
+        this.setRightToolPanelFocused(false);
+    }
+
     selectRightTool(tool: RightToolId): void {
         const state = this.getRightToolPanelState();
         const nextState = selectRightTool(state, tool);
