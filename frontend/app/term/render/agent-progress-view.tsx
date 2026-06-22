@@ -11,6 +11,8 @@ import type { AgentProgress, AgentProgressAction, AgentProgressActionGroup, Agen
 export interface AgentProgressViewProps {
     progress: AgentProgress;
     showTechnicalDetails?: boolean;
+    onExplainChange?: (params: { filePath: string; hunkIds: string[] }) => void;
+    onViewDiff?: (params: { filePath: string; hunkIds?: string[] }) => void;
 }
 
 function ChevronIcon({ open }: { open: boolean }) {
@@ -59,7 +61,12 @@ function basename(path: string): string {
     return normalized.split("/").filter(Boolean).at(-1) ?? path;
 }
 
-export function AgentProgressView({ progress, showTechnicalDetails = false }: AgentProgressViewProps) {
+export function AgentProgressView({
+    progress,
+    showTechnicalDetails = false,
+    onExplainChange,
+    onViewDiff,
+}: AgentProgressViewProps) {
     const env = useWaveEnv<Pick<WaveEnv, "createBlock">>();
     const changeReviewStageId = firstChangeReviewStageId(progress.stages, progress.changeReview);
     const [openStageIds, setOpenStageIds] = useState<Set<string>>(
@@ -115,6 +122,8 @@ export function AgentProgressView({ progress, showTechnicalDetails = false }: Ag
                             isOpen={openStageIds.has(stage.id)}
                             onToggle={() => toggleStage(stage.id)}
                             onOpenFile={openFile}
+                            onExplainChange={onExplainChange}
+                            onViewDiff={onViewDiff}
                         />
                     ))}
                 </div>
@@ -129,12 +138,16 @@ function StageOverview({
     isOpen,
     onToggle,
     onOpenFile,
+    onExplainChange,
+    onViewDiff,
 }: {
     stage: AgentProgressStage;
     changeReview?: ChangeReview;
     isOpen: boolean;
     onToggle: () => void;
     onOpenFile: (path: string) => void;
+    onExplainChange?: (params: { filePath: string; hunkIds: string[] }) => void;
+    onViewDiff?: (params: { filePath: string; hunkIds?: string[] }) => void;
 }) {
     const statusLabel = readableStatusLabel(stage.status);
     const hasDetails = stageHasDetails(stage, changeReview);
@@ -204,7 +217,12 @@ function StageOverview({
                                 <StageActionGroup key={group.id} group={group} onOpenFile={onOpenFile} />
                             ))}
                             {shouldRenderChangeReview(stage, changeReview) && (
-                                <ChangeReviewDetails changeReview={changeReview} onOpenFile={onOpenFile} />
+                                <ChangeReviewDetails
+                                    changeReview={changeReview}
+                                    onOpenFile={onOpenFile}
+                                    onExplainChange={onExplainChange}
+                                    onViewDiff={onViewDiff}
+                                />
                             )}
                         </ul>
                     )}
@@ -336,19 +354,31 @@ function FileLink({
 function ChangeReviewDetails({
     changeReview,
     onOpenFile,
+    onExplainChange,
+    onViewDiff,
 }: {
     changeReview: ChangeReview;
     onOpenFile: (path: string) => void;
+    onExplainChange?: (params: { filePath: string; hunkIds: string[] }) => void;
+    onViewDiff?: (params: { filePath: string; hunkIds?: string[] }) => void;
 }) {
     return (
         <li className="space-y-2 pt-1 text-xs text-secondary" data-agent-progress-change-review={changeReview.changeSetId}>
             {changeReview.modules.map((module) => (
-                <ChangeReviewModuleBlock key={module.id} module={module} onOpenFile={onOpenFile} />
+                <ChangeReviewModuleBlock
+                    key={module.id}
+                    module={module}
+                    onOpenFile={onOpenFile}
+                    onExplainChange={onExplainChange}
+                    onViewDiff={onViewDiff}
+                />
             ))}
             {changeReview.ungroupedFiles.length > 0 && (
                 <ChangeReviewModuleBlock
                     module={{ id: "ungrouped", title: "Other changes", files: changeReview.ungroupedFiles }}
                     onOpenFile={onOpenFile}
+                    onExplainChange={onExplainChange}
+                    onViewDiff={onViewDiff}
                 />
             )}
             {changeReview.warnings.map((warning) => (
@@ -367,9 +397,13 @@ function ChangeReviewDetails({
 function ChangeReviewModuleBlock({
     module,
     onOpenFile,
+    onExplainChange,
+    onViewDiff,
 }: {
     module: ChangeReviewModule;
     onOpenFile: (path: string) => void;
+    onExplainChange?: (params: { filePath: string; hunkIds: string[] }) => void;
+    onViewDiff?: (params: { filePath: string; hunkIds?: string[] }) => void;
 }) {
     return (
         <div className="space-y-1.5 rounded-lg border border-secondary/15 bg-white/[0.02] p-2" data-agent-progress-change-module={module.id}>
@@ -379,7 +413,13 @@ function ChangeReviewModuleBlock({
             </div>
             <div className="space-y-1.5">
                 {module.files.map((file) => (
-                    <ChangeReviewFileBlock key={`${module.id}:${file.path}`} file={file} onOpenFile={onOpenFile} />
+                    <ChangeReviewFileBlock
+                        key={`${module.id}:${file.path}`}
+                        file={file}
+                        onOpenFile={onOpenFile}
+                        onExplainChange={onExplainChange}
+                        onViewDiff={onViewDiff}
+                    />
                 ))}
             </div>
         </div>
@@ -389,9 +429,13 @@ function ChangeReviewModuleBlock({
 function ChangeReviewFileBlock({
     file,
     onOpenFile,
+    onExplainChange,
+    onViewDiff,
 }: {
     file: ChangeReviewFile;
     onOpenFile: (path: string) => void;
+    onExplainChange?: (params: { filePath: string; hunkIds: string[] }) => void;
+    onViewDiff?: (params: { filePath: string; hunkIds?: string[] }) => void;
 }) {
     return (
         <div className="space-y-1 rounded-md bg-black/10 p-1.5" data-agent-progress-change-file={file.path}>
@@ -405,7 +449,13 @@ function ChangeReviewFileBlock({
             {file.hunks.length > 0 && (
                 <div className="space-y-1">
                     {file.hunks.map((hunk) => (
-                        <ChangeReviewHunk key={hunk.id} hunk={hunk} />
+                        <ChangeReviewHunk
+                            key={hunk.id}
+                            hunk={hunk}
+                            filePath={file.path}
+                            onExplainChange={onExplainChange}
+                            onViewDiff={onViewDiff}
+                        />
                     ))}
                 </div>
             )}
@@ -447,8 +497,20 @@ function ChangeReviewStats({ additions, deletions, hunks }: { additions: number;
     );
 }
 
-function ChangeReviewHunk({ hunk }: { hunk: ChangeSetHunk }) {
+function ChangeReviewHunk({
+    hunk,
+    filePath,
+    onExplainChange,
+    onViewDiff,
+}: {
+    hunk: ChangeSetHunk;
+    filePath: string;
+    onExplainChange?: (params: { filePath: string; hunkIds: string[] }) => void;
+    onViewDiff?: (params: { filePath: string; hunkIds?: string[] }) => void;
+}) {
     const lineRange = `-${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines}`;
+    const canViewDiff = onViewDiff != null;
+    const canExplainChange = onExplainChange != null;
     return (
         <div className="rounded-md border border-secondary/10 bg-black/10 px-2 py-1" data-agent-progress-change-hunk={hunk.id}>
             <div className="flex flex-wrap items-center gap-1.5">
@@ -460,20 +522,32 @@ function ChangeReviewHunk({ hunk }: { hunk: ChangeSetHunk }) {
             <div className="mt-1 flex flex-wrap gap-1">
                 <button
                     type="button"
-                    disabled
-                    aria-disabled="true"
-                    title="Diff viewing is not available yet."
-                    className="cursor-default rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px] text-secondary/70"
+                    disabled={!canViewDiff}
+                    aria-disabled={!canViewDiff}
+                    title={canViewDiff ? "View diff for this hunk." : "Diff viewing is not available yet."}
+                    onClick={() => onViewDiff?.({ filePath, hunkIds: [hunk.id] })}
+                    className={cn(
+                        "rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px]",
+                        canViewDiff
+                            ? "cursor-pointer text-secondary transition-colors hover:border-[var(--accent-color)]/50 hover:text-white"
+                            : "cursor-default text-secondary/70"
+                    )}
                     data-agent-progress-change-hunk-diff={hunk.id}
                 >
                     View diff
                 </button>
                 <button
                     type="button"
-                    disabled
-                    aria-disabled="true"
-                    title="Explanation is not available yet."
-                    className="cursor-default rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px] text-secondary/70"
+                    disabled={!canExplainChange}
+                    aria-disabled={!canExplainChange}
+                    title={canExplainChange ? "Explain this hunk." : "Explanation is not available yet."}
+                    onClick={() => onExplainChange?.({ filePath, hunkIds: [hunk.id] })}
+                    className={cn(
+                        "rounded-md border border-secondary/20 px-1.5 py-0.5 text-[11px]",
+                        canExplainChange
+                            ? "cursor-pointer text-secondary transition-colors hover:border-[var(--accent-color)]/50 hover:text-white"
+                            : "cursor-default text-secondary/70"
+                    )}
                     data-agent-progress-change-hunk-explain={hunk.id}
                 >
                     Explain
