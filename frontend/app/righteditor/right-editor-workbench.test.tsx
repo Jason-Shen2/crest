@@ -167,10 +167,28 @@ describe("RightEditorWorkbench", () => {
         expect(fileTabsMarkup).toContain("app.ts");
         expect(fileTabsMarkup).toContain("src");
         expect(fileTabsMarkup).toContain("test");
+        expect(fileTabsMarkup).toContain("h-8");
+        expect(fileTabsMarkup).toContain("basis-0");
+        expect(fileTabsMarkup).toContain("bg-[#18181b]");
+        expect(fileTabsMarkup).toContain("outline-solid");
+        expect(fileTabsMarkup).toContain("outline-1");
         const visibleText = getVisibleText(fileTabsMarkup);
         expect(visibleText).not.toContain("/repo/");
         expect(visibleText).not.toContain("src/");
         expect(visibleText).not.toContain("test/");
+    });
+
+    it("hides file tab close buttons until hover while keeping the active tab close button visible", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/src/app.ts", "/repo");
+        await model.openFile("/repo/test/app.ts", "/repo");
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+        const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
+
+        expect(fileTabsMarkup).toContain("group-hover/tab:opacity-100");
+        expect(fileTabsMarkup).toContain("opacity-0");
+        expect(fileTabsMarkup).toContain("opacity-100");
     });
 
     it("keeps full paths discoverable for same-name tabs without showing them as visible tab text", async () => {
