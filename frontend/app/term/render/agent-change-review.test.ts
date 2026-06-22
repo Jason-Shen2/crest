@@ -7,6 +7,14 @@ import type { PiRun } from "@/app/store/use-pi-chat";
 import {
     buildChangeReview,
     buildChangeSet,
+    type ChangeOutline,
+    type ChangeReview,
+    type ChangeReviewFile,
+    type ChangeReviewModule,
+    type ChangeReviewWarning,
+    type ChangeSet,
+    type ChangeSetFile,
+    type ChangeSetHunk,
     deriveAgentChangeReview,
     extractChangeOperations,
     parseUnifiedPatchHunks,
@@ -72,6 +80,49 @@ describe("extractChangeOperations", () => {
                 patch: Patch,
             }),
         ]);
+    });
+
+    it("ignores failed tool results so rejected edits do not enter review", () => {
+        const operations = extractChangeOperations(
+            makeRun([
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-failed",
+                    toolName: "edit",
+                    content: [{ type: "text", text: "failed" }],
+                    details: {
+                        changeOperation: {
+                            id: "op-failed",
+                            toolCallId: "edit-failed",
+                            kind: "patch",
+                            path: "src/broken.ts",
+                            patch: Patch,
+                            patchStatus: "complete",
+                        },
+                    },
+                    isError: true,
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-ok",
+                    toolName: "edit",
+                    content: [{ type: "text", text: "patched" }],
+                    details: {
+                        changeOperation: {
+                            id: "op-ok",
+                            toolCallId: "edit-ok",
+                            kind: "patch",
+                            path: "src/app.ts",
+                            patch: Patch,
+                            patchStatus: "complete",
+                        },
+                    },
+                    isError: false,
+                },
+            ])
+        );
+
+        expect(operations.map((operation) => operation.id)).toEqual(["op-ok"]);
     });
 
     it("also reads change operations nested inside toolResult content blocks", () => {
@@ -162,19 +213,41 @@ describe("buildChangeSet", () => {
         expect(changeSet.files).toEqual([
             expect.objectContaining({
                 path: "src/app.ts",
+                status: "modified",
                 stats: { hunks: 2, additions: 3, deletions: 2 },
             }),
             expect.objectContaining({
                 path: "src/virtual.ts",
+                status: "modified",
                 stats: { hunks: 0, additions: 0, deletions: 0 },
                 patchUnavailableReason: "readFile unavailable",
             }),
         ]);
     });
+
+    it("preserves file status and previousPath from operation kind", () => {
+        const changeSet = buildChangeSet([
+            { id: "op-add", kind: "create", path: "src/new.ts", patchStatus: "unavailable" },
+            { id: "op-delete", kind: "delete", path: "src/old.ts", patchStatus: "unavailable" },
+            {
+                id: "op-rename",
+                kind: "rename",
+                path: "src/new-name.ts",
+                previousPath: "src/old-name.ts",
+                patchStatus: "unavailable",
+            },
+        ]);
+
+        expect(changeSet.files.map((file) => [file.path, file.status, file.previousPath])).toEqual([
+            ["src/new.ts", "added", undefined],
+            ["src/old.ts", "deleted", undefined],
+            ["src/new-name.ts", "renamed", "src/old-name.ts"],
+        ]);
+    });
 });
 
 describe("buildChangeReview", () => {
-    it("uses a valid outline to order file and hunk references", () => {
+    it("builds modules from a valid outline and leaves other files ungrouped", () => {
         const changeSet = buildChangeSet([
             {
                 id: "op-1",
@@ -183,22 +256,56 @@ describe("buildChangeReview", () => {
                 patch: Patch,
                 patchStatus: "complete",
             },
+            {
+                id: "op-2",
+                kind: "write",
+                path: "src/virtual.ts",
+                patchStatus: "unavailable",
+                patchUnavailableReason: "readFile unavailable",
+            },
         ]);
 
         const review = buildChangeReview(changeSet, {
-            title: "Focused review",
-            summary: "Review only touched hunks.",
-            files: [{ path: "src/app.ts", hunkIds: ["src/app.ts:2", "src/app.ts:1"] }],
+            modules: [
+                {
+                    id: "focused",
+                    title: "Focused review",
+                    summary: "Review only touched hunks.",
+                    files: [{ path: "src/app.ts", hunkIds: ["src/app.ts:2", "src/app.ts:1"] }],
+                },
+            ],
         });
 
-        expect(review.title).toBe("Focused review");
-        expect(review.summary).toBe("Review only touched hunks.");
-        expect(review.files[0].hunks.map((hunk) => hunk.id)).toEqual(["src/app.ts:2", "src/app.ts:1"]);
-        expect(review.isFallback).toBe(false);
-        expect(review.validationErrors).toEqual([]);
+        const _review: ChangeReview = review;
+        const _changeSet: ChangeSet = review.changeSet;
+        const _module: ChangeReviewModule = review.modules[0];
+        const _file: ChangeReviewFile = review.modules[0].files[0];
+        const _setFile: ChangeSetFile = review.changeSet.files[0];
+        const _hunk: ChangeSetHunk = review.changeSet.files[0].hunks[0];
+        expect(Boolean(_review && _changeSet && _module && _file && _setFile && _hunk)).toBe(true);
+        expect(review.changeSetId).toBe(changeSet.id);
+        expect(review.changeSet).toBe(changeSet);
+        expect(review.modules).toEqual([
+            expect.objectContaining({
+                id: "focused",
+                title: "Focused review",
+                summary: "Review only touched hunks.",
+                files: [
+                    expect.objectContaining({
+                        path: "src/app.ts",
+                        hunks: [
+                            expect.objectContaining({ id: "src/app.ts:2" }),
+                            expect.objectContaining({ id: "src/app.ts:1" }),
+                        ],
+                    }),
+                ],
+            }),
+        ]);
+        expect(review.ungroupedFiles.map((file) => file.path)).toEqual(["src/virtual.ts"]);
+        expect(review.warnings).toEqual([]);
     });
 
-    it("falls back when an outline references missing paths or hunks", () => {
+    it("falls back to ungrouped files with warnings when an outline references missing paths or hunks", () => {
         const changeSet = buildChangeSet([
             {
                 id: "op-1",
@@ -209,17 +316,24 @@ describe("buildChangeReview", () => {
             },
         ]);
 
-        const review = buildChangeReview(changeSet, {
-            title: "Invalid review",
-            files: [{ path: "src/missing.ts", hunkIds: ["src/app.ts:99"] }],
-        });
+        const outline: ChangeOutline = {
+            modules: [
+                {
+                    id: "invalid",
+                    title: "Invalid review",
+                    files: [{ path: "src/missing.ts", hunkIds: ["src/app.ts:99"] }],
+                },
+            ],
+        };
+        const review = buildChangeReview(changeSet, outline);
 
-        expect(review.isFallback).toBe(true);
-        expect(review.title).toBe("Changed files");
-        expect(review.files.map((file) => file.path)).toEqual(["src/app.ts"]);
-        expect(review.validationErrors).toEqual([
-            'Outline references unknown file "src/missing.ts".',
-            'Outline references unknown hunk "src/app.ts:99".',
+        const _warning: ChangeReviewWarning = review.warnings[0];
+        expect(_warning.severity).toBe("warning");
+        expect(review.modules).toEqual([]);
+        expect(review.ungroupedFiles.map((file) => file.path)).toEqual(["src/app.ts"]);
+        expect(review.warnings).toEqual([
+            { code: "unknown-file", message: 'Outline references unknown file "src/missing.ts".', severity: "warning" },
+            { code: "unknown-hunk", message: 'Outline references unknown hunk "src/app.ts:99".', severity: "warning" },
         ]);
     });
 
@@ -248,18 +362,24 @@ describe("buildChangeReview", () => {
         ]);
 
         const review = buildChangeReview(changeSet, {
-            files: [{ path: "src/app.ts", hunkIds: ["src/other.ts:1"] }],
+            modules: [
+                { id: "invalid", title: "Invalid", files: [{ path: "src/app.ts", hunkIds: ["src/other.ts:1"] }] },
+            ],
         });
 
-        expect(review.isFallback).toBe(true);
-        expect(review.validationErrors).toEqual([
-            'Outline references hunk "src/other.ts:1" outside file "src/app.ts".',
+        expect(review.modules).toEqual([]);
+        expect(review.warnings).toEqual([
+            {
+                code: "hunk-file-mismatch",
+                message: 'Outline references hunk "src/other.ts:1" outside file "src/app.ts".',
+                severity: "warning",
+            },
         ]);
     });
 });
 
 describe("deriveAgentChangeReview", () => {
-    it("derives a fallback review from a run", () => {
+    it("derives a review with all files ungrouped when no outline is provided", () => {
         const review = deriveAgentChangeReview(
             makeRun([
                 {
@@ -282,10 +402,11 @@ describe("deriveAgentChangeReview", () => {
         );
 
         expect(review).toMatchObject({
-            title: "Changed files",
-            summary: "1 file changed with 3 additions and 2 deletions.",
-            totals: { files: 1, hunks: 2, additions: 3, deletions: 2 },
-            isFallback: true,
+            changeSetId: "run-1",
+            changeSet: { id: "run-1", totals: { files: 1, hunks: 2, additions: 3, deletions: 2 } },
+            modules: [],
+            warnings: [],
         });
+        expect(review.ungroupedFiles.map((file) => file.path)).toEqual(["src/app.ts"]);
     });
 });
