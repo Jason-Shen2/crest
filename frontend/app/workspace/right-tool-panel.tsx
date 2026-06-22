@@ -8,7 +8,7 @@ import { RightEditorWorkbench } from "@/app/righteditor/right-editor-workbench";
 import { getSettingsKeyAtom } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
-import type { CSSProperties, FocusEvent, ReactNode } from "react";
+import type { CSSProperties, FocusEvent, MouseEvent, ReactNode } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
 
 type RightToolMetadata = {
@@ -172,6 +172,13 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
     if (availableTools.length === 0) {
         return null;
     }
+    const handleOpenTool = (event: MouseEvent<HTMLButtonElement>, tool: RightToolId) => {
+        onOpenTool(tool);
+        const details = event.currentTarget.closest("details");
+        if (details != null) {
+            details.open = false;
+        }
+    };
     return (
         <details className="relative shrink-0" open={initiallyOpen ? true : undefined}>
             <summary
@@ -181,7 +188,6 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
                 <i className="fa-solid fa-plus" />
             </summary>
             <div
-                role="menu"
                 aria-label="Open right tool menu"
                 className="absolute right-0 top-8 z-50 flex min-w-44 flex-col gap-1 rounded-md border border-border bg-panelbg p-1 shadow-xl"
             >
@@ -191,10 +197,9 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
                         <button
                             key={tool}
                             type="button"
-                            role="menuitem"
                             aria-label={`Open ${metadata.label} right tool`}
                             className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-secondary transition-colors hover:bg-hoverbg hover:text-white"
-                            onClick={() => onOpenTool(tool)}
+                            onClick={(event) => handleOpenTool(event, tool)}
                         >
                             <i className={cn("w-4 text-center text-[11px]", metadata.icon)} />
                             <span>{metadata.label}</span>
