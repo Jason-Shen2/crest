@@ -6,6 +6,7 @@ import { Provider } from "jotai";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as rightEditorWorkbench from "./right-editor-workbench";
 
 const mockWorkbench = vi.hoisted(() => {
     const registryModel = { id: "registry-model" };
@@ -63,6 +64,10 @@ type KeyDownEvent = {
     stopPropagation: () => void;
 };
 
+type RightEditorWorkbenchExports = typeof rightEditorWorkbench & {
+    getRightEditorTabPathSuffix?: (path: string, workspaceRoot: string) => string;
+};
+
 function renderWithStore(element: ReactElement): string {
     return renderToStaticMarkup(<Provider store={globalStore}>{element}</Provider>);
 }
@@ -97,6 +102,28 @@ describe("RightEditorWorkbench", () => {
         const markup = renderWithStore(<RightEditorWorkbench model={model} />);
         expect(markup).toContain("app.ts");
         expect(markup).toContain('aria-label="Save app.ts"');
+    });
+
+    it("returns relative parent suffixes for right editor tabs", () => {
+        const getRightEditorTabPathSuffix = (rightEditorWorkbench as RightEditorWorkbenchExports)
+            .getRightEditorTabPathSuffix;
+
+        expect(getRightEditorTabPathSuffix).toBeTypeOf("function");
+        expect(getRightEditorTabPathSuffix?.("/repo/src/app.ts", "/repo")).toBe("src/");
+        expect(getRightEditorTabPathSuffix?.("/repo/packages/web/src/app.ts", "/repo")).toBe("packages/web/src/");
+        expect(getRightEditorTabPathSuffix?.("/repo/app.ts", "/repo")).toBe("");
+    });
+
+    it("renders Trae-style file tabs with filename and relative parent suffix", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/src/app.ts", "/repo");
+        await model.openFile("/repo/test/app.ts", "/repo");
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+
+        expect(markup).toContain("app.ts");
+        expect(markup).toContain("src/");
+        expect(markup).toContain("test/");
     });
 
     it("uses the file uri model from MonacoModelRegistry for the active file", async () => {
