@@ -38,9 +38,10 @@ import * as electron from "electron";
 
 import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
+import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
 import { buildPaneHarness } from "./agent/harness-factory";
 import { uuidv7 } from "./agent/harness/session/uuid";
-import { buildPersistedRunsFromSessionEntries, PaneAgentSession } from "./agent/pane-agent-session";
+import { buildPersistedRunsFromSessionEntries, PaneAgentSession, type AgentRun } from "./agent/pane-agent-session";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { getDefaultTools } from "./agent/tools";
@@ -213,7 +214,21 @@ async function ensurePaneSession(
         const rows = await RpcApi.GetCmdBlocksCommand(ElectronWshClient, { blockid: opts.blockId });
         initialRuns = buildPersistedRunsFromSessionEntries(await piSession.getBranch(), rows ?? []);
     }
-    const owner = new PaneAgentSession(metadata.path, pane, seed.messages ?? [], initialRuns);
+    let owner: PaneAgentSession;
+    const onRunFinished = async (run: AgentRun): Promise<void> => {
+        const operations = extractChangeOperationsFromMessages(run.responseMessages, { runId: run.runId });
+        if (operations.length === 0) return;
+        const changeOutline = await generateChangeOutline({
+            model,
+            operations,
+            runId: run.runId,
+            apiKey,
+        });
+        if (changeOutline) {
+            owner.setRunChangeOutline(run.runId, changeOutline);
+        }
+    };
+    owner = new PaneAgentSession(metadata.path, pane, seed.messages ?? [], initialRuns, { onRunFinished });
     sessionCache.set(metadata.path, owner);
     attachPendingSubscribers(metadata.path, owner);
     return owner;

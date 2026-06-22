@@ -33,6 +33,7 @@
 // See docs/agent-rendering-architecture.md.
 
 import type { SystemPromptInputs } from "./build-system-prompt";
+import type { ChangeOutline } from "./change-review/change-outline";
 import type { PaneHarness } from "./harness-factory";
 import type { AgentHarnessEvent } from "./harness/types";
 import type { SessionTreeEntry } from "./harness/types";
@@ -48,6 +49,7 @@ export interface AgentRun {
     responseMessages: AgentMessage[];
     status: AgentRunStatus;
     errorMessage?: string;
+    changeOutline?: ChangeOutline;
 }
 
 export interface AgentTimelineRef {
@@ -74,6 +76,11 @@ export interface PaneSessionSnapshot {
 }
 
 export type PaneSessionListener = (event: AgentHarnessEvent) => void;
+export type PaneRunFinishedHook = (run: AgentRun) => void | Promise<void>;
+
+export interface PaneAgentSessionOptions {
+    onRunFinished?: PaneRunFinishedHook;
+}
 
 function isErroredAssistant(message: AgentMessage): boolean {
     return (
@@ -185,10 +192,18 @@ export class PaneAgentSession {
 
     listeners = new Set<PaneSessionListener>();
     unsubscribeHarness: () => void;
+    onRunFinished: PaneRunFinishedHook | undefined;
 
-    constructor(path: string, pane: PaneHarness, initialMessages: AgentMessage[] = [], initialRuns: AgentRun[] = []) {
+    constructor(
+        path: string,
+        pane: PaneHarness,
+        initialMessages: AgentMessage[] = [],
+        initialRuns: AgentRun[] = [],
+        options: PaneAgentSessionOptions = {},
+    ) {
         this.path = path;
         this.pane = pane;
+        this.onRunFinished = options.onRunFinished;
         // Seed the transcript from the persisted session so a REOPENED
         // conversation shows its history. A fresh session passes []. New
         // messages then accumulate via the live stream on top of this.
@@ -274,7 +289,7 @@ export class PaneAgentSession {
             }
             case "abort": {
                 this.running = false;
-                this.finishActiveRun();
+                this.finishActiveRun(false);
                 if (this.status !== "error") this.status = "idle";
                 return;
             }
@@ -376,6 +391,13 @@ export class PaneAgentSession {
         this.runs = this.runs.map((run) => (run.runId === nextRun.runId ? nextRun : run));
     }
 
+    setRunChangeOutline(runId: string, changeOutline: ChangeOutline | undefined): void {
+        const run = this.runs.find((item) => item.runId === runId);
+        if (!run) return;
+        this.setRun({ ...run, changeOutline });
+        this.emitRunUpdate();
+    }
+
     private applyMessageStartToRun(message: AgentMessage): void {
         const role = (message as { role?: string }).role;
         if (role === "user" && !this.activeRunId) {
@@ -415,11 +437,34 @@ export class PaneAgentSession {
         });
     }
 
-    private finishActiveRun(): void {
+    private finishActiveRun(notifyFinished = true): void {
         const run = this.getActiveRun();
+        let finishedRun = run;
         if (run && run.status !== "error") {
-            this.setRun({ ...run, status: "done" });
+            finishedRun = { ...run, status: "done" };
+            this.setRun(finishedRun);
         }
         this.activeRunId = undefined;
+        if (notifyFinished && finishedRun?.status === "done") {
+            this.notifyRunFinished(finishedRun);
+        }
+    }
+
+    private notifyRunFinished(run: AgentRun): void {
+        if (!this.onRunFinished) return;
+        void Promise.resolve(this.onRunFinished(run)).catch((err) => {
+            console.error(`[pane-session] onRunFinished error for ${this.path}:`, err);
+        });
+    }
+
+    private emitRunUpdate(): void {
+        const event = { type: "agent_run_update" } as AgentHarnessEvent;
+        for (const listener of this.listeners) {
+            try {
+                listener(event);
+            } catch (err) {
+                console.error(`[pane-session] listener error for ${this.path}:`, err);
+            }
+        }
     }
 }

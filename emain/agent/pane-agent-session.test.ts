@@ -200,6 +200,48 @@ describe("PaneAgentSession — owned runs", () => {
             },
         ]);
     });
+
+    it("calls onRunFinished with the completed run after agent_end", () => {
+        const fake = makeFakeHarness();
+        const onRunFinished = vi.fn();
+        const owner = new PaneAgentSession("/s", fake.pane, [], [], { onRunFinished });
+        const q = user("hello");
+        const final = assistant("hello back", "stop");
+
+        owner.send("run-a", "hello");
+        fake.emit({ type: "message_start", message: q });
+        fake.emit({ type: "message_start", message: assistant("hel") });
+        fake.emit({ type: "message_end", message: final });
+        fake.emit({ type: "agent_end", messages: [q, final] });
+
+        expect(onRunFinished).toHaveBeenCalledWith({
+            runId: "run-a",
+            userMessage: q,
+            responseMessages: [final],
+            status: "done",
+        });
+    });
+
+    it("updates a completed run change outline and notifies subscribers", () => {
+        const fake = makeFakeHarness();
+        const owner = new PaneAgentSession("/s", fake.pane);
+        const seen: string[] = [];
+        owner.subscribe((event) => seen.push(event.type));
+
+        owner.send("run-a", "hello");
+        fake.emit({ type: "message_start", message: user("hello") });
+        fake.emit({ type: "message_start", message: assistant("hello back") });
+        fake.emit({ type: "message_end", message: assistant("hello back", "stop") });
+        fake.emit({ type: "agent_end", messages: [] });
+        owner.setRunChangeOutline("run-a", {
+            modules: [{ id: "ui", title: "UI changes", files: [{ path: "src/app.ts" }] }],
+        });
+
+        expect(owner.getSnapshot().runs[0].changeOutline).toEqual({
+            modules: [{ id: "ui", title: "UI changes", files: [{ path: "src/app.ts" }] }],
+        });
+        expect(seen).toContain("agent_run_update");
+    });
 });
 
 describe("buildPersistedRunsFromTimeline", () => {

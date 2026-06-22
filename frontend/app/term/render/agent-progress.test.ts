@@ -155,6 +155,67 @@ describe("deriveAgentProgress", () => {
         ]);
     });
 
+    it("uses the run change outline to group change review files", () => {
+        const patch = `--- a/src/app.ts
++++ b/src/app.ts
+@@ -1 +1,2 @@
+ const keep = true;
++const added = true;
+`;
+        const progress = deriveAgentProgress({
+            ...makeRun([
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "toolCall",
+                            id: "edit-1",
+                            name: "edit_text_file",
+                            input: { path: "src/app.ts" },
+                        },
+                    ],
+                },
+                {
+                    role: "toolResult",
+                    toolCallId: "edit-1",
+                    toolName: "edit_text_file",
+                    content: [{ type: "text", text: "patched" }],
+                    details: {
+                        changeOperation: {
+                            id: "op-1",
+                            toolCallId: "edit-1",
+                            kind: "patch",
+                            path: "src/app.ts",
+                            patch,
+                            patchStatus: "complete",
+                        },
+                    },
+                    isError: false,
+                },
+            ]),
+            changeOutline: {
+                modules: [
+                    {
+                        id: "app-flow",
+                        title: "Application flow",
+                        summary: "Review the app flow update.",
+                        files: [{ path: "src/app.ts" }],
+                    },
+                ],
+            },
+        });
+
+        expect(progress.changeReview?.modules).toEqual([
+            expect.objectContaining({
+                id: "app-flow",
+                title: "Application flow",
+                summary: "Review the app flow update.",
+                files: [expect.objectContaining({ path: "src/app.ts" })],
+            }),
+        ]);
+        expect(progress.changeReview?.ungroupedFiles).toEqual([]);
+    });
+
     it("groups read-only discovery tool calls into a product-facing exploration stage", () => {
         const progress = deriveAgentProgress(
             makeRun([
