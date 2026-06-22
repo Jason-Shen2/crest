@@ -158,6 +158,7 @@ describe("RightEditorWorkbench", () => {
         expect(getRightEditorTabPathSuffix?.("/a/src/app.ts", "/")).toBe("a/src");
         expect(getRightEditorTabPathSuffix?.("/other/src/app.ts", "/repo")).toBe("src");
         expect(getRightEditorTabPathSuffix?.("/repo/app.ts", "/repo")).toBe("");
+        expect(getRightEditorTabPathSuffix?.(String.raw`C:\repo\src\app.ts`, String.raw`C:\repo`)).toBe("src");
     });
 
     it("renders Trae-style file tabs with filename and relative parent suffix", async () => {
@@ -176,6 +177,23 @@ describe("RightEditorWorkbench", () => {
         expect(visibleText).not.toContain("/repo/");
         expect(visibleText).not.toContain("src/");
         expect(visibleText).not.toContain("test/");
+    });
+
+    it("renders Windows file tabs with filename and relative parent suffix without showing the drive path", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        const path = String.raw`C:\repo\src\app.ts`;
+        await model.openFile(path, String.raw`C:\repo`);
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+        const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
+        const visibleText = getVisibleText(fileTabsMarkup);
+
+        expect(visibleText).toContain("app.ts");
+        expect(visibleText).toContain("src");
+        expect(visibleText).not.toContain(String.raw`C:\repo`);
+        expect(fileTabsMarkup).toContain(`title="${path}"`);
+        expect(fileTabsMarkup).toContain(`aria-label="Select ${path}"`);
+        expect(fileTabsMarkup).toContain(`aria-label="Close ${path}"`);
     });
 
     it("hides file tab close buttons until hover while keeping the active tab close button visible", async () => {
