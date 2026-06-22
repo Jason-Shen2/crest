@@ -150,7 +150,7 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
         <div className="flex h-full min-h-0 flex-col bg-[#111113]">
             <div
                 aria-label="Right editor file tabs"
-                className="flex h-9 shrink-0 items-stretch overflow-hidden border-b border-[#27272a] bg-[#18181b] text-[12px]"
+                className="flex h-8 shrink-0 items-stretch overflow-hidden border-b border-[#27272a] bg-[#111113] text-[12px]"
             >
                 {state.openFiles.map((file) => {
                     const active = file.path === activeFile.path;
@@ -161,14 +161,14 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                         <div
                             key={file.path}
                             className={cn(
-                                "flex min-w-0 max-w-56 items-center border-r border-[#2b2b30]",
+                                "group/tab flex h-8 min-w-24 max-w-56 flex-1 basis-0 items-center rounded-sm border border-transparent",
                                 active
-                                    ? "bg-[#252529] text-[#f4f4f5]"
-                                    : "text-[#a1a1aa] hover:bg-[#202024] hover:text-[#f4f4f5]"
+                                    ? "border-[#3f3f46] bg-[#252529] text-[#f4f4f5] outline-solid outline-1 outline-[#4b5563]"
+                                    : "bg-[#18181b] text-[#a1a1aa] hover:border-[#3f3f46] hover:bg-[#202024] hover:text-[#f4f4f5]"
                             )}
                         >
                             <button
-                                className="flex min-w-0 cursor-pointer items-center gap-1.5 px-3 py-1.5"
+                                className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2"
                                 aria-label={`Select ${file.path}`}
                                 onClick={() => model.selectFile(file.path)}
                                 title={file.path}
@@ -184,7 +184,10 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                             <button
                                 type="button"
                                 aria-label={`Close ${file.path}`}
-                                className="mr-1 cursor-pointer rounded px-1.5 py-1 text-[#71717a] hover:bg-[#3f3f46] hover:text-[#f4f4f5]"
+                                className={cn(
+                                    "mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:opacity-100",
+                                    active ? "opacity-100" : "opacity-0 group-hover/tab:opacity-100"
+                                )}
                                 title={file.path}
                                 onClick={() =>
                                     closeRightEditorFileWithConfirmation({

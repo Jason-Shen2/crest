@@ -179,6 +179,7 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-label="Hide right tool panel"');
         expect(markup).toContain("fa-solid fa-chevron-right");
         expect(markup).toContain('aria-current="page"');
+        expect(markup).toContain("ml-0");
         expect(markup).not.toContain(">Tools<");
     });
 
@@ -215,7 +216,8 @@ describe("RightToolPanel parts", () => {
         );
 
         expect(markup).toContain("<details");
-        expect(markup).toContain("open=\"\"");
+        expect(markup).toContain('open=""');
+        expect(markup).toContain('aria-label="Close right tool menu"');
         expect(markup).not.toContain('role="menu"');
         expect(markup).not.toContain('role="menuitem"');
         expect(markup).toContain('aria-label="Open Browser right tool"');
@@ -245,6 +247,25 @@ describe("RightToolPanel parts", () => {
         expect(details.open).toBe(false);
     });
 
+    it("closes the open tool menu when the outside dismiss layer is pressed", () => {
+        const menu = RightToolOpenMenu({
+            openedTools: ["editor"],
+            onOpenTool: () => null,
+            initiallyOpen: true,
+        });
+        const dismissLayer = findElementByAriaLabel(menu, "Close right tool menu");
+        const details = { open: true };
+
+        expect(dismissLayer.props.onClick).toBeTypeOf("function");
+        dismissLayer.props.onClick?.({
+            currentTarget: {
+                closest: (selector: string) => (selector === "details" ? details : null),
+            },
+        });
+
+        expect(details.open).toBe(false);
+    });
+
     it("hides the open button when all right tools are already open", () => {
         const markup = renderToStaticMarkup(
             <RightToolTopBar
@@ -271,7 +292,7 @@ describe("RightToolPanel parts", () => {
         expect(markup).not.toContain("Terminal");
     });
 
-    it("marks active tabs, uses pill styling, and renders close buttons", () => {
+    it("marks active tabs, uses Trae-style rectangular styling, and reveals close buttons on hover or active", () => {
         const markup = renderToStaticMarkup(
             <RightToolTabs
                 openedTools={["editor", "browser"]}
@@ -287,7 +308,14 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-current="page"');
         expect(markup).toContain('aria-label="Close Editor"');
         expect(markup).toContain('aria-label="Close Browser"');
-        expect(markup).toContain("rounded-md");
+        expect(markup).toContain("h-8");
+        expect(markup).toContain("basis-0");
+        expect(markup).toContain("bg-[#18181b]");
+        expect(markup).toContain("outline-solid");
+        expect(markup).toContain("outline-1");
+        expect(markup).toContain("group-hover/tab:opacity-100");
+        expect(markup).toContain("opacity-0");
+        expect(markup).toContain("opacity-100");
         expect(markup).toContain("fa-regular fa-pen-to-square");
     });
 

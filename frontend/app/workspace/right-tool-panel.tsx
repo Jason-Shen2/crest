@@ -148,18 +148,18 @@ export function RightToolTopBar({
 }: RightToolTopBarProps) {
     const hasAvailableTools = RightToolIds.some((tool) => !openedTools.includes(tool));
     return (
-        <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-1.5">
-            <RightToolTabs
-                activeTool={activeTool}
-                openedTools={openedTools}
-                onSelectTool={onSelectTool}
-                onCloseTool={onCloseTool}
-            />
-            {hasAvailableTools ? (
-                <RightToolOpenMenu openedTools={openedTools} onOpenTool={onOpenTool} />
-            ) : null}
+        <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-[#111113] px-2">
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+                <RightToolTabs
+                    activeTool={activeTool}
+                    openedTools={openedTools}
+                    onSelectTool={onSelectTool}
+                    onCloseTool={onCloseTool}
+                />
+                {hasAvailableTools ? <RightToolOpenMenu openedTools={openedTools} onOpenTool={onOpenTool} /> : null}
+            </div>
             {action != null ? (
-                <div aria-label="Right tool panel actions" className="ml-auto flex shrink-0 items-center gap-1">
+                <div aria-label="Right tool panel actions" className="ml-0 flex shrink-0 items-center gap-1">
                     {action}
                 </div>
             ) : null}
@@ -172,12 +172,15 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
     if (availableTools.length === 0) {
         return null;
     }
-    const handleOpenTool = (event: MouseEvent<HTMLButtonElement>, tool: RightToolId) => {
-        onOpenTool(tool);
+    const closeDetails = (event: MouseEvent<HTMLElement>) => {
         const details = event.currentTarget.closest("details");
         if (details != null) {
             details.open = false;
         }
+    };
+    const handleOpenTool = (event: MouseEvent<HTMLButtonElement>, tool: RightToolId) => {
+        onOpenTool(tool);
+        closeDetails(event);
     };
     return (
         <details className="relative shrink-0" open={initiallyOpen ? true : undefined}>
@@ -187,6 +190,12 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
             >
                 <i className="fa-solid fa-plus" />
             </summary>
+            <button
+                type="button"
+                aria-label="Close right tool menu"
+                className="fixed inset-0 z-40 cursor-default"
+                onClick={closeDetails}
+            />
             <div
                 aria-label="Open right tool menu"
                 className="absolute right-0 top-8 z-50 flex min-w-44 flex-col gap-1 rounded-md border border-border bg-panelbg p-1 shadow-xl"
@@ -216,7 +225,11 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
         return null;
     }
     return (
-        <nav aria-label="Right tool tabs" className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+        <nav
+            aria-label="Right tool tabs"
+            className="flex min-w-0 max-w-full items-center gap-1 overflow-hidden"
+            style={{ width: `min(100%, ${openedTools.length * 136}px)` }}
+        >
             {openedTools.map((tool) => {
                 const metadata = RightToolMetadataById[tool];
                 const active = tool === activeTool;
@@ -224,26 +237,29 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                     <div
                         key={tool}
                         className={cn(
-                            "flex min-w-0 items-center rounded-md border text-xs transition-colors",
+                            "group/tab flex h-8 min-w-24 flex-1 basis-0 items-center rounded-sm border text-xs transition-colors",
                             active
-                                ? "border-border bg-hoverbg text-white"
-                                : "border-transparent bg-black/20 text-secondary hover:border-border hover:bg-hoverbg hover:text-white"
+                                ? "border-[#3f3f46] bg-[#252529] text-[#f4f4f5] outline-solid outline-1 outline-[#4b5563]"
+                                : "border-transparent bg-[#18181b] text-[#a1a1aa] hover:border-[#3f3f46] hover:bg-[#202024] hover:text-[#f4f4f5]"
                         )}
                     >
                         <button
                             type="button"
                             aria-label={`Select ${metadata.label}`}
                             aria-current={active ? "page" : undefined}
-                            className="flex min-w-0 cursor-pointer items-center gap-1.5 py-1 pl-2 pr-1"
+                            className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2"
                             onClick={() => onSelectTool(tool)}
                         >
                             <i className={cn("shrink-0 text-[11px]", metadata.icon)} />
-                            <span className="truncate">{metadata.label}</span>
+                            <span className="truncate font-medium">{metadata.label}</span>
                         </button>
                         <button
                             type="button"
                             aria-label={`Close ${metadata.label}`}
-                            className="cursor-pointer py-1 pl-1 pr-2 text-muted hover:text-white"
+                            className={cn(
+                                "mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:opacity-100",
+                                active ? "opacity-100" : "opacity-0 group-hover/tab:opacity-100"
+                            )}
                             onClick={() => onCloseTool(tool)}
                         >
                             <i className="fa-solid fa-xmark" />
