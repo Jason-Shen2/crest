@@ -72,6 +72,16 @@ function renderWithStore(element: ReactElement): string {
     return renderToStaticMarkup(<Provider store={globalStore}>{element}</Provider>);
 }
 
+function getRightEditorFileTabsMarkup(markup: string): string {
+    const tabBarStart = markup.indexOf(
+        '<div class="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1">'
+    );
+    const saveButtonStart = markup.indexOf('<button type="button" aria-label="Save ', tabBarStart);
+    expect(tabBarStart).toBeGreaterThan(-1);
+    expect(saveButtonStart).toBeGreaterThan(tabBarStart);
+    return markup.slice(tabBarStart, saveButtonStart);
+}
+
 function mountCapturedEditor(): (event: KeyDownEvent) => void {
     let keyDownHandler: (event: KeyDownEvent) => void;
     mockWorkbench.codeEditorProps[0].onMount({
@@ -120,10 +130,11 @@ describe("RightEditorWorkbench", () => {
         await model.openFile("/repo/test/app.ts", "/repo");
 
         const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+        const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
 
-        expect(markup).toContain("app.ts");
-        expect(markup).toContain("src/");
-        expect(markup).toContain("test/");
+        expect(fileTabsMarkup).toContain("app.ts");
+        expect(fileTabsMarkup).toContain("src/");
+        expect(fileTabsMarkup).toContain("test/");
     });
 
     it("uses the file uri model from MonacoModelRegistry for the active file", async () => {
