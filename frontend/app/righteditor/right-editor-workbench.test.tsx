@@ -134,6 +134,8 @@ describe("RightEditorWorkbench", () => {
         expect(fileTabsMarkup).toContain("test");
         expect(fileTabsMarkup).toContain("●");
         expect(fileTabsMarkup).not.toContain("/repo/");
+        expect(fileTabsMarkup).not.toContain("src/");
+        expect(fileTabsMarkup).not.toContain("test/");
     });
 
     it("returns relative parent suffixes for right editor tabs", () => {
@@ -158,6 +160,8 @@ describe("RightEditorWorkbench", () => {
         expect(fileTabsMarkup).toContain("src");
         expect(fileTabsMarkup).toContain("test");
         expect(fileTabsMarkup).not.toContain("/repo/");
+        expect(fileTabsMarkup).not.toContain("src/");
+        expect(fileTabsMarkup).not.toContain("test/");
     });
 
     it("uses the file uri model from MonacoModelRegistry for the active file", async () => {
