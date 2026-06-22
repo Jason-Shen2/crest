@@ -63,6 +63,13 @@ export type RightToolTabsProps = {
     onCloseTool: (tool: RightToolId) => void;
 };
 
+export type RightToolTopBarProps = {
+    title: string;
+    actionAriaLabel: string;
+    actionIconClassName: string;
+    onAction: () => void;
+};
+
 export type RightToolContentProps = {
     activeTool?: RightToolId;
 };
@@ -119,6 +126,22 @@ export function RightToolLauncher({ supportedTools = RightToolIds, onOpenTool }:
                     );
                 })}
             </div>
+        </div>
+    );
+}
+
+export function RightToolTopBar({ title, actionAriaLabel, actionIconClassName, onAction }: RightToolTopBarProps) {
+    return (
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
+            <div className="text-xs font-semibold uppercase tracking-wide text-secondary">{title}</div>
+            <button
+                type="button"
+                aria-label={actionAriaLabel}
+                className="cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
+                onClick={onAction}
+            >
+                <i className={actionIconClassName} />
+            </button>
         </div>
     );
 }
@@ -265,17 +288,12 @@ export function RightToolPanelMagnifiedOverlayView({
                     onBlurPanel();
                 }}
             >
-                <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
-                    <button
-                        type="button"
-                        aria-label="Exit magnified right tool panel"
-                        className="cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
-                        onClick={onExit}
-                    >
-                        <i className="fa-solid fa-down-left-and-up-right-to-center" />
-                    </button>
-                </div>
+                {RightToolTopBar({
+                    title: "Tools",
+                    actionAriaLabel: "Exit magnified right tool panel",
+                    actionIconClassName: "fa-solid fa-down-left-and-up-right-to-center",
+                    onAction: onExit,
+                })}
                 <RightToolTabs
                     activeTool={state.activeTool}
                     openedTools={state.openedTools}
@@ -317,17 +335,12 @@ export function RightToolPanel({
                 onBlurPanel();
             }}
         >
-            <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
-                <div className="text-xs font-semibold uppercase tracking-wide text-secondary">Tools</div>
-                <button
-                    type="button"
-                    aria-label="Hide right tool panel"
-                    className="cursor-pointer rounded px-2 py-1 text-muted hover:bg-hoverbg hover:text-white"
-                    onClick={onHide}
-                >
-                    <i className="fa-solid fa-chevron-right" />
-                </button>
-            </div>
+            {RightToolTopBar({
+                title: "Tools",
+                actionAriaLabel: "Hide right tool panel",
+                actionIconClassName: "fa-solid fa-chevron-right",
+                onAction: onHide,
+            })}
             <RightToolTabs
                 activeTool={state.activeTool}
                 openedTools={state.openedTools}
