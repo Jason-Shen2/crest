@@ -8,17 +8,20 @@ const TransportMocks = vi.hoisted(() => {
     const setModelMarkers = vi.fn();
     const getModel = vi.fn((uri) => ({ uri }));
     const ensureMonacoVscodeServices = vi.fn(async () => undefined);
+    const jsonRpcSocketClosed = vi.fn();
     return {
         startClient,
         disposeClient,
         setModelMarkers,
         getModel,
         ensureMonacoVscodeServices,
+        jsonRpcSocketClosed,
         clientConstructor: vi.fn(function (this: any) {
             this.start = startClient;
             this.dispose = disposeClient;
         }),
-        readerConstructor: vi.fn(function (this: any) {
+        readerConstructor: vi.fn(function (this: any, socket: any) {
+            socket.onClose(jsonRpcSocketClosed);
             this.dispose = vi.fn();
         }),
         writerConstructor: vi.fn(function (this: any) {
@@ -79,6 +82,10 @@ class MockWebSocket {
     error(): void {
         this.onerror?.();
     }
+
+    closeWith(code: number, reason: string): void {
+        this.onclose?.({ code, reason });
+    }
 }
 
 function installRuntime(endpoint?: string): void {
@@ -98,6 +105,7 @@ describe("createLspWebSocketTransport", () => {
         TransportMocks.setModelMarkers.mockClear();
         TransportMocks.getModel.mockClear();
         TransportMocks.ensureMonacoVscodeServices.mockClear();
+        TransportMocks.jsonRpcSocketClosed.mockClear();
         TransportMocks.clientConstructor.mockClear();
         TransportMocks.readerConstructor.mockClear();
         TransportMocks.writerConstructor.mockClear();
@@ -222,6 +230,63 @@ describe("createLspWebSocketTransport", () => {
         MockWebSocket.instances[0].error();
 
         await expect(transportPromise).rejects.toThrow("Failed to connect to LSP WebSocket");
+    });
+
+    it("rejects with the WebSocket close reason when the socket closes before opening", async () => {
+        installRuntime("ws://127.0.0.1:9010");
+        vi.stubGlobal("WebSocket", MockWebSocket);
+
+        const transportPromise = createLspWebSocketTransport({
+            workspaceRoot: "/repo",
+            language: "go",
+            serverId: "gopls",
+        });
+        MockWebSocket.instances[0].closeWith(1008, "LSP unavailable: Install gopls: go install golang.org/x/tools/gopls@latest");
+
+        await expect(transportPromise).rejects.toThrow(
+            "LSP unavailable: Install gopls: go install golang.org/x/tools/gopls@latest"
+        );
+        expect(TransportMocks.startClient).not.toHaveBeenCalled();
+    });
+
+    it("rejects with the WebSocket close reason when the socket closes before the Monaco client starts", async () => {
+        installRuntime("ws://127.0.0.1:9010");
+        vi.stubGlobal("WebSocket", MockWebSocket);
+        TransportMocks.startClient.mockImplementationOnce(
+            () =>
+                new Promise<void>(() => {
+                    // Keep startup pending so the close event must reject the transport.
+                })
+        );
+
+        const transportPromise = createLspWebSocketTransport({
+            workspaceRoot: "/repo",
+            language: "go",
+            serverId: "gopls",
+        });
+        MockWebSocket.instances[0].open();
+        await Promise.resolve();
+        MockWebSocket.instances[0].closeWith(1008, "LSP unavailable: Install gopls");
+
+        await expect(transportPromise).rejects.toThrow("LSP unavailable: Install gopls");
+    });
+
+    it("routes WebSocket closes after startup through the JSON-RPC reader", async () => {
+        installRuntime("ws://127.0.0.1:9010");
+        vi.stubGlobal("WebSocket", MockWebSocket);
+
+        const transportPromise = createLspWebSocketTransport({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+        });
+        MockWebSocket.instances[0].open();
+        const transport = await transportPromise;
+
+        MockWebSocket.instances[0].closeWith(1006, "server stopped");
+
+        expect(TransportMocks.jsonRpcSocketClosed).toHaveBeenCalledWith(1006, "server stopped");
+        transport.dispose();
     });
 
     it("maps 1-based LSP diagnostic severities to Monaco markers", () => {
