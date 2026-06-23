@@ -29,6 +29,7 @@ function makeFakeHarness() {
     let navigateTreeResult: () => Promise<unknown> = () => Promise.resolve({ cancelled: false });
     const session = {
         getEntries: vi.fn().mockResolvedValue([]),
+        getBranch: vi.fn().mockResolvedValue([]),
         getLeafId: vi.fn().mockResolvedValue(null),
         getLabel: vi.fn().mockResolvedValue(undefined),
     };
@@ -181,6 +182,21 @@ describe("PaneAgentSession — command operations", () => {
         expect(result.labels.get("1")).toBe("Intro");
     });
 
+    it("omits internal leaf entries from listed session tree entries", async () => {
+        const fake = makeFakeHarness();
+        const message = { type: "message", id: "1", parentId: null, timestamp: "t", message: user("hello") };
+        const leaf = { type: "leaf", id: "leaf-entry", parentId: "1", timestamp: "t", targetId: "1" };
+        fake.session.getEntries.mockResolvedValue([message, leaf]);
+        fake.session.getLeafId.mockResolvedValue("1");
+
+        const owner = new PaneAgentSession("/s", fake.pane);
+        const result = await owner.listTreeEntries();
+
+        expect(result.entries).toEqual([message]);
+        expect(fake.session.getLabel).toHaveBeenCalledTimes(1);
+        expect(fake.session.getLabel).toHaveBeenCalledWith("1");
+    });
+
     it("navigates the session tree without branch summarization", async () => {
         const fake = makeFakeHarness();
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "edit this" }));
@@ -190,6 +206,67 @@ describe("PaneAgentSession — command operations", () => {
 
         expect(fake.calls.navigateTree).toEqual([{ targetId: "entry-1", options: { summarize: false } }]);
         expect(result).toEqual({ editorText: "edit this" });
+    });
+
+    it("rebuilds owner snapshot from the selected branch after tree navigation", async () => {
+        const fake = makeFakeHarness();
+        const oldMessages = [user("old question"), assistant("old answer", "stop")];
+        const q = user("new question");
+        const a = assistant("new answer", "stop");
+        const branchEntries: SessionTreeEntry[] = [
+            {
+                type: "custom",
+                id: "run-entry",
+                parentId: null,
+                timestamp: "2026-01-01T00:00:00.000Z",
+                customType: AgentRunSessionEntryType,
+                data: { runId: "new-run" },
+            },
+            {
+                type: "message",
+                id: "m1",
+                parentId: "run-entry",
+                timestamp: "2026-01-01T00:00:01.000Z",
+                message: q,
+            },
+            {
+                type: "message",
+                id: "m2",
+                parentId: "m1",
+                timestamp: "2026-01-01T00:00:02.000Z",
+                message: a,
+            },
+        ];
+        fake.session.getBranch.mockResolvedValue(branchEntries);
+        const owner = new PaneAgentSession("/s", fake.pane, oldMessages);
+        const seen: unknown[] = [];
+        owner.subscribe((event) => seen.push(event));
+
+        await owner.navigateTree("m2");
+
+        expect(owner.getSnapshot().messages).toEqual([q, a]);
+        expect(owner.getSnapshot().runs).toEqual([
+            {
+                runId: "new-run",
+                userMessage: q,
+                responseMessages: [a],
+                status: "done",
+            },
+        ]);
+        expect(seen).toContainEqual(
+            expect.objectContaining({
+                type: "snapshot",
+                messages: [q, a],
+                runs: [
+                    {
+                        runId: "new-run",
+                        userMessage: q,
+                        responseMessages: [a],
+                        status: "done",
+                    },
+                ],
+            }),
+        );
     });
 
     it("returns an empty navigation result when tree navigation is cancelled", async () => {
