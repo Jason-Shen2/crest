@@ -55,6 +55,17 @@ export function shouldStartRightEditorLsp(language: string, workspaceRoot: strin
     return isRightEditorLspSupported(language, workspaceRoot);
 }
 
+export function getRightEditorLspLifecycleKeyForActiveFile(input: {
+    activeFile: RightEditorOpenFile | null | undefined;
+    workspaceRoot: string;
+}): string | undefined {
+    if (!input.activeFile) return undefined;
+    const workspaceRoot = input.activeFile.workspaceRoot || input.workspaceRoot;
+    const server = getRightEditorLanguageServer(input.activeFile.language);
+    if (!workspaceRoot || !server) return undefined;
+    return `${workspaceRoot}\u0000${server.serverId}`;
+}
+
 type LspLifecycleManager = {
     acquireClient: (input: {
         workspaceRoot: string;
@@ -124,6 +135,10 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
     const state = useAtomValue(model.stateAtom);
     const activeFile = state.openFiles.find((file) => file.path === state.activePath);
     const text = activeFile ? (activeFile.dirtyText ?? activeFile.savedText) : "";
+    const activeLspLifecycleKey = getRightEditorLspLifecycleKeyForActiveFile({
+        activeFile,
+        workspaceRoot: activeFile?.workspaceRoot ?? state.workspaceRoot,
+    });
     const activeMonacoModel = useMemo(() => {
         if (!activeFile) return null;
         return MonacoModelRegistry.getInstance().getOrCreateModel({
@@ -140,7 +155,7 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
             workspaceRoot: activeFile?.workspaceRoot ?? state.workspaceRoot,
             lspManager: languageClientManager,
         });
-    }, [state.workspaceRoot, activeFile?.workspaceRoot, activeFile?.language]);
+    }, [activeLspLifecycleKey]);
 
     if (!activeFile) {
         return (
