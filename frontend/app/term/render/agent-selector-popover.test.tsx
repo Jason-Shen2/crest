@@ -9,6 +9,7 @@ import {
     AgentSelectorPanel,
     commitAgentSelectorPick,
     editorTextFromAgentSelectorResult,
+    getInitialAgentSelectorFocusEntryId,
     getAgentSelectorTitle,
     shouldAllowAgentSelectorCancel,
     type AgentSelectorViewState,
@@ -103,6 +104,15 @@ describe("agent selector popover", () => {
 
     it("labels fork selectors by forkable prompt points", () => {
         expect(getAgentSelectorTitle("fork")).toBe("Fork agent session");
+    });
+
+    it("focuses the most recent fork point by default", () => {
+        expect(
+            getInitialAgentSelectorFocusEntryId("fork", [
+                { id: "oldest-user-message", preview: "first prompt" },
+                { id: "recent-user-message", preview: "latest prompt" },
+            ])
+        ).toBe("recent-user-message");
     });
 
     it("keeps cancellation disabled while a selector pick is committing", () => {
