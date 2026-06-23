@@ -1,0 +1,276 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { cn } from "@/util/util";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import type { AgentSelectorRequest } from "./agent-chat-host";
+
+type AgentSelectorRequestType = AgentSelectorRequest["type"];
+
+export interface AgentSelectorEntryView {
+    id: string;
+    parentId?: string;
+    role?: string;
+    label?: string;
+    preview: string;
+    timestamp?: string;
+    isLeaf?: boolean;
+    isCurrent?: boolean;
+}
+
+export type AgentSelectorViewState =
+    | { status: "idle" | "loading"; entries: AgentSelectorEntryView[] }
+    | { status: "ready"; entries: AgentSelectorEntryView[] }
+    | { status: "error"; entries: AgentSelectorEntryView[]; message: string };
+
+export interface AgentSelectorPopoverProps {
+    request: AgentSelectorRequest | null;
+    onClose: () => void;
+    onUserMessage?: (message: string) => void;
+}
+
+export async function commitAgentSelectorPick(
+    request: AgentSelectorRequest,
+    entryId: string
+): Promise<AgentNavigateTreeResult | AgentForkSessionResult> {
+    if (request.type === "tree") {
+        return await request.navigateTree(entryId);
+    }
+    return await request.forkSession(entryId);
+}
+
+export function getAgentSelectorTitle(type: AgentSelectorRequestType): string {
+    return type === "tree" ? "Agent session tree" : "Fork agent session";
+}
+
+function getAgentSelectorSubtitle(type: AgentSelectorRequestType): string {
+    return type === "tree"
+        ? "Jump to a previous point in this agent session."
+        : "Pick a previous user prompt to fork into a new session.";
+}
+
+function successMessage(type: AgentSelectorRequestType): string {
+    return type === "tree" ? "Navigated agent session tree." : "Forked agent session.";
+}
+
+function normalizeForkPoints(points: AgentForkPointView[]): AgentSelectorEntryView[] {
+    return points.map((point) => ({
+        id: point.entryId,
+        role: "user",
+        preview: point.preview,
+        timestamp: point.timestamp,
+    }));
+}
+
+async function loadSelectorEntries(request: AgentSelectorRequest): Promise<AgentSelectorEntryView[]> {
+    if (request.type === "tree") {
+        const result = await request.listTree();
+        return result.entries.map((entry) => ({
+            id: entry.id,
+            parentId: entry.parentId,
+            role: entry.role,
+            label: entry.label,
+            preview: entry.preview,
+            timestamp: entry.timestamp,
+            isLeaf: entry.isLeaf,
+            isCurrent: entry.isCurrent,
+        }));
+    }
+    return normalizeForkPoints(await request.listForkPoints());
+}
+
+export const AgentSelectorPopover = memo(({ request, onClose, onUserMessage }: AgentSelectorPopoverProps) => {
+    const [state, setState] = useState<AgentSelectorViewState>({ status: "idle", entries: [] });
+    const [busyEntryId, setBusyEntryId] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!request) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key !== "Escape") return;
+            e.preventDefault();
+            onClose();
+        };
+        document.addEventListener("keydown", onKeyDown);
+        return () => document.removeEventListener("keydown", onKeyDown);
+    }, [request, onClose]);
+
+    useEffect(() => {
+        if (!request) {
+            setState({ status: "idle", entries: [] });
+            setBusyEntryId(null);
+            return;
+        }
+
+        let cancelled = false;
+        setState({ status: "loading", entries: [] });
+        setBusyEntryId(null);
+        void loadSelectorEntries(request)
+            .then((entries) => {
+                if (cancelled) return;
+                setState({ status: "ready", entries });
+            })
+            .catch((err) => {
+                if (cancelled) return;
+                const message = err instanceof Error ? err.message : String(err);
+                setState({ status: "error", entries: [], message });
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [request]);
+
+    const handlePick = useCallback(
+        async (entryId: string) => {
+            if (!request) return;
+            setBusyEntryId(entryId);
+            try {
+                await commitAgentSelectorPick(request, entryId);
+                onUserMessage?.(successMessage(request.type));
+                onClose();
+            } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                setState((prev) => ({ status: "error", entries: prev.entries, message }));
+            } finally {
+                setBusyEntryId(null);
+            }
+        },
+        [request, onClose, onUserMessage]
+    );
+
+    if (!request) return null;
+
+    return (
+        <AgentSelectorPanel
+            requestType={request.type}
+            state={state}
+            busyEntryId={busyEntryId}
+            onPick={handlePick}
+            onCancel={onClose}
+        />
+    );
+});
+AgentSelectorPopover.displayName = "AgentSelectorPopover";
+
+export interface AgentSelectorPanelProps {
+    requestType: AgentSelectorRequestType;
+    state: AgentSelectorViewState;
+    busyEntryId: string | null;
+    onPick: (entryId: string) => void;
+    onCancel: () => void;
+}
+
+export const AgentSelectorPanel = memo(
+    ({ requestType, state, busyEntryId, onPick, onCancel }: AgentSelectorPanelProps) => {
+        const depths = useMemo(() => computeDepths(state.entries), [state.entries]);
+        const empty = state.status === "ready" && state.entries.length === 0;
+        return (
+            <div
+                className="absolute inset-0 z-[900]"
+                data-agent-selector-backdrop="true"
+                onClick={onCancel}
+                onMouseDown={(e) => e.stopPropagation()}
+            >
+                <div
+                    className="absolute bottom-24 left-1/2 w-[min(560px,calc(100%-32px))] -translate-x-1/2 overflow-hidden rounded-md border border-fg-overlay-3 bg-fg-overlay-1 text-[12px] text-foreground shadow-xl backdrop-blur"
+                    data-agent-selector="true"
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                >
+                    <div className="flex items-start justify-between gap-3 border-b border-fg-overlay-2/70 px-3 py-2">
+                        <div>
+                            <div className="text-[13px] font-semibold">{getAgentSelectorTitle(requestType)}</div>
+                            <div className="mt-0.5 text-secondary/70">{getAgentSelectorSubtitle(requestType)}</div>
+                        </div>
+                        <button
+                            type="button"
+                            className="rounded px-2 py-1 text-secondary hover:bg-fg-overlay-2/70 hover:text-foreground"
+                            onClick={onCancel}
+                        >
+                            Cancel
+                        </button>
+                    </div>
+
+                    {state.status === "loading" && <PanelMessage>Loading choices…</PanelMessage>}
+                    {state.status === "error" && <PanelMessage tone="error">{state.message}</PanelMessage>}
+                    {empty && <PanelMessage>No choices available for this session.</PanelMessage>}
+
+                    {state.entries.length > 0 && (
+                        <div className="max-h-[360px] overflow-y-auto py-1">
+                            {state.entries.map((entry) => (
+                                <button
+                                    key={entry.id}
+                                    type="button"
+                                    data-agent-selector-entry={entry.id}
+                                    data-agent-selector-current={entry.isCurrent ? "true" : undefined}
+                                    className={cn(
+                                        "flex w-full cursor-pointer items-start gap-2 px-3 py-2 text-left hover:bg-fg-overlay-2/70",
+                                        entry.isCurrent && "bg-fg-overlay-2/45"
+                                    )}
+                                    onClick={() => onPick(entry.id)}
+                                    disabled={busyEntryId != null}
+                                >
+                                    <span
+                                        className="mt-0.5 shrink-0 text-secondary/60"
+                                        style={{ width: `${Math.min(depths.get(entry.id) ?? 0, 6) * 14 + 16}px` }}
+                                    >
+                                        {requestType === "tree" ? "↳" : "•"}
+                                    </span>
+                                    <span className="min-w-0 flex-1">
+                                        <span className="flex items-center gap-2">
+                                            <span className="truncate font-medium">
+                                                {entry.label || entry.role || "entry"}
+                                            </span>
+                                            {entry.isCurrent && (
+                                                <span className="rounded bg-green-500/15 px-1.5 py-0.5 text-[10px] text-green-300">
+                                                    current
+                                                </span>
+                                            )}
+                                            {entry.isLeaf && !entry.isCurrent && (
+                                                <span className="rounded bg-fg-overlay-2 px-1.5 py-0.5 text-[10px] text-secondary">
+                                                    leaf
+                                                </span>
+                                            )}
+                                        </span>
+                                        <span className="mt-0.5 block truncate text-secondary/80">{entry.preview}</span>
+                                    </span>
+                                    {busyEntryId === entry.id && (
+                                        <span className="shrink-0 text-secondary">Working…</span>
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="border-t border-fg-overlay-2/60 px-3 py-1.5 text-[11px] text-secondary/65">
+                        Click a row to select · Esc or outside click cancels.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+);
+AgentSelectorPanel.displayName = "AgentSelectorPanel";
+
+function PanelMessage({ children, tone = "muted" }: { children: React.ReactNode; tone?: "muted" | "error" }) {
+    return (
+        <div className={cn("px-3 py-4 text-center", tone === "error" ? "text-rose-300" : "text-secondary/75")}>
+            {children}
+        </div>
+    );
+}
+
+function computeDepths(entries: AgentSelectorEntryView[]): Map<string, number> {
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const depths = new Map<string, number>();
+    const depthFor = (entry: AgentSelectorEntryView): number => {
+        const cached = depths.get(entry.id);
+        if (cached != null) return cached;
+        const parent = entry.parentId ? byId.get(entry.parentId) : undefined;
+        const depth = parent ? depthFor(parent) + 1 : 0;
+        depths.set(entry.id, depth);
+        return depth;
+    };
+    entries.forEach(depthFor);
+    return depths;
+}
