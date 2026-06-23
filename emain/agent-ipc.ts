@@ -27,11 +27,11 @@
 //       on cleanup, but sender 'destroyed' also releases automatically
 //   on     "agent:unsubscribe"         (sessionPath)
 //   handle "agent:list-commands"       () → AgentCommandInfo[]
-//   handle "agent:list-tree"           (sessionPath) → AgentTreeEntryView[]
-//   handle "agent:list-fork-points"    (sessionPath) → AgentForkPointView[]
-//   handle "agent:navigate-tree"       (sessionPath, targetId) → { editorText? }
-//   handle "agent:fork-session"        (metadata, entryId) → AgentSessionMeta
-//   handle "agent:clone-session"       (metadata) → AgentSessionMeta
+//   handle "agent:list-tree"           (metadata) → { entries, leafId }
+//   handle "agent:list-fork-points"    (metadata) → AgentForkPointView[]
+//   handle "agent:navigate-tree"       ({ metadata, targetId }) → { metadata, editorText? }
+//   handle "agent:fork-session"        ({ metadata, cwd, entryId }) → { metadata, selectedText? }
+//   handle "agent:clone-session"       ({ metadata, cwd }) → { metadata?, message? }
 //
 // Event stream payload (sent on "agent:event"):
 //   { sessionPath: string, event: AgentHarnessEvent }
@@ -46,7 +46,7 @@ import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
 import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
 import { getBuiltInAgentCommands } from "./agent/commands/registry";
-import { buildAgentForkPointViews, buildAgentTreeEntryViews } from "./agent/commands/session-views";
+import { buildAgentForkPointViews, buildAgentTreeEntryViews, previewSessionEntry } from "./agent/commands/session-views";
 import type { AgentCommandInfo, AgentForkPointView, AgentTreeEntryView } from "./agent/commands/types";
 import { buildPaneHarness } from "./agent/harness-factory";
 import { uuidv7 } from "./agent/harness/session/uuid";
@@ -117,6 +117,42 @@ interface SendOptions {
      * allowAll regardless of this value. See emain/agent/permissions.ts.
      */
     allowedTools?: string[];
+}
+
+interface AgentNavigateTreeInput {
+    sessionMetadata: JsonlSessionMetadata;
+    targetId: string;
+}
+
+interface AgentForkSessionInput {
+    sessionMetadata: JsonlSessionMetadata;
+    cwd: string;
+    entryId: string;
+}
+
+interface AgentCloneSessionInput {
+    sessionMetadata: JsonlSessionMetadata;
+    cwd: string;
+}
+
+interface AgentTreeResult {
+    entries: AgentTreeEntryView[];
+    leafId: string | null;
+}
+
+interface AgentNavigateTreeResult {
+    sessionMetadata: JsonlSessionMetadata;
+    editorText?: string;
+}
+
+interface AgentForkSessionResult {
+    sessionMetadata: JsonlSessionMetadata;
+    selectedText?: string;
+}
+
+interface AgentCloneSessionResult {
+    sessionMetadata?: JsonlSessionMetadata;
+    message?: string;
 }
 
 function resolveModelOrThrow(provider: string, modelId: string): Model<Api> {
@@ -354,15 +390,15 @@ function attachPendingSubscribers(sessionPath: string, session: PaneAgentSession
     }
 }
 
-async function getSessionTreeData(sessionPath: string): Promise<{
+async function getSessionTreeData(sessionMetadata: JsonlSessionMetadata): Promise<{
     entries: Awaited<ReturnType<PaneAgentSession["listTreeEntries"]>>["entries"];
     leafId: string | null;
     labels: Map<string, string | undefined>;
 }> {
-    const owner = sessionCache.get(sessionPath);
+    const owner = sessionCache.get(sessionMetadata.path);
     if (owner) return owner.listTreeEntries();
 
-    const session = await openPaneSessionByPath(sessionPath);
+    const session = await openPaneSession(sessionMetadata);
     const entries = (await session.getEntries()).filter((entry) => entry.type !== "leaf");
     const leafId = await session.getLeafId();
     const labels = new Map<string, string | undefined>();
@@ -376,43 +412,49 @@ export function listAgentCommandsForIpc(): AgentCommandInfo[] {
     return getBuiltInAgentCommands();
 }
 
-export async function listAgentTreeForIpc(sessionPath: string): Promise<AgentTreeEntryView[]> {
-    const { entries, leafId, labels } = await getSessionTreeData(sessionPath);
-    return buildAgentTreeEntryViews(entries, leafId, labels);
+export async function listAgentTreeForIpc(sessionMetadata: JsonlSessionMetadata): Promise<AgentTreeResult> {
+    const { entries, leafId, labels } = await getSessionTreeData(sessionMetadata);
+    return { entries: buildAgentTreeEntryViews(entries, leafId, labels), leafId };
 }
 
-export async function listAgentForkPointsForIpc(sessionPath: string): Promise<AgentForkPointView[]> {
-    const { entries } = await getSessionTreeData(sessionPath);
+export async function listAgentForkPointsForIpc(sessionMetadata: JsonlSessionMetadata): Promise<AgentForkPointView[]> {
+    const { entries } = await getSessionTreeData(sessionMetadata);
     return buildAgentForkPointViews(entries);
 }
 
-export async function navigateAgentTreeForIpc(
-    sessionPath: string,
-    targetId: string,
-): Promise<{ editorText?: string }> {
-    const owner = sessionCache.get(sessionPath);
+export async function navigateAgentTreeForIpc(input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> {
+    const owner = sessionCache.get(input.sessionMetadata.path);
     if (!owner) {
-        throw new Error(`agent session is not active: ${sessionPath}`);
+        throw new Error(`agent session is not active: ${input.sessionMetadata.path}`);
     }
-    return owner.navigateTree(targetId);
+    const result = await owner.navigateTree(input.targetId);
+    return { sessionMetadata: input.sessionMetadata, ...result };
 }
 
-export async function forkAgentSessionForIpc(
-    sourceMetadata: JsonlSessionMetadata,
-    entryId: string,
-): Promise<JsonlSessionMetadata> {
-    const { metadata } = await forkPaneSession(sourceMetadata, { entryId });
-    return metadata;
+export async function forkAgentSessionForIpc(input: AgentForkSessionInput): Promise<AgentForkSessionResult> {
+    const source = await openPaneSession(input.sessionMetadata);
+    const target = await source.getEntry(input.entryId);
+    const { metadata } = await forkPaneSession(input.sessionMetadata, {
+        cwd: input.cwd,
+        entryId: input.entryId,
+    });
+    return {
+        sessionMetadata: metadata,
+        ...(target ? { selectedText: previewSessionEntry(target) } : {}),
+    };
 }
 
-export async function cloneAgentSessionForIpc(sourceMetadata: JsonlSessionMetadata): Promise<JsonlSessionMetadata> {
-    const source = await openPaneSession(sourceMetadata);
+export async function cloneAgentSessionForIpc(input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> {
+    const source = await openPaneSession(input.sessionMetadata);
     const leafId = await source.getLeafId();
+    if (!leafId) {
+        return { message: "No session branch to clone yet." };
+    }
     const { metadata } = await forkPaneSession(
-        sourceMetadata,
-        leafId ? { entryId: leafId, position: "at" } : {},
+        input.sessionMetadata,
+        { cwd: input.cwd, entryId: leafId, position: "at" },
     );
-    return metadata;
+    return { sessionMetadata: metadata };
 }
 
 /**
@@ -439,35 +481,35 @@ export function registerAgentIpcHandlers(): void {
         return listAgentCommandsForIpc();
     });
 
-    electron.ipcMain.handle("agent:list-tree", async (_event, sessionPath: string): Promise<AgentTreeEntryView[]> => {
-        return await listAgentTreeForIpc(sessionPath);
+    electron.ipcMain.handle("agent:list-tree", async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentTreeResult> => {
+        return await listAgentTreeForIpc(sessionMetadata);
     });
 
     electron.ipcMain.handle(
         "agent:list-fork-points",
-        async (_event, sessionPath: string): Promise<AgentForkPointView[]> => {
-            return await listAgentForkPointsForIpc(sessionPath);
+        async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentForkPointView[]> => {
+            return await listAgentForkPointsForIpc(sessionMetadata);
         },
     );
 
     electron.ipcMain.handle(
         "agent:navigate-tree",
-        async (_event, sessionPath: string, targetId: string): Promise<{ editorText?: string }> => {
-            return await navigateAgentTreeForIpc(sessionPath, targetId);
+        async (_event, input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> => {
+            return await navigateAgentTreeForIpc(input);
         },
     );
 
     electron.ipcMain.handle(
         "agent:fork-session",
-        async (_event, sourceMetadata: JsonlSessionMetadata, entryId: string): Promise<JsonlSessionMetadata> => {
-            return await forkAgentSessionForIpc(sourceMetadata, entryId);
+        async (_event, input: AgentForkSessionInput): Promise<AgentForkSessionResult> => {
+            return await forkAgentSessionForIpc(input);
         },
     );
 
     electron.ipcMain.handle(
         "agent:clone-session",
-        async (_event, sourceMetadata: JsonlSessionMetadata): Promise<JsonlSessionMetadata> => {
-            return await cloneAgentSessionForIpc(sourceMetadata);
+        async (_event, input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> => {
+            return await cloneAgentSessionForIpc(input);
         },
     );
 

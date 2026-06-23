@@ -91,10 +91,11 @@ describe("agent-ipc command helpers", () => {
         const firstId = await session.appendMessage(user("first question"));
         await session.appendMessage(assistant("first answer"));
 
-        const tree = await listAgentTreeForIpc(metadata.path);
-        const forkPoints = await listAgentForkPointsForIpc(metadata.path);
+        const tree = await listAgentTreeForIpc(metadata);
+        const forkPoints = await listAgentForkPointsForIpc(metadata);
 
-        expect(tree).toEqual([
+        expect(tree.leafId).not.toBeNull();
+        expect(tree.entries).toEqual([
             expect.objectContaining({ id: firstId, preview: "first question", role: "user", isCurrent: false }),
             expect.objectContaining({ preview: "first answer", role: "assistant", isCurrent: true }),
         ]);
@@ -106,15 +107,32 @@ describe("agent-ipc command helpers", () => {
         await session.appendMessage(user("keep this"));
         const forkPointId = await session.appendMessage(user("fork target"));
 
-        const forked = await forkAgentSessionForIpc(metadata, forkPointId);
-        const cloned = await cloneAgentSessionForIpc(metadata);
+        const forked = await forkAgentSessionForIpc({
+            sessionMetadata: metadata,
+            cwd: "/tmp/agent-ipc-fork-alt",
+            entryId: forkPointId,
+        });
+        const cloned = await cloneAgentSessionForIpc({ sessionMetadata: metadata, cwd: "/tmp/agent-ipc-clone-alt" });
 
-        expect(forked.parentSessionPath).toBe(metadata.path);
-        expect(cloned.parentSessionPath).toBe(metadata.path);
-        expect((await listAgentTreeForIpc(forked.path)).map((entry) => entry.preview)).toEqual(["keep this"]);
-        expect((await listAgentTreeForIpc(cloned.path)).map((entry) => entry.preview)).toEqual([
+        expect(forked.sessionMetadata.parentSessionPath).toBe(metadata.path);
+        expect(forked.sessionMetadata.cwd).toBe("/tmp/agent-ipc-fork-alt");
+        expect(forked.selectedText).toBe("fork target");
+        expect(cloned.sessionMetadata?.parentSessionPath).toBe(metadata.path);
+        expect(cloned.sessionMetadata?.cwd).toBe("/tmp/agent-ipc-clone-alt");
+        expect((await listAgentTreeForIpc(forked.sessionMetadata)).entries.map((entry) => entry.preview)).toEqual(["keep this"]);
+        expect((await listAgentTreeForIpc(cloned.sessionMetadata!)).entries.map((entry) => entry.preview)).toEqual([
             "keep this",
             "fork target",
         ]);
+    });
+
+    it("clone is a no-op when the source session has no leaf", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-empty");
+
+        const cloned = await cloneAgentSessionForIpc({ sessionMetadata: metadata, cwd: "/tmp/agent-ipc-empty-clone" });
+
+        expect(cloned.sessionMetadata).toBeUndefined();
+        expect(cloned.message).toContain("No session branch");
+        await expect((await listAgentTreeForIpc(metadata)).entries).toEqual([]);
     });
 });

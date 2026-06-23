@@ -164,11 +164,11 @@ declare global {
             createSession: (cwd: string) => Promise<AgentSessionMeta>;
             listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
             listCommands: () => Promise<AgentCommandInfo[]>; // agent:list-commands
-            listTree: (sessionPath: string) => Promise<AgentTreeEntryView[]>; // agent:list-tree
-            listForkPoints: (sessionPath: string) => Promise<AgentForkPointView[]>; // agent:list-fork-points
-            navigateTree: (sessionPath: string, targetId: string) => Promise<{ editorText?: string }>; // agent:navigate-tree
-            forkSession: (sourceMetadata: AgentSessionMeta, entryId: string) => Promise<AgentSessionMeta>; // agent:fork-session
-            cloneSession: (sourceMetadata: AgentSessionMeta) => Promise<AgentSessionMeta>; // agent:clone-session
+            listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>; // agent:list-tree
+            listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>; // agent:list-fork-points
+            navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>; // agent:navigate-tree
+            forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>; // agent:fork-session
+            cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>; // agent:clone-session
             send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
@@ -262,6 +262,42 @@ declare global {
         entryId: string;
         preview: string;
         timestamp?: string;
+    };
+
+    type AgentTreeResult = {
+        entries: AgentTreeEntryView[];
+        leafId: string | null;
+    };
+
+    type AgentNavigateTreeInput = {
+        sessionMetadata: AgentSessionMeta;
+        targetId: string;
+    };
+
+    type AgentNavigateTreeResult = {
+        sessionMetadata: AgentSessionMeta;
+        editorText?: string;
+    };
+
+    type AgentForkSessionInput = {
+        sessionMetadata: AgentSessionMeta;
+        cwd: string;
+        entryId: string;
+    };
+
+    type AgentForkSessionResult = {
+        sessionMetadata: AgentSessionMeta;
+        selectedText?: string;
+    };
+
+    type AgentCloneSessionInput = {
+        sessionMetadata: AgentSessionMeta;
+        cwd: string;
+    };
+
+    type AgentCloneSessionResult = {
+        sessionMetadata?: AgentSessionMeta;
+        message?: string;
     };
 
     type ElectronContextMenuItem = {
