@@ -8,6 +8,7 @@ type ClientKey = string;
 type EnsureClientInput = {
     workspaceRoot: string;
     language: string;
+    languages?: string[];
     serverId?: string | null;
     displayName?: string;
 };

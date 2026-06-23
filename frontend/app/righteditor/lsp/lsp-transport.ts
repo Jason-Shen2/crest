@@ -9,6 +9,7 @@ import { type IWebSocket, WebSocketMessageReader, WebSocketMessageWriter } from 
 export type LspTransportInput = {
     workspaceRoot: string;
     language: string;
+    languages?: string[];
 };
 
 export type LspTransport = {
@@ -104,6 +105,7 @@ export async function createLspWebSocketTransport(input: LspTransportInput): Pro
         workspaceRoot: input.workspaceRoot,
         language: input.language,
     });
+    const documentSelectorLanguages = input.languages?.length ? input.languages : [input.language];
     const socket = new WebSocket(`${getRuntimeLspWebSocketUrl()}/lsp?${params.toString()}`);
     return new Promise<LspTransport>((resolve, reject) => {
         socket.onopen = async () => {
@@ -116,7 +118,7 @@ export async function createLspWebSocketTransport(input: LspTransportInput): Pro
                 const client = new MonacoLanguageClient({
                     name: `Crest ${input.language} Language Client`,
                     clientOptions: {
-                        documentSelector: [{ scheme: "file", language: input.language }],
+                        documentSelector: documentSelectorLanguages.map((language) => ({ scheme: "file", language })),
                         errorHandler: {
                             error: () => ({ action: LanguageClientErrorActionContinue }),
                             closed: () => ({ action: LanguageClientCloseActionDoNotRestart }),

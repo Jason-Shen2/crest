@@ -22,6 +22,51 @@ describe("LanguageClientManager", () => {
         expect(transportFactory).toHaveBeenCalledTimes(1);
     });
 
+    it("starts shared TS transport with the concrete first language and all server languages", async () => {
+        const transportFactory = vi.fn(async () => ({ dispose: vi.fn() }));
+        const manager = new LanguageClientManager({ transportFactory });
+        const languages = ["typescript", "typescriptreact", "javascript", "javascriptreact"];
+
+        await manager.ensureClient({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            languages,
+        });
+        await manager.ensureClient({
+            workspaceRoot: "/repo",
+            language: "typescriptreact",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            languages,
+        });
+
+        expect(transportFactory).toHaveBeenCalledWith({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            languages,
+        });
+        expect(
+            manager.getStatus({
+                workspaceRoot: "/repo",
+                language: "typescriptreact",
+                serverId: "typescript-language-server",
+                displayName: "TypeScript/JavaScript",
+                languages,
+            })
+        ).toEqual({
+            workspaceRoot: "/repo",
+            language: "typescriptreact",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            state: "running",
+            message: null,
+        });
+    });
+
     it("starts separate clients for different server ids in the same workspace", async () => {
         const transportFactory = vi.fn(async () => ({ dispose: vi.fn() }));
         const manager = new LanguageClientManager({ transportFactory });
