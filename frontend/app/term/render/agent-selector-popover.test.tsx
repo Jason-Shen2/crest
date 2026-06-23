@@ -92,6 +92,10 @@ describe("agent selector popover", () => {
         expect(html).toContain("Cancel");
         expect(html).toContain('role="dialog"');
         expect(html).toContain('aria-modal="true"');
+        expect(html).toContain('aria-labelledby="agent-selector-tree-title"');
+        expect(html).toContain('aria-describedby="agent-selector-tree-description"');
+        expect(html).toContain('id="agent-selector-tree-title"');
+        expect(html).toContain('id="agent-selector-tree-description"');
         expect(html).toContain('tabindex="-1"');
         expect(html).toContain('data-agent-selector-entry="root"');
         expect(html).toContain('data-agent-selector-current="true"');
