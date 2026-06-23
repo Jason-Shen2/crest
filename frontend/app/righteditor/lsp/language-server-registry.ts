@@ -7,6 +7,11 @@ export type RightEditorLanguageServerDefinition = {
     installHint?: string;
 };
 
+export type RightEditorBasicEditingStatus = RightEditorLspStatus & {
+    serverId: string | null;
+    displayName: string;
+};
+
 export type RightEditorLspSupport =
     | {
           supported: true;
@@ -14,7 +19,7 @@ export type RightEditorLspSupport =
       }
     | {
           supported: false;
-          status: RightEditorLspStatus;
+          status: RightEditorBasicEditingStatus;
       };
 
 export const rightEditorLanguageServers: RightEditorLanguageServerDefinition[] = [
