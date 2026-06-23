@@ -117,6 +117,7 @@ export interface CmdBlockInputProps {
     // Fires on every editor keystroke with the latest buffer text.  The
     // NLD model (parent-owned) consumes this to drive autodetection.
     onTextChange?: (text: string) => void;
+    restoredTextRequest?: { text: string; requestId: number };
     // When `mode === "auto"`, this is the classifier's current verdict
     // and the value that will be used on submit.  Defaults to "terminal"
     // when omitted so the component degrades gracefully without NLD.
@@ -1252,6 +1253,7 @@ export const CmdBlockInput = memo(
         topRightSlot,
         history: externalHistory,
         onTextChange,
+        restoredTextRequest,
         effectiveMode,
     }: CmdBlockInputProps) => {
         const [text, setText] = useState("");
@@ -1337,6 +1339,13 @@ export const CmdBlockInput = memo(
         const fileInputRef = useRef<HTMLInputElement>(null);
         const [focusRequest, setFocusRequest] = useState(0);
         const requestEditorFocus = useCallback(() => setFocusRequest((prev) => prev + 1), []);
+
+        useEffect(() => {
+            if (!restoredTextRequest) return;
+            setText(restoredTextRequest.text);
+            onTextChange?.(restoredTextRequest.text);
+            requestEditorFocus();
+        }, [restoredTextRequest?.requestId, restoredTextRequest, onTextChange, requestEditorFocus]);
 
         useEffect(() => {
             const el = containerRef.current;
