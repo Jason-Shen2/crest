@@ -109,7 +109,11 @@ describe("createLspWebSocketTransport", () => {
         vi.stubGlobal("WebSocket", MockWebSocket);
 
         await expect(
-            createLspWebSocketTransport({ workspaceRoot: "/repo", language: "typescript" })
+            createLspWebSocketTransport({
+                workspaceRoot: "/repo",
+                language: "typescript",
+                serverId: "typescript-language-server",
+            })
         ).rejects.toThrow("LSP WebSocket URL is not available");
         expect(MockWebSocket.instances).toHaveLength(0);
     });
@@ -122,6 +126,7 @@ describe("createLspWebSocketTransport", () => {
         const transportPromise = createLspWebSocketTransport({
             workspaceRoot: "/repo",
             language: "typescript",
+            serverId: "typescript-language-server",
         }).then((transport) => {
             settled = true;
             return transport;
@@ -130,7 +135,7 @@ describe("createLspWebSocketTransport", () => {
 
         expect(settled).toBe(false);
         expect(MockWebSocket.instances[0].url).toBe(
-            "ws://127.0.0.1:9010/lsp?workspaceRoot=%2Frepo&language=typescript"
+            "ws://127.0.0.1:9010/lsp?workspaceRoot=%2Frepo&language=typescript&serverId=typescript-language-server"
         );
 
         MockWebSocket.instances[0].open();
@@ -147,6 +152,7 @@ describe("createLspWebSocketTransport", () => {
         const transportPromise = createLspWebSocketTransport({
             workspaceRoot: "/repo",
             language: "typescript",
+            serverId: "typescript-language-server",
         });
         MockWebSocket.instances[0].open();
         const transport = await transportPromise;
@@ -179,13 +185,14 @@ describe("createLspWebSocketTransport", () => {
         const transportPromise = createLspWebSocketTransport({
             workspaceRoot: "/repo",
             language: "typescript",
+            serverId: "typescript-language-server",
             languages: ["typescript", "typescriptreact", "javascript", "javascriptreact"],
         });
         MockWebSocket.instances[0].open();
         const transport = await transportPromise;
 
         expect(MockWebSocket.instances[0].url).toBe(
-            "ws://127.0.0.1:9010/lsp?workspaceRoot=%2Frepo&language=typescript"
+            "ws://127.0.0.1:9010/lsp?workspaceRoot=%2Frepo&language=typescript&serverId=typescript-language-server"
         );
         expect(TransportMocks.clientConstructor).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -210,6 +217,7 @@ describe("createLspWebSocketTransport", () => {
         const transportPromise = createLspWebSocketTransport({
             workspaceRoot: "/repo",
             language: "typescript",
+            serverId: "typescript-language-server",
         });
         MockWebSocket.instances[0].error();
 
