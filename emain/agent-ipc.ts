@@ -169,11 +169,21 @@ function requireNonEmptyString(value: unknown, fieldName: string): string {
     return value;
 }
 
-function assertInsideSessionsDir(sessionPath: string, sessionsRoot: string): void {
+function assertInsideSessionsDir(sessionPath: string, sessionsRoot: string, fieldName: string): void {
     const relative = path.relative(sessionsRoot, sessionPath);
     if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
-        throw new Error(`agent IPC: sessionMetadata.path is outside sessions directory`);
+        throw new Error(`agent IPC: ${fieldName} is outside sessions directory`);
     }
+}
+
+async function validateSessionPath(value: unknown, fieldName = "sessionPath"): Promise<string> {
+    const inputPath = requireNonEmptyString(value, fieldName);
+    const [sessionPath, sessionsRoot] = await Promise.all([
+        fs.realpath(inputPath),
+        fs.realpath(defaultSessionsDir()),
+    ]);
+    assertInsideSessionsDir(sessionPath, sessionsRoot, fieldName);
+    return sessionPath;
 }
 
 function validateSessionMetadataShape(value: unknown): JsonlSessionMetadata {
@@ -195,11 +205,7 @@ async function openValidatedSessionMetadata(value: unknown): Promise<{
     requestedPath: string;
 }> {
     const input = validateSessionMetadataShape(value);
-    const [sessionPath, sessionsRoot] = await Promise.all([
-        fs.realpath(input.path),
-        fs.realpath(defaultSessionsDir()),
-    ]);
-    assertInsideSessionsDir(sessionPath, sessionsRoot);
+    const sessionPath = await validateSessionPath(input.path, "sessionMetadata.path");
     const session = await openPaneSessionByPath(sessionPath);
     const metadata = await session.getMetadata();
     return { metadata, session, requestedPath: input.path };
@@ -289,9 +295,11 @@ async function ensureSession(opts: SendOptions): Promise<{
     isNew: boolean;
 }> {
     if (opts.sessionMetadata) {
-        return { metadata: opts.sessionMetadata, isNew: false };
+        const { metadata } = await openValidatedSessionMetadata(opts.sessionMetadata);
+        return { metadata, isNew: false };
     }
-    const { metadata } = await createPaneSession(opts.cwd);
+    const created = await createPaneSession(opts.cwd);
+    const { metadata } = await openValidatedSessionMetadata(await created.session.getMetadata());
     return { metadata, isNew: true };
 }
 
@@ -426,8 +434,10 @@ async function sendPersistedSnapshot(
     sessionPath: string,
     blockId?: string,
 ): Promise<void> {
+    let canonicalPath = sessionPath;
     try {
-        const session = await openPaneSessionByPath(sessionPath);
+        canonicalPath = await validateSessionPath(sessionPath);
+        const session = await openPaneSessionByPath(canonicalPath);
         const context = await session.buildContext();
         let runs = [];
         if (blockId) {
@@ -436,7 +446,7 @@ async function sendPersistedSnapshot(
         }
         if (sender.isDestroyed()) return;
         sender.send("agent:event", {
-            sessionPath,
+            sessionPath: canonicalPath,
             event: {
                 type: "snapshot",
                 messages: context.messages,
@@ -447,7 +457,7 @@ async function sendPersistedSnapshot(
             },
         });
     } catch (err) {
-        console.error(`[agent-ipc] persisted snapshot error for ${sessionPath}:`, err);
+        console.error(`[agent-ipc] persisted snapshot error for ${canonicalPath}:`, err);
     }
 }
 
@@ -566,6 +576,41 @@ export async function cloneAgentSessionForIpc(input: unknown): Promise<AgentClon
     return { sessionMetadata: metadata };
 }
 
+export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    sessionCache.get(canonicalPath)?.abort();
+}
+
+export async function subscribeAgentSessionForIpc(
+    sender: electron.WebContents,
+    sessionPath: unknown,
+    opts?: { blockId?: string },
+): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    const session = sessionCache.get(canonicalPath);
+    if (!session) {
+        const key: SubKey = `${sender.id}:${canonicalPath}`;
+        if (!pendingSubscriptions.has(key)) {
+            pendingSubscriptions.set(key, { sender, sessionPath: canonicalPath, blockId: opts?.blockId });
+            trackSenderKey(sender, key);
+        }
+        await sendPersistedSnapshot(sender, canonicalPath, opts?.blockId);
+        return;
+    }
+    subscribeToOwner(sender, canonicalPath, session);
+}
+
+export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPath: unknown): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    const key: SubKey = `${senderId}:${canonicalPath}`;
+    releaseSubscription(key);
+    const set = subscriptionsBySender.get(senderId);
+    if (set) {
+        set.delete(key);
+        if (set.size === 0) subscriptionsBySender.delete(senderId);
+    }
+}
+
 /**
  * Wire the agent IPC handlers. Call once at app startup from
  * emain-ipc.ts initIpcHandlers().
@@ -660,36 +705,21 @@ export function registerAgentIpcHandlers(): void {
     );
 
     electron.ipcMain.on("agent:abort", (_event, sessionPath: string) => {
-        if (typeof sessionPath !== "string" || !sessionPath) return;
-        // Fire an abort intent at the owner — not a synchronous request for
-        // completion. The owner forwards to the harness.
-        sessionCache.get(sessionPath)?.abort();
+        void abortAgentSessionForIpc(sessionPath).catch((err) => {
+            console.error("[agent-ipc] abort validation error:", err);
+        });
     });
 
     electron.ipcMain.on("agent:subscribe", (event, sessionPath: string, opts?: { blockId?: string }) => {
-        if (typeof sessionPath !== "string" || !sessionPath) return;
-        const session = sessionCache.get(sessionPath);
-        if (!session) {
-            const key: SubKey = `${event.sender.id}:${sessionPath}`;
-            if (!pendingSubscriptions.has(key)) {
-                pendingSubscriptions.set(key, { sender: event.sender, sessionPath, blockId: opts?.blockId });
-                trackSenderKey(event.sender, key);
-            }
-            void sendPersistedSnapshot(event.sender, sessionPath, opts?.blockId);
-            return;
-        }
-        subscribeToOwner(event.sender, sessionPath, session);
+        void subscribeAgentSessionForIpc(event.sender, sessionPath, opts).catch((err) => {
+            console.error("[agent-ipc] subscribe validation error:", err);
+        });
     });
 
     electron.ipcMain.on("agent:unsubscribe", (event, sessionPath: string) => {
-        if (typeof sessionPath !== "string" || !sessionPath) return;
-        const key: SubKey = `${event.sender.id}:${sessionPath}`;
-        releaseSubscription(key);
-        const set = subscriptionsBySender.get(event.sender.id);
-        if (set) {
-            set.delete(key);
-            if (set.size === 0) subscriptionsBySender.delete(event.sender.id);
-        }
+        void unsubscribeAgentSessionForIpc(event.sender.id, sessionPath).catch((err) => {
+            console.error("[agent-ipc] unsubscribe validation error:", err);
+        });
     });
 }
 
