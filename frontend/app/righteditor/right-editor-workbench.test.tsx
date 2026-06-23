@@ -270,12 +270,14 @@ describe("RightEditorWorkbench", () => {
         expect(mockWorkbench.codeEditorProps[0].model).toBe(mockWorkbench.registryModel);
     });
 
-    it("starts LSP only for JavaScript and TypeScript files with a workspace root", () => {
+    it("starts LSP for registered languages with a workspace root", () => {
         expect(shouldStartRightEditorLsp("typescript", "/repo")).toBe(true);
         expect(shouldStartRightEditorLsp("typescriptreact", "/repo")).toBe(true);
         expect(shouldStartRightEditorLsp("javascript", "/repo")).toBe(true);
         expect(shouldStartRightEditorLsp("javascriptreact", "/repo")).toBe(true);
+        expect(shouldStartRightEditorLsp("go", "/repo")).toBe(true);
         expect(shouldStartRightEditorLsp("typescript", "")).toBe(false);
+        expect(shouldStartRightEditorLsp("go", "")).toBe(false);
         expect(shouldStartRightEditorLsp("json", "/repo")).toBe(false);
     });
 
@@ -301,7 +303,12 @@ describe("RightEditorWorkbench", () => {
             lspManager,
         });
 
-        expect(lspManager.acquireClient).toHaveBeenCalledWith({ workspaceRoot: "/repo", language: "typescript" });
+        expect(lspManager.acquireClient).toHaveBeenCalledWith({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+        });
         cleanup();
         expect(release).toHaveBeenCalledTimes(1);
     });
@@ -327,7 +334,44 @@ describe("RightEditorWorkbench", () => {
             lspManager,
         });
 
-        expect(lspManager.acquireClient).toHaveBeenCalledWith({ workspaceRoot: "/repo-a", language: "typescript" });
+        expect(lspManager.acquireClient).toHaveBeenCalledWith({
+            workspaceRoot: "/repo-a",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+        });
+    });
+
+    it("acquires Go LSP through gopls", () => {
+        const release = vi.fn();
+        const lspManager = {
+            acquireClient: vi.fn(() => release),
+        };
+
+        const cleanup = acquireRightEditorLspForActiveFile({
+            activeFile: {
+                path: "/repo/main.go",
+                uri: "file:///repo/main.go",
+                language: "go",
+                workspaceRoot: "/repo",
+                readonly: false,
+                savedText: "package main\n",
+                dirtyText: null,
+                saveStatus: "idle",
+                error: null,
+            },
+            workspaceRoot: "/repo",
+            lspManager,
+        });
+
+        expect(lspManager.acquireClient).toHaveBeenCalledWith({
+            workspaceRoot: "/repo",
+            language: "go",
+            serverId: "gopls",
+            displayName: "Go",
+        });
+        cleanup();
+        expect(release).toHaveBeenCalledTimes(1);
     });
 
     it("does not acquire LSP for unsupported active files", () => {

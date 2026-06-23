@@ -24,6 +24,8 @@ export type RightEditorState = {
 export type RightEditorLspStatus = {
     language: string;
     workspaceRoot: string;
-    state: "stopped" | "starting" | "running" | "error";
+    serverId: string | null;
+    displayName: string;
+    state: "stopped" | "starting" | "running" | "unavailable" | "error";
     message: string | null;
 };

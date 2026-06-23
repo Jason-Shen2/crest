@@ -6,6 +6,7 @@ import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { useEffect, useMemo } from "react";
 import { languageClientManager } from "./lsp/language-client-manager";
+import { getRightEditorLanguageServer, isRightEditorLspSupported } from "./lsp/language-server-registry";
 import { MonacoModelRegistry } from "./monaco-model-registry";
 import type { RightEditorModel } from "./right-editor-model";
 import type { RightEditorOpenFile } from "./right-editor-types";
@@ -51,17 +52,11 @@ export function getRightEditorTabPathSuffix(path: string, workspaceRoot: string)
 }
 
 export function shouldStartRightEditorLsp(language: string, workspaceRoot: string): boolean {
-    if (!workspaceRoot) return false;
-    return (
-        language === "typescript" ||
-        language === "typescriptreact" ||
-        language === "javascript" ||
-        language === "javascriptreact"
-    );
+    return isRightEditorLspSupported(language, workspaceRoot);
 }
 
 type LspLifecycleManager = {
-    acquireClient: (input: { workspaceRoot: string; language: string }) => () => void;
+    acquireClient: (input: { workspaceRoot: string; language: string; serverId: string; displayName: string }) => () => void;
 };
 
 export function acquireRightEditorLspForActiveFile(input: {
@@ -71,10 +66,13 @@ export function acquireRightEditorLspForActiveFile(input: {
 }): (() => void) | undefined {
     if (!input.activeFile) return undefined;
     const workspaceRoot = input.activeFile.workspaceRoot || input.workspaceRoot;
-    if (!shouldStartRightEditorLsp(input.activeFile.language, workspaceRoot)) return undefined;
+    const server = getRightEditorLanguageServer(input.activeFile.language);
+    if (!workspaceRoot || !server) return undefined;
     return input.lspManager.acquireClient({
         workspaceRoot,
         language: input.activeFile.language,
+        serverId: server.serverId,
+        displayName: server.displayName,
     });
 }
 
