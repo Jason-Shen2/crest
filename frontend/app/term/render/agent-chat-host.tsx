@@ -26,7 +26,7 @@ import {
     type UsePiChatPaneContext,
     type UsePiChatStatus,
 } from "@/app/store/use-pi-chat";
-import { resolveAgentSlashCommandRoute, type AgentSlashCommandRoute } from "./agent-slash-command-routing";
+import { resolveAgentSlashCommandRoute } from "./agent-slash-command-routing";
 
 export interface AgentChatHostProps {
     outerBlockId: string;
@@ -59,6 +59,8 @@ export interface AgentChatHostProps {
     onUserError?: (message: string) => void;
     /** Opens the real model picker owned by the input component. */
     onOpenModelPicker?: () => void;
+    /** Selector-first command path for Task7 UI: /tree and /fork never self-resolve from text. */
+    onSelectorRequest?: (request: AgentSelectorRequest) => void;
 }
 
 /** Reactive agent state surfaced to the parent for the activity bar. */
@@ -74,10 +76,126 @@ export interface AgentChatHostApi {
     submit: (text: string) => boolean;
     /** Send a user prompt. Idempotent if called twice with the same text — pi will queue. */
     send: (text: string) => boolean;
+    /** List the current session tree for selector UI. */
+    listTree: () => Promise<AgentTreeResult>;
+    /** List forkable user-message points for selector UI. */
+    listForkPoints: () => Promise<AgentForkPointView[]>;
+    /** Navigate to a selected tree entry. */
+    navigateTree: (targetId: string) => Promise<AgentNavigateTreeResult>;
+    /** Fork from a selected entry. */
+    forkSession: (entryId: string) => Promise<AgentForkSessionResult>;
+    /** Clone the current branch immediately. */
+    cloneSession: () => Promise<AgentCloneSessionResult>;
     /** Abort the in-flight run, if any. */
     abort: () => void;
     /** Snapshot of runs for diagnostics / future selectors. */
     getRuns: () => PiRun[];
+}
+
+export type AgentSelectorRequest =
+    | {
+          type: "tree";
+          listTree: () => Promise<AgentTreeResult>;
+          navigateTree: (targetId: string) => Promise<AgentNavigateTreeResult>;
+      }
+    | {
+          type: "fork";
+          listForkPoints: () => Promise<AgentForkPointView[]>;
+          forkSession: (entryId: string) => Promise<AgentForkSessionResult>;
+      };
+
+interface AgentChatHostApiDeps {
+    sendPrompt: (text: string) => boolean;
+    abort: () => void;
+    getRuns: () => PiRun[];
+    getRuntimeApi: () => AgentRuntimeApi | undefined;
+    getSessionMetadata: () => AgentSessionMeta | undefined;
+    getPaneCwd: () => string;
+    onSessionMinted?: (meta: AgentSessionMeta) => void;
+    onUserError?: (message: string) => void;
+    onOpenModelPicker?: () => void;
+    onSelectorRequest?: (request: AgentSelectorRequest) => void;
+}
+
+export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHostApi {
+    const requireRuntimeApi = (): AgentRuntimeApi => {
+        const runtimeApi = deps.getRuntimeApi();
+        if (!runtimeApi) {
+            throw new Error("Electron agent IPC not available (window.api.agent missing)");
+        }
+        return runtimeApi;
+    };
+    const requireSessionMetadata = (): AgentSessionMeta => {
+        const sessionMetadata = deps.getSessionMetadata();
+        if (!sessionMetadata?.path) {
+            throw new Error("No agent session yet. Send a prompt before using session commands.");
+        }
+        return sessionMetadata;
+    };
+    const listTree = async (): Promise<AgentTreeResult> => {
+        return await requireRuntimeApi().listTree(requireSessionMetadata());
+    };
+    const listForkPoints = async (): Promise<AgentForkPointView[]> => {
+        return await requireRuntimeApi().listForkPoints(requireSessionMetadata());
+    };
+    const navigateTree = async (targetId: string): Promise<AgentNavigateTreeResult> => {
+        return await requireRuntimeApi().navigateTree({
+            sessionMetadata: requireSessionMetadata(),
+            targetId,
+        });
+    };
+    const forkSession = async (entryId: string): Promise<AgentForkSessionResult> => {
+        const result = await requireRuntimeApi().forkSession({
+            sessionMetadata: requireSessionMetadata(),
+            cwd: deps.getPaneCwd(),
+            entryId,
+        });
+        deps.onSessionMinted?.(result.sessionMetadata);
+        return result;
+    };
+    const cloneSession = async (): Promise<AgentCloneSessionResult> => {
+        const result = await requireRuntimeApi().cloneSession({
+            sessionMetadata: requireSessionMetadata(),
+            cwd: deps.getPaneCwd(),
+        });
+        if (result.sessionMetadata) {
+            deps.onSessionMinted?.(result.sessionMetadata);
+        }
+        return result;
+    };
+    const reportAsyncError = (promise: Promise<unknown>): void => {
+        void promise.catch((err) => deps.onUserError?.(err instanceof Error ? err.message : String(err)));
+    };
+    return {
+        submit: (text) => {
+            const route = resolveAgentSlashCommandRoute(text);
+            if (!route.handled) {
+                return deps.sendPrompt(text);
+            }
+            if (route.command === "model") {
+                deps.onOpenModelPicker?.();
+                return true;
+            }
+            if (route.command === "tree") {
+                deps.onSelectorRequest?.({ type: "tree", listTree, navigateTree });
+                return true;
+            }
+            if (route.command === "fork") {
+                deps.onSelectorRequest?.({ type: "fork", listForkPoints, forkSession });
+                return true;
+            }
+            reportAsyncError(cloneSession());
+            return true;
+        },
+        send: deps.sendPrompt,
+        listTree,
+        listForkPoints,
+        navigateTree,
+        forkSession,
+        cloneSession,
+        abort: deps.abort,
+        getRuns: deps.getRuns,
+    };
 }
 
 export function AgentChatHost({
@@ -93,6 +211,7 @@ export function AgentChatHost({
     allowedTools,
     onUserError,
     onOpenModelPicker,
+    onSelectorRequest,
 }: AgentChatHostProps) {
     // usePiChat doesn't accept a undefined modelSelection (send needs
     // provider+model). We feed it a synthetic placeholder when the
@@ -122,6 +241,8 @@ export function AgentChatHost({
     onOpenModelPickerRef.current = onOpenModelPicker;
     const onSessionMintedRef = useRef(onSessionMinted);
     onSessionMintedRef.current = onSessionMinted;
+    const onSelectorRequestRef = useRef(onSelectorRequest);
+    onSelectorRequestRef.current = onSelectorRequest;
     useEffect(() => {
         onRunsChangeRef.current?.(runs);
     }, [runs]);
@@ -174,79 +295,18 @@ export function AgentChatHost({
             void sendRef.current(trimmed);
             return true;
         };
-        const runAgentSlashCommand = async (route: AgentSlashCommandRoute): Promise<void> => {
-            if (!route.handled) return;
-            if (route.command === "model") {
-                onOpenModelPickerRef.current?.();
-                return;
-            }
-            const runtimeApi = getAgentRuntimeApi();
-            if (!runtimeApi) {
-                onUserErrorRef.current?.("Electron agent IPC not available (window.api.agent missing)");
-                return;
-            }
-            const sessionMetadata = sessionMetadataRef.current;
-            if (!sessionMetadata?.path) {
-                onUserErrorRef.current?.("No agent session yet. Send a prompt before using session commands.");
-                return;
-            }
-            try {
-                if (route.command === "tree") {
-                    const tree = await runtimeApi.listTree(sessionMetadata);
-                    onUserErrorRef.current?.(`Agent tree: ${tree.entries.length} entries.`);
-                    return;
-                }
-                if (route.command === "clone") {
-                    const result = await runtimeApi.cloneSession({
-                        sessionMetadata,
-                        cwd: paneContextRef.current.cwd,
-                    });
-                    if (result.sessionMetadata) {
-                        onSessionMintedRef.current?.(result.sessionMetadata);
-                    }
-                    onUserErrorRef.current?.(result.message ?? "Cloned agent session.");
-                    return;
-                }
-                const forkPoints = await runtimeApi.listForkPoints(sessionMetadata);
-                const needle = route.argsText.toLowerCase();
-                const target = forkPoints.find(
-                    (point) =>
-                        point.entryId === route.argsText || (!!needle && point.preview.toLowerCase().includes(needle))
-                );
-                if (!target) {
-                    onUserErrorRef.current?.(
-                        route.argsText
-                            ? `No fork point matched "${route.argsText}".`
-                            : "Type /fork with a message preview to choose a fork point."
-                    );
-                    return;
-                }
-                const result = await runtimeApi.forkSession({
-                    sessionMetadata,
-                    cwd: paneContextRef.current.cwd,
-                    entryId: target.entryId,
-                });
-                onSessionMintedRef.current?.(result.sessionMetadata);
-                onUserErrorRef.current?.(`Forked agent session from "${target.preview}".`);
-            } catch (err) {
-                onUserErrorRef.current?.(err instanceof Error ? err.message : String(err));
-            }
-        };
-        const api: AgentChatHostApi = {
-            submit: (text) => {
-                const route = resolveAgentSlashCommandRoute(text);
-                if (!route.handled) {
-                    return sendPrompt(text);
-                }
-                void runAgentSlashCommand(route);
-                return true;
-            },
-            send: sendPrompt,
-            abort: () => {
-                abortRef.current();
-            },
+        const api = createAgentChatHostApi({
+            sendPrompt,
+            abort: () => abortRef.current(),
             getRuns: () => runsRef.current,
-        };
+            getRuntimeApi: getAgentRuntimeApi,
+            getSessionMetadata: () => sessionMetadataRef.current,
+            getPaneCwd: () => paneContextRef.current.cwd,
+            onSessionMinted: (meta) => onSessionMintedRef.current?.(meta),
+            onUserError: (message) => onUserErrorRef.current?.(message),
+            onOpenModelPicker: () => onOpenModelPickerRef.current?.(),
+            onSelectorRequest: (request) => onSelectorRequestRef.current?.(request),
+        });
         onReadyRef.current?.(api);
         // Re-fire when the API identity is stable; we want one-shot,
         // but tolerating an extra fire on remount is harmless because
@@ -259,6 +319,7 @@ export function AgentChatHost({
 interface AgentRuntimeApi {
     listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>;
     listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>;
+    navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>;
     forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>;
     cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>;
 }
