@@ -101,4 +101,32 @@ describe("createAgentChatHostApi", () => {
         expect(runtimeApi.cloneSession).toHaveBeenCalledWith({ sessionMetadata: session, cwd: "/repo" });
         expect(sendPrompt).not.toHaveBeenCalled();
     });
+
+    it("surfaces clone no-op messages to the user", async () => {
+        const session = makeSession();
+        const sendPrompt = vi.fn(() => true);
+        const onUserError = vi.fn();
+        const runtimeApi = {
+            listTree: vi.fn(),
+            listForkPoints: vi.fn(),
+            navigateTree: vi.fn(),
+            forkSession: vi.fn(),
+            cloneSession: vi.fn(async () => ({ message: "No session branch to clone yet." })),
+        };
+        const api = createAgentChatHostApi({
+            sendPrompt,
+            abort: vi.fn(),
+            getRuns: () => [],
+            getRuntimeApi: () => runtimeApi,
+            getSessionMetadata: () => session,
+            getPaneCwd: () => "/repo",
+            onUserError,
+        });
+
+        expect(api.submit("/clone")).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(onUserError).toHaveBeenCalledWith("No session branch to clone yet.");
+        expect(sendPrompt).not.toHaveBeenCalled();
+    });
 });
