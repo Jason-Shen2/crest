@@ -17,15 +17,16 @@
 
 import { useEffect, useRef } from "react";
 
+import type { ResolveError } from "@/app/store/ai-types";
 import {
+    usePiChat,
     type PiAgentMessage,
     type PiRun,
     type UsePiChatModel,
     type UsePiChatPaneContext,
     type UsePiChatStatus,
-    usePiChat,
 } from "@/app/store/use-pi-chat";
-import type { ResolveError } from "@/app/store/ai-types";
+import { resolveAgentSlashCommandRoute, type AgentSlashCommandRoute } from "./agent-slash-command-routing";
 
 export interface AgentChatHostProps {
     outerBlockId: string;
@@ -56,6 +57,8 @@ export interface AgentChatHostProps {
     allowedTools?: string[];
     /** Notification atom setter — surface user-facing errors when send can't proceed. */
     onUserError?: (message: string) => void;
+    /** Opens the real model picker owned by the input component. */
+    onOpenModelPicker?: () => void;
 }
 
 /** Reactive agent state surfaced to the parent for the activity bar. */
@@ -67,6 +70,8 @@ export interface AgentHostState {
 
 /** Functions exposed via onReady for the input bar / parent. */
 export interface AgentChatHostApi {
+    /** Route agent slash commands, otherwise send a user prompt. */
+    submit: (text: string) => boolean;
     /** Send a user prompt. Idempotent if called twice with the same text — pi will queue. */
     send: (text: string) => boolean;
     /** Abort the in-flight run, if any. */
@@ -87,6 +92,7 @@ export function AgentChatHost({
     onStateChange,
     allowedTools,
     onUserError,
+    onOpenModelPicker,
 }: AgentChatHostProps) {
     // usePiChat doesn't accept a undefined modelSelection (send needs
     // provider+model). We feed it a synthetic placeholder when the
@@ -112,6 +118,10 @@ export function AgentChatHost({
     onRunsChangeRef.current = onRunsChange;
     const onUserErrorRef = useRef(onUserError);
     onUserErrorRef.current = onUserError;
+    const onOpenModelPickerRef = useRef(onOpenModelPicker);
+    onOpenModelPickerRef.current = onOpenModelPicker;
+    const onSessionMintedRef = useRef(onSessionMinted);
+    onSessionMintedRef.current = onSessionMinted;
     useEffect(() => {
         onRunsChangeRef.current?.(runs);
     }, [runs]);
@@ -122,15 +132,19 @@ export function AgentChatHost({
     const sendRef = useRef(chat.send);
     const abortRef = useRef(chat.abort);
     const runsRef = useRef(runs);
+    const sessionMetadataRef = useRef(chat.sessionMetadata);
+    const paneContextRef = useRef(paneContext);
     const selectionErrorRef = useRef(selectionError);
     const modelSelectionRef = useRef(modelSelection);
     useEffect(() => {
         sendRef.current = chat.send;
         abortRef.current = chat.abort;
         runsRef.current = runs;
+        sessionMetadataRef.current = chat.sessionMetadata;
+        paneContextRef.current = paneContext;
         selectionErrorRef.current = selectionError;
         modelSelectionRef.current = modelSelection;
-    }, [chat.send, chat.abort, runs, selectionError, modelSelection]);
+    }, [chat.send, chat.abort, runs, chat.sessionMetadata, paneContext, selectionError, modelSelection]);
 
     const onReadyRef = useRef(onReady);
     onReadyRef.current = onReady;
@@ -144,23 +158,90 @@ export function AgentChatHost({
     // One-shot wiring of the API. Stable identity so re-renders don't
     // tear down whatever the parent stored.
     useEffect(() => {
-        const api: AgentChatHostApi = {
-            send: (text) => {
-                const trimmed = text.trim();
-                if (!trimmed) return false;
-                // Block sends when no model is resolved (e.g. ai.json
-                // missing, no API key). Surface the resolver error so
-                // the user sees a specific reason rather than nothing.
-                if (!modelSelectionRef.current) {
-                    const msg =
-                        selectionErrorRef.current?.message ??
-                        "AI is not configured. Open the model picker to set up a provider and pick a model.";
-                    onUserErrorRef.current?.(msg);
-                    return false;
+        const sendPrompt = (text: string): boolean => {
+            const trimmed = text.trim();
+            if (!trimmed) return false;
+            // Block sends when no model is resolved (e.g. ai.json
+            // missing, no API key). Surface the resolver error so
+            // the user sees a specific reason rather than nothing.
+            if (!modelSelectionRef.current) {
+                const msg =
+                    selectionErrorRef.current?.message ??
+                    "AI is not configured. Open the model picker to set up a provider and pick a model.";
+                onUserErrorRef.current?.(msg);
+                return false;
+            }
+            void sendRef.current(trimmed);
+            return true;
+        };
+        const runAgentSlashCommand = async (route: AgentSlashCommandRoute): Promise<void> => {
+            if (!route.handled) return;
+            if (route.command === "model") {
+                onOpenModelPickerRef.current?.();
+                return;
+            }
+            const runtimeApi = getAgentRuntimeApi();
+            if (!runtimeApi) {
+                onUserErrorRef.current?.("Electron agent IPC not available (window.api.agent missing)");
+                return;
+            }
+            const sessionMetadata = sessionMetadataRef.current;
+            if (!sessionMetadata?.path) {
+                onUserErrorRef.current?.("No agent session yet. Send a prompt before using session commands.");
+                return;
+            }
+            try {
+                if (route.command === "tree") {
+                    const tree = await runtimeApi.listTree(sessionMetadata);
+                    onUserErrorRef.current?.(`Agent tree: ${tree.entries.length} entries.`);
+                    return;
                 }
-                void sendRef.current(trimmed);
+                if (route.command === "clone") {
+                    const result = await runtimeApi.cloneSession({
+                        sessionMetadata,
+                        cwd: paneContextRef.current.cwd,
+                    });
+                    if (result.sessionMetadata) {
+                        onSessionMintedRef.current?.(result.sessionMetadata);
+                    }
+                    onUserErrorRef.current?.(result.message ?? "Cloned agent session.");
+                    return;
+                }
+                const forkPoints = await runtimeApi.listForkPoints(sessionMetadata);
+                const needle = route.argsText.toLowerCase();
+                const target = forkPoints.find(
+                    (point) =>
+                        point.entryId === route.argsText || (!!needle && point.preview.toLowerCase().includes(needle))
+                );
+                if (!target) {
+                    onUserErrorRef.current?.(
+                        route.argsText
+                            ? `No fork point matched "${route.argsText}".`
+                            : "Type /fork with a message preview to choose a fork point."
+                    );
+                    return;
+                }
+                const result = await runtimeApi.forkSession({
+                    sessionMetadata,
+                    cwd: paneContextRef.current.cwd,
+                    entryId: target.entryId,
+                });
+                onSessionMintedRef.current?.(result.sessionMetadata);
+                onUserErrorRef.current?.(`Forked agent session from "${target.preview}".`);
+            } catch (err) {
+                onUserErrorRef.current?.(err instanceof Error ? err.message : String(err));
+            }
+        };
+        const api: AgentChatHostApi = {
+            submit: (text) => {
+                const route = resolveAgentSlashCommandRoute(text);
+                if (!route.handled) {
+                    return sendPrompt(text);
+                }
+                void runAgentSlashCommand(route);
                 return true;
             },
+            send: sendPrompt,
             abort: () => {
                 abortRef.current();
             },
@@ -173,4 +254,16 @@ export function AgentChatHost({
     }, []);
 
     return null;
+}
+
+interface AgentRuntimeApi {
+    listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>;
+    listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>;
+    forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>;
+    cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>;
+}
+
+function getAgentRuntimeApi(): AgentRuntimeApi | undefined {
+    if (typeof window === "undefined") return undefined;
+    return (window as unknown as { api?: { agent?: AgentRuntimeApi } }).api?.agent;
 }

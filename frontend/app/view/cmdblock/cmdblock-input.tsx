@@ -93,6 +93,7 @@ export interface CmdBlockInputProps {
     selection?: AgentSelection | null;
     onSelectionChange?: (next: AgentSelection) => void;
     onOpenAIConfigFile?: () => void;
+    openModelPickerRequest?: number;
     placeholder?: string;
     // Grid font size — only used by Editor.  Chrome (chips, buttons,
     // help row) uses fixed UI sizes for legibility.  Reference: warp's
@@ -1033,6 +1034,9 @@ interface InlineCommand {
 const SlashCommands: InlineCommand[] = [
     { name: "/agent", icon: "stars-01", description: "Send input to the agent" },
     { name: "/model", icon: "stars-01", description: "Pick the AI model" },
+    { name: "/tree", icon: "git-branch-01", description: "Show the current agent session tree" },
+    { name: "/fork", icon: "git-branch-01", description: "Fork from a previous agent message" },
+    { name: "/clone", icon: "copy-01", description: "Clone the current agent session branch" },
     { name: "/terminal", icon: "terminal", description: "Switch input to shell mode" },
     { name: "/auto", icon: "lightning-02", description: "Auto-detect shell vs natural language" },
     { name: "/clear", icon: "x-close", description: "Clear the current terminal output" },
@@ -1236,6 +1240,7 @@ export const CmdBlockInput = memo(
         selection,
         onSelectionChange,
         onOpenAIConfigFile,
+        openModelPickerRequest,
         placeholder,
         fontSize = 16,
         focusRequest: externalFocusRequest = 0,
@@ -1292,6 +1297,11 @@ export const CmdBlockInput = memo(
         // The popover handles empty / error states internally via the
         // userConfigStatus prop, so the chip can always open it.
         const hasModelPicker = !!onSelectionChange;
+
+        useEffect(() => {
+            if (!openModelPickerRequest || !hasModelPicker) return;
+            setModelPickerOpen(true);
+        }, [openModelPickerRequest, hasModelPicker]);
         const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
         const [atSelectedIdx, setAtSelectedIdx] = useState(0);
         const [dragOver, setDragOver] = useState(false);
