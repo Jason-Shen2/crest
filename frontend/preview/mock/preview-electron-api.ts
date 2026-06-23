@@ -73,8 +73,7 @@ const previewElectronApi: ElectronApi = {
     // Agent IPC stubs — preview pages never actually invoke the agent
     // runtime, so these reject / no-op. Only here to satisfy ElectronApi.
     agent: {
-        createSession: () =>
-            Promise.reject(new Error("agent not available in preview env")),
+        createSession: () => Promise.reject(new Error("agent not available in preview env")),
         listSessionsForCwd: () => Promise.resolve([]),
         listCommands: () => Promise.resolve([]),
         listTree: () => Promise.resolve({ entries: [], leafId: null }),

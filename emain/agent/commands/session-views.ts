@@ -59,7 +59,7 @@ export function previewSessionEntry(entry: SessionTreeEntry): string {
 export function buildAgentTreeEntryViews(
     entries: SessionTreeEntry[],
     leafId: string | null,
-    labels: Map<string, string | undefined> = new Map(),
+    labels: Map<string, string | undefined> = new Map()
 ): AgentTreeEntryView[] {
     return entries.map((entry) => {
         const label = labels.get(entry.id);
@@ -78,11 +78,9 @@ export function buildAgentTreeEntryViews(
 }
 
 export function buildAgentForkPointViews(entries: SessionTreeEntry[]): AgentForkPointView[] {
-    return entries
-        .filter(isUserMessageEntry)
-        .map((entry) => ({
-            entryId: entry.id,
-            preview: previewSessionEntry(entry),
-            timestamp: entry.timestamp,
-        }));
+    return entries.filter(isUserMessageEntry).map((entry) => ({
+        entryId: entry.id,
+        preview: previewSessionEntry(entry),
+        timestamp: entry.timestamp,
+    }));
 }
