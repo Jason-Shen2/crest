@@ -37,6 +37,10 @@ export class LanguageClientManager {
     }
 
     async ensureClient(input: EnsureClientInput): Promise<void> {
+        if (!input.serverId) {
+            this.setStatus(input, "unavailable", "Language server unavailable");
+            return;
+        }
         const key = this.makeKey(input);
         if (this.transports.has(key)) return;
         const pendingTransport = this.pendingTransports.get(key);
@@ -75,19 +79,22 @@ export class LanguageClientManager {
     }
 
     getStatus(input: EnsureClientInput): RightEditorLspStatus {
-        return (
-            this.statusByKey.get(this.makeKey(input)) ?? {
-                workspaceRoot: input.workspaceRoot,
-                language: input.language,
-                serverId: input.serverId ?? null,
-                displayName: input.displayName ?? input.language,
-                state: "stopped",
-                message: null,
-            }
-        );
+        const status = this.statusByKey.get(this.makeKey(input));
+        return {
+            workspaceRoot: input.workspaceRoot,
+            language: input.language,
+            serverId: input.serverId ?? status?.serverId ?? null,
+            displayName: input.displayName ?? status?.displayName ?? input.language,
+            state: status?.state ?? "stopped",
+            message: status?.message ?? null,
+        };
     }
 
     acquireClient(input: EnsureClientInput): () => void {
+        if (!input.serverId) {
+            this.setStatus(input, "unavailable", "Language server unavailable");
+            return () => undefined;
+        }
         const key = this.makeKey(input);
         this.referenceCounts.set(key, (this.referenceCounts.get(key) ?? 0) + 1);
         void this.ensureClient(input).catch(() => undefined);
@@ -145,7 +152,7 @@ export class LanguageClientManager {
     }
 
     private makeKey(input: EnsureClientInput): ClientKey {
-        return `${input.workspaceRoot}\u0000${input.language}`;
+        return `${input.workspaceRoot}\u0000${input.serverId ?? ""}`;
     }
 }
 
