@@ -29,6 +29,7 @@ import {
     type AgentHostState,
     type AgentSelectorRequest,
 } from "./agent-chat-host";
+import { AgentSelectorPopover } from "./agent-selector-popover";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
@@ -363,15 +364,6 @@ export const TerminalView = memo(
         const onAgentSelectorRequest = useCallback((request: AgentSelectorRequest) => {
             setAgentSelectorRequest(request);
         }, []);
-        useEffect(() => {
-            if (!agentSelectorRequest) return;
-            globalStore.set(
-                model.notificationAtom,
-                agentSelectorRequest.type === "tree"
-                    ? "Agent tree selector requested."
-                    : "Agent fork selector requested."
-            );
-        }, [agentSelectorRequest, model]);
         // Reactive agent state (status + pending queue) for the activity bar above
         // the input. The host's onReady api is imperative; this is the live view.
         const [agentState, setAgentState] = useState<AgentHostState>({
@@ -842,6 +834,11 @@ export const TerminalView = memo(
                         status={agentState.status}
                         queuedMessages={agentState.queuedMessages}
                         onStop={onAgentStop}
+                    />
+                    <AgentSelectorPopover
+                        request={agentSelectorRequest}
+                        onClose={() => setAgentSelectorRequest(null)}
+                        onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
                     />
                     <CmdBlockInput
                         cwd={liveCwd}
