@@ -172,6 +172,37 @@ describe("createLspWebSocketTransport", () => {
         expect(MockWebSocket.instances[0].close).toHaveBeenCalledTimes(1);
     });
 
+    it("uses server languages for Monaco selectors while keeping the backend language concrete", async () => {
+        installRuntime("ws://127.0.0.1:9010");
+        vi.stubGlobal("WebSocket", MockWebSocket);
+
+        const transportPromise = createLspWebSocketTransport({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            languages: ["typescript", "typescriptreact", "javascript", "javascriptreact"],
+        });
+        MockWebSocket.instances[0].open();
+        const transport = await transportPromise;
+
+        expect(MockWebSocket.instances[0].url).toBe(
+            "ws://127.0.0.1:9010/lsp?workspaceRoot=%2Frepo&language=typescript"
+        );
+        expect(TransportMocks.clientConstructor).toHaveBeenCalledWith(
+            expect.objectContaining({
+                clientOptions: expect.objectContaining({
+                    documentSelector: [
+                        { scheme: "file", language: "typescript" },
+                        { scheme: "file", language: "typescriptreact" },
+                        { scheme: "file", language: "javascript" },
+                        { scheme: "file", language: "javascriptreact" },
+                    ],
+                }),
+            })
+        );
+
+        transport.dispose();
+    });
+
     it("rejects when the WebSocket errors before opening", async () => {
         installRuntime("ws://127.0.0.1:9010");
         vi.stubGlobal("WebSocket", MockWebSocket);

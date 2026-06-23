@@ -308,6 +308,7 @@ describe("RightEditorWorkbench", () => {
             language: "typescript",
             serverId: "typescript-language-server",
             displayName: "TypeScript/JavaScript",
+            languages: ["typescript", "typescriptreact", "javascript", "javascriptreact"],
         });
         cleanup();
         expect(release).toHaveBeenCalledTimes(1);
@@ -339,6 +340,7 @@ describe("RightEditorWorkbench", () => {
             language: "typescript",
             serverId: "typescript-language-server",
             displayName: "TypeScript/JavaScript",
+            languages: ["typescript", "typescriptreact", "javascript", "javascriptreact"],
         });
     });
 
@@ -369,6 +371,7 @@ describe("RightEditorWorkbench", () => {
             language: "go",
             serverId: "gopls",
             displayName: "Go",
+            languages: ["go"],
         });
         cleanup();
         expect(release).toHaveBeenCalledTimes(1);
