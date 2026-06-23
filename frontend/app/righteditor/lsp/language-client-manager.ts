@@ -26,6 +26,8 @@ type PendingTransport = {
     stopped: boolean;
 };
 
+const LspUnavailablePrefix = "LSP unavailable: ";
+
 export class LanguageClientManager {
     private readonly deps: LanguageClientManagerDeps;
     private readonly transports = new Map<ClientKey, DisposableTransport>();
@@ -70,7 +72,9 @@ export class LanguageClientManager {
                 this.setStatus(input, "running", null);
             }
         } catch (e: any) {
-            this.setStatus(input, "error", e?.message ?? String(e));
+            if (this.pendingTransports.get(key) === pendingTransportEntry && !pendingTransportEntry.stopped) {
+                this.setErrorStatus(input, e);
+            }
             throw e;
         } finally {
             if (this.pendingTransports.get(key) === pendingTransportEntry) {
@@ -150,6 +154,15 @@ export class LanguageClientManager {
             state,
             message,
         });
+    }
+
+    private setErrorStatus(input: EnsureClientInput, e: any): void {
+        const message = e?.message ?? String(e);
+        if (message.startsWith(LspUnavailablePrefix)) {
+            this.setStatus(input, "unavailable", message.slice(LspUnavailablePrefix.length));
+            return;
+        }
+        this.setStatus(input, "error", message);
     }
 
     private makeKey(input: EnsureClientInput): ClientKey {

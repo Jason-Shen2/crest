@@ -257,6 +257,30 @@ describe("LanguageClientManager", () => {
         });
     });
 
+    it("maps LSP unavailable transport errors to unavailable status with the prefix stripped", async () => {
+        const transportFactory = vi.fn(async () => {
+            throw new Error("LSP unavailable: Install gopls");
+        });
+        const manager = new LanguageClientManager({ transportFactory });
+        const input = {
+            workspaceRoot: "/repo",
+            language: "go",
+            serverId: "gopls",
+            displayName: "Go",
+        };
+
+        await expect(manager.ensureClient(input)).rejects.toThrow("LSP unavailable: Install gopls");
+
+        expect(manager.getStatus(input)).toEqual({
+            workspaceRoot: "/repo",
+            language: "go",
+            serverId: "gopls",
+            displayName: "Go",
+            state: "unavailable",
+            message: "Install gopls",
+        });
+    });
+
     it("reuses one pending transport for concurrent requests", async () => {
         let resolveTransport: (transport: { dispose: () => void }) => void;
         const transportPromise = new Promise<{ dispose: () => void }>((resolve) => {
@@ -305,6 +329,70 @@ describe("LanguageClientManager", () => {
 
         expect(dispose).toHaveBeenCalledTimes(1);
         expect(transportFactory).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not let a stopped pending rejection overwrite stopped status", async () => {
+        let rejectTransport: (error: Error) => void;
+        const transportPromise = new Promise<{ dispose: () => void }>((_resolve, reject) => {
+            rejectTransport = reject;
+        });
+        const transportFactory = vi.fn(async () => transportPromise);
+        const manager = new LanguageClientManager({ transportFactory });
+        const input = {
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+        };
+
+        const pending = manager.ensureClient(input);
+        manager.stopClient(input);
+
+        rejectTransport!(new Error("late failure"));
+        await expect(pending).rejects.toThrow("late failure");
+
+        expect(manager.getStatus(input)).toEqual({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            state: "stopped",
+            message: null,
+        });
+    });
+
+    it("does not let an older pending rejection overwrite a restarted running client", async () => {
+        let rejectFirst: (error: Error) => void;
+        const firstTransportPromise = new Promise<{ dispose: () => void }>((_resolve, reject) => {
+            rejectFirst = reject;
+        });
+        const transportFactory = vi
+            .fn()
+            .mockImplementationOnce(async () => firstTransportPromise)
+            .mockResolvedValueOnce({ dispose: vi.fn() });
+        const manager = new LanguageClientManager({ transportFactory });
+        const input = {
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+        };
+
+        const firstPending = manager.ensureClient(input);
+        manager.stopClient(input);
+        await manager.ensureClient(input);
+
+        rejectFirst!(new Error("older failure"));
+        await expect(firstPending).rejects.toThrow("older failure");
+
+        expect(manager.getStatus(input)).toEqual({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            state: "running",
+            message: null,
+        });
     });
 
     it("disposes pending transports resolved after stopAll", async () => {
