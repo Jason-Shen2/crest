@@ -343,6 +343,32 @@ export class PaneAgentSession {
         });
     }
 
+    async listTreeEntries(): Promise<{
+        entries: SessionTreeEntry[];
+        leafId: string | null;
+        labels: Map<string, string | undefined>;
+    }> {
+        const entries = await this.pane.session.getEntries();
+        const leafId = await this.pane.session.getLeafId();
+        const labels = new Map<string, string | undefined>();
+        for (const entry of entries) {
+            labels.set(entry.id, await this.pane.session.getLabel(entry.id));
+        }
+        return { entries, leafId, labels };
+    }
+
+    async navigateTree(targetId: string): Promise<{ editorText?: string }> {
+        const result = await this.pane.harness.navigateTree(targetId, { summarize: false });
+        if (result.cancelled) {
+            return {};
+        }
+        return { editorText: result.editorText };
+    }
+
+    async getLeafId(): Promise<string | null> {
+        return this.pane.session.getLeafId();
+    }
+
     dispose(): void {
         this.unsubscribeHarness();
         this.listeners.clear();
