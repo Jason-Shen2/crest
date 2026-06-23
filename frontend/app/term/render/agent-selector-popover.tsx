@@ -55,6 +55,14 @@ export function getAgentSelectorTitle(type: AgentSelectorRequestType): string {
     return type === "tree" ? "Agent session tree" : "Fork agent session";
 }
 
+function getAgentSelectorTitleId(type: AgentSelectorRequestType): string {
+    return `agent-selector-${type}-title`;
+}
+
+function getAgentSelectorDescriptionId(type: AgentSelectorRequestType): string {
+    return `agent-selector-${type}-description`;
+}
+
 function getAgentSelectorSubtitle(type: AgentSelectorRequestType): string {
     return type === "tree"
         ? "Jump to a previous point in this agent session."
@@ -234,6 +242,8 @@ export const AgentSelectorPanel = memo(
         const depths = useMemo(() => computeDepths(state.entries), [state.entries]);
         const empty = state.status === "ready" && state.entries.length === 0;
         const canCancel = shouldAllowAgentSelectorCancel(busyEntryId);
+        const titleId = getAgentSelectorTitleId(requestType);
+        const descriptionId = getAgentSelectorDescriptionId(requestType);
         return (
             <div
                 className="absolute inset-0 z-[900]"
@@ -248,6 +258,8 @@ export const AgentSelectorPanel = memo(
                     ref={dialogRef}
                     role="dialog"
                     aria-modal="true"
+                    aria-labelledby={titleId}
+                    aria-describedby={descriptionId}
                     tabIndex={-1}
                     className="absolute bottom-24 left-1/2 w-[min(560px,calc(100%-32px))] -translate-x-1/2 overflow-hidden rounded-md border border-fg-overlay-3 bg-fg-overlay-1 text-[12px] text-foreground shadow-xl backdrop-blur"
                     data-agent-selector="true"
@@ -256,8 +268,12 @@ export const AgentSelectorPanel = memo(
                 >
                     <div className="flex items-start justify-between gap-3 border-b border-fg-overlay-2/70 px-3 py-2">
                         <div>
-                            <div className="text-[13px] font-semibold">{getAgentSelectorTitle(requestType)}</div>
-                            <div className="mt-0.5 text-secondary/70">{getAgentSelectorSubtitle(requestType)}</div>
+                            <div id={titleId} className="text-[13px] font-semibold">
+                                {getAgentSelectorTitle(requestType)}
+                            </div>
+                            <div id={descriptionId} className="mt-0.5 text-secondary/70">
+                                {getAgentSelectorSubtitle(requestType)}
+                            </div>
                         </div>
                         <button
                             type="button"
