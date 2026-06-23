@@ -350,6 +350,10 @@ export const TerminalView = memo(
         const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
             agentApiRef.current = api;
         }, []);
+        const [modelPickerRequest, setModelPickerRequest] = useState(0);
+        const onOpenAgentModelPicker = useCallback(() => {
+            setModelPickerRequest((value) => value + 1);
+        }, []);
         // Reactive agent state (status + pending queue) for the activity bar above
         // the input. The host's onReady api is imperative; this is the live view.
         const [agentState, setAgentState] = useState<AgentHostState>({
@@ -435,7 +439,7 @@ export const TerminalView = memo(
                         globalStore.set(model.notificationAtom, "Agent is still starting. Try again in a moment.");
                         return false;
                     }
-                    return api.send(text);
+                    return api.submit(text);
                 }
                 setSubmitting(true);
                 void model.submitInput(text).finally(() => setSubmitting(false));
@@ -785,6 +789,7 @@ export const TerminalView = memo(
                         onRunsChange={onAgentRunsUpdate}
                         onStateChange={setAgentState}
                         onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
+                        onOpenModelPicker={onOpenAgentModelPicker}
                     />
                     {error && (
                         <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
@@ -853,6 +858,7 @@ export const TerminalView = memo(
                         selection={activeSelection}
                         onSelectionChange={onSelectionChange}
                         onOpenAIConfigFile={onOpenAIConfigFile}
+                        openModelPickerRequest={modelPickerRequest}
                         placeholder={
                             inAltScreen
                                 ? "TUI active — keystrokes forward to the running app (not yet wired)"
