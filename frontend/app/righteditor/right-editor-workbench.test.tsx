@@ -34,15 +34,19 @@ vi.mock("./monaco-model-registry", () => ({
 
 vi.mock("./lsp/language-client-manager", () => ({
     languageClientManager: {
-        ensureClient: vi.fn(async () => undefined),
+        acquireClient: vi.fn(() => vi.fn()),
+        getStatus: vi.fn(),
     },
 }));
 
+import { languageClientManager } from "./lsp/language-client-manager";
 import { RightEditorModel } from "./right-editor-model";
 import {
     acquireRightEditorLspForActiveFile,
     closeRightEditorFileWithConfirmation,
+    getRightEditorLspStatusForActiveFile,
     getRightEditorLspLifecycleKeyForActiveFile,
+    getRightEditorLspStatusLabel,
     handleRightEditorKeyDown,
     RightEditorWorkbench,
     shouldStartRightEditorLsp,
@@ -140,6 +144,16 @@ describe("RightEditorWorkbench", () => {
         RightEditorModel.resetInstance();
         mockWorkbench.codeEditorProps = [];
         mockWorkbench.getOrCreateModel.mockClear();
+        vi.mocked(languageClientManager.acquireClient).mockClear();
+        vi.mocked(languageClientManager.getStatus).mockReset();
+        vi.mocked(languageClientManager.getStatus).mockImplementation((input) => ({
+            workspaceRoot: input.workspaceRoot,
+            language: input.language,
+            serverId: input.serverId ?? null,
+            displayName: input.displayName ?? input.language,
+            state: "stopped",
+            message: null,
+        }));
         vi.unstubAllGlobals();
     });
 
@@ -421,6 +435,107 @@ describe("RightEditorWorkbench", () => {
 
         expect(lspManager.acquireClient).not.toHaveBeenCalled();
         expect(cleanup).toBeUndefined();
+    });
+
+    it("returns basic editing status for unsupported active files", () => {
+        const lspManager = {
+            getStatus: vi.fn(),
+        };
+
+        const details = getRightEditorLspStatusForActiveFile({
+            activeFile: makeTestOpenFile({ path: "/repo/package.json", language: "json" }),
+            workspaceRoot: "/repo",
+            lspManager,
+        });
+
+        expect(lspManager.getStatus).not.toHaveBeenCalled();
+        expect(details).toEqual({
+            supported: false,
+            installHint: null,
+            status: {
+                workspaceRoot: "/repo",
+                language: "json",
+                serverId: null,
+                displayName: "JSON",
+                state: "stopped",
+                message: "Basic editing",
+            },
+        });
+        expect(getRightEditorLspStatusLabel(details?.status)).toBe("Basic editing");
+    });
+
+    it("returns shared server status metadata for supported active files", () => {
+        const lspManager = {
+            getStatus: vi.fn(() => ({
+                workspaceRoot: "/repo",
+                language: "typescriptreact",
+                serverId: "typescript-language-server",
+                displayName: "TypeScript/JavaScript",
+                state: "running" as const,
+                message: null,
+            })),
+        };
+
+        const details = getRightEditorLspStatusForActiveFile({
+            activeFile: makeTestOpenFile({ path: "/repo/src/app.tsx", language: "typescriptreact" }),
+            workspaceRoot: "/repo",
+            lspManager,
+        });
+
+        expect(lspManager.getStatus).toHaveBeenCalledWith({
+            workspaceRoot: "/repo",
+            language: "typescriptreact",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            languages: ["typescript", "typescriptreact", "javascript", "javascriptreact"],
+        });
+        expect(details?.supported).toBe(true);
+        expect(details?.installHint).toBeNull();
+        expect(getRightEditorLspStatusLabel(details?.status)).toBe("TypeScript/JavaScript LSP ready");
+    });
+
+    it("renders basic editing status for unsupported active files", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/package.json", "/repo");
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+
+        expect(markup).toContain("Basic editing");
+        expect(markup).not.toContain("LSP ready");
+    });
+
+    it("renders LSP ready status for running active files", async () => {
+        vi.mocked(languageClientManager.getStatus).mockImplementation((input) => ({
+            workspaceRoot: input.workspaceRoot,
+            language: input.language,
+            serverId: input.serverId ?? null,
+            displayName: input.displayName ?? input.language,
+            state: "running",
+            message: null,
+        }));
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/src/app.ts", "/repo");
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+
+        expect(markup).toContain("TypeScript/JavaScript LSP ready");
+    });
+
+    it("renders unavailable LSP status with the install hint", async () => {
+        vi.mocked(languageClientManager.getStatus).mockImplementation((input) => ({
+            workspaceRoot: input.workspaceRoot,
+            language: input.language,
+            serverId: input.serverId ?? null,
+            displayName: input.displayName ?? input.language,
+            state: "unavailable",
+            message: null,
+        }));
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/main.go", "/repo");
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+
+        expect(markup).toContain("Install gopls: go install golang.org/x/tools/gopls@latest");
     });
 
     it("keeps shared LSP acquisition when active file switches within the same workspace and server", () => {
