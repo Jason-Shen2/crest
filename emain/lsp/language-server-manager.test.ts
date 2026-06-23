@@ -24,7 +24,7 @@ describe("LanguageServerManager", () => {
 
     it("resolves typescript language server command by server id", () => {
         const manager = new LanguageServerManager({ commandExists: () => false, spawn: vi.fn() as any });
-        expect(manager.resolveCommand("typescript-language-server")).toEqual({
+        expect(manager.resolveCommand(typescriptInput)).toEqual({
             command: "typescript-language-server",
             args: ["--stdio"],
         });
@@ -34,11 +34,27 @@ describe("LanguageServerManager", () => {
         const commandAvailable = vi.fn(() => true);
         const manager = new LanguageServerManager({ commandAvailable, spawn: vi.fn() as any });
 
-        expect(manager.resolveCommand("gopls")).toEqual({
+        expect(manager.resolveCommand(goInput)).toEqual({
             command: "gopls",
             args: [],
         });
         expect(commandAvailable).toHaveBeenCalledWith("gopls", ["version"]);
+    });
+
+    it("rejects resolving the TypeScript server for Go", () => {
+        const manager = new LanguageServerManager({ spawn: vi.fn() as any });
+
+        expect(() =>
+            manager.resolveCommand({ workspaceRoot: "/repo", language: "go", serverId: "typescript-language-server" })
+        ).toThrow("Language go is not supported by language server typescript-language-server");
+    });
+
+    it("rejects starting gopls for TypeScript", () => {
+        const manager = new LanguageServerManager({ commandAvailable: () => true, spawn: vi.fn() as any });
+
+        expect(() =>
+            manager.startSession({ workspaceRoot: "/repo", language: "typescript", serverId: "gopls" })
+        ).toThrow("Language typescript is not supported by language server gopls");
     });
 
     it("throws an LSP unavailable error when gopls is missing", () => {
@@ -57,7 +73,7 @@ describe("LanguageServerManager", () => {
             spawn: vi.fn() as any,
         });
 
-        expect(manager.resolveCommand("typescript-language-server")).toEqual({
+        expect(manager.resolveCommand(typescriptInput)).toEqual({
             command: path.join(appRoot, "node_modules", ".bin", "typescript-language-server"),
             args: ["--stdio"],
         });
@@ -81,7 +97,7 @@ describe("LanguageServerManager", () => {
             spawn: vi.fn() as any,
         });
 
-        expect(manager.resolveCommand("typescript-language-server")).toEqual({
+        expect(manager.resolveCommand(typescriptInput)).toEqual({
             command: nodeCommand,
             args: [packagedCommand, "--stdio"],
             env: { ELECTRON_RUN_AS_NODE: "1" },
@@ -93,7 +109,7 @@ describe("LanguageServerManager", () => {
         const manager = new LanguageServerManager({ spawn: spawn as any });
 
         manager.getOrStart(typescriptInput);
-        manager.getOrStart(typescriptInput);
+        manager.getOrStart({ workspaceRoot: "/repo", language: "typescriptreact", serverId: "typescript-language-server" });
 
         expect(spawn).toHaveBeenCalledTimes(1);
     });
