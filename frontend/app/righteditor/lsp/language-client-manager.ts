@@ -8,6 +8,8 @@ type ClientKey = string;
 type EnsureClientInput = {
     workspaceRoot: string;
     language: string;
+    serverId?: string | null;
+    displayName?: string;
 };
 
 type DisposableTransport = {
@@ -77,6 +79,8 @@ export class LanguageClientManager {
             this.statusByKey.get(this.makeKey(input)) ?? {
                 workspaceRoot: input.workspaceRoot,
                 language: input.language,
+                serverId: input.serverId ?? null,
+                displayName: input.displayName ?? input.language,
                 state: "stopped",
                 message: null,
             }
@@ -133,6 +137,8 @@ export class LanguageClientManager {
         this.statusByKey.set(this.makeKey(input), {
             workspaceRoot: input.workspaceRoot,
             language: input.language,
+            serverId: input.serverId ?? null,
+            displayName: input.displayName ?? input.language,
             state,
             message,
         });

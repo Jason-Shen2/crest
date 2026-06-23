@@ -12,15 +12,29 @@ describe("LanguageClientManager", () => {
         expect(transportFactory).toHaveBeenCalledTimes(1);
     });
 
-    it("marks the client as running after ensureClient", async () => {
+    it("marks the client as running with status metadata after ensureClient", async () => {
         const transportFactory = vi.fn(async () => ({ dispose: vi.fn() }));
         const manager = new LanguageClientManager({ transportFactory });
 
-        await manager.ensureClient({ workspaceRoot: "/repo", language: "typescript" });
-
-        expect(manager.getStatus({ workspaceRoot: "/repo", language: "typescript" })).toEqual({
+        await manager.ensureClient({
             workspaceRoot: "/repo",
             language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+        });
+
+        expect(
+            manager.getStatus({
+                workspaceRoot: "/repo",
+                language: "typescript",
+                serverId: "typescript-language-server",
+                displayName: "TypeScript/JavaScript",
+            })
+        ).toEqual({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
             state: "running",
             message: null,
         });
