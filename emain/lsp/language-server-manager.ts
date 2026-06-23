@@ -5,7 +5,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn as nodeSpawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { getLanguageServerDefinitionById } from "./language-server-registry";
+import { getLanguageServerDefinition } from "./language-server-registry";
 
 type SpawnFn = typeof nodeSpawn;
 type CommandExistsFn = (path: string) => boolean;
@@ -50,9 +50,8 @@ export class LanguageServerManager {
         this.spawn = deps.spawn ?? nodeSpawn;
     }
 
-    resolveCommand(serverId: string): LanguageServerCommand | null {
-        const definition = getLanguageServerDefinitionById(serverId);
-        if (!definition) return null;
+    resolveCommand(input: LanguageServerInput): LanguageServerCommand {
+        const definition = getLanguageServerDefinition(input.serverId, input.language);
         if (definition.serverId === "typescript-language-server") {
             return this.resolvePackagedCommand("typescript-language-server") ?? {
                 command: this.resolveAppBinCommand("typescript-language-server"),
@@ -113,10 +112,7 @@ export class LanguageServerManager {
     }
 
     private spawnProcess(input: LanguageServerInput): ChildProcessWithoutNullStreams {
-        const command = this.resolveCommand(input.serverId);
-        if (!command) {
-            throw new Error(`No language server configured for ${input.serverId}`);
-        }
+        const command = this.resolveCommand(input);
         return this.spawn(command.command, command.args, {
             cwd: input.workspaceRoot,
             env: command.env ? { ...process.env, ...command.env } : process.env,
