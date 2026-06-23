@@ -19,3 +19,21 @@ export interface ParsedAgentCommandInput {
     commandName: string;
     argsText: string;
 }
+
+export interface AgentTreeEntryView {
+    id: string;
+    parentId?: string;
+    type: string;
+    role?: string;
+    label?: string;
+    preview: string;
+    timestamp?: string;
+    isLeaf: boolean;
+    isCurrent: boolean;
+}
+
+export interface AgentForkPointView {
+    entryId: string;
+    preview: string;
+    timestamp?: string;
+}
