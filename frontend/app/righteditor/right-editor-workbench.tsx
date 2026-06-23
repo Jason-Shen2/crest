@@ -56,7 +56,13 @@ export function shouldStartRightEditorLsp(language: string, workspaceRoot: strin
 }
 
 type LspLifecycleManager = {
-    acquireClient: (input: { workspaceRoot: string; language: string; serverId: string; displayName: string }) => () => void;
+    acquireClient: (input: {
+        workspaceRoot: string;
+        language: string;
+        languages: string[];
+        serverId: string;
+        displayName: string;
+    }) => () => void;
 };
 
 export function acquireRightEditorLspForActiveFile(input: {
@@ -71,6 +77,7 @@ export function acquireRightEditorLspForActiveFile(input: {
     return input.lspManager.acquireClient({
         workspaceRoot,
         language: input.activeFile.language,
+        languages: server.languages,
         serverId: server.serverId,
         displayName: server.displayName,
     });
