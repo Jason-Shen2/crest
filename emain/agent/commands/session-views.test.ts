@@ -37,4 +37,22 @@ describe("session view helpers", () => {
         const long = "x".repeat(140);
         expect(previewSessionEntry(messageEntry("1", null, "user", long))).toHaveLength(121);
     });
+
+    it("ignores text content parts with non-string text", () => {
+        const entry = messageEntry("1", null, "user", "safe");
+        entry.message.content = [
+            { type: "text", text: "safe" },
+            { type: "text", text: { unsafe: true } },
+            { type: "text", text: " text" },
+        ] as any;
+
+        expect(previewSessionEntry(entry)).toBe("safe text");
+    });
+
+    it("truncates previews without splitting unicode surrogate pairs", () => {
+        const preview = previewSessionEntry(messageEntry("1", null, "user", `${"x".repeat(119)}😀more`));
+
+        expect(Array.from(preview.slice(0, -1))).toHaveLength(120);
+        expect(preview).toBe(`${"x".repeat(119)}😀…`);
+    });
 });
