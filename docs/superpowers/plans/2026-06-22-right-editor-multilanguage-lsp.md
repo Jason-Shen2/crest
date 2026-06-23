@@ -17,10 +17,10 @@
 | Phase 0: Research | Done | Current Crest LSP chain and Warp LSP architecture reviewed. |
 | Phase 1: Design | Done | See `docs/superpowers/specs/2026-06-22-right-editor-multilanguage-lsp-design.md`. |
 | Phase 2: Plan | Done | This document is the implementation checklist and progress source. |
-| Phase 3: Registry Refactor | Not started | Add frontend and backend registries while preserving JS/TS behavior. |
-| Phase 4: Go Sample | Not started | Add `gopls` discovery, startup, and unavailable status. |
-| Phase 5: UI Status | Not started | Surface LSP states and install hints. |
-| Phase 6: Verification | Not started | Run unit, lifecycle, UI, and focused build checks. |
+| Phase 3: Registry Refactor | Done | Frontend and backend registry paths replace JS/TS hard-coding. |
+| Phase 4: Go Sample | Done | `gopls` is discovered from PATH and reports an actionable unavailable status. |
+| Phase 5: UI Status | Done | Right editor shows basic, starting, ready, unavailable, and error states. |
+| Phase 6: Verification | Done | Focused tests and development build passed; `gopls` PATH availability verified. |
 
 ## File Structure
 
