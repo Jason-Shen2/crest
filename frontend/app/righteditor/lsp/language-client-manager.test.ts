@@ -2,6 +2,41 @@ import { describe, expect, it, vi } from "vitest";
 import { LanguageClientManager } from "./language-client-manager";
 
 describe("LanguageClientManager", () => {
+    it("notifies status subscribers and advances the snapshot when status changes", async () => {
+        let resolveTransport: (transport: { dispose: () => void }) => void;
+        const transportPromise = new Promise<{ dispose: () => void }>((resolve) => {
+            resolveTransport = resolve;
+        });
+        const transportFactory = vi.fn(async () => transportPromise);
+        const manager = new LanguageClientManager({ transportFactory });
+        const input = {
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+        };
+        const listener = vi.fn();
+        const unsubscribe = manager.subscribeStatus(input, listener);
+        const initialSnapshot = manager.getStatusSnapshot(input);
+
+        const pending = manager.ensureClient(input);
+
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect(manager.getStatusSnapshot(input)).toBeGreaterThan(initialSnapshot);
+        expect(manager.getStatus(input).state).toBe("starting");
+
+        resolveTransport!({ dispose: vi.fn() });
+        await pending;
+
+        expect(listener).toHaveBeenCalledTimes(2);
+        expect(manager.getStatus(input).state).toBe("running");
+
+        unsubscribe();
+        manager.stopClient(input);
+
+        expect(listener).toHaveBeenCalledTimes(2);
+    });
+
     it("reuses one client per workspace root and server id across TS and TSX", async () => {
         const transportFactory = vi.fn(async () => ({ dispose: vi.fn() }));
         const manager = new LanguageClientManager({ transportFactory });
