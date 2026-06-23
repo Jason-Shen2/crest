@@ -152,6 +152,15 @@ contextBridge.exposeInMainWorld("api", {
         createSession: (cwd: string) => ipcRenderer.invoke("agent:create-session", cwd),
         listSessionsForCwd: (cwd: string) =>
             ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
+        listCommands: () => ipcRenderer.invoke("agent:list-commands"),
+        listTree: (sessionPath: string) => ipcRenderer.invoke("agent:list-tree", sessionPath),
+        listForkPoints: (sessionPath: string) => ipcRenderer.invoke("agent:list-fork-points", sessionPath),
+        navigateTree: (sessionPath: string, targetId: string) =>
+            ipcRenderer.invoke("agent:navigate-tree", sessionPath, targetId),
+        forkSession: (sourceMetadata: unknown, entryId: string) =>
+            ipcRenderer.invoke("agent:fork-session", sourceMetadata, entryId),
+        cloneSession: (sourceMetadata: unknown) =>
+            ipcRenderer.invoke("agent:clone-session", sourceMetadata),
         send: (opts: unknown) => ipcRenderer.invoke("agent:send", opts),
         abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
         subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }): (() => void) => {

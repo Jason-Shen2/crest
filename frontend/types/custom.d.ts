@@ -163,6 +163,12 @@ declare global {
         agent: {
             createSession: (cwd: string) => Promise<AgentSessionMeta>;
             listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
+            listCommands: () => Promise<AgentCommandInfo[]>; // agent:list-commands
+            listTree: (sessionPath: string) => Promise<AgentTreeEntryView[]>; // agent:list-tree
+            listForkPoints: (sessionPath: string) => Promise<AgentForkPointView[]>; // agent:list-fork-points
+            navigateTree: (sessionPath: string, targetId: string) => Promise<{ editorText?: string }>; // agent:navigate-tree
+            forkSession: (sourceMetadata: AgentSessionMeta, entryId: string) => Promise<AgentSessionMeta>; // agent:fork-session
+            cloneSession: (sourceMetadata: AgentSessionMeta) => Promise<AgentSessionMeta>; // agent:clone-session
             send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
@@ -224,6 +230,38 @@ declare global {
          * emain/agent/permissions.ts and the architecture doc §7.9.
          */
         allowedTools?: string[];
+    };
+
+    type AgentCommandSource = "builtin" | "skill" | "prompt";
+
+    type AgentCommandAction =
+        | { type: "backend"; command: "tree" | "fork" | "clone" | "compact" | "session" | "clear" | "new" | "help" }
+        | { type: "frontend"; action: "openModelPicker" };
+
+    type AgentCommandInfo = {
+        name: string;
+        description: string;
+        argumentHint?: string;
+        source: AgentCommandSource;
+        action: AgentCommandAction;
+    };
+
+    type AgentTreeEntryView = {
+        id: string;
+        parentId?: string;
+        type: string;
+        role?: string;
+        label?: string;
+        preview: string;
+        timestamp?: string;
+        isLeaf: boolean;
+        isCurrent: boolean;
+    };
+
+    type AgentForkPointView = {
+        entryId: string;
+        preview: string;
+        timestamp?: string;
     };
 
     type ElectronContextMenuItem = {
