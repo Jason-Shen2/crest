@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { cn } from "@/util/util";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import type { RefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentSelectorRequest } from "./agent-chat-host";
 
 type AgentSelectorRequestType = AgentSelectorRequest["type"];
@@ -27,6 +28,7 @@ export interface AgentSelectorPopoverProps {
     request: AgentSelectorRequest | null;
     onClose: () => void;
     onUserMessage?: (message: string) => void;
+    onEditorText?: (text: string) => void;
 }
 
 export async function commitAgentSelectorPick(
@@ -37,6 +39,16 @@ export async function commitAgentSelectorPick(
         return await request.navigateTree(entryId);
     }
     return await request.forkSession(entryId);
+}
+
+export function shouldAllowAgentSelectorCancel(busyEntryId: string | null): boolean {
+    return busyEntryId == null;
+}
+
+export function editorTextFromAgentSelectorResult(
+    result: AgentNavigateTreeResult | AgentForkSessionResult
+): string | undefined {
+    return "editorText" in result ? result.editorText : undefined;
 }
 
 export function getAgentSelectorTitle(type: AgentSelectorRequestType): string {
@@ -79,80 +91,137 @@ async function loadSelectorEntries(request: AgentSelectorRequest): Promise<Agent
     return normalizeForkPoints(await request.listForkPoints());
 }
 
-export const AgentSelectorPopover = memo(({ request, onClose, onUserMessage }: AgentSelectorPopoverProps) => {
-    const [state, setState] = useState<AgentSelectorViewState>({ status: "idle", entries: [] });
-    const [busyEntryId, setBusyEntryId] = useState<string | null>(null);
+export const AgentSelectorPopover = memo(
+    ({ request, onClose, onUserMessage, onEditorText }: AgentSelectorPopoverProps) => {
+        const [state, setState] = useState<AgentSelectorViewState>({ status: "idle", entries: [] });
+        const [busyEntryId, setBusyEntryId] = useState<string | null>(null);
+        const dialogRef = useRef<HTMLDivElement>(null);
+        const previousFocusRef = useRef<HTMLElement | null>(null);
+        const commitRequestIdRef = useRef(0);
 
-    useEffect(() => {
-        if (!request) return;
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (e.key !== "Escape") return;
-            e.preventDefault();
-            onClose();
-        };
-        document.addEventListener("keydown", onKeyDown);
-        return () => document.removeEventListener("keydown", onKeyDown);
-    }, [request, onClose]);
-
-    useEffect(() => {
-        if (!request) {
-            setState({ status: "idle", entries: [] });
-            setBusyEntryId(null);
-            return;
-        }
-
-        let cancelled = false;
-        setState({ status: "loading", entries: [] });
-        setBusyEntryId(null);
-        void loadSelectorEntries(request)
-            .then((entries) => {
-                if (cancelled) return;
-                setState({ status: "ready", entries });
-            })
-            .catch((err) => {
-                if (cancelled) return;
-                const message = err instanceof Error ? err.message : String(err);
-                setState({ status: "error", entries: [], message });
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [request]);
-
-    const handlePick = useCallback(
-        async (entryId: string) => {
-            if (!request) return;
-            setBusyEntryId(entryId);
-            try {
-                await commitAgentSelectorPick(request, entryId);
-                onUserMessage?.(successMessage(request.type));
-                onClose();
-            } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
-                setState((prev) => ({ status: "error", entries: prev.entries, message }));
-            } finally {
-                setBusyEntryId(null);
+        useEffect(() => {
+            if (!request) {
+                commitRequestIdRef.current++;
+                return;
             }
-        },
-        [request, onClose, onUserMessage]
-    );
+            return () => {
+                commitRequestIdRef.current++;
+            };
+        }, [request]);
 
-    if (!request) return null;
+        useEffect(() => {
+            if (!request) return;
+            const onKeyDown = (e: KeyboardEvent) => {
+                if (e.key !== "Escape") return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (shouldAllowAgentSelectorCancel(busyEntryId)) {
+                    onClose();
+                }
+            };
+            document.addEventListener("keydown", onKeyDown, true);
+            return () => document.removeEventListener("keydown", onKeyDown, true);
+        }, [request, onClose, busyEntryId]);
 
-    return (
-        <AgentSelectorPanel
-            requestType={request.type}
-            state={state}
-            busyEntryId={busyEntryId}
-            onPick={handlePick}
-            onCancel={onClose}
-        />
-    );
-});
+        useEffect(() => {
+            if (!request) return;
+            previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            return () => {
+                const previous = previousFocusRef.current;
+                previousFocusRef.current = null;
+                if (previous && previous.isConnected) {
+                    previous.focus({ preventScroll: true });
+                }
+            };
+        }, [request]);
+
+        useEffect(() => {
+            if (!request) return;
+            const id = window.setTimeout(() => {
+                const dialog = dialogRef.current;
+                const firstEntry = dialog?.querySelector<HTMLElement>("[data-agent-selector-entry]:not(:disabled)");
+                (firstEntry ?? dialog)?.focus({ preventScroll: true });
+            }, 0);
+            return () => window.clearTimeout(id);
+        }, [request, state.status, state.entries.length]);
+
+        useEffect(() => {
+            if (!request) {
+                setState({ status: "idle", entries: [] });
+                setBusyEntryId(null);
+                return;
+            }
+
+            let cancelled = false;
+            setState({ status: "loading", entries: [] });
+            setBusyEntryId(null);
+            void loadSelectorEntries(request)
+                .then((entries) => {
+                    if (cancelled) return;
+                    setState({ status: "ready", entries });
+                })
+                .catch((err) => {
+                    if (cancelled) return;
+                    const message = err instanceof Error ? err.message : String(err);
+                    setState({ status: "error", entries: [], message });
+                });
+
+            return () => {
+                cancelled = true;
+            };
+        }, [request]);
+
+        const handlePick = useCallback(
+            async (entryId: string) => {
+                if (!request) return;
+                const commitRequestId = ++commitRequestIdRef.current;
+                setBusyEntryId(entryId);
+                try {
+                    const result = await commitAgentSelectorPick(request, entryId);
+                    if (commitRequestId !== commitRequestIdRef.current) return;
+                    const editorText = editorTextFromAgentSelectorResult(result);
+                    if (editorText != null) {
+                        onEditorText?.(editorText);
+                    }
+                    onUserMessage?.(successMessage(request.type));
+                    onClose();
+                } catch (err) {
+                    if (commitRequestId !== commitRequestIdRef.current) return;
+                    const message = err instanceof Error ? err.message : String(err);
+                    setState((prev) => ({ status: "error", entries: prev.entries, message }));
+                } finally {
+                    if (commitRequestId === commitRequestIdRef.current) {
+                        setBusyEntryId(null);
+                    }
+                }
+            },
+            [request, onClose, onUserMessage, onEditorText]
+        );
+
+        const handleCancel = useCallback(() => {
+            if (!shouldAllowAgentSelectorCancel(busyEntryId)) return;
+            commitRequestIdRef.current++;
+            onClose();
+        }, [busyEntryId, onClose]);
+
+        if (!request) return null;
+
+        return (
+            <AgentSelectorPanel
+                dialogRef={dialogRef}
+                requestType={request.type}
+                state={state}
+                busyEntryId={busyEntryId}
+                onPick={handlePick}
+                onCancel={handleCancel}
+            />
+        );
+    }
+);
 AgentSelectorPopover.displayName = "AgentSelectorPopover";
 
 export interface AgentSelectorPanelProps {
+    dialogRef?: RefObject<HTMLDivElement | null>;
     requestType: AgentSelectorRequestType;
     state: AgentSelectorViewState;
     busyEntryId: string | null;
@@ -161,17 +230,25 @@ export interface AgentSelectorPanelProps {
 }
 
 export const AgentSelectorPanel = memo(
-    ({ requestType, state, busyEntryId, onPick, onCancel }: AgentSelectorPanelProps) => {
+    ({ dialogRef, requestType, state, busyEntryId, onPick, onCancel }: AgentSelectorPanelProps) => {
         const depths = useMemo(() => computeDepths(state.entries), [state.entries]);
         const empty = state.status === "ready" && state.entries.length === 0;
+        const canCancel = shouldAllowAgentSelectorCancel(busyEntryId);
         return (
             <div
                 className="absolute inset-0 z-[900]"
                 data-agent-selector-backdrop="true"
-                onClick={onCancel}
+                data-agent-selector-cancel-disabled={canCancel ? undefined : "true"}
+                onClick={() => {
+                    if (canCancel) onCancel();
+                }}
                 onMouseDown={(e) => e.stopPropagation()}
             >
                 <div
+                    ref={dialogRef}
+                    role="dialog"
+                    aria-modal="true"
+                    tabIndex={-1}
                     className="absolute bottom-24 left-1/2 w-[min(560px,calc(100%-32px))] -translate-x-1/2 overflow-hidden rounded-md border border-fg-overlay-3 bg-fg-overlay-1 text-[12px] text-foreground shadow-xl backdrop-blur"
                     data-agent-selector="true"
                     onClick={(e) => e.stopPropagation()}
@@ -186,6 +263,7 @@ export const AgentSelectorPanel = memo(
                             type="button"
                             className="rounded px-2 py-1 text-secondary hover:bg-fg-overlay-2/70 hover:text-foreground"
                             onClick={onCancel}
+                            disabled={!canCancel}
                         >
                             Cancel
                         </button>

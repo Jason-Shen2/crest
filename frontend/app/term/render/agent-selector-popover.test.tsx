@@ -8,7 +8,9 @@ import type { AgentSelectorRequest } from "./agent-chat-host";
 import {
     AgentSelectorPanel,
     commitAgentSelectorPick,
+    editorTextFromAgentSelectorResult,
     getAgentSelectorTitle,
+    shouldAllowAgentSelectorCancel,
     type AgentSelectorViewState,
 } from "./agent-selector-popover";
 
@@ -88,11 +90,47 @@ describe("agent selector popover", () => {
         expect(html).toContain("first prompt");
         expect(html).toContain("latest answer");
         expect(html).toContain("Cancel");
+        expect(html).toContain('role="dialog"');
+        expect(html).toContain('aria-modal="true"');
+        expect(html).toContain('tabindex="-1"');
         expect(html).toContain('data-agent-selector-entry="root"');
         expect(html).toContain('data-agent-selector-current="true"');
     });
 
     it("labels fork selectors by forkable prompt points", () => {
         expect(getAgentSelectorTitle("fork")).toBe("Fork agent session");
+    });
+
+    it("keeps cancellation disabled while a selector pick is committing", () => {
+        expect(shouldAllowAgentSelectorCancel(null)).toBe(true);
+        expect(shouldAllowAgentSelectorCancel("entry-1")).toBe(false);
+
+        const html = renderToStaticMarkup(
+            <AgentSelectorPanel
+                requestType="fork"
+                state={{ status: "ready", entries: [{ id: "entry-1", preview: "previous prompt" }] }}
+                busyEntryId="entry-1"
+                onPick={() => undefined}
+                onCancel={() => undefined}
+            />
+        );
+
+        expect(html).toContain('data-agent-selector-cancel-disabled="true"');
+        expect(html).toContain("disabled");
+    });
+
+    it("extracts tree editorText for input restoration and ignores fork selectedText", () => {
+        expect(
+            editorTextFromAgentSelectorResult({
+                sessionMetadata: { id: "s1", createdAt: "now", cwd: "/repo", path: "/tmp/session.jsonl" },
+                editorText: "restore this prompt",
+            })
+        ).toBe("restore this prompt");
+        expect(
+            editorTextFromAgentSelectorResult({
+                sessionMetadata: { id: "s2", createdAt: "now", cwd: "/repo", path: "/tmp/fork.jsonl" },
+                selectedText: "fork target",
+            })
+        ).toBeUndefined();
     });
 });

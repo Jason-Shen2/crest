@@ -364,6 +364,12 @@ export const TerminalView = memo(
         const onAgentSelectorRequest = useCallback((request: AgentSelectorRequest) => {
             setAgentSelectorRequest(request);
         }, []);
+        const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
+            { text: string; requestId: number } | undefined
+        >(undefined);
+        const onAgentEditorText = useCallback((text: string) => {
+            setAgentRestoredTextRequest((prev) => ({ text, requestId: (prev?.requestId ?? 0) + 1 }));
+        }, []);
         // Reactive agent state (status + pending queue) for the activity bar above
         // the input. The host's onReady api is imperative; this is the live view.
         const [agentState, setAgentState] = useState<AgentHostState>({
@@ -839,6 +845,7 @@ export const TerminalView = memo(
                         request={agentSelectorRequest}
                         onClose={() => setAgentSelectorRequest(null)}
                         onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
+                        onEditorText={onAgentEditorText}
                     />
                     <CmdBlockInput
                         cwd={liveCwd}
@@ -865,6 +872,7 @@ export const TerminalView = memo(
                         focusRequest={focusRequest}
                         history={commandHistory}
                         onTextChange={onInputTextChange}
+                        restoredTextRequest={agentRestoredTextRequest}
                         effectiveMode={effectiveMode}
                         modelDisplayLabel={modelDisplayLabel}
                         catalog={CATALOG}
