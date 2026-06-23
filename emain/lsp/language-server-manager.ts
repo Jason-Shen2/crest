@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { spawn as nodeSpawn } from "node:child_process";
+import { spawn as nodeSpawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { getLanguageServerDefinitionById } from "./language-server-registry";
 
 type SpawnFn = typeof nodeSpawn;
 type CommandExistsFn = (path: string) => boolean;
+type CommandAvailableFn = (command: string, args: string[]) => boolean;
 
 type LanguageServerInput = {
     workspaceRoot: string;
     language: string;
+    serverId: string;
 };
 
 type LanguageServerCommand = {
@@ -23,6 +26,7 @@ type LanguageServerCommand = {
 export class LanguageServerManager {
     private readonly spawn: SpawnFn;
     private readonly appRoot: string;
+    private readonly commandAvailable: CommandAvailableFn;
     private readonly commandExists: CommandExistsFn;
     private readonly nodeCommand: string;
     private readonly resourcesPath: string;
@@ -31,6 +35,7 @@ export class LanguageServerManager {
     constructor(
         deps: {
             appRoot?: string;
+            commandAvailable?: CommandAvailableFn;
             commandExists?: CommandExistsFn;
             nodeCommand?: string;
             resourcesPath?: string;
@@ -38,29 +43,36 @@ export class LanguageServerManager {
         } = {}
     ) {
         this.appRoot = deps.appRoot ?? process.cwd();
+        this.commandAvailable = deps.commandAvailable ?? defaultCommandAvailable;
         this.commandExists = deps.commandExists ?? existsSync;
         this.nodeCommand = deps.nodeCommand ?? process.execPath;
         this.resourcesPath = deps.resourcesPath ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? "";
         this.spawn = deps.spawn ?? nodeSpawn;
     }
 
-    resolveCommand(language: string): LanguageServerCommand | null {
-        if (
-            language === "typescript" ||
-            language === "typescriptreact" ||
-            language === "javascript" ||
-            language === "javascriptreact"
-        ) {
+    resolveCommand(serverId: string): LanguageServerCommand | null {
+        const definition = getLanguageServerDefinitionById(serverId);
+        if (!definition) return null;
+        if (definition.serverId === "typescript-language-server") {
             return this.resolvePackagedCommand("typescript-language-server") ?? {
                 command: this.resolveAppBinCommand("typescript-language-server"),
                 args: ["--stdio"],
             };
         }
-        return null;
+        if (
+            definition.availabilityCheck &&
+            !this.commandAvailable(definition.availabilityCheck.command, definition.availabilityCheck.args)
+        ) {
+            throw new Error(`LSP unavailable: ${definition.availabilityCheck.unavailableMessage}`);
+        }
+        return {
+            command: definition.command,
+            args: definition.args,
+        };
     }
 
     getOrStart(input: LanguageServerInput): ChildProcessWithoutNullStreams {
-        const key = `${input.workspaceRoot}\u0000${input.language}`;
+        const key = this.cacheKey(input);
         const existing = this.processes.get(key);
         if (existing) return existing;
         const child = this.spawnProcess(input);
@@ -75,7 +87,7 @@ export class LanguageServerManager {
     }
 
     stop(input: LanguageServerInput): void {
-        const key = `${input.workspaceRoot}\u0000${input.language}`;
+        const key = this.cacheKey(input);
         const child = this.processes.get(key);
         if (!child) return;
         child.kill();
@@ -101,9 +113,9 @@ export class LanguageServerManager {
     }
 
     private spawnProcess(input: LanguageServerInput): ChildProcessWithoutNullStreams {
-        const command = this.resolveCommand(input.language);
+        const command = this.resolveCommand(input.serverId);
         if (!command) {
-            throw new Error(`No language server configured for ${input.language}`);
+            throw new Error(`No language server configured for ${input.serverId}`);
         }
         return this.spawn(command.command, command.args, {
             cwd: input.workspaceRoot,
@@ -134,4 +146,13 @@ export class LanguageServerManager {
         ];
         return Array.from(new Set(candidates.filter((candidate) => candidate != null)));
     }
+
+    private cacheKey(input: LanguageServerInput): string {
+        return `${input.workspaceRoot}\u0000${input.serverId}`;
+    }
+}
+
+function defaultCommandAvailable(command: string, args: string[]): boolean {
+    const result = spawnSync(command, args, { stdio: "ignore" });
+    return result.status === 0;
 }
