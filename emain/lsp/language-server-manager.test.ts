@@ -126,6 +126,64 @@ describe("LanguageServerManager", () => {
         expect(spawn).toHaveBeenCalledTimes(1);
     });
 
+    it("acquires one cached process per workspace root and server id until all references are released", () => {
+        const first = makeChild();
+        const second = makeChild();
+        const spawn = vi.fn().mockReturnValueOnce(first.child).mockReturnValueOnce(second.child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        const firstAcquire = manager.acquire(typescriptInput);
+        const secondAcquire = manager.acquire({
+            workspaceRoot: "/repo",
+            language: "typescriptreact",
+            serverId: "typescript-language-server",
+        });
+        manager.release(typescriptInput);
+        const stillCached = manager.getOrStart(typescriptInput);
+        manager.release({
+            workspaceRoot: "/repo",
+            language: "typescriptreact",
+            serverId: "typescript-language-server",
+        });
+        const restarted = manager.acquire(typescriptInput);
+
+        expect(firstAcquire).toBe(first.child);
+        expect(secondAcquire).toBe(first.child);
+        expect(stillCached).toBe(first.child);
+        expect(first.child.kill).toHaveBeenCalledTimes(1);
+        expect(restarted).toBe(second.child);
+        expect(spawn).toHaveBeenCalledTimes(2);
+    });
+
+    it("validates language before returning an acquired cached process", () => {
+        const spawn = vi.fn(() => makeChild().child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        manager.acquire(typescriptInput);
+
+        expect(() =>
+            manager.acquire({ workspaceRoot: "/repo", language: "go", serverId: "typescript-language-server" })
+        ).toThrow("Language go is not supported by language server typescript-language-server");
+        expect(spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it("drops acquired references when the cached process exits", () => {
+        const first = makeChild();
+        const second = makeChild();
+        const spawn = vi.fn().mockReturnValueOnce(first.child).mockReturnValueOnce(second.child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        manager.acquire(typescriptInput);
+        manager.acquire(typescriptInput);
+        first.emit("exit");
+        manager.release(typescriptInput);
+        const restarted = manager.acquire(typescriptInput);
+
+        expect(first.child.kill).not.toHaveBeenCalled();
+        expect(restarted).toBe(second.child);
+        expect(spawn).toHaveBeenCalledTimes(2);
+    });
+
     it("starts independent sessions without reusing cached processes", () => {
         const first = makeChild();
         const second = makeChild();
