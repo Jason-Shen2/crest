@@ -44,19 +44,21 @@ import * as electron from "electron";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
-import type { Api, Model } from "./ai";
-import { getModel } from "./ai";
+import { RpcApi } from "../frontend/app/store/wshclientapi";
+import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
 import { getBuiltInAgentCommands } from "./agent/commands/registry";
-import { buildAgentForkPointViews, buildAgentTreeEntryViews, previewSessionEntry } from "./agent/commands/session-views";
+import {
+    buildAgentForkPointViews,
+    buildAgentTreeEntryViews,
+    previewSessionEntry,
+} from "./agent/commands/session-views";
 import type { AgentCommandInfo, AgentForkPointView, AgentTreeEntryView } from "./agent/commands/types";
 import { buildPaneHarness } from "./agent/harness-factory";
 import { uuidv7 } from "./agent/harness/session/uuid";
+import type { JsonlSessionMetadata } from "./agent/harness/types";
 import { buildPersistedRunsFromSessionEntries, PaneAgentSession, type AgentRun } from "./agent/pane-agent-session";
-import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
-import { getDefaultTools } from "./agent/tools";
-import { getSecret } from "./aiconfig/secrets";
 import {
     createPaneSession,
     defaultSessionsDir,
@@ -65,9 +67,11 @@ import {
     openPaneSession,
     openPaneSessionByPath,
 } from "./agent/sessions";
-import type { JsonlSessionMetadata } from "./agent/harness/types";
+import { getDefaultTools } from "./agent/tools";
 import type { ThinkingLevel } from "./agent/types";
-import { RpcApi } from "../frontend/app/store/wshclientapi";
+import type { Api, Model } from "./ai";
+import { getModel } from "./ai";
+import { getSecret } from "./aiconfig/secrets";
 import { ElectronWshClient } from "./emain-wsh";
 
 // Per-pane conversation OWNERS, keyed by session JSONL path (the natural
@@ -178,10 +182,7 @@ function assertInsideSessionsDir(sessionPath: string, sessionsRoot: string, fiel
 
 async function validateSessionPath(value: unknown, fieldName = "sessionPath"): Promise<string> {
     const inputPath = requireNonEmptyString(value, fieldName);
-    const [sessionPath, sessionsRoot] = await Promise.all([
-        fs.realpath(inputPath),
-        fs.realpath(defaultSessionsDir()),
-    ]);
+    const [sessionPath, sessionsRoot] = await Promise.all([fs.realpath(inputPath), fs.realpath(defaultSessionsDir())]);
     assertInsideSessionsDir(sessionPath, sessionsRoot, fieldName);
     return sessionPath;
 }
@@ -214,7 +215,7 @@ async function openValidatedSessionMetadata(value: unknown): Promise<{
 async function requireSessionEntry(
     session: Awaited<ReturnType<typeof openPaneSessionByPath>>,
     entryId: string,
-    fieldName: string,
+    fieldName: string
 ) {
     const entry = await session.getEntry(entryId);
     if (!entry) {
@@ -271,10 +272,7 @@ async function validateCloneInput(value: unknown): Promise<{
 function resolveModelOrThrow(provider: string, modelId: string): Model<Api> {
     // pi's getModel is typed with literal generics; our renderer-supplied
     // strings can't satisfy them. Cast — runtime accepts any registered id.
-    const model = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(
-        provider,
-        modelId,
-    );
+    const model = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(provider, modelId);
     if (!model) {
         throw new Error(`agent: unknown provider/model "${provider}/${modelId}"`);
     }
@@ -316,10 +314,7 @@ async function resolveApiKey(opts: SendOptions): Promise<string | undefined> {
     return undefined;
 }
 
-async function ensurePaneSession(
-    metadata: JsonlSessionMetadata,
-    opts: SendOptions,
-): Promise<PaneAgentSession> {
+async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptions): Promise<PaneAgentSession> {
     const existing = sessionCache.get(metadata.path);
     if (existing) {
         existing.update(buildPromptInputs(opts));
@@ -341,7 +336,7 @@ async function ensurePaneSession(
         `[agent-ipc] send → provider=${model.provider} model=${model.id} api=${model.api} ` +
             `baseUrl=${(model as { baseUrl?: string }).baseUrl ?? "(provider default)"} ` +
             `reasoning=${opts.reasoning ?? "off"} apiKey=${apiKey ? "present" : "MISSING"} ` +
-            `(tokenSecretName=${opts.tokenSecretName ?? "-"})`,
+            `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
     );
     const pane = buildPaneHarness({
         session: piSession,
@@ -360,7 +355,7 @@ async function ensurePaneSession(
                 ? { allowAll: true }
                 : opts.allowedTools
                   ? { allowAll: false, allowedTools: opts.allowedTools }
-                  : { allowAll: true },
+                  : { allowAll: true }
         ),
     });
     // Wrap the harness in the per-session owner. Its constructor attaches
@@ -432,7 +427,7 @@ function trackSenderKey(sender: electron.WebContents, key: SubKey): void {
 async function sendPersistedSnapshot(
     sender: electron.WebContents,
     sessionPath: string,
-    blockId?: string,
+    blockId?: string
 ): Promise<void> {
     let canonicalPath = sessionPath;
     try {
@@ -461,11 +456,7 @@ async function sendPersistedSnapshot(
     }
 }
 
-function subscribeToOwner(
-    sender: electron.WebContents,
-    sessionPath: string,
-    session: PaneAgentSession,
-): void {
+function subscribeToOwner(sender: electron.WebContents, sessionPath: string, session: PaneAgentSession): void {
     const key: SubKey = `${sender.id}:${sessionPath}`;
     pendingSubscriptions.delete(key);
     if (subscriptions.has(key)) return;
@@ -569,10 +560,7 @@ export async function cloneAgentSessionForIpc(input: unknown): Promise<AgentClon
         return { message: "No session branch to clone yet." };
     }
     await requireSessionEntry(source, leafId, "targetId");
-    const { metadata } = await forkPaneSession(
-        sourceMetadata,
-        { cwd, entryId: leafId, position: "at" },
-    );
+    const { metadata } = await forkPaneSession(sourceMetadata, { cwd, entryId: leafId, position: "at" });
     return { sessionMetadata: metadata };
 }
 
@@ -584,7 +572,7 @@ export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<voi
 export async function subscribeAgentSessionForIpc(
     sender: electron.WebContents,
     sessionPath: unknown,
-    opts?: { blockId?: string },
+    opts?: { blockId?: string }
 ): Promise<void> {
     const canonicalPath = await validateSessionPath(sessionPath);
     const session = sessionCache.get(canonicalPath);
@@ -616,68 +604,65 @@ export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPat
  * emain-ipc.ts initIpcHandlers().
  */
 export function registerAgentIpcHandlers(): void {
-    electron.ipcMain.handle(
-        "agent:create-session",
-        async (_event, cwd: string): Promise<JsonlSessionMetadata> => {
-            const { metadata } = await createPaneSession(cwd);
-            return metadata;
-        },
-    );
+    electron.ipcMain.handle("agent:create-session", async (_event, cwd: string): Promise<JsonlSessionMetadata> => {
+        const { metadata } = await createPaneSession(cwd);
+        return metadata;
+    });
 
     electron.ipcMain.handle(
         "agent:list-sessions-for-cwd",
         async (_event, cwd: string): Promise<JsonlSessionMetadata[]> => {
             return await listSessionsForCwd(cwd);
-        },
+        }
     );
 
     electron.ipcMain.handle("agent:list-commands", (): AgentCommandInfo[] => {
         return listAgentCommandsForIpc();
     });
 
-    electron.ipcMain.handle("agent:list-tree", async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentTreeResult> => {
-        return await listAgentTreeForIpc(sessionMetadata);
-    });
+    electron.ipcMain.handle(
+        "agent:list-tree",
+        async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentTreeResult> => {
+            return await listAgentTreeForIpc(sessionMetadata);
+        }
+    );
 
     electron.ipcMain.handle(
         "agent:list-fork-points",
         async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentForkPointView[]> => {
             return await listAgentForkPointsForIpc(sessionMetadata);
-        },
+        }
     );
 
     electron.ipcMain.handle(
         "agent:navigate-tree",
         async (_event, input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> => {
             return await navigateAgentTreeForIpc(input);
-        },
+        }
     );
 
     electron.ipcMain.handle(
         "agent:fork-session",
         async (_event, input: AgentForkSessionInput): Promise<AgentForkSessionResult> => {
             return await forkAgentSessionForIpc(input);
-        },
+        }
     );
 
     electron.ipcMain.handle(
         "agent:clone-session",
         async (_event, input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> => {
             return await cloneAgentSessionForIpc(input);
-        },
+        }
     );
 
     electron.ipcMain.handle(
         "agent:send",
-        async (
-            _event,
-            opts: SendOptions,
-        ): Promise<{ sessionMetadata: JsonlSessionMetadata; runId: string }> => {
+        async (_event, opts: SendOptions): Promise<{ sessionMetadata: JsonlSessionMetadata; runId: string }> => {
             console.log(
                 `[agent-ipc] agent:send provider=${opts.provider} model=${opts.model} ` +
                     `reasoning=${opts.reasoning ?? "off"} ` +
                     `cred=${opts.token ? "token" : opts.tokenSecretName ? `secret:${opts.tokenSecretName}` : "NONE"} ` +
-                    `textLen=${opts.text?.length ?? 0}`,
+                    `textLen=${opts.text?.length ?? 0}`
             );
             const { metadata } = await ensureSession(opts);
             const session = await ensurePaneSession(metadata, opts);
@@ -701,7 +686,7 @@ export function registerAgentIpcHandlers(): void {
 
             session.send(runId, opts.text);
             return { sessionMetadata: metadata, runId };
-        },
+        }
     );
 
     electron.ipcMain.on("agent:abort", (_event, sessionPath: string) => {
