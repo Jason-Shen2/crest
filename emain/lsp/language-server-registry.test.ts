@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { getLanguageServerDefinitionById, getLanguageServerDefinitionForLanguage } from "./language-server-registry";
+import {
+    getLanguageServerDefinition,
+    getLanguageServerDefinitionById,
+    getLanguageServerDefinitionForLanguage,
+} from "./language-server-registry";
 
 describe("language server registry", () => {
     it("maps JS and TS language ids to the TypeScript language server", () => {
@@ -39,5 +43,11 @@ describe("language server registry", () => {
             })
         );
         expect(getLanguageServerDefinitionById("missing")).toBeUndefined();
+    });
+
+    it("rejects a server id that does not support the requested language", () => {
+        expect(() => getLanguageServerDefinition("typescript-language-server", "go")).toThrow(
+            "Language go is not supported by language server typescript-language-server"
+        );
     });
 });

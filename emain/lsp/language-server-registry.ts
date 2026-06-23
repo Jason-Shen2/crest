@@ -51,3 +51,14 @@ export function getLanguageServerDefinitionById(serverId: string): LanguageServe
 export function getLanguageServerDefinitionForLanguage(language: string): LanguageServerDefinition | undefined {
     return languageServerByLanguage.get(language);
 }
+
+export function getLanguageServerDefinition(serverId: string, language: string): LanguageServerDefinition {
+    const definition = getLanguageServerDefinitionById(serverId);
+    if (!definition) {
+        throw new Error(`No language server configured for ${serverId}`);
+    }
+    if (!definition.languages.includes(language)) {
+        throw new Error(`Language ${language} is not supported by language server ${serverId}`);
+    }
+    return definition;
+}
