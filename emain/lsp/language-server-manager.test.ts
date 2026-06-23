@@ -114,6 +114,18 @@ describe("LanguageServerManager", () => {
         expect(spawn).toHaveBeenCalledTimes(1);
     });
 
+    it("validates language before returning an existing cached process", () => {
+        const spawn = vi.fn(() => makeChild().child);
+        const manager = new LanguageServerManager({ spawn: spawn as any });
+
+        manager.getOrStart(typescriptInput);
+
+        expect(() =>
+            manager.getOrStart({ workspaceRoot: "/repo", language: "go", serverId: "typescript-language-server" })
+        ).toThrow("Language go is not supported by language server typescript-language-server");
+        expect(spawn).toHaveBeenCalledTimes(1);
+    });
+
     it("starts independent sessions without reusing cached processes", () => {
         const first = makeChild();
         const second = makeChild();
