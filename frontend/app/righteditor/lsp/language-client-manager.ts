@@ -26,6 +26,8 @@ type PendingTransport = {
     stopped: boolean;
 };
 
+type StatusListener = () => void;
+
 const LspUnavailablePrefix = "LSP unavailable: ";
 
 export class LanguageClientManager {
@@ -33,6 +35,8 @@ export class LanguageClientManager {
     private readonly transports = new Map<ClientKey, DisposableTransport>();
     private readonly pendingTransports = new Map<ClientKey, PendingTransport>();
     private readonly statusByKey = new Map<ClientKey, RightEditorLspStatus>();
+    private readonly statusVersions = new Map<ClientKey, number>();
+    private readonly statusListeners = new Map<ClientKey, Set<StatusListener>>();
     private readonly referenceCounts = new Map<ClientKey, number>();
 
     constructor(deps: LanguageClientManagerDeps) {
@@ -95,6 +99,26 @@ export class LanguageClientManager {
         };
     }
 
+    getStatusSnapshot(input: EnsureClientInput): number {
+        return this.statusVersions.get(this.makeKey(input)) ?? 0;
+    }
+
+    subscribeStatus(input: EnsureClientInput, listener: StatusListener): () => void {
+        const key = this.makeKey(input);
+        let listeners = this.statusListeners.get(key);
+        if (!listeners) {
+            listeners = new Set();
+            this.statusListeners.set(key, listeners);
+        }
+        listeners.add(listener);
+        return () => {
+            listeners?.delete(listener);
+            if (listeners?.size === 0) {
+                this.statusListeners.delete(key);
+            }
+        };
+    }
+
     acquireClient(input: EnsureClientInput): () => void {
         if (!input.serverId) {
             this.setStatus(input, "unavailable", "Language server unavailable");
@@ -143,10 +167,12 @@ export class LanguageClientManager {
         this.pendingTransports.clear();
         this.statusByKey.clear();
         this.referenceCounts.clear();
+        this.notifyAllStatusListeners();
     }
 
     private setStatus(input: EnsureClientInput, state: RightEditorLspStatus["state"], message: string | null): void {
-        this.statusByKey.set(this.makeKey(input), {
+        const key = this.makeKey(input);
+        this.statusByKey.set(key, {
             workspaceRoot: input.workspaceRoot,
             language: input.language,
             serverId: input.serverId ?? null,
@@ -154,6 +180,7 @@ export class LanguageClientManager {
             state,
             message,
         });
+        this.notifyStatusListeners(key);
     }
 
     private setErrorStatus(input: EnsureClientInput, e: any): void {
@@ -167,6 +194,21 @@ export class LanguageClientManager {
 
     private makeKey(input: EnsureClientInput): ClientKey {
         return `${input.workspaceRoot}\u0000${input.serverId ?? ""}`;
+    }
+
+    private notifyStatusListeners(key: ClientKey): void {
+        this.statusVersions.set(key, (this.statusVersions.get(key) ?? 0) + 1);
+        const listeners = this.statusListeners.get(key);
+        if (!listeners) return;
+        for (const listener of [...listeners]) {
+            listener();
+        }
+    }
+
+    private notifyAllStatusListeners(): void {
+        for (const key of this.statusListeners.keys()) {
+            this.notifyStatusListeners(key);
+        }
     }
 }
 

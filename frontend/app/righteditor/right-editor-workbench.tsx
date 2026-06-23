@@ -4,7 +4,6 @@
 import { CodeEditor } from "@/app/view/codeeditor/codeeditor";
 import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
-import { useEffect, useMemo } from "react";
 import { languageClientManager } from "./lsp/language-client-manager";
 import {
     getRightEditorLanguageServer,
@@ -14,6 +13,7 @@ import {
 import { MonacoModelRegistry } from "./monaco-model-registry";
 import type { RightEditorModel } from "./right-editor-model";
 import type { RightEditorLspStatus, RightEditorOpenFile } from "./right-editor-types";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 function normalizePathSeparators(path: string): string {
     return path.replace(/\\/g, "/");
@@ -88,12 +88,37 @@ type LspStatusManager = {
         serverId?: string | null;
         displayName?: string;
     }) => RightEditorLspStatus;
+    getStatusSnapshot?: (input: {
+        workspaceRoot: string;
+        language: string;
+        languages?: string[];
+        serverId?: string | null;
+        displayName?: string;
+    }) => number;
+    subscribeStatus?: (
+        input: {
+            workspaceRoot: string;
+            language: string;
+            languages?: string[];
+            serverId?: string | null;
+            displayName?: string;
+        },
+        listener: () => void
+    ) => () => void;
 };
 
 export type RightEditorLspStatusDetails = {
     supported: boolean;
     status: RightEditorLspStatus;
     installHint: string | null;
+};
+
+type RightEditorLspStatusInput = {
+    workspaceRoot: string;
+    language: string;
+    languages: string[];
+    serverId: string;
+    displayName: string;
 };
 
 export function acquireRightEditorLspForActiveFile(input: {
@@ -140,6 +165,44 @@ export function getRightEditorLspStatusForActiveFile(input: {
             displayName: support.server.displayName,
         }),
     };
+}
+
+function getRightEditorLspStatusInputForActiveFile(
+    activeFile: RightEditorOpenFile | null | undefined,
+    workspaceRoot: string
+): RightEditorLspStatusInput | undefined {
+    if (!activeFile) return undefined;
+    const activeWorkspaceRoot = activeFile.workspaceRoot || workspaceRoot;
+    const support = getRightEditorLspSupport(activeFile.language, activeWorkspaceRoot);
+    if (!support.supported) return undefined;
+    return {
+        workspaceRoot: activeWorkspaceRoot,
+        language: activeFile.language,
+        languages: support.server.languages,
+        serverId: support.server.serverId,
+        displayName: support.server.displayName,
+    };
+}
+
+function useRightEditorLspStatusVersion(
+    activeFile: RightEditorOpenFile | null | undefined,
+    workspaceRoot: string
+): number {
+    const statusInput = getRightEditorLspStatusInputForActiveFile(activeFile, workspaceRoot);
+    return useSyncExternalStore(
+        (onStoreChange) => {
+            if (!statusInput || !languageClientManager.subscribeStatus) return () => undefined;
+            return languageClientManager.subscribeStatus(statusInput, onStoreChange);
+        },
+        () => {
+            if (!statusInput || !languageClientManager.getStatusSnapshot) return 0;
+            return languageClientManager.getStatusSnapshot(statusInput);
+        },
+        () => {
+            if (!statusInput || !languageClientManager.getStatusSnapshot) return 0;
+            return languageClientManager.getStatusSnapshot(statusInput);
+        }
+    );
 }
 
 export function getRightEditorLspStatusLabel(status: RightEditorLspStatus | undefined, installHint?: string | null): string {
@@ -198,6 +261,10 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
         activeFile,
         workspaceRoot: activeFile?.workspaceRoot ?? state.workspaceRoot,
     });
+    const lspStatusVersion = useRightEditorLspStatusVersion(
+        activeFile,
+        activeFile?.workspaceRoot ?? state.workspaceRoot
+    );
     const activeMonacoModel = useMemo(() => {
         if (!activeFile) return null;
         return MonacoModelRegistry.getInstance().getOrCreateModel({
@@ -234,6 +301,7 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
         workspaceRoot: activeFile.workspaceRoot || state.workspaceRoot,
         lspManager: languageClientManager,
     });
+    void lspStatusVersion;
     const lspStatusLabel = getRightEditorLspStatusLabel(
         lspStatusDetails?.status,
         lspStatusDetails?.installHint
@@ -341,7 +409,12 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                     {activeLabel}
                 </span>
                 <div className="flex shrink-0 items-center gap-2">
-                    <span className="max-w-64 truncate" title={footerStatusLabel ?? activeFile.path}>
+                    <span
+                        role="status"
+                        aria-live="polite"
+                        className="max-w-64 truncate"
+                        title={footerStatusLabel ?? activeFile.path}
+                    >
                         {footerStatusLabel}
                     </span>
                     <button
