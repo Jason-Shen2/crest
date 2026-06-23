@@ -19,25 +19,34 @@ function makeChild() {
 }
 
 describe("LanguageServerManager", () => {
-    it("resolves typescript language server command", () => {
+    const typescriptInput = { workspaceRoot: "/repo", language: "typescript", serverId: "typescript-language-server" };
+    const goInput = { workspaceRoot: "/repo", language: "go", serverId: "gopls" };
+
+    it("resolves typescript language server command by server id", () => {
         const manager = new LanguageServerManager({ commandExists: () => false, spawn: vi.fn() as any });
-        expect(manager.resolveCommand("typescript")).toEqual({
+        expect(manager.resolveCommand("typescript-language-server")).toEqual({
             command: "typescript-language-server",
             args: ["--stdio"],
         });
     });
 
-    it("uses the typescript language server for TSX and JSX language ids", () => {
-        const manager = new LanguageServerManager({ commandExists: () => false, spawn: vi.fn() as any });
+    it("resolves gopls after checking command availability", () => {
+        const commandAvailable = vi.fn(() => true);
+        const manager = new LanguageServerManager({ commandAvailable, spawn: vi.fn() as any });
 
-        expect(manager.resolveCommand("typescriptreact")).toEqual({
-            command: "typescript-language-server",
-            args: ["--stdio"],
+        expect(manager.resolveCommand("gopls")).toEqual({
+            command: "gopls",
+            args: [],
         });
-        expect(manager.resolveCommand("javascriptreact")).toEqual({
-            command: "typescript-language-server",
-            args: ["--stdio"],
-        });
+        expect(commandAvailable).toHaveBeenCalledWith("gopls", ["version"]);
+    });
+
+    it("throws an LSP unavailable error when gopls is missing", () => {
+        const manager = new LanguageServerManager({ commandAvailable: () => false, spawn: vi.fn() as any });
+
+        expect(() => manager.startSession(goInput)).toThrow(
+            "LSP unavailable: Install gopls: go install golang.org/x/tools/gopls@latest"
+        );
     });
 
     it("resolves typescript language server from app node_modules when available", () => {
@@ -48,7 +57,7 @@ describe("LanguageServerManager", () => {
             spawn: vi.fn() as any,
         });
 
-        expect(manager.resolveCommand("typescript")).toEqual({
+        expect(manager.resolveCommand("typescript-language-server")).toEqual({
             command: path.join(appRoot, "node_modules", ".bin", "typescript-language-server"),
             args: ["--stdio"],
         });
@@ -72,19 +81,19 @@ describe("LanguageServerManager", () => {
             spawn: vi.fn() as any,
         });
 
-        expect(manager.resolveCommand("typescript")).toEqual({
+        expect(manager.resolveCommand("typescript-language-server")).toEqual({
             command: nodeCommand,
             args: [packagedCommand, "--stdio"],
             env: { ELECTRON_RUN_AS_NODE: "1" },
         });
     });
 
-    it("reuses one process per workspace root and language", () => {
+    it("reuses one process per workspace root and server id", () => {
         const spawn = vi.fn(() => makeChild().child);
         const manager = new LanguageServerManager({ spawn: spawn as any });
 
-        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
-        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        manager.getOrStart(typescriptInput);
+        manager.getOrStart(typescriptInput);
 
         expect(spawn).toHaveBeenCalledTimes(1);
     });
@@ -95,8 +104,8 @@ describe("LanguageServerManager", () => {
         const spawn = vi.fn().mockReturnValueOnce(first.child).mockReturnValueOnce(second.child);
         const manager = new LanguageServerManager({ spawn: spawn as any });
 
-        const firstSession = manager.startSession({ workspaceRoot: "/repo", language: "typescript" });
-        const secondSession = manager.startSession({ workspaceRoot: "/repo", language: "typescript" });
+        const firstSession = manager.startSession(typescriptInput);
+        const secondSession = manager.startSession(typescriptInput);
 
         expect(spawn).toHaveBeenCalledTimes(2);
         expect(firstSession).toBe(first.child);
@@ -109,8 +118,8 @@ describe("LanguageServerManager", () => {
         const spawn = vi.fn().mockReturnValueOnce(session.child).mockReturnValueOnce(cached.child);
         const manager = new LanguageServerManager({ spawn: spawn as any });
 
-        manager.startSession({ workspaceRoot: "/repo", language: "typescript" });
-        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        manager.startSession(typescriptInput);
+        manager.getOrStart(typescriptInput);
         manager.stopAll();
 
         expect(session.child.kill).not.toHaveBeenCalled();
@@ -123,9 +132,9 @@ describe("LanguageServerManager", () => {
         const spawn = vi.fn().mockReturnValueOnce(first.child).mockReturnValueOnce(second.child);
         const manager = new LanguageServerManager({ spawn: spawn as any });
 
-        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        manager.getOrStart(typescriptInput);
         first.emit("error");
-        const restarted = manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        const restarted = manager.getOrStart(typescriptInput);
 
         expect(spawn).toHaveBeenCalledTimes(2);
         expect(restarted).toBe(second.child);
@@ -136,9 +145,9 @@ describe("LanguageServerManager", () => {
         const spawn = vi.fn(() => spawned.child);
         const manager = new LanguageServerManager({ spawn: spawn as any });
 
-        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
-        manager.stop({ workspaceRoot: "/repo", language: "typescript" });
-        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        manager.getOrStart(typescriptInput);
+        manager.stop(typescriptInput);
+        manager.getOrStart(typescriptInput);
 
         expect(spawned.child.kill).toHaveBeenCalledTimes(1);
         expect(spawn).toHaveBeenCalledTimes(2);
@@ -148,12 +157,12 @@ describe("LanguageServerManager", () => {
         const first = makeChild();
         const second = makeChild();
         const spawn = vi.fn().mockReturnValueOnce(first.child).mockReturnValueOnce(second.child).mockReturnValue(makeChild().child);
-        const manager = new LanguageServerManager({ spawn: spawn as any });
+        const manager = new LanguageServerManager({ commandAvailable: () => true, spawn: spawn as any });
 
-        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
-        manager.getOrStart({ workspaceRoot: "/repo", language: "javascript" });
+        manager.getOrStart(typescriptInput);
+        manager.getOrStart({ workspaceRoot: "/repo", language: "go", serverId: "gopls" });
         manager.stopAll();
-        manager.getOrStart({ workspaceRoot: "/repo", language: "typescript" });
+        manager.getOrStart(typescriptInput);
 
         expect(first.child.kill).toHaveBeenCalledTimes(1);
         expect(second.child.kill).toHaveBeenCalledTimes(1);
