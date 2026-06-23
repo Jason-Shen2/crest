@@ -14,6 +14,25 @@ const mockWorkbench = vi.hoisted(() => {
         codeEditorProps: [] as any[],
         registryModel,
         getOrCreateModel: vi.fn(() => registryModel),
+        lspSnapshot: 0,
+        lspStatus: null as any,
+        lspStatusListeners: new Set<() => void>(),
+        emitLspStatus(status: any) {
+            mockWorkbench.lspStatus = status;
+            mockWorkbench.lspSnapshot++;
+            for (const listener of mockWorkbench.lspStatusListeners) {
+                listener();
+            }
+        },
+        useSyncExternalStore: vi.fn((subscribe: any, getSnapshot: any) => getSnapshot()),
+    };
+});
+
+vi.mock("react", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("react")>();
+    return {
+        ...actual,
+        useSyncExternalStore: mockWorkbench.useSyncExternalStore,
     };
 });
 
@@ -36,6 +55,8 @@ vi.mock("./lsp/language-client-manager", () => ({
     languageClientManager: {
         acquireClient: vi.fn(() => vi.fn()),
         getStatus: vi.fn(),
+        getStatusSnapshot: vi.fn(),
+        subscribeStatus: vi.fn(),
     },
 }));
 
@@ -81,6 +102,24 @@ type RightEditorWorkbenchExports = typeof rightEditorWorkbench & {
 
 function renderWithStore(element: ReactElement): string {
     return renderToStaticMarkup(<Provider store={globalStore}>{element}</Provider>);
+}
+
+function renderWithMountedStore(element: ReactElement): { getMarkup: () => string; getChangeCount: () => number } {
+    let changeCount = 0;
+    mockWorkbench.useSyncExternalStore.mockImplementation((
+        subscribe: (onStoreChange: () => void) => () => void,
+        getSnapshot: () => unknown
+    ) => {
+        subscribe(() => {
+            changeCount++;
+        });
+        return getSnapshot();
+    });
+
+    return {
+        getMarkup: () => renderWithStore(element),
+        getChangeCount: () => changeCount,
+    };
 }
 
 function getRightEditorFileTabsMarkup(markup: string): string {
@@ -144,16 +183,32 @@ describe("RightEditorWorkbench", () => {
         RightEditorModel.resetInstance();
         mockWorkbench.codeEditorProps = [];
         mockWorkbench.getOrCreateModel.mockClear();
+        mockWorkbench.lspSnapshot = 0;
+        mockWorkbench.lspStatus = null;
+        mockWorkbench.lspStatusListeners.clear();
+        mockWorkbench.useSyncExternalStore.mockReset();
+        mockWorkbench.useSyncExternalStore.mockImplementation((_subscribe: any, getSnapshot: any) => getSnapshot());
         vi.mocked(languageClientManager.acquireClient).mockClear();
         vi.mocked(languageClientManager.getStatus).mockReset();
         vi.mocked(languageClientManager.getStatus).mockImplementation((input) => ({
-            workspaceRoot: input.workspaceRoot,
-            language: input.language,
-            serverId: input.serverId ?? null,
-            displayName: input.displayName ?? input.language,
-            state: "stopped",
-            message: null,
+            ...(mockWorkbench.lspStatus ?? {
+                workspaceRoot: input.workspaceRoot,
+                language: input.language,
+                serverId: input.serverId ?? null,
+                displayName: input.displayName ?? input.language,
+                state: "stopped",
+                message: null,
+            }),
         }));
+        vi.mocked(languageClientManager.getStatusSnapshot).mockReset();
+        vi.mocked(languageClientManager.getStatusSnapshot).mockImplementation(() => mockWorkbench.lspSnapshot);
+        vi.mocked(languageClientManager.subscribeStatus).mockReset();
+        vi.mocked(languageClientManager.subscribeStatus).mockImplementation((_input, listener) => {
+            mockWorkbench.lspStatusListeners.add(listener);
+            return () => {
+                mockWorkbench.lspStatusListeners.delete(listener);
+            };
+        });
         vi.unstubAllGlobals();
     });
 
@@ -536,6 +591,65 @@ describe("RightEditorWorkbench", () => {
         const markup = renderWithStore(<RightEditorWorkbench model={model} />);
 
         expect(markup).toContain("Install gopls: go install golang.org/x/tools/gopls@latest");
+    });
+
+    it("updates the mounted LSP footer when manager status changes after mount", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/src/app.ts", "/repo");
+        const mounted = renderWithMountedStore(<RightEditorWorkbench model={model} />);
+
+        expect(mounted.getMarkup()).toContain("TypeScript/JavaScript LSP stopped");
+
+        mockWorkbench.emitLspStatus({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            state: "starting",
+            message: null,
+        });
+        expect(mounted.getChangeCount()).toBeGreaterThan(0);
+        expect(mounted.getMarkup()).toContain("TypeScript/JavaScript LSP starting");
+
+        mockWorkbench.emitLspStatus({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            state: "running",
+            message: null,
+        });
+        expect(mounted.getMarkup()).toContain("TypeScript/JavaScript LSP ready");
+
+        mockWorkbench.emitLspStatus({
+            workspaceRoot: "/repo",
+            language: "typescript",
+            serverId: "typescript-language-server",
+            displayName: "TypeScript/JavaScript",
+            state: "error",
+            message: "server crashed",
+        });
+        expect(mounted.getMarkup()).toContain("server crashed");
+    });
+
+    it("updates the mounted LSP footer to unavailable with install hint and polite live status", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/main.go", "/repo");
+        const mounted = renderWithMountedStore(<RightEditorWorkbench model={model} />);
+
+        mockWorkbench.emitLspStatus({
+            workspaceRoot: "/repo",
+            language: "go",
+            serverId: "gopls",
+            displayName: "Go",
+            state: "unavailable",
+            message: null,
+        });
+
+        const markup = mounted.getMarkup();
+        expect(markup).toContain("Install gopls: go install golang.org/x/tools/gopls@latest");
+        expect(markup).toContain('role="status"');
+        expect(markup).toContain('aria-live="polite"');
     });
 
     it("keeps shared LSP acquisition when active file switches within the same workspace and server", () => {
