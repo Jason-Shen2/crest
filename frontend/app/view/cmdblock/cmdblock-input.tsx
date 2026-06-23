@@ -27,6 +27,7 @@
 
 import { Tooltip } from "@/app/element/tooltip";
 import { UIcon } from "@/app/element/ui-icon";
+import { getApi } from "@/app/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { cn } from "@/util/util";
 import { CornerDownLeft } from "lucide-react";
@@ -1020,24 +1021,20 @@ function caretRectOf(host: HTMLElement, range: Range): DOMRect {
 
 // =========================================================================
 // SlashCommandMenu — inline menu when buffer starts with '/'.  Warp
-// reference: app/src/terminal/input/slash_commands/.  We hardcode a small
-// crest-specific list until a registry is wired through the model.
+// reference: app/src/terminal/input/slash_commands/.
 // =========================================================================
 interface InlineCommand {
     name: string;
     description: string;
     icon: string;
+    action?: "openModelPicker";
     // Optional alternate keystroke chips shown in the trailing slot
     // when this row is selected.
     altKeys?: string[];
 }
 
-const SlashCommands: InlineCommand[] = [
+const LocalSlashCommands: InlineCommand[] = [
     { name: "/agent", icon: "stars-01", description: "Send input to the agent" },
-    { name: "/model", icon: "stars-01", description: "Pick the AI model" },
-    { name: "/tree", icon: "git-branch-01", description: "Show the current agent session tree" },
-    { name: "/fork", icon: "git-branch-01", description: "Fork from a previous agent message" },
-    { name: "/clone", icon: "copy-01", description: "Clone the current agent session branch" },
     { name: "/terminal", icon: "terminal", description: "Switch input to shell mode" },
     { name: "/auto", icon: "lightning-02", description: "Auto-detect shell vs natural language" },
     { name: "/clear", icon: "x-close", description: "Clear the current terminal output" },
@@ -1047,6 +1044,44 @@ const SlashCommands: InlineCommand[] = [
     { name: "/settings", icon: "settings", description: "Open settings" },
     { name: "/reload", icon: "refresh", description: "Reload the terminal pane" },
 ];
+
+const FallbackAgentSlashCommands: InlineCommand[] = [
+    { name: "/tree", icon: "git-branch-01", description: "Navigate the current agent session tree" },
+    { name: "/fork", icon: "git-branch-01", description: "Fork a new agent session from a previous user message" },
+    { name: "/clone", icon: "copy-01", description: "Clone the current agent session branch" },
+    { name: "/compact", icon: "stars-01", description: "Compact the current agent session context [instructions]" },
+    { name: "/model", icon: "stars-01", description: "Open the model picker", action: "openModelPicker" },
+    { name: "/help", icon: "book-open", description: "Show available agent commands" },
+];
+
+const SlashCommands: InlineCommand[] = mergeSlashCommands(FallbackAgentSlashCommands, LocalSlashCommands);
+
+export function makeSlashCommandsFromAgentRegistry(commands: AgentCommandInfo[]): InlineCommand[] {
+    return commands.map((command) => {
+        const inlineCommand: InlineCommand = {
+            name: `/${command.name}`,
+            description: command.argumentHint ? `${command.description} ${command.argumentHint}` : command.description,
+            icon: iconForAgentCommand(command),
+        };
+        if (command.action.type === "frontend") {
+            inlineCommand.action = command.action.action;
+        }
+        return inlineCommand;
+    });
+}
+
+function mergeSlashCommands(agentCommands: InlineCommand[], localCommands: InlineCommand[]): InlineCommand[] {
+    const names = new Set(agentCommands.map((command) => command.name));
+    return [...agentCommands, ...localCommands.filter((command) => !names.has(command.name))];
+}
+
+function iconForAgentCommand(command: AgentCommandInfo): string {
+    if (command.action.type === "frontend") return "stars-01";
+    if (command.action.command === "tree" || command.action.command === "fork") return "git-branch-01";
+    if (command.action.command === "clone") return "copy-01";
+    if (command.action.command === "help") return "book-open";
+    return "stars-01";
+}
 
 // =========================================================================
 // AtMenu — inline @ context menu.  Warp reference: input/inline_menu/.
@@ -1299,11 +1334,26 @@ export const CmdBlockInput = memo(
         // The popover handles empty / error states internally via the
         // userConfigStatus prop, so the chip can always open it.
         const hasModelPicker = !!onSelectionChange;
+        const [slashCommands, setSlashCommands] = useState<InlineCommand[]>(SlashCommands);
 
         useEffect(() => {
             if (!openModelPickerRequest || !hasModelPicker) return;
             setModelPickerOpen(true);
         }, [openModelPickerRequest, hasModelPicker]);
+        useEffect(() => {
+            const listCommands = getApi()?.agent?.listCommands;
+            if (!listCommands) return;
+            let cancelled = false;
+            void listCommands()
+                .then((commands) => {
+                    if (cancelled) return;
+                    setSlashCommands(mergeSlashCommands(makeSlashCommandsFromAgentRegistry(commands), LocalSlashCommands));
+                })
+                .catch(() => undefined);
+            return () => {
+                cancelled = true;
+            };
+        }, []);
         const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
         const [atSelectedIdx, setAtSelectedIdx] = useState(0);
         const [dragOver, setDragOver] = useState(false);
@@ -1312,8 +1362,8 @@ export const CmdBlockInput = memo(
         // keyboard navigation (↑/↓ → setSelectedIdx).  Memoising keeps the
         // arrays reference-stable across keystrokes that don't change them.
         const slashFiltered = useMemo(
-            () => filterCommands(text, SlashCommands),
-            [text]
+            () => filterCommands(text, slashCommands),
+            [text, slashCommands]
         );
         const atFiltered = useMemo(
             () => filterCommands(atQuery, AtCommands),
@@ -1498,7 +1548,8 @@ export const CmdBlockInput = memo(
         // (onMenuAccept via Enter).
         const pickSlashCommand = useCallback(
             (cmd: string) => {
-                if (cmd === "/model" && hasModelPicker) {
+                const command = slashCommands.find((item) => item.name === cmd);
+                if (command?.action === "openModelPicker" && hasModelPicker) {
                     setText("");
                     setSlashOpen(false);
                     setModelPickerOpen(true);
@@ -1507,7 +1558,7 @@ export const CmdBlockInput = memo(
                 replaceLastToken(cmd, "/");
                 setSlashOpen(false);
             },
-            [hasModelPicker, replaceLastToken]
+            [hasModelPicker, replaceLastToken, slashCommands]
         );
 
         // Editor-side menu callbacks: ↑/↓ moves selection within the

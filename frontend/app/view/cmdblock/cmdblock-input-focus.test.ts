@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
     getAgentShellShortcutModifierKey,
+    makeSlashCommandsFromAgentRegistry,
     resolveEditorEnterAction,
     resolveSubmitMode,
     resolveShortcutOverrideMode,
@@ -103,5 +104,39 @@ describe("getAgentShellShortcutModifierKey", () => {
     it("uses native symbol modifier keys", () => {
         expect(getAgentShellShortcutModifierKey(true)).toBe("⌘");
         expect(getAgentShellShortcutModifierKey(false)).toBe("⌃");
+    });
+});
+
+describe("makeSlashCommandsFromAgentRegistry", () => {
+    it("uses agent command registry metadata for builtin slash commands", () => {
+        const commands = makeSlashCommandsFromAgentRegistry([
+            {
+                name: "compact",
+                description: "Compact the current agent session context",
+                argumentHint: "[instructions]",
+                source: "builtin",
+                action: { type: "backend", command: "compact" },
+            },
+            {
+                name: "model",
+                description: "Open the model picker",
+                source: "builtin",
+                action: { type: "frontend", action: "openModelPicker" },
+            },
+        ]);
+
+        expect(commands).toEqual([
+            {
+                name: "/compact",
+                description: "Compact the current agent session context [instructions]",
+                icon: "stars-01",
+            },
+            {
+                name: "/model",
+                description: "Open the model picker",
+                icon: "stars-01",
+                action: "openModelPicker",
+            },
+        ]);
     });
 });

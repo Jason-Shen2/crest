@@ -55,6 +55,16 @@ export function getAgentSelectorTitle(type: AgentSelectorRequestType): string {
     return type === "tree" ? "Agent session tree" : "Fork agent session";
 }
 
+export function getInitialAgentSelectorFocusEntryId(
+    type: AgentSelectorRequestType,
+    entries: AgentSelectorEntryView[]
+): string | undefined {
+    if (type === "fork") {
+        return entries[entries.length - 1]?.id;
+    }
+    return entries.find((entry) => entry.isCurrent)?.id ?? entries[0]?.id;
+}
+
 function getAgentSelectorTitleId(type: AgentSelectorRequestType): string {
     return `agent-selector-${type}-title`;
 }
@@ -147,8 +157,14 @@ export const AgentSelectorPopover = memo(
             if (!request) return;
             const id = window.setTimeout(() => {
                 const dialog = dialogRef.current;
-                const firstEntry = dialog?.querySelector<HTMLElement>("[data-agent-selector-entry]:not(:disabled)");
-                (firstEntry ?? dialog)?.focus({ preventScroll: true });
+                const targetEntryId = getInitialAgentSelectorFocusEntryId(request.type, state.entries);
+                const entries = Array.from(
+                    dialog?.querySelectorAll<HTMLElement>("[data-agent-selector-entry]:not(:disabled)") ?? []
+                );
+                const targetEntry =
+                    entries.find((entry) => entry.getAttribute("data-agent-selector-entry") === targetEntryId) ??
+                    entries[0];
+                (targetEntry ?? dialog)?.focus({ preventScroll: true });
             }, 0);
             return () => window.clearTimeout(id);
         }, [request, state.status, state.entries.length]);
