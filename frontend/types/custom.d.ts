@@ -98,7 +98,11 @@ declare global {
         getZoomFactor: () => number; // get-zoom-factor
         showWorkspaceAppMenu: (workspaceId: string) => void; // workspace-appmenu-show
         showBuilderAppMenu: (builderId: string) => void; // builder-appmenu-show
-        showContextMenu: (workspaceId: string, menu: ElectronContextMenuItem[], position?: { x: number; y: number }) => void; // contextmenu-show
+        showContextMenu: (
+            workspaceId: string,
+            menu: ElectronContextMenuItem[],
+            position?: { x: number; y: number }
+        ) => void; // contextmenu-show
         onContextMenuClick: (callback: (id: string | null) => void) => void; // contextmenu-click
         onNavigate: (callback: (url: string) => void) => void;
         onIframeNavigate: (callback: (url: string) => void) => void;
@@ -172,7 +176,11 @@ declare global {
             send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
-            subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
+            subscribe: (
+                sessionPath: string,
+                callback: (event: unknown) => void,
+                opts?: { blockId?: string }
+            ) => () => void;
         };
     };
 
