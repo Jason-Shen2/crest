@@ -23,7 +23,12 @@ import { ContextChipModel } from "../contextchip/chip-model";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
 import { AgentActivityBar } from "./agent-activity-bar";
-import { AgentChatHost, type AgentChatHostApi, type AgentHostState } from "./agent-chat-host";
+import {
+    AgentChatHost,
+    type AgentChatHostApi,
+    type AgentHostState,
+    type AgentSelectorRequest,
+} from "./agent-chat-host";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
@@ -354,6 +359,19 @@ export const TerminalView = memo(
         const onOpenAgentModelPicker = useCallback(() => {
             setModelPickerRequest((value) => value + 1);
         }, []);
+        const [agentSelectorRequest, setAgentSelectorRequest] = useState<AgentSelectorRequest | null>(null);
+        const onAgentSelectorRequest = useCallback((request: AgentSelectorRequest) => {
+            setAgentSelectorRequest(request);
+        }, []);
+        useEffect(() => {
+            if (!agentSelectorRequest) return;
+            globalStore.set(
+                model.notificationAtom,
+                agentSelectorRequest.type === "tree"
+                    ? "Agent tree selector requested."
+                    : "Agent fork selector requested."
+            );
+        }, [agentSelectorRequest, model]);
         // Reactive agent state (status + pending queue) for the activity bar above
         // the input. The host's onReady api is imperative; this is the live view.
         const [agentState, setAgentState] = useState<AgentHostState>({
@@ -790,6 +808,7 @@ export const TerminalView = memo(
                         onStateChange={setAgentState}
                         onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
                         onOpenModelPicker={onOpenAgentModelPicker}
+                        onSelectorRequest={onAgentSelectorRequest}
                     />
                     {error && (
                         <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
