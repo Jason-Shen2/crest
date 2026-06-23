@@ -8,17 +8,19 @@ const MaxPreviewLength = 120;
 
 function truncatePreview(text: string): string {
     const normalized = text.replace(/\s+/g, " ").trim();
-    if (normalized.length <= MaxPreviewLength) {
+    const codePoints = Array.from(normalized);
+    if (codePoints.length <= MaxPreviewLength) {
         return normalized;
     }
-    return `${normalized.slice(0, MaxPreviewLength)}…`;
+    return `${codePoints.slice(0, MaxPreviewLength).join("")}…`;
 }
 
-function isTextContentPart(part: unknown): part is { type: string; text?: string } {
+function isTextContentPart(part: unknown): part is { type: string; text: string } {
     if (typeof part !== "object" || part == null) {
         return false;
     }
-    return (part as { type?: unknown }).type === "text";
+    const candidate = part as { type?: unknown; text?: unknown };
+    return candidate.type === "text" && typeof candidate.text === "string";
 }
 
 function textFromContent(content: unknown): string {
@@ -30,7 +32,7 @@ function textFromContent(content: unknown): string {
     }
     return content
         .filter(isTextContentPart)
-        .map((part) => part.text ?? "")
+        .map((part) => part.text)
         .join("");
 }
 
