@@ -41,6 +41,8 @@
 // strings never end up in channel names).
 
 import * as electron from "electron";
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
 
 import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
@@ -57,6 +59,7 @@ import { getDefaultTools } from "./agent/tools";
 import { getSecret } from "./aiconfig/secrets";
 import {
     createPaneSession,
+    defaultSessionsDir,
     forkPaneSession,
     listSessionsForCwd,
     openPaneSession,
@@ -153,6 +156,110 @@ interface AgentForkSessionResult {
 interface AgentCloneSessionResult {
     sessionMetadata?: JsonlSessionMetadata;
     message?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+}
+
+function requireNonEmptyString(value: unknown, fieldName: string): string {
+    if (typeof value !== "string" || value.trim() === "") {
+        throw new Error(`agent IPC: ${fieldName} must be a non-empty string`);
+    }
+    return value;
+}
+
+function assertInsideSessionsDir(sessionPath: string, sessionsRoot: string): void {
+    const relative = path.relative(sessionsRoot, sessionPath);
+    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new Error(`agent IPC: sessionMetadata.path is outside sessions directory`);
+    }
+}
+
+function validateSessionMetadataShape(value: unknown): JsonlSessionMetadata {
+    if (!isRecord(value)) {
+        throw new Error("agent IPC: sessionMetadata must be an object");
+    }
+    return {
+        id: typeof value.id === "string" ? value.id : "",
+        createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
+        path: requireNonEmptyString(value.path, "sessionMetadata.path"),
+        cwd: requireNonEmptyString(value.cwd, "sessionMetadata.cwd"),
+        parentSessionPath: typeof value.parentSessionPath === "string" ? value.parentSessionPath : undefined,
+    };
+}
+
+async function openValidatedSessionMetadata(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    requestedPath: string;
+}> {
+    const input = validateSessionMetadataShape(value);
+    const [sessionPath, sessionsRoot] = await Promise.all([
+        fs.realpath(input.path),
+        fs.realpath(defaultSessionsDir()),
+    ]);
+    assertInsideSessionsDir(sessionPath, sessionsRoot);
+    const session = await openPaneSessionByPath(sessionPath);
+    const metadata = await session.getMetadata();
+    return { metadata, session, requestedPath: input.path };
+}
+
+async function requireSessionEntry(
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>,
+    entryId: string,
+    fieldName: string,
+) {
+    const entry = await session.getEntry(entryId);
+    if (!entry) {
+        throw new Error(`agent IPC: ${fieldName} does not belong to the session`);
+    }
+    return entry;
+}
+
+async function validateTreeInput(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    requestedPath: string;
+}> {
+    return openValidatedSessionMetadata(value);
+}
+
+async function validateNavigateInput(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    targetId: string;
+    requestedPath: string;
+}> {
+    if (!isRecord(value)) throw new Error("agent IPC: navigateTree input must be an object");
+    const { metadata, session, requestedPath } = await openValidatedSessionMetadata(value.sessionMetadata);
+    const targetId = requireNonEmptyString(value.targetId, "targetId");
+    await requireSessionEntry(session, targetId, "targetId");
+    return { metadata, targetId, requestedPath };
+}
+
+async function validateForkInput(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    cwd: string;
+    entryId: string;
+}> {
+    if (!isRecord(value)) throw new Error("agent IPC: forkSession input must be an object");
+    const { metadata, session } = await openValidatedSessionMetadata(value.sessionMetadata);
+    const cwd = requireNonEmptyString(value.cwd, "cwd");
+    const entryId = requireNonEmptyString(value.entryId, "entryId");
+    await requireSessionEntry(session, entryId, "entryId");
+    return { metadata, session, cwd, entryId };
+}
+
+async function validateCloneInput(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    cwd: string;
+}> {
+    if (!isRecord(value)) throw new Error("agent IPC: cloneSession input must be an object");
+    const { metadata, session } = await openValidatedSessionMetadata(value.sessionMetadata);
+    const cwd = requireNonEmptyString(value.cwd, "cwd");
+    return { metadata, session, cwd };
 }
 
 function resolveModelOrThrow(provider: string, modelId: string): Model<Api> {
@@ -390,15 +497,15 @@ function attachPendingSubscribers(sessionPath: string, session: PaneAgentSession
     }
 }
 
-async function getSessionTreeData(sessionMetadata: JsonlSessionMetadata): Promise<{
+async function getSessionTreeData(sessionMetadataInput: unknown): Promise<{
     entries: Awaited<ReturnType<PaneAgentSession["listTreeEntries"]>>["entries"];
     leafId: string | null;
     labels: Map<string, string | undefined>;
 }> {
-    const owner = sessionCache.get(sessionMetadata.path);
+    const { metadata: sessionMetadata, session, requestedPath } = await validateTreeInput(sessionMetadataInput);
+    const owner = sessionCache.get(sessionMetadata.path) ?? sessionCache.get(requestedPath);
     if (owner) return owner.listTreeEntries();
 
-    const session = await openPaneSession(sessionMetadata);
     const entries = (await session.getEntries()).filter((entry) => entry.type !== "leaf");
     const leafId = await session.getLeafId();
     const labels = new Map<string, string | undefined>();
@@ -412,31 +519,32 @@ export function listAgentCommandsForIpc(): AgentCommandInfo[] {
     return getBuiltInAgentCommands();
 }
 
-export async function listAgentTreeForIpc(sessionMetadata: JsonlSessionMetadata): Promise<AgentTreeResult> {
+export async function listAgentTreeForIpc(sessionMetadata: unknown): Promise<AgentTreeResult> {
     const { entries, leafId, labels } = await getSessionTreeData(sessionMetadata);
     return { entries: buildAgentTreeEntryViews(entries, leafId, labels), leafId };
 }
 
-export async function listAgentForkPointsForIpc(sessionMetadata: JsonlSessionMetadata): Promise<AgentForkPointView[]> {
+export async function listAgentForkPointsForIpc(sessionMetadata: unknown): Promise<AgentForkPointView[]> {
     const { entries } = await getSessionTreeData(sessionMetadata);
     return buildAgentForkPointViews(entries);
 }
 
-export async function navigateAgentTreeForIpc(input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> {
-    const owner = sessionCache.get(input.sessionMetadata.path);
+export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavigateTreeResult> {
+    const { metadata, targetId, requestedPath } = await validateNavigateInput(input);
+    const owner = sessionCache.get(metadata.path) ?? sessionCache.get(requestedPath);
     if (!owner) {
-        throw new Error(`agent session is not active: ${input.sessionMetadata.path}`);
+        throw new Error(`agent session is not active: ${metadata.path}`);
     }
-    const result = await owner.navigateTree(input.targetId);
-    return { sessionMetadata: input.sessionMetadata, ...result };
+    const result = await owner.navigateTree(targetId);
+    return { sessionMetadata: metadata, ...result };
 }
 
-export async function forkAgentSessionForIpc(input: AgentForkSessionInput): Promise<AgentForkSessionResult> {
-    const source = await openPaneSession(input.sessionMetadata);
-    const target = await source.getEntry(input.entryId);
-    const { metadata } = await forkPaneSession(input.sessionMetadata, {
-        cwd: input.cwd,
-        entryId: input.entryId,
+export async function forkAgentSessionForIpc(input: unknown): Promise<AgentForkSessionResult> {
+    const { metadata: sourceMetadata, session: source, cwd, entryId } = await validateForkInput(input);
+    const target = await source.getEntry(entryId);
+    const { metadata } = await forkPaneSession(sourceMetadata, {
+        cwd,
+        entryId,
     });
     return {
         sessionMetadata: metadata,
@@ -444,15 +552,16 @@ export async function forkAgentSessionForIpc(input: AgentForkSessionInput): Prom
     };
 }
 
-export async function cloneAgentSessionForIpc(input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> {
-    const source = await openPaneSession(input.sessionMetadata);
+export async function cloneAgentSessionForIpc(input: unknown): Promise<AgentCloneSessionResult> {
+    const { metadata: sourceMetadata, session: source, cwd } = await validateCloneInput(input);
     const leafId = await source.getLeafId();
     if (!leafId) {
         return { message: "No session branch to clone yet." };
     }
+    await requireSessionEntry(source, leafId, "targetId");
     const { metadata } = await forkPaneSession(
-        input.sessionMetadata,
-        { cwd: input.cwd, entryId: leafId, position: "at" },
+        sourceMetadata,
+        { cwd, entryId: leafId, position: "at" },
     );
     return { sessionMetadata: metadata };
 }
