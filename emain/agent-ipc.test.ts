@@ -46,12 +46,15 @@ vi.mock("../frontend/app/store/wshclientapi", () => ({
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
 import {
+    abortAgentSessionForIpc,
     cloneAgentSessionForIpc,
     forkAgentSessionForIpc,
     listAgentCommandsForIpc,
     listAgentForkPointsForIpc,
     listAgentTreeForIpc,
     registerAgentIpcHandlers,
+    subscribeAgentSessionForIpc,
+    unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
 import { JsonlSessionRepo } from "./agent/harness/session/jsonl-repo";
 import type { AgentMessage } from "./agent/types";
@@ -72,6 +75,7 @@ describe("agent-ipc command helpers", () => {
 
     beforeEach(async () => {
         vi.mocked(electron.ipcMain.handle).mockClear();
+        vi.mocked(electron.ipcMain.on).mockClear();
         previousConfigHome = process.env.WAVETERM_CONFIG_HOME;
         tmpConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-ipc-test-"));
         process.env.WAVETERM_CONFIG_HOME = tmpConfigHome;
@@ -211,5 +215,56 @@ describe("agent-ipc command helpers", () => {
         await expect(
             handlers.get("agent:clone-session")?.({}, { sessionMetadata: metadata, cwd: "" }),
         ).rejects.toThrow(/cwd/);
+    });
+
+    it("rejects forged paths for send existing sessions and subscription helpers", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-old-paths");
+        const outside = path.join(tmpConfigHome, "outside-old-paths.jsonl");
+        await fs.writeFile(
+            outside,
+            JSON.stringify({ type: "session", version: 3, id: "evil", timestamp: new Date().toISOString(), cwd: "/tmp" }) + "\n",
+        );
+        const sender = {
+            id: 1,
+            isDestroyed: vi.fn(() => false),
+            once: vi.fn(),
+            send: vi.fn(),
+        } as unknown as electron.WebContents;
+
+        registerAgentIpcHandlers();
+        const handleHandlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handleHandlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+        const onHandlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.on).mock.calls) {
+            onHandlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        await expect(
+            handleHandlers.get("agent:send")?.(
+                {},
+                {
+                    sessionMetadata: { ...metadata, path: outside },
+                    blockId: "block-1",
+                    cwd: "/tmp/agent-ipc-old-paths",
+                    text: "hello",
+                    provider: "provider",
+                    model: "model",
+                },
+            ),
+        ).rejects.toThrow(/outside sessions directory/);
+        await expect(subscribeAgentSessionForIpc(sender, outside)).rejects.toThrow(/outside sessions directory/);
+        await expect(abortAgentSessionForIpc(outside)).rejects.toThrow(/outside sessions directory/);
+        await expect(unsubscribeAgentSessionForIpc(1, outside)).rejects.toThrow(/outside sessions directory/);
+        onHandlers.get("agent:subscribe")?.({ sender }, outside);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(errorSpy).toHaveBeenCalledWith(
+            "[agent-ipc] subscribe validation error:",
+            expect.objectContaining({ message: expect.stringMatching(/outside sessions directory/) }),
+        );
+        errorSpy.mockRestore();
+        expect(sender.send).not.toHaveBeenCalled();
     });
 });
