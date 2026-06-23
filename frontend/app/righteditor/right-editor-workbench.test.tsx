@@ -42,6 +42,7 @@ import { RightEditorModel } from "./right-editor-model";
 import {
     acquireRightEditorLspForActiveFile,
     closeRightEditorFileWithConfirmation,
+    getRightEditorLspLifecycleKeyForActiveFile,
     handleRightEditorKeyDown,
     RightEditorWorkbench,
     shouldStartRightEditorLsp,
@@ -50,6 +51,12 @@ import {
 const rpc = {
     readFile: vi.fn(async () => ({ text: "const x = 1;", readonly: false })),
     writeFile: vi.fn(async () => undefined),
+};
+
+type TestOpenFileInput = {
+    path: string;
+    language: string;
+    workspaceRoot?: string;
 };
 
 type KeyDownEvent = {
@@ -101,6 +108,20 @@ function getVisibleText(markup: string): string {
 
 function countMatches(markup: string, pattern: RegExp): number {
     return markup.match(pattern)?.length ?? 0;
+}
+
+function makeTestOpenFile(input: TestOpenFileInput) {
+    return {
+        path: input.path,
+        uri: `file://${input.path}`,
+        language: input.language,
+        workspaceRoot: input.workspaceRoot ?? "/repo",
+        readonly: false,
+        savedText: "",
+        dirtyText: null,
+        saveStatus: "idle" as const,
+        error: null,
+    };
 }
 
 function mountCapturedEditor(): (event: KeyDownEvent) => void {
@@ -400,6 +421,43 @@ describe("RightEditorWorkbench", () => {
 
         expect(lspManager.acquireClient).not.toHaveBeenCalled();
         expect(cleanup).toBeUndefined();
+    });
+
+    it("keeps shared LSP acquisition when active file switches within the same workspace and server", () => {
+        const releaseTs = vi.fn();
+        const releaseGo = vi.fn();
+        const lspManager = {
+            acquireClient: vi.fn().mockReturnValueOnce(releaseTs).mockReturnValueOnce(releaseGo),
+        };
+        let lifecycleKey: string | undefined;
+        let cleanup: (() => void) | undefined;
+        const syncActiveFile = (activeFile: ReturnType<typeof makeTestOpenFile>) => {
+            const nextLifecycleKey = getRightEditorLspLifecycleKeyForActiveFile({
+                activeFile,
+                workspaceRoot: activeFile.workspaceRoot,
+            });
+            if (nextLifecycleKey === lifecycleKey) return;
+            cleanup?.();
+            lifecycleKey = nextLifecycleKey;
+            cleanup = acquireRightEditorLspForActiveFile({
+                activeFile,
+                workspaceRoot: activeFile.workspaceRoot,
+                lspManager,
+            });
+        };
+
+        syncActiveFile(makeTestOpenFile({ path: "/repo/src/app.ts", language: "typescript" }));
+        syncActiveFile(makeTestOpenFile({ path: "/repo/src/app.tsx", language: "typescriptreact" }));
+        expect(lspManager.acquireClient).toHaveBeenCalledTimes(1);
+        expect(releaseTs).not.toHaveBeenCalled();
+
+        syncActiveFile(makeTestOpenFile({ path: "/repo/main.go", language: "go" }));
+        expect(releaseTs).toHaveBeenCalledTimes(1);
+        expect(lspManager.acquireClient).toHaveBeenCalledTimes(2);
+
+        syncActiveFile(makeTestOpenFile({ path: "/repo/package.json", language: "json" }));
+        expect(releaseGo).toHaveBeenCalledTimes(1);
+        expect(lspManager.acquireClient).toHaveBeenCalledTimes(2);
     });
 
     it("asks before closing a dirty file", () => {
