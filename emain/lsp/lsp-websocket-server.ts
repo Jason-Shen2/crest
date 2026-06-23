@@ -11,6 +11,7 @@ import { LanguageServerManager } from "./language-server-manager";
 export type ParsedLspRequest = {
     language: string;
     workspaceRoot: string;
+    serverId: string;
 };
 
 type LanguageServerManagerLike = {
@@ -24,9 +25,11 @@ export function parseLspRequest(urlText: string): ParsedLspRequest {
     if (url.pathname !== "/lsp") throw new Error("Invalid LSP endpoint");
     const language = url.searchParams.get("language");
     const workspaceRoot = url.searchParams.get("workspaceRoot");
+    const serverId = url.searchParams.get("serverId");
     if (!language) throw new Error("Missing language");
     if (!workspaceRoot) throw new Error("Missing workspaceRoot");
-    return { language, workspaceRoot };
+    if (!serverId) throw new Error("Missing serverId");
+    return { language, workspaceRoot, serverId };
 }
 
 function makeJsonRpcWebSocket(ws: WebSocket): IWebSocket {

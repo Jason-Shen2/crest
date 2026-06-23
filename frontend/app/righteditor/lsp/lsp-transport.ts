@@ -10,6 +10,7 @@ export type LspTransportInput = {
     workspaceRoot: string;
     language: string;
     languages?: string[];
+    serverId?: string | null;
 };
 
 export type LspTransport = {
@@ -101,9 +102,13 @@ export function applyLspDiagnosticsToMonacoMarkers(uri: monaco.Uri, diagnostics:
 }
 
 export async function createLspWebSocketTransport(input: LspTransportInput): Promise<LspTransport> {
+    if (!input.serverId) {
+        throw new Error("LSP server ID is not available");
+    }
     const params = new URLSearchParams({
         workspaceRoot: input.workspaceRoot,
         language: input.language,
+        serverId: input.serverId,
     });
     const documentSelectorLanguages = input.languages?.length ? input.languages : [input.language];
     const socket = new WebSocket(`${getRuntimeLspWebSocketUrl()}/lsp?${params.toString()}`);
