@@ -161,6 +161,9 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         if (result.sessionMetadata) {
             deps.onSessionMinted?.(result.sessionMetadata);
         }
+        if (result.message) {
+            deps.onUserError?.(result.message);
+        }
         return result;
     };
     const reportAsyncError = (promise: Promise<unknown>): void => {
