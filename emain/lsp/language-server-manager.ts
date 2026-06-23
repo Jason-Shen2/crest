@@ -71,6 +71,7 @@ export class LanguageServerManager {
     }
 
     getOrStart(input: LanguageServerInput): ChildProcessWithoutNullStreams {
+        this.validateInput(input);
         const key = this.cacheKey(input);
         const existing = this.processes.get(key);
         if (existing) return existing;
@@ -145,6 +146,10 @@ export class LanguageServerManager {
 
     private cacheKey(input: LanguageServerInput): string {
         return `${input.workspaceRoot}\u0000${input.serverId}`;
+    }
+
+    private validateInput(input: LanguageServerInput): void {
+        getLanguageServerDefinition(input.serverId, input.language);
     }
 }
 
