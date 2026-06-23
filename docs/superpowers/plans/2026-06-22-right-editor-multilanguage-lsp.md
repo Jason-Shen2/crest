@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | Phase 0: Research | Done | Current Crest LSP chain and Warp LSP architecture reviewed. |
 | Phase 1: Design | Done | See `docs/superpowers/specs/2026-06-22-right-editor-multilanguage-lsp-design.md`. |
-| Phase 2: Plan | In progress | This document is the implementation checklist and progress source. |
+| Phase 2: Plan | Done | This document is the implementation checklist and progress source. |
 | Phase 3: Registry Refactor | Not started | Add frontend and backend registries while preserving JS/TS behavior. |
 | Phase 4: Go Sample | Not started | Add `gopls` discovery, startup, and unavailable status. |
 | Phase 5: UI Status | Not started | Surface LSP states and install hints. |
