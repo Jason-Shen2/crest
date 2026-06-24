@@ -10,7 +10,7 @@ export type TerminalInputState =
     | { kind: "alt-screen"; blockId: BlockId }
     | { kind: "terminal-capture"; blockId: BlockId };
 
-export type CLIAgent = "claude" | "codex" | "gemini" | "pi" | "coco" | "unknown";
+export type CLIAgent = "claude" | "codex" | "gemini" | "pi" | "coco";
 
 export type TerminalSurfaceState =
     | { kind: "normal-output"; blockId: BlockId }
@@ -21,7 +21,7 @@ export type TerminalSurfaceState =
 
 export type CursorRenderState =
     | { kind: "hidden" }
-    | { kind: "terminal"; forceVisible?: false }
+    | { kind: "terminal" }
     | { kind: "suppressed"; reason: "cli-soft-cursor" | "rich-input-open" | "parked-cursor" }
     | { kind: "cli-owned"; agent: CLIAgent };
 
@@ -53,11 +53,11 @@ export function terminalCaptureActive(mode: TermMode | null | undefined): boolea
     );
 }
 
-export function detectCLIAgent(command: string | null | undefined): CLIAgent {
+export function detectCLIAgent(command: string | null | undefined): CLIAgent | null {
     const firstToken = command?.trim().split(/\s+/, 1)[0];
-    if (!firstToken) return "unknown";
+    if (!firstToken) return null;
     const basename = firstToken.split("/").pop() ?? "";
-    return isCLIAgent(basename) ? basename : "unknown";
+    return isCLIAgent(basename) ? basename : null;
 }
 
 function isCLIAgent(value: string): value is CLIAgent {
