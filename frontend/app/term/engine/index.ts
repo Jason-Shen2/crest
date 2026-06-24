@@ -19,4 +19,14 @@ export type { AnsiHandler } from "./handler";
 export { AnsiParser } from "./ansi-parser";
 export { BlockHandler } from "./block-handler";
 export type { TerminalContext } from "./block-handler";
+export {
+    LONG_RUNNING_COMMAND_DURATION_MS,
+    deriveTerminalInputState,
+    terminalCaptureActive,
+} from "./terminal-state";
+export type {
+    DeriveTerminalInputStateOpts,
+    TerminalInputState,
+    TerminalStateBlock,
+} from "./terminal-state";
 export { applySgr, withLink } from "./style";
