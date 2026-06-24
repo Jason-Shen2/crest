@@ -184,7 +184,7 @@ export const TerminalView = memo(
         const terminalInputState = useMemo(() => {
             return model.getTerminalInputState();
             // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [model, revision, longRunningTick]);
+        }, [model, revision, longRunningTick, loading]);
 
         const nld = useNLDModel(outerBlockId);
         const inputMode = useAtomValue(nld.modeAtom);
