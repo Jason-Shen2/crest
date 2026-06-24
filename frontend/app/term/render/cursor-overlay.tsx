@@ -15,7 +15,6 @@ export interface CursorOverlayProps {
     charWidth: number;
     lineHeight: number;
     visible?: boolean;
-    forceVisible?: boolean;
     // Revision tick from the model — re-renders the overlay on cursor
     // movement, since the cursor lives inside a mutable Grid object.
     revision?: number;
@@ -26,12 +25,11 @@ export function CursorOverlay({
     charWidth,
     lineHeight,
     visible = true,
-    forceVisible = false,
     revision: _revision,
 }: CursorOverlayProps) {
     const overrides = usePaletteOverrides();
     if (!visible) return null;
-    if (!forceVisible && !grid.cursorState.visible) return null;
+    if (!grid.cursorState.visible) return null;
 
     // Snap to pixel boundaries the same way SelectionLayer /
     // FindHighlightLayer do — floating-point edges can leave a 1px

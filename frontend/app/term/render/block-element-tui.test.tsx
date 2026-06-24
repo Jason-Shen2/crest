@@ -3,6 +3,7 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { DefaultTermMode } from "../engine/types";
 import { BlockElement } from "./block-element";
 
 vi.mock("@/app/view/cmdblock/cmdblock-header", () => ({
@@ -20,9 +21,7 @@ vi.mock("./grid-element", () => ({
 }));
 
 vi.mock("./cursor-overlay", () => ({
-    CursorOverlay: ({ forceVisible }: { forceVisible?: boolean }) => (
-        <div data-testid="cursor" data-force-visible={forceVisible ? "true" : "false"} />
-    ),
+    CursorOverlay: () => <div data-testid="cursor" />,
 }));
 
 const EmptyCell = {
@@ -44,10 +43,6 @@ function makeGrid() {
     return grid;
 }
 
-function textRow(text: string) {
-    return text.split("").map((char) => ({ ...EmptyCell, char }));
-}
-
 function makeBlock(active: boolean) {
     const grid = makeGrid();
     return {
@@ -63,18 +58,28 @@ function makeBlock(active: boolean) {
     };
 }
 
+function makeSurfaceModel(block: { id: string }) {
+    return {
+        getMode: () => DefaultTermMode,
+        getActiveSurfaceState: () => ({ kind: "alt-screen", blockId: block.id }),
+        getCursorRenderState: () => ({ kind: "terminal" }),
+    };
+}
+
 describe("BlockElement TUI layout", () => {
     it("hides block command chrome while active alternate screen is displayed", () => {
+        const block = makeBlock(true) as any;
         const html = renderToStaticMarkup(
-            <BlockElement block={makeBlock(true) as any} revision={1} />
+            <BlockElement block={block} revision={1} model={makeSurfaceModel(block) as any} />
         );
         expect(html).not.toContain('data-testid="cmd-header"');
         expect(html).not.toContain('data-testid="cmd-snackbar"');
     });
 
     it("renders active alternate screen with full-height terminal styling", () => {
+        const block = makeBlock(true) as any;
         const html = renderToStaticMarkup(
-            <BlockElement block={makeBlock(true) as any} revision={1} />
+            <BlockElement block={block} revision={1} model={makeSurfaceModel(block) as any} />
         );
         expect(html).toMatch(/data-testid="grid"[^>]*class="[^"]*min-h-full/);
     });
@@ -85,7 +90,9 @@ describe("BlockElement TUI layout", () => {
         const block = makeBlock(true) as any;
         block.altScreen.grid.getRow = () => sparseRow;
         expect(() =>
-            renderToStaticMarkup(<BlockElement block={block} revision={1} />)
+            renderToStaticMarkup(
+                <BlockElement block={block} revision={1} model={makeSurfaceModel(block) as any} />
+            )
         ).not.toThrow();
     });
 
@@ -108,16 +115,18 @@ describe("BlockElement TUI layout", () => {
                         mouseUrxvt: false,
                         alternateScroll: false,
                     }),
+                    getActiveSurfaceState: () => ({ kind: "terminal-capture", blockId: block.id }),
+                    getCursorRenderState: () => ({ kind: "terminal" }),
                 } as any}
             />
         );
         expect(html).not.toContain('data-testid="cmd-header"');
         expect(html).not.toContain('data-testid="cmd-snackbar"');
         expect(html).toMatch(/data-testid="grid"[^>]*class="[^"]*min-h-full/);
-        expect(html).toContain('data-force-visible="false"');
+        expect(html).toContain('data-testid="cursor"');
     });
 
-    it("does not force a parked blank cursor visible for long-running PTY input surfaces", () => {
+    it("does not render a cursor for long-running PTY when model suppresses parked cursor", () => {
         const block = makeBlock(false) as any;
         block.outputGrid.cursorState.visible = false;
         const html = renderToStaticMarkup(
@@ -125,73 +134,13 @@ describe("BlockElement TUI layout", () => {
                 block={block}
                 revision={1}
                 model={{
-                    getMode: () => ({
-                        appCursor: false,
-                        appKeypad: false,
-                        bracketedPaste: false,
-                        focusReport: false,
-                        mouseX10: false,
-                        mouseClick: false,
-                        mouseButton: false,
-                        mouseMotion: false,
-                        mouseSgr: false,
-                        mouseUtf8: false,
-                        mouseUrxvt: false,
-                        alternateScroll: false,
-                        autoWrap: true,
-                        origin: false,
-                        insertMode: false,
-                        syncOutput: false,
-                        reverseVideo: false,
-                        columnMode: false,
-                        autoRepeat: true,
-                        kittyKeyboardFlags: 0,
-                    }),
+                    getMode: () => DefaultTermMode,
+                    getActiveSurfaceState: () => ({ kind: "long-running-pty", blockId: block.id }),
+                    getCursorRenderState: () => ({ kind: "suppressed", reason: "parked-cursor" }),
                 } as any}
             />
         );
 
-        expect(html).toContain('data-testid="cursor"');
-        expect(html).toContain('data-force-visible="false"');
-    });
-
-    it("forces cursor visibility when the PTY cursor sits on a visible long-running input row", () => {
-        const block = makeBlock(false) as any;
-        block.outputGrid.cursorState.visible = false;
-        block.outputGrid.cursor.col = 6;
-        block.outputGrid.getRow = () => textRow("coco> ");
-        const html = renderToStaticMarkup(
-            <BlockElement
-                block={block}
-                revision={1}
-                model={{
-                    getMode: () => ({
-                        appCursor: false,
-                        appKeypad: false,
-                        bracketedPaste: false,
-                        focusReport: false,
-                        mouseX10: false,
-                        mouseClick: false,
-                        mouseButton: false,
-                        mouseMotion: false,
-                        mouseSgr: false,
-                        mouseUtf8: false,
-                        mouseUrxvt: false,
-                        alternateScroll: false,
-                        autoWrap: true,
-                        origin: false,
-                        insertMode: false,
-                        syncOutput: false,
-                        reverseVideo: false,
-                        columnMode: false,
-                        autoRepeat: true,
-                        kittyKeyboardFlags: 0,
-                    }),
-                } as any}
-            />
-        );
-
-        expect(html).toContain('data-testid="cursor"');
-        expect(html).toContain('data-force-visible="true"');
+        expect(html).not.toContain('data-testid="cursor"');
     });
 });
