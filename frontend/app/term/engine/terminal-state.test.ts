@@ -25,6 +25,7 @@ describe("terminal state types", () => {
         const agent: CLIAgent = "claude";
         const surfaceState: TerminalSurfaceState = { kind: "cli-agent", blockId: "b1", agent };
         const cursorState: CursorRenderState = { kind: "cli-owned", agent };
+        const terminalCursorState: CursorRenderState = { kind: "terminal" };
         const session: CLIAgentSession = {
             blockId: "b1",
             agent,
@@ -35,9 +36,12 @@ describe("terminal state types", () => {
         expect(inputState.kind).toBe("terminal-capture");
         expect(surfaceState.kind).toBe("cli-agent");
         expect(cursorState.kind).toBe("cli-owned");
+        expect(terminalCursorState.kind).toBe("terminal");
         expect(session.status).toBe("in-progress");
         expectTypeOf(inputState).toEqualTypeOf<TerminalInputState>();
+        expectTypeOf<Extract<CursorRenderState, { kind: "terminal" }>>().toEqualTypeOf<{ kind: "terminal" }>();
         expectTypeOf(session).toEqualTypeOf<CLIAgentSession>();
+        expectTypeOf(detectCLIAgent).returns.toEqualTypeOf<CLIAgent | null>();
     });
 });
 
@@ -74,11 +78,13 @@ describe("detectCLIAgent", () => {
         expect(detectCLIAgent("/opt/homebrew/bin/claude --resume")).toBe("claude");
     });
 
-    it("returns unknown for unsupported, empty, or non-prefix commands", () => {
-        expect(detectCLIAgent("")).toBe("unknown");
-        expect(detectCLIAgent("npm run claude")).toBe("unknown");
-        expect(detectCLIAgent("python script.py")).toBe("unknown");
-        expect(detectCLIAgent(null)).toBe("unknown");
-        expect(detectCLIAgent(undefined)).toBe("unknown");
+    it("returns null for unsupported, empty, or non-prefix commands", () => {
+        expect(detectCLIAgent("")).toBeNull();
+        expect(detectCLIAgent("echo coco")).toBeNull();
+        expect(detectCLIAgent("npm test")).toBeNull();
+        expect(detectCLIAgent("npm run claude")).toBeNull();
+        expect(detectCLIAgent("python script.py")).toBeNull();
+        expect(detectCLIAgent(null)).toBeNull();
+        expect(detectCLIAgent(undefined)).toBeNull();
     });
 });
