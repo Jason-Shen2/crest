@@ -31,7 +31,6 @@ import {
     BlockLifecycleState,
     Blocks,
     DefaultTermMode,
-    mouseReportingActive,
     TermMode,
     TerminalContext,
 } from "./engine";
@@ -73,27 +72,6 @@ export type ScrollPosition =
     | { kind: "follow-bottom" }
     | { kind: "free"; scrollTop: number }
     | { kind: "anchored"; blockId: BlockId };
-
-export type TerminalInputState =
-    | { kind: "not-bootstrapped" }
-    | { kind: "input-editor" }
-    | { kind: "long-running-command"; blockId: BlockId }
-    | { kind: "alt-screen"; blockId: BlockId }
-    | { kind: "terminal-capture"; blockId: BlockId };
-
-export const LONG_RUNNING_COMMAND_DURATION_MS = 50;
-
-export function terminalCaptureActive(mode: TermMode | null | undefined): boolean {
-    if (!mode) return false;
-    return (
-        mode.appCursor ||
-        mode.appKeypad ||
-        mode.focusReport ||
-        mode.alternateScroll ||
-        mouseReportingActive(mode) ||
-        mode.kittyKeyboardFlags !== 0
-    );
-}
 
 // FindMatch — one occurrence of the active find query inside a block's
 // output grid.  Computed eagerly when setFind() runs and re-used by the
@@ -294,49 +272,6 @@ export class TerminalModel {
 
     getMode(): TermMode {
         return this.mode;
-    }
-
-    getTerminalInputState(now: number = Date.now()): TerminalInputState {
-        if (globalStore.get(this.loadingAtom)) {
-            return { kind: "not-bootstrapped" };
-        }
-
-        const all = this.blocks.all();
-        for (let i = all.length - 1; i >= 0; i--) {
-            const block = all[i];
-            if (block.kind === "agent") continue;
-            if (block.altScreen.active) {
-                return { kind: "alt-screen", blockId: block.id };
-            }
-        }
-
-        const running = this.getActiveRunningBlock();
-        if (!running) {
-            return { kind: "input-editor" };
-        }
-        if (terminalCaptureActive(this.mode)) {
-            return { kind: "terminal-capture", blockId: running.id };
-        }
-        if (this.blockIsLongRunning(running, now)) {
-            return { kind: "long-running-command", blockId: running.id };
-        }
-        return { kind: "input-editor" };
-    }
-
-    private getActiveRunningBlock(): Block | null {
-        const all = this.blocks.all();
-        for (let i = all.length - 1; i >= 0; i--) {
-            const block = all[i];
-            if (block.kind === "agent") continue;
-            if (block.state === "running") return block;
-        }
-        return null;
-    }
-
-    private blockIsLongRunning(block: Block, now: number): boolean {
-        if (block.state !== "running") return false;
-        if (block.startTs == null) return false;
-        return now - block.startTs > LONG_RUNNING_COMMAND_DURATION_MS;
     }
 
     // ---------- palette overrides (OSC 4/10/11/12) ----------
