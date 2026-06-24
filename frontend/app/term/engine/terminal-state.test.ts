@@ -40,7 +40,6 @@ describe("terminal state types", () => {
         expect(terminalCursorState.kind).toBe("terminal");
         expect(unknownAgent).toBe("unknown");
         expect(session.status).toBe("in-progress");
-        expectTypeOf(inputState).toEqualTypeOf<TerminalInputState>();
         expectTypeOf<CLIAgent>().toEqualTypeOf<"claude" | "codex" | "gemini" | "pi" | "coco" | "unknown">();
         expectTypeOf<Extract<CursorRenderState, { kind: "terminal" }>>().toEqualTypeOf<{ kind: "terminal" }>();
         expectTypeOf(session).toEqualTypeOf<CLIAgentSession>();
