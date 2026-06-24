@@ -98,4 +98,20 @@ describe("TerminalModel terminal state", () => {
             blockId: "b1",
         });
     });
+
+    it("creates CLI agent session semantics from command prefix without changing input takeover", () => {
+        const model = loadedModel();
+        const block = runningBlock("b1", 1_000);
+        block.cmd = "coco";
+        vi.spyOn(block, "commandText").mockReturnValue("echo not-an-agent");
+        addBlock(model, block);
+
+        expect(model.getCLIAgentSession("b1")).toEqual({
+            blockId: "b1",
+            agent: "coco",
+            status: "in-progress",
+            inputState: { kind: "pty-owned" },
+        });
+        expect(model.getTerminalInputState(1_010)).toEqual({ kind: "input-editor" });
+    });
 });
