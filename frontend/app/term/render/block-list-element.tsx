@@ -26,7 +26,6 @@ import { FindMatch, TerminalModel } from "../terminal-model";
 import { AgentBlockElement } from "./agent-block-element";
 import { BlockElement } from "./block-element";
 import { computeBlockSlice } from "./selection";
-import { blockIsActiveTuiSurface } from "./tui-capture";
 
 const ScrollBottomThresholdPx = 32;
 
@@ -255,7 +254,8 @@ export const BlockListElement = memo(
                         ) {
                             return null;
                         }
-                        const activeTuiSurface = blockIsActiveTuiSurface(block, model.getMode());
+                        const activeSurfaceState = model.getActiveSurfaceState?.() ?? null;
+                        const activeTuiSurface = activeSurfaceState?.blockId === block.id;
                         return (
                             <div
                                 key={block.id}
