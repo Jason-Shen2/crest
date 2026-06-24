@@ -26,6 +26,8 @@ const testState = vi.hoisted(() => {
             durationMs?: () => number | undefined;
         }> | null,
         modeOverride: null as Record<string, unknown> | null,
+        inputStateOverride: null as { kind: string; blockId?: string } | null,
+        surfaceStateOverride: null as { kind: string; blockId: string } | null,
     };
 });
 
@@ -176,6 +178,23 @@ function makeModel() {
         kittyKeyboardFlags: 0,
         ...(testState.modeOverride ?? {}),
     };
+    const getTerminalInputState = () => {
+        if (testState.inputStateOverride) return testState.inputStateOverride;
+        const activeBlock = [...blocks].reverse().find((block) => block.altScreen.active || block.state === "running");
+        if (!activeBlock) return { kind: "input-editor" };
+        if (activeBlock.altScreen.active) return { kind: "alt-screen", blockId: activeBlock.id };
+        if (mode.appCursor || mode.mouseClick) return { kind: "terminal-capture", blockId: activeBlock.id };
+        if ((activeBlock.durationMs?.() ?? 0) > 50) {
+            return { kind: "long-running-command", blockId: activeBlock.id };
+        }
+        return { kind: "input-editor" };
+    };
+    const getActiveSurfaceState = () => {
+        if (testState.surfaceStateOverride) return testState.surfaceStateOverride;
+        const inputState = getTerminalInputState();
+        if (inputState.kind === "input-editor") return null;
+        return inputState;
+    };
     const model = {
         revisionAtom: testState.atomValue(1),
         loadingAtom: testState.atomValue(false),
@@ -193,6 +212,9 @@ function makeModel() {
         sendResize: vi.fn(),
         sendBytes: testState.sendBytes,
         getMode: () => mode,
+        getTerminalInputState,
+        getActiveSurfaceState,
+        nextLongRunningCheckDelayMs: () => null,
         getBlocks: () => ({
             all: () => blocks,
             length: () => blocks.length,
@@ -279,6 +301,8 @@ describe("TerminalView TUI mode", () => {
         testState.activeElement = null;
         testState.blocks = null;
         testState.modeOverride = null;
+        testState.inputStateOverride = null;
+        testState.surfaceStateOverride = null;
         installDocumentStub();
         testState.sendBytes.mockClear();
     });
@@ -351,6 +375,21 @@ describe("TerminalView TUI mode", () => {
             },
         ];
         testState.modeOverride = {};
+        const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+
+        expect(html).not.toContain('data-testid="cmd-input"');
+    });
+
+    it("uses TerminalModel input state to hide the command input", () => {
+        testState.blocks = [
+            {
+                id: "block-model-state",
+                state: "running",
+                altScreen: { active: false },
+                commandText: () => "coco",
+            },
+        ];
+        testState.inputStateOverride = { kind: "long-running-command", blockId: "block-model-state" };
         const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
 
         expect(html).not.toContain('data-testid="cmd-input"');
