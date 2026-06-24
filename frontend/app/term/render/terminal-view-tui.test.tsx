@@ -133,6 +133,7 @@ vi.mock("../nld", () => ({
 }));
 
 vi.mock("../terminal-model", () => ({
+    LONG_RUNNING_COMMAND_DURATION_MS: 50,
     TerminalModel: vi.fn().mockImplementation(() => makeModel()),
 }));
 
@@ -193,6 +194,29 @@ function makeModel() {
         sendResize: vi.fn(),
         sendBytes: testState.sendBytes,
         getMode: () => mode,
+        getTerminalInputState: () => {
+            const alt = [...blocks].reverse().find((block) => block.altScreen.active);
+            if (alt) return { kind: "alt-screen", blockId: alt.id };
+            const running = [...blocks].reverse().find((block) => block.state === "running");
+            if (!running) return { kind: "input-editor" };
+            if (
+                mode.appCursor ||
+                mode.appKeypad ||
+                mode.focusReport ||
+                mode.alternateScroll ||
+                mode.mouseX10 ||
+                mode.mouseClick ||
+                mode.mouseButton ||
+                mode.mouseMotion ||
+                mode.kittyKeyboardFlags !== 0
+            ) {
+                return { kind: "terminal-capture", blockId: running.id };
+            }
+            if ((running.durationMs?.() ?? 0) > 50) {
+                return { kind: "long-running-command", blockId: running.id };
+            }
+            return { kind: "input-editor" };
+        },
         getBlocks: () => ({
             all: () => blocks,
             length: () => blocks.length,

@@ -21,14 +21,13 @@ import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContextChipModel } from "../contextchip/chip-model";
 import { NLDModel } from "../nld";
-import { TerminalModel } from "../terminal-model";
+import { LONG_RUNNING_COMMAND_DURATION_MS, TerminalModel } from "../terminal-model";
 import { AgentActivityBar } from "./agent-activity-bar";
 import { AgentChatHost, type AgentChatHostApi, type AgentHostState } from "./agent-chat-host";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
 import { PaletteContext, PaletteOverrides } from "./palette-context";
-import { blockIsActiveTuiSurface, LONG_RUNNING_COMMAND_DURATION_MS } from "./tui-capture";
 
 export interface TerminalViewProps {
     outerBlockId: string;
@@ -182,14 +181,10 @@ export const TerminalView = memo(
             // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [revision]);
         const [longRunningTick, setLongRunningTick] = useState(0);
-        const activeAltScreenBlock = useMemo(() => {
-            const all = model.getBlocks().all();
-            for (let i = all.length - 1; i >= 0; i--) {
-                if (blockIsActiveTuiSurface(all[i], model.getMode())) return all[i];
-            }
-            return null;
+        const terminalInputState = useMemo(() => {
+            return model.getTerminalInputState();
             // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [revision, longRunningTick]);
+        }, [model, revision, longRunningTick, loading]);
 
         const nld = useNLDModel(outerBlockId);
         const inputMode = useAtomValue(nld.modeAtom);
@@ -487,7 +482,10 @@ export const TerminalView = memo(
         );
 
         const isRunning = liveBlock?.state === "running";
-        const inAltScreen = activeAltScreenBlock != null;
+        const inAltScreen =
+            terminalInputState.kind === "alt-screen" ||
+            terminalInputState.kind === "terminal-capture" ||
+            terminalInputState.kind === "long-running-command";
         const rootRef = useRef<HTMLDivElement>(null);
 
         useEffect(() => {
