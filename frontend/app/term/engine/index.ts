@@ -19,4 +19,14 @@ export type { AnsiHandler } from "./handler";
 export { AnsiParser } from "./ansi-parser";
 export { BlockHandler } from "./block-handler";
 export type { TerminalContext } from "./block-handler";
+export { detectCLIAgent, terminalCaptureActive } from "./terminal-state";
+export type {
+    CLIAgent,
+    CLIAgentInputState,
+    CLIAgentSession,
+    CLIAgentSessionStatus,
+    CursorRenderState,
+    TerminalInputState,
+    TerminalSurfaceState,
+} from "./terminal-state";
 export { applySgr, withLink } from "./style";
