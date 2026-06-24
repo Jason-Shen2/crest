@@ -29,6 +29,7 @@ vi.mock("@/app/store/wshclientapi", () => ({
     },
 }));
 
+import { globalStore } from "@/app/store/jotaiStore";
 import { Block } from "./engine/block";
 import { LONG_RUNNING_COMMAND_DURATION_MS } from "./engine/block";
 import { TerminalModel } from "./terminal-model";
@@ -44,15 +45,27 @@ function runningBlock(id: string, startTs: number): Block {
     return block;
 }
 
+function loadedModel(): TerminalModel {
+    const model = new TerminalModel("outer");
+    globalStore.set(model.loadingAtom, false);
+    return model;
+}
+
 describe("TerminalModel terminal state", () => {
-    it("returns input-editor when no running block owns input", () => {
+    it("returns not-bootstrapped while initial blocks are loading", () => {
         const model = new TerminalModel("outer");
+        expect(model.getTerminalInputState(1_000)).toEqual({ kind: "not-bootstrapped" });
+        expect(model.getActiveSurfaceState(1_000)).toBe(null);
+    });
+
+    it("returns input-editor when no running block owns input", () => {
+        const model = loadedModel();
         expect(model.getTerminalInputState(1_000)).toEqual({ kind: "input-editor" });
         expect(model.getActiveSurfaceState(1_000)).toBe(null);
     });
 
     it("gives alt-screen priority over terminal capture and long-running", () => {
-        const model = new TerminalModel("outer");
+        const model = loadedModel();
         const block = runningBlock("b1", 1_000);
         block.enterAltScreen();
         addBlock(model, block);
@@ -63,7 +76,7 @@ describe("TerminalModel terminal state", () => {
     });
 
     it("returns terminal-capture for running capture modes", () => {
-        const model = new TerminalModel("outer");
+        const model = loadedModel();
         addBlock(model, runningBlock("b1", 1_000));
         model.setModeForTest({ appCursor: true });
 
@@ -72,7 +85,7 @@ describe("TerminalModel terminal state", () => {
     });
 
     it("returns long-running-command after the Warp threshold", () => {
-        const model = new TerminalModel("outer");
+        const model = loadedModel();
         addBlock(model, runningBlock("b1", 1_000));
 
         expect(model.getTerminalInputState(1_000 + LONG_RUNNING_COMMAND_DURATION_MS)).toEqual({ kind: "input-editor" });

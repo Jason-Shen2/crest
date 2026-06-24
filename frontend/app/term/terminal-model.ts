@@ -661,6 +661,7 @@ export class TerminalModel {
     }
 
     getTerminalInputState(now: number = Date.now()): TerminalInputState {
+        if (globalStore.get(this.loadingAtom)) return { kind: "not-bootstrapped" };
         const block = this.activeRuntimeBlock();
         if (!block) return { kind: "input-editor" };
         if (block.altScreen.active) return { kind: "alt-screen", blockId: block.id };
