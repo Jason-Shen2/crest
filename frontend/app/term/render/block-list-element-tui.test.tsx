@@ -3,6 +3,7 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { DefaultTermMode } from "../engine/types";
 import { BlockListElement } from "./block-list-element";
 
 vi.mock("jotai", async (importOriginal) => {
@@ -43,7 +44,12 @@ function makeActiveTuiBlock() {
     };
 }
 
-function makeModel(block: ReturnType<typeof makeActiveTuiBlock>) {
+function makeModel(
+    block: ReturnType<typeof makeActiveTuiBlock>,
+    activeSurfaceState: { kind: string; blockId: string } | null = block.altScreen.active
+        ? { kind: "alt-screen", blockId: block.id }
+        : null
+) {
     return {
         revisionAtom: atomValue(1),
         scrollPositionAtom: atomValue({ kind: "follow-bottom" }),
@@ -56,6 +62,7 @@ function makeModel(block: ReturnType<typeof makeActiveTuiBlock>) {
             all: () => [block],
             indexOf: () => 0,
         }),
+        getActiveSurfaceState: () => activeSurfaceState,
         getMode: () => ({
             appCursor: false,
             focusReport: false,
@@ -97,7 +104,7 @@ describe("BlockListElement TUI layout", () => {
                         isStatic: false,
                         altScreen: { active: false },
                         commandText: () => "claude",
-                    } as any),
+                    } as any, { kind: "terminal-capture", blockId: "block-raw" }),
                     getMode: () => ({
                         appCursor: true,
                         focusReport: false,
@@ -116,5 +123,32 @@ describe("BlockListElement TUI layout", () => {
 
         expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*h-full/);
         expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*min-h-full/);
+    });
+
+    it("lets the active surface wrapper fill the pane from TerminalSurfaceState", () => {
+        const html = renderToStaticMarkup(
+            <BlockListElement
+                model={
+                    {
+                        ...makeModel(
+                            {
+                                id: "block-surface",
+                                kind: "shell",
+                                hidden: false,
+                                state: "running",
+                                isBackground: false,
+                                isStatic: false,
+                                altScreen: { active: false },
+                                commandText: () => "coco",
+                            } as any,
+                            { kind: "long-running-pty", blockId: "block-surface" }
+                        ),
+                        getMode: () => DefaultTermMode,
+                    } as any
+                }
+            />
+        );
+
+        expect(html).toMatch(/data-block-oid="block-surface"[^>]*class="[^"]*h-full/);
     });
 });

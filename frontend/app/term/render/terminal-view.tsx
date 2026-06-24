@@ -28,7 +28,6 @@ import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
 import { PaletteContext, PaletteOverrides } from "./palette-context";
-import { blockIsActiveTuiSurface, LONG_RUNNING_COMMAND_DURATION_MS } from "./tui-capture";
 
 export interface TerminalViewProps {
     outerBlockId: string;
@@ -182,14 +181,10 @@ export const TerminalView = memo(
             // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [revision]);
         const [longRunningTick, setLongRunningTick] = useState(0);
-        const activeAltScreenBlock = useMemo(() => {
-            const all = model.getBlocks().all();
-            for (let i = all.length - 1; i >= 0; i--) {
-                if (blockIsActiveTuiSurface(all[i], model.getMode())) return all[i];
-            }
-            return null;
+        const terminalInputState = useMemo(() => {
+            return model.getTerminalInputState();
             // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [revision, longRunningTick]);
+        }, [model, revision, longRunningTick]);
 
         const nld = useNLDModel(outerBlockId);
         const inputMode = useAtomValue(nld.modeAtom);
@@ -487,19 +482,15 @@ export const TerminalView = memo(
         );
 
         const isRunning = liveBlock?.state === "running";
-        const inAltScreen = activeAltScreenBlock != null;
+        const inAltScreen = terminalInputState.kind !== "input-editor";
         const rootRef = useRef<HTMLDivElement>(null);
 
         useEffect(() => {
-            if (liveBlock?.state !== "running") return;
-            const duration = liveBlock.durationMs?.() ?? 0;
-            if (duration > LONG_RUNNING_COMMAND_DURATION_MS) return;
-            const timeout = setTimeout(
-                () => setLongRunningTick((tick) => tick + 1),
-                LONG_RUNNING_COMMAND_DURATION_MS - duration + 1
-            );
+            const delay = model.nextLongRunningCheckDelayMs();
+            if (delay == null) return;
+            const timeout = setTimeout(() => setLongRunningTick((tick) => tick + 1), delay);
             return () => clearTimeout(timeout);
-        }, [liveBlock, revision]);
+        }, [model, revision]);
 
         useEffect(() => {
             if (!inAltScreen) return;
