@@ -10,7 +10,7 @@ export type TerminalInputState =
     | { kind: "alt-screen"; blockId: BlockId }
     | { kind: "terminal-capture"; blockId: BlockId };
 
-export type CLIAgent = "claude" | "codex" | "gemini" | "pi" | "coco";
+export type CLIAgent = "claude" | "codex" | "gemini" | "pi" | "coco" | "unknown";
 
 export type TerminalSurfaceState =
     | { kind: "normal-output"; blockId: BlockId }
