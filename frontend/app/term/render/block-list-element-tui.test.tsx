@@ -1,0 +1,120 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+import { BlockListElement } from "./block-list-element";
+
+vi.mock("jotai", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("jotai")>();
+    return {
+        ...actual,
+        useAtomValue: (atom: { read?: () => unknown; value?: unknown }) => {
+            if (typeof atom?.read === "function") return atom.read();
+            return atom?.value;
+        },
+    };
+});
+
+vi.mock("./block-element", () => ({
+    BlockElement: () => <div data-testid="block-element" />,
+}));
+
+vi.mock("./agent-block-element", () => ({
+    AgentBlockElement: () => <div data-testid="agent-block-element" />,
+}));
+
+vi.mock("@/app/element/ui-icon", () => ({
+    UIcon: () => <span data-testid="ui-icon" />,
+}));
+
+const atomValue = <T,>(value: T) => ({ read: () => value });
+
+function makeActiveTuiBlock() {
+    return {
+        id: "block-1",
+        kind: "shell",
+        hidden: false,
+        state: "running",
+        isBackground: false,
+        isStatic: false,
+        altScreen: { active: true },
+        commandText: () => "vim",
+    };
+}
+
+function makeModel(block: ReturnType<typeof makeActiveTuiBlock>) {
+    return {
+        revisionAtom: atomValue(1),
+        scrollPositionAtom: atomValue({ kind: "follow-bottom" }),
+        selectedBlockIdAtom: atomValue(""),
+        selectionAtom: atomValue(null),
+        findMatchesAtom: atomValue([]),
+        findCurrentIndexAtom: atomValue(-1),
+        snackbarVisibleAtom: atomValue(true),
+        getBlocks: () => ({
+            all: () => [block],
+            indexOf: () => 0,
+        }),
+        getMode: () => ({
+            appCursor: false,
+            focusReport: false,
+            mouseX10: false,
+            mouseClick: false,
+            mouseButton: false,
+            mouseMotion: false,
+            mouseSgr: false,
+            mouseUtf8: false,
+            mouseUrxvt: false,
+            alternateScroll: false,
+        }),
+        clearSelection: vi.fn(),
+        selectBlock: vi.fn(),
+        setScrollPosition: vi.fn(),
+    };
+}
+
+describe("BlockListElement TUI layout", () => {
+    it("lets the active TUI block wrapper fill the pane", () => {
+        const html = renderToStaticMarkup(
+            <BlockListElement model={makeModel(makeActiveTuiBlock()) as any} />
+        );
+
+        expect(html).toMatch(/data-block-oid="block-1"[^>]*class="[^"]*h-full/);
+        expect(html).toMatch(/data-block-oid="block-1"[^>]*class="[^"]*min-h-full/);
+    });
+
+    it("lets a running raw-capture TUI block wrapper fill the pane", () => {
+        const html = renderToStaticMarkup(
+            <BlockListElement
+                model={{
+                    ...makeModel({
+                        id: "block-raw",
+                        kind: "shell",
+                        hidden: false,
+                        state: "running",
+                        isBackground: false,
+                        isStatic: false,
+                        altScreen: { active: false },
+                        commandText: () => "claude",
+                    } as any),
+                    getMode: () => ({
+                        appCursor: true,
+                        focusReport: false,
+                        mouseX10: false,
+                        mouseClick: true,
+                        mouseButton: false,
+                        mouseMotion: false,
+                        mouseSgr: false,
+                        mouseUtf8: false,
+                        mouseUrxvt: false,
+                        alternateScroll: false,
+                    }),
+                } as any}
+            />
+        );
+
+        expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*h-full/);
+        expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*min-h-full/);
+    });
+});

@@ -28,6 +28,7 @@ import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
 import { PaletteContext, PaletteOverrides } from "./palette-context";
+import { blockIsActiveTuiSurface, LONG_RUNNING_COMMAND_DURATION_MS } from "./tui-capture";
 
 export interface TerminalViewProps {
     outerBlockId: string;
@@ -45,6 +46,16 @@ export interface TerminalViewProps {
     // for `term:mode = "vdom"` where the whole pane becomes a single
     // VDom subblock instead of a shell.
     replaceContent?: React.ReactNode;
+}
+
+export function blurActiveEditableInRoot(root: HTMLElement | null): void {
+    if (!root) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (!active) return;
+    if (!root.contains(active)) return;
+    if (active.tagName === "TEXTAREA" || active.tagName === "INPUT" || active.isContentEditable) {
+        active.blur();
+    }
 }
 
 // One TerminalModel per outerBlockId, cached for the component's lifetime.
@@ -170,6 +181,15 @@ export const TerminalView = memo(
             return all[all.length - 1];
             // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [revision]);
+        const [longRunningTick, setLongRunningTick] = useState(0);
+        const activeAltScreenBlock = useMemo(() => {
+            const all = model.getBlocks().all();
+            for (let i = all.length - 1; i >= 0; i--) {
+                if (blockIsActiveTuiSurface(all[i], model.getMode())) return all[i];
+            }
+            return null;
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [revision, longRunningTick]);
 
         const nld = useNLDModel(outerBlockId);
         const inputMode = useAtomValue(nld.modeAtom);
@@ -455,6 +475,7 @@ export const TerminalView = memo(
                     const row = grid.getRow(r);
                     let s = "";
                     for (const cell of row) {
+                        if (!cell) continue;
                         if (cell.width === 0) continue;
                         s += cell.char || " ";
                     }
@@ -466,7 +487,24 @@ export const TerminalView = memo(
         );
 
         const isRunning = liveBlock?.state === "running";
-        const inAltScreen = liveBlock?.altScreen.active ?? false;
+        const inAltScreen = activeAltScreenBlock != null;
+        const rootRef = useRef<HTMLDivElement>(null);
+
+        useEffect(() => {
+            if (liveBlock?.state !== "running") return;
+            const duration = liveBlock.durationMs?.() ?? 0;
+            if (duration > LONG_RUNNING_COMMAND_DURATION_MS) return;
+            const timeout = setTimeout(
+                () => setLongRunningTick((tick) => tick + 1),
+                LONG_RUNNING_COMMAND_DURATION_MS - duration + 1
+            );
+            return () => clearTimeout(timeout);
+        }, [liveBlock, revision]);
+
+        useEffect(() => {
+            if (!inAltScreen) return;
+            blurActiveEditableInRoot(rootRef.current);
+        }, [inAltScreen]);
 
         // OSC 8 link click — open in user's default browser.
         const onLinkClick = useCallback((uri: string) => {
@@ -496,6 +534,7 @@ export const TerminalView = memo(
                 if (bytes != null) {
                     e.preventDefault();
                     e.stopPropagation();
+                    e.stopImmediatePropagation();
                     void model.sendBytes(bytes);
                 }
             };
@@ -567,7 +606,6 @@ export const TerminalView = memo(
         // cols for *future* blocks; running blocks have their geometry already
         // baked in, but we still notify the PTY via sendResize so the shell's
         // line-editing math stays correct.
-        const rootRef = useRef<HTMLDivElement>(null);
         // charWidth is held in *state* (not just a ref) so it flows down into
         // BlockListElement as a prop — block-level mouse-to-cell math needs
         // the value for SelectionLayer rectangles.
@@ -810,57 +848,59 @@ export const TerminalView = memo(
                 10px breathing room between the last block's output and the
                 top of the input editor.  Without this the input's border-t
                 hugs the last command's stdout. */}
-                    <div className="mt-2.5" />
+                    {!inAltScreen && <div className="mt-2.5" />}
                     {/* Agent footer (warp's bottom orchestration bar): working status +
                 Stop on the right, queued messages on the left. Between the
                 conversation and the input editor; hidden when idle + empty. */}
-                    <AgentActivityBar
-                        status={agentState.status}
-                        queuedMessages={agentState.queuedMessages}
-                        onStop={onAgentStop}
-                    />
-                    <CmdBlockInput
-                        cwd={liveCwd}
-                        home={home}
-                        // Branch prefers the precmd value (instant) and falls back
-                        // to the chip-model fetch (covers shells with no precmd).
-                        branch={liveBlock?.gitBranch || chipValues.gitBranch}
-                        venv={liveBlock?.virtualEnv}
-                        nodeVersion={liveBlock?.nodeVersion}
-                        // Diff stats: precmd if shell sent it, else chip-model.
-                        gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
-                        gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
-                        prNumber={chipValues.prNumber}
-                        prTitle={chipValues.prTitle}
-                        kubernetesContext={chipValues.kubernetesContext}
-                        sshHost={sshHost}
-                        sshUser={sshUser}
-                        mode={inputMode}
-                        onModeChange={setInputMode}
-                        onSubmit={onSubmit}
-                        submitting={submitting}
-                        disabled={isRunning && !inAltScreen ? false : false}
-                        fontSize={fontSize}
-                        focusRequest={focusRequest}
-                        history={commandHistory}
-                        onTextChange={onInputTextChange}
-                        effectiveMode={effectiveMode}
-                        modelDisplayLabel={modelDisplayLabel}
-                        catalog={CATALOG}
-                        userConfig={userConfigState.config}
-                        userConfigStatus={userConfigState.status}
-                        userConfigError={userConfigState.error}
-                        selection={activeSelection}
-                        onSelectionChange={onSelectionChange}
-                        onOpenAIConfigFile={onOpenAIConfigFile}
-                        placeholder={
-                            inAltScreen
-                                ? "TUI active — keystrokes forward to the running app (not yet wired)"
-                                : isRunning
-                                  ? "Press Ctrl+C in the running block to interrupt, or type the next command"
-                                  : undefined
-                        }
-                    />
+                    {!inAltScreen && (
+                        <AgentActivityBar
+                            status={agentState.status}
+                            queuedMessages={agentState.queuedMessages}
+                            onStop={onAgentStop}
+                        />
+                    )}
+                    {!inAltScreen && (
+                        <CmdBlockInput
+                            cwd={liveCwd}
+                            home={home}
+                            // Branch prefers the precmd value (instant) and falls back
+                            // to the chip-model fetch (covers shells with no precmd).
+                            branch={liveBlock?.gitBranch || chipValues.gitBranch}
+                            venv={liveBlock?.virtualEnv}
+                            nodeVersion={liveBlock?.nodeVersion}
+                            // Diff stats: precmd if shell sent it, else chip-model.
+                            gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
+                            gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
+                            prNumber={chipValues.prNumber}
+                            prTitle={chipValues.prTitle}
+                            kubernetesContext={chipValues.kubernetesContext}
+                            sshHost={sshHost}
+                            sshUser={sshUser}
+                            mode={inputMode}
+                            onModeChange={setInputMode}
+                            onSubmit={onSubmit}
+                            submitting={submitting}
+                            disabled={false}
+                            fontSize={fontSize}
+                            focusRequest={focusRequest}
+                            history={commandHistory}
+                            onTextChange={onInputTextChange}
+                            effectiveMode={effectiveMode}
+                            modelDisplayLabel={modelDisplayLabel}
+                            catalog={CATALOG}
+                            userConfig={userConfigState.config}
+                            userConfigStatus={userConfigState.status}
+                            userConfigError={userConfigState.error}
+                            selection={activeSelection}
+                            onSelectionChange={onSelectionChange}
+                            onOpenAIConfigFile={onOpenAIConfigFile}
+                            placeholder={
+                                isRunning
+                                    ? "Press Ctrl+C in the running block to interrupt, or type the next command"
+                                    : undefined
+                            }
+                        />
+                    )}
                     {overlaySlot}
                     {notification && (
                         <div className="pointer-events-none absolute right-3 top-3 max-w-[60%] rounded border border-fg-overlay-2 bg-background/95 px-3 py-2 text-[12px] text-foreground shadow-lg">
