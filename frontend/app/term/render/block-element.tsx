@@ -124,8 +124,13 @@ export const BlockElement = memo(
         const visualState = mapLifecycleToVisual(block);
 
         const activeSurfaceState = model?.getActiveSurfaceState?.() ?? null;
-        const activeTuiSurface = activeSurfaceState?.blockId === block.id;
-        const surfaceKind = activeTuiSurface ? activeSurfaceState.kind : "normal-output";
+        const modelSurfaceActive = activeSurfaceState?.blockId === block.id;
+        const activeTuiSurface = modelSurfaceActive || (!model && block.altScreen.active);
+        const surfaceKind = modelSurfaceActive
+            ? activeSurfaceState.kind
+            : !model && block.altScreen.active
+              ? "alt-screen"
+              : "normal-output";
         const inAltScreen = surfaceKind === "alt-screen";
         const cmd = block.commandText() || undefined;
         // Frozen alt-screen — after a TUI exits we keep its last frame

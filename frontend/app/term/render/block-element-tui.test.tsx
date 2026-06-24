@@ -67,6 +67,15 @@ function makeSurfaceModel(block: { id: string }) {
 }
 
 describe("BlockElement TUI layout", () => {
+    it("renders active alternate screen as full-height and hides chrome without a model", () => {
+        const block = makeBlock(true) as any;
+        const html = renderToStaticMarkup(<BlockElement block={block} revision={1} />);
+
+        expect(html).not.toContain('data-testid="cmd-header"');
+        expect(html).not.toContain('data-testid="cmd-snackbar"');
+        expect(html).toMatch(/data-testid="grid"[^>]*class="[^"]*min-h-full/);
+    });
+
     it("hides block command chrome while active alternate screen is displayed", () => {
         const block = makeBlock(true) as any;
         const html = renderToStaticMarkup(
