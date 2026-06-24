@@ -576,6 +576,7 @@ export class TerminalModel {
                 const row = grid.getRow(r);
                 let s = "";
                 for (const cell of row) {
+                    if (!cell) continue;
                     if (cell.width === 0) continue;
                     s += cell.char.length > 0 ? cell.char : " ";
                 }

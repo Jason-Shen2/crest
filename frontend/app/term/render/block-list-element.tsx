@@ -19,12 +19,14 @@
 
 import { UIcon } from "@/app/element/ui-icon";
 import type { PiRun } from "@/app/store/use-pi-chat";
+import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { FindMatch, TerminalModel } from "../terminal-model";
 import { AgentBlockElement } from "./agent-block-element";
 import { BlockElement } from "./block-element";
 import { computeBlockSlice } from "./selection";
+import { blockIsActiveTuiSurface } from "./tui-capture";
 
 const ScrollBottomThresholdPx = 32;
 
@@ -253,8 +255,13 @@ export const BlockListElement = memo(
                         ) {
                             return null;
                         }
+                        const activeTuiSurface = blockIsActiveTuiSurface(block, model.getMode());
                         return (
-                            <div key={block.id} data-block-oid={block.id}>
+                            <div
+                                key={block.id}
+                                data-block-oid={block.id}
+                                className={cn(activeTuiSurface && "h-full min-h-full")}
+                            >
                                 <BlockElement
                                     block={block}
                                     revision={revision}
