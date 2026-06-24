@@ -109,4 +109,20 @@ describe("TerminalModel terminal state", () => {
         expect(model.getCLIAgentSession("b1")).toBe(null);
         expect(model.getTerminalInputState(1_010)).toEqual({ kind: "input-editor" });
     });
+
+    it("creates CLI agent session from cmd when commandText is empty without changing input takeover", () => {
+        const model = loadedModel();
+        const block = runningBlock("b1", 1_000);
+        block.cmd = "coco";
+        vi.spyOn(block, "commandText").mockReturnValue("");
+        addBlock(model, block);
+
+        expect(model.getCLIAgentSession("b1")).toEqual({
+            blockId: "b1",
+            agent: "coco",
+            status: "in-progress",
+            inputState: { kind: "pty-owned" },
+        });
+        expect(model.getTerminalInputState(1_010)).toEqual({ kind: "input-editor" });
+    });
 });
