@@ -18,6 +18,7 @@ const testState = vi.hoisted(() => {
         sendBytes,
         activeElement: null as HTMLElement | null,
         lastModel: null as ReturnType<typeof makeModel> | null,
+        loading: false,
         blocks: null as Array<{
             id: string;
             state: string;
@@ -28,13 +29,29 @@ const testState = vi.hoisted(() => {
         modeOverride: null as Record<string, unknown> | null,
         inputStateOverride: null as { kind: string; blockId?: string } | null,
         surfaceStateOverride: null as { kind: string; blockId: string } | null,
+        memoHookIndex: 0,
+        memoCache: [] as Array<{ deps: unknown[] | undefined; value: unknown }>,
     };
 });
 
 vi.mock("react", async (importOriginal) => {
     const actual = await importOriginal<typeof import("react")>();
+    const depsMatch = (prev: unknown[] | undefined, next: unknown[] | undefined) => {
+        if (!prev || !next || prev.length !== next.length) return false;
+        return prev.every((value, index) => Object.is(value, next[index]));
+    };
     return {
         ...actual,
+        useMemo: <T,>(factory: () => T, deps?: unknown[]): T => {
+            const index = testState.memoHookIndex++;
+            const cached = testState.memoCache[index];
+            if (cached && depsMatch(cached.deps, deps)) {
+                return cached.value as T;
+            }
+            const value = factory();
+            testState.memoCache[index] = { deps, value };
+            return value;
+        },
         useEffect: (effect: () => void | (() => void)) => {
             const cleanup = effect();
             if (typeof cleanup === "function") {
@@ -180,6 +197,7 @@ function makeModel() {
     };
     const getTerminalInputState = () => {
         if (testState.inputStateOverride) return testState.inputStateOverride;
+        if (testState.loading) return { kind: "not-bootstrapped" };
         const activeBlock = [...blocks].reverse().find((block) => block.altScreen.active || block.state === "running");
         if (!activeBlock) return { kind: "input-editor" };
         if (activeBlock.altScreen.active) return { kind: "alt-screen", blockId: activeBlock.id };
@@ -197,7 +215,7 @@ function makeModel() {
     };
     const model = {
         revisionAtom: testState.atomValue(1),
-        loadingAtom: testState.atomValue(false),
+        loadingAtom: { read: () => testState.loading },
         errorAtom: testState.atomValue(""),
         notificationAtom: testState.atomValue(""),
         paletteOverridesAtom: testState.atomValue({}),
@@ -235,6 +253,11 @@ function makeModel() {
     };
     testState.lastModel = model;
     return model;
+}
+
+function renderTerminalView() {
+    testState.memoHookIndex = 0;
+    return renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
 }
 
 function installDocumentStub() {
@@ -299,10 +322,13 @@ describe("TerminalView TUI mode", () => {
     beforeEach(() => {
         testState.effectCleanups.length = 0;
         testState.activeElement = null;
+        testState.loading = false;
         testState.blocks = null;
         testState.modeOverride = null;
         testState.inputStateOverride = null;
         testState.surfaceStateOverride = null;
+        testState.memoHookIndex = 0;
+        testState.memoCache = [];
         installDocumentStub();
         testState.sendBytes.mockClear();
     });
@@ -316,13 +342,13 @@ describe("TerminalView TUI mode", () => {
     });
 
     it("does not render the command input while alternate screen is active", () => {
-        const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        const html = renderTerminalView();
 
         expect(html).not.toContain('data-testid="cmd-input"');
     });
 
     it("does not render footer spacer or agent activity while alternate screen is active", () => {
-        const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        const html = renderTerminalView();
 
         expect(html).not.toContain('class="mt-2.5"');
         expect(html).not.toContain('data-testid="agent-activity-bar"');
@@ -344,7 +370,7 @@ describe("TerminalView TUI mode", () => {
             },
         ];
 
-        const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        const html = renderTerminalView();
 
         expect(html).not.toContain('data-testid="cmd-input"');
     });
@@ -359,7 +385,7 @@ describe("TerminalView TUI mode", () => {
             },
         ];
         testState.modeOverride = { appCursor: true, mouseClick: true };
-        const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        const html = renderTerminalView();
 
         expect(html).not.toContain('data-testid="cmd-input"');
     });
@@ -375,7 +401,7 @@ describe("TerminalView TUI mode", () => {
             },
         ];
         testState.modeOverride = {};
-        const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        const html = renderTerminalView();
 
         expect(html).not.toContain('data-testid="cmd-input"');
     });
@@ -390,9 +416,21 @@ describe("TerminalView TUI mode", () => {
             },
         ];
         testState.inputStateOverride = { kind: "long-running-command", blockId: "block-model-state" };
-        const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        const html = renderTerminalView();
 
         expect(html).not.toContain('data-testid="cmd-input"');
+    });
+
+    it("shows the command input after loading finishes with no blocks", () => {
+        testState.loading = true;
+        testState.blocks = [];
+        const loadingHtml = renderTerminalView();
+        expect(loadingHtml).not.toContain('data-testid="cmd-input"');
+
+        testState.loading = false;
+        const loadedHtml = renderTerminalView();
+
+        expect(loadedHtml).toContain('data-testid="cmd-input"');
     });
 
     it("keeps the command input for a newly running block before the long-running threshold", () => {
@@ -413,13 +451,13 @@ describe("TerminalView TUI mode", () => {
             },
         ];
         testState.modeOverride = {};
-        const html = renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        const html = renderTerminalView();
 
         expect(html).toContain('data-testid="cmd-input"');
     });
 
     it("forwards ordinary document keydown to the running TUI", () => {
-        renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        renderTerminalView();
 
         dispatchDocumentKeydown({
             key: "x",
@@ -430,7 +468,7 @@ describe("TerminalView TUI mode", () => {
     });
 
     it("stops same-document global shortcuts after forwarding a TUI key", () => {
-        renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        renderTerminalView();
 
         dispatchDocumentKeydown({
             key: "f",
@@ -468,7 +506,7 @@ describe("TerminalView TUI mode", () => {
         testState.activeElement = activeElement;
         installDocumentStub();
 
-        renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+        renderTerminalView();
 
         expect(activeElement.blur).not.toHaveBeenCalled();
     });
