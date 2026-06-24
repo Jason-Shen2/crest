@@ -698,7 +698,7 @@ export class TerminalModel {
     getCLIAgentSession(blockId: BlockId): CLIAgentSession | null {
         const block = this.blocks.findById(blockId);
         if (!block) return null;
-        const agent = detectCLIAgent(block.commandText()) ?? detectCLIAgent(block.cmd);
+        const agent = detectCLIAgent(block.commandText() || block.cmd);
         if (!agent) return null;
         return {
             blockId,
