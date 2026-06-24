@@ -118,6 +118,7 @@ export class BlockGrid {
             const row = this.inner.getRow(r);
             let s = "";
             for (const cell of row) {
+                if (!cell) continue;
                 if (cell.width !== 0 && cell.char) s += cell.char;
             }
             out.push(s);
@@ -137,7 +138,7 @@ export class BlockGrid {
         for (let r = 0; r < this.inner.rowCount(); r++) {
             const row = this.inner.getRow(r);
             for (let c = row.length - 1; c >= 0; c--) {
-                if (row[c].char) {
+                if (row[c]?.char) {
                     if (c > max) max = c;
                     break;
                 }
@@ -155,6 +156,7 @@ export class BlockGrid {
         for (let r = 0; r < this.inner.rowCount() && !has; r++) {
             const row = this.inner.getRow(r);
             for (const cell of row) {
+                if (!cell) continue;
                 if (cell.char) {
                     has = true;
                     break;
