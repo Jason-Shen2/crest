@@ -37,6 +37,15 @@ describe("Block interaction state", () => {
         expect(block.isActiveAndLongRunning(1_000 + LONG_RUNNING_COMMAND_DURATION_MS + 2)).toBe(false);
     });
 
+    it("keeps alt-screen interaction state independent of block lifecycle", () => {
+        const block = makeRunningBlock(1_000);
+
+        block.finishCommand(0);
+        block.enterAltScreen();
+
+        expect(block.interactionMode(DefaultTermMode, 2_000)).toBe("alt-screen");
+    });
+
     it("maps block interaction mode with alt-screen and terminal capture priority", () => {
         const block = makeRunningBlock(1_000);
 
