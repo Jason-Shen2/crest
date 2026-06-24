@@ -49,23 +49,11 @@ import { GridElement } from "./grid-element";
 import { LogicalMouseEvent, MouseButton, encodeMouseEvent, shouldReportAction } from "./mouse";
 import { BlockSelectionSlice, SelectionMode, pixelToCell } from "./selection";
 import { SelectionLayer } from "./selection-layer";
-import { blockIsActiveTuiSurface, terminalCaptureActive } from "./tui-capture";
 
 type MouseLikeEvent = Pick<
     React.MouseEvent<HTMLDivElement>,
     "clientX" | "clientY" | "shiftKey" | "altKey" | "ctrlKey" | "preventDefault" | "stopPropagation"
 >;
-
-function hasVisibleCursorAnchor(grid: import("../engine/grid").Grid): boolean {
-    const row = grid.getRow(grid.cursor.row);
-    const maxCol = Math.min(grid.cursor.col, row.length - 1);
-    for (let col = 0; col <= maxCol; col++) {
-        const cell = row[col];
-        if (!cell) continue;
-        if (cell.width !== 0 && cell.char.length > 0) return true;
-    }
-    return false;
-}
 
 export interface BlockElementProps {
     block: Block;
@@ -135,8 +123,10 @@ export const BlockElement = memo(
 
         const visualState = mapLifecycleToVisual(block);
 
-        const inAltScreen = block.altScreen.active;
-        const activeTuiSurface = blockIsActiveTuiSurface(block, model?.getMode());
+        const activeSurfaceState = model?.getActiveSurfaceState?.() ?? null;
+        const activeTuiSurface = activeSurfaceState?.blockId === block.id;
+        const surfaceKind = activeTuiSurface ? activeSurfaceState.kind : "normal-output";
+        const inAltScreen = surfaceKind === "alt-screen";
         const cmd = block.commandText() || undefined;
         // Frozen alt-screen — after a TUI exits we keep its last frame
         // visible if no post-exit output has landed, so vim/htop/less
@@ -144,14 +134,9 @@ export const BlockElement = memo(
         const outputRowCount = block.outputGrid.rowCount();
         const frozenAltScreen =
             !inAltScreen && block.altScreen.wasActive && outputRowCount === 0;
-        const showAltScreen = inAltScreen || frozenAltScreen;
+        const showAltScreen = surfaceKind === "alt-screen" || frozenAltScreen;
         const liveGrid = showAltScreen ? block.altScreen.grid : block.outputGrid.raw();
-        const forceCursorVisible =
-            activeTuiSurface &&
-            block.state === "running" &&
-            !block.altScreen.active &&
-            !terminalCaptureActive(model?.getMode()) &&
-            hasVisibleCursorAnchor(liveGrid);
+        const cursorState = model?.getCursorRenderState?.(block.id) ?? { kind: "terminal" as const };
         const lineHeight = Math.round((fontSize ?? 12) * 1.4);
         const effCharWidth = charWidth ?? (fontSize ?? 12) * 0.6;
 
@@ -172,7 +157,7 @@ export const BlockElement = memo(
         // Render the cursor for blocks that are actually receiving input —
         // running blocks (the shell prompt's cursor sits in the output grid)
         // and any alt-screen TUI.  Done blocks have no live cursor.
-        const showCursor = block.state === "running" || inAltScreen;
+        const showCursor = (block.state === "running" || inAltScreen) && cursorState.kind === "terminal";
 
         const cellFromEvent = useCallback(
             (e: MouseLikeEvent): { row: number; col: number } | null => {
@@ -622,7 +607,6 @@ export const BlockElement = memo(
                                 charWidth={effCharWidth}
                                 lineHeight={lineHeight}
                                 revision={revision}
-                                forceVisible={forceCursorVisible}
                             />
                         )}
                         {findMatches && findMatches.length > 0 && !showCollapsed && (

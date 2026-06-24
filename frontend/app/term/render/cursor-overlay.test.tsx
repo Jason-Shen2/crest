@@ -21,11 +21,11 @@ describe("CursorOverlay", () => {
         expect(html).toBe("");
     });
 
-    it("can force the cursor visible for long-running PTY input surfaces", () => {
+    it("does not force a hidden terminal cursor visible", () => {
         const html = renderToStaticMarkup(
-            <CursorOverlay grid={grid(false)} charWidth={8} lineHeight={16} forceVisible />
+            <CursorOverlay grid={grid(false)} charWidth={8} lineHeight={16} />
         );
 
-        expect(html).toContain("position:absolute");
+        expect(html).toBe("");
     });
 });
