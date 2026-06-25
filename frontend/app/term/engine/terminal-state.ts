@@ -22,7 +22,7 @@ export type TerminalSurfaceState =
 export type CursorRenderState =
     | { kind: "hidden" }
     | { kind: "terminal" }
-    | { kind: "suppressed"; reason: "cli-soft-cursor" | "rich-input-open" | "parked-cursor" }
+    | { kind: "suppressed"; reason: "cli-soft-cursor" | "rich-input-open" }
     | { kind: "cli-owned"; agent: CLIAgent };
 
 export type CLIAgentSessionStatus = "starting" | "in-progress" | "idle" | "stopped" | "error";
