@@ -15,19 +15,30 @@ function makeStreamChild() {
 }
 
 describe("parseLspRequest", () => {
-    it("extracts language and workspace root", () => {
-        expect(parseLspRequest("/lsp?language=typescript&workspaceRoot=%2Frepo")).toEqual({
+    it("extracts server id, language, and workspace root", () => {
+        expect(
+            parseLspRequest("/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server")
+        ).toEqual({
             language: "typescript",
             workspaceRoot: "/repo",
+            serverId: "typescript-language-server",
         });
     });
 
     it("rejects missing language", () => {
-        expect(() => parseLspRequest("/lsp?workspaceRoot=%2Frepo")).toThrow("Missing language");
+        expect(() => parseLspRequest("/lsp?workspaceRoot=%2Frepo&serverId=typescript-language-server")).toThrow(
+            "Missing language"
+        );
+    });
+
+    it("rejects missing server id", () => {
+        expect(() => parseLspRequest("/lsp?language=typescript&workspaceRoot=%2Frepo")).toThrow("Missing serverId");
     });
 
     it("rejects requests outside the /lsp endpoint", () => {
-        expect(() => parseLspRequest("/bad?language=typescript&workspaceRoot=%2Frepo")).toThrow("Invalid LSP endpoint");
+        expect(() =>
+            parseLspRequest("/bad?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server")
+        ).toThrow("Invalid LSP endpoint");
     });
 });
 
@@ -41,13 +52,21 @@ describe("LspWebSocketBridge", () => {
             stdioPayload += data.toString();
         });
         const languageServerManager = {
-            startSession: vi.fn(() => child),
-            stopAll: vi.fn(),
+            acquire: vi.fn(() => child),
+            release: vi.fn(),
         };
         const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
         const url = await bridge.start();
-        const client = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
+        const client = new WebSocket(
+            `${url}/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
         await new Promise<void>((resolve) => client.once("open", resolve));
+
+        expect(languageServerManager.acquire).toHaveBeenCalledWith({
+            language: "typescript",
+            workspaceRoot: "/repo",
+            serverId: "typescript-language-server",
+        });
 
         const initializeMessage: RequestMessage = { jsonrpc: "2.0", id: 1, method: "initialize", params: {} };
         client.send(JSON.stringify(initializeMessage));
@@ -67,18 +86,25 @@ describe("LspWebSocketBridge", () => {
         await vi.waitFor(() => {
             expect(stdout.listenerCount("data")).toBe(0);
         });
+        expect(languageServerManager.release).toHaveBeenCalledWith({
+            language: "typescript",
+            workspaceRoot: "/repo",
+            serverId: "typescript-language-server",
+        });
         await bridge.stop();
     });
 
     it("closes active websocket clients when the bridge stops", async () => {
         const child = makeStreamChild();
         const languageServerManager = {
-            startSession: vi.fn(() => child),
-            stopAll: vi.fn(),
+            acquire: vi.fn(() => child),
+            release: vi.fn(),
         };
         const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
         const url = await bridge.start();
-        const client = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
+        const client = new WebSocket(
+            `${url}/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
         await new Promise<void>((resolve) => client.once("open", resolve));
 
         let stopped = false;
@@ -88,35 +114,71 @@ describe("LspWebSocketBridge", () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
 
         expect(stopped).toBe(true);
-        expect(child.kill).toHaveBeenCalledTimes(1);
+        expect(languageServerManager.release).toHaveBeenCalledTimes(1);
+        expect(child.kill).not.toHaveBeenCalled();
         await stopPromise;
     });
 
-    it("starts a separate language server session for each websocket client", async () => {
-        const firstChild = makeStreamChild();
-        const secondChild = makeStreamChild();
-        const reusedChild = makeStreamChild();
+    it("rejects a duplicate active websocket session for the same workspace root and server id", async () => {
+        const child = makeStreamChild();
         const languageServerManager = {
-            getOrStart: vi.fn(() => reusedChild),
-            startSession: vi.fn().mockReturnValueOnce(firstChild).mockReturnValueOnce(secondChild),
-            stopAll: vi.fn(),
+            acquire: vi.fn(() => child),
+            release: vi.fn(),
         };
         const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
         const url = await bridge.start();
-        const firstClient = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
-        const secondClient = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
+        const firstClient = new WebSocket(
+            `${url}/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
+        const secondClient = new WebSocket(
+            `${url}/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
+        const duplicateClose = new Promise<{ code: number; reason: string }>((resolve) => {
+            secondClient.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+        });
         await Promise.all([
             new Promise<void>((resolve) => firstClient.once("open", resolve)),
             new Promise<void>((resolve) => secondClient.once("open", resolve)),
         ]);
 
-        expect(languageServerManager.startSession).toHaveBeenCalledTimes(2);
-        expect(languageServerManager.getOrStart).not.toHaveBeenCalled();
-        expect(firstChild.stdout.listenerCount("data")).toBe(1);
-        expect(secondChild.stdout.listenerCount("data")).toBe(1);
-        expect(reusedChild.stdout.listenerCount("data")).toBe(0);
+        await expect(duplicateClose).resolves.toEqual({
+            code: 1008,
+            reason: "LSP session already active for workspaceRoot and serverId",
+        });
+        expect(languageServerManager.acquire).toHaveBeenCalledTimes(1);
+        expect(child.stdout.listenerCount("data")).toBe(1);
 
         firstClient.close();
+        await vi.waitFor(() => {
+            expect(languageServerManager.release).toHaveBeenCalledTimes(1);
+        });
+        await bridge.stop();
+    });
+
+    it("allows a new websocket session after the previous matching session closes", async () => {
+        const child = makeStreamChild();
+        const languageServerManager = {
+            acquire: vi.fn(() => child),
+            release: vi.fn(),
+        };
+        const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
+        const url = await bridge.start();
+        const firstClient = new WebSocket(
+            `${url}/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
+        await new Promise<void>((resolve) => firstClient.once("open", resolve));
+
+        firstClient.close();
+        await vi.waitFor(() => {
+            expect(languageServerManager.release).toHaveBeenCalledTimes(1);
+        });
+
+        const secondClient = new WebSocket(
+            `${url}/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
+        await new Promise<void>((resolve) => secondClient.once("open", resolve));
+
+        expect(languageServerManager.acquire).toHaveBeenCalledTimes(2);
         secondClient.close();
         await bridge.stop();
     });
@@ -124,11 +186,14 @@ describe("LspWebSocketBridge", () => {
     it("closes and cleans up the websocket when the language server exits", async () => {
         const child = makeStreamChild();
         const languageServerManager = {
-            startSession: vi.fn(() => child),
+            acquire: vi.fn(() => child),
+            release: vi.fn(),
         };
         const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
         const url = await bridge.start();
-        const client = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
+        const client = new WebSocket(
+            `${url}/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
         await new Promise<void>((resolve) => client.once("open", resolve));
 
         child.emit("exit", 0, null);
@@ -138,17 +203,21 @@ describe("LspWebSocketBridge", () => {
             expect(child.stdout.listenerCount("data")).toBe(0);
         });
         expect(child.kill).not.toHaveBeenCalled();
+        expect(languageServerManager.release).toHaveBeenCalledTimes(1);
         await bridge.stop();
     });
 
     it("closes and cleans up the websocket when the language server errors", async () => {
         const child = makeStreamChild();
         const languageServerManager = {
-            startSession: vi.fn(() => child),
+            acquire: vi.fn(() => child),
+            release: vi.fn(),
         };
         const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
         const url = await bridge.start();
-        const client = new WebSocket(`${url}/lsp?language=typescript&workspaceRoot=%2Frepo`);
+        const client = new WebSocket(
+            `${url}/lsp?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
         await new Promise<void>((resolve) => client.once("open", resolve));
 
         child.emit("error", new Error("ls failed"));
@@ -158,22 +227,27 @@ describe("LspWebSocketBridge", () => {
             expect(child.stdout.listenerCount("data")).toBe(0);
         });
         expect(child.kill).not.toHaveBeenCalled();
+        expect(languageServerManager.release).toHaveBeenCalledTimes(1);
         await bridge.stop();
     });
 
     it("rejects invalid endpoint paths without starting a language server session", async () => {
         const languageServerManager = {
-            startSession: vi.fn(),
+            acquire: vi.fn(),
+            release: vi.fn(),
         };
         const bridge = new LspWebSocketBridge({ languageServerManager: languageServerManager as any });
         const url = await bridge.start();
-        const client = new WebSocket(`${url}/bad?language=typescript&workspaceRoot=%2Frepo`);
+        const client = new WebSocket(
+            `${url}/bad?language=typescript&workspaceRoot=%2Frepo&serverId=typescript-language-server`
+        );
         await new Promise<void>((resolve) => client.once("open", resolve));
 
         await vi.waitFor(() => {
             expect(client.readyState).toBe(WebSocket.CLOSED);
         });
-        expect(languageServerManager.startSession).not.toHaveBeenCalled();
+        expect(languageServerManager.acquire).not.toHaveBeenCalled();
+        expect(languageServerManager.release).not.toHaveBeenCalled();
         await bridge.stop();
     });
 });

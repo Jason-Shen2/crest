@@ -9,6 +9,8 @@ import { type IWebSocket, WebSocketMessageReader, WebSocketMessageWriter } from 
 export type LspTransportInput = {
     workspaceRoot: string;
     language: string;
+    languages?: string[];
+    serverId?: string | null;
 };
 
 export type LspTransport = {
@@ -48,7 +50,18 @@ function getRuntimeLspWebSocketUrl(): string {
     return baseUrl.replace(/\/$/, "");
 }
 
-function makeJsonRpcWebSocket(socket: WebSocket): IWebSocket {
+function makeStartupCloseError(event: CloseEvent): Error {
+    const reason = event.reason?.trim();
+    if (reason) return new Error(reason);
+    return new Error(`LSP WebSocket closed before the language client started (code ${event.code})`);
+}
+
+function makeJsonRpcWebSocket(socket: WebSocket, onClose?: (event: CloseEvent) => void): IWebSocket {
+    let jsonRpcCloseHandler: ((code: number, reason: string) => void) | null = null;
+    socket.onclose = (event) => {
+        onClose?.(event);
+        jsonRpcCloseHandler?.(event.code, event.reason);
+    };
     return {
         send: (content) => socket.send(content),
         onMessage: (cb) => {
@@ -58,7 +71,7 @@ function makeJsonRpcWebSocket(socket: WebSocket): IWebSocket {
             socket.onerror = cb;
         },
         onClose: (cb) => {
-            socket.onclose = (event) => cb(event.code, event.reason);
+            jsonRpcCloseHandler = cb;
         },
         dispose: () => socket.close(),
     };
@@ -100,15 +113,36 @@ export function applyLspDiagnosticsToMonacoMarkers(uri: monaco.Uri, diagnostics:
 }
 
 export async function createLspWebSocketTransport(input: LspTransportInput): Promise<LspTransport> {
+    if (!input.serverId) {
+        throw new Error("LSP server ID is not available");
+    }
     const params = new URLSearchParams({
         workspaceRoot: input.workspaceRoot,
         language: input.language,
+        serverId: input.serverId,
     });
+    const documentSelectorLanguages = input.languages?.length ? input.languages : [input.language];
     const socket = new WebSocket(`${getRuntimeLspWebSocketUrl()}/lsp?${params.toString()}`);
     return new Promise<LspTransport>((resolve, reject) => {
+        let clientStarted = false;
+        let startupCloseError: Error | null = null;
+        let rejectStartupClose: (error: Error) => void = () => undefined;
+        const startupClosePromise = new Promise<never>((_resolve, rejectClose) => {
+            rejectStartupClose = rejectClose;
+        });
+        void startupClosePromise.catch(() => undefined);
+        const rejectStartupOnClose = (event: CloseEvent) => {
+            if (clientStarted) return;
+            startupCloseError = makeStartupCloseError(event);
+            socket.onopen = null;
+            socket.onerror = null;
+            rejectStartupClose(startupCloseError);
+            reject(startupCloseError);
+        };
+        socket.onclose = rejectStartupOnClose;
         socket.onopen = async () => {
             socket.onerror = null;
-            const rpcSocket = makeJsonRpcWebSocket(socket);
+            const rpcSocket = makeJsonRpcWebSocket(socket, rejectStartupOnClose);
             const reader = new WebSocketMessageReader(rpcSocket);
             const writer = new WebSocketMessageWriter(rpcSocket);
             try {
@@ -116,7 +150,7 @@ export async function createLspWebSocketTransport(input: LspTransportInput): Pro
                 const client = new MonacoLanguageClient({
                     name: `Crest ${input.language} Language Client`,
                     clientOptions: {
-                        documentSelector: [{ scheme: "file", language: input.language }],
+                        documentSelector: documentSelectorLanguages.map((language) => ({ scheme: "file", language })),
                         errorHandler: {
                             error: () => ({ action: LanguageClientErrorActionContinue }),
                             closed: () => ({ action: LanguageClientCloseActionDoNotRestart }),
@@ -133,7 +167,11 @@ export async function createLspWebSocketTransport(input: LspTransportInput): Pro
                         writer,
                     },
                 });
-                await client.start();
+                await Promise.race([client.start(), startupClosePromise]);
+                if (startupCloseError) {
+                    throw startupCloseError;
+                }
+                clientStarted = true;
                 resolve({
                     dispose: () => {
                         void client.dispose();
