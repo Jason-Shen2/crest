@@ -691,7 +691,6 @@ export class TerminalModel {
     getCursorRenderState(blockId: BlockId, now: number = Date.now()): CursorRenderState {
         const surface = this.getActiveSurfaceState(now);
         if (!surface || surface.blockId !== blockId) return { kind: "terminal" };
-        if (surface.kind === "long-running-pty") return { kind: "suppressed", reason: "parked-cursor" };
         return { kind: "terminal" };
     }
 

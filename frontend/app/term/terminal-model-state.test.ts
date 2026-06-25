@@ -97,6 +97,9 @@ describe("TerminalModel terminal state", () => {
             kind: "long-running-pty",
             blockId: "b1",
         });
+        expect(model.getCursorRenderState("b1", 1_000 + LONG_RUNNING_COMMAND_DURATION_MS + 1)).toEqual({
+            kind: "terminal",
+        });
     });
 
     it("does not use cmd fallback when commandText is an explicit non-agent command", () => {
