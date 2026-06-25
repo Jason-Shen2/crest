@@ -4,6 +4,7 @@
 import { CodeEditor } from "@/app/view/codeeditor/codeeditor";
 import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { languageClientManager } from "./lsp/language-client-manager";
 import {
     getRightEditorLanguageServer,
@@ -13,7 +14,6 @@ import {
 import { MonacoModelRegistry } from "./monaco-model-registry";
 import type { RightEditorModel } from "./right-editor-model";
 import type { RightEditorLspStatus, RightEditorOpenFile } from "./right-editor-types";
-import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 function normalizePathSeparators(path: string): string {
     return path.replace(/\\/g, "/");
@@ -43,6 +43,16 @@ function stripLeadingSlash(path: string): string {
     return path.replace(/^\/+/, "");
 }
 
+function splitSuffixSegments(suffix: string): string[] {
+    return stripLeadingSlash(suffix)
+        .split("/")
+        .filter((segment) => segment.length > 0);
+}
+
+function getWorkspaceLabel(workspaceRoot: string): string {
+    return basename(trimTrailingSlashes(workspaceRoot)) || ".";
+}
+
 export function getRightEditorTabPathSuffix(path: string, workspaceRoot: string): string {
     const parentPath = dirname(path);
     if (!parentPath) return "";
@@ -53,6 +63,64 @@ export function getRightEditorTabPathSuffix(path: string, workspaceRoot: string)
         return parentPath.slice(normalizedWorkspaceRoot.length + 1);
     }
     return basename(parentPath);
+}
+
+type RightEditorFileTabInput = Pick<RightEditorOpenFile, "path" | "workspaceRoot">;
+
+export function getRightEditorFileTabDisplay(
+    file: RightEditorFileTabInput,
+    openFiles: RightEditorFileTabInput[],
+    fallbackWorkspaceRoot = ""
+): { name: string; suffix: string } {
+    const name = basename(trimTrailingSlashes(file.path));
+    const sameNameFiles = openFiles.filter((candidate) => basename(trimTrailingSlashes(candidate.path)) === name);
+    if (sameNameFiles.length <= 1) {
+        return { name, suffix: "" };
+    }
+
+    const baseSegments = new Map<RightEditorFileTabInput, string[]>();
+    const getBaseSegments = (candidate: RightEditorFileTabInput): string[] => {
+        const workspaceRoot = candidate.workspaceRoot || fallbackWorkspaceRoot;
+        const suffix = getRightEditorTabPathSuffix(candidate.path, workspaceRoot);
+        const segments = splitSuffixSegments(suffix);
+        return segments.length > 0 ? segments : [getWorkspaceLabel(workspaceRoot)];
+    };
+    for (const candidate of sameNameFiles) {
+        baseSegments.set(candidate, getBaseSegments(candidate));
+    }
+
+    const getDisplaySegments = (candidate: RightEditorFileTabInput): string[] => {
+        const workspaceRoot = candidate.workspaceRoot || fallbackWorkspaceRoot;
+        const segments = baseSegments.get(candidate) ?? getBaseSegments(candidate);
+        const key = segments.join("/");
+        const hasCollision = sameNameFiles.some((other) => {
+            if (other === candidate) return false;
+            const otherSegments = baseSegments.get(other) ?? getBaseSegments(other);
+            return otherSegments.join("/") === key;
+        });
+        const workspaceLabel = getWorkspaceLabel(workspaceRoot);
+        return hasCollision ? [workspaceLabel, ...segments] : segments;
+    };
+
+    const fileSegments = new Map<RightEditorFileTabInput, string[]>();
+    for (const candidate of sameNameFiles) {
+        fileSegments.set(candidate, getDisplaySegments(candidate));
+    }
+
+    const currentSegments = fileSegments.get(file) ?? getDisplaySegments(file);
+    const maxDepth = Math.max(...sameNameFiles.map((candidate) => fileSegments.get(candidate)?.length ?? 1));
+    for (let depth = 1; depth <= maxDepth; depth++) {
+        const currentSuffix = currentSegments.slice(-depth).join("/");
+        const matchingCount = sameNameFiles.filter((candidate) => {
+            const segments = fileSegments.get(candidate) ?? getDisplaySegments(candidate);
+            return segments.slice(-depth).join("/") === currentSuffix;
+        }).length;
+        if (currentSuffix && matchingCount === 1) {
+            return { name, suffix: currentSuffix };
+        }
+    }
+
+    return { name, suffix: currentSegments.join("/") };
 }
 
 export function shouldStartRightEditorLsp(language: string, workspaceRoot: string): boolean {
@@ -205,7 +273,10 @@ function useRightEditorLspStatusVersion(
     );
 }
 
-export function getRightEditorLspStatusLabel(status: RightEditorLspStatus | undefined, installHint?: string | null): string {
+export function getRightEditorLspStatusLabel(
+    status: RightEditorLspStatus | undefined,
+    installHint?: string | null
+): string {
     if (!status) return "";
     if (status.state === "running") return `${status.displayName} LSP ready`;
     if (status.state === "starting") return `${status.displayName} LSP starting`;
@@ -293,8 +364,9 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
         );
     }
 
-    const displayName = basename(trimTrailingSlashes(activeFile.path));
-    const activeSuffix = getRightEditorTabPathSuffix(activeFile.path, activeFile.workspaceRoot || state.workspaceRoot);
+    const activeDisplay = getRightEditorFileTabDisplay(activeFile, state.openFiles, state.workspaceRoot);
+    const displayName = activeDisplay.name;
+    const activeSuffix = activeDisplay.suffix;
     const activeLabel = activeSuffix ? `${displayName} ${activeSuffix}` : displayName;
     const lspStatusDetails = getRightEditorLspStatusForActiveFile({
         activeFile,
@@ -302,55 +374,65 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
         lspManager: languageClientManager,
     });
     void lspStatusVersion;
-    const lspStatusLabel = getRightEditorLspStatusLabel(
-        lspStatusDetails?.status,
-        lspStatusDetails?.installHint
-    );
+    const lspStatusLabel = getRightEditorLspStatusLabel(lspStatusDetails?.status, lspStatusDetails?.installHint);
     const footerStatusLabel = activeFile.saveStatus === "error" ? activeFile.error : lspStatusLabel;
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-[#111113]">
             <div
                 aria-label="Right editor file tabs"
-                data-overflow-behavior="horizontal-scroll"
-                className="flex h-8 shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-[#27272a] bg-[#111113] text-[12px]"
+                data-overflow-behavior="no-horizontal-scroll"
+                data-tab-sizing="adaptive-fill"
+                data-tab-width="adaptive-by-count"
+                className="flex h-8 shrink-0 items-stretch gap-0 overflow-hidden border-b border-[#2a2b2f] bg-[#111113] text-[12px]"
             >
                 {state.openFiles.map((file) => {
                     const active = file.path === activeFile.path;
-                    const name = basename(trimTrailingSlashes(file.path));
-                    const suffix = getRightEditorTabPathSuffix(file.path, file.workspaceRoot || state.workspaceRoot);
+                    const { name, suffix } = getRightEditorFileTabDisplay(file, state.openFiles, state.workspaceRoot);
                     const dirty = file.dirtyText != null;
                     return (
                         <div
                             key={file.path}
                             className={cn(
-                                "group/tab flex h-8 min-w-24 max-w-56 flex-1 basis-0 items-center rounded-sm border border-transparent",
+                                "group/tab relative flex h-8 min-w-0 max-w-[24rem] flex-1 items-center border-r border-[#2a2b2f]",
                                 active
-                                    ? "border-[#3f3f46] bg-[#252529] text-[#f4f4f5] outline-solid outline-1 outline-[#4b5563]"
-                                    : "bg-[#18181b] text-[#a1a1aa] hover:border-[#3f3f46] hover:bg-[#202024] hover:text-[#f4f4f5]"
+                                    ? "bg-[#202124] text-[#f4f4f5] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+                                    : "bg-[#18191b] text-[#a1a1aa] hover:bg-[#202124] hover:text-[#f4f4f5]"
                             )}
+                            style={{ containerType: "inline-size" }}
                         >
                             <button
-                                className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2"
+                                className="flex h-full min-w-0 flex-1 cursor-pointer items-center justify-center gap-2 overflow-hidden px-6 [@container(max-width:9rem)]:px-2"
                                 aria-label={`Select ${file.path}`}
+                                data-tab-content-align="center"
+                                data-label-collapse="hide-on-narrow"
                                 onClick={() => model.selectFile(file.path)}
                                 title={file.path}
                             >
-                                <span className="truncate font-medium">{name}</span>
+                                <i className="fa-regular fa-file-code shrink-0 text-[12px] text-[#a1a1aa]" />
+                                <span
+                                    className="min-w-0 max-w-[15rem] truncate font-medium [@container(max-width:9rem)]:hidden"
+                                    data-name-display="full-priority"
+                                >
+                                    {name}
+                                </span>
                                 {suffix ? (
-                                    <span className="truncate text-[10px] text-[#71717a]">
+                                    <span
+                                        className="min-w-0 max-w-[8rem] flex-shrink-[999] truncate text-[11px] text-[#71717a] [@container(max-width:12rem)]:hidden"
+                                        data-suffix-priority="shrink-first"
+                                    >
                                         {stripLeadingSlash(suffix)}
                                     </span>
                                 ) : null}
-                                {dirty ? <span className="text-[#d4d4d8]">●</span> : null}
+                                {dirty ? <span className="shrink-0 text-[#d4d4d8]">●</span> : null}
                             </button>
                             <button
                                 type="button"
                                 aria-label={`Close ${file.path}`}
-                                data-close-visibility={active ? "always" : "hover"}
+                                data-close-visibility="hover"
                                 className={cn(
-                                    "mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:opacity-100",
-                                    active ? "opacity-100" : "opacity-0 group-hover/tab:opacity-100"
+                                    "pointer-events-none absolute right-1.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:pointer-events-auto focus:opacity-100",
+                                    "opacity-0 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100"
                                 )}
                                 title={file.path}
                                 onClick={() =>
