@@ -14,7 +14,7 @@ import { cn } from "@/util/util";
 import { memo } from "react";
 import { BlockGrid } from "../engine/block-grid";
 import { Grid } from "../engine/grid";
-import { Cell, CellStyle, stylesEqual } from "../engine/types";
+import { BlankCell, Cell, CellStyle, stylesEqual } from "../engine/types";
 import { CellRun } from "./cell-run";
 
 export interface GridElementProps {
@@ -144,7 +144,7 @@ function computeRuns(cells: readonly Cell[]): Run[] {
     let current: Run | null = null;
     let trailingBlankStart = -1;
     for (let i = 0; i < cells.length; i++) {
-        const cell = cells[i];
+        const cell = cells[i] ?? BlankCell;
         // Track where the trailing blanks would start.  If this cell is
         // non-blank, reset the tracker.
         if (cell.char === "" && !cell.extra?.secret) {

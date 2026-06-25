@@ -22,6 +22,7 @@
 import { AltScreen } from "./alt-screen";
 import { BlockGrid } from "./block-grid";
 import { HeaderGrid } from "./header-grid";
+import { terminalCaptureActive } from "./terminal-state";
 import {
     AgentBlockRef,
     BlockId,
@@ -30,7 +31,18 @@ import {
     ImagePlacement,
     PrecmdState,
     SessionId,
+    TermMode,
 } from "./types";
+
+export const LONG_RUNNING_COMMAND_DURATION_MS = 50;
+
+export type BlockInteractionMode =
+    | "idle"
+    | "input-editor"
+    | "terminal-capture"
+    | "long-running-command"
+    | "alt-screen"
+    | "cli-agent";
 
 export interface BlockInit {
     id: BlockId;
@@ -91,6 +103,7 @@ export class Block {
     readonly creationTs: number;
     startTs?: number;
     completedTs?: number;
+    wasLongRunning = false;
 
     agentSessionId?: string;
 
@@ -231,6 +244,29 @@ export class Block {
     }
 
     // ---------- queries ----------
+
+    isRunning(): boolean {
+        return this.state === "running";
+    }
+
+    isActiveAndLongRunning(now: number = Date.now()): boolean {
+        if (!this.isRunning()) return false;
+        if (this.wasLongRunning) return true;
+        if (this.startTs == null) return false;
+        if (now - this.startTs > LONG_RUNNING_COMMAND_DURATION_MS) {
+            this.wasLongRunning = true;
+            return true;
+        }
+        return false;
+    }
+
+    interactionMode(mode: TermMode, now: number = Date.now()): BlockInteractionMode {
+        if (this.altScreen.active) return "alt-screen";
+        if (!this.isRunning()) return "idle";
+        if (terminalCaptureActive(mode)) return "terminal-capture";
+        if (this.isActiveAndLongRunning(now)) return "long-running-command";
+        return "input-editor";
+    }
 
     // commandText — the user's typed input.  Tries the headerGrid scan
     // first (parsed from replayed OSC 133;B/C markers), falls back to the
