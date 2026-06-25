@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { spawn as nodeSpawn } from "node:child_process";
+import { spawn as nodeSpawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { getLanguageServerDefinition } from "./language-server-registry";
 
 type SpawnFn = typeof nodeSpawn;
 type CommandExistsFn = (path: string) => boolean;
+type CommandAvailableFn = (command: string, args: string[]) => boolean;
 
 type LanguageServerInput = {
     workspaceRoot: string;
     language: string;
+    serverId: string;
 };
 
 type LanguageServerCommand = {
@@ -20,17 +23,24 @@ type LanguageServerCommand = {
     env?: NodeJS.ProcessEnv;
 };
 
+type CachedLanguageServer = {
+    child: ChildProcessWithoutNullStreams;
+    refCount: number;
+};
+
 export class LanguageServerManager {
     private readonly spawn: SpawnFn;
     private readonly appRoot: string;
+    private readonly commandAvailable: CommandAvailableFn;
     private readonly commandExists: CommandExistsFn;
     private readonly nodeCommand: string;
     private readonly resourcesPath: string;
-    private readonly processes = new Map<string, ChildProcessWithoutNullStreams>();
+    private readonly processes = new Map<string, CachedLanguageServer>();
 
     constructor(
         deps: {
             appRoot?: string;
+            commandAvailable?: CommandAvailableFn;
             commandExists?: CommandExistsFn;
             nodeCommand?: string;
             resourcesPath?: string;
@@ -38,36 +48,58 @@ export class LanguageServerManager {
         } = {}
     ) {
         this.appRoot = deps.appRoot ?? process.cwd();
+        this.commandAvailable = deps.commandAvailable ?? defaultCommandAvailable;
         this.commandExists = deps.commandExists ?? existsSync;
         this.nodeCommand = deps.nodeCommand ?? process.execPath;
         this.resourcesPath = deps.resourcesPath ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? "";
         this.spawn = deps.spawn ?? nodeSpawn;
     }
 
-    resolveCommand(language: string): LanguageServerCommand | null {
-        if (
-            language === "typescript" ||
-            language === "typescriptreact" ||
-            language === "javascript" ||
-            language === "javascriptreact"
-        ) {
+    resolveCommand(input: LanguageServerInput): LanguageServerCommand {
+        const definition = getLanguageServerDefinition(input.serverId, input.language);
+        if (definition.serverId === "typescript-language-server") {
             return this.resolvePackagedCommand("typescript-language-server") ?? {
                 command: this.resolveAppBinCommand("typescript-language-server"),
                 args: ["--stdio"],
             };
         }
-        return null;
+        if (
+            definition.availabilityCheck &&
+            !this.commandAvailable(definition.availabilityCheck.command, definition.availabilityCheck.args)
+        ) {
+            throw new Error(`LSP unavailable: ${definition.availabilityCheck.unavailableMessage}`);
+        }
+        return {
+            command: definition.command,
+            args: definition.args,
+        };
     }
 
     getOrStart(input: LanguageServerInput): ChildProcessWithoutNullStreams {
-        const key = `${input.workspaceRoot}\u0000${input.language}`;
+        this.validateInput(input);
+        const key = this.cacheKey(input);
         const existing = this.processes.get(key);
-        if (existing) return existing;
-        const child = this.spawnProcess(input);
-        child.on("exit", () => this.processes.delete(key));
-        child.on("error", () => this.processes.delete(key));
-        this.processes.set(key, child);
-        return child;
+        if (existing) return existing.child;
+        return this.createCachedProcess(key, input).child;
+    }
+
+    acquire(input: LanguageServerInput): ChildProcessWithoutNullStreams {
+        this.validateInput(input);
+        const key = this.cacheKey(input);
+        const entry = this.processes.get(key) ?? this.createCachedProcess(key, input);
+        entry.refCount += 1;
+        return entry.child;
+    }
+
+    release(input: LanguageServerInput): void {
+        this.validateInput(input);
+        const key = this.cacheKey(input);
+        const entry = this.processes.get(key);
+        if (!entry || entry.refCount <= 0) return;
+        entry.refCount -= 1;
+        if (entry.refCount > 0) return;
+        entry.child.kill();
+        this.processes.delete(key);
     }
 
     startSession(input: LanguageServerInput): ChildProcessWithoutNullStreams {
@@ -75,16 +107,16 @@ export class LanguageServerManager {
     }
 
     stop(input: LanguageServerInput): void {
-        const key = `${input.workspaceRoot}\u0000${input.language}`;
-        const child = this.processes.get(key);
-        if (!child) return;
-        child.kill();
+        const key = this.cacheKey(input);
+        const entry = this.processes.get(key);
+        if (!entry) return;
+        entry.child.kill();
         this.processes.delete(key);
     }
 
     stopAll(): void {
-        for (const child of this.processes.values()) {
-            child.kill();
+        for (const entry of this.processes.values()) {
+            entry.child.kill();
         }
         this.processes.clear();
     }
@@ -101,15 +133,28 @@ export class LanguageServerManager {
     }
 
     private spawnProcess(input: LanguageServerInput): ChildProcessWithoutNullStreams {
-        const command = this.resolveCommand(input.language);
-        if (!command) {
-            throw new Error(`No language server configured for ${input.language}`);
-        }
+        const command = this.resolveCommand(input);
         return this.spawn(command.command, command.args, {
             cwd: input.workspaceRoot,
             env: command.env ? { ...process.env, ...command.env } : process.env,
             stdio: "pipe",
         });
+    }
+
+    private createCachedProcess(key: string, input: LanguageServerInput): CachedLanguageServer {
+        const child = this.spawnProcess(input);
+        const entry = { child, refCount: 0 };
+        child.on("exit", () => this.deleteCachedProcess(key, child));
+        child.on("error", () => this.deleteCachedProcess(key, child));
+        this.processes.set(key, entry);
+        return entry;
+    }
+
+    private deleteCachedProcess(key: string, child: ChildProcessWithoutNullStreams): void {
+        const entry = this.processes.get(key);
+        if (entry?.child === child) {
+            this.processes.delete(key);
+        }
     }
 
     private resolvePackagedCommand(command: string): LanguageServerCommand | null {
@@ -134,4 +179,17 @@ export class LanguageServerManager {
         ];
         return Array.from(new Set(candidates.filter((candidate) => candidate != null)));
     }
+
+    private cacheKey(input: LanguageServerInput): string {
+        return `${input.workspaceRoot}\u0000${input.serverId}`;
+    }
+
+    private validateInput(input: LanguageServerInput): void {
+        getLanguageServerDefinition(input.serverId, input.language);
+    }
+}
+
+function defaultCommandAvailable(command: string, args: string[]): boolean {
+    const result = spawnSync(command, args, { stdio: "ignore" });
+    return result.status === 0;
 }

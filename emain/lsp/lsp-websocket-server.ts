@@ -11,22 +11,26 @@ import { LanguageServerManager } from "./language-server-manager";
 export type ParsedLspRequest = {
     language: string;
     workspaceRoot: string;
+    serverId: string;
 };
 
 type LanguageServerManagerLike = {
-    startSession: (input: ParsedLspRequest) => ChildProcessWithoutNullStreams;
+    acquire: (input: ParsedLspRequest) => ChildProcessWithoutNullStreams;
+    release: (input: ParsedLspRequest) => void;
 };
 
-type SessionCleanup = (opts?: { killChild: boolean; closeWebSocket: boolean }) => void;
+type SessionCleanup = (opts?: { releaseServer: boolean; closeWebSocket: boolean }) => void;
 
 export function parseLspRequest(urlText: string): ParsedLspRequest {
     const url = new URL(urlText, "ws://127.0.0.1");
     if (url.pathname !== "/lsp") throw new Error("Invalid LSP endpoint");
     const language = url.searchParams.get("language");
     const workspaceRoot = url.searchParams.get("workspaceRoot");
+    const serverId = url.searchParams.get("serverId");
     if (!language) throw new Error("Missing language");
     if (!workspaceRoot) throw new Error("Missing workspaceRoot");
-    return { language, workspaceRoot };
+    if (!serverId) throw new Error("Missing serverId");
+    return { language, workspaceRoot, serverId };
 }
 
 function makeJsonRpcWebSocket(ws: WebSocket): IWebSocket {
@@ -49,6 +53,7 @@ export class LspWebSocketBridge {
     private url: string = null;
     private readonly clients = new Set<WebSocket>();
     private readonly sessionCleanups = new Set<SessionCleanup>();
+    private readonly activeSessions = new Set<string>();
 
     constructor(deps: { languageServerManager?: LanguageServerManagerLike } = {}) {
         this.languageServerManager = deps.languageServerManager ?? new LanguageServerManager();
@@ -97,12 +102,26 @@ export class LspWebSocketBridge {
         this.clients.add(ws);
         ws.on("close", () => this.clients.delete(ws));
         let child: ChildProcessWithoutNullStreams;
+        let input: ParsedLspRequest | null = null;
+        let sessionKey: string | null = null;
         try {
-            child = this.languageServerManager.startSession(parseLspRequest(urlText));
+            input = parseLspRequest(urlText);
+            sessionKey = makeSessionKey(input);
+            if (this.activeSessions.has(sessionKey)) {
+                throw new Error("LSP session already active for workspaceRoot and serverId");
+            }
+            this.activeSessions.add(sessionKey);
+            child = this.languageServerManager.acquire(input);
         } catch (e: any) {
+            if (sessionKey) {
+                this.activeSessions.delete(sessionKey);
+            }
             ws.close(1008, e?.message ?? String(e));
             return;
         }
+        if (!input || !sessionKey) return;
+        const acquiredInput = input;
+        const acquiredSessionKey = sessionKey;
         const jsonRpcWebSocket = makeJsonRpcWebSocket(ws);
         const wsReader = new WebSocketMessageReader(jsonRpcWebSocket);
         const wsWriter = new WebSocketMessageWriter(jsonRpcWebSocket);
@@ -118,10 +137,11 @@ export class LspWebSocketBridge {
                 ws.close();
             }
         };
-        const cleanup: SessionCleanup = (opts = { killChild: true, closeWebSocket: false }) => {
+        const cleanup: SessionCleanup = (opts = { releaseServer: true, closeWebSocket: false }) => {
             if (cleanedUp) return;
             cleanedUp = true;
             this.sessionCleanups.delete(cleanup);
+            this.activeSessions.delete(acquiredSessionKey);
             child.off("exit", onChildExit);
             child.off("error", onChildError);
             for (const disposable of disposables) {
@@ -131,18 +151,22 @@ export class LspWebSocketBridge {
             wsWriter.dispose();
             lspReader.dispose();
             lspWriter.dispose();
-            if (opts.killChild) {
-                child.kill();
+            if (opts.releaseServer) {
+                this.languageServerManager.release(acquiredInput);
             }
             if (opts.closeWebSocket) {
                 closeWebSocket();
             }
         };
-        const onChildExit = () => cleanup({ killChild: false, closeWebSocket: true });
-        const onChildError = () => cleanup({ killChild: false, closeWebSocket: true });
+        const onChildExit = () => cleanup({ releaseServer: true, closeWebSocket: true });
+        const onChildError = () => cleanup({ releaseServer: true, closeWebSocket: true });
         this.sessionCleanups.add(cleanup);
         child.once("exit", onChildExit);
         child.once("error", onChildError);
-        ws.on("close", () => cleanup({ killChild: true, closeWebSocket: false }));
+        ws.on("close", () => cleanup({ releaseServer: true, closeWebSocket: false }));
     }
+}
+
+function makeSessionKey(input: Pick<ParsedLspRequest, "workspaceRoot" | "serverId">): string {
+    return `${input.workspaceRoot}\u0000${input.serverId}`;
 }

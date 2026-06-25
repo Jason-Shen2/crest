@@ -17,10 +17,10 @@
 | Phase 0: Research | Done | Current Crest LSP chain and Warp LSP architecture reviewed. |
 | Phase 1: Design | Done | See `docs/superpowers/specs/2026-06-22-right-editor-multilanguage-lsp-design.md`. |
 | Phase 2: Plan | Done | This document is the implementation checklist and progress source. |
-| Phase 3: Registry Refactor | Not started | Add frontend and backend registries while preserving JS/TS behavior. |
-| Phase 4: Go Sample | Not started | Add `gopls` discovery, startup, and unavailable status. |
-| Phase 5: UI Status | Not started | Surface LSP states and install hints. |
-| Phase 6: Verification | Not started | Run unit, lifecycle, UI, and focused build checks. |
+| Phase 3: Registry Refactor | Done | Frontend and backend registry paths replace JS/TS hard-coding. |
+| Phase 4: Go Sample | Done | `gopls` PATH discovery and unavailable-status behavior are covered by automated tests; `gopls` was present in the verification shell. |
+| Phase 5: UI Status | Done | Right editor shows basic, starting, ready, unavailable, and error states. |
+| Phase 6: Verification | Done | Focused automated tests and `build:dev` passed; manual GUI Go available/unavailable validation was not performed. |
 
 ## File Structure
 
@@ -1432,7 +1432,7 @@ git commit -m "feat: show right editor lsp status"
 - Modify: `docs/superpowers/specs/2026-06-22-right-editor-multilanguage-lsp-design.md`
 - Modify: `docs/superpowers/plans/2026-06-22-right-editor-multilanguage-lsp.md`
 
-- [ ] **Step 1: Run all focused tests**
+- [x] **Step 1: Run all focused tests**
 
 Run:
 
@@ -1442,7 +1442,7 @@ npm test -- frontend/app/righteditor/lsp/language-server-registry.test.ts fronte
 
 Expected: PASS.
 
-- [ ] **Step 2: Run type/build verification**
+- [x] **Step 2: Run type/build verification**
 
 Run:
 
@@ -1452,7 +1452,7 @@ npm run build:dev
 
 Expected: PASS with no TypeScript or bundling errors in the changed frontend and Electron main files.
 
-- [ ] **Step 3: Manually validate Go unavailable status**
+- [ ] **Step 3: Manually validate Go unavailable status** — Not performed in this verification pass.
 
 Temporarily run the app in an environment where `gopls` is not on PATH, open a `.go` file in the right editor, and verify the status area shows:
 
@@ -1463,7 +1463,7 @@ Install gopls: go install golang.org/x/tools/gopls@latest
 
 Expected: the file remains editable and no duplicate `gopls` process is spawned.
 
-- [ ] **Step 4: Manually validate Go available path**
+- [ ] **Step 4: Manually validate Go available path** — Not performed in this verification pass; only `gopls` PATH availability was checked from the shell.
 
 Install `gopls` if needed:
 
@@ -1484,7 +1484,7 @@ Expected:
 - Diagnostics from `gopls` appear as Monaco markers.
 - Switching between `main.go` and `pkg/foo.go` does not create a second `gopls` process for the same workspace.
 
-- [ ] **Step 5: Update progress in design and plan docs**
+- [x] **Step 5: Update progress in design and plan docs**
 
 In `docs/superpowers/specs/2026-06-22-right-editor-multilanguage-lsp-design.md`, update the progress table to:
 
@@ -1495,9 +1495,9 @@ In `docs/superpowers/specs/2026-06-22-right-editor-multilanguage-lsp-design.md`,
 | Phase 1: Design | Done | Registry, workspace reuse, Go sample, and status UI decisions captured. |
 | Phase 2: Plan | Done | Implementation checklist created in `docs/superpowers/plans/2026-06-22-right-editor-multilanguage-lsp.md`. |
 | Phase 3: Registry Refactor | Done | Frontend and backend registry paths replace JS/TS hard-coding. |
-| Phase 4: Go Sample | Done | `gopls` is discovered from PATH and reports an actionable unavailable status. |
+| Phase 4: Go Sample | Done | `gopls` PATH discovery and unavailable-status behavior are covered by automated tests; `gopls` was present in the verification shell. |
 | Phase 5: UI Status | Done | Right editor shows basic, starting, ready, unavailable, and error states. |
-| Phase 6: Verification | Done | Focused tests, development build, and Go validation completed. |
+| Phase 6: Verification | Done | Focused automated tests and `build:dev` passed; manual GUI Go available/unavailable validation was not performed. |
 ```
 
 In this plan file, update the `Progress` table to the same completed statuses after verification passes.
@@ -1510,6 +1510,26 @@ Run:
 git add docs/superpowers/specs/2026-06-22-right-editor-multilanguage-lsp-design.md docs/superpowers/plans/2026-06-22-right-editor-multilanguage-lsp.md
 git commit -m "docs: mark right editor multilanguage lsp progress"
 ```
+
+### Verification Log
+
+- Focused tests command:
+  ```bash
+  PATH="/opt/homebrew/bin:/usr/local/bin:$PWD/node_modules/.bin:$PATH" npm test -- frontend/app/righteditor/lsp/language-server-registry.test.ts frontend/app/righteditor/lsp/language-client-manager.test.ts frontend/app/righteditor/lsp/lsp-transport.test.ts frontend/app/righteditor/right-editor-workbench.test.tsx emain/lsp/language-server-registry.test.ts emain/lsp/language-server-manager.test.ts emain/lsp/lsp-websocket-server.test.ts --run
+  ```
+- Focused tests result: exit code 0; 7 test files passed; 87 tests passed.
+- Development build command:
+  ```bash
+  PATH="/opt/homebrew/bin:/usr/local/bin:$PWD/node_modules/.bin:$PATH" npm run build:dev
+  ```
+- Development build result: exit code 0; main, preload, and frontend bundles built successfully.
+- `gopls` PATH check command:
+  ```bash
+  PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" command -v gopls && PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" gopls version || true
+  ```
+- `gopls` PATH check result: `/opt/homebrew/bin/gopls`; `golang.org/x/tools/gopls v0.22.0`.
+- Build warnings observed: Vite externalized `fs` and `path` from `electron/index.js` for browser compatibility; Browserslist data was 6 months old; circular chunks were reported for `mermaid -> cytoscape -> mermaid` and `mermaid -> monaco -> mermaid`; `monaco-model-registry.ts` was both dynamically and statically imported; `vite-plugin-image-optimizer` reported missing optional `sharp` while optimizing logo PNGs.
+- Manual GUI validation: not performed for Go available or unavailable status in a running app session.
 
 ## Self-Review
 
