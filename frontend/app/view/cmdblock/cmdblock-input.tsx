@@ -27,15 +27,16 @@
 
 import { Tooltip } from "@/app/element/tooltip";
 import { UIcon } from "@/app/element/ui-icon";
+import { ProviderEntry } from "@/app/store/ai-catalog";
+import { AgentSelection, AIUserConfig } from "@/app/store/ai-types";
+import { AIUserConfigStatus } from "@/app/store/ai-user-config";
+import { getApi } from "@/app/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { cn } from "@/util/util";
 import { CornerDownLeft } from "lucide-react";
 import { memo, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatPromptCwd } from "./cmdblock-status";
 import { ModelPickerInline, ModelPickerPopover } from "./model-picker-popover";
-import { ProviderEntry } from "@/app/store/ai-catalog";
-import { AgentSelection, AIUserConfig } from "@/app/store/ai-types";
-import { AIUserConfigStatus } from "@/app/store/ai-user-config";
 
 // "auto" maps to warp's InputToggleMode::AutoDetection
 // (universal_developer_input.rs:440).  Visual-only for crest until we
@@ -93,6 +94,7 @@ export interface CmdBlockInputProps {
     selection?: AgentSelection | null;
     onSelectionChange?: (next: AgentSelection) => void;
     onOpenAIConfigFile?: () => void;
+    openModelPickerRequest?: number;
     placeholder?: string;
     // Grid font size — only used by Editor.  Chrome (chips, buttons,
     // help row) uses fixed UI sizes for legibility.  Reference: warp's
@@ -116,6 +118,7 @@ export interface CmdBlockInputProps {
     // Fires on every editor keystroke with the latest buffer text.  The
     // NLD model (parent-owned) consumes this to drive autodetection.
     onTextChange?: (text: string) => void;
+    restoredTextRequest?: { text: string; requestId: number };
     // When `mode === "auto"`, this is the classifier's current verdict
     // and the value that will be used on submit.  Defaults to "terminal"
     // when omitted so the component degrades gracefully without NLD.
@@ -128,11 +131,11 @@ export interface CmdBlockInputProps {
 // (universal_developer_input.rs:924) which derives UI sizes from a base
 // of 10 px scaled by a UI-specific scalar.  We hard-code crest's values:
 // =========================================================================
-const UI_FONT_PX = 15;       // chrome text (chips, segmented labels)
-const UI_HELP_FONT_PX = 13;  // top help row hints (slightly smaller)
-const UI_BUTTON_PX = 30;     // chip/button height — comfortable click target
-const UI_ICON_PX = 17;       // icon size inside buttons
-const UI_GAP_PX = 6;         // gap between adjacent chrome elements
+const UI_FONT_PX = 15; // chrome text (chips, segmented labels)
+const UI_HELP_FONT_PX = 13; // top help row hints (slightly smaller)
+const UI_BUTTON_PX = 30; // chip/button height — comfortable click target
+const UI_ICON_PX = 17; // icon size inside buttons
+const UI_GAP_PX = 6; // gap between adjacent chrome elements
 const UI_CHIP_RADIUS_PX = 6; // chip corner radius (warp uses ~6 for chips)
 
 export function shouldFocusCmdBlockEditor(activeElement: Element | null, container: HTMLElement | null): boolean {
@@ -234,9 +237,7 @@ const AgentHintRow = memo(({ rightSlot, showShellShortcutHint }: AgentHintRowPro
             <UIcon name="stars-01" size={UI_HELP_FONT_PX} />
             <span>agent mode</span>
         </span>
-        {showShellShortcutHint && (
-            <ShortcutOverrideHint targetMode="terminal" />
-        )}
+        {showShellShortcutHint && <ShortcutOverrideHint targetMode="terminal" />}
         {rightSlot && <div className="ml-auto flex shrink-0 items-center">{rightSlot}</div>}
     </div>
 ));
@@ -365,10 +366,7 @@ interface WithTooltipProps {
 const WithTooltip = memo(({ label, keys, children }: WithTooltipProps) => {
     if (!label) return <>{children}</>;
     return (
-        <Tooltip
-            content={<TooltipBody label={label} keys={keys} />}
-            divClassName="inline-flex shrink-0"
-        >
+        <Tooltip content={<TooltipBody label={label} keys={keys} />} divClassName="inline-flex shrink-0">
             {children}
         </Tooltip>
     );
@@ -389,8 +387,7 @@ interface AutodetectHintRowProps {
 
 const AutodetectHintRow = memo(({ effectiveMode, rightSlot, showShortcutOverrideHint }: AutodetectHintRowProps) => {
     const label = effectiveMode === "terminal" ? "shell command" : "natural language";
-    const accent =
-        effectiveMode === "terminal" ? "text-[var(--ansi-blue)]" : "text-[var(--ansi-yellow)]";
+    const accent = effectiveMode === "terminal" ? "text-[var(--ansi-blue)]" : "text-[var(--ansi-yellow)]";
     const shortcutTarget = resolveShortcutOverrideMode(effectiveMode);
     return (
         <div
@@ -431,11 +428,7 @@ const ContextChip = memo(
         const interactive = onClick != null || onContextMenu != null;
         const inner = (
             <>
-                <UIcon
-                    name={icon}
-                    size={UI_ICON_PX - 1}
-                    className="shrink-0 opacity-70"
-                />
+                <UIcon name={icon} size={UI_ICON_PX - 1} className="shrink-0 opacity-70" />
                 {children}
             </>
         );
@@ -461,11 +454,7 @@ const ContextChip = memo(
                 {inner}
             </button>
         ) : (
-            <span
-                onContextMenu={onContextMenu}
-                className={sharedClass}
-                style={sharedStyle}
-            >
+            <span onContextMenu={onContextMenu} className={sharedClass} style={sharedStyle}>
                 {inner}
             </span>
         );
@@ -556,12 +545,8 @@ const GitDiffStatsChip = memo(({ added = 0, removed = 0 }: GitDiffStatsChipProps
     return (
         <ContextChip icon="file-code-02" title="Working tree changes (added / removed lines)">
             <span className="inline-flex items-center gap-1.5 font-mono">
-                {added > 0 && (
-                    <span className="text-[var(--ansi-green)]">+{added}</span>
-                )}
-                {removed > 0 && (
-                    <span className="text-[var(--ansi-red)]">-{removed}</span>
-                )}
+                {added > 0 && <span className="text-[var(--ansi-green)]">+{added}</span>}
+                {removed > 0 && <span className="text-[var(--ansi-red)]">-{removed}</span>}
             </span>
         </ContextChip>
     );
@@ -579,11 +564,7 @@ interface GithubPrChipProps {
 const GithubPrChip = memo(({ number, title, onClick }: GithubPrChipProps) => {
     if (!number) return null;
     return (
-        <ContextChip
-            icon="share-01"
-            title={title ? `PR #${number}: ${title}` : `PR #${number}`}
-            onClick={onClick}
-        >
+        <ContextChip icon="share-01" title={title ? `PR #${number}: ${title}` : `PR #${number}`} onClick={onClick}>
             <span className="font-mono">#{number}</span>
         </ContextChip>
     );
@@ -650,29 +631,23 @@ function formatTokens(n: number): string {
     return `${n}`;
 }
 
-const ContextWindowUsageChip = memo(
-    ({ usedTokens, maxTokens, onClick }: ContextWindowUsageChipProps) => {
-        if (!usedTokens || !maxTokens || maxTokens <= 0) return null;
-        const ratio = Math.min(1, usedTokens / maxTokens);
-        const accent =
-            ratio < 0.6
-                ? "text-secondary/85"
-                : ratio < 0.85
-                  ? "text-[var(--ansi-yellow)]"
-                  : "text-[var(--ansi-red)]";
-        return (
-            <ContextChip
-                icon="clock-loader"
-                title={`Context: ${usedTokens.toLocaleString()} / ${maxTokens.toLocaleString()} tokens (${Math.round(ratio * 100)}%)`}
-                onClick={onClick}
-            >
-                <span className={cn("font-mono", accent)}>
-                    {formatTokens(usedTokens)}/{formatTokens(maxTokens)}
-                </span>
-            </ContextChip>
-        );
-    }
-);
+const ContextWindowUsageChip = memo(({ usedTokens, maxTokens, onClick }: ContextWindowUsageChipProps) => {
+    if (!usedTokens || !maxTokens || maxTokens <= 0) return null;
+    const ratio = Math.min(1, usedTokens / maxTokens);
+    const accent =
+        ratio < 0.6 ? "text-secondary/85" : ratio < 0.85 ? "text-[var(--ansi-yellow)]" : "text-[var(--ansi-red)]";
+    return (
+        <ContextChip
+            icon="clock-loader"
+            title={`Context: ${usedTokens.toLocaleString()} / ${maxTokens.toLocaleString()} tokens (${Math.round(ratio * 100)}%)`}
+            onClick={onClick}
+        >
+            <span className={cn("font-mono", accent)}>
+                {formatTokens(usedTokens)}/{formatTokens(maxTokens)}
+            </span>
+        </ContextChip>
+    );
+});
 ContextWindowUsageChip.displayName = "ContextWindowUsageChip";
 
 // VoiceInputBtn — warp AgentToolbarItemKind::VoiceInput.  Stubbed: only
@@ -769,7 +744,6 @@ const IconButton = memo(({ icon, title, onClick, disabled, active }: IconButtonP
 ));
 IconButton.displayName = "IconButton";
 
-
 // =========================================================================
 // ModelChip — pill on the right showing current model.  Warp screenshot:
 // rounded border, icon + "Default | auto (genius)" + chevron.  Visual
@@ -833,158 +807,170 @@ interface EditorProps {
     onMenuAccept?: () => boolean;
 }
 
-const Editor = memo(({
-    value,
-    onChange,
-    onSubmit,
-    onSubmitOverride,
-    placeholder,
-    disabled,
-    fontSize,
-    focusRequest,
-    focusContainerRef,
-    onSlashCommandHint,
-    onAtCommandHint,
-    onHistoryPrev,
-    onHistoryNext,
-    onCancelMenus,
-    menuOpen,
-    onMenuNavigate,
-    onMenuAccept,
-}: EditorProps) => {
-    const ref = useRef<HTMLDivElement>(null);
+const Editor = memo(
+    ({
+        value,
+        onChange,
+        onSubmit,
+        onSubmitOverride,
+        placeholder,
+        disabled,
+        fontSize,
+        focusRequest,
+        focusContainerRef,
+        onSlashCommandHint,
+        onAtCommandHint,
+        onHistoryPrev,
+        onHistoryNext,
+        onCancelMenus,
+        menuOpen,
+        onMenuNavigate,
+        onMenuAccept,
+    }: EditorProps) => {
+        const ref = useRef<HTMLDivElement>(null);
 
-    useLayoutEffect(() => {
-        const el = ref.current;
-        if (!el) return;
-        if (el.textContent !== value) {
-            el.textContent = value;
-            // Place caret at end after programmatic value change so a
-            // history pick lets the user keep editing without re-positioning.
+        useLayoutEffect(() => {
+            const el = ref.current;
+            if (!el) return;
+            if (el.textContent !== value) {
+                el.textContent = value;
+                // Place caret at end after programmatic value change so a
+                // history pick lets the user keep editing without re-positioning.
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                range.collapse(false);
+                const sel = window.getSelection();
+                if (sel && document.activeElement === el) {
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }
+            }
+        }, [value]);
+
+        useEffect(() => {
+            const el = ref.current;
+            if (!el || disabled) return;
+            if (!shouldFocusCmdBlockEditor(document.activeElement, focusContainerRef.current)) return;
+            el.focus({ preventScroll: true });
             const range = document.createRange();
             range.selectNodeContents(el);
             range.collapse(false);
             const sel = window.getSelection();
-            if (sel && document.activeElement === el) {
-                sel.removeAllRanges();
-                sel.addRange(range);
-            }
-        }
-    }, [value]);
+            if (!sel) return;
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }, [focusRequest, disabled, focusContainerRef]);
 
-    useEffect(() => {
-        const el = ref.current;
-        if (!el || disabled) return;
-        if (!shouldFocusCmdBlockEditor(document.activeElement, focusContainerRef.current)) return;
-        el.focus({ preventScroll: true });
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        range.collapse(false);
-        const sel = window.getSelection();
-        if (!sel) return;
-        sel.removeAllRanges();
-        sel.addRange(range);
-    }, [focusRequest, disabled, focusContainerRef]);
+        const flush = useCallback(() => {
+            const el = ref.current;
+            if (!el) return;
+            const text = el.textContent ?? "";
+            onChange(text);
+            onSlashCommandHint?.(text.startsWith("/"));
+            // @-trigger: open when buffer contains an `@token` segment at the
+            // caret (simplified — warp parses positions, we just look at the
+            // last `@` token).  Toggled off when no `@` is present.
+            onAtCommandHint?.(/(^|\s)@\S*$/.test(text));
+        }, [onChange, onSlashCommandHint, onAtCommandHint]);
 
-    const flush = useCallback(() => {
-        const el = ref.current;
-        if (!el) return;
-        const text = el.textContent ?? "";
-        onChange(text);
-        onSlashCommandHint?.(text.startsWith("/"));
-        // @-trigger: open when buffer contains an `@token` segment at the
-        // caret (simplified — warp parses positions, we just look at the
-        // last `@` token).  Toggled off when no `@` is present.
-        onAtCommandHint?.(/(^|\s)@\S*$/.test(text));
-    }, [onChange, onSlashCommandHint, onAtCommandHint]);
-
-    const handleKeyDown = useCallback(
-        (e: React.KeyboardEvent<HTMLDivElement>) => {
-            if (disabled) return;
-            const enterAction = resolveEditorEnterAction(e);
-            if (enterAction === "submit-override") {
-                e.preventDefault();
-                onSubmitOverride();
-                return;
-            }
-            if (enterAction === "submit") {
-                // When a slash / @ menu is open, ↵ commits the highlighted
-                // row instead of submitting the editor buffer.
-                if (menuOpen && onMenuAccept?.()) {
+        const handleKeyDown = useCallback(
+            (e: React.KeyboardEvent<HTMLDivElement>) => {
+                if (disabled) return;
+                const enterAction = resolveEditorEnterAction(e);
+                if (enterAction === "submit-override") {
                     e.preventDefault();
+                    onSubmitOverride();
                     return;
                 }
-                e.preventDefault();
-                onSubmit();
-                return;
-            }
-            if (e.key === "Tab" && !e.shiftKey && !e.altKey) {
-                e.preventDefault();
-                document.execCommand("insertText", false, "\t");
-                return;
-            }
-            if (e.key === "Escape") {
-                onCancelMenus?.();
-                return;
-            }
-            // Inline-menu navigation wins over history when a menu is open
-            // — matches warp's inline_menu/view.rs key handling.
-            if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
-                if (menuOpen) {
-                    if (onMenuNavigate?.(e.key === "ArrowUp" ? -1 : 1)) {
+                if (enterAction === "submit") {
+                    // When a slash / @ menu is open, ↵ commits the highlighted
+                    // row instead of submitting the editor buffer.
+                    if (menuOpen && onMenuAccept?.()) {
+                        e.preventDefault();
+                        return;
+                    }
+                    e.preventDefault();
+                    onSubmit();
+                    return;
+                }
+                if (e.key === "Tab" && !e.shiftKey && !e.altKey) {
+                    e.preventDefault();
+                    document.execCommand("insertText", false, "\t");
+                    return;
+                }
+                if (e.key === "Escape") {
+                    onCancelMenus?.();
+                    return;
+                }
+                // Inline-menu navigation wins over history when a menu is open
+                // — matches warp's inline_menu/view.rs key handling.
+                if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
+                    if (menuOpen) {
+                        if (onMenuNavigate?.(e.key === "ArrowUp" ? -1 : 1)) {
+                            e.preventDefault();
+                            return;
+                        }
+                    }
+                }
+                // History navigation — only fires when the caret is on the
+                // first line (so multi-line edits use ↑/↓ normally).  Warp
+                // does the same in its inline_history wire-up.
+                if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
+                    const el = ref.current;
+                    if (!el) return;
+                    const sel = window.getSelection();
+                    const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+                    if (!range || !range.collapsed) return;
+                    const onFirstLine = isCaretOnFirstLine(el, range);
+                    const onLastLine = isCaretOnLastLine(el, range);
+                    if (e.key === "ArrowUp" && onFirstLine && onHistoryPrev?.()) {
+                        e.preventDefault();
+                        return;
+                    }
+                    if (e.key === "ArrowDown" && onLastLine && onHistoryNext?.()) {
                         e.preventDefault();
                         return;
                     }
                 }
-            }
-            // History navigation — only fires when the caret is on the
-            // first line (so multi-line edits use ↑/↓ normally).  Warp
-            // does the same in its inline_history wire-up.
-            if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey) {
-                const el = ref.current;
-                if (!el) return;
-                const sel = window.getSelection();
-                const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
-                if (!range || !range.collapsed) return;
-                const onFirstLine = isCaretOnFirstLine(el, range);
-                const onLastLine = isCaretOnLastLine(el, range);
-                if (e.key === "ArrowUp" && onFirstLine && onHistoryPrev?.()) {
-                    e.preventDefault();
-                    return;
-                }
-                if (e.key === "ArrowDown" && onLastLine && onHistoryNext?.()) {
-                    e.preventDefault();
-                    return;
-                }
-            }
-        },
-        [disabled, onSubmit, onSubmitOverride, onCancelMenus, onHistoryPrev, onHistoryNext, menuOpen, onMenuNavigate, onMenuAccept]
-    );
+            },
+            [
+                disabled,
+                onSubmit,
+                onSubmitOverride,
+                onCancelMenus,
+                onHistoryPrev,
+                onHistoryNext,
+                menuOpen,
+                onMenuNavigate,
+                onMenuAccept,
+            ]
+        );
 
-    const lineHeight = Math.round(fontSize * 1.4);
-    // Min editor height from warp agent.rs:59 CLOUD_MODE_V2_INPUT_MIN_EDITOR_HEIGHT = 80.
-    return (
-        <div
-            ref={ref}
-            contentEditable={!disabled}
-            suppressContentEditableWarning
-            role="textbox"
-            aria-multiline="true"
-            aria-disabled={disabled}
-            spellCheck={false}
-            data-placeholder={placeholder ?? ""}
-            onInput={flush}
-            onKeyDown={handleKeyDown}
-            style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`, minHeight: "80px" }}
-            className={cn(
-                "max-h-[50vh] w-full overflow-y-auto whitespace-pre-wrap break-words",
-                "bg-transparent font-mono text-foreground outline-none",
-                "empty:before:pointer-events-none empty:before:text-secondary/55 empty:before:content-[attr(data-placeholder)]",
-                disabled && "opacity-60"
-            )}
-        />
-    );
-});
+        const lineHeight = Math.round(fontSize * 1.4);
+        // Min editor height from warp agent.rs:59 CLOUD_MODE_V2_INPUT_MIN_EDITOR_HEIGHT = 80.
+        return (
+            <div
+                ref={ref}
+                contentEditable={!disabled}
+                suppressContentEditableWarning
+                role="textbox"
+                aria-multiline="true"
+                aria-disabled={disabled}
+                spellCheck={false}
+                data-placeholder={placeholder ?? ""}
+                onInput={flush}
+                onKeyDown={handleKeyDown}
+                style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`, minHeight: "80px" }}
+                className={cn(
+                    "max-h-[50vh] w-full overflow-y-auto whitespace-pre-wrap break-words",
+                    "bg-transparent font-mono text-foreground outline-none",
+                    "empty:before:pointer-events-none empty:before:text-secondary/55 empty:before:content-[attr(data-placeholder)]",
+                    disabled && "opacity-60"
+                )}
+            />
+        );
+    }
+);
 Editor.displayName = "Editor";
 
 // Caret-position helpers for ↑/↓ history navigation.  Without a real
@@ -1018,21 +1004,20 @@ function caretRectOf(host: HTMLElement, range: Range): DOMRect {
 
 // =========================================================================
 // SlashCommandMenu — inline menu when buffer starts with '/'.  Warp
-// reference: app/src/terminal/input/slash_commands/.  We hardcode a small
-// crest-specific list until a registry is wired through the model.
+// reference: app/src/terminal/input/slash_commands/.
 // =========================================================================
 interface InlineCommand {
     name: string;
     description: string;
     icon: string;
+    action?: "openModelPicker";
     // Optional alternate keystroke chips shown in the trailing slot
     // when this row is selected.
     altKeys?: string[];
 }
 
-const SlashCommands: InlineCommand[] = [
+const LocalSlashCommands: InlineCommand[] = [
     { name: "/agent", icon: "stars-01", description: "Send input to the agent" },
-    { name: "/model", icon: "stars-01", description: "Pick the AI model" },
     { name: "/terminal", icon: "terminal", description: "Switch input to shell mode" },
     { name: "/auto", icon: "lightning-02", description: "Auto-detect shell vs natural language" },
     { name: "/clear", icon: "x-close", description: "Clear the current terminal output" },
@@ -1042,6 +1027,44 @@ const SlashCommands: InlineCommand[] = [
     { name: "/settings", icon: "settings", description: "Open settings" },
     { name: "/reload", icon: "refresh", description: "Reload the terminal pane" },
 ];
+
+const FallbackAgentSlashCommands: InlineCommand[] = [
+    { name: "/tree", icon: "git-branch-01", description: "Navigate the current agent session tree" },
+    { name: "/fork", icon: "git-branch-01", description: "Fork a new agent session from a previous user message" },
+    { name: "/clone", icon: "copy-01", description: "Clone the current agent session branch" },
+    { name: "/compact", icon: "stars-01", description: "Compact the current agent session context [instructions]" },
+    { name: "/model", icon: "stars-01", description: "Open the model picker", action: "openModelPicker" },
+    { name: "/help", icon: "book-open", description: "Show available agent commands" },
+];
+
+const SlashCommands: InlineCommand[] = mergeSlashCommands(FallbackAgentSlashCommands, LocalSlashCommands);
+
+export function makeSlashCommandsFromAgentRegistry(commands: AgentCommandInfo[]): InlineCommand[] {
+    return commands.map((command) => {
+        const inlineCommand: InlineCommand = {
+            name: `/${command.name}`,
+            description: command.argumentHint ? `${command.description} ${command.argumentHint}` : command.description,
+            icon: iconForAgentCommand(command),
+        };
+        if (command.action.type === "frontend") {
+            inlineCommand.action = command.action.action;
+        }
+        return inlineCommand;
+    });
+}
+
+function mergeSlashCommands(agentCommands: InlineCommand[], localCommands: InlineCommand[]): InlineCommand[] {
+    const names = new Set(agentCommands.map((command) => command.name));
+    return [...agentCommands, ...localCommands.filter((command) => !names.has(command.name))];
+}
+
+function iconForAgentCommand(command: AgentCommandInfo): string {
+    if (command.action.type === "frontend") return "stars-01";
+    if (command.action.command === "tree" || command.action.command === "fork") return "git-branch-01";
+    if (command.action.command === "clone") return "copy-01";
+    if (command.action.command === "help") return "book-open";
+    return "stars-01";
+}
 
 // =========================================================================
 // AtMenu — inline @ context menu.  Warp reference: input/inline_menu/.
@@ -1083,7 +1106,7 @@ const INLINE_MENU_ROW_PX = 28;
 const INLINE_MENU_ICON_PX = 14;
 
 interface InlineMenuProps {
-    label: string;          // header label ("commands" → "/COMMANDS")
+    label: string; // header label ("commands" → "/COMMANDS")
     items: InlineCommand[]; // already filtered by caller
     selectedIdx: number;
     onPick: (name: string) => void;
@@ -1236,6 +1259,7 @@ export const CmdBlockInput = memo(
         selection,
         onSelectionChange,
         onOpenAIConfigFile,
+        openModelPickerRequest,
         placeholder,
         fontSize = 16,
         focusRequest: externalFocusRequest = 0,
@@ -1247,6 +1271,7 @@ export const CmdBlockInput = memo(
         topRightSlot,
         history: externalHistory,
         onTextChange,
+        restoredTextRequest,
         effectiveMode,
     }: CmdBlockInputProps) => {
         const [text, setText] = useState("");
@@ -1268,45 +1293,53 @@ export const CmdBlockInput = memo(
         // autodetect banner because `!` is a stronger signal than the
         // classifier verdict.
         const showShellPrefixHint = hasShellPrefix;
-        const showAutodetectHint =
-            !showShellPrefixHint && mode === "auto" && text.trim().length > 0;
+        const showAutodetectHint = !showShellPrefixHint && mode === "auto" && text.trim().length > 0;
         // Plain agent banner: default mode, user is typing, no `!` prefix
         // and not in auto-detect.  Tells the user ↵ will route to the
         // agent.  Suppressed in terminal-locked mode (then HelpRow stays).
-        const showAgentHint =
-            !showShellPrefixHint &&
-            !showAutodetectHint &&
-            mode === "agent" &&
-            text.trim().length > 0;
+        const showAgentHint = !showShellPrefixHint && !showAutodetectHint && mode === "agent" && text.trim().length > 0;
         const [focused, setFocused] = useState(false);
         const [slashOpen, setSlashOpen] = useState(false);
         const [atOpen, setAtOpen] = useState(false);
         const [modelPickerOpen, setModelPickerOpen] = useState(false);
-        const showAgentShellShortcutHint = shouldShowAgentShellShortcutHint(
-            mode,
-            text
-        );
+        const showAgentShellShortcutHint = shouldShowAgentShellShortcutHint(mode, text);
         const modelChipRef = useRef<HTMLButtonElement>(null);
         const chipLabel = modelDisplayLabel || "Pick model";
         // hasModelPicker — true whenever the parent wires a write path.
         // The popover handles empty / error states internally via the
         // userConfigStatus prop, so the chip can always open it.
         const hasModelPicker = !!onSelectionChange;
+        const [slashCommands, setSlashCommands] = useState<InlineCommand[]>(SlashCommands);
+
+        useEffect(() => {
+            if (!openModelPickerRequest || !hasModelPicker) return;
+            setModelPickerOpen(true);
+        }, [openModelPickerRequest, hasModelPicker]);
+        useEffect(() => {
+            const listCommands = getApi()?.agent?.listCommands;
+            if (!listCommands) return;
+            let cancelled = false;
+            void listCommands()
+                .then((commands) => {
+                    if (cancelled) return;
+                    setSlashCommands(
+                        mergeSlashCommands(makeSlashCommandsFromAgentRegistry(commands), LocalSlashCommands)
+                    );
+                })
+                .catch(() => undefined);
+            return () => {
+                cancelled = true;
+            };
+        }, []);
         const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
         const [atSelectedIdx, setAtSelectedIdx] = useState(0);
         const [dragOver, setDragOver] = useState(false);
-        const atQuery = (/(^|\s)(@\S*)$/.exec(text)?.[2] ?? "@");
+        const atQuery = /(^|\s)(@\S*)$/.exec(text)?.[2] ?? "@";
         // Filter both menus in parent so we can index the result list for
         // keyboard navigation (↑/↓ → setSelectedIdx).  Memoising keeps the
         // arrays reference-stable across keystrokes that don't change them.
-        const slashFiltered = useMemo(
-            () => filterCommands(text, SlashCommands),
-            [text]
-        );
-        const atFiltered = useMemo(
-            () => filterCommands(atQuery, AtCommands),
-            [atQuery]
-        );
+        const slashFiltered = useMemo(() => filterCommands(text, slashCommands), [text, slashCommands]);
+        const atFiltered = useMemo(() => filterCommands(atQuery, AtCommands), [atQuery]);
         // Clamp selected index whenever the filtered list shrinks past it
         // (e.g. the user typed more characters and the matches narrowed).
         useEffect(() => {
@@ -1327,6 +1360,13 @@ export const CmdBlockInput = memo(
         const fileInputRef = useRef<HTMLInputElement>(null);
         const [focusRequest, setFocusRequest] = useState(0);
         const requestEditorFocus = useCallback(() => setFocusRequest((prev) => prev + 1), []);
+
+        useEffect(() => {
+            if (!restoredTextRequest) return;
+            setText(restoredTextRequest.text);
+            onTextChange?.(restoredTextRequest.text);
+            requestEditorFocus();
+        }, [restoredTextRequest?.requestId, restoredTextRequest, onTextChange, requestEditorFocus]);
 
         useEffect(() => {
             const el = containerRef.current;
@@ -1479,7 +1519,8 @@ export const CmdBlockInput = memo(
         // (onMenuAccept via Enter).
         const pickSlashCommand = useCallback(
             (cmd: string) => {
-                if (cmd === "/model" && hasModelPicker) {
+                const command = slashCommands.find((item) => item.name === cmd);
+                if (command?.action === "openModelPicker" && hasModelPicker) {
                     setText("");
                     setSlashOpen(false);
                     setModelPickerOpen(true);
@@ -1488,7 +1529,7 @@ export const CmdBlockInput = memo(
                 replaceLastToken(cmd, "/");
                 setSlashOpen(false);
             },
-            [hasModelPicker, replaceLastToken]
+            [hasModelPicker, replaceLastToken, slashCommands]
         );
 
         // Editor-side menu callbacks: ↑/↓ moves selection within the
@@ -1498,16 +1539,12 @@ export const CmdBlockInput = memo(
             (delta: -1 | 1): boolean => {
                 if (slashOpen) {
                     if (slashFiltered.length === 0) return false;
-                    setSlashSelectedIdx((prev) =>
-                        (prev + delta + slashFiltered.length) % slashFiltered.length
-                    );
+                    setSlashSelectedIdx((prev) => (prev + delta + slashFiltered.length) % slashFiltered.length);
                     return true;
                 }
                 if (atOpen) {
                     if (atFiltered.length === 0) return false;
-                    setAtSelectedIdx((prev) =>
-                        (prev + delta + atFiltered.length) % atFiltered.length
-                    );
+                    setAtSelectedIdx((prev) => (prev + delta + atFiltered.length) % atFiltered.length);
                     return true;
                 }
                 return false;
@@ -1531,7 +1568,16 @@ export const CmdBlockInput = memo(
                 return true;
             }
             return false;
-        }, [slashOpen, atOpen, slashFiltered, atFiltered, slashSelectedIdx, atSelectedIdx, replaceLastToken, pickSlashCommand]);
+        }, [
+            slashOpen,
+            atOpen,
+            slashFiltered,
+            atFiltered,
+            slashSelectedIdx,
+            atSelectedIdx,
+            replaceLastToken,
+            pickSlashCommand,
+        ]);
 
         const placeholderText =
             placeholder ??
@@ -1541,26 +1587,32 @@ export const CmdBlockInput = memo(
                   ? "Type a command or question (use `!` for explicit shell)…"
                   : "Ask the agent (use `!` for shell commands)…");
 
-        const handleDragOver = useCallback((e: React.DragEvent) => {
-            if (!onFilesDropped) return;
-            if (e.dataTransfer.types.includes("Files")) {
-                e.preventDefault();
-                setDragOver(true);
-            }
-        }, [onFilesDropped]);
+        const handleDragOver = useCallback(
+            (e: React.DragEvent) => {
+                if (!onFilesDropped) return;
+                if (e.dataTransfer.types.includes("Files")) {
+                    e.preventDefault();
+                    setDragOver(true);
+                }
+            },
+            [onFilesDropped]
+        );
 
         const handleDragLeave = useCallback((e: React.DragEvent) => {
             if (e.currentTarget === e.target) setDragOver(false);
         }, []);
 
-        const handleDrop = useCallback((e: React.DragEvent) => {
-            if (!onFilesDropped) return;
-            setDragOver(false);
-            const files = Array.from(e.dataTransfer.files ?? []);
-            if (files.length === 0) return;
-            e.preventDefault();
-            onFilesDropped(files);
-        }, [onFilesDropped]);
+        const handleDrop = useCallback(
+            (e: React.DragEvent) => {
+                if (!onFilesDropped) return;
+                setDragOver(false);
+                const files = Array.from(e.dataTransfer.files ?? []);
+                if (files.length === 0) return;
+                e.preventDefault();
+                onFilesDropped(files);
+            },
+            [onFilesDropped]
+        );
 
         return (
             <div ref={containerRef} className="shrink-0">
@@ -1619,179 +1671,171 @@ export const CmdBlockInput = memo(
                         // rounded corners; sectioning is done with border-b
                         // dividers between rows.
                         "border-t transition-colors",
-                        focused
-                            ? "bg-fg-overlay-1 border-fg-overlay-3"
-                            : "bg-transparent border-fg-overlay-2",
+                        focused ? "bg-fg-overlay-1 border-fg-overlay-3" : "bg-transparent border-fg-overlay-2",
                         dragOver && "border-[var(--color-term-accent)] bg-[var(--color-term-accent-10)]",
                         disabled && "opacity-60"
                     )}
                 >
-                {/* 1. Optional banner (vim status / errors / hints).
+                    {/* 1. Optional banner (vim status / errors / hints).
                     Visual reference: warp universal.rs:64-72. */}
-                {banner && <div className="px-4 pt-4">{banner}</div>}
+                    {banner && <div className="px-4 pt-4">{banner}</div>}
 
-                {/* 2. Top help row — kbd hints flushed left, optional
+                    {/* 2. Top help row — kbd hints flushed left, optional
                     slot on the right.  Inner padding 16px horizontal,
                     matches warp agent.rs:49 CLOUD_MODE_V2_INPUT_HORIZONTAL_PADDING.
                     When in auto mode with non-empty input, replace the
                     kbd hints with the NLD autodetect banner so the user
                     can see which mode would run on Enter. */}
-                {!hideHelpRow && (
-                    <div
-                        className={cn(
-                            "px-4 pt-3 pb-2 border-b border-fg-overlay-1/50 transition-colors",
-                            (showAutodetectHint || showShellPrefixHint || showAgentHint) &&
-                                "bg-fg-overlay-1/30"
-                        )}
-                    >
-                        {showShellPrefixHint ? (
-                            <ShellPrefixHintRow rightSlot={topRightSlot} />
-                        ) : showAutodetectHint ? (
-                            <AutodetectHintRow
-                                effectiveMode={effectiveMode ?? "agent"}
-                                rightSlot={topRightSlot}
-                                showShortcutOverrideHint
-                            />
-                        ) : showAgentHint ? (
-                            <AgentHintRow
-                                rightSlot={topRightSlot}
-                                showShellShortcutHint={showAgentShellShortcutHint}
-                            />
-                        ) : (
-                            <HelpRow rightSlot={topRightSlot} />
-                        )}
+                    {!hideHelpRow && (
+                        <div
+                            className={cn(
+                                "px-4 pt-3 pb-2 border-b border-fg-overlay-1/50 transition-colors",
+                                (showAutodetectHint || showShellPrefixHint || showAgentHint) && "bg-fg-overlay-1/30"
+                            )}
+                        >
+                            {showShellPrefixHint ? (
+                                <ShellPrefixHintRow rightSlot={topRightSlot} />
+                            ) : showAutodetectHint ? (
+                                <AutodetectHintRow
+                                    effectiveMode={effectiveMode ?? "agent"}
+                                    rightSlot={topRightSlot}
+                                    showShortcutOverrideHint
+                                />
+                            ) : showAgentHint ? (
+                                <AgentHintRow
+                                    rightSlot={topRightSlot}
+                                    showShellShortcutHint={showAgentShellShortcutHint}
+                                />
+                            ) : (
+                                <HelpRow rightSlot={topRightSlot} />
+                            )}
+                        </div>
+                    )}
+
+                    {/* 3. Editor. */}
+                    <div className="px-4 pt-3 pb-2">
+                        <Editor
+                            value={text}
+                            onChange={handleTextChange}
+                            onSubmit={submit}
+                            onSubmitOverride={submitOverride}
+                            placeholder={placeholderText}
+                            disabled={disabled || submitting}
+                            fontSize={fontSize}
+                            focusRequest={focusRequest}
+                            focusContainerRef={containerRef}
+                            onSlashCommandHint={setSlashOpen}
+                            onAtCommandHint={setAtOpen}
+                            onHistoryPrev={historyPrev}
+                            onHistoryNext={historyNext}
+                            onCancelMenus={cancelMenus}
+                            menuOpen={menuOpen}
+                            onMenuNavigate={onMenuNavigate}
+                            onMenuAccept={onMenuAccept}
+                        />
                     </div>
-                )}
 
-                {/* 3. Editor. */}
-                <div className="px-4 pt-3 pb-2">
-                    <Editor
-                        value={text}
-                        onChange={handleTextChange}
-                        onSubmit={submit}
-                        onSubmitOverride={submitOverride}
-                        placeholder={placeholderText}
-                        disabled={disabled || submitting}
-                        fontSize={fontSize}
-                        focusRequest={focusRequest}
-                        focusContainerRef={containerRef}
-                        onSlashCommandHint={setSlashOpen}
-                        onAtCommandHint={setAtOpen}
-                        onHistoryPrev={historyPrev}
-                        onHistoryNext={historyNext}
-                        onCancelMenus={cancelMenus}
-                        menuOpen={menuOpen}
-                        onMenuNavigate={onMenuNavigate}
-                        onMenuAccept={onMenuAccept}
-                    />
-                </div>
-
-                {/* 4. Bottom footer — chip row.  Visual + ordering reference:
+                    {/* 4. Bottom footer — chip row.  Visual + ordering reference:
                     warp agent_input_footer/toolbar_item.rs:182-214
                     (`default_left()` / `default_right()`).  Left = context
                     chips (SSH, cwd, branch, diff, PR) + NLD toggle.
                     Right = agent-plan / context-window / model selector /
                     fast-forward / voice / file-attach.  Bottom & horizontal
                     padding match warp agent.rs:49,55 (16 px). */}
-                <div
-                    className="flex flex-wrap items-center px-4 pb-4 pt-2"
-                    style={{ gap: `${UI_GAP_PX}px` }}
-                >
-                    <SshChip user={sshUser} host={sshHost} />
-                    <CwdChip
-                        cwd={cwd}
-                        home={home}
-                        venv={venv}
-                        nodeVersion={nodeVersion}
-                        onContextMenu={onPromptContextMenu}
-                    />
-                    <GitBranchChip branch={branch} />
-                    <GitDiffStatsChip added={gitAdded} removed={gitRemoved} />
-                    <GithubPrChip number={prNumber} title={prTitle} onClick={onPrClick} />
-                    <KubernetesContextChip context={kubernetesContext} />
-                    <AutoToggle
-                        on={mode === "auto"}
-                        onToggle={() =>
-                            onModeChange(mode === "auto" ? "agent" : "auto", text)
-                        }
-                    />
+                    <div className="flex flex-wrap items-center px-4 pb-4 pt-2" style={{ gap: `${UI_GAP_PX}px` }}>
+                        <SshChip user={sshUser} host={sshHost} />
+                        <CwdChip
+                            cwd={cwd}
+                            home={home}
+                            venv={venv}
+                            nodeVersion={nodeVersion}
+                            onContextMenu={onPromptContextMenu}
+                        />
+                        <GitBranchChip branch={branch} />
+                        <GitDiffStatsChip added={gitAdded} removed={gitRemoved} />
+                        <GithubPrChip number={prNumber} title={prTitle} onClick={onPrClick} />
+                        <KubernetesContextChip context={kubernetesContext} />
+                        <AutoToggle
+                            on={mode === "auto"}
+                            onToggle={() => onModeChange(mode === "auto" ? "agent" : "auto", text)}
+                        />
 
-                    <div className="ml-auto flex shrink-0 items-center" style={{ gap: `${UI_GAP_PX}px` }}>
-                        <AgentPlanChip
-                            completed={agentPlanCompleted}
-                            total={agentPlanTotal}
-                            onClick={onAgentPlanClick}
-                        />
-                        <ContextWindowUsageChip
-                            usedTokens={usedTokens}
-                            maxTokens={maxTokens}
-                            onClick={onContextWindowClick}
-                        />
-                        {promptAlert && (
-                            <div
-                                className="flex shrink-0 items-center font-sans text-[var(--color-term-warning)]"
-                                style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
-                            >
-                                {promptAlert}
-                            </div>
-                        )}
-                        <ModelChip
-                            label={chipLabel}
-                            buttonRef={modelChipRef}
-                            expanded={hasModelPicker && modelPickerOpen}
-                            onClick={() => {
-                                if (!hasModelPicker) return;
-                                setModelPickerOpen((v) => !v);
-                            }}
-                        />
-                        {/* Floating popover variant — superseded by the
+                        <div className="ml-auto flex shrink-0 items-center" style={{ gap: `${UI_GAP_PX}px` }}>
+                            <AgentPlanChip
+                                completed={agentPlanCompleted}
+                                total={agentPlanTotal}
+                                onClick={onAgentPlanClick}
+                            />
+                            <ContextWindowUsageChip
+                                usedTokens={usedTokens}
+                                maxTokens={maxTokens}
+                                onClick={onContextWindowClick}
+                            />
+                            {promptAlert && (
+                                <div
+                                    className="flex shrink-0 items-center font-sans text-[var(--color-term-warning)]"
+                                    style={{ fontSize: `${UI_HELP_FONT_PX}px` }}
+                                >
+                                    {promptAlert}
+                                </div>
+                            )}
+                            <ModelChip
+                                label={chipLabel}
+                                buttonRef={modelChipRef}
+                                expanded={hasModelPicker && modelPickerOpen}
+                                onClick={() => {
+                                    if (!hasModelPicker) return;
+                                    setModelPickerOpen((v) => !v);
+                                }}
+                            />
+                            {/* Floating popover variant — superseded by the
                             inline ModelPickerInline above the input card.
                             Left in place (and importable) so we can flip
                             back during evaluation; void reference keeps
                             the named export reachable for bundlers / IDEs. */}
-                        {false && hasModelPicker && (
-                            <ModelPickerPopover
-                                anchorRef={modelChipRef}
-                                open={modelPickerOpen}
-                                onOpenChange={setModelPickerOpen}
-                                selection={selection ?? null}
-                                onSelectionChange={(next) => onSelectionChange!(next)}
-                                userConfig={userConfig ?? null}
-                                userConfigStatus={userConfigStatus ?? "loading"}
-                                userConfigError={userConfigError}
-                                catalog={catalog}
-                                onOpenConfigFile={onOpenAIConfigFile}
+                            {false && hasModelPicker && (
+                                <ModelPickerPopover
+                                    anchorRef={modelChipRef}
+                                    open={modelPickerOpen}
+                                    onOpenChange={setModelPickerOpen}
+                                    selection={selection ?? null}
+                                    onSelectionChange={(next) => onSelectionChange!(next)}
+                                    userConfig={userConfig ?? null}
+                                    userConfigStatus={userConfigStatus ?? "loading"}
+                                    userConfigError={userConfigError}
+                                    catalog={catalog}
+                                    onOpenConfigFile={onOpenAIConfigFile}
+                                />
+                            )}
+                            <VoiceInputBtn onVoiceInput={onVoiceInput} recording={voiceRecording} />
+                            <IconButton
+                                icon="plus"
+                                title="Attach file"
+                                onClick={() => fileInputRef.current?.click()}
+                                disabled={!onFilesDropped}
                             />
-                        )}
-                        <VoiceInputBtn onVoiceInput={onVoiceInput} recording={voiceRecording} />
-                        <IconButton
-                            icon="plus"
-                            title="Attach file"
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={!onFilesDropped}
-                        />
-                        <input
-                            ref={fileInputRef}
-                            type="file"
-                            multiple
-                            hidden
-                            onChange={(e) => {
-                                const files = Array.from(e.target.files ?? []);
-                                if (files.length === 0) return;
-                                onFilesDropped?.(files);
-                                // Reset so the same file can be picked again.
-                                e.target.value = "";
-                            }}
-                        />
-                        {submitting && (
-                            <UIcon
-                                name="clock-loader"
-                                size={UI_ICON_PX}
-                                className="animate-spin text-secondary/70"
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                multiple
+                                hidden
+                                onChange={(e) => {
+                                    const files = Array.from(e.target.files ?? []);
+                                    if (files.length === 0) return;
+                                    onFilesDropped?.(files);
+                                    // Reset so the same file can be picked again.
+                                    e.target.value = "";
+                                }}
                             />
-                        )}
+                            {submitting && (
+                                <UIcon
+                                    name="clock-loader"
+                                    size={UI_ICON_PX}
+                                    className="animate-spin text-secondary/70"
+                                />
+                            )}
+                        </div>
                     </div>
-                </div>
                 </div>
             </div>
         );

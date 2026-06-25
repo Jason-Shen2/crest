@@ -55,6 +55,7 @@ export interface BuildPaneHarnessOptions {
 export interface PaneHarness {
     /** The underlying pi AgentHarness. Use directly for subscribe/prompt/abort. */
     readonly harness: AgentHarness;
+    readonly session: Session;
     appendCustomEntry(customType: string, data?: unknown): Promise<void>;
     promptWithCustomEntry(customType: string, data: unknown, text: string): Promise<unknown>;
     /**
@@ -93,6 +94,7 @@ export function buildPaneHarness(opts: BuildPaneHarnessOptions): PaneHarness {
     }
     return {
         harness,
+        session: opts.session,
         appendCustomEntry: (customType: string, data?: unknown) => harness.appendCustomEntry(customType, data),
         promptWithCustomEntry: (customType: string, data: unknown, text: string) =>
             harness.promptWithCustomEntry(customType, data, text),

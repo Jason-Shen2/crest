@@ -23,7 +23,13 @@ import { ContextChipModel } from "../contextchip/chip-model";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
 import { AgentActivityBar } from "./agent-activity-bar";
-import { AgentChatHost, type AgentChatHostApi, type AgentHostState } from "./agent-chat-host";
+import {
+    AgentChatHost,
+    type AgentChatHostApi,
+    type AgentHostState,
+    type AgentSelectorRequest,
+} from "./agent-chat-host";
+import { AgentSelectorPopover } from "./agent-selector-popover";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
@@ -365,6 +371,20 @@ export const TerminalView = memo(
         const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
             agentApiRef.current = api;
         }, []);
+        const [modelPickerRequest, setModelPickerRequest] = useState(0);
+        const onOpenAgentModelPicker = useCallback(() => {
+            setModelPickerRequest((value) => value + 1);
+        }, []);
+        const [agentSelectorRequest, setAgentSelectorRequest] = useState<AgentSelectorRequest | null>(null);
+        const onAgentSelectorRequest = useCallback((request: AgentSelectorRequest) => {
+            setAgentSelectorRequest(request);
+        }, []);
+        const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
+            { text: string; requestId: number } | undefined
+        >(undefined);
+        const onAgentEditorText = useCallback((text: string) => {
+            setAgentRestoredTextRequest((prev) => ({ text, requestId: (prev?.requestId ?? 0) + 1 }));
+        }, []);
         // Reactive agent state (status + pending queue) for the activity bar above
         // the input. The host's onReady api is imperative; this is the live view.
         const [agentState, setAgentState] = useState<AgentHostState>({
@@ -450,7 +470,7 @@ export const TerminalView = memo(
                         globalStore.set(model.notificationAtom, "Agent is still starting. Try again in a moment.");
                         return false;
                     }
-                    return api.send(text);
+                    return api.submit(text);
                 }
                 setSubmitting(true);
                 void model.submitInput(text).finally(() => setSubmitting(false));
@@ -814,6 +834,8 @@ export const TerminalView = memo(
                         onRunsChange={onAgentRunsUpdate}
                         onStateChange={setAgentState}
                         onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
+                        onOpenModelPicker={onOpenAgentModelPicker}
+                        onSelectorRequest={onAgentSelectorRequest}
                     />
                     {error && (
                         <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
@@ -876,6 +898,7 @@ export const TerminalView = memo(
                             focusRequest={focusRequest}
                             history={commandHistory}
                             onTextChange={onInputTextChange}
+                            restoredTextRequest={agentRestoredTextRequest}
                             effectiveMode={effectiveMode}
                             modelDisplayLabel={modelDisplayLabel}
                             catalog={CATALOG}
@@ -885,6 +908,7 @@ export const TerminalView = memo(
                             selection={activeSelection}
                             onSelectionChange={onSelectionChange}
                             onOpenAIConfigFile={onOpenAIConfigFile}
+                            openModelPickerRequest={modelPickerRequest}
                             placeholder={
                                 isRunning
                                     ? "Press Ctrl+C in the running block to interrupt, or type the next command"
@@ -892,6 +916,12 @@ export const TerminalView = memo(
                             }
                         />
                     )}
+                    <AgentSelectorPopover
+                        request={agentSelectorRequest}
+                        onClose={() => setAgentSelectorRequest(null)}
+                        onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
+                        onEditorText={onAgentEditorText}
+                    />
                     {overlaySlot}
                     {notification && (
                         <div className="pointer-events-none absolute right-3 top-3 max-w-[60%] rounded border border-fg-overlay-2 bg-background/95 px-3 py-2 text-[12px] text-foreground shadow-lg">

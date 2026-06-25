@@ -78,6 +78,15 @@ export interface PaneSessionSnapshot {
 export type PaneSessionListener = (event: AgentHarnessEvent) => void;
 export type PaneRunFinishedHook = (run: AgentRun) => void | Promise<void>;
 
+interface PaneSnapshotEvent {
+    type: "snapshot";
+    messages: AgentMessage[];
+    runs: AgentRun[];
+    status: PaneSessionStatus;
+    steer: AgentMessage[];
+    followUp: AgentMessage[];
+}
+
 export interface PaneAgentSessionOptions {
     onRunFinished?: PaneRunFinishedHook;
 }
@@ -343,6 +352,34 @@ export class PaneAgentSession {
         });
     }
 
+    async listTreeEntries(): Promise<{
+        entries: SessionTreeEntry[];
+        leafId: string | null;
+        labels: Map<string, string | undefined>;
+    }> {
+        const entries = (await this.pane.session.getEntries()).filter((entry) => entry.type !== "leaf");
+        const leafId = await this.pane.session.getLeafId();
+        const labels = new Map<string, string | undefined>();
+        for (const entry of entries) {
+            labels.set(entry.id, await this.pane.session.getLabel(entry.id));
+        }
+        return { entries, leafId, labels };
+    }
+
+    async navigateTree(targetId: string): Promise<{ editorText?: string }> {
+        const result = await this.pane.harness.navigateTree(targetId, { summarize: false });
+        if (result.cancelled) {
+            return {};
+        }
+        await this.rebuildFromCurrentBranch();
+        this.emitSnapshot();
+        return { editorText: result.editorText };
+    }
+
+    async getLeafId(): Promise<string | null> {
+        return this.pane.session.getLeafId();
+    }
+
     dispose(): void {
         this.unsubscribeHarness();
         this.listeners.clear();
@@ -455,6 +492,39 @@ export class PaneAgentSession {
         void Promise.resolve(this.onRunFinished(run)).catch((err) => {
             console.error(`[pane-session] onRunFinished error for ${this.path}:`, err);
         });
+    }
+
+    private async rebuildFromCurrentBranch(): Promise<void> {
+        const entries = await this.pane.session.getBranch();
+        this.messages = entries
+            .filter((entry): entry is Extract<SessionTreeEntry, { type: "message" }> => entry.type === "message")
+            .map((entry) => entry.message as AgentMessage);
+        this.runs = buildPersistedRunsFromSessionEntries(entries);
+        this.steerQueue = [];
+        this.followUpQueue = [];
+        this.status = "idle";
+        this.errorMessage = undefined;
+        this.activeRunId = undefined;
+        this.pendingRunIds = [];
+        this.running = false;
+    }
+
+    private emitSnapshot(): void {
+        const event: PaneSnapshotEvent = {
+            type: "snapshot",
+            messages: this.messages,
+            runs: this.runs,
+            status: this.status,
+            steer: this.steerQueue,
+            followUp: this.followUpQueue,
+        };
+        for (const listener of this.listeners) {
+            try {
+                listener(event as unknown as AgentHarnessEvent);
+            } catch (err) {
+                console.error(`[pane-session] listener error for ${this.path}:`, err);
+            }
+        }
     }
 
     private emitRunUpdate(): void {
