@@ -34,6 +34,15 @@ import {
     TermMode,
     TerminalContext,
 } from "./engine";
+import { LONG_RUNNING_COMMAND_DURATION_MS } from "./engine/block";
+import {
+    detectCLIAgent,
+    terminalCaptureActive,
+    type CLIAgentSession,
+    type CursorRenderState,
+    type TerminalInputState,
+    type TerminalSurfaceState,
+} from "./engine/terminal-state";
 import {
     BlockSelectionSlice,
     Selection,
@@ -576,6 +585,7 @@ export class TerminalModel {
                 const row = grid.getRow(r);
                 let s = "";
                 for (const cell of row) {
+                    if (!cell) continue;
                     if (cell.width === 0) continue;
                     s += cell.char.length > 0 ? cell.char : " ";
                 }
@@ -638,6 +648,78 @@ export class TerminalModel {
 
     getBlocks(): Blocks {
         return this.blocks;
+    }
+
+    private activeRuntimeBlock(): Block | null {
+        const all = this.blocks.all();
+        for (let i = all.length - 1; i >= 0; i--) {
+            const block = all[i];
+            if (block.id === "__sentinel__") continue;
+            if (block.altScreen.active || block.state === "running") return block;
+        }
+        return null;
+    }
+
+    getTerminalInputState(now: number = Date.now()): TerminalInputState {
+        if (globalStore.get(this.loadingAtom)) return { kind: "not-bootstrapped" };
+        const block = this.activeRuntimeBlock();
+        if (!block) return { kind: "input-editor" };
+        if (block.altScreen.active) return { kind: "alt-screen", blockId: block.id };
+        if (block.state === "running" && terminalCaptureActive(this.mode)) {
+            return { kind: "terminal-capture", blockId: block.id };
+        }
+        if (block.isActiveAndLongRunning(now)) {
+            return { kind: "long-running-command", blockId: block.id };
+        }
+        return { kind: "input-editor" };
+    }
+
+    getActiveSurfaceState(now: number = Date.now()): TerminalSurfaceState | null {
+        const inputState = this.getTerminalInputState(now);
+        switch (inputState.kind) {
+            case "alt-screen":
+                return { kind: "alt-screen", blockId: inputState.blockId };
+            case "terminal-capture":
+                return { kind: "terminal-capture", blockId: inputState.blockId };
+            case "long-running-command":
+                return { kind: "long-running-pty", blockId: inputState.blockId };
+            default:
+                return null;
+        }
+    }
+
+    getCursorRenderState(blockId: BlockId, now: number = Date.now()): CursorRenderState {
+        const surface = this.getActiveSurfaceState(now);
+        if (!surface || surface.blockId !== blockId) return { kind: "terminal" };
+        if (surface.kind === "long-running-pty") return { kind: "suppressed", reason: "parked-cursor" };
+        return { kind: "terminal" };
+    }
+
+    getCLIAgentSession(blockId: BlockId): CLIAgentSession | null {
+        const block = this.blocks.findById(blockId);
+        if (!block) return null;
+        const agent = detectCLIAgent(block.commandText() || block.cmd);
+        if (!agent) return null;
+        return {
+            blockId,
+            agent,
+            status: block.state === "running" ? "in-progress" : "idle",
+            inputState: { kind: "pty-owned" },
+        };
+    }
+
+    nextLongRunningCheckDelayMs(now: number = Date.now()): number | null {
+        const block = this.activeRuntimeBlock();
+        if (!block || block.state !== "running" || block.startTs == null || block.wasLongRunning) return null;
+        const remaining = LONG_RUNNING_COMMAND_DURATION_MS - (now - block.startTs) + 1;
+        return remaining > 0 ? remaining : 0;
+    }
+
+    setModeForTest(patch: Partial<TermMode>): void {
+        if (typeof process === "undefined" || process.env.NODE_ENV !== "test") {
+            throw new Error("setModeForTest is test-only");
+        }
+        this.applyModePatch(patch);
     }
 
     getFirstAgentSessionPath(): string | undefined {

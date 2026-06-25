@@ -50,6 +50,11 @@ import { LogicalMouseEvent, MouseButton, encodeMouseEvent, shouldReportAction } 
 import { BlockSelectionSlice, SelectionMode, pixelToCell } from "./selection";
 import { SelectionLayer } from "./selection-layer";
 
+type MouseLikeEvent = Pick<
+    React.MouseEvent<HTMLDivElement>,
+    "clientX" | "clientY" | "shiftKey" | "altKey" | "ctrlKey" | "preventDefault" | "stopPropagation"
+>;
+
 export interface BlockElementProps {
     block: Block;
     revision: number;
@@ -100,6 +105,7 @@ export const BlockElement = memo(
         // Track which mouse buttons are pressed so we can correctly tag
         // motion events as "drag" vs free-move under mode 1002.
         const buttonDownRef = useRef<MouseButton | null>(null);
+        const lastMouseCellRef = useRef<{ row: number; col: number } | null>(null);
 
         // Duration tick — while the command is running, force a re-render
         // once per second so the elapsed-time readout in the header stays
@@ -117,7 +123,15 @@ export const BlockElement = memo(
 
         const visualState = mapLifecycleToVisual(block);
 
-        const inAltScreen = block.altScreen.active;
+        const activeSurfaceState = model?.getActiveSurfaceState?.() ?? null;
+        const modelSurfaceActive = activeSurfaceState?.blockId === block.id;
+        const activeTuiSurface = modelSurfaceActive || (!model && block.altScreen.active);
+        const surfaceKind = modelSurfaceActive
+            ? activeSurfaceState.kind
+            : !model && block.altScreen.active
+              ? "alt-screen"
+              : "normal-output";
+        const inAltScreen = surfaceKind === "alt-screen";
         const cmd = block.commandText() || undefined;
         // Frozen alt-screen — after a TUI exits we keep its last frame
         // visible if no post-exit output has landed, so vim/htop/less
@@ -125,8 +139,9 @@ export const BlockElement = memo(
         const outputRowCount = block.outputGrid.rowCount();
         const frozenAltScreen =
             !inAltScreen && block.altScreen.wasActive && outputRowCount === 0;
-        const showAltScreen = inAltScreen || frozenAltScreen;
+        const showAltScreen = surfaceKind === "alt-screen" || frozenAltScreen;
         const liveGrid = showAltScreen ? block.altScreen.grid : block.outputGrid.raw();
+        const cursorState = model?.getCursorRenderState?.(block.id) ?? { kind: "terminal" as const };
         const lineHeight = Math.round((fontSize ?? 12) * 1.4);
         const effCharWidth = charWidth ?? (fontSize ?? 12) * 0.6;
 
@@ -147,10 +162,10 @@ export const BlockElement = memo(
         // Render the cursor for blocks that are actually receiving input —
         // running blocks (the shell prompt's cursor sits in the output grid)
         // and any alt-screen TUI.  Done blocks have no live cursor.
-        const showCursor = block.state === "running" || inAltScreen;
+        const showCursor = (block.state === "running" || inAltScreen) && cursorState.kind === "terminal";
 
         const cellFromEvent = useCallback(
-            (e: React.MouseEvent<HTMLDivElement>): { row: number; col: number } | null => {
+            (e: MouseLikeEvent): { row: number; col: number } | null => {
                 const host = gridHostRef.current;
                 if (!host) return null;
                 const rect = host.getBoundingClientRect();
@@ -179,7 +194,7 @@ export const BlockElement = memo(
 
         const forwardMouse = useCallback(
             (
-                e: React.MouseEvent<HTMLDivElement>,
+                e: MouseLikeEvent,
                 action: "press" | "release" | "motion",
                 button: MouseButton
             ): boolean => {
@@ -188,7 +203,11 @@ export const BlockElement = memo(
                 if (!mouseReportingActive(mode)) return false;
                 const dragging = action === "motion" && buttonDownRef.current != null;
                 if (!shouldReportAction(action, dragging, mode)) return false;
-                const cell = cellFromEvent(e);
+                const eventCell = cellFromEvent(e);
+                if (eventCell) {
+                    lastMouseCellRef.current = eventCell;
+                }
+                const cell = eventCell ?? (action === "release" ? lastMouseCellRef.current : null);
                 if (!cell) return false;
                 const logical: LogicalMouseEvent = {
                     button,
@@ -208,6 +227,21 @@ export const BlockElement = memo(
             },
             [cellFromEvent, model]
         );
+
+        useEffect(() => {
+            const onMouseUp = (e: MouseEvent) => {
+                if (!buttonDownRef.current) return;
+                forwardMouse(e, "release", buttonDownRef.current);
+                buttonDownRef.current = null;
+                lastMouseCellRef.current = null;
+            };
+            document.addEventListener("mouseup", onMouseUp);
+            window.addEventListener("mouseup", onMouseUp);
+            return () => {
+                document.removeEventListener("mouseup", onMouseUp);
+                window.removeEventListener("mouseup", onMouseUp);
+            };
+        }, [forwardMouse]);
 
         const handleMouseDown = useCallback(
             (e: React.MouseEvent<HTMLDivElement>) => {
@@ -273,6 +307,7 @@ export const BlockElement = memo(
                 if (buttonDownRef.current) {
                     forwardMouse(e, "release", buttonDownRef.current);
                     buttonDownRef.current = null;
+                    lastMouseCellRef.current = null;
                     return;
                 }
                 // Selection drag end is also handled by the document-level
@@ -286,9 +321,8 @@ export const BlockElement = memo(
         const handleMouseLeave = useCallback(() => {
             // Don't end the selection drag here — the user may be
             // mid-drag across blocks and pointer transitions trigger
-            // mouseleave/mouseenter rapidly.  Cancel PTY-mouse capture
-            // only.
-            buttonDownRef.current = null;
+            // mouseleave/mouseenter rapidly.  Keep PTY-mouse capture too
+            // so a release after re-entering still reaches the TUI.
         }, []);
 
         const handleWheel = useCallback(
@@ -443,10 +477,11 @@ export const BlockElement = memo(
                     selected && "bg-[var(--color-term-accent-10)]",
                     // Failed (non-selected): 10% red overlay (warp
                     // block_list_element.rs:2404-2410, bg = failed × 10%).
-                    isFailed && !selected && "bg-[var(--ansi-red)]/10"
+                    isFailed && !selected && "bg-[var(--ansi-red)]/10",
+                    activeTuiSurface && "h-full min-h-full"
                 )}
             >
-                {showSnackbar && (
+                {showSnackbar && !activeTuiSurface && (
                     <CmdBlockSnackbar
                         anchorRef={headerAnchorRef}
                         state={visualState}
@@ -461,23 +496,25 @@ export const BlockElement = memo(
                         onDismiss={model ? () => model.setSnackbarVisible(false) : undefined}
                     />
                 )}
-                <div ref={headerAnchorRef}>
-                    <CmdBlockHeader
-                        state={visualState}
-                        cwd={block.pwd}
-                        home={home}
-                        branch={block.gitBranch}
-                        cmd={cmd}
-                        durationMs={block.durationMs()}
-                        exitCode={block.exitCode}
-                        selected={selected}
-                        venv={block.virtualEnv}
-                        nodeVersion={block.nodeVersion}
-                        rightSlot={
-                            toolbelt ? <CmdBlockToolbelt {...toolbelt} /> : undefined
-                        }
-                    />
-                </div>
+                {!activeTuiSurface && (
+                    <div ref={headerAnchorRef}>
+                        <CmdBlockHeader
+                            state={visualState}
+                            cwd={block.pwd}
+                            home={home}
+                            branch={block.gitBranch}
+                            cmd={cmd}
+                            durationMs={block.durationMs()}
+                            exitCode={block.exitCode}
+                            selected={selected}
+                            venv={block.virtualEnv}
+                            nodeVersion={block.nodeVersion}
+                            rightSlot={
+                                toolbelt ? <CmdBlockToolbelt {...toolbelt} /> : undefined
+                            }
+                        />
+                    </div>
+                )}
                 {/* Per user feedback: no visible gap between the command
                     row and its output — the two share one continuous
                     background.  Drop padding_middle (warp 0.5 lines) to
@@ -485,104 +522,114 @@ export const BlockElement = memo(
                     line.  Keep a small pb-2 (≈ 8 px, half of warp's 1.0
                     line) so the next block's top divider doesn't kiss
                     this block's last line. */}
-                <div className="px-3 pt-0 pb-2">
-                    <div
-                    ref={gridHostRef}
-                    // Layout padding sits on the outer div so this inner
-                    // host has zero padding — its border box equals the
-                    // text content box.  SelectionLayer / FindHighlight /
-                    // CursorOverlay all position absolute inside it, and
-                    // cellFromEvent uses getBoundingClientRect() of this
-                    // same node, so mouse-to-cell math and layer rect
-                    // math share a single origin.
-                    //
-                    // select-none suppresses the browser's native text
-                    // selection so it doesn't draw a second highlight on
-                    // top of SelectionLayer.  Copy goes through our
-                    // Cmd+C handler (model.copySelection), so disabling
-                    // native selection has no copy-path consequence.
-                    className="relative select-none"
-                    onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
-                    onMouseUp={handleMouseUp}
-                    onMouseLeave={handleMouseLeave}
-                    onWheel={handleWheel}
-                    onContextMenu={handleContextMenu}
+                <div
+                    className={cn(
+                        activeTuiSurface ? "h-full min-h-full p-0" : "px-3 pt-0 pb-2"
+                    )}
                 >
-                    {showAltScreen ? (
-                        <GridElement
-                            source={block.altScreen.grid}
-                            revision={revision}
-                            fontSize={fontSize}
-                            className={frozenAltScreen ? "text-foreground/85" : "text-foreground"}
-                            onLinkClick={onLinkClick}
-                        />
-                    ) : showCollapsed ? (
-                        <>
+                    <div
+                        ref={gridHostRef}
+                        // Layout padding sits on the outer div so this inner
+                        // host has zero padding — its border box equals the
+                        // text content box.  SelectionLayer / FindHighlight /
+                        // CursorOverlay all position absolute inside it, and
+                        // cellFromEvent uses getBoundingClientRect() of this
+                        // same node, so mouse-to-cell math and layer rect
+                        // math share a single origin.
+                        //
+                        // select-none suppresses the browser's native text
+                        // selection so it doesn't draw a second highlight on
+                        // top of SelectionLayer.  Copy goes through our
+                        // Cmd+C handler (model.copySelection), so disabling
+                        // native selection has no copy-path consequence.
+                        className={cn(
+                            "relative select-none",
+                            activeTuiSurface && "h-full min-h-full"
+                        )}
+                        onMouseDown={handleMouseDown}
+                        onMouseMove={handleMouseMove}
+                        onMouseUp={handleMouseUp}
+                        onMouseLeave={handleMouseLeave}
+                        onWheel={handleWheel}
+                        onContextMenu={handleContextMenu}
+                    >
+                        {showAltScreen ? (
+                            <GridElement
+                                source={block.altScreen.grid}
+                                revision={revision}
+                                fontSize={fontSize}
+                                className={cn(
+                                    activeTuiSurface && "min-h-full",
+                                    frozenAltScreen ? "text-foreground/85" : "text-foreground"
+                                )}
+                                onLinkClick={onLinkClick}
+                            />
+                        ) : showCollapsed ? (
+                            <>
+                                <GridElement
+                                    source={block.outputGrid}
+                                    revision={revision}
+                                    fontSize={fontSize}
+                                    className={cn(activeTuiSurface && "min-h-full", "text-foreground")}
+                                    onLinkClick={onLinkClick}
+                                    visibleRowIndicesOverride={Array.from(
+                                        { length: CollapseHeadRows },
+                                        (_, i) => i
+                                    )}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => model?.toggleBlockCollapsed(block.id)}
+                                    className="my-1 flex w-full cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-fg-overlay-2 bg-fg-overlay-1/40 px-3 py-1 text-[11px] text-secondary hover:bg-fg-overlay-1 hover:text-foreground"
+                                    title="Click to expand"
+                                >
+                                    ─── {hiddenCount} rows hidden — click to expand ───
+                                </button>
+                                <GridElement
+                                    source={block.outputGrid}
+                                    revision={revision}
+                                    fontSize={fontSize}
+                                    className={cn(activeTuiSurface && "min-h-full", "text-foreground")}
+                                    onLinkClick={onLinkClick}
+                                    visibleRowIndicesOverride={Array.from(
+                                        { length: CollapseTailRows },
+                                        (_, i) => outputRowCount - CollapseTailRows + i
+                                    )}
+                                />
+                            </>
+                        ) : (
                             <GridElement
                                 source={block.outputGrid}
                                 revision={revision}
                                 fontSize={fontSize}
-                                className="text-foreground"
+                                className={cn(activeTuiSurface && "min-h-full", "text-foreground")}
                                 onLinkClick={onLinkClick}
-                                visibleRowIndicesOverride={Array.from(
-                                    { length: CollapseHeadRows },
-                                    (_, i) => i
-                                )}
                             />
-                            <button
-                                type="button"
-                                onClick={() => model?.toggleBlockCollapsed(block.id)}
-                                className="my-1 flex w-full cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-fg-overlay-2 bg-fg-overlay-1/40 px-3 py-1 text-[11px] text-secondary hover:bg-fg-overlay-1 hover:text-foreground"
-                                title="Click to expand"
-                            >
-                                ─── {hiddenCount} rows hidden — click to expand ───
-                            </button>
-                            <GridElement
-                                source={block.outputGrid}
+                        )}
+                        {showCursor && !showCollapsed && (
+                            <CursorOverlay
+                                grid={liveGrid}
+                                charWidth={effCharWidth}
+                                lineHeight={lineHeight}
                                 revision={revision}
-                                fontSize={fontSize}
-                                className="text-foreground"
-                                onLinkClick={onLinkClick}
-                                visibleRowIndicesOverride={Array.from(
-                                    { length: CollapseTailRows },
-                                    (_, i) => outputRowCount - CollapseTailRows + i
-                                )}
                             />
-                        </>
-                    ) : (
-                        <GridElement
-                            source={block.outputGrid}
-                            revision={revision}
-                            fontSize={fontSize}
-                            className="text-foreground"
-                            onLinkClick={onLinkClick}
-                        />
-                    )}
-                    {showCursor && !showCollapsed && (
-                        <CursorOverlay
-                            grid={liveGrid}
-                            charWidth={effCharWidth}
-                            lineHeight={lineHeight}
-                            revision={revision}
-                        />
-                    )}
-                    {findMatches && findMatches.length > 0 && !showCollapsed && (
-                        <FindHighlightLayer
-                            matches={findMatches}
-                            activeMatch={activeMatch ?? null}
-                            charWidth={effCharWidth}
-                            lineHeight={lineHeight}
-                        />
-                    )}
-                    {!showCollapsed && (
-                        <SelectionLayer
-                            slice={selectionSlice ?? null}
-                            grid={liveGrid}
-                            charWidth={effCharWidth}
-                            lineHeight={lineHeight}
-                        />
-                    )}
+                        )}
+                        {findMatches && findMatches.length > 0 && !showCollapsed && (
+                            <FindHighlightLayer
+                                matches={findMatches}
+                                activeMatch={activeMatch ?? null}
+                                charWidth={effCharWidth}
+                                lineHeight={lineHeight}
+                            />
+                        )}
+                        {!showCollapsed && (
+                            <SelectionLayer
+                                slice={selectionSlice ?? null}
+                                grid={liveGrid}
+                                charWidth={effCharWidth}
+                                lineHeight={lineHeight}
+                            />
+                        )}
                     </div>
                 </div>
                 {menuPos && menuItems.length > 0 && (
@@ -610,6 +657,7 @@ function gridToText(grid: import("../engine/grid").Grid): string {
         const row = grid.getRow(r);
         let s = "";
         for (const cell of row) {
+            if (!cell) continue;
             if (cell.width === 0) continue;
             s += cell.char.length > 0 ? cell.char : " ";
         }

@@ -19,6 +19,7 @@
 
 import { UIcon } from "@/app/element/ui-icon";
 import type { PiRun } from "@/app/store/use-pi-chat";
+import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { FindMatch, TerminalModel } from "../terminal-model";
@@ -253,8 +254,14 @@ export const BlockListElement = memo(
                         ) {
                             return null;
                         }
+                        const activeSurfaceState = model.getActiveSurfaceState?.() ?? null;
+                        const activeTuiSurface = activeSurfaceState?.blockId === block.id;
                         return (
-                            <div key={block.id} data-block-oid={block.id}>
+                            <div
+                                key={block.id}
+                                data-block-oid={block.id}
+                                className={cn(activeTuiSurface && "h-full min-h-full")}
+                            >
                                 <BlockElement
                                     block={block}
                                     revision={revision}
