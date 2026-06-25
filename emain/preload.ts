@@ -21,20 +21,17 @@ ipcRenderer.on("dir-changed", (_event, path: string, eventType: string, filename
 // "agent:event" with {sessionPath, event}; we route to per-sessionPath
 // callbacks the renderer registered via api.agent.subscribe().
 const agentEventCallbacks = new Map<string, Set<(event: unknown) => void>>();
-ipcRenderer.on(
-    "agent:event",
-    (_event, payload: { sessionPath: string; event: unknown }) => {
-        const cbs = agentEventCallbacks.get(payload.sessionPath);
-        if (!cbs) return;
-        for (const cb of cbs) {
-            try {
-                cb(payload.event);
-            } catch (e) {
-                console.error("agent:event callback error", e);
-            }
+ipcRenderer.on("agent:event", (_event, payload: { sessionPath: string; event: unknown }) => {
+    const cbs = agentEventCallbacks.get(payload.sessionPath);
+    if (!cbs) return;
+    for (const cb of cbs) {
+        try {
+            cb(payload.event);
+        } catch (e) {
+            console.error("agent:event callback error", e);
         }
-    },
-);
+    }
+});
 
 // update type in custom.d.ts (ElectronApi type)
 contextBridge.exposeInMainWorld("waveRuntime", {
@@ -141,8 +138,7 @@ contextBridge.exposeInMainWorld("api", {
     // ─── AI config / provider listing ────────────────────────────────
     // See emain/aiconfig-ipc.ts. Replaces the Go ListProviderModelsCommand.
     ai: {
-        listProviderModels: (input: unknown) =>
-            ipcRenderer.invoke("ai:list-provider-models", input),
+        listProviderModels: (input: unknown) => ipcRenderer.invoke("ai:list-provider-models", input),
         getUserConfig: () => ipcRenderer.invoke("ai:get-user-config"),
         writeUserConfig: (cfg: unknown) => ipcRenderer.invoke("ai:write-user-config", cfg),
     },
@@ -150,11 +146,20 @@ contextBridge.exposeInMainWorld("api", {
     // See docs/agent-runtime-architecture.md §2 + emain/agent-ipc.ts.
     agent: {
         createSession: (cwd: string) => ipcRenderer.invoke("agent:create-session", cwd),
-        listSessionsForCwd: (cwd: string) =>
-            ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
+        listSessionsForCwd: (cwd: string) => ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
+        listCommands: () => ipcRenderer.invoke("agent:list-commands"),
+        listTree: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:list-tree", sessionMetadata),
+        listForkPoints: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:list-fork-points", sessionMetadata),
+        navigateTree: (input: unknown) => ipcRenderer.invoke("agent:navigate-tree", input),
+        forkSession: (input: unknown) => ipcRenderer.invoke("agent:fork-session", input),
+        cloneSession: (input: unknown) => ipcRenderer.invoke("agent:clone-session", input),
         send: (opts: unknown) => ipcRenderer.invoke("agent:send", opts),
         abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
-        subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }): (() => void) => {
+        subscribe: (
+            sessionPath: string,
+            callback: (event: unknown) => void,
+            opts?: { blockId?: string }
+        ): (() => void) => {
             let entry = agentEventCallbacks.get(sessionPath);
             if (!entry) {
                 entry = new Set();

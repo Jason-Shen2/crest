@@ -58,6 +58,7 @@ const previewElectronApi: ElectronApi = {
     openBuilder: (_appId?: string) => {},
     setBuilderWindowAppId: (_appId: string) => {},
     doRefresh: () => {},
+    getPathForFile: (_file: File) => "",
     saveTextFile: (_fileName: string, _content: string) => Promise.resolve(false),
     setIsActive: async () => {},
     watchDir: (_path: string, _callback: (eventType: string, filename: string) => void) => {},
@@ -72,9 +73,14 @@ const previewElectronApi: ElectronApi = {
     // Agent IPC stubs — preview pages never actually invoke the agent
     // runtime, so these reject / no-op. Only here to satisfy ElectronApi.
     agent: {
-        createSession: () =>
-            Promise.reject(new Error("agent not available in preview env")),
+        createSession: () => Promise.reject(new Error("agent not available in preview env")),
         listSessionsForCwd: () => Promise.resolve([]),
+        listCommands: () => Promise.resolve([]),
+        listTree: () => Promise.resolve({ entries: [], leafId: null }),
+        listForkPoints: () => Promise.resolve([]),
+        navigateTree: () => Promise.reject(new Error("agent not available in preview env")),
+        forkSession: () => Promise.reject(new Error("agent not available in preview env")),
+        cloneSession: () => Promise.reject(new Error("agent not available in preview env")),
         send: () => Promise.reject(new Error("agent not available in preview env")),
         abort: () => {},
         subscribe: () => () => {},

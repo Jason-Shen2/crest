@@ -26,6 +26,12 @@
 //     - subscriber tracked per-sender; renderer must call unsubscribe
 //       on cleanup, but sender 'destroyed' also releases automatically
 //   on     "agent:unsubscribe"         (sessionPath)
+//   handle "agent:list-commands"       () → AgentCommandInfo[]
+//   handle "agent:list-tree"           (metadata) → { entries, leafId }
+//   handle "agent:list-fork-points"    (metadata) → AgentForkPointView[]
+//   handle "agent:navigate-tree"       ({ metadata, targetId }) → { metadata, editorText? }
+//   handle "agent:fork-session"        ({ metadata, cwd, entryId }) → { metadata, selectedText? }
+//   handle "agent:clone-session"       ({ metadata, cwd }) → { metadata?, message? }
 //
 // Event stream payload (sent on "agent:event"):
 //   { sessionPath: string, event: AgentHarnessEvent }
@@ -35,26 +41,37 @@
 // strings never end up in channel names).
 
 import * as electron from "electron";
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
 
-import type { Api, Model } from "./ai";
-import { getModel } from "./ai";
+import { RpcApi } from "../frontend/app/store/wshclientapi";
+import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
+import { getBuiltInAgentCommands } from "./agent/commands/registry";
+import {
+    buildAgentForkPointViews,
+    buildAgentTreeEntryViews,
+    previewSessionEntry,
+} from "./agent/commands/session-views";
+import type { AgentCommandInfo, AgentForkPointView, AgentTreeEntryView } from "./agent/commands/types";
 import { buildPaneHarness } from "./agent/harness-factory";
 import { uuidv7 } from "./agent/harness/session/uuid";
+import type { JsonlSessionMetadata } from "./agent/harness/types";
 import { buildPersistedRunsFromSessionEntries, PaneAgentSession, type AgentRun } from "./agent/pane-agent-session";
-import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
-import { getDefaultTools } from "./agent/tools";
-import { getSecret } from "./aiconfig/secrets";
 import {
     createPaneSession,
+    defaultSessionsDir,
+    forkPaneSession,
     listSessionsForCwd,
     openPaneSession,
     openPaneSessionByPath,
 } from "./agent/sessions";
-import type { JsonlSessionMetadata } from "./agent/harness/types";
+import { getDefaultTools } from "./agent/tools";
 import type { ThinkingLevel } from "./agent/types";
-import { RpcApi } from "../frontend/app/store/wshclientapi";
+import type { Api, Model } from "./ai";
+import { getModel } from "./ai";
+import { getSecret } from "./aiconfig/secrets";
 import { ElectronWshClient } from "./emain-wsh";
 
 // Per-pane conversation OWNERS, keyed by session JSONL path (the natural
@@ -109,13 +126,153 @@ interface SendOptions {
     allowedTools?: string[];
 }
 
+interface AgentNavigateTreeInput {
+    sessionMetadata: JsonlSessionMetadata;
+    targetId: string;
+}
+
+interface AgentForkSessionInput {
+    sessionMetadata: JsonlSessionMetadata;
+    cwd: string;
+    entryId: string;
+}
+
+interface AgentCloneSessionInput {
+    sessionMetadata: JsonlSessionMetadata;
+    cwd: string;
+}
+
+interface AgentTreeResult {
+    entries: AgentTreeEntryView[];
+    leafId: string | null;
+}
+
+interface AgentNavigateTreeResult {
+    sessionMetadata: JsonlSessionMetadata;
+    editorText?: string;
+}
+
+interface AgentForkSessionResult {
+    sessionMetadata: JsonlSessionMetadata;
+    selectedText?: string;
+}
+
+interface AgentCloneSessionResult {
+    sessionMetadata?: JsonlSessionMetadata;
+    message?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+}
+
+function requireNonEmptyString(value: unknown, fieldName: string): string {
+    if (typeof value !== "string" || value.trim() === "") {
+        throw new Error(`agent IPC: ${fieldName} must be a non-empty string`);
+    }
+    return value;
+}
+
+function assertInsideSessionsDir(sessionPath: string, sessionsRoot: string, fieldName: string): void {
+    const relative = path.relative(sessionsRoot, sessionPath);
+    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+        throw new Error(`agent IPC: ${fieldName} is outside sessions directory`);
+    }
+}
+
+async function validateSessionPath(value: unknown, fieldName = "sessionPath"): Promise<string> {
+    const inputPath = requireNonEmptyString(value, fieldName);
+    const [sessionPath, sessionsRoot] = await Promise.all([fs.realpath(inputPath), fs.realpath(defaultSessionsDir())]);
+    assertInsideSessionsDir(sessionPath, sessionsRoot, fieldName);
+    return sessionPath;
+}
+
+function validateSessionMetadataShape(value: unknown): JsonlSessionMetadata {
+    if (!isRecord(value)) {
+        throw new Error("agent IPC: sessionMetadata must be an object");
+    }
+    return {
+        id: typeof value.id === "string" ? value.id : "",
+        createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
+        path: requireNonEmptyString(value.path, "sessionMetadata.path"),
+        cwd: requireNonEmptyString(value.cwd, "sessionMetadata.cwd"),
+        parentSessionPath: typeof value.parentSessionPath === "string" ? value.parentSessionPath : undefined,
+    };
+}
+
+async function openValidatedSessionMetadata(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    requestedPath: string;
+}> {
+    const input = validateSessionMetadataShape(value);
+    const sessionPath = await validateSessionPath(input.path, "sessionMetadata.path");
+    const session = await openPaneSessionByPath(sessionPath);
+    const metadata = await session.getMetadata();
+    return { metadata, session, requestedPath: input.path };
+}
+
+async function requireSessionEntry(
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>,
+    entryId: string,
+    fieldName: string
+) {
+    const entry = await session.getEntry(entryId);
+    if (!entry) {
+        throw new Error(`agent IPC: ${fieldName} does not belong to the session`);
+    }
+    return entry;
+}
+
+async function validateTreeInput(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    requestedPath: string;
+}> {
+    return openValidatedSessionMetadata(value);
+}
+
+async function validateNavigateInput(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    targetId: string;
+    requestedPath: string;
+}> {
+    if (!isRecord(value)) throw new Error("agent IPC: navigateTree input must be an object");
+    const { metadata, session, requestedPath } = await openValidatedSessionMetadata(value.sessionMetadata);
+    const targetId = requireNonEmptyString(value.targetId, "targetId");
+    await requireSessionEntry(session, targetId, "targetId");
+    return { metadata, targetId, requestedPath };
+}
+
+async function validateForkInput(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    cwd: string;
+    entryId: string;
+}> {
+    if (!isRecord(value)) throw new Error("agent IPC: forkSession input must be an object");
+    const { metadata, session } = await openValidatedSessionMetadata(value.sessionMetadata);
+    const cwd = requireNonEmptyString(value.cwd, "cwd");
+    const entryId = requireNonEmptyString(value.entryId, "entryId");
+    await requireSessionEntry(session, entryId, "entryId");
+    return { metadata, session, cwd, entryId };
+}
+
+async function validateCloneInput(value: unknown): Promise<{
+    metadata: JsonlSessionMetadata;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    cwd: string;
+}> {
+    if (!isRecord(value)) throw new Error("agent IPC: cloneSession input must be an object");
+    const { metadata, session } = await openValidatedSessionMetadata(value.sessionMetadata);
+    const cwd = requireNonEmptyString(value.cwd, "cwd");
+    return { metadata, session, cwd };
+}
+
 function resolveModelOrThrow(provider: string, modelId: string): Model<Api> {
     // pi's getModel is typed with literal generics; our renderer-supplied
     // strings can't satisfy them. Cast — runtime accepts any registered id.
-    const model = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(
-        provider,
-        modelId,
-    );
+    const model = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(provider, modelId);
     if (!model) {
         throw new Error(`agent: unknown provider/model "${provider}/${modelId}"`);
     }
@@ -136,9 +293,11 @@ async function ensureSession(opts: SendOptions): Promise<{
     isNew: boolean;
 }> {
     if (opts.sessionMetadata) {
-        return { metadata: opts.sessionMetadata, isNew: false };
+        const { metadata } = await openValidatedSessionMetadata(opts.sessionMetadata);
+        return { metadata, isNew: false };
     }
-    const { metadata } = await createPaneSession(opts.cwd);
+    const created = await createPaneSession(opts.cwd);
+    const { metadata } = await openValidatedSessionMetadata(await created.session.getMetadata());
     return { metadata, isNew: true };
 }
 
@@ -155,10 +314,7 @@ async function resolveApiKey(opts: SendOptions): Promise<string | undefined> {
     return undefined;
 }
 
-async function ensurePaneSession(
-    metadata: JsonlSessionMetadata,
-    opts: SendOptions,
-): Promise<PaneAgentSession> {
+async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptions): Promise<PaneAgentSession> {
     const existing = sessionCache.get(metadata.path);
     if (existing) {
         existing.update(buildPromptInputs(opts));
@@ -180,7 +336,7 @@ async function ensurePaneSession(
         `[agent-ipc] send → provider=${model.provider} model=${model.id} api=${model.api} ` +
             `baseUrl=${(model as { baseUrl?: string }).baseUrl ?? "(provider default)"} ` +
             `reasoning=${opts.reasoning ?? "off"} apiKey=${apiKey ? "present" : "MISSING"} ` +
-            `(tokenSecretName=${opts.tokenSecretName ?? "-"})`,
+            `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
     );
     const pane = buildPaneHarness({
         session: piSession,
@@ -199,7 +355,7 @@ async function ensurePaneSession(
                 ? { allowAll: true }
                 : opts.allowedTools
                   ? { allowAll: false, allowedTools: opts.allowedTools }
-                  : { allowAll: true },
+                  : { allowAll: true }
         ),
     });
     // Wrap the harness in the per-session owner. Its constructor attaches
@@ -271,10 +427,12 @@ function trackSenderKey(sender: electron.WebContents, key: SubKey): void {
 async function sendPersistedSnapshot(
     sender: electron.WebContents,
     sessionPath: string,
-    blockId?: string,
+    blockId?: string
 ): Promise<void> {
+    let canonicalPath = sessionPath;
     try {
-        const session = await openPaneSessionByPath(sessionPath);
+        canonicalPath = await validateSessionPath(sessionPath);
+        const session = await openPaneSessionByPath(canonicalPath);
         const context = await session.buildContext();
         let runs = [];
         if (blockId) {
@@ -283,7 +441,7 @@ async function sendPersistedSnapshot(
         }
         if (sender.isDestroyed()) return;
         sender.send("agent:event", {
-            sessionPath,
+            sessionPath: canonicalPath,
             event: {
                 type: "snapshot",
                 messages: context.messages,
@@ -294,15 +452,11 @@ async function sendPersistedSnapshot(
             },
         });
     } catch (err) {
-        console.error(`[agent-ipc] persisted snapshot error for ${sessionPath}:`, err);
+        console.error(`[agent-ipc] persisted snapshot error for ${canonicalPath}:`, err);
     }
 }
 
-function subscribeToOwner(
-    sender: electron.WebContents,
-    sessionPath: string,
-    session: PaneAgentSession,
-): void {
+function subscribeToOwner(sender: electron.WebContents, sessionPath: string, session: PaneAgentSession): void {
     const key: SubKey = `${sender.id}:${sessionPath}`;
     pendingSubscriptions.delete(key);
     if (subscriptions.has(key)) return;
@@ -344,37 +498,171 @@ function attachPendingSubscribers(sessionPath: string, session: PaneAgentSession
     }
 }
 
+async function getSessionTreeData(sessionMetadataInput: unknown): Promise<{
+    entries: Awaited<ReturnType<PaneAgentSession["listTreeEntries"]>>["entries"];
+    leafId: string | null;
+    labels: Map<string, string | undefined>;
+}> {
+    const { metadata: sessionMetadata, session, requestedPath } = await validateTreeInput(sessionMetadataInput);
+    const owner = sessionCache.get(sessionMetadata.path) ?? sessionCache.get(requestedPath);
+    if (owner) return owner.listTreeEntries();
+
+    const entries = (await session.getEntries()).filter((entry) => entry.type !== "leaf");
+    const leafId = await session.getLeafId();
+    const labels = new Map<string, string | undefined>();
+    for (const entry of entries) {
+        labels.set(entry.id, await session.getLabel(entry.id));
+    }
+    return { entries, leafId, labels };
+}
+
+export function listAgentCommandsForIpc(): AgentCommandInfo[] {
+    return getBuiltInAgentCommands();
+}
+
+export async function listAgentTreeForIpc(sessionMetadata: unknown): Promise<AgentTreeResult> {
+    const { entries, leafId, labels } = await getSessionTreeData(sessionMetadata);
+    return { entries: buildAgentTreeEntryViews(entries, leafId, labels), leafId };
+}
+
+export async function listAgentForkPointsForIpc(sessionMetadata: unknown): Promise<AgentForkPointView[]> {
+    const { entries } = await getSessionTreeData(sessionMetadata);
+    return buildAgentForkPointViews(entries);
+}
+
+export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavigateTreeResult> {
+    const { metadata, targetId, requestedPath } = await validateNavigateInput(input);
+    const owner = sessionCache.get(metadata.path) ?? sessionCache.get(requestedPath);
+    if (!owner) {
+        throw new Error(`agent session is not active: ${metadata.path}`);
+    }
+    const result = await owner.navigateTree(targetId);
+    return { sessionMetadata: metadata, ...result };
+}
+
+export async function forkAgentSessionForIpc(input: unknown): Promise<AgentForkSessionResult> {
+    const { metadata: sourceMetadata, session: source, cwd, entryId } = await validateForkInput(input);
+    const target = await source.getEntry(entryId);
+    const { metadata } = await forkPaneSession(sourceMetadata, {
+        cwd,
+        entryId,
+    });
+    return {
+        sessionMetadata: metadata,
+        ...(target ? { selectedText: previewSessionEntry(target) } : {}),
+    };
+}
+
+export async function cloneAgentSessionForIpc(input: unknown): Promise<AgentCloneSessionResult> {
+    const { metadata: sourceMetadata, session: source, cwd } = await validateCloneInput(input);
+    const leafId = await source.getLeafId();
+    if (!leafId) {
+        return { message: "No session branch to clone yet." };
+    }
+    await requireSessionEntry(source, leafId, "targetId");
+    const { metadata } = await forkPaneSession(sourceMetadata, { cwd, entryId: leafId, position: "at" });
+    return { sessionMetadata: metadata };
+}
+
+export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    sessionCache.get(canonicalPath)?.abort();
+}
+
+export async function subscribeAgentSessionForIpc(
+    sender: electron.WebContents,
+    sessionPath: unknown,
+    opts?: { blockId?: string }
+): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    const session = sessionCache.get(canonicalPath);
+    if (!session) {
+        const key: SubKey = `${sender.id}:${canonicalPath}`;
+        if (!pendingSubscriptions.has(key)) {
+            pendingSubscriptions.set(key, { sender, sessionPath: canonicalPath, blockId: opts?.blockId });
+            trackSenderKey(sender, key);
+        }
+        await sendPersistedSnapshot(sender, canonicalPath, opts?.blockId);
+        return;
+    }
+    subscribeToOwner(sender, canonicalPath, session);
+}
+
+export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPath: unknown): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    const key: SubKey = `${senderId}:${canonicalPath}`;
+    releaseSubscription(key);
+    const set = subscriptionsBySender.get(senderId);
+    if (set) {
+        set.delete(key);
+        if (set.size === 0) subscriptionsBySender.delete(senderId);
+    }
+}
+
 /**
  * Wire the agent IPC handlers. Call once at app startup from
  * emain-ipc.ts initIpcHandlers().
  */
 export function registerAgentIpcHandlers(): void {
-    electron.ipcMain.handle(
-        "agent:create-session",
-        async (_event, cwd: string): Promise<JsonlSessionMetadata> => {
-            const { metadata } = await createPaneSession(cwd);
-            return metadata;
-        },
-    );
+    electron.ipcMain.handle("agent:create-session", async (_event, cwd: string): Promise<JsonlSessionMetadata> => {
+        const { metadata } = await createPaneSession(cwd);
+        return metadata;
+    });
 
     electron.ipcMain.handle(
         "agent:list-sessions-for-cwd",
         async (_event, cwd: string): Promise<JsonlSessionMetadata[]> => {
             return await listSessionsForCwd(cwd);
-        },
+        }
+    );
+
+    electron.ipcMain.handle("agent:list-commands", (): AgentCommandInfo[] => {
+        return listAgentCommandsForIpc();
+    });
+
+    electron.ipcMain.handle(
+        "agent:list-tree",
+        async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentTreeResult> => {
+            return await listAgentTreeForIpc(sessionMetadata);
+        }
+    );
+
+    electron.ipcMain.handle(
+        "agent:list-fork-points",
+        async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentForkPointView[]> => {
+            return await listAgentForkPointsForIpc(sessionMetadata);
+        }
+    );
+
+    electron.ipcMain.handle(
+        "agent:navigate-tree",
+        async (_event, input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> => {
+            return await navigateAgentTreeForIpc(input);
+        }
+    );
+
+    electron.ipcMain.handle(
+        "agent:fork-session",
+        async (_event, input: AgentForkSessionInput): Promise<AgentForkSessionResult> => {
+            return await forkAgentSessionForIpc(input);
+        }
+    );
+
+    electron.ipcMain.handle(
+        "agent:clone-session",
+        async (_event, input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> => {
+            return await cloneAgentSessionForIpc(input);
+        }
     );
 
     electron.ipcMain.handle(
         "agent:send",
-        async (
-            _event,
-            opts: SendOptions,
-        ): Promise<{ sessionMetadata: JsonlSessionMetadata; runId: string }> => {
+        async (_event, opts: SendOptions): Promise<{ sessionMetadata: JsonlSessionMetadata; runId: string }> => {
             console.log(
                 `[agent-ipc] agent:send provider=${opts.provider} model=${opts.model} ` +
                     `reasoning=${opts.reasoning ?? "off"} ` +
                     `cred=${opts.token ? "token" : opts.tokenSecretName ? `secret:${opts.tokenSecretName}` : "NONE"} ` +
-                    `textLen=${opts.text?.length ?? 0}`,
+                    `textLen=${opts.text?.length ?? 0}`
             );
             const { metadata } = await ensureSession(opts);
             const session = await ensurePaneSession(metadata, opts);
@@ -398,40 +686,25 @@ export function registerAgentIpcHandlers(): void {
 
             session.send(runId, opts.text);
             return { sessionMetadata: metadata, runId };
-        },
+        }
     );
 
     electron.ipcMain.on("agent:abort", (_event, sessionPath: string) => {
-        if (typeof sessionPath !== "string" || !sessionPath) return;
-        // Fire an abort intent at the owner — not a synchronous request for
-        // completion. The owner forwards to the harness.
-        sessionCache.get(sessionPath)?.abort();
+        void abortAgentSessionForIpc(sessionPath).catch((err) => {
+            console.error("[agent-ipc] abort validation error:", err);
+        });
     });
 
     electron.ipcMain.on("agent:subscribe", (event, sessionPath: string, opts?: { blockId?: string }) => {
-        if (typeof sessionPath !== "string" || !sessionPath) return;
-        const session = sessionCache.get(sessionPath);
-        if (!session) {
-            const key: SubKey = `${event.sender.id}:${sessionPath}`;
-            if (!pendingSubscriptions.has(key)) {
-                pendingSubscriptions.set(key, { sender: event.sender, sessionPath, blockId: opts?.blockId });
-                trackSenderKey(event.sender, key);
-            }
-            void sendPersistedSnapshot(event.sender, sessionPath, opts?.blockId);
-            return;
-        }
-        subscribeToOwner(event.sender, sessionPath, session);
+        void subscribeAgentSessionForIpc(event.sender, sessionPath, opts).catch((err) => {
+            console.error("[agent-ipc] subscribe validation error:", err);
+        });
     });
 
     electron.ipcMain.on("agent:unsubscribe", (event, sessionPath: string) => {
-        if (typeof sessionPath !== "string" || !sessionPath) return;
-        const key: SubKey = `${event.sender.id}:${sessionPath}`;
-        releaseSubscription(key);
-        const set = subscriptionsBySender.get(event.sender.id);
-        if (set) {
-            set.delete(key);
-            if (set.size === 0) subscriptionsBySender.delete(event.sender.id);
-        }
+        void unsubscribeAgentSessionForIpc(event.sender.id, sessionPath).catch((err) => {
+            console.error("[agent-ipc] unsubscribe validation error:", err);
+        });
     });
 }
 

@@ -98,7 +98,11 @@ declare global {
         getZoomFactor: () => number; // get-zoom-factor
         showWorkspaceAppMenu: (workspaceId: string) => void; // workspace-appmenu-show
         showBuilderAppMenu: (builderId: string) => void; // builder-appmenu-show
-        showContextMenu: (workspaceId: string, menu: ElectronContextMenuItem[], position?: { x: number; y: number }) => void; // contextmenu-show
+        showContextMenu: (
+            workspaceId: string,
+            menu: ElectronContextMenuItem[],
+            position?: { x: number; y: number }
+        ) => void; // contextmenu-show
         onContextMenuClick: (callback: (id: string | null) => void) => void; // contextmenu-click
         onNavigate: (callback: (url: string) => void) => void;
         onIframeNavigate: (callback: (url: string) => void) => void;
@@ -163,10 +167,20 @@ declare global {
         agent: {
             createSession: (cwd: string) => Promise<AgentSessionMeta>;
             listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
+            listCommands: () => Promise<AgentCommandInfo[]>; // agent:list-commands
+            listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>; // agent:list-tree
+            listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>; // agent:list-fork-points
+            navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>; // agent:navigate-tree
+            forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>; // agent:fork-session
+            cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>; // agent:clone-session
             send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
-            subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
+            subscribe: (
+                sessionPath: string,
+                callback: (event: unknown) => void,
+                opts?: { blockId?: string }
+            ) => () => void;
         };
     };
 
@@ -224,6 +238,74 @@ declare global {
          * emain/agent/permissions.ts and the architecture doc §7.9.
          */
         allowedTools?: string[];
+    };
+
+    type AgentCommandSource = "builtin" | "skill" | "prompt";
+
+    type AgentCommandAction =
+        | { type: "backend"; command: "tree" | "fork" | "clone" | "compact" | "session" | "clear" | "new" | "help" }
+        | { type: "frontend"; action: "openModelPicker" };
+
+    type AgentCommandInfo = {
+        name: string;
+        description: string;
+        argumentHint?: string;
+        source: AgentCommandSource;
+        action: AgentCommandAction;
+    };
+
+    type AgentTreeEntryView = {
+        id: string;
+        parentId?: string;
+        type: string;
+        role?: string;
+        label?: string;
+        preview: string;
+        timestamp?: string;
+        isLeaf: boolean;
+        isCurrent: boolean;
+    };
+
+    type AgentForkPointView = {
+        entryId: string;
+        preview: string;
+        timestamp?: string;
+    };
+
+    type AgentTreeResult = {
+        entries: AgentTreeEntryView[];
+        leafId: string | null;
+    };
+
+    type AgentNavigateTreeInput = {
+        sessionMetadata: AgentSessionMeta;
+        targetId: string;
+    };
+
+    type AgentNavigateTreeResult = {
+        sessionMetadata: AgentSessionMeta;
+        editorText?: string;
+    };
+
+    type AgentForkSessionInput = {
+        sessionMetadata: AgentSessionMeta;
+        cwd: string;
+        entryId: string;
+    };
+
+    type AgentForkSessionResult = {
+        sessionMetadata: AgentSessionMeta;
+        selectedText?: string;
+    };
+
+    type AgentCloneSessionInput = {
+        sessionMetadata: AgentSessionMeta;
+        cwd: string;
+    };
+
+    type AgentCloneSessionResult = {
+        sessionMetadata?: AgentSessionMeta;
+        message?: string;
     };
 
     type ElectronContextMenuItem = {

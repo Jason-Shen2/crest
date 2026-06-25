@@ -18,8 +18,21 @@ import type { SessionTreeEntry } from "./harness/types";
 // PaneAgentSession touches.
 function makeFakeHarness() {
     const listeners = new Set<(event: unknown) => void>();
-    const calls = { prompt: [] as string[], followUp: [] as string[], custom: [] as unknown[], abort: 0 };
+    const calls = {
+        prompt: [] as string[],
+        followUp: [] as string[],
+        custom: [] as unknown[],
+        abort: 0,
+        navigateTree: [] as unknown[],
+    };
     let promptResult: () => Promise<unknown> = () => new Promise(() => {}); // pending forever by default
+    let navigateTreeResult: () => Promise<unknown> = () => Promise.resolve({ cancelled: false });
+    const session = {
+        getEntries: vi.fn().mockResolvedValue([]),
+        getBranch: vi.fn().mockResolvedValue([]),
+        getLeafId: vi.fn().mockResolvedValue(null),
+        getLabel: vi.fn().mockResolvedValue(undefined),
+    };
     const harness = {
         subscribe(listener: (event: unknown) => void) {
             listeners.add(listener);
@@ -47,9 +60,14 @@ function makeFakeHarness() {
             calls.abort += 1;
             return Promise.resolve({});
         },
+        navigateTree(targetId: string, options?: unknown) {
+            calls.navigateTree.push({ targetId, options });
+            return navigateTreeResult();
+        },
     };
     return {
         calls,
+        session,
         emit(event: unknown) {
             for (const l of listeners) l(event);
         },
@@ -57,8 +75,12 @@ function makeFakeHarness() {
         setPromptResult(fn: () => Promise<unknown>) {
             promptResult = fn;
         },
+        setNavigateTreeResult(fn: () => Promise<unknown>) {
+            navigateTreeResult = fn;
+        },
         pane: {
             harness,
+            session,
             appendCustomEntry: harness.appendCustomEntry,
             promptWithCustomEntry: harness.promptWithCustomEntry,
             update: vi.fn(),
@@ -141,6 +163,126 @@ describe("PaneAgentSession — owned transcript", () => {
         expect(messages).toHaveLength(4);
         expect((messages[0] as { content: { text: string }[] }).content[0].text).toBe("q1");
         expect((messages[2] as { content: { text: string }[] }).content[0].text).toBe("q2");
+    });
+});
+
+describe("PaneAgentSession — command operations", () => {
+    it("lists session tree entries through the pane harness session", async () => {
+        const fake = makeFakeHarness();
+        const entry = { type: "message", id: "1", parentId: null, timestamp: "t", message: user("hello") };
+        fake.session.getEntries.mockResolvedValue([entry]);
+        fake.session.getLeafId.mockResolvedValue("1");
+        fake.session.getLabel.mockResolvedValue("Intro");
+
+        const owner = new PaneAgentSession("/s", fake.pane);
+        const result = await owner.listTreeEntries();
+
+        expect(result.entries).toEqual([entry]);
+        expect(result.leafId).toBe("1");
+        expect(result.labels.get("1")).toBe("Intro");
+    });
+
+    it("omits internal leaf entries from listed session tree entries", async () => {
+        const fake = makeFakeHarness();
+        const message = { type: "message", id: "1", parentId: null, timestamp: "t", message: user("hello") };
+        const leaf = { type: "leaf", id: "leaf-entry", parentId: "1", timestamp: "t", targetId: "1" };
+        fake.session.getEntries.mockResolvedValue([message, leaf]);
+        fake.session.getLeafId.mockResolvedValue("1");
+
+        const owner = new PaneAgentSession("/s", fake.pane);
+        const result = await owner.listTreeEntries();
+
+        expect(result.entries).toEqual([message]);
+        expect(fake.session.getLabel).toHaveBeenCalledTimes(1);
+        expect(fake.session.getLabel).toHaveBeenCalledWith("1");
+    });
+
+    it("navigates the session tree without branch summarization", async () => {
+        const fake = makeFakeHarness();
+        fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "edit this" }));
+        const owner = new PaneAgentSession("/s", fake.pane);
+
+        const result = await owner.navigateTree("entry-1");
+
+        expect(fake.calls.navigateTree).toEqual([{ targetId: "entry-1", options: { summarize: false } }]);
+        expect(result).toEqual({ editorText: "edit this" });
+    });
+
+    it("rebuilds owner snapshot from the selected branch after tree navigation", async () => {
+        const fake = makeFakeHarness();
+        const oldMessages = [user("old question"), assistant("old answer", "stop")];
+        const q = user("new question");
+        const a = assistant("new answer", "stop");
+        const branchEntries: SessionTreeEntry[] = [
+            {
+                type: "custom",
+                id: "run-entry",
+                parentId: null,
+                timestamp: "2026-01-01T00:00:00.000Z",
+                customType: AgentRunSessionEntryType,
+                data: { runId: "new-run" },
+            },
+            {
+                type: "message",
+                id: "m1",
+                parentId: "run-entry",
+                timestamp: "2026-01-01T00:00:01.000Z",
+                message: q,
+            },
+            {
+                type: "message",
+                id: "m2",
+                parentId: "m1",
+                timestamp: "2026-01-01T00:00:02.000Z",
+                message: a,
+            },
+        ];
+        fake.session.getBranch.mockResolvedValue(branchEntries);
+        const owner = new PaneAgentSession("/s", fake.pane, oldMessages);
+        const seen: unknown[] = [];
+        owner.subscribe((event) => seen.push(event));
+
+        await owner.navigateTree("m2");
+
+        expect(owner.getSnapshot().messages).toEqual([q, a]);
+        expect(owner.getSnapshot().runs).toEqual([
+            {
+                runId: "new-run",
+                userMessage: q,
+                responseMessages: [a],
+                status: "done",
+            },
+        ]);
+        expect(seen).toContainEqual(
+            expect.objectContaining({
+                type: "snapshot",
+                messages: [q, a],
+                runs: [
+                    {
+                        runId: "new-run",
+                        userMessage: q,
+                        responseMessages: [a],
+                        status: "done",
+                    },
+                ],
+            }),
+        );
+    });
+
+    it("returns an empty navigation result when tree navigation is cancelled", async () => {
+        const fake = makeFakeHarness();
+        fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: true }));
+        const owner = new PaneAgentSession("/s", fake.pane);
+
+        await expect(owner.navigateTree("entry-1")).resolves.toEqual({});
+    });
+
+    it("reads the active leaf id from the pane harness session", async () => {
+        const fake = makeFakeHarness();
+        fake.session.getLeafId.mockResolvedValue("leaf-1");
+        const owner = new PaneAgentSession("/s", fake.pane);
+
+        await expect(owner.getLeafId()).resolves.toBe("leaf-1");
     });
 });
 
