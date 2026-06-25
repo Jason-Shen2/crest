@@ -288,6 +288,7 @@ const SmartSelectPatterns: SmartSelectPattern[] = [
 function rowToText(row: readonly Cell[]): string {
     let s = "";
     for (const cell of row) {
+        if (!cell) continue;
         if (cell.width === 0) continue;
         s += cell.char.length > 0 ? cell.char : " ";
     }
