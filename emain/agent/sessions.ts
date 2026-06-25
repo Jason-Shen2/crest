@@ -26,6 +26,14 @@ import { NodeExecutionEnv } from "./node";
 
 let _repo: JsonlSessionRepo | undefined;
 
+export interface ForkPaneSessionOptions {
+    cwd?: string;
+    entryId?: string;
+    position?: "before" | "at";
+    id?: string;
+    parentSessionPath?: string;
+}
+
 /**
  * Resolve the sessions root directory mirroring the Go side's
  * GetWaveConfigDir logic (pkg/wavebase/wavebase.go:130). Sessions
@@ -99,6 +107,21 @@ export async function openPaneSessionByPath(
     sessionPath: string,
 ): Promise<Session<JsonlSessionMetadata>> {
     return getSessionsRepo().openPath(sessionPath);
+}
+
+export async function forkPaneSession(
+    sourceMetadata: JsonlSessionMetadata,
+    options: ForkPaneSessionOptions = {},
+): Promise<{
+    session: Session<JsonlSessionMetadata>;
+    metadata: JsonlSessionMetadata;
+}> {
+    const session = await getSessionsRepo().fork(sourceMetadata, {
+        ...options,
+        cwd: options.cwd ?? sourceMetadata.cwd,
+    });
+    const metadata = await session.getMetadata();
+    return { session, metadata };
 }
 
 /**

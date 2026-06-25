@@ -16,6 +16,7 @@ import {
     _setSessionsRepoForTests,
     createPaneSession,
     defaultSessionsDir,
+    forkPaneSession,
     listSessionsForCwd,
     openPaneSession,
     openPaneSessionByPath,
@@ -78,6 +79,22 @@ describe("sessions — JsonlSessionRepo wiring", () => {
         expect(context.messages).toHaveLength(1);
         expect(context.messages[0].role).toBe("user");
         expect((context.messages[0] as { content: { text: string }[] }).content[0].text).toBe("persisted q");
+    });
+
+    it("forkPaneSession forks before a user message and records the source path", async () => {
+        const source = await createPaneSession("/tmp/proj-fork");
+        await source.session.appendMessage(user("keep this"));
+        const forkPointId = await source.session.appendMessage(user("fork from here"));
+
+        const forked = await forkPaneSession(source.metadata, { entryId: forkPointId });
+        const forkedMeta = await forked.session.getMetadata();
+        const context = await forked.session.buildContext();
+
+        expect(forked.metadata.path).toBe(forkedMeta.path);
+        expect(forked.metadata.cwd).toBe("/tmp/proj-fork");
+        expect(forked.metadata.parentSessionPath).toBe(source.metadata.path);
+        expect(context.messages).toHaveLength(1);
+        expect((context.messages[0] as { content: { text: string }[] }).content[0].text).toBe("keep this");
     });
 
     it("listSessionsForCwd returns only sessions for the given cwd, newest first", async () => {
