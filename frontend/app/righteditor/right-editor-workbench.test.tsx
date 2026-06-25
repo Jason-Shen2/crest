@@ -65,8 +65,9 @@ import { RightEditorModel } from "./right-editor-model";
 import {
     acquireRightEditorLspForActiveFile,
     closeRightEditorFileWithConfirmation,
-    getRightEditorLspStatusForActiveFile,
+    getRightEditorFileTabDisplay,
     getRightEditorLspLifecycleKeyForActiveFile,
+    getRightEditorLspStatusForActiveFile,
     getRightEditorLspStatusLabel,
     handleRightEditorKeyDown,
     RightEditorWorkbench,
@@ -106,15 +107,14 @@ function renderWithStore(element: ReactElement): string {
 
 function renderWithMountedStore(element: ReactElement): { getMarkup: () => string; getChangeCount: () => number } {
     let changeCount = 0;
-    mockWorkbench.useSyncExternalStore.mockImplementation((
-        subscribe: (onStoreChange: () => void) => () => void,
-        getSnapshot: () => unknown
-    ) => {
-        subscribe(() => {
-            changeCount++;
-        });
-        return getSnapshot();
-    });
+    mockWorkbench.useSyncExternalStore.mockImplementation(
+        (subscribe: (onStoreChange: () => void) => () => void, getSnapshot: () => unknown) => {
+            subscribe(() => {
+                changeCount++;
+            });
+            return getSnapshot();
+        }
+    );
 
     return {
         getMarkup: () => renderWithStore(element),
@@ -228,8 +228,6 @@ describe("RightEditorWorkbench", () => {
         expect(markup).toContain('aria-label="Save /repo/test/app.ts"');
         const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
         expect(fileTabsMarkup).toContain("app.ts");
-        expect(fileTabsMarkup).toContain("src");
-        expect(fileTabsMarkup).toContain("test");
         expect(fileTabsMarkup).toContain("●");
         expect(fileTabsMarkup).not.toContain("Save app.ts");
         const visibleText = getVisibleText(fileTabsMarkup);
@@ -251,6 +249,52 @@ describe("RightEditorWorkbench", () => {
         expect(getRightEditorTabPathSuffix?.(String.raw`C:\repo\src\app.ts`, String.raw`C:\repo`)).toBe("src");
     });
 
+    it("shows suffixes only when open files need name disambiguation", () => {
+        const files = [
+            { path: "/repo/src/app.ts", workspaceRoot: "/repo" },
+            { path: "/repo/test/app.ts", workspaceRoot: "/repo" },
+            { path: "/repo/docs/readme.md", workspaceRoot: "/repo" },
+        ];
+
+        expect(getRightEditorFileTabDisplay(files[0], files)).toEqual({ name: "app.ts", suffix: "src" });
+        expect(getRightEditorFileTabDisplay(files[1], files)).toEqual({ name: "app.ts", suffix: "test" });
+        expect(getRightEditorFileTabDisplay(files[2], files)).toEqual({ name: "readme.md", suffix: "" });
+    });
+
+    it("uses the shortest unique parent suffix for deeply nested duplicate file names", () => {
+        const files = [
+            { path: "/repo/packages/web/src/index.ts", workspaceRoot: "/repo" },
+            { path: "/repo/apps/web/src/index.ts", workspaceRoot: "/repo" },
+            { path: "/repo/packages/api/src/index.ts", workspaceRoot: "/repo" },
+        ];
+
+        expect(getRightEditorFileTabDisplay(files[0], files).suffix).toBe("packages/web/src");
+        expect(getRightEditorFileTabDisplay(files[1], files).suffix).toBe("apps/web/src");
+        expect(getRightEditorFileTabDisplay(files[2], files).suffix).toBe("api/src");
+    });
+
+    it("includes workspace labels when duplicate file names share the same relative parent suffix", () => {
+        const files = [
+            { path: "/repo-a/src/app.ts", workspaceRoot: "/repo-a" },
+            { path: "/repo-b/src/app.ts", workspaceRoot: "/repo-b" },
+        ];
+
+        expect(getRightEditorFileTabDisplay(files[0], files).suffix).toBe("repo-a/src");
+        expect(getRightEditorFileTabDisplay(files[1], files).suffix).toBe("repo-b/src");
+    });
+
+    it("disambiguates duplicate tabs when the requested file is an equivalent object from outside openFiles", () => {
+        const files = [
+            { path: "/repo-a/src/app.ts", workspaceRoot: "/repo-a" },
+            { path: "/repo-b/src/app.ts", workspaceRoot: "/repo-b" },
+        ];
+
+        expect(getRightEditorFileTabDisplay({ ...files[0] }, files)).toEqual({
+            name: "app.ts",
+            suffix: "repo-a/src",
+        });
+    });
+
     it("renders Trae-style file tabs with filename and relative parent suffix", async () => {
         const model = RightEditorModel.getInstance(rpc);
         await model.openFile("/repo/src/app.ts", "/repo");
@@ -262,7 +306,7 @@ describe("RightEditorWorkbench", () => {
         expect(fileTabsMarkup).toContain("app.ts");
         expect(fileTabsMarkup).toContain("src");
         expect(fileTabsMarkup).toContain("test");
-        expect(fileTabsMarkup).toContain('data-overflow-behavior="horizontal-scroll"');
+        expect(fileTabsMarkup).toContain('data-overflow-behavior="no-horizontal-scroll"');
         const visibleText = getVisibleText(fileTabsMarkup);
         expect(visibleText).not.toContain("/repo/");
         expect(visibleText).not.toContain("src/");
@@ -279,14 +323,14 @@ describe("RightEditorWorkbench", () => {
         const visibleText = getVisibleText(fileTabsMarkup);
 
         expect(visibleText).toContain("app.ts");
-        expect(visibleText).toContain("src");
+        expect(visibleText).not.toContain("src");
         expect(visibleText).not.toContain(String.raw`C:\repo`);
         expect(fileTabsMarkup).toContain(`title="${path}"`);
         expect(fileTabsMarkup).toContain(`aria-label="Select ${path}"`);
         expect(fileTabsMarkup).toContain(`aria-label="Close ${path}"`);
     });
 
-    it("hides file tab close buttons until hover while keeping the active tab close button visible", async () => {
+    it("centers file tab content and hides all file tab close buttons until hover", async () => {
         const model = RightEditorModel.getInstance(rpc);
         await model.openFile("/repo/src/app.ts", "/repo");
         await model.openFile("/repo/test/app.ts", "/repo");
@@ -294,8 +338,10 @@ describe("RightEditorWorkbench", () => {
         const markup = renderWithStore(<RightEditorWorkbench model={model} />);
         const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
 
+        expect(fileTabsMarkup).toContain('data-tab-content-align="center"');
         expect(fileTabsMarkup).toContain('data-close-visibility="hover"');
-        expect(fileTabsMarkup).toContain('data-close-visibility="always"');
+        expect(fileTabsMarkup).not.toContain('data-close-visibility="always"');
+        expect(fileTabsMarkup).not.toContain(" opacity-100");
     });
 
     it("keeps every file tab select and close control rendered when many tabs are open", async () => {
@@ -314,13 +360,46 @@ describe("RightEditorWorkbench", () => {
         const markup = renderWithStore(<RightEditorWorkbench model={model} />);
         const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
 
-        expect(fileTabsMarkup).toContain('data-overflow-behavior="horizontal-scroll"');
+        expect(fileTabsMarkup).toContain('data-overflow-behavior="no-horizontal-scroll"');
         expect(countMatches(fileTabsMarkup, /aria-label="Select /g)).toBe(paths.length);
         expect(countMatches(fileTabsMarkup, /aria-label="Close /g)).toBe(paths.length);
         for (const path of paths) {
             expect(fileTabsMarkup).toContain(`aria-label="Select ${path}"`);
             expect(fileTabsMarkup).toContain(`aria-label="Close ${path}"`);
         }
+    });
+
+    it("uses adaptive file tab widths without horizontal scrolling and hides labels when narrow", async () => {
+        const model = RightEditorModel.getInstance(rpc);
+        await model.openFile("/repo/packages/web/src/index.ts", "/repo");
+        await model.openFile("/repo/apps/web/src/index.ts", "/repo");
+
+        const markup = renderWithStore(<RightEditorWorkbench model={model} />);
+        const fileTabsMarkup = getRightEditorFileTabsMarkup(markup);
+        const visibleText = getVisibleText(fileTabsMarkup);
+
+        expect(fileTabsMarkup).toContain('data-overflow-behavior="no-horizontal-scroll"');
+        expect(fileTabsMarkup).toContain('data-tab-sizing="adaptive-fill"');
+        expect(fileTabsMarkup).toContain('data-tab-width="adaptive-by-count"');
+        expect(fileTabsMarkup).toContain('data-label-collapse="hide-on-narrow"');
+        expect(fileTabsMarkup).toContain("container-type:inline-size");
+        expect(fileTabsMarkup).toContain("[@container(max-width:9rem)]:hidden");
+        expect(fileTabsMarkup).not.toContain("overflow-x-auto");
+        expect(fileTabsMarkup).not.toContain("no-scrollbar");
+        expect(fileTabsMarkup).not.toContain("scrollbar-width:none");
+        expect(fileTabsMarkup).toContain('data-name-display="full-priority"');
+        expect(fileTabsMarkup).toContain("overflow-hidden");
+        expect(fileTabsMarkup).not.toContain("min-w-8");
+        expect(fileTabsMarkup).not.toContain("shrink-0 truncate font-medium");
+        expect(fileTabsMarkup).toContain('data-suffix-priority="shrink-first"');
+        expect(fileTabsMarkup).not.toContain("basis-0");
+        expect(fileTabsMarkup).not.toContain("max-w-56");
+        expect(fileTabsMarkup).not.toContain("whitespace-nowrap");
+        expect(fileTabsMarkup).not.toContain("h-9");
+        expect(fileTabsMarkup).not.toContain("min-w-[14rem]");
+        expect(visibleText).toContain("index.ts");
+        expect(visibleText).toContain("packages/web/src");
+        expect(visibleText).toContain("apps/web/src");
     });
 
     it("keeps full paths discoverable for same-name tabs without showing them as visible tab text", async () => {
@@ -343,6 +422,8 @@ describe("RightEditorWorkbench", () => {
         expect(markup.match(/title="\/repo-b\/src\/app\.ts"/g)?.length).toBeGreaterThanOrEqual(4);
         expect(visibleText).not.toContain("/repo-a/");
         expect(visibleText).not.toContain("/repo-b/");
+        expect(visibleText).toContain("repo-a/src");
+        expect(visibleText).toContain("repo-b/src");
     });
 
     it("uses the file uri model from MonacoModelRegistry for the active file", async () => {

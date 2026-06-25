@@ -181,6 +181,7 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-label="Right tool tabs"');
         expect(markup).toContain('aria-label="Open right tool"');
         expect(markup).toContain('aria-label="Hide right tool panel"');
+        expect(markup).toContain('data-add-placement="tab-strip-end"');
         expect(markup).toContain("fa-solid fa-chevron-right");
         expect(markup).toContain('aria-current="page"');
         expect(markup.indexOf('aria-label="Right tool tabs"')).toBeLessThan(
@@ -211,7 +212,10 @@ describe("RightToolPanel parts", () => {
         const actionButton = findElementByAriaLabel(topBar, "Hide right tool panel");
 
         expect(openButton.type).toBe("summary");
-        expect(renderToStaticMarkup(topBar)).toContain("rounded-md");
+        const markup = renderToStaticMarkup(topBar);
+        expect(markup).toContain('class="relative flex h-7 shrink-0 items-center"');
+        expect(markup).toContain("h-full w-7");
+        expect(markup).not.toContain("h-7 w-9");
         expect(actionButton.props.onClick).toBeTypeOf("function");
         actionButton.props.onClick?.();
 
@@ -227,6 +231,20 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain("<details");
         expect(markup).toContain('open=""');
         expect(markup).toContain('aria-label="Close right tool menu"');
+        expect(markup).toContain('data-menu-backdrop="true"');
+        expect(markup).toContain('tabindex="-1"');
+        expect(markup).toContain('aria-hidden="true"');
+        expect(markup).toContain('data-menu-surface="trae"');
+        expect(markup).toContain("right-0");
+        expect(markup).toContain("top-8");
+        expect(markup).toContain("w-44");
+        expect(markup).toContain("p-1");
+        expect(markup).toContain("text-xs");
+        expect(markup).not.toContain("absolute left-0");
+        expect(markup).not.toContain("top-9");
+        expect(markup).not.toContain("w-52");
+        expect(markup).not.toContain("p-1.5");
+        expect(markup).not.toContain("text-sm font-medium");
         expect(markup).not.toContain('role="menu"');
         expect(markup).not.toContain('role="menuitem"');
         expect(markup).toContain('aria-label="Open Browser right tool"');
@@ -318,8 +336,51 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-label="Close Editor"');
         expect(markup).toContain('aria-label="Close Browser"');
         expect(markup).toContain('data-close-visibility="hover"');
-        expect(markup).toContain('data-close-visibility="always"');
+        expect(markup).toContain('data-tab-content-align="center"');
+        expect(markup).not.toContain('data-close-visibility="always"');
+        expect(markup).not.toContain(" opacity-100");
         expect(markup).toContain("fa-regular fa-pen-to-square");
+    });
+
+    it("uses adaptive tool tab widths without horizontal scrolling", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolTabs
+                openedTools={["editor", "browser", "terminal", "codeReview"]}
+                activeTool="codeReview"
+                onSelectTool={() => null}
+                onCloseTool={() => null}
+            />
+        );
+
+        expect(markup).toContain('data-overflow-behavior="no-horizontal-scroll"');
+        expect(markup).toContain('data-tab-sizing="adaptive-fill"');
+        expect(markup).toContain('data-tab-width="adaptive-by-count"');
+        expect(markup).toContain('data-label-collapse="hide-on-narrow"');
+        expect(markup).toContain("container-type:inline-size");
+        expect(markup).toContain("[@container(max-width:7.5rem)]:hidden");
+        expect(markup).not.toContain("overflow-x-auto");
+        expect(markup).not.toContain("no-scrollbar");
+        expect(markup).not.toContain("scrollbar-width:none");
+        expect(markup).not.toContain("basis-0");
+        expect(markup).not.toContain("max-width:min");
+        expect(markup).not.toContain("h-9");
+        expect(markup).not.toContain("min-w-[10rem]");
+    });
+
+    it("keeps the add button next to the tab strip instead of pushing it to the far edge", () => {
+        const markup = renderToStaticMarkup(
+            <RightToolTopBar
+                activeTool="editor"
+                openedTools={["editor", "browser"]}
+                onOpenTool={() => null}
+                onSelectTool={() => null}
+                onCloseTool={() => null}
+            />
+        );
+
+        expect(markup).toContain('data-add-placement="tab-strip-end"');
+        expect(markup).toContain("flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden");
+        expect(markup).not.toContain("overflow-x-auto");
     });
 
     it("keeps every select and close control rendered for many tabs without clipping the tab strip", () => {
@@ -332,7 +393,7 @@ describe("RightToolPanel parts", () => {
             />
         );
 
-        expect(markup).toContain('data-overflow-behavior="horizontal-scroll"');
+        expect(markup).toContain('data-overflow-behavior="no-horizontal-scroll"');
         expect(countMatches(markup, /aria-label="Select /g)).toBe(4);
         expect(countMatches(markup, /aria-label="Close /g)).toBe(4);
         expect(markup).toContain('aria-label="Select Editor"');
