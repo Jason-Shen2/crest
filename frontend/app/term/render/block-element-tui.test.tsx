@@ -135,7 +135,7 @@ describe("BlockElement TUI layout", () => {
         expect(html).toContain('data-testid="cursor"');
     });
 
-    it("does not render a cursor for long-running PTY when model suppresses parked cursor", () => {
+    it("does not render a cursor when model suppresses terminal cursor rendering", () => {
         const block = makeBlock(false) as any;
         block.outputGrid.cursorState.visible = false;
         const html = renderToStaticMarkup(
@@ -145,7 +145,7 @@ describe("BlockElement TUI layout", () => {
                 model={{
                     getMode: () => DefaultTermMode,
                     getActiveSurfaceState: () => ({ kind: "long-running-pty", blockId: block.id }),
-                    getCursorRenderState: () => ({ kind: "suppressed", reason: "parked-cursor" }),
+                    getCursorRenderState: () => ({ kind: "suppressed", reason: "rich-input-open" }),
                 } as any}
             />
         );
