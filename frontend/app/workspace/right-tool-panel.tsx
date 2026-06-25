@@ -183,22 +183,30 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
         closeDetails(event);
     };
     return (
-        <details className="relative shrink-0" open={initiallyOpen ? true : undefined}>
+        <details
+            className="relative flex h-7 shrink-0 items-center"
+            data-add-placement="tab-strip-end"
+            open={initiallyOpen ? true : undefined}
+        >
             <summary
                 aria-label="Open right tool"
-                className="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded-md border border-border bg-black/20 text-muted transition-colors hover:bg-hoverbg hover:text-white [&::-webkit-details-marker]:hidden"
+                className="flex h-full w-7 cursor-pointer list-none items-center justify-center rounded-md border border-transparent bg-[#202124] text-[#a1a1aa] transition-colors hover:border-[#3f3f46] hover:bg-[#2a2b2f] hover:text-[#f4f4f5] [&::-webkit-details-marker]:hidden"
             >
-                <i className="fa-solid fa-plus" />
+                <i className="fa-solid fa-plus text-xs" />
             </summary>
             <button
                 type="button"
                 aria-label="Close right tool menu"
-                className="fixed inset-0 z-40 cursor-default"
+                aria-hidden="true"
+                data-menu-backdrop="true"
+                tabIndex={-1}
+                className="fixed inset-0 z-40 cursor-default border-0 bg-transparent p-0"
                 onClick={closeDetails}
             />
             <div
                 aria-label="Open right tool menu"
-                className="absolute right-0 top-8 z-50 flex min-w-44 flex-col gap-1 rounded-md border border-border bg-panelbg p-1 shadow-xl"
+                data-menu-surface="trae"
+                className="absolute right-0 top-8 z-50 flex w-44 flex-col gap-1 rounded-lg border border-[#34343a] bg-[#1f2023] p-1 shadow-2xl"
             >
                 {availableTools.map((tool) => {
                     const metadata = RightToolMetadataById[tool];
@@ -207,10 +215,10 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
                             key={tool}
                             type="button"
                             aria-label={`Open ${metadata.label} right tool`}
-                            className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-secondary transition-colors hover:bg-hoverbg hover:text-white"
+                            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-[#d4d4d8] transition-colors hover:bg-[#2a2b2f] hover:text-[#f4f4f5]"
                             onClick={(event) => handleOpenTool(event, tool)}
                         >
-                            <i className={cn("w-4 text-center text-[11px]", metadata.icon)} />
+                            <i className={cn("w-3.5 text-center text-xs", metadata.icon)} />
                             <span>{metadata.label}</span>
                         </button>
                     );
@@ -227,9 +235,10 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
     return (
         <nav
             aria-label="Right tool tabs"
-            data-overflow-behavior="horizontal-scroll"
-            className="flex min-w-0 max-w-full shrink items-center gap-1 overflow-x-auto overflow-y-hidden"
-            style={{ width: "max-content", maxWidth: `min(100%, ${openedTools.length * 136}px)` }}
+            data-overflow-behavior="no-horizontal-scroll"
+            data-tab-sizing="adaptive-fill"
+            data-tab-width="adaptive-by-count"
+            className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden pr-1"
         >
             {openedTools.map((tool) => {
                 const metadata = RightToolMetadataById[tool];
@@ -238,29 +247,34 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                     <div
                         key={tool}
                         className={cn(
-                            "group/tab flex h-8 min-w-24 flex-1 basis-0 items-center rounded-sm border text-xs transition-colors",
+                            "group/tab relative flex h-7 min-w-7 max-w-[14rem] flex-1 items-center rounded-md border text-xs transition-colors",
                             active
-                                ? "border-[#3f3f46] bg-[#252529] text-[#f4f4f5] outline-solid outline-1 outline-[#4b5563]"
-                                : "border-transparent bg-[#18181b] text-[#a1a1aa] hover:border-[#3f3f46] hover:bg-[#202024] hover:text-[#f4f4f5]"
+                                ? "border-[#4b5563] bg-[#2a2b2f] text-[#f4f4f5] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]"
+                                : "border-transparent bg-[#202124] text-[#a1a1aa] hover:border-[#3f3f46] hover:bg-[#27282c] hover:text-[#f4f4f5]"
                         )}
+                        style={{ containerType: "inline-size" }}
                     >
                         <button
                             type="button"
                             aria-label={`Select ${metadata.label}`}
                             aria-current={active ? "page" : undefined}
-                            className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-1.5 px-2"
+                            data-tab-content-align="center"
+                            data-label-collapse="hide-on-narrow"
+                            className="flex h-full min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 px-2"
                             onClick={() => onSelectTool(tool)}
                         >
-                            <i className={cn("shrink-0 text-[11px]", metadata.icon)} />
-                            <span className="truncate font-medium">{metadata.label}</span>
+                            <i className={cn("shrink-0 text-[13px]", metadata.icon)} />
+                            <span className="min-w-0 truncate font-medium [@container(max-width:7.5rem)]:hidden">
+                                {metadata.label}
+                            </span>
                         </button>
                         <button
                             type="button"
                             aria-label={`Close ${metadata.label}`}
-                            data-close-visibility={active ? "always" : "hover"}
+                            data-close-visibility="hover"
                             className={cn(
-                                "mr-1 flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:opacity-100",
-                                active ? "opacity-100" : "opacity-0 group-hover/tab:opacity-100"
+                                "pointer-events-none absolute right-1.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:pointer-events-auto focus:opacity-100",
+                                "opacity-0 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100"
                             )}
                             onClick={() => onCloseTool(tool)}
                         >
