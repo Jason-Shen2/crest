@@ -8,6 +8,9 @@ type ClientKey = string;
 type EnsureClientInput = {
     workspaceRoot: string;
     language: string;
+    languages?: string[];
+    serverId?: string | null;
+    displayName?: string;
 };
 
 type DisposableTransport = {
@@ -23,11 +26,17 @@ type PendingTransport = {
     stopped: boolean;
 };
 
+type StatusListener = () => void;
+
+const LspUnavailablePrefix = "LSP unavailable: ";
+
 export class LanguageClientManager {
     private readonly deps: LanguageClientManagerDeps;
     private readonly transports = new Map<ClientKey, DisposableTransport>();
     private readonly pendingTransports = new Map<ClientKey, PendingTransport>();
     private readonly statusByKey = new Map<ClientKey, RightEditorLspStatus>();
+    private readonly statusVersions = new Map<ClientKey, number>();
+    private readonly statusListeners = new Map<ClientKey, Set<StatusListener>>();
     private readonly referenceCounts = new Map<ClientKey, number>();
 
     constructor(deps: LanguageClientManagerDeps) {
@@ -35,6 +44,10 @@ export class LanguageClientManager {
     }
 
     async ensureClient(input: EnsureClientInput): Promise<void> {
+        if (!input.serverId) {
+            this.setStatus(input, "unavailable", "Language server unavailable");
+            return;
+        }
         const key = this.makeKey(input);
         if (this.transports.has(key)) return;
         const pendingTransport = this.pendingTransports.get(key);
@@ -63,7 +76,9 @@ export class LanguageClientManager {
                 this.setStatus(input, "running", null);
             }
         } catch (e: any) {
-            this.setStatus(input, "error", e?.message ?? String(e));
+            if (this.pendingTransports.get(key) === pendingTransportEntry && !pendingTransportEntry.stopped) {
+                this.setErrorStatus(input, e);
+            }
             throw e;
         } finally {
             if (this.pendingTransports.get(key) === pendingTransportEntry) {
@@ -73,17 +88,42 @@ export class LanguageClientManager {
     }
 
     getStatus(input: EnsureClientInput): RightEditorLspStatus {
-        return (
-            this.statusByKey.get(this.makeKey(input)) ?? {
-                workspaceRoot: input.workspaceRoot,
-                language: input.language,
-                state: "stopped",
-                message: null,
+        const status = this.statusByKey.get(this.makeKey(input));
+        return {
+            workspaceRoot: input.workspaceRoot,
+            language: input.language,
+            serverId: input.serverId ?? status?.serverId ?? null,
+            displayName: input.displayName ?? status?.displayName ?? input.language,
+            state: status?.state ?? "stopped",
+            message: status?.message ?? null,
+        };
+    }
+
+    getStatusSnapshot(input: EnsureClientInput): number {
+        return this.statusVersions.get(this.makeKey(input)) ?? 0;
+    }
+
+    subscribeStatus(input: EnsureClientInput, listener: StatusListener): () => void {
+        const key = this.makeKey(input);
+        let listeners = this.statusListeners.get(key);
+        if (!listeners) {
+            listeners = new Set();
+            this.statusListeners.set(key, listeners);
+        }
+        listeners.add(listener);
+        return () => {
+            listeners?.delete(listener);
+            if (listeners?.size === 0) {
+                this.statusListeners.delete(key);
             }
-        );
+        };
     }
 
     acquireClient(input: EnsureClientInput): () => void {
+        if (!input.serverId) {
+            this.setStatus(input, "unavailable", "Language server unavailable");
+            return () => undefined;
+        }
         const key = this.makeKey(input);
         this.referenceCounts.set(key, (this.referenceCounts.get(key) ?? 0) + 1);
         void this.ensureClient(input).catch(() => undefined);
@@ -127,19 +167,48 @@ export class LanguageClientManager {
         this.pendingTransports.clear();
         this.statusByKey.clear();
         this.referenceCounts.clear();
+        this.notifyAllStatusListeners();
     }
 
     private setStatus(input: EnsureClientInput, state: RightEditorLspStatus["state"], message: string | null): void {
-        this.statusByKey.set(this.makeKey(input), {
+        const key = this.makeKey(input);
+        this.statusByKey.set(key, {
             workspaceRoot: input.workspaceRoot,
             language: input.language,
+            serverId: input.serverId ?? null,
+            displayName: input.displayName ?? input.language,
             state,
             message,
         });
+        this.notifyStatusListeners(key);
+    }
+
+    private setErrorStatus(input: EnsureClientInput, e: any): void {
+        const message = e?.message ?? String(e);
+        if (message.startsWith(LspUnavailablePrefix)) {
+            this.setStatus(input, "unavailable", message.slice(LspUnavailablePrefix.length));
+            return;
+        }
+        this.setStatus(input, "error", message);
     }
 
     private makeKey(input: EnsureClientInput): ClientKey {
-        return `${input.workspaceRoot}\u0000${input.language}`;
+        return `${input.workspaceRoot}\u0000${input.serverId ?? ""}`;
+    }
+
+    private notifyStatusListeners(key: ClientKey): void {
+        this.statusVersions.set(key, (this.statusVersions.get(key) ?? 0) + 1);
+        const listeners = this.statusListeners.get(key);
+        if (!listeners) return;
+        for (const listener of [...listeners]) {
+            listener();
+        }
+    }
+
+    private notifyAllStatusListeners(): void {
+        for (const key of this.statusListeners.keys()) {
+            this.notifyStatusListeners(key);
+        }
     }
 }
 

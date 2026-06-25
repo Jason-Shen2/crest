@@ -4,11 +4,16 @@
 import { CodeEditor } from "@/app/view/codeeditor/codeeditor";
 import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
-import { useEffect, useMemo } from "react";
 import { languageClientManager } from "./lsp/language-client-manager";
+import {
+    getRightEditorLanguageServer,
+    getRightEditorLspSupport,
+    isRightEditorLspSupported,
+} from "./lsp/language-server-registry";
 import { MonacoModelRegistry } from "./monaco-model-registry";
 import type { RightEditorModel } from "./right-editor-model";
-import type { RightEditorOpenFile } from "./right-editor-types";
+import type { RightEditorLspStatus, RightEditorOpenFile } from "./right-editor-types";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 
 function normalizePathSeparators(path: string): string {
     return path.replace(/\\/g, "/");
@@ -51,17 +56,69 @@ export function getRightEditorTabPathSuffix(path: string, workspaceRoot: string)
 }
 
 export function shouldStartRightEditorLsp(language: string, workspaceRoot: string): boolean {
-    if (!workspaceRoot) return false;
-    return (
-        language === "typescript" ||
-        language === "typescriptreact" ||
-        language === "javascript" ||
-        language === "javascriptreact"
-    );
+    return isRightEditorLspSupported(language, workspaceRoot);
+}
+
+export function getRightEditorLspLifecycleKeyForActiveFile(input: {
+    activeFile: RightEditorOpenFile | null | undefined;
+    workspaceRoot: string;
+}): string | undefined {
+    if (!input.activeFile) return undefined;
+    const workspaceRoot = input.activeFile.workspaceRoot || input.workspaceRoot;
+    const server = getRightEditorLanguageServer(input.activeFile.language);
+    if (!workspaceRoot || !server) return undefined;
+    return `${workspaceRoot}\u0000${server.serverId}`;
 }
 
 type LspLifecycleManager = {
-    acquireClient: (input: { workspaceRoot: string; language: string }) => () => void;
+    acquireClient: (input: {
+        workspaceRoot: string;
+        language: string;
+        languages: string[];
+        serverId: string;
+        displayName: string;
+    }) => () => void;
+};
+
+type LspStatusManager = {
+    getStatus: (input: {
+        workspaceRoot: string;
+        language: string;
+        languages?: string[];
+        serverId?: string | null;
+        displayName?: string;
+    }) => RightEditorLspStatus;
+    getStatusSnapshot?: (input: {
+        workspaceRoot: string;
+        language: string;
+        languages?: string[];
+        serverId?: string | null;
+        displayName?: string;
+    }) => number;
+    subscribeStatus?: (
+        input: {
+            workspaceRoot: string;
+            language: string;
+            languages?: string[];
+            serverId?: string | null;
+            displayName?: string;
+        },
+        listener: () => void
+    ) => () => void;
+};
+
+export type RightEditorLspStatusDetails = {
+    supported: boolean;
+    status: RightEditorLspStatus;
+    installHint: string | null;
+};
+
+type RightEditorLspStatusInput = {
+    workspaceRoot: string;
+    language: string;
+    languages: string[];
+    serverId: string;
+    displayName: string;
 };
 
 export function acquireRightEditorLspForActiveFile(input: {
@@ -71,11 +128,92 @@ export function acquireRightEditorLspForActiveFile(input: {
 }): (() => void) | undefined {
     if (!input.activeFile) return undefined;
     const workspaceRoot = input.activeFile.workspaceRoot || input.workspaceRoot;
-    if (!shouldStartRightEditorLsp(input.activeFile.language, workspaceRoot)) return undefined;
+    const server = getRightEditorLanguageServer(input.activeFile.language);
+    if (!workspaceRoot || !server) return undefined;
     return input.lspManager.acquireClient({
         workspaceRoot,
         language: input.activeFile.language,
+        languages: server.languages,
+        serverId: server.serverId,
+        displayName: server.displayName,
     });
+}
+
+export function getRightEditorLspStatusForActiveFile(input: {
+    activeFile: RightEditorOpenFile | null | undefined;
+    workspaceRoot: string;
+    lspManager: LspStatusManager;
+}): RightEditorLspStatusDetails | undefined {
+    if (!input.activeFile) return undefined;
+    const workspaceRoot = input.activeFile.workspaceRoot || input.workspaceRoot;
+    const support = getRightEditorLspSupport(input.activeFile.language, workspaceRoot);
+    if (!support.supported) {
+        return {
+            supported: false,
+            installHint: null,
+            status: support.status,
+        };
+    }
+    return {
+        supported: true,
+        installHint: support.server.installHint ?? null,
+        status: input.lspManager.getStatus({
+            workspaceRoot,
+            language: input.activeFile.language,
+            languages: support.server.languages,
+            serverId: support.server.serverId,
+            displayName: support.server.displayName,
+        }),
+    };
+}
+
+function getRightEditorLspStatusInputForActiveFile(
+    activeFile: RightEditorOpenFile | null | undefined,
+    workspaceRoot: string
+): RightEditorLspStatusInput | undefined {
+    if (!activeFile) return undefined;
+    const activeWorkspaceRoot = activeFile.workspaceRoot || workspaceRoot;
+    const support = getRightEditorLspSupport(activeFile.language, activeWorkspaceRoot);
+    if (!support.supported) return undefined;
+    return {
+        workspaceRoot: activeWorkspaceRoot,
+        language: activeFile.language,
+        languages: support.server.languages,
+        serverId: support.server.serverId,
+        displayName: support.server.displayName,
+    };
+}
+
+function useRightEditorLspStatusVersion(
+    activeFile: RightEditorOpenFile | null | undefined,
+    workspaceRoot: string
+): number {
+    const statusInput = getRightEditorLspStatusInputForActiveFile(activeFile, workspaceRoot);
+    return useSyncExternalStore(
+        (onStoreChange) => {
+            if (!statusInput || !languageClientManager.subscribeStatus) return () => undefined;
+            return languageClientManager.subscribeStatus(statusInput, onStoreChange);
+        },
+        () => {
+            if (!statusInput || !languageClientManager.getStatusSnapshot) return 0;
+            return languageClientManager.getStatusSnapshot(statusInput);
+        },
+        () => {
+            if (!statusInput || !languageClientManager.getStatusSnapshot) return 0;
+            return languageClientManager.getStatusSnapshot(statusInput);
+        }
+    );
+}
+
+export function getRightEditorLspStatusLabel(status: RightEditorLspStatus | undefined, installHint?: string | null): string {
+    if (!status) return "";
+    if (status.state === "running") return `${status.displayName} LSP ready`;
+    if (status.state === "starting") return `${status.displayName} LSP starting`;
+    if (status.state === "unavailable") {
+        return status.message ?? installHint ?? `${status.displayName} LSP unavailable`;
+    }
+    if (status.state === "error") return status.message ?? `${status.displayName} LSP error`;
+    return status.message ?? `${status.displayName} LSP stopped`;
 }
 
 export function closeRightEditorFileWithConfirmation(input: {
@@ -119,6 +257,14 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
     const state = useAtomValue(model.stateAtom);
     const activeFile = state.openFiles.find((file) => file.path === state.activePath);
     const text = activeFile ? (activeFile.dirtyText ?? activeFile.savedText) : "";
+    const activeLspLifecycleKey = getRightEditorLspLifecycleKeyForActiveFile({
+        activeFile,
+        workspaceRoot: activeFile?.workspaceRoot ?? state.workspaceRoot,
+    });
+    const lspStatusVersion = useRightEditorLspStatusVersion(
+        activeFile,
+        activeFile?.workspaceRoot ?? state.workspaceRoot
+    );
     const activeMonacoModel = useMemo(() => {
         if (!activeFile) return null;
         return MonacoModelRegistry.getInstance().getOrCreateModel({
@@ -135,7 +281,7 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
             workspaceRoot: activeFile?.workspaceRoot ?? state.workspaceRoot,
             lspManager: languageClientManager,
         });
-    }, [state.workspaceRoot, activeFile?.workspaceRoot, activeFile?.language]);
+    }, [activeLspLifecycleKey]);
 
     if (!activeFile) {
         return (
@@ -150,6 +296,17 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
     const displayName = basename(trimTrailingSlashes(activeFile.path));
     const activeSuffix = getRightEditorTabPathSuffix(activeFile.path, activeFile.workspaceRoot || state.workspaceRoot);
     const activeLabel = activeSuffix ? `${displayName} ${activeSuffix}` : displayName;
+    const lspStatusDetails = getRightEditorLspStatusForActiveFile({
+        activeFile,
+        workspaceRoot: activeFile.workspaceRoot || state.workspaceRoot,
+        lspManager: languageClientManager,
+    });
+    void lspStatusVersion;
+    const lspStatusLabel = getRightEditorLspStatusLabel(
+        lspStatusDetails?.status,
+        lspStatusDetails?.installHint
+    );
+    const footerStatusLabel = activeFile.saveStatus === "error" ? activeFile.error : lspStatusLabel;
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-[#111113]">
@@ -252,8 +409,13 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                     {activeLabel}
                 </span>
                 <div className="flex shrink-0 items-center gap-2">
-                    <span className="max-w-64 truncate" title={activeFile.path}>
-                        {activeFile.saveStatus === "error" ? activeFile.error : activeFile.language}
+                    <span
+                        role="status"
+                        aria-live="polite"
+                        className="max-w-64 truncate"
+                        title={footerStatusLabel ?? activeFile.path}
+                    >
+                        {footerStatusLabel}
                     </span>
                     <button
                         type="button"
