@@ -3,11 +3,12 @@
 
 import { describe, expect, it } from "vitest";
 import {
+    findSlashCommandAction,
     getAgentShellShortcutModifierKey,
     makeSlashCommandsFromAgentRegistry,
     resolveEditorEnterAction,
-    resolveSubmitMode,
     resolveShortcutOverrideMode,
+    resolveSubmitMode,
     shouldClearInputAfterSubmit,
     shouldFocusCmdBlockEditor,
     shouldShowAgentShellShortcutHint,
@@ -44,7 +45,9 @@ describe("shouldFocusCmdBlockEditor", () => {
     });
 
     it("does not steal focus from another editable surface", () => {
-        expect(shouldFocusCmdBlockEditor(makeElement("DIV", { contentEditable: true }), makeContainer(false))).toBe(false);
+        expect(shouldFocusCmdBlockEditor(makeElement("DIV", { contentEditable: true }), makeContainer(false))).toBe(
+            false
+        );
     });
 });
 
@@ -130,6 +133,7 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
                 name: "/compact",
                 description: "Compact the current agent session context [instructions]",
                 icon: "stars-01",
+                action: "submitAgentCommand",
             },
             {
                 name: "/model",
@@ -138,5 +142,47 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
                 action: "openModelPicker",
             },
         ]);
+    });
+
+    it("marks builtin backend slash commands as agent actions", () => {
+        const commands = makeSlashCommandsFromAgentRegistry([
+            {
+                name: "tree",
+                description: "Navigate the current agent session tree",
+                source: "builtin",
+                action: { type: "backend", command: "tree" },
+            },
+            {
+                name: "fork",
+                description: "Fork a new agent session from a previous user message",
+                source: "builtin",
+                action: { type: "backend", command: "fork" },
+            },
+        ]);
+
+        expect(commands.map((command) => ({ name: command.name, action: command.action }))).toEqual([
+            { name: "/tree", action: "submitAgentCommand" },
+            { name: "/fork", action: "submitAgentCommand" },
+        ]);
+    });
+});
+
+describe("findSlashCommandAction", () => {
+    it("routes exact backend slash commands through the agent regardless of input mode", () => {
+        expect(
+            findSlashCommandAction(
+                [
+                    { name: "/tree", action: "submitAgentCommand" },
+                    { name: "/model", action: "openModelPicker" },
+                ],
+                "/tree "
+            )
+        ).toBe("submitAgentCommand");
+    });
+
+    it("does not treat slash commands with arguments as exact immediate actions", () => {
+        expect(
+            findSlashCommandAction([{ name: "/tree", action: "submitAgentCommand" }], "/tree extra")
+        ).toBeUndefined();
     });
 });

@@ -1006,11 +1006,11 @@ function caretRectOf(host: HTMLElement, range: Range): DOMRect {
 // SlashCommandMenu — inline menu when buffer starts with '/'.  Warp
 // reference: app/src/terminal/input/slash_commands/.
 // =========================================================================
-interface InlineCommand {
+export interface InlineCommand {
     name: string;
     description: string;
     icon: string;
-    action?: "openModelPicker";
+    action?: "openModelPicker" | "submitAgentCommand";
     // Optional alternate keystroke chips shown in the trailing slot
     // when this row is selected.
     altKeys?: string[];
@@ -1029,10 +1029,30 @@ const LocalSlashCommands: InlineCommand[] = [
 ];
 
 const FallbackAgentSlashCommands: InlineCommand[] = [
-    { name: "/tree", icon: "git-branch-01", description: "Navigate the current agent session tree" },
-    { name: "/fork", icon: "git-branch-01", description: "Fork a new agent session from a previous user message" },
-    { name: "/clone", icon: "copy-01", description: "Clone the current agent session branch" },
-    { name: "/compact", icon: "stars-01", description: "Compact the current agent session context [instructions]" },
+    {
+        name: "/tree",
+        icon: "git-branch-01",
+        description: "Navigate the current agent session tree",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/fork",
+        icon: "git-branch-01",
+        description: "Fork a new agent session from a previous user message",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/clone",
+        icon: "copy-01",
+        description: "Clone the current agent session branch",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/compact",
+        icon: "stars-01",
+        description: "Compact the current agent session context [instructions]",
+        action: "submitAgentCommand",
+    },
     { name: "/model", icon: "stars-01", description: "Open the model picker", action: "openModelPicker" },
     { name: "/help", icon: "book-open", description: "Show available agent commands" },
 ];
@@ -1048,6 +1068,8 @@ export function makeSlashCommandsFromAgentRegistry(commands: AgentCommandInfo[])
         };
         if (command.action.type === "frontend") {
             inlineCommand.action = command.action.action;
+        } else if (command.source === "builtin") {
+            inlineCommand.action = "submitAgentCommand";
         }
         return inlineCommand;
     });
@@ -1056,6 +1078,14 @@ export function makeSlashCommandsFromAgentRegistry(commands: AgentCommandInfo[])
 function mergeSlashCommands(agentCommands: InlineCommand[], localCommands: InlineCommand[]): InlineCommand[] {
     const names = new Set(agentCommands.map((command) => command.name));
     return [...agentCommands, ...localCommands.filter((command) => !names.has(command.name))];
+}
+
+export function findSlashCommandAction(
+    commands: Pick<InlineCommand, "name" | "action">[],
+    text: string
+): InlineCommand["action"] {
+    const trimmed = text.replace(/\s+$/g, "");
+    return commands.find((item) => item.name === trimmed)?.action;
 }
 
 function iconForAgentCommand(command: AgentCommandInfo): string {
@@ -1425,11 +1455,16 @@ export const CmdBlockInput = memo(
             const trimmedTail = text.replace(/\s+$/g, "");
             if (!trimmedTail) return;
             // Action-style slash commands are intercepted before any
-            // shell/agent routing — typing `/model` and pressing Enter
-            // opens the picker, doesn't submit the literal text.
-            if (trimmedTail === "/model" && hasModelPicker) {
+            // shell/agent routing. Backend agent commands must not leak
+            // to the PTY when the input is in terminal mode.
+            const slashAction = findSlashCommandAction(slashCommands, trimmedTail);
+            if (slashAction === "openModelPicker" && hasModelPicker) {
                 setText("");
                 setModelPickerOpen(true);
+                return;
+            }
+            if (slashAction === "submitAgentCommand") {
+                submitWith("agent", trimmedTail);
                 return;
             }
             const shellPrefixMatch = /^\s*!(.*)$/s.exec(trimmedTail);
@@ -1442,7 +1477,7 @@ export const CmdBlockInput = memo(
                 return;
             }
             submitWith(resolveSubmitMode(mode, effectiveMode), trimmedTail);
-        }, [submitWith, mode, effectiveMode, text, hasModelPicker]);
+        }, [submitWith, mode, effectiveMode, text, hasModelPicker, slashCommands]);
 
         const submitOverride = useCallback(() => {
             const trimmedTail = text.replace(/\s+$/g, "");
@@ -1526,10 +1561,15 @@ export const CmdBlockInput = memo(
                     setModelPickerOpen(true);
                     return;
                 }
+                if (command?.action === "submitAgentCommand") {
+                    setSlashOpen(false);
+                    submitWith("agent", cmd);
+                    return;
+                }
                 replaceLastToken(cmd, "/");
                 setSlashOpen(false);
             },
-            [hasModelPicker, replaceLastToken, slashCommands]
+            [hasModelPicker, replaceLastToken, slashCommands, submitWith]
         );
 
         // Editor-side menu callbacks: ↑/↓ moves selection within the
