@@ -1,3 +1,6 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, it } from "vitest";
 import { suggest } from "./engine";
 import { historyProvider } from "./providers/history";
