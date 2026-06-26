@@ -885,6 +885,13 @@ export const TerminalView = memo(
                     )}
                     {!inAltScreen && (
                         <div ref={agentSelectorAnchorRef}>
+                            <AgentSelectorPopover
+                                anchorRef={agentSelectorAnchorRef}
+                                request={agentSelectorRequest}
+                                onClose={() => setAgentSelectorRequest(null)}
+                                onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
+                                onEditorText={onAgentEditorText}
+                            />
                             <CmdBlockInput
                                 cwd={liveCwd}
                                 home={home}
@@ -929,13 +936,6 @@ export const TerminalView = memo(
                             />
                         </div>
                     )}
-                    <AgentSelectorPopover
-                        anchorRef={agentSelectorAnchorRef}
-                        request={agentSelectorRequest}
-                        onClose={() => setAgentSelectorRequest(null)}
-                        onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
-                        onEditorText={onAgentEditorText}
-                    />
                     {overlaySlot}
                     {notification && (
                         <div className="pointer-events-none absolute right-3 top-3 max-w-[60%] rounded border border-fg-overlay-2 bg-background/95 px-3 py-2 text-[12px] text-foreground shadow-lg">
