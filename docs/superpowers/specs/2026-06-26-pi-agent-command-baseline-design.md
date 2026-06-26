@@ -16,7 +16,7 @@ In scope for this slice:
 - Add `/new`, `/resume`, `/compact`, `/session`, `/copy`, `/export`, `/import`, and `/reload`.
 - Keep the existing `/tree`, `/fork`, `/clone`, and `/model` behavior.
 - Route all implemented backend commands through the agent command path even when the input is in terminal mode.
-- Prefer minimal Crest-native UI for command completion, notifications, and selectors.
+- Prefer strict Pi-style inline result rendering for immediate command feedback while keeping Crest-native selectors.
 - Add tests that lock the exposed command list and prevent command text from falling through to prompt or PTY paths.
 
 Out of scope for this slice:
@@ -111,18 +111,20 @@ Expected behavior:
 - Requires an active session.
 - Blocks while an agent run is active unless the underlying runtime already queues compaction safely.
 - Passes optional instructions to the compaction operation.
-- Emits a visible success or failure message.
+- Emits a Pi-style inline compaction result: success rebuilds the visible transcript with a compaction summary block;
+  failure renders an inline error row.
 - Does not expose `/compact` until the backend path is wired.
 
 ### `/session`
 
-Shows current session information in a lightweight Crest notification or panel row.
+Shows current session information as an inline `Session Info` block inside the terminal/chat transcript.
 
 Expected behavior:
 
 - Requires an active session.
 - Shows session path, session id or basename, cwd, active leaf id, visible message count, and rough token/cost stats only if available.
 - Does not block the editor.
+- Uses sectioned output similar to Pi's `Session Info`: file/id, message counts, token counts, and cost.
 
 ### `/copy`
 
@@ -132,7 +134,7 @@ Expected behavior:
 
 - Requires an active session with at least one assistant message.
 - Copies plain text, not rendered HTML.
-- Shows a success message with a short character count.
+- Shows an inline Pi-style status line.
 - Shows a friendly no-op message when no assistant message exists.
 
 ### `/export [path]`
@@ -144,7 +146,7 @@ Expected behavior:
 - Requires an active session.
 - If a path is provided, writes to that path after validation.
 - If no path is provided, writes to a deterministic default export path or opens the platform save flow if Crest already has one.
-- Returns the written path and shows it to the user.
+- Returns the written path and renders it as an inline Pi-style status line.
 - HTML export remains deferred.
 
 ### `/import <path>`
@@ -157,7 +159,7 @@ Expected behavior:
 - Validates that the file is readable JSONL session data.
 - Creates or registers a Crest session metadata record.
 - Switches the current block to the imported session.
-- Shows a clear error for unreadable, invalid, or unsupported files.
+- Shows inline success/cancel/error rows, not transient toast UI.
 
 ### `/reload`
 
@@ -168,20 +170,38 @@ Expected behavior:
 - Refreshes command metadata exposed by `agent:list-commands`.
 - Refreshes renderer slash menu state.
 - Leaves deeper Pi package, skill, prompt, theme, and extension reloads for later.
-- Shows a success message listing what was refreshed.
+- Uses a temporary inline reload/loading block followed by an inline status row, matching Pi's editor-area reload affordance
+  as closely as Crest allows.
 
 ## UI Guidance
 
-This slice should not attempt full Pi TUI parity. Use existing Crest primitives first:
+This slice should not attempt full Pi TUI parity, but the immediate command feedback for this slice should follow Pi's
+terminal semantics instead of Crest toast semantics.
 
-- Immediate commands use non-blocking notifications for success, no-op, and failure.
 - Choice commands must use the same anchor, placement, and visual treatment as `/model`.
 - `/tree`, `/fork`, and `/resume` open above the input box, aligned to the input/menu anchor, not as centered dialogs.
 - Selector popovers should match `/model`'s surface style: `FloatingPortal`, `useFloating({ placement: "top-end" })`, `offset(6)`, `flip`, `shift`, width near `340px`, rounded border, `bg-fg-overlay-1`, `border-fg-overlay-3`, `shadow-xl`, and backdrop blur.
 - Selector keyboard behavior should match `/model`: search or focusable input receives focus on open, arrow keys move rows, Enter selects, Escape dismisses, outside click dismisses.
 - `/resume` can reuse the selector-popover shell with a new session-row renderer, but the shell must be model-picker aligned.
-- `/session` can start as a compact read-only info card or notification text.
 - `/export` and `/import` should prefer explicit paths in this slice; richer file picker UI can be added later.
+
+Immediate command feedback rules:
+
+- `/model`, `/tree`, `/fork`, and `/resume` are selector UIs and stay in the popover family.
+- `/session`, `/copy`, `/compact`, `/export`, `/import`, and `/reload` are execution-result UIs and should render inline
+  in the terminal/chat content flow.
+- Do not use toast/notification overlays for these six command results.
+- Pi-style status lines should render as dim inline transcript rows, not elevated cards.
+- `/session` should render as a bordered or sectioned inline info block in the transcript, not as a popover.
+- `/compact` success should render as a compaction summary block in the transcript, consistent with Pi's compaction
+  summary behavior.
+- `/reload` should temporarily replace or augment the editor area with a reload/loading affordance when feasible; if Crest
+  cannot safely replace the editor, use an inline loading block immediately above the input and dismiss it into a status
+  line on completion.
+
+Reference mock for this boundary:
+
+- `docs/superpowers/mockups/pi-command-feedback-mock.html`
 
 The later UI pass should compare row content and information hierarchy against Pi TUI components such as
 `tree-selector.ts`, `user-message-selector.ts`, `session-selector.ts`, `settings-selector.ts`, and
@@ -214,6 +234,10 @@ Frontend tests:
 - `/resume` opens a selector instead of sending `/resume` as a prompt.
 - `/model` still opens the model picker.
 - `/tree`, `/fork`, and `/resume` selector surfaces use the same input-anchored popover contract as `/model`.
+- The six immediate commands do not route success/no-op/failure text through the transient notification toast path.
+- `/session` renders structured inline content rather than a toast.
+- `/copy`, `/export`, `/import`, and `/reload` render inline status rows.
+- `/compact` success renders an inline compaction result block.
 
 Manual checks:
 
