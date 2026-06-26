@@ -81,6 +81,7 @@ const previewElectronApi: ElectronApi = {
         navigateTree: () => Promise.reject(new Error("agent not available in preview env")),
         forkSession: () => Promise.reject(new Error("agent not available in preview env")),
         cloneSession: () => Promise.reject(new Error("agent not available in preview env")),
+        runCommand: () => Promise.reject(new Error("agent not available in preview env")),
         send: () => Promise.reject(new Error("agent not available in preview env")),
         abort: () => {},
         subscribe: () => () => {},
