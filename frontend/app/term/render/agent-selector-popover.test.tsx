@@ -107,19 +107,13 @@ describe("agent selector popover", () => {
             />
         );
 
-        expect(html).toContain("Agent session tree");
         expect(html).toContain("first prompt");
         expect(html).toContain("latest answer");
-        expect(html).toContain("Cancel");
-        expect(html).toContain('role="dialog"');
-        expect(html).toContain('aria-modal="true"');
-        expect(html).toContain('aria-labelledby="agent-selector-tree-title"');
-        expect(html).toContain('aria-describedby="agent-selector-tree-description"');
-        expect(html).toContain('id="agent-selector-tree-title"');
-        expect(html).toContain('id="agent-selector-tree-description"');
+        expect(html).toContain('role="listbox"');
         expect(html).toContain('tabindex="-1"');
-        expect(html).toContain('data-agent-selector-entry="root"');
+        expect(html).toContain('data-agent-selector-row="root"');
         expect(html).toContain('data-agent-selector-current="true"');
+        expect(html).toContain("focus:outline-none");
     });
 
     it("uses the same inline-above-input contract as the model picker", () => {
@@ -160,7 +154,7 @@ describe("agent selector popover", () => {
         ).toBe("recent-user-message");
     });
 
-    it("keeps cancellation disabled while a selector pick is committing", () => {
+    it("disables entry buttons while a selector pick is committing", () => {
         expect(shouldAllowAgentSelectorCancel(null)).toBe(true);
         expect(shouldAllowAgentSelectorCancel("entry-1")).toBe(false);
 
@@ -174,8 +168,8 @@ describe("agent selector popover", () => {
             />
         );
 
-        expect(html).toContain('data-agent-selector-cancel-disabled="true"');
         expect(html).toContain("disabled");
+        expect(html).toContain("Working…");
     });
 
     it("extracts tree editorText for input restoration and ignores fork selectedText", () => {
@@ -191,5 +185,52 @@ describe("agent selector popover", () => {
                 selectedText: "fork target",
             })
         ).toBeUndefined();
+    });
+
+    it("uses model-picker-aligned row styles without browser default focus outline", () => {
+        const state: AgentSelectorViewState = {
+            status: "ready",
+            entries: [{ id: "e1", role: "user", preview: "hello", isCurrent: true }],
+        };
+
+        const html = renderToStaticMarkup(
+            <AgentSelectorPanel
+                requestType="tree"
+                state={state}
+                busyEntryId={null}
+                onPick={() => undefined}
+                onCancel={() => undefined}
+            />
+        );
+
+        expect(html).not.toContain("Jump to a previous point");
+        expect(html).toContain('data-agent-selector-row="e1"');
+        expect(html).toContain("focus:outline-none");
+    });
+
+    it("marks the active row for keyboard navigation", () => {
+        const state: AgentSelectorViewState = {
+            status: "ready",
+            entries: [
+                { id: "e1", role: "user", preview: "first" },
+                { id: "e2", role: "assistant", preview: "second", isCurrent: true },
+            ],
+        };
+
+        const html = renderToStaticMarkup(
+            <AgentSelectorPanel
+                requestType="tree"
+                state={state}
+                busyEntryId={null}
+                onPick={() => undefined}
+                onCancel={() => undefined}
+            />
+        );
+
+        expect(html).toContain('data-agent-selector-active="true"');
+        expect(html).toContain(">↑<");
+        expect(html).toContain(">↓<");
+        expect(html).toContain(">↵<");
+        expect(html).toContain(">esc<");
     });
 });

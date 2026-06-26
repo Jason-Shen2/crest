@@ -37,6 +37,7 @@ export interface AgentSelectorPopoverProps {
 export const COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX = 360;
 const COMMAND_SELECTOR_LIST_MIN_HEIGHT_PX = 200;
 const COMMAND_SELECTOR_LIST_MAX_RESIZE_HEIGHT_PX = 720;
+const SELECTOR_FOOTER_FONT_PX = 11;
 export const COMMAND_SELECTOR_INLINE_CLASSNAME = COMMAND_INLINE_FRAME_CLASSNAME;
 
 export async function commitAgentSelectorPick(
@@ -81,20 +82,6 @@ export function getInitialAgentSelectorFocusEntryId(
         return entries[entries.length - 1]?.id;
     }
     return entries.find((entry) => entry.isCurrent)?.id ?? entries[0]?.id;
-}
-
-function getAgentSelectorTitleId(type: AgentSelectorRequestType): string {
-    return `agent-selector-${type}-title`;
-}
-
-function getAgentSelectorDescriptionId(type: AgentSelectorRequestType): string {
-    return `agent-selector-${type}-description`;
-}
-
-function getAgentSelectorSubtitle(type: AgentSelectorRequestType): string {
-    if (type === "tree") return "Jump to a previous point in this agent session.";
-    if (type === "resume") return "Pick a saved session to attach to this pane.";
-    return "Pick a previous user prompt to fork into a new session.";
 }
 
 function successMessage(type: AgentSelectorRequestType): string {
@@ -144,7 +131,7 @@ export const AgentSelectorPopover = memo(
     ({ request, onClose, onUserMessage, onEditorText }: AgentSelectorPopoverProps) => {
         const [state, setState] = useState<AgentSelectorViewState>({ status: "idle", entries: [] });
         const [busyEntryId, setBusyEntryId] = useState<string | null>(null);
-        const dialogRef = useRef<HTMLDivElement>(null);
+        const panelRef = useRef<HTMLDivElement>(null);
         const previousFocusRef = useRef<HTMLElement | null>(null);
         const commitRequestIdRef = useRef(0);
         const [listMaxHeight, setListMaxHeight] = useState(COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX);
@@ -161,20 +148,6 @@ export const AgentSelectorPopover = memo(
 
         useEffect(() => {
             if (!request) return;
-            const onKeyDown = (e: KeyboardEvent) => {
-                if (e.key !== "Escape") return;
-                e.preventDefault();
-                e.stopPropagation();
-                if (shouldAllowAgentSelectorCancel(busyEntryId)) {
-                    onClose();
-                }
-            };
-            document.addEventListener("keydown", onKeyDown, true);
-            return () => document.removeEventListener("keydown", onKeyDown, true);
-        }, [request, onClose, busyEntryId]);
-
-        useEffect(() => {
-            if (!request) return;
             previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
             return () => {
                 const previous = previousFocusRef.current;
@@ -184,22 +157,6 @@ export const AgentSelectorPopover = memo(
                 }
             };
         }, [request]);
-
-        useEffect(() => {
-            if (!request) return;
-            const id = window.setTimeout(() => {
-                const dialog = dialogRef.current;
-                const targetEntryId = getInitialAgentSelectorFocusEntryId(request.type, state.entries);
-                const entries = Array.from(
-                    dialog?.querySelectorAll<HTMLElement>("[data-agent-selector-entry]:not(:disabled)") ?? []
-                );
-                const targetEntry =
-                    entries.find((entry) => entry.getAttribute("data-agent-selector-entry") === targetEntryId) ??
-                    entries[0];
-                (targetEntry ?? dialog)?.focus({ preventScroll: true });
-            }, 0);
-            return () => window.clearTimeout(id);
-        }, [request, state.status, state.entries.length]);
 
         useEffect(() => {
             if (!request) {
@@ -227,6 +184,15 @@ export const AgentSelectorPopover = memo(
             };
         }, [request]);
 
+        useEffect(() => {
+            if (state.status === "ready" && state.entries.length > 0) {
+                const id = window.setTimeout(() => {
+                    panelRef.current?.focus({ preventScroll: true });
+                }, 0);
+                return () => window.clearTimeout(id);
+            }
+        }, [state.status, state.entries.length]);
+
         const handlePick = useCallback(
             async (entryId: string) => {
                 if (!request) return;
@@ -251,14 +217,13 @@ export const AgentSelectorPopover = memo(
                     }
                 }
             },
-            [request, onClose, onUserMessage, onEditorText]
+            [request, state.entries, onClose, onUserMessage, onEditorText]
         );
 
         const handleCancel = useCallback(() => {
-            if (!shouldAllowAgentSelectorCancel(busyEntryId)) return;
             commitRequestIdRef.current++;
             onClose();
-        }, [busyEntryId, onClose]);
+        }, [onClose]);
 
         const handleResizeStart = useCallback(
             (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -284,10 +249,30 @@ export const AgentSelectorPopover = memo(
 
         if (!request) return null;
 
+        const canCancel = shouldAllowAgentSelectorCancel(busyEntryId);
+        const cancelButton = canCancel ? (
+            <button
+                type="button"
+                className="rounded px-2 py-1 text-secondary hover:bg-fg-overlay-2/70 hover:text-foreground"
+                onClick={handleCancel}
+                style={{ fontSize: "11px" }}
+            >
+                Cancel
+            </button>
+        ) : (
+            <span className="px-2 py-1 text-secondary/40" style={{ fontSize: "11px" }}>
+                Cancel
+            </span>
+        );
+
         return (
-            <CommandInlineFrame commandName={`/${request.type}`} onResizeStart={handleResizeStart}>
+            <CommandInlineFrame
+                commandName={`/${request.type}`}
+                onResizeStart={handleResizeStart}
+                headerActions={cancelButton}
+            >
                 <AgentSelectorPanel
-                    dialogRef={dialogRef}
+                    panelRef={panelRef}
                     requestType={request.type}
                     state={state}
                     busyEntryId={busyEntryId}
@@ -302,7 +287,7 @@ export const AgentSelectorPopover = memo(
 AgentSelectorPopover.displayName = "AgentSelectorPopover";
 
 export interface AgentSelectorPanelProps {
-    dialogRef?: RefObject<HTMLDivElement | null>;
+    panelRef?: RefObject<HTMLDivElement | null>;
     requestType: AgentSelectorRequestType;
     state: AgentSelectorViewState;
     busyEntryId: string | null;
@@ -313,7 +298,7 @@ export interface AgentSelectorPanelProps {
 
 export const AgentSelectorPanel = memo(
     ({
-        dialogRef,
+        panelRef,
         requestType,
         state,
         busyEntryId,
@@ -321,99 +306,142 @@ export const AgentSelectorPanel = memo(
         onPick,
         onCancel,
     }: AgentSelectorPanelProps) => {
+        const [activeIdx, setActiveIdx] = useState(0);
+        const listInnerRef = useRef<HTMLDivElement>(null);
         const depths = useMemo(() => computeDepths(state.entries), [state.entries]);
         const empty = state.status === "ready" && state.entries.length === 0;
-        const canCancel = shouldAllowAgentSelectorCancel(busyEntryId);
-        const titleId = getAgentSelectorTitleId(requestType);
-        const descriptionId = getAgentSelectorDescriptionId(requestType);
+        const entryCount = state.entries.length;
+
+        useEffect(() => {
+            if (state.status !== "ready") return;
+            const initialId = getInitialAgentSelectorFocusEntryId(requestType, state.entries);
+            const idx = state.entries.findIndex((e) => e.id === initialId);
+            setActiveIdx(idx >= 0 ? idx : 0);
+        }, [requestType, state.status, state.entries]);
+
+        useEffect(() => {
+            if (entryCount === 0) return;
+            const list = listInnerRef.current;
+            if (!list) return;
+            const row = list.querySelector<HTMLElement>(`[data-agent-selector-row-idx="${activeIdx}"]`);
+            row?.scrollIntoView({ block: "nearest" });
+        }, [activeIdx, entryCount]);
+
+        const handleKeyDown = useCallback(
+            (e: React.KeyboardEvent) => {
+                if (entryCount === 0) {
+                    if (e.key === "Escape") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onCancel();
+                    }
+                    return;
+                }
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setActiveIdx((prev) => (prev + 1) % entryCount);
+                    return;
+                }
+                if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setActiveIdx((prev) => (prev - 1 + entryCount) % entryCount);
+                    return;
+                }
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    const entry = state.entries[activeIdx];
+                    if (entry && busyEntryId == null) {
+                        onPick(entry.id);
+                    }
+                    return;
+                }
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onCancel();
+                    return;
+                }
+            },
+            [entryCount, state.entries, activeIdx, busyEntryId, onPick, onCancel]
+        );
+
         return (
             <div
-                className="text-[12px] text-foreground"
-                data-agent-selector-cancel-disabled={canCancel ? undefined : "true"}
+                ref={panelRef}
+                className="text-[12px] text-foreground font-sans outline-none"
+                tabIndex={-1}
+                role="listbox"
+                aria-label={getAgentSelectorTitle(requestType)}
+                onKeyDown={handleKeyDown}
             >
-                <div
-                    ref={dialogRef}
-                    role="dialog"
-                    aria-modal="true"
-                    aria-labelledby={titleId}
-                    aria-describedby={descriptionId}
-                    tabIndex={-1}
-                    data-agent-selector="true"
-                >
-                    <div className="flex items-start justify-between gap-3 border-b border-fg-overlay-2/70 px-3 py-2">
-                        <div>
-                            <div id={titleId} className="text-[13px] font-semibold">
-                                {getAgentSelectorTitle(requestType)}
-                            </div>
-                            <div id={descriptionId} className="mt-0.5 text-secondary/70">
-                                {getAgentSelectorSubtitle(requestType)}
-                            </div>
-                        </div>
-                        <button
-                            type="button"
-                            className="rounded px-2 py-1 text-secondary hover:bg-fg-overlay-2/70 hover:text-foreground"
-                            onClick={onCancel}
-                            disabled={!canCancel}
-                        >
-                            Cancel
-                        </button>
-                    </div>
+                {state.status === "loading" && <PanelMessage>Loading choices…</PanelMessage>}
+                {state.status === "error" && <PanelMessage tone="error">{state.message}</PanelMessage>}
+                {empty && <PanelMessage>No choices available for this session.</PanelMessage>}
 
-                    {state.status === "loading" && <PanelMessage>Loading choices…</PanelMessage>}
-                    {state.status === "error" && <PanelMessage tone="error">{state.message}</PanelMessage>}
-                    {empty && <PanelMessage>No choices available for this session.</PanelMessage>}
-
-                    {state.entries.length > 0 && (
-                        <div className="overflow-y-auto py-1" style={{ maxHeight: `${listMaxHeight}px` }}>
-                            {state.entries.map((entry) => (
-                                <button
+                {state.entries.length > 0 && (
+                    <div ref={listInnerRef} className="overflow-y-auto" style={{ maxHeight: `${listMaxHeight}px` }}>
+                        {state.entries.map((entry, idx) => {
+                            const isActive = idx === activeIdx;
+                            const indent = Math.min(depths.get(entry.id) ?? 0, 6) * 14 + 12;
+                            return (
+                                <div
                                     key={entry.id}
-                                    type="button"
-                                    data-agent-selector-entry={entry.id}
+                                    data-agent-selector-row={entry.id}
+                                    data-agent-selector-row-idx={idx}
+                                    data-agent-selector-active={isActive ? "true" : undefined}
                                     data-agent-selector-current={entry.isCurrent ? "true" : undefined}
                                     className={cn(
-                                        "flex w-full cursor-pointer items-start gap-2 px-3 py-2 text-left hover:bg-fg-overlay-2/70",
-                                        entry.isCurrent && "bg-fg-overlay-2/45"
+                                        "flex w-full items-center gap-2 py-1.5 pr-2 text-left transition-colors",
+                                        isActive ? "bg-fg-overlay-2/70" : "hover:bg-fg-overlay-1"
                                     )}
-                                    onClick={() => onPick(entry.id)}
-                                    disabled={busyEntryId != null}
+                                    onMouseEnter={() => setActiveIdx(idx)}
                                 >
-                                    <span
-                                        className="mt-0.5 shrink-0 text-secondary/60"
-                                        style={{ width: `${Math.min(depths.get(entry.id) ?? 0, 6) * 14 + 16}px` }}
+                                    <button
+                                        type="button"
+                                        className="flex w-full items-start gap-2 bg-transparent px-0 py-0 text-left focus:outline-none"
+                                        style={{ paddingLeft: `${indent}px` }}
+                                        onClick={() => busyEntryId == null && onPick(entry.id)}
+                                        disabled={busyEntryId != null}
                                     >
-                                        {requestType === "tree" ? "↳" : "•"}
-                                    </span>
-                                    <span className="min-w-0 flex-1">
-                                        <span className="flex items-center gap-2">
-                                            <span className="truncate font-medium">
-                                                {entry.label || entry.role || "entry"}
-                                            </span>
-                                            {entry.isCurrent && (
-                                                <span className="rounded bg-green-500/15 px-1.5 py-0.5 text-[10px] text-green-300">
-                                                    current
-                                                </span>
-                                            )}
-                                            {entry.isLeaf && !entry.isCurrent && (
-                                                <span className="rounded bg-fg-overlay-2 px-1.5 py-0.5 text-[10px] text-secondary">
-                                                    leaf
-                                                </span>
-                                            )}
+                                        <span className="mt-0.5 shrink-0 text-secondary/50 text-[11px]">
+                                            {requestType === "tree" ? "↳" : "•"}
                                         </span>
-                                        <span className="mt-0.5 block truncate text-secondary/80">{entry.preview}</span>
-                                    </span>
-                                    {busyEntryId === entry.id && (
-                                        <span className="shrink-0 text-secondary">Working…</span>
-                                    )}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-
-                    <div className="border-t border-fg-overlay-2/60 px-3 py-1.5 text-[11px] text-secondary/65">
-                        Click a row to select · Esc or outside click cancels.
+                                        <span className="min-w-0 flex-1">
+                                            <span className="flex items-center gap-2">
+                                                <span className="truncate font-medium" style={{ fontSize: "12px" }}>
+                                                    {entry.label || entry.role || "entry"}
+                                                </span>
+                                                {entry.isCurrent && (
+                                                    <span className="shrink-0 rounded bg-green-500/15 px-1.5 py-0.5 text-[10px] font-medium text-green-300">
+                                                        current
+                                                    </span>
+                                                )}
+                                                {entry.isLeaf && !entry.isCurrent && (
+                                                    <span className="shrink-0 rounded bg-fg-overlay-2/70 px-1.5 py-0.5 text-[10px] text-secondary">
+                                                        leaf
+                                                    </span>
+                                                )}
+                                            </span>
+                                            <span
+                                                className="mt-0.5 block truncate text-secondary/75"
+                                                style={{ fontSize: "11px" }}
+                                            >
+                                                {entry.preview}
+                                            </span>
+                                        </span>
+                                        {busyEntryId === entry.id && (
+                                            <span className="shrink-0 self-center text-secondary text-[11px]">
+                                                Working…
+                                            </span>
+                                        )}
+                                    </button>
+                                </div>
+                            );
+                        })}
                     </div>
-                </div>
+                )}
+
+                <SelectorHintFooter />
             </div>
         );
     }
@@ -427,6 +455,36 @@ function PanelMessage({ children, tone = "muted" }: { children: React.ReactNode;
         </div>
     );
 }
+
+const SelectorHintFooter = memo(() => (
+    <div
+        className="flex items-center gap-x-3 border-t border-fg-overlay-2 bg-fg-overlay-1/60 px-3 py-1.5 font-sans text-secondary/65"
+        style={{ fontSize: `${SELECTOR_FOOTER_FONT_PX}px` }}
+    >
+        <span className="inline-flex items-center gap-1.5">
+            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">
+                ↑
+            </kbd>
+            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">
+                ↓
+            </kbd>
+            <span>navigate</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1">
+                ↵
+            </kbd>
+            <span>select</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+            <kbd className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1.5">
+                esc
+            </kbd>
+            <span>dismiss</span>
+        </span>
+    </div>
+));
+SelectorHintFooter.displayName = "SelectorHintFooter";
 
 function computeDepths(entries: AgentSelectorEntryView[]): Map<string, number> {
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
