@@ -71,12 +71,13 @@ import {
     createPaneSession,
     defaultSessionsDir,
     forkPaneSession,
+    importPaneSessionFromJsonl,
     listSessionsForCwd,
     openPaneSession,
     openPaneSessionByPath,
 } from "./agent/sessions";
 import { getDefaultTools } from "./agent/tools";
-import type { ThinkingLevel } from "./agent/types";
+import type { AgentMessage, ThinkingLevel } from "./agent/types";
 import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
 import { getSecret } from "./aiconfig/secrets";
@@ -170,6 +171,15 @@ interface AgentCloneSessionResult {
     message?: string;
 }
 
+interface JsonlSessionHeader {
+    type: "session";
+    version: 3;
+    id: string;
+    timestamp: string;
+    cwd: string;
+    parentSession?: string;
+}
+
 const RunnableAgentCommands = new Set<AgentBackendCommandName>([
     "new",
     "resume",
@@ -190,6 +200,36 @@ function requireNonEmptyString(value: unknown, fieldName: string): string {
         throw new Error(`agent IPC: ${fieldName} must be a non-empty string`);
     }
     return value;
+}
+
+function getPathCommandArgument(argsText: string): string | undefined {
+    const argsString = argsText.trimStart();
+    if (!argsString) return undefined;
+    const firstChar = argsString[0];
+    if (firstChar === '"' || firstChar === "'") {
+        const closingQuoteIndex = argsString.indexOf(firstChar, 1);
+        if (closingQuoteIndex < 0) return undefined;
+        return argsString.slice(1, closingQuoteIndex);
+    }
+    const firstWhitespaceIndex = argsString.search(/\s/);
+    if (firstWhitespaceIndex < 0) return argsString;
+    return argsString.slice(0, firstWhitespaceIndex);
+}
+
+function resolvePathForCwd(inputPath: string, cwd: string): string {
+    return path.isAbsolute(inputPath) ? inputPath : path.resolve(cwd, inputPath);
+}
+
+function getAssistantText(message: AgentMessage): string | undefined {
+    if ((message as { role?: string }).role !== "assistant") return undefined;
+    const content = (message as { content?: Array<{ type: string; text?: string }> }).content;
+    if (!Array.isArray(content)) return undefined;
+    const text = content
+        .filter((item) => item.type === "text" && typeof item.text === "string")
+        .map((item) => item.text)
+        .join("")
+        .trim();
+    return text || undefined;
 }
 
 function assertInsideSessionsDir(sessionPath: string, sessionsRoot: string, fieldName: string): void {
@@ -230,7 +270,8 @@ function validateRunCommandInput(value: unknown): AgentRunCommandInput {
         cwd,
         command,
         argsText: typeof value.argsText === "string" ? value.argsText : "",
-        sessionMetadata: value.sessionMetadata == null ? undefined : validateSessionMetadataShape(value.sessionMetadata),
+        sessionMetadata:
+            value.sessionMetadata == null ? undefined : validateSessionMetadataShape(value.sessionMetadata),
     };
 }
 
@@ -603,12 +644,18 @@ export async function runAgentCommandForIpc(input: unknown): Promise<AgentComman
     switch (parsed.command) {
         case "new":
             return await runNewAgentSessionCommand(parsed.cwd);
+        case "compact":
+            return await runCompactSessionCommand(parsed.sessionMetadata, parsed.argsText);
         case "session":
             return await runSessionInfoCommand(parsed.sessionMetadata);
         case "copy":
             return await runCopyLastAssistantMessageCommand(parsed.sessionMetadata);
+        case "export":
+            return await runExportSessionCommand(parsed.sessionMetadata, parsed.cwd, parsed.argsText);
+        case "import":
+            return await runImportSessionCommand(parsed.cwd, parsed.argsText);
         case "reload":
-            return commandSuccess("Reloaded agent command metadata.");
+            return commandSuccess("Reloaded keybindings, extensions, skills, prompts, themes");
         default:
             return commandNoop(`Agent command /${parsed.command} is not implemented yet.`);
     }
@@ -618,19 +665,81 @@ async function runNewAgentSessionCommand(cwd: string): Promise<AgentCommandExecu
     const { metadata } = await createPaneSession(cwd);
     return {
         status: "success",
-        message: "Created a new agent session.",
+        message: "New session started",
         sessionMetadata: metadata,
     };
 }
 
-async function runSessionInfoCommand(sessionMetadata: JsonlSessionMetadata | undefined): Promise<AgentCommandExecutionResult> {
+async function runCompactSessionCommand(
+    sessionMetadata: JsonlSessionMetadata | undefined,
+    argsText: string
+): Promise<AgentCommandExecutionResult> {
+    if (!sessionMetadata?.path) return commandNoop("No active agent session to compact.");
+    const { metadata, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
+    const owner = sessionCache.get(metadata.path) ?? sessionCache.get(requestedPath);
+    if (!owner) return commandNoop("No active agent session to compact.");
+    const customInstructions = argsText.trim() || undefined;
+    await owner.compact(customInstructions);
+    return commandSuccess("Compacted session context.");
+}
+
+async function runSessionInfoCommand(
+    sessionMetadata: JsonlSessionMetadata | undefined
+): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
     const { metadata, session } = await openValidatedSessionMetadata(sessionMetadata);
-    const entries = await session.getEntries();
-    const leafId = await session.getLeafId();
-    return commandSuccess(
-        `Session ${path.basename(metadata.path)}: ${entries.length} entries, current leaf ${leafId ?? "none"}.`
-    );
+    const context = await session.buildContext();
+    const messages = context.messages ?? [];
+    const userMessages = messages.filter((message) => message.role === "user").length;
+    const assistantMessages = messages.filter((message) => message.role === "assistant").length;
+    const toolResults = messages.filter((message) => message.role === "toolResult").length;
+    let toolCalls = 0;
+    let totalInput = 0;
+    let totalOutput = 0;
+    let totalCacheRead = 0;
+    let totalCacheWrite = 0;
+    let totalCost = 0;
+    for (const message of messages) {
+        if (message.role !== "assistant") continue;
+        const assistant = message as unknown as {
+            content?: Array<{ type: string }>;
+            usage?: {
+                input?: number;
+                output?: number;
+                cacheRead?: number;
+                cacheWrite?: number;
+                cost?: { total?: number };
+            };
+        };
+        toolCalls += assistant.content?.filter((item) => item.type === "toolCall").length ?? 0;
+        totalInput += assistant.usage?.input ?? 0;
+        totalOutput += assistant.usage?.output ?? 0;
+        totalCacheRead += assistant.usage?.cacheRead ?? 0;
+        totalCacheWrite += assistant.usage?.cacheWrite ?? 0;
+        totalCost += assistant.usage?.cost?.total ?? 0;
+    }
+    const lines = [
+        "Session Info",
+        "",
+        `File: ${metadata.path}`,
+        `ID: ${metadata.id}`,
+        "",
+        "Messages",
+        `User: ${userMessages}`,
+        `Assistant: ${assistantMessages}`,
+        `Tool Calls: ${toolCalls}`,
+        `Tool Results: ${toolResults}`,
+        `Total: ${messages.length}`,
+        "",
+        "Tokens",
+        `Input: ${totalInput.toLocaleString()}`,
+        `Output: ${totalOutput.toLocaleString()}`,
+    ];
+    if (totalCacheRead > 0) lines.push(`Cache Read: ${totalCacheRead.toLocaleString()}`);
+    if (totalCacheWrite > 0) lines.push(`Cache Write: ${totalCacheWrite.toLocaleString()}`);
+    lines.push(`Total: ${(totalInput + totalOutput + totalCacheRead + totalCacheWrite).toLocaleString()}`);
+    if (totalCost > 0) lines.push("", "Cost", `Total: ${totalCost.toFixed(4)}`);
+    return commandSuccess(lines.join("\n"));
 }
 
 async function runCopyLastAssistantMessageCommand(
@@ -638,12 +747,59 @@ async function runCopyLastAssistantMessageCommand(
 ): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
     const { session } = await openValidatedSessionMetadata(sessionMetadata);
-    const entries = await session.getEntries();
-    const assistantEntry = [...entries].reverse().find((entry) => entry.type === "message" && entry.message.role === "assistant");
-    const text = assistantEntry ? previewSessionEntry(assistantEntry) : "";
-    if (!text) return commandNoop("No assistant response to copy yet.");
+    const context = await session.buildContext();
+    const text = [...(context.messages ?? [])]
+        .reverse()
+        .map(getAssistantText)
+        .find((value) => value);
+    if (!text) return commandNoop("No agent messages to copy yet.");
     electron.clipboard.writeText(text);
-    return commandSuccess(`Copied ${text.length} characters.`);
+    return commandSuccess("Copied last agent message to clipboard");
+}
+
+async function runExportSessionCommand(
+    sessionMetadata: JsonlSessionMetadata | undefined,
+    cwd: string,
+    argsText: string
+): Promise<AgentCommandExecutionResult> {
+    if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
+    const outputArg = getPathCommandArgument(argsText);
+    const outputPath = resolvePathForCwd(
+        outputArg ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
+        cwd
+    );
+    const { metadata, session } = await openValidatedSessionMetadata(sessionMetadata);
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    const header: JsonlSessionHeader = {
+        type: "session",
+        version: 3,
+        id: metadata.id,
+        timestamp: metadata.createdAt,
+        cwd: metadata.cwd,
+        parentSession: metadata.parentSessionPath,
+    };
+    const branchEntries = await session.getBranch();
+    const lines = [JSON.stringify(header)];
+    let prevId: string | null = null;
+    for (const entry of branchEntries) {
+        const linear = { ...entry, parentId: prevId };
+        lines.push(JSON.stringify(linear));
+        prevId = entry.id;
+    }
+    await fs.writeFile(outputPath, `${lines.join("\n")}\n`);
+    return commandSuccess(`Session exported to: ${outputPath}`);
+}
+
+async function runImportSessionCommand(cwd: string, argsText: string): Promise<AgentCommandExecutionResult> {
+    const inputArg = getPathCommandArgument(argsText);
+    if (!inputArg) throw new Error("Usage: /import <path.jsonl>");
+    const inputPath = resolvePathForCwd(inputArg, cwd);
+    const { metadata } = await importPaneSessionFromJsonl(inputPath, cwd);
+    return {
+        status: "success",
+        message: `Session imported from: ${inputPath}`,
+        sessionMetadata: metadata,
+    };
 }
 
 export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<void> {
@@ -737,9 +893,12 @@ export function registerAgentIpcHandlers(): void {
         }
     );
 
-    electron.ipcMain.handle("agent:run-command", async (_event, input: AgentRunCommandInput): Promise<AgentCommandExecutionResult> => {
-        return await runAgentCommandForIpc(input);
-    });
+    electron.ipcMain.handle(
+        "agent:run-command",
+        async (_event, input: AgentRunCommandInput): Promise<AgentCommandExecutionResult> => {
+            return await runAgentCommandForIpc(input);
+        }
+    );
 
     electron.ipcMain.handle(
         "agent:send",

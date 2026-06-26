@@ -13,6 +13,7 @@
 // AgentHarness instances build their own NodeExecutionEnv with the
 // pane's actual cwd when tool execution is needed.
 
+import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -25,6 +26,10 @@ import { NodeExecutionEnv } from "./node";
 // match (Y1 camelCase decision, doc §7.2) so round-trip is identity.
 
 let _repo: JsonlSessionRepo | undefined;
+
+function encodeCwd(cwd: string): string {
+    return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+}
 
 export interface ForkPaneSessionOptions {
     cwd?: string;
@@ -97,21 +102,17 @@ export async function createPaneSession(cwd: string): Promise<{
  * AgentSessionMeta shape produced by Go round-trips without
  * translation (doc §5.1).
  */
-export async function openPaneSession(
-    metadata: JsonlSessionMetadata,
-): Promise<Session<JsonlSessionMetadata>> {
+export async function openPaneSession(metadata: JsonlSessionMetadata): Promise<Session<JsonlSessionMetadata>> {
     return getSessionsRepo().open(metadata);
 }
 
-export async function openPaneSessionByPath(
-    sessionPath: string,
-): Promise<Session<JsonlSessionMetadata>> {
+export async function openPaneSessionByPath(sessionPath: string): Promise<Session<JsonlSessionMetadata>> {
     return getSessionsRepo().openPath(sessionPath);
 }
 
 export async function forkPaneSession(
     sourceMetadata: JsonlSessionMetadata,
-    options: ForkPaneSessionOptions = {},
+    options: ForkPaneSessionOptions = {}
 ): Promise<{
     session: Session<JsonlSessionMetadata>;
     metadata: JsonlSessionMetadata;
@@ -120,6 +121,28 @@ export async function forkPaneSession(
         ...options,
         cwd: options.cwd ?? sourceMetadata.cwd,
     });
+    const metadata = await session.getMetadata();
+    return { session, metadata };
+}
+
+export async function importPaneSessionFromJsonl(
+    inputPath: string,
+    cwd: string
+): Promise<{
+    session: Session<JsonlSessionMetadata>;
+    metadata: JsonlSessionMetadata;
+}> {
+    const resolvedInputPath = path.resolve(cwd, inputPath);
+    await fs.access(resolvedInputPath);
+
+    const sessionDir = path.join(defaultSessionsDir(), encodeCwd(cwd));
+    await fs.mkdir(sessionDir, { recursive: true });
+    const destinationPath = path.join(sessionDir, path.basename(resolvedInputPath));
+    if (path.resolve(destinationPath) !== resolvedInputPath) {
+        await fs.copyFile(resolvedInputPath, destinationPath);
+    }
+
+    const session = await openPaneSessionByPath(destinationPath);
     const metadata = await session.getMetadata();
     return { session, metadata };
 }

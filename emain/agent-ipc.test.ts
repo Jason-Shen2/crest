@@ -5,8 +5,8 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as electron from "electron";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => ({
     app: {
@@ -47,6 +47,7 @@ vi.mock("../frontend/app/store/wshclientapi", () => ({
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
 import {
+    _resetAgentIpcForTests,
     abortAgentSessionForIpc,
     cloneAgentSessionForIpc,
     forkAgentSessionForIpc,
@@ -59,9 +60,9 @@ import {
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
 import { JsonlSessionRepo } from "./agent/harness/session/jsonl-repo";
-import type { AgentMessage } from "./agent/types";
 import { NodeExecutionEnv } from "./agent/node";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "./agent/sessions";
+import type { AgentMessage } from "./agent/types";
 
 function user(text: string): AgentMessage {
     return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;
@@ -78,6 +79,7 @@ describe("agent-ipc command helpers", () => {
     beforeEach(async () => {
         vi.mocked(electron.ipcMain.handle).mockClear();
         vi.mocked(electron.ipcMain.on).mockClear();
+        _resetAgentIpcForTests();
         previousConfigHome = process.env.WAVETERM_CONFIG_HOME;
         tmpConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-ipc-test-"));
         process.env.WAVETERM_CONFIG_HOME = tmpConfigHome;
@@ -137,7 +139,9 @@ describe("agent-ipc command helpers", () => {
         expect(forked.selectedText).toBe("fork target");
         expect(cloned.sessionMetadata?.parentSessionPath).toBe(canonicalSourcePath);
         expect(cloned.sessionMetadata?.cwd).toBe("/tmp/agent-ipc-clone-alt");
-        expect((await listAgentTreeForIpc(forked.sessionMetadata)).entries.map((entry) => entry.preview)).toEqual(["keep this"]);
+        expect((await listAgentTreeForIpc(forked.sessionMetadata)).entries.map((entry) => entry.preview)).toEqual([
+            "keep this",
+        ]);
         expect((await listAgentTreeForIpc(cloned.sessionMetadata!)).entries.map((entry) => entry.preview)).toEqual([
             "keep this",
             "fork target",
@@ -159,13 +163,21 @@ describe("agent-ipc command helpers", () => {
         const outside = path.join(tmpConfigHome, "outside.jsonl");
         await fs.writeFile(
             outside,
-            JSON.stringify({ type: "session", version: 3, id: "evil", timestamp: new Date().toISOString(), cwd: "/tmp" }) + "\n",
+            JSON.stringify({
+                type: "session",
+                version: 3,
+                id: "evil",
+                timestamp: new Date().toISOString(),
+                cwd: "/tmp",
+            }) + "\n"
         );
 
         await expect(listAgentTreeForIpc({ ...metadata, path: "" })).rejects.toThrow(/sessionMetadata\.path/);
         await expect(listAgentTreeForIpc({ ...metadata, cwd: "" })).rejects.toThrow(/sessionMetadata\.cwd/);
         await expect(listAgentTreeForIpc({ ...metadata, path: outside })).rejects.toThrow(/outside sessions directory/);
-        await expect(forkAgentSessionForIpc({ sessionMetadata: metadata, cwd: "", entryId: "x" })).rejects.toThrow(/cwd/);
+        await expect(forkAgentSessionForIpc({ sessionMetadata: metadata, cwd: "", entryId: "x" })).rejects.toThrow(
+            /cwd/
+        );
     });
 
     it("opens disk metadata instead of trusting spoofed metadata", async () => {
@@ -187,10 +199,14 @@ describe("agent-ipc command helpers", () => {
         await firstSession.appendMessage(user("first"));
 
         await expect(
-            forkAgentSessionForIpc({ sessionMetadata: first, cwd: "/tmp/agent-ipc-first-fork", entryId: "not-in-this-session" }),
+            forkAgentSessionForIpc({
+                sessionMetadata: first,
+                cwd: "/tmp/agent-ipc-first-fork",
+                entryId: "not-in-this-session",
+            })
         ).rejects.toThrow(/does not belong/);
         await expect(
-            forkAgentSessionForIpc({ sessionMetadata: first, cwd: "/tmp/agent-ipc-first-fork", entryId: "" }),
+            forkAgentSessionForIpc({ sessionMetadata: first, cwd: "/tmp/agent-ipc-first-fork", entryId: "" })
         ).rejects.toThrow(/entryId/);
     });
 
@@ -200,7 +216,13 @@ describe("agent-ipc command helpers", () => {
         const outside = path.join(tmpConfigHome, "outside-handler.jsonl");
         await fs.writeFile(
             outside,
-            JSON.stringify({ type: "session", version: 3, id: "evil", timestamp: new Date().toISOString(), cwd: "/tmp" }) + "\n",
+            JSON.stringify({
+                type: "session",
+                version: 3,
+                id: "evil",
+                timestamp: new Date().toISOString(),
+                cwd: "/tmp",
+            }) + "\n"
         );
         registerAgentIpcHandlers();
         const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -209,14 +231,14 @@ describe("agent-ipc command helpers", () => {
         }
 
         await expect(handlers.get("agent:list-tree")?.({}, { ...metadata, path: outside })).rejects.toThrow(
-            /outside sessions directory/,
+            /outside sessions directory/
         );
         await expect(
-            handlers.get("agent:fork-session")?.({}, { sessionMetadata: metadata, cwd: "/tmp/fork", entryId: "" }),
+            handlers.get("agent:fork-session")?.({}, { sessionMetadata: metadata, cwd: "/tmp/fork", entryId: "" })
         ).rejects.toThrow(/entryId/);
-        await expect(
-            handlers.get("agent:clone-session")?.({}, { sessionMetadata: metadata, cwd: "" }),
-        ).rejects.toThrow(/cwd/);
+        await expect(handlers.get("agent:clone-session")?.({}, { sessionMetadata: metadata, cwd: "" })).rejects.toThrow(
+            /cwd/
+        );
     });
 
     it("registers and runs generic agent commands", async () => {
@@ -228,13 +250,13 @@ describe("agent-ipc command helpers", () => {
 
         await expect(runAgentCommandForIpc({ command: "reload", cwd: "/tmp", argsText: "" })).resolves.toEqual({
             status: "success",
-            message: "Reloaded agent command metadata.",
+            message: "Reloaded keybindings, extensions, skills, prompts, themes",
         });
         await expect(
-            handlers.get("agent:run-command")?.({}, { command: "compact", cwd: "/tmp", argsText: "keep errors" }),
+            handlers.get("agent:run-command")?.({}, { command: "compact", cwd: "/tmp", argsText: "keep errors" })
         ).resolves.toEqual({
             status: "noop",
-            message: "Agent command /compact is not implemented yet.",
+            message: "No active agent session to compact.",
         });
     });
 
@@ -243,7 +265,7 @@ describe("agent-ipc command helpers", () => {
 
         expect(result).toMatchObject({
             status: "success",
-            message: "Created a new agent session.",
+            message: "New session started",
             sessionMetadata: expect.objectContaining({ cwd: "/tmp/agent-ipc-new" }),
         });
     });
@@ -260,9 +282,11 @@ describe("agent-ipc command helpers", () => {
             argsText: "",
         });
 
-        expect(result.status).toBe("success");
+        expect(result.message).toContain("Session Info");
         expect(result.message).toContain(path.basename(metadata.path));
-        expect(result.message).toContain("2 entries");
+        expect(result.message).toContain(`ID: ${metadata.id}`);
+        expect(result.message).toContain("User: 1");
+        expect(result.message).toContain("Assistant: 1");
     });
 
     it("copies the latest assistant message from /copy", async () => {
@@ -277,7 +301,7 @@ describe("agent-ipc command helpers", () => {
             argsText: "",
         });
 
-        expect(result).toEqual({ status: "success", message: "Copied 16 characters." });
+        expect(result).toEqual({ status: "success", message: "Copied last agent message to clipboard" });
         expect(electron.clipboard.writeText).toHaveBeenCalledWith("copy this answer");
     });
 
@@ -289,7 +313,94 @@ describe("agent-ipc command helpers", () => {
             runAgentCommandForIpc({ command: "copy", cwd: metadata.cwd, sessionMetadata: metadata, argsText: "" })
         ).resolves.toEqual({
             status: "noop",
-            message: "No assistant response to copy yet.",
+            message: "No agent messages to copy yet.",
+        });
+    });
+
+    it("exports the current session branch as a Pi-compatible JSONL file", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-export-cwd-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        await session.appendMessage(user("export question"));
+        const leafId = await session.appendMessage(assistant("export answer"));
+        await session.appendMessage(user("side branch"));
+        await session.moveTo(leafId);
+        const outputPath = path.join(cwd, "quoted export.jsonl");
+
+        const result = await runAgentCommandForIpc({
+            command: "export",
+            cwd,
+            sessionMetadata: metadata,
+            argsText: `"${outputPath}"`,
+        });
+        const exported = await fs.readFile(outputPath, "utf8");
+        const lines = exported
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+
+        expect(result).toEqual({ status: "success", message: `Session exported to: ${outputPath}` });
+        expect(lines[0]).toMatchObject({ type: "session", version: 3, id: metadata.id, cwd });
+        expect(lines.slice(1).map((line) => line.message?.content?.[0]?.text)).toEqual([
+            "export question",
+            "export answer",
+        ]);
+        expect(lines[1].parentId).toBeNull();
+        expect(lines[2].parentId).toBe(lines[1].id);
+    });
+
+    it("exports to a default JSONL path when /export has no argument", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-export-default-cwd-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        await session.appendMessage(user("default export"));
+
+        const result = await runAgentCommandForIpc({ command: "export", cwd, sessionMetadata: metadata, argsText: "" });
+
+        expect(result.status).toBe("success");
+        expect(result.message).toMatch(
+            new RegExp(`^Session exported to: ${cwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/session-.*\\.jsonl$`)
+        );
+    });
+
+    it("requires an import path", async () => {
+        await expect(runAgentCommandForIpc({ command: "import", cwd: "/tmp", argsText: "" })).rejects.toThrow(
+            "Usage: /import <path.jsonl>"
+        );
+    });
+
+    it("imports a quoted JSONL path and returns imported session metadata", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-import-cwd-"));
+        const sourcePath = path.join(cwd, "session with spaces.jsonl");
+        await fs.writeFile(
+            sourcePath,
+            [
+                JSON.stringify({
+                    type: "session",
+                    version: 3,
+                    id: "imported-id",
+                    timestamp: new Date().toISOString(),
+                    cwd,
+                }),
+                JSON.stringify({
+                    type: "message",
+                    id: "entry-1",
+                    parentId: null,
+                    timestamp: new Date().toISOString(),
+                    message: user("imported question"),
+                }),
+                "",
+            ].join("\n")
+        );
+
+        const result = await runAgentCommandForIpc({ command: "import", cwd, argsText: `"${sourcePath}"` });
+
+        expect(result).toMatchObject({
+            status: "success",
+            message: `Session imported from: ${sourcePath}`,
+            sessionMetadata: expect.objectContaining({ id: "imported-id", cwd }),
+        });
+        expect(result.sessionMetadata?.path).not.toBe(sourcePath);
+        await expect(listAgentTreeForIpc(result.sessionMetadata)).resolves.toMatchObject({
+            entries: [expect.objectContaining({ preview: "imported question" })],
         });
     });
 
@@ -298,7 +409,13 @@ describe("agent-ipc command helpers", () => {
         const outside = path.join(tmpConfigHome, "outside-old-paths.jsonl");
         await fs.writeFile(
             outside,
-            JSON.stringify({ type: "session", version: 3, id: "evil", timestamp: new Date().toISOString(), cwd: "/tmp" }) + "\n",
+            JSON.stringify({
+                type: "session",
+                version: 3,
+                id: "evil",
+                timestamp: new Date().toISOString(),
+                cwd: "/tmp",
+            }) + "\n"
         );
         const sender = {
             id: 1,
@@ -328,8 +445,8 @@ describe("agent-ipc command helpers", () => {
                     text: "hello",
                     provider: "provider",
                     model: "model",
-                },
-            ),
+                }
+            )
         ).rejects.toThrow(/outside sessions directory/);
         await expect(subscribeAgentSessionForIpc(sender, outside)).rejects.toThrow(/outside sessions directory/);
         await expect(abortAgentSessionForIpc(outside)).rejects.toThrow(/outside sessions directory/);
@@ -338,7 +455,7 @@ describe("agent-ipc command helpers", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(errorSpy).toHaveBeenCalledWith(
             "[agent-ipc] subscribe validation error:",
-            expect.objectContaining({ message: expect.stringMatching(/outside sessions directory/) }),
+            expect.objectContaining({ message: expect.stringMatching(/outside sessions directory/) })
         );
         errorSpy.mockRestore();
         expect(sender.send).not.toHaveBeenCalled();
