@@ -16,6 +16,7 @@ vi.mock("electron", () => ({
         setName: vi.fn(),
     },
     dialog: { showMessageBoxSync: vi.fn() },
+    clipboard: { writeText: vi.fn() },
     ipcMain: { handle: vi.fn(), on: vi.fn() },
     safeStorage: {
         decryptString: vi.fn(),
@@ -234,6 +235,61 @@ describe("agent-ipc command helpers", () => {
         ).resolves.toEqual({
             status: "noop",
             message: "Agent command /compact is not implemented yet.",
+        });
+    });
+
+    it("creates a new agent session from /new", async () => {
+        const result = await runAgentCommandForIpc({ command: "new", cwd: "/tmp/agent-ipc-new", argsText: "" });
+
+        expect(result).toMatchObject({
+            status: "success",
+            message: "Created a new agent session.",
+            sessionMetadata: expect.objectContaining({ cwd: "/tmp/agent-ipc-new" }),
+        });
+    });
+
+    it("shows current session information from /session", async () => {
+        const { metadata, session } = await createPaneSession("/tmp/agent-ipc-session-info");
+        await session.appendMessage(user("session question"));
+        await session.appendMessage(assistant("session answer"));
+
+        const result = await runAgentCommandForIpc({
+            command: "session",
+            cwd: metadata.cwd,
+            sessionMetadata: metadata,
+            argsText: "",
+        });
+
+        expect(result.status).toBe("success");
+        expect(result.message).toContain(path.basename(metadata.path));
+        expect(result.message).toContain("2 entries");
+    });
+
+    it("copies the latest assistant message from /copy", async () => {
+        const { metadata, session } = await createPaneSession("/tmp/agent-ipc-copy");
+        await session.appendMessage(user("copy question"));
+        await session.appendMessage(assistant("copy this answer"));
+
+        const result = await runAgentCommandForIpc({
+            command: "copy",
+            cwd: metadata.cwd,
+            sessionMetadata: metadata,
+            argsText: "",
+        });
+
+        expect(result).toEqual({ status: "success", message: "Copied 16 characters." });
+        expect(electron.clipboard.writeText).toHaveBeenCalledWith("copy this answer");
+    });
+
+    it("returns a friendly no-op when /copy has no assistant message", async () => {
+        const { metadata, session } = await createPaneSession("/tmp/agent-ipc-copy-empty");
+        await session.appendMessage(user("copy question"));
+
+        await expect(
+            runAgentCommandForIpc({ command: "copy", cwd: metadata.cwd, sessionMetadata: metadata, argsText: "" })
+        ).resolves.toEqual({
+            status: "noop",
+            message: "No assistant response to copy yet.",
         });
     });
 

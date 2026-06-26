@@ -601,11 +601,49 @@ export async function cloneAgentSessionForIpc(input: unknown): Promise<AgentClon
 export async function runAgentCommandForIpc(input: unknown): Promise<AgentCommandExecutionResult> {
     const parsed = validateRunCommandInput(input);
     switch (parsed.command) {
+        case "new":
+            return await runNewAgentSessionCommand(parsed.cwd);
+        case "session":
+            return await runSessionInfoCommand(parsed.sessionMetadata);
+        case "copy":
+            return await runCopyLastAssistantMessageCommand(parsed.sessionMetadata);
         case "reload":
             return commandSuccess("Reloaded agent command metadata.");
         default:
             return commandNoop(`Agent command /${parsed.command} is not implemented yet.`);
     }
+}
+
+async function runNewAgentSessionCommand(cwd: string): Promise<AgentCommandExecutionResult> {
+    const { metadata } = await createPaneSession(cwd);
+    return {
+        status: "success",
+        message: "Created a new agent session.",
+        sessionMetadata: metadata,
+    };
+}
+
+async function runSessionInfoCommand(sessionMetadata: JsonlSessionMetadata | undefined): Promise<AgentCommandExecutionResult> {
+    if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
+    const { metadata, session } = await openValidatedSessionMetadata(sessionMetadata);
+    const entries = await session.getEntries();
+    const leafId = await session.getLeafId();
+    return commandSuccess(
+        `Session ${path.basename(metadata.path)}: ${entries.length} entries, current leaf ${leafId ?? "none"}.`
+    );
+}
+
+async function runCopyLastAssistantMessageCommand(
+    sessionMetadata: JsonlSessionMetadata | undefined
+): Promise<AgentCommandExecutionResult> {
+    if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
+    const { session } = await openValidatedSessionMetadata(sessionMetadata);
+    const entries = await session.getEntries();
+    const assistantEntry = [...entries].reverse().find((entry) => entry.type === "message" && entry.message.role === "assistant");
+    const text = assistantEntry ? previewSessionEntry(assistantEntry) : "";
+    if (!text) return commandNoop("No assistant response to copy yet.");
+    electron.clipboard.writeText(text);
+    return commandSuccess(`Copied ${text.length} characters.`);
 }
 
 export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<void> {
