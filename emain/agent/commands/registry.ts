@@ -28,6 +28,57 @@ const BuiltInAgentCommands: AgentCommandInfo[] = [
         source: "builtin",
         action: { type: "frontend", action: "openModelPicker" },
     },
+    {
+        name: "new",
+        description: "Create a fresh agent session",
+        source: "builtin",
+        action: { type: "backend", command: "new" },
+    },
+    {
+        name: "resume",
+        description: "Resume an existing agent session for this workspace",
+        source: "builtin",
+        action: { type: "backend", command: "resume" },
+    },
+    {
+        name: "compact",
+        description: "Compact the current session context",
+        argumentHint: "[instructions]",
+        source: "builtin",
+        action: { type: "backend", command: "compact" },
+    },
+    {
+        name: "session",
+        description: "Show current agent session information",
+        source: "builtin",
+        action: { type: "backend", command: "session" },
+    },
+    {
+        name: "copy",
+        description: "Copy the last assistant response",
+        source: "builtin",
+        action: { type: "backend", command: "copy" },
+    },
+    {
+        name: "export",
+        description: "Export the current session as JSONL",
+        argumentHint: "[path]",
+        source: "builtin",
+        action: { type: "backend", command: "export" },
+    },
+    {
+        name: "import",
+        description: "Import a JSONL session",
+        argumentHint: "<path>",
+        source: "builtin",
+        action: { type: "backend", command: "import" },
+    },
+    {
+        name: "reload",
+        description: "Reload agent command metadata",
+        source: "builtin",
+        action: { type: "backend", command: "reload" },
+    },
 ];
 
 export function getBuiltInAgentCommands(): AgentCommandInfo[] {

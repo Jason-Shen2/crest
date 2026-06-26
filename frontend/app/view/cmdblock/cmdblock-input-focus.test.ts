@@ -125,6 +125,13 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
                 source: "builtin",
                 action: { type: "frontend", action: "openModelPicker" },
             },
+            {
+                name: "compact",
+                description: "Compact the current session context",
+                argumentHint: "[instructions]",
+                source: "builtin",
+                action: { type: "backend", command: "compact" },
+            },
         ]);
 
         expect(commands).toEqual([
@@ -139,6 +146,12 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
                 description: "Open the model picker",
                 icon: "stars-01",
                 action: "openModelPicker",
+            },
+            {
+                name: "/compact",
+                description: "Compact the current session context [instructions]",
+                icon: "archive",
+                action: "submitAgentCommand",
             },
         ]);
     });
@@ -157,11 +170,19 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
                 source: "builtin",
                 action: { type: "backend", command: "fork" },
             },
+            {
+                name: "export",
+                description: "Export the current session as JSONL",
+                argumentHint: "[path]",
+                source: "builtin",
+                action: { type: "backend", command: "export" },
+            },
         ]);
 
         expect(commands.map((command) => ({ name: command.name, action: command.action }))).toEqual([
             { name: "/tree", action: "submitAgentCommand" },
             { name: "/fork", action: "submitAgentCommand" },
+            { name: "/export", action: "submitAgentCommand" },
         ]);
     });
 });
