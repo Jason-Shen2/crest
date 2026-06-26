@@ -70,6 +70,7 @@ import {
 } from "@/app/store/ai-provider-models";
 import { AIUserConfig, AgentSelection, UserCustomEndpointModel, UserCustomModel } from "@/app/store/ai-types";
 import { AIUserConfigStatus, isPinned, togglePinned } from "@/app/store/ai-user-config";
+import { CommandInlineFrame } from "./command-inline-frame";
 
 const POPOVER_WIDTH_PX = 340;
 const LIST_MAX_HEIGHT_PX = 360;
@@ -613,14 +614,97 @@ interface TabBarProps {
     showRefresh: boolean;
     refreshing: boolean;
     onRefresh: () => void;
+    commandLabel?: string;
     // mousedown on the drag handle starts a resize drag of the menu
     // body height. Wired by the inline picker; popover leaves it
     // undefined and no handle renders.
     onResizeStart?: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
+interface TabButtonsProps {
+    tabs: TabSpec[];
+    activeTab: string;
+    onTabClick: (tab: TabSpec) => void;
+}
+
+const TabButtons = memo(({ tabs, activeTab, onTabClick }: TabButtonsProps) => {
+    return (
+        <div className="flex min-w-0 items-center gap-1 overflow-x-auto no-scrollbar">
+            {tabs.map((tab) => {
+                const isActive = tab.id === activeTab;
+                const isAdd = tab.kind === "add";
+                return (
+                    <button
+                        key={tab.id}
+                        type="button"
+                        onMouseDown={(e) => {
+                            e.preventDefault();
+                            onTabClick(tab);
+                        }}
+                        className={cn(
+                            "inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-3 py-1 font-sans font-semibold transition-colors",
+                            isActive
+                                ? "bg-fg-overlay-2 text-foreground"
+                                : isAdd
+                                  ? "border border-dashed border-fg-overlay-3 text-secondary/80 hover:border-fg-overlay-3 hover:bg-fg-overlay-2/45 hover:text-foreground/95"
+                                  : "text-secondary/80 hover:bg-fg-overlay-2/45 hover:text-foreground/95"
+                        )}
+                        style={{
+                            fontSize: `${SEARCH_FONT_PX}px`,
+                            // Dashed border on +Add pulls the content inward
+                            // 1px on each side; compensate so the pill heights
+                            // still match.
+                            ...(isAdd ? { paddingTop: 3, paddingBottom: 3 } : {}),
+                        }}
+                    >
+                        {tab.icon}
+                        <span>{tab.label}</span>
+                    </button>
+                );
+            })}
+        </div>
+    );
+});
+TabButtons.displayName = "TabButtons";
+
+interface RefreshButtonProps {
+    showRefresh: boolean;
+    refreshing: boolean;
+    onRefresh: () => void;
+}
+
+const RefreshButton = memo(({ showRefresh, refreshing, onRefresh }: RefreshButtonProps) => {
+    if (!showRefresh) return null;
+    return (
+        <button
+            type="button"
+            onMouseDown={(e) => {
+                e.preventDefault();
+                onRefresh();
+            }}
+            title="Refresh model list"
+            className={cn(
+                "inline-flex shrink-0 cursor-pointer items-center justify-center rounded p-1 text-secondary/75 hover:bg-fg-overlay-2/55 hover:text-foreground",
+                refreshing && "animate-spin text-foreground/90"
+            )}
+        >
+            <UIcon name="refresh-cw-04" size={ICON_PX - 1} />
+        </button>
+    );
+});
+RefreshButton.displayName = "RefreshButton";
+
 const TabBar = memo(
-    ({ tabs, activeTab, onTabClick, showRefresh, refreshing, onRefresh, onResizeStart }: TabBarProps) => {
+    ({
+        tabs,
+        activeTab,
+        onTabClick,
+        showRefresh,
+        refreshing,
+        onRefresh,
+        commandLabel = "/MODEL",
+        onResizeStart,
+    }: TabBarProps) => {
         return (
             <div
                 className="relative flex items-center border-y border-fg-overlay-2/60 bg-fg-overlay-1/55 px-3"
@@ -632,69 +716,22 @@ const TabBar = memo(
                     positioning, so its X stays fixed when the right-
                     hand refresh button toggles in and out. */}
                 <div className="flex min-w-0 items-center gap-3">
-                    <span
-                        className="shrink-0 font-mono uppercase tracking-wider text-foreground/90"
-                        style={{ fontSize: `${HEADER_FONT_PX + 1}px` }}
-                    >
-                        /MODEL
-                    </span>
-                    <div className="flex min-w-0 items-center gap-1 overflow-x-auto no-scrollbar">
-                        {tabs.map((tab) => {
-                            const isActive = tab.id === activeTab;
-                            const isAdd = tab.kind === "add";
-                            return (
-                                <button
-                                    key={tab.id}
-                                    type="button"
-                                    onMouseDown={(e) => {
-                                        e.preventDefault();
-                                        onTabClick(tab);
-                                    }}
-                                    className={cn(
-                                        "inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-3 py-1 font-sans font-semibold transition-colors",
-                                        isActive
-                                            ? "bg-fg-overlay-2 text-foreground"
-                                            : isAdd
-                                              ? "border border-dashed border-fg-overlay-3 text-secondary/80 hover:border-fg-overlay-3 hover:bg-fg-overlay-2/45 hover:text-foreground/95"
-                                              : "text-secondary/80 hover:bg-fg-overlay-2/45 hover:text-foreground/95"
-                                    )}
-                                    style={{
-                                        fontSize: `${SEARCH_FONT_PX}px`,
-                                        // Dashed border on +Add pulls
-                                        // the content inward 1px on
-                                        // each side; compensate so the
-                                        // pill heights still match.
-                                        ...(isAdd ? { paddingTop: 3, paddingBottom: 3 } : {}),
-                                    }}
-                                >
-                                    {tab.icon}
-                                    <span>{tab.label}</span>
-                                </button>
-                            );
-                        })}
-                    </div>
+                    {commandLabel && (
+                        <span
+                            className="shrink-0 font-mono uppercase tracking-wider text-foreground/90"
+                            style={{ fontSize: `${HEADER_FONT_PX + 1}px` }}
+                        >
+                            {commandLabel}
+                        </span>
+                    )}
+                    <TabButtons tabs={tabs} activeTab={activeTab} onTabClick={onTabClick} />
                 </div>
 
                 {/* Right section: refresh. Pushed to the far right via
                     ml-auto so the drag handle (absolutely positioned
                     below) doesn't displace it. */}
                 <div className="ml-auto flex shrink-0 items-center gap-0.5">
-                    {showRefresh && (
-                        <button
-                            type="button"
-                            onMouseDown={(e) => {
-                                e.preventDefault();
-                                onRefresh();
-                            }}
-                            title="Refresh model list"
-                            className={cn(
-                                "inline-flex shrink-0 cursor-pointer items-center justify-center rounded p-1 text-secondary/75 hover:bg-fg-overlay-2/55 hover:text-foreground",
-                                refreshing && "animate-spin text-foreground/90"
-                            )}
-                        >
-                            <UIcon name="refresh-cw-04" size={ICON_PX - 1} />
-                        </button>
-                    )}
+                    <RefreshButton showRefresh={showRefresh} refreshing={refreshing} onRefresh={onRefresh} />
                 </div>
 
                 {/* Drag handle, absolutely anchored to the header's
@@ -2029,7 +2066,16 @@ export const ModelPickerInline = memo(
         const showSidecarProvider = activeTabSpec?.kind !== "provider";
 
         return (
-            <div ref={rootRef} className="border-t border-fg-overlay-2 bg-fg-overlay-1/40 font-sans" role="listbox">
+            <CommandInlineFrame
+                commandName="/model"
+                rootRef={rootRef}
+                role="listbox"
+                headerContent={<TabButtons tabs={tabs} activeTab={activeTab} onTabClick={handleTabClick} />}
+                headerActions={
+                    <RefreshButton showRefresh={showRefresh} refreshing={isLoading} onRefresh={handleRefresh} />
+                }
+                onResizeStart={handleResizeStart}
+            >
                 <ConfigBanner
                     status={userConfigStatus}
                     error={userConfigError}
@@ -2044,16 +2090,6 @@ export const ModelPickerInline = memo(
                         onSelectionChange(sel);
                         onOpenChange(false);
                     }}
-                />
-
-                <TabBar
-                    tabs={tabs}
-                    activeTab={activeTab}
-                    onTabClick={handleTabClick}
-                    showRefresh={showRefresh}
-                    refreshing={isLoading}
-                    onRefresh={handleRefresh}
-                    onResizeStart={handleResizeStart}
                 />
 
                 <SearchBar
@@ -2101,7 +2137,7 @@ export const ModelPickerInline = memo(
                 </div>
 
                 <HintFooter showTabHint={tabs.filter((t) => t.kind !== "add").length > 1} />
-            </div>
+            </CommandInlineFrame>
         );
     }
 );
