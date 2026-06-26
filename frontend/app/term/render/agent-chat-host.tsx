@@ -57,6 +57,8 @@ export interface AgentChatHostProps {
     allowedTools?: string[];
     /** Notification atom setter — surface user-facing errors when send can't proceed. */
     onUserError?: (message: string) => void;
+    /** Pi-style inline command result feedback for immediate slash commands. */
+    onCommandResult?: (result: AgentInlineCommandResult) => void;
     /** Opens the real model picker owned by the input component. */
     onOpenModelPicker?: () => void;
     /** Selector-first command path for Task7 UI: /tree and /fork never self-resolve from text. */
@@ -110,11 +112,19 @@ export type AgentSelectorRequest =
       };
 
 export interface AgentCommandExecutionResult {
+    status?: "success" | "noop";
     message?: string;
     sessionMetadata?: AgentSessionMeta;
 }
 
 type AgentImmediateCommandName = Exclude<AgentSlashCommandName, "tree" | "fork" | "clone" | "model">;
+
+export interface AgentInlineCommandResult {
+    command: AgentImmediateCommandName;
+    status: "success" | "noop";
+    message: string;
+    sessionMetadata?: AgentSessionMeta;
+}
 
 interface AgentChatHostApiDeps {
     sendPrompt: (text: string) => boolean;
@@ -125,6 +135,7 @@ interface AgentChatHostApiDeps {
     getPaneCwd: () => string;
     runCommand?: (command: AgentImmediateCommandName, argsText: string) => Promise<AgentCommandExecutionResult>;
     onSessionMinted?: (meta: AgentSessionMeta) => void;
+    onCommandResult?: (result: AgentInlineCommandResult) => void;
     onUserError?: (message: string) => void;
     onOpenModelPicker?: () => void;
     onSelectorRequest?: (request: AgentSelectorRequest) => void;
@@ -200,7 +211,12 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
                     deps.onSessionMinted?.(result.sessionMetadata);
                 }
                 if (result.message) {
-                    deps.onUserError?.(result.message);
+                    deps.onCommandResult?.({
+                        command,
+                        status: result.status ?? "success",
+                        message: result.message,
+                        sessionMetadata: result.sessionMetadata,
+                    });
                 }
             })
         );
@@ -260,6 +276,7 @@ export function AgentChatHost({
     onStateChange,
     allowedTools,
     onUserError,
+    onCommandResult,
     onOpenModelPicker,
     onSelectorRequest,
 }: AgentChatHostProps) {
@@ -287,6 +304,8 @@ export function AgentChatHost({
     onRunsChangeRef.current = onRunsChange;
     const onUserErrorRef = useRef(onUserError);
     onUserErrorRef.current = onUserError;
+    const onCommandResultRef = useRef(onCommandResult);
+    onCommandResultRef.current = onCommandResult;
     const onOpenModelPickerRef = useRef(onOpenModelPicker);
     onOpenModelPickerRef.current = onOpenModelPicker;
     const onSessionMintedRef = useRef(onSessionMinted);
@@ -353,6 +372,7 @@ export function AgentChatHost({
             getSessionMetadata: () => sessionMetadataRef.current,
             getPaneCwd: () => paneContextRef.current.cwd,
             onSessionMinted: (meta) => onSessionMintedRef.current?.(meta),
+            onCommandResult: (result) => onCommandResultRef.current?.(result),
             onUserError: (message) => onUserErrorRef.current?.(message),
             onOpenModelPicker: () => onOpenModelPickerRef.current?.(),
             onSelectorRequest: (request) => onSelectorRequestRef.current?.(request),
