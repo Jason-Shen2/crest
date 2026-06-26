@@ -38,7 +38,7 @@ export class AltScreen {
     constructor(cols: number, rows: number = DefaultAltScreenRows) {
         this.grid = new Grid(cols);
         this.rows = rows;
-        this.fillToRows();
+        this.grid.resizeViewport(cols, rows);
     }
 
     // enter — switch to alt-screen mode.  `clear` controls whether the
@@ -53,7 +53,7 @@ export class AltScreen {
             this.grid.eraseInDisplay(2);
             this.grid.cursorTo(0, 0);
             this.grid.setStyle(DefaultStyle);
-            this.fillToRows();
+            this.grid.resizeViewport(this.grid.cols, this.rows);
         }
         this.grid.markAllDirty();
     }
@@ -64,6 +64,7 @@ export class AltScreen {
         // Don't clear — warp keeps the last-frame on the block for scroll-back
         // history.  The renderer decides whether to render it (typically
         // shown above the command's output_grid).
+        this.grid.resetScrollRegion();
     }
 
     // resize — when the terminal pane changes size, the TUI needs a new
@@ -72,26 +73,8 @@ export class AltScreen {
     // cols on the grid and the row count here; the renderer recomputes
     // layout naturally.
     resize(cols: number, rows: number): void {
-        this.grid.cols = cols;
         this.rows = rows;
-        this.fillToRows();
+        this.grid.resizeViewport(cols, rows);
         this.grid.markAllDirty();
-    }
-
-    // Ensure the grid has at least `rows` rows.  TUIs assume the viewport
-    // is already populated when they start drawing (they CUP to row 5 and
-    // expect row 5 to exist).  We pad with empty rows up front.
-    //
-    // BUG WAS: using cursorTo() to "grow" rows was an infinite loop —
-    // cursorTo only sets cursor.row, it doesn't create rows in the
-    // underlying Vec<Row>.  Only writeChar / lineFeed actually call
-    // ensureRow() to allocate.  Use lineFeed() which both advances cursor
-    // and allocates.
-    private fillToRows(): void {
-        while (this.grid.rowCount() < this.rows) {
-            this.grid.lineFeed();
-        }
-        // Snap cursor back to top-left for the parser's next write.
-        this.grid.cursorTo(0, 0);
     }
 }

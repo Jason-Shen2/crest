@@ -718,6 +718,7 @@ export const TerminalView = memo(
         // when focus is in the input bar or any other editable area so the
         // user can still navigate command-line text with arrow keys.
         useEffect(() => {
+            if (inAltScreen) return;
             const onKeyDown = (e: KeyboardEvent) => {
                 if (!(e.metaKey || e.ctrlKey)) return;
                 if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
@@ -734,7 +735,7 @@ export const TerminalView = memo(
             };
             document.addEventListener("keydown", onKeyDown);
             return () => document.removeEventListener("keydown", onKeyDown);
-        }, [model]);
+        }, [model, inAltScreen]);
 
         // Cmd/Ctrl + Shift + S — toggle the snackbar (sticky pinned prompt).
         // The dismiss button on the snackbar itself only hides; this is the

@@ -6,7 +6,10 @@ import {
     findSlashCommandAction,
     getAgentShellShortcutModifierKey,
     makeSlashCommandsFromAgentRegistry,
+    resolveEditorBeforeInputAction,
     resolveEditorEnterAction,
+    resolveEditorMacNavigationAction,
+    resolveEditorWordBoundary,
     resolveShortcutOverrideMode,
     resolveSubmitMode,
     shouldClearInputAfterSubmit,
@@ -63,6 +66,47 @@ describe("resolveEditorEnterAction", () => {
 
     it("does not submit for shift Enter", () => {
         expect(resolveEditorEnterAction({ key: "Enter", shiftKey: true })).toBeNull();
+    });
+});
+
+describe("resolveEditorMacNavigationAction", () => {
+    it("clears the editor for Command Backspace", () => {
+        expect(resolveEditorMacNavigationAction({ key: "Backspace", metaKey: true })).toBe("clear-all");
+    });
+
+    it("moves by word for Option arrows", () => {
+        expect(resolveEditorMacNavigationAction({ key: "ArrowLeft", altKey: true })).toBe("word-left");
+        expect(resolveEditorMacNavigationAction({ key: "ArrowRight", altKey: true })).toBe("word-right");
+    });
+
+    it("does not intercept plain deletion or arrows", () => {
+        expect(resolveEditorMacNavigationAction({ key: "Backspace" })).toBeNull();
+        expect(resolveEditorMacNavigationAction({ key: "ArrowLeft" })).toBeNull();
+        expect(resolveEditorMacNavigationAction({ key: "ArrowRight" })).toBeNull();
+    });
+});
+
+describe("resolveEditorBeforeInputAction", () => {
+    it("clears the editor for macOS Command Backspace beforeinput variants", () => {
+        expect(resolveEditorBeforeInputAction("deleteHardLineBackward")).toBe("clear-all");
+        expect(resolveEditorBeforeInputAction("deleteSoftLineBackward")).toBe("clear-all");
+    });
+
+    it("does not intercept ordinary content deletion", () => {
+        expect(resolveEditorBeforeInputAction("deleteContentBackward")).toBeNull();
+        expect(resolveEditorBeforeInputAction("deleteWordBackward")).toBeNull();
+    });
+});
+
+describe("resolveEditorWordBoundary", () => {
+    it("moves left to the start of the previous shell token", () => {
+        expect(resolveEditorWordBoundary("git commit --amend", 18, "left")).toBe(11);
+        expect(resolveEditorWordBoundary("git commit   --amend", 13, "left")).toBe(4);
+    });
+
+    it("moves right to the end of the next shell token", () => {
+        expect(resolveEditorWordBoundary("git commit --amend", 0, "right")).toBe(3);
+        expect(resolveEditorWordBoundary("git   commit --amend", 3, "right")).toBe(12);
     });
 });
 

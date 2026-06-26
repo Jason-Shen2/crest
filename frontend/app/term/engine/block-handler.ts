@@ -64,6 +64,11 @@ export interface TerminalContext {
     // (terminal/model/blocks.rs:3556-3594).  No-op in alt-screen (so vim's
     // own clear doesn't blow away history).
     clearPriorBlocks?(): void;
+    // Called when the parser detects a full-screen clear (ED 2 / ED 3 /
+    // ESC c) on a running block — strong signal that an inline TUI is
+    // initializing.  The model uses this to set a bounded viewport on
+    // the outputGrid so LF/auto-wrap scroll instead of growing rows.
+    onInlineTui?(): void;
 }
 
 const NoopCtx: TerminalContext = {
@@ -253,6 +258,11 @@ export class BlockHandler implements AnsiHandler {
                 if (mode === 3 && !this.block.altScreen.active) {
                     this.ctx.clearPriorBlocks?.();
                 }
+                // ED 2 / ED 3 on a running block (not alt-screen) is a
+                // strong signal that an inline TUI is initializing.
+                if ((mode === 2 || mode === 3) && !this.block.altScreen.active && this.block.state === "running") {
+                    this.ctx.onInlineTui?.();
+                }
                 return;
             }
             case "K":
@@ -296,10 +306,18 @@ export class BlockHandler implements AnsiHandler {
                     return;
                 }
                 const top = (params[0] || 1) - 1;
-                const bot =
-                    params[1] != null && params[1] > 0
-                        ? params[1] - 1
-                        : Number.POSITIVE_INFINITY;
+                let bot: number;
+                if (params[1] != null && params[1] > 0) {
+                    bot = params[1] - 1;
+                } else {
+                    // DECSTBM without a bottom parameter resets to the
+                    // full viewport height (per VT spec).  In bounded
+                    // (TUI) mode use viewportHeight(); in unbounded mode
+                    // fall back to POSITIVE_INFINITY so normal command
+                    // output can keep growing.
+                    const vh = g.viewportHeight();
+                    bot = vh > 0 ? vh - 1 : Number.POSITIVE_INFINITY;
+                }
                 g.setScrollRegion(top, bot);
                 return;
             }
@@ -348,7 +366,7 @@ export class BlockHandler implements AnsiHandler {
         const op = params[0];
         if (op === 18 || op === 19) {
             const cols = g.cols;
-            const rows = Math.max(g.rowCount(), 24);
+            const rows = g.viewportHeight();
             this.ctx.respond(`${CSI}8;${rows};${cols}t`);
         }
     }
@@ -487,6 +505,9 @@ export class BlockHandler implements AnsiHandler {
                 ctx.setMode({ columnMode: on });
                 g.eraseInDisplay(2);
                 g.cursorTo(0, 0);
+                if (!this.block.altScreen.active && this.block.state === "running") {
+                    this.ctx.onInlineTui?.();
+                }
                 return;
             case 5:
                 ctx.setMode({ reverseVideo: on });

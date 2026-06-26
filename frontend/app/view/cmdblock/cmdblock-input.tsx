@@ -154,6 +154,7 @@ export function shouldFocusCmdBlockEditor(activeElement: Element | null, contain
 }
 
 export type EditorEnterAction = "submit" | "submit-override";
+export type EditorMacNavigationAction = "clear-all" | "word-left" | "word-right";
 
 export interface EditorEnterKeyLike {
     key: string;
@@ -168,6 +169,34 @@ export function resolveEditorEnterAction(e: EditorEnterKeyLike): EditorEnterActi
     if (e.shiftKey || e.altKey) return null;
     if (e.metaKey || e.ctrlKey) return "submit-override";
     return "submit";
+}
+
+export function resolveEditorMacNavigationAction(e: EditorEnterKeyLike): EditorMacNavigationAction | null {
+    if (e.key === "Backspace" && e.metaKey && !e.altKey && !e.ctrlKey) return "clear-all";
+    if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+        if (e.key === "ArrowLeft") return "word-left";
+        if (e.key === "ArrowRight") return "word-right";
+    }
+    return null;
+}
+
+export function resolveEditorBeforeInputAction(inputType: string): EditorMacNavigationAction | null {
+    if (inputType === "deleteHardLineBackward" || inputType === "deleteSoftLineBackward") return "clear-all";
+    return null;
+}
+
+export function resolveEditorWordBoundary(text: string, offset: number, direction: "left" | "right"): number {
+    const clamped = Math.max(0, Math.min(offset, text.length));
+    if (direction === "left") {
+        let i = clamped;
+        while (i > 0 && /\s/.test(text[i - 1])) i--;
+        while (i > 0 && !/\s/.test(text[i - 1])) i--;
+        return i;
+    }
+    let i = clamped;
+    while (i < text.length && /\s/.test(text[i])) i++;
+    while (i < text.length && !/\s/.test(text[i])) i++;
+    return i;
 }
 
 export function resolveShortcutOverrideMode(current: "terminal" | "agent"): "terminal" | "agent" {
@@ -883,17 +912,42 @@ const Editor = memo(
             sel.addRange(range);
         }, [focusRequest, disabled, focusContainerRef]);
 
+        const syncText = useCallback(
+            (text: string) => {
+                onChange(text);
+                onSlashCommandHint?.(text.startsWith("/"));
+                // @-trigger: open when buffer contains an `@token` segment at the
+                // caret (simplified — warp parses positions, we just look at the
+                // last `@` token).  Toggled off when no `@` is present.
+                onAtCommandHint?.(/(^|\s)@\S*$/.test(text));
+            },
+            [onChange, onSlashCommandHint, onAtCommandHint]
+        );
+
         const flush = useCallback(() => {
             const el = ref.current;
             if (!el) return;
-            const text = el.textContent ?? "";
-            onChange(text);
-            onSlashCommandHint?.(text.startsWith("/"));
-            // @-trigger: open when buffer contains an `@token` segment at the
-            // caret (simplified — warp parses positions, we just look at the
-            // last `@` token).  Toggled off when no `@` is present.
-            onAtCommandHint?.(/(^|\s)@\S*$/.test(text));
-        }, [onChange, onSlashCommandHint, onAtCommandHint]);
+            syncText(el.textContent ?? "");
+        }, [syncText]);
+
+        const clearEditor = useCallback(() => {
+            const el = ref.current;
+            if (!el) return false;
+            el.textContent = "";
+            syncText("");
+            setEditorCaretOffset(el, 0);
+            return true;
+        }, [syncText]);
+
+        const handleBeforeInput = useCallback(
+            (e: React.FormEvent<HTMLDivElement>) => {
+                const inputType = (e.nativeEvent as InputEvent).inputType;
+                if (inputType == null || resolveEditorBeforeInputAction(inputType) !== "clear-all") return;
+                e.preventDefault();
+                clearEditor();
+            },
+            [clearEditor]
+        );
 
         const handleKeyDown = useCallback(
             (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -956,6 +1010,21 @@ const Editor = memo(
                     onSubmit();
                     return;
                 }
+                const macNavigationAction = resolveEditorMacNavigationAction(e);
+                if (macNavigationAction) {
+                    const el = ref.current;
+                    if (!el) return;
+                    e.preventDefault();
+                    if (macNavigationAction === "clear-all") {
+                        clearEditor();
+                        return;
+                    }
+                    const offset = getEditorCaretOffset(el);
+                    if (offset == null) return;
+                    const direction = macNavigationAction === "word-left" ? "left" : "right";
+                    setEditorCaretOffset(el, resolveEditorWordBoundary(el.textContent ?? "", offset, direction));
+                    return;
+                }
                 if (e.key === "Tab" && !e.shiftKey && !e.altKey) {
                     e.preventDefault();
                     if (onTab && onTab()) return;
@@ -1001,6 +1070,7 @@ const Editor = memo(
                 disabled,
                 onSubmit,
                 onSubmitOverride,
+                clearEditor,
                 onCancelMenus,
                 onHistoryPrev,
                 onHistoryNext,
@@ -1041,6 +1111,7 @@ const Editor = memo(
                     spellCheck={false}
                     data-placeholder={placeholder ?? ""}
                     onInput={flush}
+                    onBeforeInput={handleBeforeInput}
                     onKeyDown={handleKeyDown}
                     style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`, minHeight: "80px" }}
                     className={cn(
@@ -1055,6 +1126,44 @@ const Editor = memo(
     }
 );
 Editor.displayName = "Editor";
+
+function getEditorCaretOffset(host: HTMLElement): number | null {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!host.contains(range.endContainer)) return null;
+    const prefix = range.cloneRange();
+    prefix.selectNodeContents(host);
+    prefix.setEnd(range.endContainer, range.endOffset);
+    return prefix.toString().length;
+}
+
+function setEditorCaretOffset(host: HTMLElement, offset: number): void {
+    const target = Math.max(0, Math.min(offset, (host.textContent ?? "").length));
+    const range = document.createRange();
+    let seen = 0;
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+        const text = node.textContent ?? "";
+        const next = seen + text.length;
+        if (target <= next) {
+            range.setStart(node, target - seen);
+            range.collapse(true);
+            const sel = window.getSelection();
+            sel?.removeAllRanges();
+            sel?.addRange(range);
+            return;
+        }
+        seen = next;
+        node = walker.nextNode();
+    }
+    range.selectNodeContents(host);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+}
 
 // Caret-position helpers for ↑/↓ history navigation.  Without a real
 // editor we approximate by measuring the caret's clientRect against the
