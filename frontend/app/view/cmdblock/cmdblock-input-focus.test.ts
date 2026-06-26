@@ -114,11 +114,10 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
     it("uses agent command registry metadata for builtin slash commands", () => {
         const commands = makeSlashCommandsFromAgentRegistry([
             {
-                name: "compact",
-                description: "Compact the current agent session context",
-                argumentHint: "[instructions]",
+                name: "tree",
+                description: "Navigate the current agent session tree",
                 source: "builtin",
-                action: { type: "backend", command: "compact" },
+                action: { type: "backend", command: "tree" },
             },
             {
                 name: "model",
@@ -130,9 +129,9 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
 
         expect(commands).toEqual([
             {
-                name: "/compact",
-                description: "Compact the current agent session context [instructions]",
-                icon: "stars-01",
+                name: "/tree",
+                description: "Navigate the current agent session tree",
+                icon: "git-branch-01",
                 action: "submitAgentCommand",
             },
             {
