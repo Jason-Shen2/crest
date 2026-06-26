@@ -10,6 +10,7 @@ export function parseToken(buffer: string, cursor: number): ParsedToken {
     const start = cursor - text.length;
     const head = buffer.slice(0, start);
     const isFirstWord = head.trim().length === 0;
+    // looksLikePath 预留给未来的路径检测启发式
     const looksLikePath = text.includes("/") || /^(\.\/|\.\.\/|~)/.test(text);
     return { text, start, isFirstWord, looksLikePath };
 }

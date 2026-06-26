@@ -10,7 +10,9 @@ export interface Suggestion {
     type: SuggestionType;
     priority: number; // 排序用，越大越靠前
     icon?: string;
-    spanStart?: number; // 该候选替换的起点 offset；缺省由引擎兜底填充
+    // 该候选替换的起点 offset；缺省由引擎兜底填充。
+    // 这是权威的替换起点，消费方必须使用每个 Suggestion 自身的 spanStart 来计算替换区间。
+    spanStart?: number;
 }
 
 export interface ReplacementSpan {
@@ -19,8 +21,11 @@ export interface ReplacementSpan {
 }
 
 export interface SuggestionResults {
+    // 仅作兜底 / UI 提示；当候选 spanStart 异构（如 history=0、path=token.start）时不可靠，
+    // 消费方应改用每个 Suggestion 自身的 spanStart。
     replacementSpan: ReplacementSpan;
     suggestions: Suggestion[];
+    // "fuzzy" 预留给未来的模糊匹配，当前仅使用 "prefix"。
     matchStrategy: "prefix" | "fuzzy";
 }
 
