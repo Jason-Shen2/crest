@@ -24,19 +24,22 @@
 //     "shift-click overrides mouse capture") so they can copy text even
 //     while a TUI eats clicks.
 
-import { cn } from "@/util/util";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { CmdBlockHeader } from "@/app/view/cmdblock/cmdblock-header";
 import { CmdBlockSnackbar } from "@/app/view/cmdblock/cmdblock-snackbar";
-import { CmdBlockToolbelt, CmdBlockToolbeltProps } from "@/app/view/cmdblock/cmdblock-toolbelt";
 import { blockStateFromRaw } from "@/app/view/cmdblock/cmdblock-status";
+import { CmdBlockToolbelt, CmdBlockToolbeltProps } from "@/app/view/cmdblock/cmdblock-toolbelt";
+import { cn } from "@/util/util";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Block } from "../engine/block";
 import { mouseReportingActive } from "../engine/types";
-import { TerminalModel } from "../terminal-model";
-import { FindMatch } from "../terminal-model";
+import { FindMatch, TerminalModel } from "../terminal-model";
 import { BlockContextMenu, BlockContextMenuEntry } from "./block-context-menu";
 import { CursorOverlay } from "./cursor-overlay";
 import { FindHighlightLayer } from "./find-highlight-layer";
+import { GridElement } from "./grid-element";
+import { LogicalMouseEvent, MouseButton, encodeMouseEvent, shouldReportAction } from "./mouse";
+import { BlockSelectionSlice, SelectionMode, pixelToCell } from "./selection";
+import { SelectionLayer } from "./selection-layer";
 
 // Auto-collapse head/tail row counts.  Pure crest values — see the
 // note next to the row threshold in terminal-model.ts for why crest
@@ -45,10 +48,6 @@ import { FindHighlightLayer } from "./find-highlight-layer";
 // terminal-screen-worth of context at each end.
 const CollapseHeadRows = 30;
 const CollapseTailRows = 20;
-import { GridElement } from "./grid-element";
-import { LogicalMouseEvent, MouseButton, encodeMouseEvent, shouldReportAction } from "./mouse";
-import { BlockSelectionSlice, SelectionMode, pixelToCell } from "./selection";
-import { SelectionLayer } from "./selection-layer";
 
 type MouseLikeEvent = Pick<
     React.MouseEvent<HTMLDivElement>,
@@ -137,8 +136,7 @@ export const BlockElement = memo(
         // visible if no post-exit output has landed, so vim/htop/less
         // sessions don't visually vanish from the block list.
         const outputRowCount = block.outputGrid.rowCount();
-        const frozenAltScreen =
-            !inAltScreen && block.altScreen.wasActive && outputRowCount === 0;
+        const frozenAltScreen = !inAltScreen && block.altScreen.wasActive && outputRowCount === 0;
         const showAltScreen = surfaceKind === "alt-screen" || frozenAltScreen;
         const liveGrid = showAltScreen ? block.altScreen.grid : block.outputGrid.raw();
         const cursorState = model?.getCursorRenderState?.(block.id) ?? { kind: "terminal" as const };
@@ -155,14 +153,29 @@ export const BlockElement = memo(
             block.collapsed &&
             outputRowCount > CollapseHeadRows + CollapseTailRows &&
             !hasFindMatches;
-        const hiddenCount = showCollapsed
-            ? outputRowCount - CollapseHeadRows - CollapseTailRows
-            : 0;
+        const hiddenCount = showCollapsed ? outputRowCount - CollapseHeadRows - CollapseTailRows : 0;
 
-        // Render the cursor for blocks that are actually receiving input —
-        // running blocks (the shell prompt's cursor sits in the output grid)
-        // and any alt-screen TUI.  Done blocks have no live cursor.
-        const showCursor = (block.state === "running" || inAltScreen) && cursorState.kind === "terminal";
+        // Render the cursor for blocks that are actually receiving input.
+        //
+        // Cursor visibility rules:
+        //   1. Active TUI surfaces (alt-screen, long-running-pty, terminal-capture):
+        //      Show the overlay only when the app keeps the host cursor visible
+        //      (DECTCEM ?25 h, cursorState.visible=true).  Apps that hide the
+        //      cursor (?25 l) draw their own software cursor via reverse-video
+        //      (now rendered correctly by CellRun), so we must not show the
+        //      overlay at the stale VT-cursor position.
+        //   2. Running non-TUI shell blocks: gate on cursorState.kind === "terminal"
+        //      so password-prompt style cursor suppression is honored.
+        //
+        // Done blocks never carry a live cursor.
+        const isTuiSurface =
+            surfaceKind === "alt-screen" ||
+            surfaceKind === "long-running-pty" ||
+            surfaceKind === "terminal-capture" ||
+            frozenAltScreen;
+        const showCursor = isTuiSurface
+            ? liveGrid.cursorState.visible
+            : (block.state === "running" || inAltScreen) && cursorState.kind === "terminal";
 
         const cellFromEvent = useCallback(
             (e: MouseLikeEvent): { row: number; col: number } | null => {
@@ -193,11 +206,7 @@ export const BlockElement = memo(
         };
 
         const forwardMouse = useCallback(
-            (
-                e: MouseLikeEvent,
-                action: "press" | "release" | "motion",
-                button: MouseButton
-            ): boolean => {
+            (e: MouseLikeEvent, action: "press" | "release" | "motion", button: MouseButton): boolean => {
                 if (!model) return false;
                 const mode = model.getMode();
                 if (!mouseReportingActive(mode)) return false;
@@ -454,10 +463,7 @@ export const BlockElement = memo(
         //     stripe so selection still reads even with the red tint.
         // The flag-pole is rendered as a border-l-4 on the wrapper so it
         // automatically clips to block bounds when scrolling.
-        const isFailed =
-            block.state === "done-with-execution" &&
-            block.exitCode != null &&
-            block.exitCode !== 0;
+        const isFailed = block.state === "done-with-execution" && block.exitCode != null && block.exitCode !== 0;
         return (
             <div
                 onClick={onSelect}
@@ -478,7 +484,7 @@ export const BlockElement = memo(
                     // Failed (non-selected): 10% red overlay (warp
                     // block_list_element.rs:2404-2410, bg = failed × 10%).
                     isFailed && !selected && "bg-[var(--ansi-red)]/10",
-                    activeTuiSurface && "h-full min-h-full"
+                    activeTuiSurface && "flex flex-col h-full min-h-0 border-b-0"
                 )}
             >
                 {showSnackbar && !activeTuiSurface && (
@@ -509,9 +515,7 @@ export const BlockElement = memo(
                             selected={selected}
                             venv={block.virtualEnv}
                             nodeVersion={block.nodeVersion}
-                            rightSlot={
-                                toolbelt ? <CmdBlockToolbelt {...toolbelt} /> : undefined
-                            }
+                            rightSlot={toolbelt ? <CmdBlockToolbelt {...toolbelt} /> : undefined}
                         />
                     </div>
                 )}
@@ -522,30 +526,10 @@ export const BlockElement = memo(
                     line.  Keep a small pb-2 (≈ 8 px, half of warp's 1.0
                     line) so the next block's top divider doesn't kiss
                     this block's last line. */}
-                <div
-                    className={cn(
-                        activeTuiSurface ? "h-full min-h-full p-0" : "px-3 pt-0 pb-2"
-                    )}
-                >
+                <div className={cn(activeTuiSurface ? "flex-1 min-h-0 p-0 flex flex-col" : "px-3 pt-0 pb-2")}>
                     <div
                         ref={gridHostRef}
-                        // Layout padding sits on the outer div so this inner
-                        // host has zero padding — its border box equals the
-                        // text content box.  SelectionLayer / FindHighlight /
-                        // CursorOverlay all position absolute inside it, and
-                        // cellFromEvent uses getBoundingClientRect() of this
-                        // same node, so mouse-to-cell math and layer rect
-                        // math share a single origin.
-                        //
-                        // select-none suppresses the browser's native text
-                        // selection so it doesn't draw a second highlight on
-                        // top of SelectionLayer.  Copy goes through our
-                        // Cmd+C handler (model.copySelection), so disabling
-                        // native selection has no copy-path consequence.
-                        className={cn(
-                            "relative select-none",
-                            activeTuiSurface && "h-full min-h-full"
-                        )}
+                        className={cn("relative select-none", activeTuiSurface && "flex-1 min-h-0 overflow-hidden")}
                         onMouseDown={handleMouseDown}
                         onMouseMove={handleMouseMove}
                         onMouseUp={handleMouseUp}
@@ -559,7 +543,7 @@ export const BlockElement = memo(
                                 revision={revision}
                                 fontSize={fontSize}
                                 className={cn(
-                                    activeTuiSurface && "min-h-full",
+                                    activeTuiSurface && "h-full min-h-full",
                                     frozenAltScreen ? "text-foreground/85" : "text-foreground"
                                 )}
                                 onLinkClick={onLinkClick}
@@ -570,12 +554,9 @@ export const BlockElement = memo(
                                     source={block.outputGrid}
                                     revision={revision}
                                     fontSize={fontSize}
-                                    className={cn(activeTuiSurface && "min-h-full", "text-foreground")}
+                                    className={cn(activeTuiSurface && "h-full min-h-full", "text-foreground")}
                                     onLinkClick={onLinkClick}
-                                    visibleRowIndicesOverride={Array.from(
-                                        { length: CollapseHeadRows },
-                                        (_, i) => i
-                                    )}
+                                    visibleRowIndicesOverride={Array.from({ length: CollapseHeadRows }, (_, i) => i)}
                                 />
                                 <button
                                     type="button"
@@ -589,7 +570,7 @@ export const BlockElement = memo(
                                     source={block.outputGrid}
                                     revision={revision}
                                     fontSize={fontSize}
-                                    className={cn(activeTuiSurface && "min-h-full", "text-foreground")}
+                                    className={cn(activeTuiSurface && "h-full min-h-full", "text-foreground")}
                                     onLinkClick={onLinkClick}
                                     visibleRowIndicesOverride={Array.from(
                                         { length: CollapseTailRows },
@@ -602,7 +583,7 @@ export const BlockElement = memo(
                                 source={block.outputGrid}
                                 revision={revision}
                                 fontSize={fontSize}
-                                className={cn(activeTuiSurface && "min-h-full", "text-foreground")}
+                                className={cn(activeTuiSurface && "h-full min-h-full", "text-foreground")}
                                 onLinkClick={onLinkClick}
                             />
                         )}
@@ -633,12 +614,7 @@ export const BlockElement = memo(
                     </div>
                 </div>
                 {menuPos && menuItems.length > 0 && (
-                    <BlockContextMenu
-                        x={menuPos.x}
-                        y={menuPos.y}
-                        items={menuItems}
-                        onClose={() => setMenuPos(null)}
-                    />
+                    <BlockContextMenu x={menuPos.x} y={menuPos.y} items={menuItems} onClose={() => setMenuPos(null)} />
                 )}
             </div>
         );
@@ -669,13 +645,7 @@ function gridToText(grid: import("../engine/grid").Grid): string {
     return lines.slice(0, lastNonblank + 1).join("\n");
 }
 
-function mapLifecycleToVisual(block: Block):
-    | "before"
-    | "running"
-    | "done-ok"
-    | "done-err"
-    | "background"
-    | "static" {
+function mapLifecycleToVisual(block: Block): "before" | "running" | "done-ok" | "done-err" | "background" | "static" {
     if (block.state === "background") return "background";
     if (block.state === "static") return "static";
     if (block.state === "running") return "running";

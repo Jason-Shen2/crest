@@ -21,8 +21,38 @@
 //                ESC [ <n> ; <mod> ~          for ~-final keys
 //
 // Alt is encoded as an ESC prefix on printable / Backspace / Enter /
-// Tab — xterm's "Meta sends ESC" convention.  Cmd is left alone so OS
-// shortcuts (Cmd+C, Cmd+V, Cmd+R, …) still work.
+// Tab — xterm's "Meta sends ESC" convention.  Cmd+letter combinations
+// (Cmd+C/V/A/Z/X/…) belong to the OS / browser and return null, but
+// Cmd+editing keys (Backspace, Arrow keys, Home/End, Delete) are mapped
+// to their expected terminal functions so macOS text-editing muscle
+// memory works inside TUIs (pi, coco, vim, htop, …).
+
+// Keys where Cmd acts as a "command modifier" (OS shortcut) — these
+// return null so the browser/OS handles them.  Letters, digits, and
+// common app-level shortcuts (R reload, W close tab, Q quit, …).
+function isCmdShortcutKey(key: string): boolean {
+    if (key.length === 1) return true; // letters, digits, punctuation
+    switch (key) {
+        case "F1":
+        case "F2":
+        case "F3":
+        case "F4":
+        case "F5":
+        case "F6":
+        case "F7":
+        case "F8":
+        case "F9":
+        case "F10":
+        case "F11":
+        case "F12":
+        case "Tab":
+        case "Enter":
+        case "Escape":
+            return true;
+        default:
+            return false;
+    }
+}
 
 export interface KeyEncoderMode {
     appCursor: boolean;
@@ -38,14 +68,13 @@ export interface KeyEncoderMode {
 
 const DefaultMode: KeyEncoderMode = { appCursor: false };
 
-export function keyEventToBytes(
-    e: KeyboardEvent,
-    mode: KeyEncoderMode = DefaultMode
-): string | null {
+export function keyEventToBytes(e: KeyboardEvent, mode: KeyEncoderMode = DefaultMode): string | null {
     const { key, ctrlKey, altKey, metaKey, shiftKey } = e;
 
-    // Pure Cmd combinations belong to the OS / browser.
-    if (metaKey && !ctrlKey && !altKey) return null;
+    // Pure Cmd + letter/digit/function-key combinations belong to OS/browser.
+    // Cmd+editing keys (Backspace, Arrows, Home/End, Delete) fall through
+    // and are mapped to terminal editing sequences below.
+    if (metaKey && !ctrlKey && !altKey && isCmdShortcutKey(key)) return null;
 
     const modCode = 1 + (shiftKey ? 1 : 0) + (altKey ? 2 : 0) + (ctrlKey ? 4 : 0);
     const hasMod = modCode !== 1;
@@ -78,8 +107,10 @@ export function keyEventToBytes(
         case "ArrowDown":
             return arrowOrCursor("B", mode.appCursor, hasMod, modCode);
         case "ArrowRight":
+            if (metaKey && !ctrlKey && !altKey) return "\x1b[F";
             return arrowOrCursor("C", mode.appCursor, hasMod, modCode);
         case "ArrowLeft":
+            if (metaKey && !ctrlKey && !altKey) return "\x1b[H";
             return arrowOrCursor("D", mode.appCursor, hasMod, modCode);
         case "Home":
             return arrowOrCursor("H", mode.appCursor, hasMod, modCode);
@@ -94,6 +125,7 @@ export function keyEventToBytes(
         case "Delete":
             return tildeKey(3, hasMod, modCode);
         case "Backspace":
+            if (metaKey && !ctrlKey && !altKey) return "\x15";
             if (ctrlKey) return "\x08";
             return (altKey ? "\x1b" : "") + "\x7f";
         case "Enter":
@@ -134,12 +166,7 @@ export function keyEventToBytes(
 
 // Arrow + Home/End.  CSI in cursor mode, SS3 in application cursor mode;
 // modified always uses long form regardless of appCursor.
-function arrowOrCursor(
-    letter: string,
-    appCursor: boolean,
-    hasMod: boolean,
-    modCode: number
-): string {
+function arrowOrCursor(letter: string, appCursor: boolean, hasMod: boolean, modCode: number): string {
     if (hasMod) return `\x1b[1;${modCode}${letter}`;
     return appCursor ? `\x1bO${letter}` : `\x1b[${letter}`;
 }

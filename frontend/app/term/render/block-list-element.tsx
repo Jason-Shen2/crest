@@ -180,11 +180,17 @@ export const BlockListElement = memo(
             }
         }, [model, scrollPos]);
 
+        const activeSurfaceState = model.getActiveSurfaceState?.() ?? null;
+        const hasActiveTui = activeSurfaceState != null;
+        const activeTuiBlockId = activeSurfaceState?.blockId;
         return (
             <div className="relative min-h-0 flex-1">
                 <div
                     ref={scrollRef}
-                    className="absolute inset-0 overflow-y-auto overflow-x-hidden"
+                    className={cn(
+                        "absolute inset-0 overflow-x-hidden",
+                        hasActiveTui ? "overflow-hidden flex flex-col" : "overflow-y-auto"
+                    )}
                     onScroll={handleScroll}
                     onClick={(e) => {
                         if (e.target === e.currentTarget) model.clearSelection();
@@ -193,6 +199,13 @@ export const BlockListElement = memo(
                     {blockList.map((block) => {
                         if (block.hidden) return null;
                         if (block.id === "__sentinel__") return null;
+                        const isActiveTuiBlock = activeTuiBlockId === block.id;
+                        // When a TUI surface is active, hide non-TUI blocks so
+                        // they don't occupy space and the TUI block can fill
+                        // the entire viewport (matches alt-screen semantics).
+                        if (hasActiveTui && !isActiveTuiBlock && block.kind !== "agent") {
+                            return null;
+                        }
                         // Agent blocks render through a dedicated element
                         // (no shell-block chrome, no ANSI grid).  Dispatch
                         // by kind happens here so BlockElement stays
@@ -254,13 +267,13 @@ export const BlockListElement = memo(
                         ) {
                             return null;
                         }
-                        const activeSurfaceState = model.getActiveSurfaceState?.() ?? null;
-                        const activeTuiSurface = activeSurfaceState?.blockId === block.id;
                         return (
                             <div
                                 key={block.id}
                                 data-block-oid={block.id}
-                                className={cn(activeTuiSurface && "h-full min-h-full")}
+                                className={cn(
+                                    isActiveTuiBlock ? "flex-1 min-h-0" : ""
+                                )}
                             >
                                 <BlockElement
                                     block={block}

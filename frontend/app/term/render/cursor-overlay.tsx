@@ -6,6 +6,14 @@
 // and for alt-screen TUIs; done blocks don't carry a cursor.  Shape is
 // driven by Grid.cursorState (DECSCUSR / DECTCEM): block / underline /
 // bar, with or without blink.
+//
+// Visibility is controlled entirely by the caller via the `visible`
+// prop — we do NOT read grid.cursorState.visible here.  TUI apps
+// (vim, htop, pi, coco, …) conventionally send CSI ?25 l to hide the
+// host cursor and draw their own software cursor via reverse-video;
+// in a Warp-style renderer the overlay *is* the host cursor, so the
+// caller decides when it should be visible (always for an active TUI
+// surface, or gated on shell prompt state otherwise).
 
 import { Grid } from "../engine/grid";
 import { usePaletteOverrides } from "./palette-context";
@@ -29,7 +37,6 @@ export function CursorOverlay({
 }: CursorOverlayProps) {
     const overrides = usePaletteOverrides();
     if (!visible) return null;
-    if (!grid.cursorState.visible) return null;
 
     // Snap to pixel boundaries the same way SelectionLayer /
     // FindHighlightLayer do — floating-point edges can leave a 1px
@@ -63,21 +70,17 @@ export function CursorOverlay({
     }
     const left = cellLeft;
 
-    // Visual reference: warp
-    // crates/warp_core/src/ui/theme/color.rs:134-136 — `cursor()` falls back
-    // to `self.accent()` when no explicit cursor color is set.  We mirror
-    // that: an OSC 12 override wins, otherwise we use the terminal accent
-    // (warp Dark theme accent = #19AAD8).  Block-shape opacity is dropped
-    // to 0.5 so the glyph under the cursor stays readable.
+    const cursorColor = overrides.cursorColor ?? "var(--color-accent)";
     const style: React.CSSProperties = {
         position: "absolute",
         left: `${left}px`,
         top: `${topPx}px`,
         width: `${width}px`,
         height: `${height}px`,
-        background: overrides.cursorColor ?? "var(--color-term-accent)",
-        opacity: shape === "block" ? 0.5 : 0.85,
+        background: cursorColor,
+        opacity: shape === "block" ? 0.5 : 0.9,
         pointerEvents: "none",
+        zIndex: 9998,
     };
     return <div className={blink ? "animate-pulse" : ""} style={style} />;
 }
