@@ -2,7 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { cn } from "@/util/util";
-import { FloatingPortal, autoUpdate, flip, offset, shift, useDismiss, useFloating, useInteractions } from "@floating-ui/react";
+import {
+    FloatingPortal,
+    autoUpdate,
+    flip,
+    offset,
+    shift,
+    useDismiss,
+    useFloating,
+    useInteractions,
+} from "@floating-ui/react";
 import type { RefObject } from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentSelectorRequest } from "./agent-chat-host";
@@ -356,7 +365,10 @@ export const AgentSelectorPanel = memo(
                     {empty && <PanelMessage>No choices available for this session.</PanelMessage>}
 
                     {state.entries.length > 0 && (
-                        <div className="overflow-y-auto py-1" style={{ maxHeight: `${COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX}px` }}>
+                        <div
+                            className="overflow-y-auto py-1"
+                            style={{ maxHeight: `${COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX}px` }}
+                        >
                             {state.entries.map((entry) => (
                                 <button
                                     key={entry.id}

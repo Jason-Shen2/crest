@@ -1070,7 +1070,12 @@ const FallbackAgentSlashCommands: InlineCommand[] = [
         description: "Import a JSONL session <path>",
         action: "submitAgentCommand",
     },
-    { name: "/reload", icon: "refresh-cw-01", description: "Reload agent command metadata", action: "submitAgentCommand" },
+    {
+        name: "/reload",
+        icon: "refresh-cw-01",
+        description: "Reload agent command metadata",
+        action: "submitAgentCommand",
+    },
 ];
 
 const SlashCommands: InlineCommand[] = mergeSlashCommands(FallbackAgentSlashCommands, LocalSlashCommands);
