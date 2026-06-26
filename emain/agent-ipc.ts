@@ -48,12 +48,20 @@ import { RpcApi } from "../frontend/app/store/wshclientapi";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
 import { getBuiltInAgentCommands } from "./agent/commands/registry";
+import { commandNoop, commandSuccess } from "./agent/commands/session-command-results";
 import {
     buildAgentForkPointViews,
     buildAgentTreeEntryViews,
     previewSessionEntry,
 } from "./agent/commands/session-views";
-import type { AgentCommandInfo, AgentForkPointView, AgentTreeEntryView } from "./agent/commands/types";
+import type {
+    AgentBackendCommandName,
+    AgentCommandExecutionResult,
+    AgentCommandInfo,
+    AgentForkPointView,
+    AgentRunCommandInput,
+    AgentTreeEntryView,
+} from "./agent/commands/types";
 import { buildPaneHarness } from "./agent/harness-factory";
 import { uuidv7 } from "./agent/harness/session/uuid";
 import type { JsonlSessionMetadata } from "./agent/harness/types";
@@ -162,6 +170,17 @@ interface AgentCloneSessionResult {
     message?: string;
 }
 
+const RunnableAgentCommands = new Set<AgentBackendCommandName>([
+    "new",
+    "resume",
+    "compact",
+    "session",
+    "copy",
+    "export",
+    "import",
+    "reload",
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null;
 }
@@ -197,6 +216,21 @@ function validateSessionMetadataShape(value: unknown): JsonlSessionMetadata {
         path: requireNonEmptyString(value.path, "sessionMetadata.path"),
         cwd: requireNonEmptyString(value.cwd, "sessionMetadata.cwd"),
         parentSessionPath: typeof value.parentSessionPath === "string" ? value.parentSessionPath : undefined,
+    };
+}
+
+function validateRunCommandInput(value: unknown): AgentRunCommandInput {
+    if (!isRecord(value)) throw new Error("agent IPC: runCommand input must be an object");
+    const cwd = requireNonEmptyString(value.cwd, "cwd");
+    const command = requireNonEmptyString(value.command, "command") as AgentBackendCommandName;
+    if (!RunnableAgentCommands.has(command)) {
+        throw new Error(`agent IPC: unsupported command /${command}`);
+    }
+    return {
+        cwd,
+        command,
+        argsText: typeof value.argsText === "string" ? value.argsText : "",
+        sessionMetadata: value.sessionMetadata == null ? undefined : validateSessionMetadataShape(value.sessionMetadata),
     };
 }
 
@@ -564,6 +598,16 @@ export async function cloneAgentSessionForIpc(input: unknown): Promise<AgentClon
     return { sessionMetadata: metadata };
 }
 
+export async function runAgentCommandForIpc(input: unknown): Promise<AgentCommandExecutionResult> {
+    const parsed = validateRunCommandInput(input);
+    switch (parsed.command) {
+        case "reload":
+            return commandSuccess("Reloaded agent command metadata.");
+        default:
+            return commandNoop(`Agent command /${parsed.command} is not implemented yet.`);
+    }
+}
+
 export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<void> {
     const canonicalPath = await validateSessionPath(sessionPath);
     sessionCache.get(canonicalPath)?.abort();
@@ -654,6 +698,10 @@ export function registerAgentIpcHandlers(): void {
             return await cloneAgentSessionForIpc(input);
         }
     );
+
+    electron.ipcMain.handle("agent:run-command", async (_event, input: AgentRunCommandInput): Promise<AgentCommandExecutionResult> => {
+        return await runAgentCommandForIpc(input);
+    });
 
     electron.ipcMain.handle(
         "agent:send",

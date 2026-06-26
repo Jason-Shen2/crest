@@ -153,6 +153,7 @@ contextBridge.exposeInMainWorld("api", {
         navigateTree: (input: unknown) => ipcRenderer.invoke("agent:navigate-tree", input),
         forkSession: (input: unknown) => ipcRenderer.invoke("agent:fork-session", input),
         cloneSession: (input: unknown) => ipcRenderer.invoke("agent:clone-session", input),
+        runCommand: (input: unknown) => ipcRenderer.invoke("agent:run-command", input),
         send: (opts: unknown) => ipcRenderer.invoke("agent:send", opts),
         abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
         subscribe: (

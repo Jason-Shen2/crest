@@ -173,6 +173,7 @@ declare global {
             navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>; // agent:navigate-tree
             forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>; // agent:fork-session
             cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>; // agent:clone-session
+            runCommand: (input: AgentRunCommandInput) => Promise<AgentCommandExecutionResult>; // agent:run-command
             send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
@@ -242,8 +243,21 @@ declare global {
 
     type AgentCommandSource = "builtin" | "skill" | "prompt";
 
+    type AgentBackendCommandName =
+        | "tree"
+        | "fork"
+        | "clone"
+        | "new"
+        | "resume"
+        | "compact"
+        | "session"
+        | "copy"
+        | "export"
+        | "import"
+        | "reload";
+
     type AgentCommandAction =
-        | { type: "backend"; command: "tree" | "fork" | "clone" | "compact" | "session" | "clear" | "new" | "help" }
+        | { type: "backend"; command: AgentBackendCommandName }
         | { type: "frontend"; action: "openModelPicker" };
 
     type AgentCommandInfo = {
@@ -306,6 +320,21 @@ declare global {
     type AgentCloneSessionResult = {
         sessionMetadata?: AgentSessionMeta;
         message?: string;
+    };
+
+    type AgentCommandExecutionStatus = "success" | "noop";
+
+    type AgentCommandExecutionResult = {
+        status: AgentCommandExecutionStatus;
+        message: string;
+        sessionMetadata?: AgentSessionMeta;
+    };
+
+    type AgentRunCommandInput = {
+        sessionMetadata?: AgentSessionMeta;
+        cwd: string;
+        command: AgentBackendCommandName;
+        argsText: string;
     };
 
     type ElectronContextMenuItem = {
