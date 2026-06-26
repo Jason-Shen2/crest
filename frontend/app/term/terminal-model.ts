@@ -130,6 +130,7 @@ function mapState(s: string | undefined, exitcode?: number): BlockLifecycleState
 export class TerminalModel {
     readonly outerBlockId: string;
     cols: number;
+    viewportRows: number = 24;
 
     // Terminal-wide mode set — mutated by BlockHandler via ctx.setMode().
     // Readers (key bindings, paste handler, mouse capture, renderer)
@@ -263,6 +264,7 @@ export class TerminalModel {
                 );
             },
             clearPriorBlocks: () => this.clearPriorBlocks(),
+            onInlineTui: () => this.activateInlineTuiViewport(),
         };
         // The parser needs a handler at construction.  We start with a
         // throwaway block as the target — the first real chunk event will
@@ -442,10 +444,46 @@ export class TerminalModel {
 
     async sendResize(rows: number, cols: number): Promise<void> {
         if (rows <= 0 || cols <= 0) return;
+        this.viewportRows = rows;
+        // Update local TUI grids so bounded viewport / scroll region
+        // matches what the PTY-side app sees via SIGWINCH.
+        this.updateTuiViewports(cols, rows);
         await RpcApi.ControllerInputCommand(TabRpcClient, {
             blockid: this.outerBlockId,
             termsize: { rows, cols },
         });
+    }
+
+    // updateTuiViewports — propagate (cols, rows) to any active TUI grid
+    // (alt-screen or long-running inline TUI) so they have a bounded
+    // viewport that matches the real terminal geometry.  Without this,
+    // LF/auto-wrap at the bottom of an unbounded outputGrid creates
+    // phantom extra rows and the cursor drifts off-screen.
+    private updateTuiViewports(cols: number, rows: number): void {
+        const block = this.activeRuntimeBlock();
+        if (!block) return;
+        let changed = false;
+        if (block.altScreen.active) {
+            block.altScreen.resize(cols, rows);
+            changed = true;
+        } else if (block.inlineTuiActive) {
+            block.outputGrid.raw().resizeViewport(cols, rows);
+            changed = true;
+        }
+        if (changed) this.bumpRevision();
+    }
+
+    // activateInlineTuiViewport — called when the parser detects a
+    // full-screen clear (ED 2) on a running non-alt-screen block. Sets
+    // a bounded viewport on the outputGrid so the inline TUI has
+    // fixed-size terminal semantics (LF scrolls at the bottom instead
+    // of growing the buffer).
+    private activateInlineTuiViewport(): void {
+        const block = this.activeRuntimeBlock();
+        if (!block || block.altScreen.active || block.inlineTuiActive) return;
+        block.inlineTuiActive = true;
+        block.outputGrid.raw().resizeViewport(this.cols, this.viewportRows);
+        this.bumpRevision();
     }
 
     // getRecentCommands — last n submitted commands (oldest → newest).
@@ -668,7 +706,7 @@ export class TerminalModel {
         if (block.state === "running" && terminalCaptureActive(this.mode)) {
             return { kind: "terminal-capture", blockId: block.id };
         }
-        if (block.isActiveAndLongRunning(now)) {
+        if (block.inlineTuiActive || block.isActiveAndLongRunning(now)) {
             return { kind: "long-running-command", blockId: block.id };
         }
         return { kind: "input-editor" };
@@ -970,6 +1008,13 @@ export class TerminalModel {
             this.writtenOffsets.set(chunk.oid, chunk.offset + bytes.length);
         }
         block.noteWrite();
+        // Fallback: if the block is a long-running inline TUI that didn't
+        // send ED 2 (our primary detection signal), set bounded viewport
+        // as soon as it crosses the long-running threshold.
+        if (!block.altScreen.active && !block.inlineTuiActive && block.isActiveAndLongRunning()) {
+            block.inlineTuiActive = true;
+            block.outputGrid.raw().resizeViewport(this.cols, this.viewportRows);
+        }
         // Sync output (DEC mode 2026): when on, the app is in the middle
         // of an atomic update — defer rendering so the user sees one
         // coherent frame.  The next chunk that ends with syncOutput=false

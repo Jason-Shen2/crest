@@ -135,7 +135,11 @@ describe("BlockElement TUI layout", () => {
         expect(html).toContain('data-testid="cursor"');
     });
 
-    it("does not render a cursor when model suppresses terminal cursor rendering", () => {
+    it("always renders a cursor for active TUI surfaces regardless of cursor suppression", () => {
+        // TUI surfaces (alt-screen, long-running-pty, terminal-capture) always
+        // show the host cursor — TUIs conventionally send CSI ?25 l to hide
+        // the host cursor and draw their own via reverse-video, but in a
+        // Warp-style renderer we are the host and always show the overlay.
         const block = makeBlock(false) as any;
         block.outputGrid.cursorState.visible = false;
         const html = renderToStaticMarkup(
@@ -145,6 +149,28 @@ describe("BlockElement TUI layout", () => {
                 model={{
                     getMode: () => DefaultTermMode,
                     getActiveSurfaceState: () => ({ kind: "long-running-pty", blockId: block.id }),
+                    getCursorRenderState: () => ({ kind: "suppressed", reason: "rich-input-open" }),
+                } as any}
+            />
+        );
+
+        expect(html).toContain('data-testid="cursor"');
+        expect(html).toContain('h-full min-h-full');
+    });
+
+    it("does not render a cursor for non-TUI running blocks when cursor is suppressed", () => {
+        // Non-TUI running blocks (e.g. the 50ms window before long-running
+        // heuristic fires, or shell prompt input) respect the suppressed state.
+        const block = makeBlock(false) as any;
+        block.state = "running";
+        block.outputGrid.cursorState.visible = true;
+        const html = renderToStaticMarkup(
+            <BlockElement
+                block={block}
+                revision={1}
+                model={{
+                    getMode: () => DefaultTermMode,
+                    getActiveSurfaceState: () => null,
                     getCursorRenderState: () => ({ kind: "suppressed", reason: "rich-input-open" }),
                 } as any}
             />

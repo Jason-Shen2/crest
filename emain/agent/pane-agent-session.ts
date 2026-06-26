@@ -40,7 +40,6 @@ import type { AgentMessage } from "./types";
 
 export type PaneSessionStatus = "idle" | "streaming" | "error";
 export type AgentRunStatus = "streaming" | "done" | "error";
-export const AgentRunSessionEntryType = "agent_run";
 
 export interface AgentRun {
     runId: string;
@@ -54,10 +53,6 @@ export interface AgentRun {
 export interface AgentTimelineRef {
     agentrunid?: string;
     seq?: number;
-}
-
-interface AgentRunSessionEntryData {
-    runId?: string;
 }
 
 /**
@@ -134,46 +129,61 @@ export function buildPersistedRunsFromTimeline(messages: AgentMessage[], timelin
     return runs;
 }
 
-function getRunIdFromSessionEntry(entry: SessionTreeEntry): string | undefined {
-    if (entry.type !== "custom") return undefined;
-    if (entry.customType !== AgentRunSessionEntryType) return undefined;
-    const data = entry.data as AgentRunSessionEntryData | undefined;
-    return typeof data?.runId === "string" && data.runId ? data.runId : undefined;
-}
-
 export function buildPersistedRunsFromSessionEntries(
     entries: SessionTreeEntry[],
     timelineRefs: AgentTimelineRef[] = []
 ): AgentRun[] {
-    const runs: AgentRun[] = [];
     const messages: AgentMessage[] = [];
-    let current: AgentRun | undefined;
-
+    const messageEntryIds: string[] = [];
     for (const entry of entries) {
-        const runId = getRunIdFromSessionEntry(entry);
-        if (runId) {
-            current = { runId, responseMessages: [], status: "done" };
-            runs.push(current);
-            continue;
-        }
         if (entry.type !== "message") continue;
         const message = entry.message as AgentMessage;
-        messages.push(message);
-        if (!current) continue;
         const role = (message as { role?: string }).role;
-        if (role === "user" && !current.userMessage) {
-            current.userMessage = message;
-            continue;
-        }
-        current.responseMessages = [...current.responseMessages, message];
-        if (isErroredAssistant(message)) {
-            current.status = "error";
-            current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
+        if (role === "user" || role === "assistant" || role === "toolResult" || role === "tool") {
+            messages.push(message);
+            messageEntryIds.push(entry.id);
         }
     }
+    return buildPersistedRunsFromMessages(messages, messageEntryIds, timelineRefs);
+}
 
-    if (runs.length > 0) return runs;
-    return buildPersistedRunsFromTimeline(messages, timelineRefs);
+function buildPersistedRunsFromMessages(
+    messages: AgentMessage[],
+    messageEntryIds: string[],
+    timelineRefs: AgentTimelineRef[]
+): AgentRun[] {
+    const refs = timelineRefs
+        .filter((ref) => ref.agentrunid)
+        .slice()
+        .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    const runs: AgentRun[] = [];
+    let current: AgentRun | undefined;
+    let refIndex = 0;
+    let msgIndex = 0;
+
+    for (const message of messages) {
+        const role = (message as { role?: string }).role;
+        if (role === "user") {
+            const ref = refs[refIndex++];
+            const runId = ref?.agentrunid ?? `run-${messageEntryIds[msgIndex] ?? msgIndex}`;
+            current = {
+                runId,
+                userMessage: message,
+                responseMessages: [],
+                status: "done",
+            };
+            runs.push(current);
+        } else if (current) {
+            current.responseMessages = [...current.responseMessages, message];
+            if (isErroredAssistant(message)) {
+                current.status = "error";
+                current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
+            }
+        }
+        msgIndex++;
+    }
+
+    return runs;
 }
 
 export class PaneAgentSession {
@@ -359,12 +369,12 @@ export class PaneAgentSession {
         return { entries, leafId, labels };
     }
 
-    async navigateTree(targetId: string): Promise<{ editorText?: string }> {
+    async navigateTree(targetId: string, timelineRefs?: AgentTimelineRef[]): Promise<{ editorText?: string }> {
         const result = await this.pane.harness.navigateTree(targetId, { summarize: false });
         if (result.cancelled) {
             return {};
         }
-        await this.rebuildFromCurrentBranch();
+        await this.rebuildFromCurrentBranch(timelineRefs);
         this.emitSnapshot();
         return { editorText: result.editorText };
     }
@@ -402,7 +412,7 @@ export class PaneAgentSession {
 
     private async startPromptRun(runId: string, text: string): Promise<void> {
         try {
-            await this.pane.promptWithCustomEntry(AgentRunSessionEntryType, { runId }, text);
+            await this.pane.harness.prompt(text);
         } catch (err) {
             this.onSendError("prompt", err);
         } finally {
@@ -495,12 +505,12 @@ export class PaneAgentSession {
         });
     }
 
-    private async rebuildFromCurrentBranch(): Promise<void> {
+    private async rebuildFromCurrentBranch(timelineRefs?: AgentTimelineRef[]): Promise<void> {
         const entries = await this.pane.session.getBranch();
         this.messages = entries
             .filter((entry): entry is Extract<SessionTreeEntry, { type: "message" }> => entry.type === "message")
             .map((entry) => entry.message as AgentMessage);
-        this.runs = buildPersistedRunsFromSessionEntries(entries);
+        this.runs = buildPersistedRunsFromSessionEntries(entries, timelineRefs);
         this.steerQueue = [];
         this.followUpQueue = [];
         this.status = "idle";

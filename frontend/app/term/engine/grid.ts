@@ -119,6 +119,16 @@ export class Grid {
         return this.rows.length;
     }
 
+    // viewportHeight — returns the visible terminal height in rows.
+    // When a bounded scroll region is set (TUI mode), this is scrollBottom+1;
+    // otherwise it falls back to rowCount() (unbounded output mode).
+    viewportHeight(): number {
+        if (this.scrollBottom !== ScrollBottomUnbounded) {
+            return this.scrollBottom + 1;
+        }
+        return Math.max(this.rows.length, 24);
+    }
+
     getRow(row: number): readonly Cell[] {
         return this.rows[row] ?? [];
     }
@@ -177,6 +187,46 @@ export class Grid {
     resetScrollRegion(): void {
         this.scrollTop = 0;
         this.scrollBottom = ScrollBottomUnbounded;
+    }
+
+    // resizeViewport — set the grid to a fixed viewport size (TUI mode).
+    // Sets a bounded scroll region covering [0, rows-1], updates cols,
+    // prefills empty rows up to `rows` so the renderer always sees
+    // a full-height grid, and trims any rows beyond the new viewport
+    // (matching real terminal resize semantics — shrinking loses lines
+    // at the bottom).
+    resizeViewport(cols: number, rows: number): void {
+        if (cols < 1) cols = 1;
+        if (rows < 1) rows = 1;
+        this.cols = cols;
+        this.scrollTop = 0;
+        this.scrollBottom = rows - 1;
+        this.originMode = false;
+        const target = rows;
+        // Trim rows that fall below the new viewport bottom.
+        while (this.rows.length > target) {
+            this.rows.pop();
+        }
+        while (this.rowVersions.length > this.rows.length) {
+            this.rowVersions.pop();
+        }
+        // Prefill up to target height.
+        while (this.rows.length < target) {
+            this.rows.push([]);
+            this.markRowDirty(this.rows.length - 1);
+        }
+        while (this.rowVersions.length < this.rows.length) {
+            this.rowVersions.push(0);
+        }
+        // Clamp cursor within the new viewport.
+        if (this.cursor.row >= target) {
+            this.cursor.row = target - 1;
+            this.markRowDirty(this.cursor.row);
+        }
+        if (this.cursor.col >= cols) {
+            this.cursor.col = cols - 1;
+        }
+        this.pendingWrap = false;
     }
 
     private effectiveScrollBottom(): number {
@@ -498,8 +548,14 @@ export class Grid {
         }
         if (mode === 0) {
             this.eraseInLine(0);
-            this.rows.length = this.cursor.row + 1;
-            this.markRowDirty(this.cursor.row);
+            const blank = this.bgBlankCell();
+            for (let r = this.cursor.row + 1; r < this.rows.length; r++) {
+                this.rows[r] = [];
+                if (!isDefaultBg(this.currentStyle)) {
+                    while (this.rows[r].length < this.cols) this.rows[r].push(blank);
+                }
+                this.markRowDirty(r);
+            }
             return;
         }
         if (mode === 1) {
@@ -568,10 +624,19 @@ export class Grid {
         const bot = this.effectiveScrollBottom();
         if (top < this.scrollTop || top > bot) return;
         const count = Math.min(n, bot - top + 1);
-        for (let i = 0; i < count; i++) {
-            this.rows.splice(top, 0, []);
-            if (this.scrollBottom !== ScrollBottomUnbounded && this.rows.length > bot + 1) {
-                this.rows.splice(bot + 1, 1);
+        if (this.scrollBottom === ScrollBottomUnbounded) {
+            for (let i = 0; i < count; i++) {
+                this.rows.splice(top, 0, []);
+            }
+        } else {
+            // Bounded scroll region — shift rows within [top, bot] downward
+            // without moving rows outside the region.
+            this.ensureRow(bot);
+            for (let i = 0; i < count; i++) {
+                for (let r = bot; r > top; r--) {
+                    this.rows[r] = this.rows[r - 1] ?? [];
+                }
+                this.rows[top] = [];
             }
         }
         for (let r = top; r <= bot && r < this.rows.length; r++) this.markRowDirty(r);
@@ -587,10 +652,19 @@ export class Grid {
         const bot = this.effectiveScrollBottom();
         if (top < this.scrollTop || top > bot) return;
         const count = Math.min(n, bot - top + 1);
-        for (let i = 0; i < count; i++) {
-            if (this.rows[top]) this.rows.splice(top, 1);
-            if (this.scrollBottom !== ScrollBottomUnbounded) {
-                this.rows.splice(bot, 0, []);
+        if (this.scrollBottom === ScrollBottomUnbounded) {
+            for (let i = 0; i < count; i++) {
+                if (this.rows[top]) this.rows.splice(top, 1);
+            }
+        } else {
+            // Bounded scroll region — shift rows within [top, bot] upward
+            // without moving rows outside the region.
+            this.ensureRow(bot);
+            for (let i = 0; i < count; i++) {
+                for (let r = top; r < bot; r++) {
+                    this.rows[r] = this.rows[r + 1] ?? [];
+                }
+                this.rows[bot] = [];
             }
         }
         for (let r = top; r <= bot && r < this.rows.length; r++) this.markRowDirty(r);
@@ -619,12 +693,20 @@ export class Grid {
             return;
         }
         const bot = this.scrollBottom;
-        const count = Math.min(n, bot - top + 1);
+        const regionSize = bot - top + 1;
+        const count = Math.min(n, regionSize);
+        // Shift rows within the scroll region only — rows outside the
+        // region (below bot / above top) must NOT move.  Using splice on
+        // the whole array would shift external rows too; instead we
+        // copy rows within the region and clear the vacated bottom rows.
+        this.ensureRow(bot);
         for (let i = 0; i < count; i++) {
-            if (this.rows[top]) this.rows.splice(top, 1);
-            this.rows.splice(bot, 0, []);
+            for (let r = top; r < bot; r++) {
+                this.rows[r] = this.rows[r + 1] ?? [];
+            }
+            this.rows[bot] = [];
         }
-        for (let r = top; r <= bot && r < this.rows.length; r++) this.markRowDirty(r);
+        for (let r = top; r <= bot; r++) this.markRowDirty(r);
     }
 
     scrollDownInRegion(n: number): void {
@@ -636,14 +718,19 @@ export class Grid {
             return;
         }
         const bot = this.scrollBottom;
-        const count = Math.min(n, bot - top + 1);
+        const regionSize = bot - top + 1;
+        const count = Math.min(n, regionSize);
+        // Shift rows down within the scroll region only; rows below bot
+        // must stay in place.  Copy rows down and clear the vacated top
+        // rows rather than splicing (which would shift external rows).
+        this.ensureRow(bot);
         for (let i = 0; i < count; i++) {
-            this.rows.splice(top, 0, []);
-            if (this.rows.length > bot + 1) {
-                this.rows.splice(bot + 1, 1);
+            for (let r = bot; r > top; r--) {
+                this.rows[r] = this.rows[r - 1] ?? [];
             }
+            this.rows[top] = [];
         }
-        for (let r = top; r <= bot && r < this.rows.length; r++) this.markRowDirty(r);
+        for (let r = top; r <= bot; r++) this.markRowDirty(r);
     }
 
     // ---------- hyperlinks ----------

@@ -104,6 +104,9 @@ export class Block {
     startTs?: number;
     completedTs?: number;
     wasLongRunning = false;
+    // Set when the parser detects an inline TUI (ED 2 on a running block)
+    // so we can switch the outputGrid to bounded viewport semantics.
+    inlineTuiActive = false;
 
     agentSessionId?: string;
 
@@ -219,6 +222,10 @@ export class Block {
         this.headerGrid.finish();
         this.state = "done-with-execution";
         this.precmdState = "after-precmd";
+        if (this.inlineTuiActive) {
+            this.inlineTuiActive = false;
+            this.outputGrid.raw().resetScrollRegion();
+        }
         // Idempotent — guards against duplicate 133;D events.
         if (this.completedTs == null) {
             this.completedTs = Date.now();

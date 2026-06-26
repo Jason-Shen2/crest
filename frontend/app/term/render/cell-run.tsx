@@ -27,8 +27,16 @@ function styleToInline(style: CellStyle, overrides: PaletteOverrides): React.CSS
     const out: React.CSSProperties = {};
     const fg = resolveColor(style.reverse ? style.bg : style.fg, "fg", overrides);
     const bg = resolveColor(style.reverse ? style.fg : style.bg, "bg", overrides);
-    if (fg) out.color = fg;
-    if (bg) out.backgroundColor = bg;
+    if (fg) {
+        out.color = fg;
+    } else if (style.reverse) {
+        out.color = "var(--color-background)";
+    }
+    if (bg) {
+        out.backgroundColor = bg;
+    } else if (style.reverse) {
+        out.backgroundColor = "var(--color-foreground)";
+    }
     if (style.bold) out.fontWeight = 700;
     if (style.italic) out.fontStyle = "italic";
     if (style.dim) out.opacity = 0.65;
