@@ -129,4 +129,30 @@ describe("createAgentChatHostApi", () => {
         expect(onUserError).toHaveBeenCalledWith("No session branch to clone yet.");
         expect(sendPrompt).not.toHaveBeenCalled();
     });
+
+    it.each(["/new", "/compact keep errors", "/session", "/copy", "/export /tmp/a.jsonl", "/import /tmp/a.jsonl", "/reload"])(
+        "does not send %s as a normal prompt",
+        async (commandText) => {
+            const sendPrompt = vi.fn(() => true);
+            const runCommand = vi.fn(async () => ({ status: "success", message: "ok" }));
+            const onUserError = vi.fn();
+            const api = createAgentChatHostApi({
+                sendPrompt,
+                abort: vi.fn(),
+                getRuns: () => [],
+                getRuntimeApi: vi.fn(),
+                getSessionMetadata: makeSession,
+                getPaneCwd: () => "/repo",
+                onUserError,
+                runCommand,
+            });
+
+            expect(api.submit(commandText)).toBe(true);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(sendPrompt).not.toHaveBeenCalled();
+            expect(runCommand).toHaveBeenCalledOnce();
+            expect(onUserError).toHaveBeenCalledWith("ok");
+        }
+    );
 });

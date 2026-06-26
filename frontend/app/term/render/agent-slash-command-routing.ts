@@ -1,13 +1,38 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-export type AgentSlashCommandName = "tree" | "fork" | "clone" | "model";
+export type AgentSlashCommandName =
+    | "tree"
+    | "fork"
+    | "clone"
+    | "model"
+    | "new"
+    | "resume"
+    | "compact"
+    | "session"
+    | "copy"
+    | "export"
+    | "import"
+    | "reload";
 
 export type AgentSlashCommandRoute =
     | { handled: false }
     | { handled: true; command: AgentSlashCommandName; argsText: string };
 
-const RoutedAgentSlashCommands = new Set<AgentSlashCommandName>(["tree", "fork", "clone", "model"]);
+const RoutedAgentSlashCommands = new Set<AgentSlashCommandName>([
+    "tree",
+    "fork",
+    "clone",
+    "model",
+    "new",
+    "resume",
+    "compact",
+    "session",
+    "copy",
+    "export",
+    "import",
+    "reload",
+]);
 
 export function resolveAgentSlashCommandRoute(input: string): AgentSlashCommandRoute {
     const trimmed = input.trimEnd();
