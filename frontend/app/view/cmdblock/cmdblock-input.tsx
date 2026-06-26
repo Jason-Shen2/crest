@@ -1038,6 +1038,39 @@ const FallbackAgentSlashCommands: InlineCommand[] = [
         action: "submitAgentCommand",
     },
     { name: "/model", icon: "stars-01", description: "Open the model picker", action: "openModelPicker" },
+    { name: "/new", icon: "plus", description: "Create a fresh agent session", action: "submitAgentCommand" },
+    {
+        name: "/resume",
+        icon: "clock-rewind",
+        description: "Resume an existing agent session for this workspace",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/compact",
+        icon: "archive",
+        description: "Compact the current session context [instructions]",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/session",
+        icon: "info-circle",
+        description: "Show current agent session information",
+        action: "submitAgentCommand",
+    },
+    { name: "/copy", icon: "copy-01", description: "Copy the last assistant response", action: "submitAgentCommand" },
+    {
+        name: "/export",
+        icon: "download-01",
+        description: "Export the current session as JSONL [path]",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/import",
+        icon: "upload-01",
+        description: "Import a JSONL session <path>",
+        action: "submitAgentCommand",
+    },
+    { name: "/reload", icon: "refresh-cw-01", description: "Reload agent command metadata", action: "submitAgentCommand" },
 ];
 
 const SlashCommands: InlineCommand[] = mergeSlashCommands(FallbackAgentSlashCommands, LocalSlashCommands);
@@ -1075,7 +1108,14 @@ function iconForAgentCommand(command: AgentCommandInfo): string {
     if (command.action.type === "frontend") return "stars-01";
     if (command.action.command === "tree" || command.action.command === "fork") return "git-branch-01";
     if (command.action.command === "clone") return "copy-01";
-    if (command.action.command === "help") return "book-open";
+    if (command.action.command === "new") return "plus";
+    if (command.action.command === "resume") return "clock-rewind";
+    if (command.action.command === "compact") return "archive";
+    if (command.action.command === "session") return "info-circle";
+    if (command.action.command === "copy") return "copy-01";
+    if (command.action.command === "export") return "download-01";
+    if (command.action.command === "import") return "upload-01";
+    if (command.action.command === "reload") return "refresh-cw-01";
     return "stars-01";
 }
 
