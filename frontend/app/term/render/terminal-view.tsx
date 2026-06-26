@@ -27,8 +27,10 @@ import {
     AgentChatHost,
     type AgentChatHostApi,
     type AgentHostState,
+    type AgentInlineCommandResult,
     type AgentSelectorRequest,
 } from "./agent-chat-host";
+import { AgentCommandResultList } from "./agent-command-result";
 import { AgentSelectorPopover } from "./agent-selector-popover";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
@@ -123,6 +125,7 @@ export const TerminalView = memo(
         const bellTick = useAtomValue(model.bellTickAtom);
         const commandHistory = useAtomValue(model.commandHistoryAtom);
         const [bellFlash, setBellFlash] = useState(false);
+        const [agentCommandResults, setAgentCommandResults] = useState<AgentInlineCommandResult[]>([]);
 
         // Visual bell — C0 BEL bumps bellTick; flash a brief ring around the
         // pane for ~180ms.  Cheap, low-distraction; no audio permission ask.
@@ -423,6 +426,9 @@ export const TerminalView = memo(
         const [agentRunsById, setAgentRunsById] = useState<Map<string, PiRun>>(new Map());
         const onAgentRunsUpdate = useCallback((runs: PiRun[]) => {
             setAgentRunsById(indexRunsById(runs));
+        }, []);
+        const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
+            setAgentCommandResults((prev) => [...prev, result]);
         }, []);
         const tabId = useAtomValue(atoms.staticTabId);
         const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
@@ -835,6 +841,7 @@ export const TerminalView = memo(
                         onRunsChange={onAgentRunsUpdate}
                         onStateChange={setAgentState}
                         onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
+                        onCommandResult={onAgentCommandResult}
                         onOpenModelPicker={onOpenAgentModelPicker}
                         onSelectorRequest={onAgentSelectorRequest}
                     />
@@ -848,15 +855,18 @@ export const TerminalView = memo(
                             Loading terminal…
                         </div>
                     ) : (
-                        <BlockListElement
-                            model={model}
-                            fontSize={fontSize}
-                            home={home}
-                            onCopyBlock={onCopyBlock}
-                            onLinkClick={onLinkClick}
-                            charWidth={charWidth}
-                            agentRunsById={agentRunsById}
-                        />
+                        <>
+                            <BlockListElement
+                                model={model}
+                                fontSize={fontSize}
+                                home={home}
+                                onCopyBlock={onCopyBlock}
+                                onLinkClick={onLinkClick}
+                                charWidth={charWidth}
+                                agentRunsById={agentRunsById}
+                            />
+                            <AgentCommandResultList results={agentCommandResults} />
+                        </>
                     )}
                     {/* prompt_to_editor_padding — warp settings/mod.rs:551 keeps a
                 10px breathing room between the last block's output and the
