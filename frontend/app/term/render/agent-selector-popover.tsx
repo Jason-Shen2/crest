@@ -2,18 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { cn } from "@/util/util";
-import {
-    FloatingPortal,
-    autoUpdate,
-    flip,
-    offset,
-    shift,
-    useDismiss,
-    useFloating,
-    useInteractions,
-} from "@floating-ui/react";
 import type { RefObject } from "react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentSelectorRequest } from "./agent-chat-host";
 
 type AgentSelectorRequestType = AgentSelectorRequest["type"];
@@ -36,18 +26,15 @@ export type AgentSelectorViewState =
     | { status: "error"; entries: AgentSelectorEntryView[]; message: string };
 
 export interface AgentSelectorPopoverProps {
-    anchorRef: RefObject<HTMLElement | null>;
+    anchorRef?: RefObject<HTMLElement | null>;
     request: AgentSelectorRequest | null;
     onClose: () => void;
     onUserMessage?: (message: string) => void;
     onEditorText?: (text: string) => void;
 }
 
-export const COMMAND_SELECTOR_POPOVER_PLACEMENT = "top-end";
-export const COMMAND_SELECTOR_POPOVER_WIDTH_PX = 340;
 export const COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX = 360;
-export const COMMAND_SELECTOR_POPOVER_CLASSNAME =
-    "z-[1000] overflow-hidden rounded-md border border-fg-overlay-3 bg-fg-overlay-1 shadow-xl backdrop-blur";
+export const COMMAND_SELECTOR_INLINE_CLASSNAME = "border-t border-fg-overlay-2 bg-fg-overlay-1/40 font-sans";
 
 export async function commitAgentSelectorPick(
     request: AgentSelectorRequest,
@@ -151,27 +138,13 @@ async function loadSelectorEntries(request: AgentSelectorRequest): Promise<Agent
 }
 
 export const AgentSelectorPopover = memo(
-    ({ anchorRef, request, onClose, onUserMessage, onEditorText }: AgentSelectorPopoverProps) => {
+    ({ request, onClose, onUserMessage, onEditorText }: AgentSelectorPopoverProps) => {
         const [state, setState] = useState<AgentSelectorViewState>({ status: "idle", entries: [] });
         const [busyEntryId, setBusyEntryId] = useState<string | null>(null);
         const dialogRef = useRef<HTMLDivElement>(null);
         const previousFocusRef = useRef<HTMLElement | null>(null);
         const commitRequestIdRef = useRef(0);
         const canCancel = shouldAllowAgentSelectorCancel(busyEntryId);
-        const { refs, floatingStyles, context } = useFloating({
-            open: Boolean(request),
-            onOpenChange: (open) => {
-                if (!open && canCancel) onClose();
-            },
-            placement: COMMAND_SELECTOR_POPOVER_PLACEMENT,
-            middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
-            whileElementsMounted: autoUpdate,
-        });
-        useLayoutEffect(() => {
-            refs.setReference(anchorRef.current);
-        }, [anchorRef, refs]);
-        const dismiss = useDismiss(context, { outsidePress: canCancel, escapeKey: false });
-        const { getFloatingProps } = useInteractions([dismiss]);
 
         useEffect(() => {
             if (!request) {
@@ -287,25 +260,16 @@ export const AgentSelectorPopover = memo(
         if (!request) return null;
 
         return (
-            <FloatingPortal>
-                <div
-                    ref={refs.setFloating}
-                    style={{ ...floatingStyles, width: `${COMMAND_SELECTOR_POPOVER_WIDTH_PX}px` }}
-                    {...getFloatingProps()}
-                    className={COMMAND_SELECTOR_POPOVER_CLASSNAME}
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                >
-                    <AgentSelectorPanel
-                        dialogRef={dialogRef}
-                        requestType={request.type}
-                        state={state}
-                        busyEntryId={busyEntryId}
-                        onPick={handlePick}
-                        onCancel={handleCancel}
-                    />
-                </div>
-            </FloatingPortal>
+            <div className={COMMAND_SELECTOR_INLINE_CLASSNAME} onClick={(e) => e.stopPropagation()}>
+                <AgentSelectorPanel
+                    dialogRef={dialogRef}
+                    requestType={request.type}
+                    state={state}
+                    busyEntryId={busyEntryId}
+                    onPick={handlePick}
+                    onCancel={handleCancel}
+                />
+            </div>
         );
     }
 );
