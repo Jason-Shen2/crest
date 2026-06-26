@@ -23,23 +23,10 @@ const BuiltInAgentCommands: AgentCommandInfo[] = [
         action: { type: "backend", command: "clone" },
     },
     {
-        name: "compact",
-        description: "Compact the current agent session context",
-        argumentHint: "[instructions]",
-        source: "builtin",
-        action: { type: "backend", command: "compact" },
-    },
-    {
         name: "model",
         description: "Open the model picker",
         source: "builtin",
         action: { type: "frontend", action: "openModelPicker" },
-    },
-    {
-        name: "help",
-        description: "Show available agent commands",
-        source: "builtin",
-        action: { type: "backend", command: "help" },
     },
 ];
 

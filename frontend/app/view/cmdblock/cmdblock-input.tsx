@@ -1016,17 +1016,7 @@ export interface InlineCommand {
     altKeys?: string[];
 }
 
-const LocalSlashCommands: InlineCommand[] = [
-    { name: "/agent", icon: "stars-01", description: "Send input to the agent" },
-    { name: "/terminal", icon: "terminal", description: "Switch input to shell mode" },
-    { name: "/auto", icon: "lightning-02", description: "Auto-detect shell vs natural language" },
-    { name: "/clear", icon: "x-close", description: "Clear the current terminal output" },
-    { name: "/find", icon: "search", description: "Open the find bar" },
-    { name: "/history", icon: "clock", description: "Browse command history" },
-    { name: "/help", icon: "book-open", description: "Show keyboard shortcuts and commands" },
-    { name: "/settings", icon: "settings", description: "Open settings" },
-    { name: "/reload", icon: "refresh", description: "Reload the terminal pane" },
-];
+const LocalSlashCommands: InlineCommand[] = [];
 
 const FallbackAgentSlashCommands: InlineCommand[] = [
     {
@@ -1047,14 +1037,7 @@ const FallbackAgentSlashCommands: InlineCommand[] = [
         description: "Clone the current agent session branch",
         action: "submitAgentCommand",
     },
-    {
-        name: "/compact",
-        icon: "stars-01",
-        description: "Compact the current agent session context [instructions]",
-        action: "submitAgentCommand",
-    },
     { name: "/model", icon: "stars-01", description: "Open the model picker", action: "openModelPicker" },
-    { name: "/help", icon: "book-open", description: "Show available agent commands" },
 ];
 
 const SlashCommands: InlineCommand[] = mergeSlashCommands(FallbackAgentSlashCommands, LocalSlashCommands);
