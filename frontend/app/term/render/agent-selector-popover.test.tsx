@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentSelectorRequest } from "./agent-chat-host";
 import {
     AgentSelectorPanel,
+    AgentSelectorPopover,
     COMMAND_SELECTOR_INLINE_CLASSNAME,
     commitAgentSelectorPick,
     editorTextFromAgentSelectorResult,
@@ -126,6 +127,20 @@ describe("agent selector popover", () => {
         expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("border-fg-overlay-2");
         expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("bg-fg-overlay-1/40");
         expect(COMMAND_SELECTOR_INLINE_CLASSNAME).not.toContain("shadow-xl");
+    });
+
+    it("renders tree selectors inside the shared command inline frame", () => {
+        const request: AgentSelectorRequest = {
+            type: "tree",
+            listTree: vi.fn(),
+            navigateTree: vi.fn(),
+        };
+
+        const html = renderToStaticMarkup(<AgentSelectorPopover request={request} onClose={() => undefined} />);
+
+        expect(html).toContain("/tree");
+        expect(html).toContain('aria-label="Resize /tree menu"');
+        expect(html).toContain('data-command-inline-drag-handle="true"');
     });
 
     it("labels fork selectors by forkable prompt points", () => {

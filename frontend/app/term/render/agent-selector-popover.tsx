@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { COMMAND_INLINE_FRAME_CLASSNAME, CommandInlineFrame } from "@/app/view/cmdblock/command-inline-frame";
 import { cn } from "@/util/util";
 import type { RefObject } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -34,7 +35,9 @@ export interface AgentSelectorPopoverProps {
 }
 
 export const COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX = 360;
-export const COMMAND_SELECTOR_INLINE_CLASSNAME = "border-t border-fg-overlay-2 bg-fg-overlay-1/40 font-sans";
+const COMMAND_SELECTOR_LIST_MIN_HEIGHT_PX = 200;
+const COMMAND_SELECTOR_LIST_MAX_RESIZE_HEIGHT_PX = 720;
+export const COMMAND_SELECTOR_INLINE_CLASSNAME = COMMAND_INLINE_FRAME_CLASSNAME;
 
 export async function commitAgentSelectorPick(
     request: AgentSelectorRequest,
@@ -144,7 +147,7 @@ export const AgentSelectorPopover = memo(
         const dialogRef = useRef<HTMLDivElement>(null);
         const previousFocusRef = useRef<HTMLElement | null>(null);
         const commitRequestIdRef = useRef(0);
-        const canCancel = shouldAllowAgentSelectorCancel(busyEntryId);
+        const [listMaxHeight, setListMaxHeight] = useState(COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX);
 
         useEffect(() => {
             if (!request) {
@@ -257,19 +260,42 @@ export const AgentSelectorPopover = memo(
             onClose();
         }, [busyEntryId, onClose]);
 
+        const handleResizeStart = useCallback(
+            (e: React.MouseEvent<HTMLButtonElement>) => {
+                e.preventDefault();
+                const startY = e.clientY;
+                const startHeight = listMaxHeight;
+                const onMove = (mv: MouseEvent) => {
+                    const next = Math.min(
+                        COMMAND_SELECTOR_LIST_MAX_RESIZE_HEIGHT_PX,
+                        Math.max(COMMAND_SELECTOR_LIST_MIN_HEIGHT_PX, startHeight - (mv.clientY - startY))
+                    );
+                    setListMaxHeight(next);
+                };
+                const onUp = () => {
+                    document.removeEventListener("mousemove", onMove);
+                    document.removeEventListener("mouseup", onUp);
+                };
+                document.addEventListener("mousemove", onMove);
+                document.addEventListener("mouseup", onUp);
+            },
+            [listMaxHeight]
+        );
+
         if (!request) return null;
 
         return (
-            <div className={COMMAND_SELECTOR_INLINE_CLASSNAME} onClick={(e) => e.stopPropagation()}>
+            <CommandInlineFrame commandName={`/${request.type}`} onResizeStart={handleResizeStart}>
                 <AgentSelectorPanel
                     dialogRef={dialogRef}
                     requestType={request.type}
                     state={state}
                     busyEntryId={busyEntryId}
+                    listMaxHeight={listMaxHeight}
                     onPick={handlePick}
                     onCancel={handleCancel}
                 />
-            </div>
+            </CommandInlineFrame>
         );
     }
 );
@@ -280,12 +306,21 @@ export interface AgentSelectorPanelProps {
     requestType: AgentSelectorRequestType;
     state: AgentSelectorViewState;
     busyEntryId: string | null;
+    listMaxHeight?: number;
     onPick: (entryId: string) => void;
     onCancel: () => void;
 }
 
 export const AgentSelectorPanel = memo(
-    ({ dialogRef, requestType, state, busyEntryId, onPick, onCancel }: AgentSelectorPanelProps) => {
+    ({
+        dialogRef,
+        requestType,
+        state,
+        busyEntryId,
+        listMaxHeight = COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX,
+        onPick,
+        onCancel,
+    }: AgentSelectorPanelProps) => {
         const depths = useMemo(() => computeDepths(state.entries), [state.entries]);
         const empty = state.status === "ready" && state.entries.length === 0;
         const canCancel = shouldAllowAgentSelectorCancel(busyEntryId);
@@ -329,10 +364,7 @@ export const AgentSelectorPanel = memo(
                     {empty && <PanelMessage>No choices available for this session.</PanelMessage>}
 
                     {state.entries.length > 0 && (
-                        <div
-                            className="overflow-y-auto py-1"
-                            style={{ maxHeight: `${COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX}px` }}
-                        >
+                        <div className="overflow-y-auto py-1" style={{ maxHeight: `${listMaxHeight}px` }}>
                             {state.entries.map((entry) => (
                                 <button
                                     key={entry.id}
