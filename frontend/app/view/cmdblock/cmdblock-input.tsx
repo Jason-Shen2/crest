@@ -818,6 +818,8 @@ interface EditorProps {
     onCompletionNavigate?: (delta: -1 | 1) => void;
     onCompletionAccept?: () => boolean;
     onCompletionCancel?: () => void;
+    ghost?: string;
+    onAcceptGhost?: () => boolean;
 }
 
 const Editor = memo(
@@ -844,6 +846,8 @@ const Editor = memo(
         onCompletionNavigate,
         onCompletionAccept,
         onCompletionCancel,
+        ghost,
+        onAcceptGhost,
     }: EditorProps) => {
         const ref = useRef<HTMLDivElement>(null);
 
@@ -920,6 +924,21 @@ const Editor = memo(
                         return;
                     }
                 }
+                // → at end of buffer accepts the inline ghost suggestion.
+                if (e.key === "ArrowRight" && !e.shiftKey && !e.altKey && ghost) {
+                    const el = ref.current;
+                    const sel = window.getSelection();
+                    const range = sel?.rangeCount ? sel.getRangeAt(0) : null;
+                    const atEnd =
+                        !!el &&
+                        !!range &&
+                        range.collapsed &&
+                        (el.textContent ?? "").length === caretOffsetWithin(el, range);
+                    if (atEnd && onAcceptGhost?.()) {
+                        e.preventDefault();
+                        return;
+                    }
+                }
                 const enterAction = resolveEditorEnterAction(e);
                 if (enterAction === "submit-override") {
                     e.preventDefault();
@@ -993,31 +1012,45 @@ const Editor = memo(
                 onCompletionNavigate,
                 onCompletionAccept,
                 onCompletionCancel,
+                ghost,
+                onAcceptGhost,
             ]
         );
 
         const lineHeight = Math.round(fontSize * 1.4);
         // Min editor height from warp agent.rs:59 CLOUD_MODE_V2_INPUT_MIN_EDITOR_HEIGHT = 80.
         return (
-            <div
-                ref={ref}
-                contentEditable={!disabled}
-                suppressContentEditableWarning
-                role="textbox"
-                aria-multiline="true"
-                aria-disabled={disabled}
-                spellCheck={false}
-                data-placeholder={placeholder ?? ""}
-                onInput={flush}
-                onKeyDown={handleKeyDown}
-                style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`, minHeight: "80px" }}
-                className={cn(
-                    "max-h-[50vh] w-full overflow-y-auto whitespace-pre-wrap break-words",
-                    "bg-transparent font-mono text-foreground outline-none",
-                    "empty:before:pointer-events-none empty:before:text-secondary/55 empty:before:content-[attr(data-placeholder)]",
-                    disabled && "opacity-60"
-                )}
-            />
+            <div className="relative w-full">
+                {ghost ? (
+                    <div
+                        aria-hidden
+                        className="pointer-events-none absolute inset-0 w-full select-none whitespace-pre-wrap break-words font-mono"
+                        style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px` }}
+                    >
+                        <span className="invisible">{value}</span>
+                        <span className="text-secondary/55">{ghost}</span>
+                    </div>
+                ) : null}
+                <div
+                    ref={ref}
+                    contentEditable={!disabled}
+                    suppressContentEditableWarning
+                    role="textbox"
+                    aria-multiline="true"
+                    aria-disabled={disabled}
+                    spellCheck={false}
+                    data-placeholder={placeholder ?? ""}
+                    onInput={flush}
+                    onKeyDown={handleKeyDown}
+                    style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`, minHeight: "80px" }}
+                    className={cn(
+                        "relative max-h-[50vh] w-full overflow-y-auto whitespace-pre-wrap break-words",
+                        "bg-transparent font-mono text-foreground outline-none",
+                        "empty:before:pointer-events-none empty:before:text-secondary/55 empty:before:content-[attr(data-placeholder)]",
+                        disabled && "opacity-60"
+                    )}
+                />
+            </div>
         );
     }
 );
@@ -1027,6 +1060,13 @@ Editor.displayName = "Editor";
 // editor we approximate by measuring the caret's clientRect against the
 // editor element's top/bottom: a caret that overlaps the first 1.5×
 // line-height counts as "on first line"; ditto for last line.
+function caretOffsetWithin(host: HTMLElement, range: Range): number {
+    const pre = range.cloneRange();
+    pre.selectNodeContents(host);
+    pre.setEnd(range.endContainer, range.endOffset);
+    return pre.toString().length;
+}
+
 function isCaretOnFirstLine(host: HTMLElement, range: Range): boolean {
     const caretRect = caretRectOf(host, range);
     const hostRect = host.getBoundingClientRect();
@@ -1387,6 +1427,8 @@ export const CmdBlockInput = memo(
         // clear it on edit (useState setters have stable identity).
         const [completionResults, setCompletionResults] = useState<SuggestionResults | null>(null);
         const [completionIndex, setCompletionIndex] = useState(0);
+        // Inline ghost-text autosuggestion (fish-style grey prediction).
+        const [ghost, setGhost] = useState("");
         const handleTextChange = useCallback(
             (next: string) => {
                 setText(next);
@@ -1484,6 +1526,9 @@ export const CmdBlockInput = memo(
 
         // One runner instance per component; path + history providers.
         const completionRunner = useMemo(() => createRunner([pathProvider, historyProvider]), []);
+        // Separate runner so ghost recomputes never invalidate an in-flight
+        // menu run (createRunner uses an internal seq guard per instance).
+        const ghostRunner = useMemo(() => createRunner([pathProvider, historyProvider]), []);
         const [navIndex, setNavIndex] = useState<number | null>(null);
         const draftRef = useRef("");
         const containerRef = useRef<HTMLDivElement>(null);
@@ -1743,6 +1788,32 @@ export const CmdBlockInput = memo(
             return true;
         }, [slashOpen, atOpen, text, cwd, history, listDir, completionRunner]);
 
+        const recomputeGhost = useCallback(async () => {
+            // No ghost while a menu is open, or when buffer is empty/blank.
+            if (!text || slashOpen || atOpen) {
+                setGhost("");
+                return;
+            }
+            const res = await ghostRunner.run({
+                buffer: text,
+                cursor: text.length,
+                cwd: cwd ?? "",
+                history,
+                listDir,
+            });
+            const top = res?.suggestions[0];
+            if (top && top.replacement.startsWith(text) && top.replacement.length > text.length) {
+                setGhost(top.replacement.slice(text.length));
+            } else {
+                setGhost("");
+            }
+        }, [text, slashOpen, atOpen, cwd, history, listDir, ghostRunner]);
+
+        useEffect(() => {
+            const id = setTimeout(() => void recomputeGhost(), 80);
+            return () => clearTimeout(id);
+        }, [recomputeGhost]);
+
         const navigateCompletion = useCallback((delta: -1 | 1) => {
             // Read the latest results inside the updater (returning the same
             // ref to avoid a re-render) purely to drive the index update.
@@ -1776,13 +1847,23 @@ export const CmdBlockInput = memo(
             [completionResults, text, handleTextChange]
         );
 
+        const acceptGhost = useCallback((): boolean => {
+            if (!ghost) return false;
+            handleTextChange(text + ghost);
+            setGhost("");
+            return true;
+        }, [ghost, text, handleTextChange]);
+
         const handleTab = useCallback((): boolean => {
             if (completionOpen) {
                 return acceptCompletion(completionIndex);
             }
+            if (ghost) {
+                return acceptGhost();
+            }
             void openCompletions();
             return true; // consumed — suppress literal tab insertion
-        }, [completionOpen, completionIndex, acceptCompletion, openCompletions]);
+        }, [completionOpen, completionIndex, acceptCompletion, openCompletions, ghost, acceptGhost]);
 
         const acceptSelectedCompletion = useCallback(
             (): boolean => acceptCompletion(completionIndex),
@@ -1962,6 +2043,8 @@ export const CmdBlockInput = memo(
                             onCompletionNavigate={navigateCompletion}
                             onCompletionAccept={acceptSelectedCompletion}
                             onCompletionCancel={cancelCompletion}
+                            ghost={ghost}
+                            onAcceptGhost={acceptGhost}
                         />
                     </div>
 
