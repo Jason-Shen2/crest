@@ -1436,6 +1436,10 @@ export const CmdBlockInput = memo(
                 // Any keystroke invalidates an open completion menu — its span
                 // was computed against the previous buffer.
                 setCompletionResults(null);
+                // The ghost suffix is also relative to the previous buffer; clear
+                // it immediately so the 80ms debounce window can't accept a stale
+                // suffix into the new text (which would corrupt the buffer).
+                setGhost("");
             },
             [onTextChange]
         );
