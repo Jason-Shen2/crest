@@ -31,6 +31,12 @@ import { ProviderEntry } from "@/app/store/ai-catalog";
 import { AgentSelection, AIUserConfig } from "@/app/store/ai-types";
 import { AIUserConfigStatus } from "@/app/store/ai-user-config";
 import { getApi } from "@/app/store/global";
+import { RpcApi } from "@/app/store/wshclientapi";
+import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { historyProvider } from "@/app/term/completion/providers/history";
+import { pathProvider } from "@/app/term/completion/providers/path";
+import type { DirEntry, SuggestionResults } from "@/app/term/completion/types";
+import { createRunner } from "@/app/term/completion/use-completion";
 import { isMacOS } from "@/util/platformutil";
 import { cn } from "@/util/util";
 import { CornerDownLeft } from "lucide-react";
@@ -1412,6 +1418,20 @@ export const CmdBlockInput = memo(
         // input/inline_history/.
         const [localHistory, setLocalHistory] = useState<string[]>([]);
         const history = externalHistory ?? localHistory;
+        // Completion data source: list a directory via the FileList RPC and
+        // normalise FileInfo[] into the engine's DirEntry[] contract.
+        const listDir = useCallback(async (path: string): Promise<DirEntry[]> => {
+            const infos = await RpcApi.FileListCommand(TabRpcClient, {
+                path,
+                opts: { limit: 500 },
+            });
+            return (infos ?? [])
+                .filter((f) => f.name != null)
+                .map((f) => ({ name: f.name as string, isDir: !!f.isdir }));
+        }, []);
+
+        // One runner instance per component; path + history providers.
+        const completionRunner = useMemo(() => createRunner([pathProvider, historyProvider]), []);
         const [navIndex, setNavIndex] = useState<number | null>(null);
         const draftRef = useRef("");
         const containerRef = useRef<HTMLDivElement>(null);
