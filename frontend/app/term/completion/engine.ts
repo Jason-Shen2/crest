@@ -20,6 +20,7 @@ export async function suggest(ctx: CompletionContext, providers: Provider[]): Pr
     }
     merged.sort((a, b) => b.priority - a.priority);
     const hasToken = merged.some((s) => s.spanStart === token.start);
-    const start = merged.length === 0 ? token.start : hasToken ? token.start : 0;
+    // token 类候选（或空结果）锚定在 token.start；纯 history 结果锚定在 0。
+    const start = hasToken || merged.length === 0 ? token.start : 0;
     return { replacementSpan: { start, end: ctx.cursor }, suggestions: merged, matchStrategy: "prefix" };
 }

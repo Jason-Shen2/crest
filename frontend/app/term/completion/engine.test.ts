@@ -32,6 +32,19 @@ describe("suggest", () => {
         const prios = res.suggestions.map((s) => s.priority);
         expect([...prios]).toEqual([...prios].sort((a, b) => b - a));
     });
+    it("path 与 history 同时产出时保留各自异构的 spanStart", async () => {
+        const c = ctx("cat s", ["cat something"], [
+            { name: "server.ts", isDir: false },
+            { name: "src", isDir: true },
+        ]);
+        const res = await suggest(c, [pathProvider, historyProvider]);
+        const pathCands = res.suggestions.filter((s) => s.type === "path");
+        const histCand = res.suggestions.find((s) => s.replacement === "cat something");
+        expect(pathCands.length).toBeGreaterThan(0);
+        expect(pathCands.every((s) => s.spanStart === 4)).toBe(true);
+        expect(histCand).toBeDefined();
+        expect(histCand!.spanStart).toBe(0);
+    });
     it("无候选返回空集合但 span 合法", async () => {
         const c = ctx("xyz", [], []);
         const res = await suggest(c, [pathProvider, historyProvider]);
