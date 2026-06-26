@@ -8,9 +8,7 @@ import { getBuiltInAgentCommands, parseAgentCommandInput } from "./registry";
 describe("agent command registry", () => {
     it("includes session-tree commands", () => {
         const names = getBuiltInAgentCommands().map((command) => command.name);
-        expect(names).toContain("tree");
-        expect(names).toContain("fork");
-        expect(names).toContain("clone");
+        expect(names).toEqual(["tree", "fork", "clone", "model"]);
     });
 
     it("parses slash command input", () => {
