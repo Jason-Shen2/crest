@@ -1217,7 +1217,7 @@ interface InlineMenuProps {
     label: string; // header label ("commands" → "/COMMANDS")
     items: InlineCommand[]; // already filtered by caller
     selectedIdx: number;
-    onPick: (name: string) => void;
+    onPick: (name: string, idx: number) => void;
     onHover: (idx: number) => void;
 }
 
@@ -1232,11 +1232,11 @@ const InlineMenu = memo(({ label, items, selectedIdx, onPick, onHover }: InlineM
             <div className="flex max-h-[40vh] flex-col overflow-y-auto py-1">
                 {items.map((c, idx) => (
                     <InlineMenuRow
-                        key={c.name}
+                        key={idx}
                         item={c}
                         selected={idx === selectedIdx}
                         onMouseEnter={() => onHover(idx)}
-                        onPick={() => onPick(c.name)}
+                        onPick={() => onPick(c.name, idx)}
                     />
                 ))}
             </div>
@@ -1383,10 +1383,17 @@ export const CmdBlockInput = memo(
         effectiveMode,
     }: CmdBlockInputProps) => {
         const [text, setText] = useState("");
+        // Completion state declared before handleTextChange so the latter can
+        // clear it on edit (useState setters have stable identity).
+        const [completionResults, setCompletionResults] = useState<SuggestionResults | null>(null);
+        const [completionIndex, setCompletionIndex] = useState(0);
         const handleTextChange = useCallback(
             (next: string) => {
                 setText(next);
                 onTextChange?.(next);
+                // Any keystroke invalidates an open completion menu — its span
+                // was computed against the previous buffer.
+                setCompletionResults(null);
             },
             [onTextChange]
         );
@@ -1409,8 +1416,6 @@ export const CmdBlockInput = memo(
         const [focused, setFocused] = useState(false);
         const [slashOpen, setSlashOpen] = useState(false);
         const [atOpen, setAtOpen] = useState(false);
-        const [completionResults, setCompletionResults] = useState<SuggestionResults | null>(null);
-        const [completionIndex, setCompletionIndex] = useState(0);
         const completionOpen = completionResults != null && completionResults.suggestions.length > 0;
         const [modelPickerOpen, setModelPickerOpen] = useState(false);
         const showAgentShellShortcutHint = shouldShowAgentShellShortcutHint(mode, text);
@@ -1739,6 +1744,8 @@ export const CmdBlockInput = memo(
         }, [slashOpen, atOpen, text, cwd, history, listDir, completionRunner]);
 
         const navigateCompletion = useCallback((delta: -1 | 1) => {
+            // Read the latest results inside the updater (returning the same
+            // ref to avoid a re-render) purely to drive the index update.
             setCompletionResults((res) => {
                 if (res && res.suggestions.length > 0) {
                     setCompletionIndex((prev) => (prev + delta + res.suggestions.length) % res.suggestions.length);
@@ -1776,6 +1783,11 @@ export const CmdBlockInput = memo(
             void openCompletions();
             return true; // consumed — suppress literal tab insertion
         }, [completionOpen, completionIndex, acceptCompletion, openCompletions]);
+
+        const acceptSelectedCompletion = useCallback(
+            (): boolean => acceptCompletion(completionIndex),
+            [acceptCompletion, completionIndex]
+        );
 
         const placeholderText =
             placeholder ??
@@ -1852,10 +1864,7 @@ export const CmdBlockInput = memo(
                         }))}
                         selectedIdx={completionIndex}
                         onHover={setCompletionIndex}
-                        onPick={(name) => {
-                            const idx = completionResults!.suggestions.findIndex((s) => s.display === name);
-                            acceptCompletion(idx >= 0 ? idx : completionIndex);
-                        }}
+                        onPick={(_name, idx) => acceptCompletion(idx)}
                     />
                 )}
                 {/* Inline model picker — warp-style menu docked above the
@@ -1949,9 +1958,9 @@ export const CmdBlockInput = memo(
                             onMenuNavigate={onMenuNavigate}
                             onMenuAccept={onMenuAccept}
                             onTab={handleTab}
-                            completionOpen={completionOpen}
+                            completionOpen={completionOpen && !slashOpen && !atOpen}
                             onCompletionNavigate={navigateCompletion}
-                            onCompletionAccept={() => acceptCompletion(completionIndex)}
+                            onCompletionAccept={acceptSelectedCompletion}
                             onCompletionCancel={cancelCompletion}
                         />
                     </div>
