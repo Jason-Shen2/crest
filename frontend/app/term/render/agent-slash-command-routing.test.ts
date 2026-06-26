@@ -17,6 +17,25 @@ describe("resolveAgentSlashCommandRoute", () => {
         expect(resolveAgentSlashCommandRoute("/model")).toEqual({ handled: true, command: "model", argsText: "" });
     });
 
+    it.each(["new", "resume", "compact", "session", "copy", "export", "import", "reload"] as const)(
+        "routes /%s as a handled agent command",
+        (command) => {
+            expect(resolveAgentSlashCommandRoute(`/${command}`)).toEqual({
+                handled: true,
+                command,
+                argsText: "",
+            });
+        }
+    );
+
+    it("preserves arguments for command execution", () => {
+        expect(resolveAgentSlashCommandRoute("/compact keep the latest failure context")).toEqual({
+            handled: true,
+            command: "compact",
+            argsText: "keep the latest failure context",
+        });
+    });
+
     it("leaves prompts and unknown commands on the normal send path", () => {
         expect(resolveAgentSlashCommandRoute("explain /tree")).toEqual({ handled: false });
         expect(resolveAgentSlashCommandRoute("/unknown")).toEqual({ handled: false });

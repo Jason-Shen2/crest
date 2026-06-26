@@ -26,7 +26,7 @@ import {
     type UsePiChatPaneContext,
     type UsePiChatStatus,
 } from "@/app/store/use-pi-chat";
-import { resolveAgentSlashCommandRoute } from "./agent-slash-command-routing";
+import { resolveAgentSlashCommandRoute, type AgentSlashCommandName } from "./agent-slash-command-routing";
 
 export interface AgentChatHostProps {
     outerBlockId: string;
@@ -104,6 +104,11 @@ export type AgentSelectorRequest =
           forkSession: (entryId: string) => Promise<AgentForkSessionResult>;
       };
 
+export interface AgentCommandExecutionResult {
+    message?: string;
+    sessionMetadata?: AgentSessionMeta;
+}
+
 interface AgentChatHostApiDeps {
     sendPrompt: (text: string) => boolean;
     abort: () => void;
@@ -111,6 +116,7 @@ interface AgentChatHostApiDeps {
     getRuntimeApi: () => AgentRuntimeApi | undefined;
     getSessionMetadata: () => AgentSessionMeta | undefined;
     getPaneCwd: () => string;
+    runCommand?: (command: AgentSlashCommandName, argsText: string) => Promise<AgentCommandExecutionResult>;
     onSessionMinted?: (meta: AgentSessionMeta) => void;
     onUserError?: (message: string) => void;
     onOpenModelPicker?: () => void;
@@ -169,6 +175,23 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
     const reportAsyncError = (promise: Promise<unknown>): void => {
         void promise.catch((err) => deps.onUserError?.(err instanceof Error ? err.message : String(err)));
     };
+    const runImmediateCommand = (command: AgentSlashCommandName, argsText: string): boolean => {
+        if (!deps.runCommand) {
+            deps.onUserError?.(`Agent command /${command} is not available yet.`);
+            return true;
+        }
+        reportAsyncError(
+            deps.runCommand(command, argsText).then((result) => {
+                if (result.sessionMetadata) {
+                    deps.onSessionMinted?.(result.sessionMetadata);
+                }
+                if (result.message) {
+                    deps.onUserError?.(result.message);
+                }
+            })
+        );
+        return true;
+    };
     return {
         submit: (text) => {
             const route = resolveAgentSlashCommandRoute(text);
@@ -186,6 +209,9 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
             if (route.command === "fork") {
                 deps.onSelectorRequest?.({ type: "fork", listForkPoints, forkSession });
                 return true;
+            }
+            if (route.command !== "clone") {
+                return runImmediateCommand(route.command, route.argsText);
             }
             reportAsyncError(cloneSession());
             return true;
