@@ -155,4 +155,33 @@ describe("createAgentChatHostApi", () => {
             expect(onUserError).toHaveBeenCalledWith("ok");
         }
     );
+
+    it("switches to a new session after /new", async () => {
+        const onSessionMinted = vi.fn();
+        const runCommand = vi.fn(async () => ({
+            status: "success",
+            message: "Created a new agent session.",
+            sessionMetadata: { id: "s2", createdAt: "later", cwd: "/tmp", path: "/tmp/session.jsonl" },
+        }));
+        const api = createAgentChatHostApi({
+            sendPrompt: vi.fn(() => true),
+            abort: vi.fn(),
+            getRuns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: makeSession,
+            getPaneCwd: () => "/repo",
+            onSessionMinted,
+            runCommand,
+        });
+
+        expect(api.submit("/new")).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(onSessionMinted).toHaveBeenCalledWith({
+            id: "s2",
+            createdAt: "later",
+            cwd: "/tmp",
+            path: "/tmp/session.jsonl",
+        });
+    });
 });
