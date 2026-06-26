@@ -18,6 +18,7 @@ export interface AgentSelectorEntryView {
     timestamp?: string;
     isLeaf?: boolean;
     isCurrent?: boolean;
+    sessionMetadata?: AgentSessionMeta;
 }
 
 export type AgentSelectorViewState =
@@ -41,10 +42,18 @@ export const COMMAND_SELECTOR_POPOVER_CLASSNAME =
 
 export async function commitAgentSelectorPick(
     request: AgentSelectorRequest,
-    entryId: string
+    entryId: string,
+    entries: AgentSelectorEntryView[] = []
 ): Promise<AgentNavigateTreeResult | AgentForkSessionResult> {
     if (request.type === "tree") {
         return await request.navigateTree(entryId);
+    }
+    if (request.type === "resume") {
+        const sessionMetadata = entries.find((entry) => entry.id === entryId)?.sessionMetadata;
+        if (!sessionMetadata) {
+            throw new Error("Selected session is no longer available.");
+        }
+        return await request.resumeSession(sessionMetadata);
     }
     return await request.forkSession(entryId);
 }
@@ -60,7 +69,9 @@ export function editorTextFromAgentSelectorResult(
 }
 
 export function getAgentSelectorTitle(type: AgentSelectorRequestType): string {
-    return type === "tree" ? "Agent session tree" : "Fork agent session";
+    if (type === "tree") return "Agent session tree";
+    if (type === "resume") return "Resume agent session";
+    return "Fork agent session";
 }
 
 export function getInitialAgentSelectorFocusEntryId(
@@ -82,13 +93,15 @@ function getAgentSelectorDescriptionId(type: AgentSelectorRequestType): string {
 }
 
 function getAgentSelectorSubtitle(type: AgentSelectorRequestType): string {
-    return type === "tree"
-        ? "Jump to a previous point in this agent session."
-        : "Pick a previous user prompt to fork into a new session.";
+    if (type === "tree") return "Jump to a previous point in this agent session.";
+    if (type === "resume") return "Pick a saved session to attach to this pane.";
+    return "Pick a previous user prompt to fork into a new session.";
 }
 
 function successMessage(type: AgentSelectorRequestType): string {
-    return type === "tree" ? "Navigated agent session tree." : "Forked agent session.";
+    if (type === "tree") return "Navigated agent session tree.";
+    if (type === "resume") return "Resumed agent session.";
+    return "Forked agent session.";
 }
 
 function normalizeForkPoints(points: AgentForkPointView[]): AgentSelectorEntryView[] {
@@ -112,6 +125,17 @@ async function loadSelectorEntries(request: AgentSelectorRequest): Promise<Agent
             timestamp: entry.timestamp,
             isLeaf: entry.isLeaf,
             isCurrent: entry.isCurrent,
+        }));
+    }
+    if (request.type === "resume") {
+        const sessions = await request.listSessions();
+        return sessions.map((session, index) => ({
+            id: session.path || session.id || String(index),
+            role: "session",
+            label: session.path ? session.path.split(/[\\/]/).pop() : session.id || "session",
+            preview: session.cwd,
+            timestamp: session.createdAt,
+            sessionMetadata: session,
         }));
     }
     return normalizeForkPoints(await request.listForkPoints());
@@ -224,7 +248,7 @@ export const AgentSelectorPopover = memo(
                 const commitRequestId = ++commitRequestIdRef.current;
                 setBusyEntryId(entryId);
                 try {
-                    const result = await commitAgentSelectorPick(request, entryId);
+                    const result = await commitAgentSelectorPick(request, entryId, state.entries);
                     if (commitRequestId !== commitRequestIdRef.current) return;
                     const editorText = editorTextFromAgentSelectorResult(result);
                     if (editorText != null) {

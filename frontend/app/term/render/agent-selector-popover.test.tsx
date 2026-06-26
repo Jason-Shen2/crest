@@ -57,6 +57,22 @@ describe("agent selector popover", () => {
         expect(forkSession).toHaveBeenCalledWith("entry-2");
     });
 
+    it("commits resume picks through resumeSession so the host switches session", async () => {
+        const resumed = { id: "s3", createdAt: "now", cwd: "/repo", path: "/tmp/resume.jsonl" };
+        const resumeSession = vi.fn(async () => ({ sessionMetadata: resumed }));
+        const request: AgentSelectorRequest = {
+            type: "resume",
+            listSessions: vi.fn(),
+            resumeSession,
+        };
+
+        await expect(commitAgentSelectorPick(request, "0", [{ id: "0", preview: "/repo", sessionMetadata: resumed }])).resolves.toEqual({
+            sessionMetadata: resumed,
+        });
+
+        expect(resumeSession).toHaveBeenCalledWith(resumed);
+    });
+
     it("renders a cancellable tree selector without committing a prompt", () => {
         const state: AgentSelectorViewState = {
             status: "ready",
@@ -117,6 +133,10 @@ describe("agent selector popover", () => {
 
     it("labels fork selectors by forkable prompt points", () => {
         expect(getAgentSelectorTitle("fork")).toBe("Fork agent session");
+    });
+
+    it("labels resume selectors by saved sessions", () => {
+        expect(getAgentSelectorTitle("resume")).toBe("Resume agent session");
     });
 
     it("focuses the most recent fork point by default", () => {

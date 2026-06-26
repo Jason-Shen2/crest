@@ -31,6 +31,41 @@ describe("createAgentChatHostApi", () => {
         expect(onSelectorRequest).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: "fork" }));
     });
 
+    it("routes resume slash commands to selector requests without sending prompts", async () => {
+        const session = makeSession();
+        const sendPrompt = vi.fn(() => true);
+        const onSelectorRequest = vi.fn();
+        const onSessionMinted = vi.fn();
+        const runtimeApi = {
+            listTree: vi.fn(),
+            listForkPoints: vi.fn(),
+            navigateTree: vi.fn(),
+            forkSession: vi.fn(),
+            cloneSession: vi.fn(),
+            runCommand: vi.fn(),
+            listSessionsForCwd: vi.fn(async () => [session]),
+        };
+        const api = createAgentChatHostApi({
+            sendPrompt,
+            abort: vi.fn(),
+            getRuns: () => [],
+            getRuntimeApi: () => runtimeApi,
+            getSessionMetadata: makeSession,
+            getPaneCwd: () => "/repo",
+            onSelectorRequest,
+            onSessionMinted,
+        });
+
+        expect(api.submit("/resume")).toBe(true);
+
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(onSelectorRequest).toHaveBeenCalledWith(expect.objectContaining({ type: "resume" }));
+        const request = onSelectorRequest.mock.calls[0][0];
+        await expect(request.listSessions()).resolves.toEqual([session]);
+        await expect(request.resumeSession(session)).resolves.toEqual({ sessionMetadata: session });
+        expect(onSessionMinted).toHaveBeenCalledWith(session);
+    });
+
     it("exposes session tree helpers for selector UI consumption", async () => {
         const session = makeSession();
         const tree = { entries: [], leafId: null };
@@ -41,6 +76,8 @@ describe("createAgentChatHostApi", () => {
             navigateTree: vi.fn(async () => ({ sessionMetadata: session, editorText: "restore me" })),
             forkSession: vi.fn(async () => ({ sessionMetadata: { ...session, path: "/tmp/fork.jsonl" } })),
             cloneSession: vi.fn(async () => ({ sessionMetadata: { ...session, path: "/tmp/clone.jsonl" } })),
+            runCommand: vi.fn(),
+            listSessionsForCwd: vi.fn(),
         };
         const onSessionMinted = vi.fn();
         const api = createAgentChatHostApi({
@@ -82,6 +119,8 @@ describe("createAgentChatHostApi", () => {
             navigateTree: vi.fn(),
             forkSession: vi.fn(),
             cloneSession: vi.fn(async () => ({ sessionMetadata: { ...session, path: "/tmp/clone.jsonl" } })),
+            runCommand: vi.fn(),
+            listSessionsForCwd: vi.fn(),
         };
         const api = createAgentChatHostApi({
             sendPrompt,
@@ -112,6 +151,8 @@ describe("createAgentChatHostApi", () => {
             navigateTree: vi.fn(),
             forkSession: vi.fn(),
             cloneSession: vi.fn(async () => ({ message: "No session branch to clone yet." })),
+            runCommand: vi.fn(),
+            listSessionsForCwd: vi.fn(),
         };
         const api = createAgentChatHostApi({
             sendPrompt,

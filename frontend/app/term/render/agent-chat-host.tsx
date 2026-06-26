@@ -102,6 +102,11 @@ export type AgentSelectorRequest =
           type: "fork";
           listForkPoints: () => Promise<AgentForkPointView[]>;
           forkSession: (entryId: string) => Promise<AgentForkSessionResult>;
+      }
+    | {
+          type: "resume";
+          listSessions: () => Promise<AgentSessionMeta[]>;
+          resumeSession: (sessionMetadata: AgentSessionMeta) => Promise<AgentNavigateTreeResult>;
       };
 
 export interface AgentCommandExecutionResult {
@@ -146,6 +151,9 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
     const listForkPoints = async (): Promise<AgentForkPointView[]> => {
         return await requireRuntimeApi().listForkPoints(requireSessionMetadata());
     };
+    const listSessions = async (): Promise<AgentSessionMeta[]> => {
+        return await requireRuntimeApi().listSessionsForCwd(deps.getPaneCwd());
+    };
     const navigateTree = async (targetId: string): Promise<AgentNavigateTreeResult> => {
         return await requireRuntimeApi().navigateTree({
             sessionMetadata: requireSessionMetadata(),
@@ -160,6 +168,10 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         });
         deps.onSessionMinted?.(result.sessionMetadata);
         return result;
+    };
+    const resumeSession = async (sessionMetadata: AgentSessionMeta): Promise<AgentNavigateTreeResult> => {
+        deps.onSessionMinted?.(sessionMetadata);
+        return { sessionMetadata };
     };
     const cloneSession = async (): Promise<AgentCloneSessionResult> => {
         const result = await requireRuntimeApi().cloneSession({
@@ -213,6 +225,10 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
             }
             if (route.command === "fork") {
                 deps.onSelectorRequest?.({ type: "fork", listForkPoints, forkSession });
+                return true;
+            }
+            if (route.command === "resume") {
+                deps.onSelectorRequest?.({ type: "resume", listSessions, resumeSession });
                 return true;
             }
             if (isImmediateCommand(route.command)) {
@@ -363,6 +379,7 @@ export function AgentChatHost({
 }
 
 interface AgentRuntimeApi {
+    listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
     listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>;
     listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>;
     navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>;
