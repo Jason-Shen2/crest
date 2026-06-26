@@ -35,8 +35,7 @@
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import type { PaneHarness } from "./harness-factory";
-import type { AgentHarnessEvent } from "./harness/types";
-import type { SessionTreeEntry } from "./harness/types";
+import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
 import type { AgentMessage } from "./types";
 
 export type PaneSessionStatus = "idle" | "streaming" | "error";
@@ -98,10 +97,7 @@ function isErroredAssistant(message: AgentMessage): boolean {
     );
 }
 
-export function buildPersistedRunsFromTimeline(
-    messages: AgentMessage[],
-    timelineRefs: AgentTimelineRef[],
-): AgentRun[] {
+export function buildPersistedRunsFromTimeline(messages: AgentMessage[], timelineRefs: AgentTimelineRef[]): AgentRun[] {
     const refs = timelineRefs
         .filter((ref) => ref.agentrunid)
         .slice()
@@ -147,7 +143,7 @@ function getRunIdFromSessionEntry(entry: SessionTreeEntry): string | undefined {
 
 export function buildPersistedRunsFromSessionEntries(
     entries: SessionTreeEntry[],
-    timelineRefs: AgentTimelineRef[] = [],
+    timelineRefs: AgentTimelineRef[] = []
 ): AgentRun[] {
     const runs: AgentRun[] = [];
     const messages: AgentMessage[] = [];
@@ -208,7 +204,7 @@ export class PaneAgentSession {
         pane: PaneHarness,
         initialMessages: AgentMessage[] = [],
         initialRuns: AgentRun[] = [],
-        options: PaneAgentSessionOptions = {},
+        options: PaneAgentSessionOptions = {}
     ) {
         this.path = path;
         this.pane = pane;
@@ -221,9 +217,7 @@ export class PaneAgentSession {
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
-        this.unsubscribeHarness = pane.harness.subscribe((event) =>
-            this.onHarnessEvent(event as AgentHarnessEvent),
-        );
+        this.unsubscribeHarness = pane.harness.subscribe((event) => this.onHarnessEvent(event as AgentHarnessEvent));
     }
 
     /** Refresh pane context (cwd / git / recent cmds) for the next turn. */
@@ -271,8 +265,7 @@ export class PaneAgentSession {
                 }
                 if (event.type === "message_end" && isErroredAssistant(message)) {
                     this.status = "error";
-                    this.errorMessage =
-                        (message as { errorMessage?: string }).errorMessage ?? "agent error";
+                    this.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
                 }
                 this.applyMessageUpdateToRun(message, event.type === "message_end");
                 return;
@@ -376,6 +369,12 @@ export class PaneAgentSession {
         return { editorText: result.editorText };
     }
 
+    async compact(customInstructions?: string): Promise<void> {
+        await this.pane.harness.compact(customInstructions);
+        await this.rebuildFromCurrentBranch();
+        this.emitSnapshot();
+    }
+
     async getLeafId(): Promise<string | null> {
         return this.pane.session.getLeafId();
     }
@@ -470,7 +469,9 @@ export class PaneAgentSession {
             ...run,
             responseMessages,
             status: errored ? "error" : run.status,
-            errorMessage: errored ? ((message as { errorMessage?: string }).errorMessage ?? "agent error") : run.errorMessage,
+            errorMessage: errored
+                ? ((message as { errorMessage?: string }).errorMessage ?? "agent error")
+                : run.errorMessage,
         });
     }
 
