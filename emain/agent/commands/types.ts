@@ -3,8 +3,21 @@
 
 export type AgentCommandSource = "builtin" | "skill" | "prompt";
 
+export type AgentBackendCommandName =
+    | "tree"
+    | "fork"
+    | "clone"
+    | "new"
+    | "resume"
+    | "compact"
+    | "session"
+    | "copy"
+    | "export"
+    | "import"
+    | "reload";
+
 export type AgentCommandAction =
-    | { type: "backend"; command: "tree" | "fork" | "clone" | "compact" | "session" | "clear" | "new" | "help" }
+    | { type: "backend"; command: AgentBackendCommandName }
     | { type: "frontend"; action: "openModelPicker" };
 
 export interface AgentCommandInfo {
