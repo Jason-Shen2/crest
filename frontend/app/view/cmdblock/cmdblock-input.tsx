@@ -811,6 +811,13 @@ interface EditorProps {
     menuOpen?: boolean;
     onMenuNavigate?: (delta: -1 | 1) => boolean;
     onMenuAccept?: () => boolean;
+    // Tab-triggered completion menu — strictly lower priority than the
+    // slash / @ menus.  onTab returns true when it consumed the keypress.
+    onTab?: () => boolean;
+    completionOpen?: boolean;
+    onCompletionNavigate?: (delta: -1 | 1) => void;
+    onCompletionAccept?: () => boolean;
+    onCompletionCancel?: () => void;
 }
 
 const Editor = memo(
@@ -832,6 +839,11 @@ const Editor = memo(
         menuOpen,
         onMenuNavigate,
         onMenuAccept,
+        onTab,
+        completionOpen,
+        onCompletionNavigate,
+        onCompletionAccept,
+        onCompletionCancel,
     }: EditorProps) => {
         const ref = useRef<HTMLDivElement>(null);
 
@@ -882,6 +894,32 @@ const Editor = memo(
         const handleKeyDown = useCallback(
             (e: React.KeyboardEvent<HTMLDivElement>) => {
                 if (disabled) return;
+                // Completion menu keys win — but only when it's open (which
+                // itself only happens while the slash / @ menus are closed),
+                // so they must be handled before submit / history logic.
+                if (completionOpen) {
+                    if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        onCompletionNavigate?.(1);
+                        return;
+                    }
+                    if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        onCompletionNavigate?.(-1);
+                        return;
+                    }
+                    if (e.key === "Enter" && !e.shiftKey) {
+                        if (onCompletionAccept?.()) {
+                            e.preventDefault();
+                            return;
+                        }
+                    }
+                    if (e.key === "Escape") {
+                        e.preventDefault();
+                        onCompletionCancel?.();
+                        return;
+                    }
+                }
                 const enterAction = resolveEditorEnterAction(e);
                 if (enterAction === "submit-override") {
                     e.preventDefault();
@@ -901,6 +939,7 @@ const Editor = memo(
                 }
                 if (e.key === "Tab" && !e.shiftKey && !e.altKey) {
                     e.preventDefault();
+                    if (onTab && onTab()) return;
                     document.execCommand("insertText", false, "\t");
                     return;
                 }
@@ -949,6 +988,11 @@ const Editor = memo(
                 menuOpen,
                 onMenuNavigate,
                 onMenuAccept,
+                onTab,
+                completionOpen,
+                onCompletionNavigate,
+                onCompletionAccept,
+                onCompletionCancel,
             ]
         );
 
@@ -1365,6 +1409,9 @@ export const CmdBlockInput = memo(
         const [focused, setFocused] = useState(false);
         const [slashOpen, setSlashOpen] = useState(false);
         const [atOpen, setAtOpen] = useState(false);
+        const [completionResults, setCompletionResults] = useState<SuggestionResults | null>(null);
+        const [completionIndex, setCompletionIndex] = useState(0);
+        const completionOpen = completionResults != null && completionResults.suggestions.length > 0;
         const [modelPickerOpen, setModelPickerOpen] = useState(false);
         const showAgentShellShortcutHint = shouldShowAgentShellShortcutHint(mode, text);
         const modelChipRef = useRef<HTMLButtonElement>(null);
@@ -1667,6 +1714,69 @@ export const CmdBlockInput = memo(
             pickSlashCommand,
         ]);
 
+        // Completion menu (Tab-triggered) — strictly lower priority than the
+        // slash / @ menus.  It only opens when those are closed, navigates
+        // independently, and accepts by replacing the suggestion's own token
+        // span (NOT the whole line).
+        const openCompletions = useCallback(async (): Promise<boolean> => {
+            // Slash / @ menus take priority; don't compete with them.
+            if (slashOpen || atOpen) return false;
+            const cursor = text.length; // single-line caret defaults to end
+            const res = await completionRunner.run({
+                buffer: text,
+                cursor,
+                cwd: cwd ?? "",
+                history,
+                listDir,
+            });
+            if (!res || res.suggestions.length === 0) {
+                setCompletionResults(null);
+                return false;
+            }
+            setCompletionResults(res);
+            setCompletionIndex(0);
+            return true;
+        }, [slashOpen, atOpen, text, cwd, history, listDir, completionRunner]);
+
+        const navigateCompletion = useCallback((delta: -1 | 1) => {
+            setCompletionResults((res) => {
+                if (res && res.suggestions.length > 0) {
+                    setCompletionIndex((prev) => (prev + delta + res.suggestions.length) % res.suggestions.length);
+                }
+                return res;
+            });
+        }, []);
+        const cancelCompletion = useCallback(() => setCompletionResults(null), []);
+
+        const acceptCompletion = useCallback(
+            (index: number): boolean => {
+                const res = completionResults;
+                if (!res) return false;
+                const s = res.suggestions[index];
+                if (!s) return false;
+                const start = s.spanStart ?? res.replacementSpan.start;
+                const end = res.replacementSpan.end;
+                const before = text.slice(0, start);
+                const after = text.slice(end);
+                // Directory completions end with "/" so the user can keep typing
+                // the next path segment; everything else gets a trailing space.
+                const needsSpace = !s.replacement.endsWith("/");
+                const next = before + s.replacement + (needsSpace ? " " : "") + after;
+                handleTextChange(next);
+                setCompletionResults(null);
+                return true;
+            },
+            [completionResults, text, handleTextChange]
+        );
+
+        const handleTab = useCallback((): boolean => {
+            if (completionOpen) {
+                return acceptCompletion(completionIndex);
+            }
+            void openCompletions();
+            return true; // consumed — suppress literal tab insertion
+        }, [completionOpen, completionIndex, acceptCompletion, openCompletions]);
+
         const placeholderText =
             placeholder ??
             (mode === "terminal"
@@ -1727,6 +1837,24 @@ export const CmdBlockInput = memo(
                         onPick={(cmd) => {
                             replaceLastToken(cmd, "@");
                             setAtOpen(false);
+                        }}
+                    />
+                )}
+                {/* Completion menu — strictly lower priority than slash / @.
+                    Only shows when both are closed. */}
+                {completionOpen && !slashOpen && !atOpen && (
+                    <InlineMenu
+                        label="complete"
+                        items={completionResults!.suggestions.map((s) => ({
+                            name: s.display,
+                            description: s.description ?? s.type,
+                            icon: s.icon ?? "file",
+                        }))}
+                        selectedIdx={completionIndex}
+                        onHover={setCompletionIndex}
+                        onPick={(name) => {
+                            const idx = completionResults!.suggestions.findIndex((s) => s.display === name);
+                            acceptCompletion(idx >= 0 ? idx : completionIndex);
                         }}
                     />
                 )}
@@ -1820,6 +1948,11 @@ export const CmdBlockInput = memo(
                             menuOpen={menuOpen}
                             onMenuNavigate={onMenuNavigate}
                             onMenuAccept={onMenuAccept}
+                            onTab={handleTab}
+                            completionOpen={completionOpen}
+                            onCompletionNavigate={navigateCompletion}
+                            onCompletionAccept={() => acceptCompletion(completionIndex)}
+                            onCompletionCancel={cancelCompletion}
                         />
                     </div>
 
