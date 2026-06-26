@@ -26,6 +26,7 @@
 - Modify `frontend/app/term/render/agent-chat-host.tsx`: dispatch immediate commands and create selector request for `/resume`.
 - Modify `frontend/app/term/render/agent-chat-host-api.test.ts`: verify host routing and no prompt fallthrough.
 - Modify `frontend/app/term/render/agent-selector-popover.tsx`: add a session-resume selector mode.
+- Modify `frontend/app/view/cmdblock/model-picker-popover.tsx`: keep `/model` as the visual contract for input-anchored command popovers.
 - Modify `frontend/app/view/cmdblock/cmdblock-input.tsx`: update fallback commands and icons.
 - Modify `frontend/app/view/cmdblock/cmdblock-input-focus.test.ts`: verify menu action mapping.
 
@@ -583,7 +584,133 @@ git commit -m "feat: implement lightweight agent session commands"
 
 ---
 
-### Task 5: `/resume` Selector
+### Task 5: Input-Anchored Selector UI
+
+**Files:**
+- Modify: `frontend/app/term/render/agent-selector-popover.tsx`
+- Modify: `frontend/app/term/render/agent-chat-host.tsx`
+- Modify: `frontend/app/view/cmdblock/model-picker-popover.tsx`
+- Test: `frontend/app/term/render/agent-selector-popover.test.tsx`
+
+- [ ] **Step 1: Write failing placement/style contract tests**
+
+Create or update `frontend/app/term/render/agent-selector-popover.test.tsx` with assertions that the selector receives the same input anchor contract as `/model`:
+
+```tsx
+it("renders command selectors as input-anchored popovers", async () => {
+    const anchor = document.createElement("div");
+    document.body.appendChild(anchor);
+    const anchorRef = { current: anchor };
+
+    render(
+        <AgentSelectorPopover
+            anchorRef={anchorRef}
+            request={treeRequest}
+            onClose={vi.fn()}
+            onUserMessage={vi.fn()}
+            onEditorText={vi.fn()}
+        />
+    );
+
+    expect(await screen.findByRole("listbox")).toHaveAttribute("data-placement", "top-end");
+    expect(screen.getByRole("listbox")).toHaveClass("rounded-md", "border-fg-overlay-3", "bg-fg-overlay-1");
+});
+```
+
+If the test environment cannot observe Floating UI placement attributes, extract a pure `COMMAND_SELECTOR_POPOVER_CLASSNAME` and `COMMAND_SELECTOR_PLACEMENT` export and assert those constants instead.
+
+- [ ] **Step 2: Align selector props with `ModelPickerPopover`**
+
+Update `AgentSelectorPopover` props to accept an input anchor like `ModelPickerPopover`:
+
+```ts
+export interface AgentSelectorPopoverProps {
+    anchorRef: React.RefObject<HTMLElement>;
+    request: AgentSelectorRequest | null;
+    onClose: () => void;
+    onUserMessage: (message: string) => void;
+    onEditorText?: (text: string) => void;
+}
+```
+
+- [ ] **Step 3: Use the same Floating UI contract as `/model`**
+
+Use the same placement and middleware as `frontend/app/view/cmdblock/model-picker-popover.tsx`:
+
+```ts
+const { refs, floatingStyles, context } = useFloating({
+    open: Boolean(request),
+    onOpenChange: (open) => {
+        if (!open) onClose();
+    },
+    placement: "top-end",
+    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+    whileElementsMounted: autoUpdate,
+});
+
+useLayoutEffect(() => {
+    refs.setReference(anchorRef.current);
+});
+```
+
+- [ ] **Step 4: Match `/model` surface styling**
+
+Use the same surface dimensions and classes:
+
+```ts
+const COMMAND_SELECTOR_POPOVER_WIDTH_PX = 340;
+const COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX = 360;
+const COMMAND_SELECTOR_POPOVER_CLASSNAME =
+    "z-[1000] overflow-hidden rounded-md border border-fg-overlay-3 bg-fg-overlay-1 shadow-xl backdrop-blur";
+```
+
+Apply them to the floating root:
+
+```tsx
+<FloatingPortal>
+    <div
+        ref={refs.setFloating}
+        style={{ ...floatingStyles, width: `${COMMAND_SELECTOR_POPOVER_WIDTH_PX}px` }}
+        {...getFloatingProps()}
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        className={COMMAND_SELECTOR_POPOVER_CLASSNAME}
+    >
+        {content}
+    </div>
+</FloatingPortal>
+```
+
+- [ ] **Step 5: Preserve model-picker keyboard behavior**
+
+Keep the same interaction contract as `/model`: focus search on open, ArrowUp/ArrowDown move selected row, Enter selects, Escape closes, outside press closes, and rows scroll into view.
+
+- [ ] **Step 6: Wire the anchor from `CmdBlockInput` through `TerminalView`**
+
+If `AgentSelectorPopover` is currently rendered outside the input component, pass the same input/menu anchor used by `ModelPickerPopover` down to the terminal-level selector. Do not fall back to viewport-centered positioning.
+
+- [ ] **Step 7: Run selector UI tests**
+
+Run:
+
+```bash
+npm test -- frontend/app/term/render/agent-selector-popover.test.tsx frontend/app/view/cmdblock/cmdblock-input-focus.test.ts --run
+```
+
+Expected: tests pass and selector popovers use the same input-anchored contract as `/model`.
+
+- [ ] **Step 8: Commit**
+
+Run:
+
+```bash
+git add frontend/app/term/render/agent-selector-popover.tsx frontend/app/view/cmdblock/model-picker-popover.tsx frontend/app/view/cmdblock/cmdblock-input.tsx frontend/app/view/cmdblock/cmdblock-input-focus.test.ts frontend/app/term/render/agent-selector-popover.test.tsx
+git commit -m "feat: align agent selectors with model picker"
+```
+
+---
+
+### Task 6: `/resume` Selector
 
 **Files:**
 - Modify: `frontend/app/term/render/agent-selector-popover.tsx`
@@ -625,9 +752,9 @@ const resumeSession = async (sessionMetadata: JsonlSessionMetadata): Promise<{ s
 };
 ```
 
-- [ ] **Step 4: Render resume rows**
+- [ ] **Step 4: Render resume rows in the model-aligned selector**
 
-In `AgentSelectorPopover`, render `request.type === "resume"` rows with session basename and modified time if present. Empty state text:
+In `AgentSelectorPopover`, render `request.type === "resume"` rows inside the same input-anchored shell used by `/tree` and `/fork`. Rows show session basename and modified time if present. Empty state text:
 
 ```ts
 "No saved agent sessions for this workspace."
@@ -654,7 +781,7 @@ git commit -m "feat: add resume agent session command"
 
 ---
 
-### Task 6: `/compact`, `/export`, `/import`, And `/reload`
+### Task 7: `/compact`, `/export`, `/import`, And `/reload`
 
 **Files:**
 - Modify: `emain/agent-ipc.ts`
@@ -743,7 +870,7 @@ git commit -m "feat: implement pi command baseline actions"
 
 ---
 
-### Task 7: Final Verification
+### Task 8: Final Verification
 
 **Files:**
 - Verify only.
@@ -807,4 +934,3 @@ git commit -m "style: format pi command baseline"
 ```
 
 If no files changed, do not create an empty commit.
-

@@ -175,13 +175,18 @@ Expected behavior:
 This slice should not attempt full Pi TUI parity. Use existing Crest primitives first:
 
 - Immediate commands use non-blocking notifications for success, no-op, and failure.
-- Choice commands use the existing popover pattern introduced for `/tree` and `/fork`.
-- `/resume` can reuse the selector-popover shell with a new session-row renderer.
+- Choice commands must use the same anchor, placement, and visual treatment as `/model`.
+- `/tree`, `/fork`, and `/resume` open above the input box, aligned to the input/menu anchor, not as centered dialogs.
+- Selector popovers should match `/model`'s surface style: `FloatingPortal`, `useFloating({ placement: "top-end" })`, `offset(6)`, `flip`, `shift`, width near `340px`, rounded border, `bg-fg-overlay-1`, `border-fg-overlay-3`, `shadow-xl`, and backdrop blur.
+- Selector keyboard behavior should match `/model`: search or focusable input receives focus on open, arrow keys move rows, Enter selects, Escape dismisses, outside click dismisses.
+- `/resume` can reuse the selector-popover shell with a new session-row renderer, but the shell must be model-picker aligned.
 - `/session` can start as a compact read-only info card or notification text.
 - `/export` and `/import` should prefer explicit paths in this slice; richer file picker UI can be added later.
 
-The later UI pass should compare Crest components against Pi TUI components such as `tree-selector.ts`,
-`user-message-selector.ts`, `session-selector.ts`, `settings-selector.ts`, and `model-selector.ts`.
+The later UI pass should compare row content and information hierarchy against Pi TUI components such as
+`tree-selector.ts`, `user-message-selector.ts`, `session-selector.ts`, `settings-selector.ts`, and
+`model-selector.ts`. The placement and base popover styling should already be consistent with Crest's
+`ModelPickerPopover`.
 
 ## Error Handling
 
@@ -208,6 +213,7 @@ Frontend tests:
 - Slash menu clicks execute implemented commands directly rather than inserting text.
 - `/resume` opens a selector instead of sending `/resume` as a prompt.
 - `/model` still opens the model picker.
+- `/tree`, `/fork`, and `/resume` selector surfaces use the same input-anchored popover contract as `/model`.
 
 Manual checks:
 
@@ -224,4 +230,3 @@ Manual checks:
 5. Add JSONL `/export` and `/import`.
 6. Add `/reload` metadata refresh.
 7. Re-run the slash menu bug regression tests before exposing the new commands.
-
