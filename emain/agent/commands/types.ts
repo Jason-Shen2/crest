@@ -1,6 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { JsonlSessionMetadata } from "../harness/types";
+
 export type AgentCommandSource = "builtin" | "skill" | "prompt";
 
 export type AgentBackendCommandName =
@@ -26,6 +28,21 @@ export interface AgentCommandInfo {
     argumentHint?: string;
     source: AgentCommandSource;
     action: AgentCommandAction;
+}
+
+export type AgentCommandExecutionStatus = "success" | "noop";
+
+export interface AgentCommandExecutionResult {
+    status: AgentCommandExecutionStatus;
+    message: string;
+    sessionMetadata?: JsonlSessionMetadata;
+}
+
+export interface AgentRunCommandInput {
+    sessionMetadata?: JsonlSessionMetadata;
+    cwd: string;
+    command: AgentBackendCommandName;
+    argsText: string;
 }
 
 export interface ParsedAgentCommandInput {

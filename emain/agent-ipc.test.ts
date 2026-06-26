@@ -53,6 +53,7 @@ import {
     listAgentForkPointsForIpc,
     listAgentTreeForIpc,
     registerAgentIpcHandlers,
+    runAgentCommandForIpc,
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
@@ -215,6 +216,25 @@ describe("agent-ipc command helpers", () => {
         await expect(
             handlers.get("agent:clone-session")?.({}, { sessionMetadata: metadata, cwd: "" }),
         ).rejects.toThrow(/cwd/);
+    });
+
+    it("registers and runs generic agent commands", async () => {
+        registerAgentIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+
+        await expect(runAgentCommandForIpc({ command: "reload", cwd: "/tmp", argsText: "" })).resolves.toEqual({
+            status: "success",
+            message: "Reloaded agent command metadata.",
+        });
+        await expect(
+            handlers.get("agent:run-command")?.({}, { command: "compact", cwd: "/tmp", argsText: "keep errors" }),
+        ).resolves.toEqual({
+            status: "noop",
+            message: "Agent command /compact is not implemented yet.",
+        });
     });
 
     it("rejects forged paths for send existing sessions and subscription helpers", async () => {

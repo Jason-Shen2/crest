@@ -109,6 +109,8 @@ export interface AgentCommandExecutionResult {
     sessionMetadata?: AgentSessionMeta;
 }
 
+type AgentImmediateCommandName = Exclude<AgentSlashCommandName, "tree" | "fork" | "clone" | "model">;
+
 interface AgentChatHostApiDeps {
     sendPrompt: (text: string) => boolean;
     abort: () => void;
@@ -116,7 +118,7 @@ interface AgentChatHostApiDeps {
     getRuntimeApi: () => AgentRuntimeApi | undefined;
     getSessionMetadata: () => AgentSessionMeta | undefined;
     getPaneCwd: () => string;
-    runCommand?: (command: AgentSlashCommandName, argsText: string) => Promise<AgentCommandExecutionResult>;
+    runCommand?: (command: AgentImmediateCommandName, argsText: string) => Promise<AgentCommandExecutionResult>;
     onSessionMinted?: (meta: AgentSessionMeta) => void;
     onUserError?: (message: string) => void;
     onOpenModelPicker?: () => void;
@@ -175,7 +177,7 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
     const reportAsyncError = (promise: Promise<unknown>): void => {
         void promise.catch((err) => deps.onUserError?.(err instanceof Error ? err.message : String(err)));
     };
-    const runImmediateCommand = (command: AgentSlashCommandName, argsText: string): boolean => {
+    const runImmediateCommand = (command: AgentImmediateCommandName, argsText: string): boolean => {
         if (!deps.runCommand) {
             deps.onUserError?.(`Agent command /${command} is not available yet.`);
             return true;
@@ -191,6 +193,9 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
             })
         );
         return true;
+    };
+    const isImmediateCommand = (command: AgentSlashCommandName): command is AgentImmediateCommandName => {
+        return command !== "tree" && command !== "fork" && command !== "clone" && command !== "model";
     };
     return {
         submit: (text) => {
@@ -210,7 +215,7 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
                 deps.onSelectorRequest?.({ type: "fork", listForkPoints, forkSession });
                 return true;
             }
-            if (route.command !== "clone") {
+            if (isImmediateCommand(route.command)) {
                 return runImmediateCommand(route.command, route.argsText);
             }
             reportAsyncError(cloneSession());
@@ -335,6 +340,18 @@ export function AgentChatHost({
             onUserError: (message) => onUserErrorRef.current?.(message),
             onOpenModelPicker: () => onOpenModelPickerRef.current?.(),
             onSelectorRequest: (request) => onSelectorRequestRef.current?.(request),
+            runCommand: async (command, argsText) => {
+                const runtimeApi = getAgentRuntimeApi();
+                if (!runtimeApi) {
+                    throw new Error("Electron agent IPC not available (window.api.agent missing)");
+                }
+                return await runtimeApi.runCommand({
+                    sessionMetadata: sessionMetadataRef.current,
+                    cwd: paneContextRef.current.cwd,
+                    command,
+                    argsText,
+                });
+            },
         });
         onReadyRef.current?.(api);
         // Re-fire when the API identity is stable; we want one-shot,
@@ -351,6 +368,7 @@ interface AgentRuntimeApi {
     navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>;
     forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>;
     cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>;
+    runCommand: (input: AgentRunCommandInput) => Promise<AgentCommandExecutionResult>;
 }
 
 function getAgentRuntimeApi(): AgentRuntimeApi | undefined {
