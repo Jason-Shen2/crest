@@ -7,6 +7,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentSelectorRequest } from "./agent-chat-host";
 import {
     AgentSelectorPanel,
+    COMMAND_SELECTOR_POPOVER_CLASSNAME,
+    COMMAND_SELECTOR_POPOVER_PLACEMENT,
+    COMMAND_SELECTOR_POPOVER_WIDTH_PX,
     commitAgentSelectorPick,
     editorTextFromAgentSelectorResult,
     getInitialAgentSelectorFocusEntryId,
@@ -100,6 +103,16 @@ describe("agent selector popover", () => {
         expect(html).toContain('tabindex="-1"');
         expect(html).toContain('data-agent-selector-entry="root"');
         expect(html).toContain('data-agent-selector-current="true"');
+    });
+
+    it("uses the same input-anchored popover contract as the model picker", () => {
+        expect(COMMAND_SELECTOR_POPOVER_PLACEMENT).toBe("top-end");
+        expect(COMMAND_SELECTOR_POPOVER_WIDTH_PX).toBe(340);
+        expect(COMMAND_SELECTOR_POPOVER_CLASSNAME).toContain("rounded-md");
+        expect(COMMAND_SELECTOR_POPOVER_CLASSNAME).toContain("border-fg-overlay-3");
+        expect(COMMAND_SELECTOR_POPOVER_CLASSNAME).toContain("bg-fg-overlay-1");
+        expect(COMMAND_SELECTOR_POPOVER_CLASSNAME).toContain("shadow-xl");
+        expect(COMMAND_SELECTOR_POPOVER_CLASSNAME).toContain("backdrop-blur");
     });
 
     it("labels fork selectors by forkable prompt points", () => {

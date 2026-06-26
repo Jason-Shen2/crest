@@ -379,6 +379,7 @@ export const TerminalView = memo(
         const onAgentSelectorRequest = useCallback((request: AgentSelectorRequest) => {
             setAgentSelectorRequest(request);
         }, []);
+        const agentSelectorAnchorRef = useRef<HTMLDivElement>(null);
         const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
             { text: string; requestId: number } | undefined
         >(undefined);
@@ -873,50 +874,53 @@ export const TerminalView = memo(
                         />
                     )}
                     {!inAltScreen && (
-                        <CmdBlockInput
-                            cwd={liveCwd}
-                            home={home}
-                            // Branch prefers the precmd value (instant) and falls back
-                            // to the chip-model fetch (covers shells with no precmd).
-                            branch={liveBlock?.gitBranch || chipValues.gitBranch}
-                            venv={liveBlock?.virtualEnv}
-                            nodeVersion={liveBlock?.nodeVersion}
-                            // Diff stats: precmd if shell sent it, else chip-model.
-                            gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
-                            gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
-                            prNumber={chipValues.prNumber}
-                            prTitle={chipValues.prTitle}
-                            kubernetesContext={chipValues.kubernetesContext}
-                            sshHost={sshHost}
-                            sshUser={sshUser}
-                            mode={inputMode}
-                            onModeChange={setInputMode}
-                            onSubmit={onSubmit}
-                            submitting={submitting}
-                            disabled={false}
-                            fontSize={fontSize}
-                            focusRequest={focusRequest}
-                            history={commandHistory}
-                            onTextChange={onInputTextChange}
-                            restoredTextRequest={agentRestoredTextRequest}
-                            effectiveMode={effectiveMode}
-                            modelDisplayLabel={modelDisplayLabel}
-                            catalog={CATALOG}
-                            userConfig={userConfigState.config}
-                            userConfigStatus={userConfigState.status}
-                            userConfigError={userConfigState.error}
-                            selection={activeSelection}
-                            onSelectionChange={onSelectionChange}
-                            onOpenAIConfigFile={onOpenAIConfigFile}
-                            openModelPickerRequest={modelPickerRequest}
-                            placeholder={
-                                isRunning
-                                    ? "Press Ctrl+C in the running block to interrupt, or type the next command"
-                                    : undefined
-                            }
-                        />
+                        <div ref={agentSelectorAnchorRef}>
+                            <CmdBlockInput
+                                cwd={liveCwd}
+                                home={home}
+                                // Branch prefers the precmd value (instant) and falls back
+                                // to the chip-model fetch (covers shells with no precmd).
+                                branch={liveBlock?.gitBranch || chipValues.gitBranch}
+                                venv={liveBlock?.virtualEnv}
+                                nodeVersion={liveBlock?.nodeVersion}
+                                // Diff stats: precmd if shell sent it, else chip-model.
+                                gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
+                                gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
+                                prNumber={chipValues.prNumber}
+                                prTitle={chipValues.prTitle}
+                                kubernetesContext={chipValues.kubernetesContext}
+                                sshHost={sshHost}
+                                sshUser={sshUser}
+                                mode={inputMode}
+                                onModeChange={setInputMode}
+                                onSubmit={onSubmit}
+                                submitting={submitting}
+                                disabled={false}
+                                fontSize={fontSize}
+                                focusRequest={focusRequest}
+                                history={commandHistory}
+                                onTextChange={onInputTextChange}
+                                restoredTextRequest={agentRestoredTextRequest}
+                                effectiveMode={effectiveMode}
+                                modelDisplayLabel={modelDisplayLabel}
+                                catalog={CATALOG}
+                                userConfig={userConfigState.config}
+                                userConfigStatus={userConfigState.status}
+                                userConfigError={userConfigState.error}
+                                selection={activeSelection}
+                                onSelectionChange={onSelectionChange}
+                                onOpenAIConfigFile={onOpenAIConfigFile}
+                                openModelPickerRequest={modelPickerRequest}
+                                placeholder={
+                                    isRunning
+                                        ? "Press Ctrl+C in the running block to interrupt, or type the next command"
+                                        : undefined
+                                }
+                            />
+                        </div>
                     )}
                     <AgentSelectorPopover
+                        anchorRef={agentSelectorAnchorRef}
                         request={agentSelectorRequest}
                         onClose={() => setAgentSelectorRequest(null)}
                         onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
