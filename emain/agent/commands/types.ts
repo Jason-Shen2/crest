@@ -43,6 +43,8 @@ export interface AgentRunCommandInput {
     cwd: string;
     command: AgentBackendCommandName;
     argsText: string;
+    /** Parent terminal block id, used by /compact to fetch timeline anchor rows. */
+    blockId?: string;
 }
 
 export interface ParsedAgentCommandInput {

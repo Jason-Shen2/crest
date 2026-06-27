@@ -280,6 +280,7 @@ function validateRunCommandInput(value: unknown): AgentRunCommandInput {
         argsText: typeof value.argsText === "string" ? value.argsText : "",
         sessionMetadata:
             value.sessionMetadata == null ? undefined : validateSessionMetadataShape(value.sessionMetadata),
+        blockId: typeof value.blockId === "string" && value.blockId !== "" ? value.blockId : undefined,
     };
 }
 
@@ -756,7 +757,7 @@ export async function runAgentCommandForIpc(input: unknown): Promise<AgentComman
         case "new":
             return await runNewAgentSessionCommand(parsed.cwd);
         case "compact":
-            return await runCompactSessionCommand(parsed.sessionMetadata, parsed.argsText);
+            return await runCompactSessionCommand(parsed.sessionMetadata, parsed.argsText, parsed.blockId);
         case "session":
             return await runSessionInfoCommand(parsed.sessionMetadata);
         case "copy":
@@ -783,14 +784,16 @@ async function runNewAgentSessionCommand(cwd: string): Promise<AgentCommandExecu
 
 async function runCompactSessionCommand(
     sessionMetadata: JsonlSessionMetadata | undefined,
-    argsText: string
+    argsText: string,
+    blockId?: string
 ): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session to compact.");
     const { metadata, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
     const owner = sessionCache.get(metadata.path) ?? sessionCache.get(requestedPath);
     if (!owner) return commandNoop("No active agent session to compact.");
     const customInstructions = argsText.trim() || undefined;
-    await owner.compact(customInstructions);
+    const rows = blockId ? await RpcApi.GetCmdBlocksCommand(ElectronWshClient, { blockid: blockId }) : [];
+    await owner.compact(rows ?? [], customInstructions);
     return commandSuccess("Compacted session context.");
 }
 
