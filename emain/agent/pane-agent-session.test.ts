@@ -310,22 +310,23 @@ describe("PaneAgentSession — command operations", () => {
 });
 
 describe("PaneAgentSession — owned runs", () => {
-    it("builds a completed run keyed by the main-owned run id", () => {
+    it("builds a completed run keyed by the user entry id", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
         const q = user("hello");
         const partial = assistant("hel");
         const final = assistant("hello back", "stop");
 
-        owner.send("run-a", "hello");
+        void owner.send("hello");
         fake.emit({ type: "message_start", message: q });
+        fake.emit({ type: "message_end", message: q, entryId: "e-a" });
         fake.emit({ type: "message_start", message: partial });
         fake.emit({ type: "message_end", message: final });
         fake.emit({ type: "agent_end", messages: [q, final] });
 
         expect(owner.getSnapshot().runs).toEqual([
             {
-                runId: "run-a",
+                runId: "e-a",
                 userMessage: q,
                 responseMessages: [final],
                 status: "done",
@@ -333,11 +334,23 @@ describe("PaneAgentSession — owned runs", () => {
         ]);
     });
 
+    it("resolves send() with the user entry id from the message_end event", async () => {
+        const fake = makeFakeHarness();
+        const owner = new PaneAgentSession("/s", fake.pane);
+        const q = user("hello");
+
+        const sendPromise = owner.send("hello");
+        fake.emit({ type: "message_start", message: q });
+        fake.emit({ type: "message_end", message: q, entryId: "e-a" });
+
+        await expect(sendPromise).resolves.toBe("e-a");
+    });
+
     it("calls harness.prompt directly without inserting a run-boundary custom entry", async () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
 
-        owner.send("run-a", "hello");
+        void owner.send("hello");
         await flush();
 
         expect(fake.calls.custom).toEqual([]);
@@ -350,14 +363,15 @@ describe("PaneAgentSession — owned runs", () => {
         const q = user("hello");
         const final = assistant("", "error", "rate limited");
 
-        owner.send("run-err", "hello");
+        void owner.send("hello");
         fake.emit({ type: "message_start", message: q });
+        fake.emit({ type: "message_end", message: q, entryId: "e-err" });
         fake.emit({ type: "message_start", message: assistant("") });
         fake.emit({ type: "message_end", message: final });
 
         expect(owner.getSnapshot().runs).toEqual([
             {
-                runId: "run-err",
+                runId: "e-err",
                 userMessage: q,
                 responseMessages: [final],
                 status: "error",
@@ -373,14 +387,15 @@ describe("PaneAgentSession — owned runs", () => {
         const q = user("hello");
         const final = assistant("hello back", "stop");
 
-        owner.send("run-a", "hello");
+        void owner.send("hello");
         fake.emit({ type: "message_start", message: q });
+        fake.emit({ type: "message_end", message: q, entryId: "e-a" });
         fake.emit({ type: "message_start", message: assistant("hel") });
         fake.emit({ type: "message_end", message: final });
         fake.emit({ type: "agent_end", messages: [q, final] });
 
         expect(onRunFinished).toHaveBeenCalledWith({
-            runId: "run-a",
+            runId: "e-a",
             userMessage: q,
             responseMessages: [final],
             status: "done",
@@ -393,12 +408,13 @@ describe("PaneAgentSession — owned runs", () => {
         const seen: string[] = [];
         owner.subscribe((event) => seen.push(event.type));
 
-        owner.send("run-a", "hello");
+        void owner.send("hello");
         fake.emit({ type: "message_start", message: user("hello") });
+        fake.emit({ type: "message_end", message: user("hello"), entryId: "e-a" });
         fake.emit({ type: "message_start", message: assistant("hello back") });
         fake.emit({ type: "message_end", message: assistant("hello back", "stop") });
         fake.emit({ type: "agent_end", messages: [] });
-        owner.setRunChangeOutline("run-a", {
+        owner.setRunChangeOutline("e-a", {
             modules: [{ id: "ui", title: "UI changes", files: [{ path: "src/app.ts" }] }],
         });
 
@@ -759,8 +775,8 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
     it("first send prompts; a concurrent send queues via followUp", async () => {
         const fake = makeFakeHarness(); // prompt() stays pending → running stays true
         const owner = new PaneAgentSession("/s", fake.pane);
-        owner.send("run-a", "a");
-        owner.send("run-b", "b");
+        void owner.send("a");
+        void owner.send("b");
         await flush();
         expect(fake.calls.prompt).toEqual(["a"]);
         expect(fake.calls.followUp).toEqual(["b"]);
@@ -770,9 +786,9 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
     it("after the run ends (agent_end), the next send prompts again", async () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
-        owner.send("run-a", "a");
+        void owner.send("a");
         fake.emit({ type: "agent_end", messages: [] }); // clears running
-        owner.send("run-c", "c");
+        void owner.send("c");
         await flush();
         expect(fake.calls.prompt).toEqual(["a", "c"]);
         expect(fake.calls.followUp).toEqual([]);
@@ -782,13 +798,13 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
         const fake = makeFakeHarness();
         fake.setPromptResult(() => Promise.reject(new Error("boom")));
         const owner = new PaneAgentSession("/s", fake.pane);
-        owner.send("run-a", "a");
+        owner.send("a").catch(() => {});
         await flush();
         const snap = owner.getSnapshot();
         expect(snap.status).toBe("error");
         expect(snap.errorMessage).toBe("boom");
         // running was cleared → the next send prompts (doesn't deadlock on followUp).
-        owner.send("run-b", "b");
+        owner.send("b").catch(() => {});
         await flush();
         expect(fake.calls.prompt).toEqual(["a", "b"]);
     });

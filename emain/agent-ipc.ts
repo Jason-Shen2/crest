@@ -64,7 +64,6 @@ import type {
     AgentTreeEntryView,
 } from "./agent/commands/types";
 import { buildPaneHarness } from "./agent/harness-factory";
-import { uuidv7 } from "./agent/harness/session/uuid";
 import type { JsonlSessionMetadata } from "./agent/harness/types";
 import { buildPersistedRunsFromSessionEntries, PaneAgentSession, type AgentRun } from "./agent/pane-agent-session";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
@@ -1024,25 +1023,25 @@ export function registerAgentIpcHandlers(): void {
             const { metadata } = await ensureSession(opts);
             const session = await ensurePaneSession(metadata, opts);
 
-            // Phase 1: main owns run identity. Generate a stable runId
-            // (uuidv7 — time-ordered, globally unique, no coordination)
-            // and persist the timeline marker row BEFORE starting the
-            // prompt. The renderer no longer derives or persists run IDs.
-            const runId = `run-${uuidv7()}`;
+            // Run identity IS the session entry id of the user message that
+            // starts the turn. Prompt first so the session mints that entry
+            // (the single source of truth), get the userEntryId back, THEN
+            // persist the timeline anchor row keyed by it.
+            const userEntryId = await session.send(opts.text);
             if (opts.blockId) {
                 try {
                     await RpcApi.AppendAgentRunCommand(ElectronWshClient, {
                         blockid: opts.blockId,
                         sessionpath: metadata.path,
-                        runid: runId,
+                        runid: userEntryId,
+                        userentryid: userEntryId,
                     });
                 } catch (err) {
                     console.error(`[agent-ipc] failed to persist timeline marker:`, err);
                 }
             }
 
-            session.send(runId, opts.text);
-            return { sessionMetadata: metadata, runId };
+            return { sessionMetadata: metadata, runId: userEntryId };
         }
     );
 

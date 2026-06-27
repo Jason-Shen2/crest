@@ -482,8 +482,8 @@ export class AgentHarness<
 
 	private async handleAgentEvent(event: AgentEvent, signal?: AbortSignal): Promise<void> {
 		if (event.type === "message_end") {
-			await this.session.appendMessage(event.message);
-			await this.emitAny(event, signal);
+			const entryId = await this.session.appendMessage(event.message);
+			await this.emitAny({ ...event, entryId }, signal);
 			return;
 		}
 		if (event.type === "turn_end") {
