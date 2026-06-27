@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Timeline — 单一真相源 · 改动总览</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0f0d0a;
+    --bg-soft: #181511;
+    --bg-elev: #1f1b15;
+    --fg: #ece7de;
+    --fg-dim: #a59b8a;
+    --fg-mute: #6b6152;
+    --accent: #f2a23c;
+    --accent-dim: #b57a2a;
+    --line: #2a241c;
+    --good: #7bc27b;
+    --warn: #e8c065;
+    --bad: #e07b67;
+    --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Source Serif Pro", "Noto Serif SC", Georgia, serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 85% -10%, rgba(242,162,60,0.08), transparent 60%),
+      radial-gradient(900px 500px at -10% 30%, rgba(242,162,60,0.04), transparent 55%),
+      var(--bg);
+    color: var(--fg);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.72;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: 0.005em;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 0.8  0 0 0 0 0.55  0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.35;
+    mix-blend-mode: overlay;
+  }
+  main {
+    position: relative;
+    z-index: 1;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 80px 32px 140px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 48px;
+    line-height: 1.12;
+    margin: 0 0 24px;
+    letter-spacing: -0.01em;
+  }
+  h1 .accent { color: var(--accent); font-style: italic; }
+  .lede {
+    font-size: 19px;
+    color: var(--fg-dim);
+    border-left: 2px solid var(--accent);
+    padding: 4px 0 4px 20px;
+    margin: 28px 0 56px;
+  }
+  h2 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 28px;
+    margin: 72px 0 6px;
+    letter-spacing: -0.005em;
+  }
+  h2::before {
+    content: "§ ";
+    color: var(--accent);
+    font-style: italic;
+    margin-right: 2px;
+  }
+  h3 {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 40px 0 10px;
+  }
+  p { margin: 12px 0; }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(242,162,60,0.25);
+    transition: border-color 0.15s;
+  }
+  a:hover { border-bottom-color: var(--accent); }
+  code, .mono {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--bg-soft);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+  pre {
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.6;
+    margin: 14px 0 18px;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    color: var(--fg);
+  }
+  ul, ol { padding-left: 22px; margin: 10px 0; }
+  li { margin: 6px 0; }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin: 18px 0;
+  }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--bg-elev);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .card h4 {
+    margin: 0 0 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .card p { margin: 4px 0; color: var(--fg-dim); font-size: 15.5px; }
+  .tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-right: 6px;
+  }
+  .tag-add { background: rgba(123,194,123,0.12); color: var(--good); border: 1px solid rgba(123,194,123,0.3); }
+  .tag-del { background: rgba(224,123,103,0.12); color: var(--bad); border: 1px solid rgba(224,123,103,0.3); }
+  .tag-mod { background: rgba(232,192,101,0.12); color: var(--warn); border: 1px solid rgba(232,192,101,0.3); }
+  .tag-new { background: rgba(242,162,60,0.14); color: var(--accent); border: 1px solid rgba(242,162,60,0.4); }
+  .before-after {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 16px 0 20px;
+  }
+  @media (max-width: 640px) { .before-after { grid-template-columns: 1fr; } }
+  .ba {
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .ba-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--fg-mute);
+    margin-bottom: 6px;
+  }
+  .ba.after .ba-label { color: var(--accent); }
+  .ba pre { margin: 6px 0 0; border: none; padding: 0; background: none; font-size: 12.5px; }
+  blockquote {
+    margin: 20px 0;
+    padding: 14px 20px;
+    background: rgba(242,162,60,0.06);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    color: var(--fg-dim);
+    font-style: italic;
+  }
+  blockquote strong { color: var(--fg); font-style: normal; }
+  hr {
+    border: none;
+    border-top: 1px solid var(--line);
+    margin: 60px 0;
+  }
+  .diagram-wrap {
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 20px 0;
+    overflow-x: auto;
+  }
+  .diagram-wrap h3 { margin-top: 0; }
+  .mermaid { text-align: center; }
+  .file-ref {
+    display: block;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--fg-mute);
+    margin: 2px 0 8px;
+  }
+  .commits {
+    font-family: var(--mono);
+    font-size: 13px;
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 16px 0;
+  }
+  .commits div { padding: 3px 0; display: flex; gap: 12px; }
+  .commits .hash { color: var(--accent); min-width: 72px; }
+  .commits .msg { color: var(--fg-dim); }
+  .layer-num {
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent); color: var(--bg);
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    margin-right: 8px; vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+<main>
+
+<p class="eyebrow">Architecture Refactor · June 2026</p>
+<h1>Agent Timeline <span class="accent">单一真相源</span></h1>
+<p class="lede">
+  run 的身份从「凭空 mint 的 id + 位置匹配」改为「session user message 的 entry id」，
+  JSONL session 成为唯一真相源，cmdblock 退化为有序投影。
+  历史上所有 session 相关 bug（刷页后卡住 loading、/tree 错位、/compact 后丢失 run 身份、/resume 错乱）
+  共享同一个根因，这次重构从根上解决。
+</p>
+
+<div class="commits">
+  <div><span class="hash">af7300ef</span><span class="msg">feat(cmdblock): add agent_user_entry_id column</span></div>
+  <div><span class="hash">9f11bb4d</span><span class="msg">feat(cmdblock): persist userEntryID as durable agent run identity</span></div>
+  <div><span class="hash">8fc25287</span><span class="msg">feat(rpc): thread userEntryID through AppendAgentRun command</span></div>
+  <div><span class="hash">f345bb68</span><span class="msg">feat(harness): expose user entry id from prompt</span></div>
+  <div><span class="hash">685bbf3d</span><span class="msg">feat(pane-session): add deterministic entryId-join run builder</span></div>
+  <div><span class="hash">1fb8532b</span><span class="msg">feat(pane-session): prefer userEntryId join, isolate legacy positional match</span></div>
+  <div><span class="hash">21075b7f</span><span class="msg">feat(agent): derive run identity from user entry id, session-first write</span></div>
+  <div><span class="hash">93a8b917</span><span class="msg">refactor(agent): unify rebuild on entryId join, drop knownRunIds pseudo-refs</span></div>
+  <div><span class="hash">8201857f</span><span class="msg">feat(renderer): key agent blocks on userEntryId</span></div>
+  <div><span class="hash">e4b98373</span><span class="msg">fix(agent): drain pending send() resolvers on abort/dispose to avoid hang</span></div>
+  <div><span class="hash">(本轮)</span><span class="msg">refactor: 全面删除 agent_run_id / runId，userEntryId 为唯一身份</span></div>
+</div>
+
+<h2>为什么改</h2>
+<p>
+  旧架构中，renderer 或 main 会凭空 <code>uuidv7()</code> 出一个 <code>runId</code>，把它写进 cmdblock 的
+  <code>agent_run_id</code> 列，再靠「位置顺序」把 session 分支上的 user messages 与 cmdblock 的 runId 对齐。
+  位置匹配在 session 过滤、顺序方向、compact 重建、异步到达等场景下都会错位，
+  这是刷页后 block 卡在「…loading agent run…」的根源。
+</p>
+<blockquote>
+  <strong>核心洞察：</strong>run 的身份本就应该是启动它的那一条 user message 的 id。
+  既然每条 user message 在 session 里都有一个稳定的 entry id，那 runId 就不该是额外 mint 的东西——
+  直接用 userEntryId 当 runId，重建时按 entry id 精确 join，与顺序、过滤、方向都无关。
+</blockquote>
+
+<h2>改动分层梳理</h2>
+
+<!-- ==================== 第 1 层 ==================== -->
+<h3><span class="layer-num">1</span>数据库迁移</h3>
+<span class="file-ref">db/migrations-wstore/000015_agent_user_entry.up.sql · .down.sql</span>
+<p>
+  <span class="tag tag-add">新增</span>
+  在 <code>cmdblock</code> 表加列 <code>agent_user_entry_id</code>（TEXT，可空），
+  并建唯一索引 <code>cmdblock_blockid_agentuserentryid_uindex</code>（<code>block_id + agent_user_entry_id</code>）。
+</p>
+<div class="before-after">
+  <div class="ba">
+    <div class="ba-label">Up</div>
+<pre><code>ALTER TABLE cmdblock
+  ADD COLUMN agent_user_entry_id TEXT;
+
+CREATE UNIQUE INDEX
+  cmdblock_blockid_agentuserentryid_uindex
+  ON cmdblock (block_id, agent_user_entry_id);</code></pre>
+  </div>
+  <div class="ba">
+    <div class="ba-label">Down</div>
+<pre><code>DROP INDEX cmdblock_blockid_agentuserentryid_uindex;
+
+ALTER TABLE cmdblock
+  DROP COLUMN agent_user_entry_id;</code></pre>
+  </div>
+</div>
+<p>down 是 up 的逆操作，仅丢失新列数据，无额外破坏性。</p>
+
+<!-- ==================== 第 2 层 ==================== -->
+<h3><span class="layer-num">2</span>Go 层 · cmdblock</h3>
+<span class="file-ref">pkg/cmdblock/cbtypes/types.go</span>
+<p>
+  <span class="tag tag-add">新增</span>
+  <code>CmdBlockRow.AgentUserEntryID *string</code>，
+  JSON tag 为 <code>"agentuserentryid"</code>。
+</p>
+<span class="file-ref">pkg/cmdblock/store.go</span>
+<p>
+  <span class="tag tag-mod">修改</span>
+  <code>AppendAgentRun</code>：
+</p>
+<ul>
+  <li>入参签名为 <code>AppendAgentRun(ctx, blockID, sessionPath, userEntryID)</code>——已删除旧的 <code>runID</code> 入参；</li>
+  <li>INSERT 只写 <code>agent_user_entry_id</code>（<code>agent_run_id</code> 列已整列删除）；</li>
+  <li><strong>幂等键为 <code>agent_user_entry_id</code></strong>（<code>WHERE blockid = ? AND kind = ? AND agent_user_entry_id = ?</code>）；</li>
+  <li>SQL 全参数化，无注入风险。</li>
+</ul>
+<span class="file-ref">db/migrations-wstore/000016_drop_agent_run_id.up.sql · .down.sql</span>
+<p>
+  <span class="tag tag-del">删除</span>
+  新增迁移 <code>000016</code> drop 掉 <code>agent_run_id</code> 列与 <code>idx_cmdblock_agent_run</code> 索引。
+  因为 Go 用 <code>SELECT *</code> 扫进 <code>CmdBlock</code> struct，删 struct 字段必须同步 drop 列，否则 sqlx 遇未映射列报错。
+</p>
+
+<!-- ==================== 第 3 层 ==================== -->
+<h3><span class="layer-num">3</span>RPC 层 · wshrpc</h3>
+<span class="file-ref">pkg/wshrpc/wshrpctypes.go</span>
+<p>
+  <code>CommandAppendAgentRunData</code> 新增 <code>UserEntryID string</code> 字段，JSON tag <code>"userentryid"</code>。
+</p>
+<span class="file-ref">pkg/wshrpc/wshserver/wshserver.go</span>
+<p>
+  AppendAgentRun handler 把 <code>data.UserEntryID</code> 透传给 <code>store.AppendAgentRun</code>。
+</p>
+<span class="file-ref">frontend/types/gotypes.d.ts</span>
+<p>
+  TypeScript 端的 <code>CmdBlock</code> 类型同步新增 <code>agentuserentryid?: string</code>（由 go2ts 生成，已对齐）。
+</p>
+
+<!-- ==================== 第 4 层 ==================== -->
+<h3><span class="layer-num">4</span>Harness 层 · 事件携带 entryId</h3>
+<span class="file-ref">emain/agent/types.ts</span>
+<p>
+  <span class="tag tag-mod">修改</span>
+  <code>AgentEvent</code> 的 <code>message_end</code> 变体新增可选字段 <code>entryId?: string</code>。
+  <code>message_start</code> / <code>message_update</code> 不变。
+</p>
+<span class="file-ref">emain/agent/harness/agent-harness.ts</span>
+<p>
+  <span class="tag tag-mod">修改</span>
+  <code>handleAgentEvent</code> 中 <code>message_end</code> 分支：
+  原先只调用 <code>this.session.appendMessage(event.message)</code> 但丢弃返回值；
+  现在取出返回的 <code>entryId</code>，enrich 到事件里再 emit：
+</p>
+<pre><code>case "message_end":
+  const entryId = await this.session.appendMessage(event.message);
+  await this.emitAny({ ...event, entryId }, signal);</code></pre>
+<p>
+  这样下游订阅者在收到 user <code>message_end</code> 的同时就能拿到 session entry id——
+  这是 run 身份的来源，也是「session 是单一真相源」的具体体现：
+  身份不是谁 mint 的，是 session 写入时自然产生的。
+</p>
+<p>
+  <span class="tag tag-new">保留</span>
+  <code>promptReturningEntryId</code>（Task 4 加的，整分支未使用，留作备用 API）。
+</p>
+
+<!-- ==================== 第 5 层 ==================== -->
+<h3><span class="layer-num">5</span>PaneSession 层 · run 构建与身份</h3>
+<span class="file-ref">emain/agent/pane-agent-session.ts</span>
+<p>这是改动最集中的文件。分四块说：</p>
+
+<h4>5.1 新增 entryId-join 构建器</h4>
+<p>
+  <span class="tag tag-add">新增</span>
+  <code>buildRunsFromEntryIdJoin(entries, anchoredEntryIds: Set&lt;string&gt;)</code>：
+  按 session 分支顺序遍历，遇到在 <code>anchoredEntryIds</code> 中的 user message 就开一个 run，
+  之后的 assistant/tool 消息归入当前 run，遇到下一个锚定 user message 就切下一个 run。
+  100% 确定性，与顺序、过滤、位置无关。
+</p>
+<p>
+  <span class="tag tag-add">新增</span>
+  <code>buildPersistedRunsFromSessionEntries(entries, timelineRefs, path)</code> 作为总入口：
+  从 refs 里收集所有非空的 <code>agentuserentryid</code> 成 Set（并按 <code>agentsessionpath</code> 过滤），
+  始终走 entryId-join。开发阶段不兼容旧数据，旧的位置匹配逻辑
+  （<code>buildRunsLegacyPositional</code> 等 4 个函数）已整体删除。
+</p>
+
+<h4>5.2 send() 从 fire-and-forget 变为 Promise&lt;string&gt;</h4>
+<p>
+  <span class="tag tag-mod">修改</span>
+  旧签名 <code>send(runId, text): void</code> → 新签名 <code>send(text): Promise&lt;string&gt;</code>。
+  返回值是该次 send 对应 user message 的 <code>userEntryId</code>（= runId）。
+</p>
+<p>机制：</p>
+<ul>
+  <li>调用 <code>send</code> 时同步 push 一个 <code>{resolve, reject}</code> 到
+    <code>pendingEntryIdResolvers</code> FIFO 队列；</li>
+  <li>user <code>message_end</code> 到达（带 <code>entryId</code>）时，
+    用该 entryId 开 run，并 <code>shift()</code> 队头 resolver 来 <code>resolve(entryId)</code>；</li>
+  <li>prompt 或 followUp 失败时 <code>shift()</code> 队头 <code>reject(err)</code>，防止挂起；</li>
+  <li>abort / dispose 时<strong>整队列 reject</strong>（review 后补的修复，见底部）。</li>
+</ul>
+
+<h4>5.3 knownRunIds 伪 refs 彻底删除</h4>
+<p><span class="tag tag-del">删除</span></p>
+<ul>
+  <li>类字段 <code>private knownRunIds: string[] = []</code></li>
+  <li>构造函数里 <code>this.knownRunIds = initialRuns.map((r) =&gt; r.runId)</code></li>
+  <li><code>ensureRun</code> 里维护 <code>knownRunIds</code> 的分支</li>
+  <li><code>rebuildFromCurrentBranch</code> 里用 knownRunIds 构造伪 refs + 过滤回填的一大块</li>
+</ul>
+
+<h4>5.4 compact / rebuild 签名统一</h4>
+<div class="before-after">
+  <div class="ba">
+    <div class="ba-label">Before</div>
+<pre><code>async compact(customInstructions?): void {
+  await this.pane.harness.compact(customInstructions);
+  await this.rebuildFromCurrentBranch(); // 靠 knownRunIds
+  this.emitSnapshot();
+}
+
+private async rebuildFromCurrentBranch(
+  timelineRefs?: AgentTimelineRef[]
+): Promise&lt;void&gt; {
+  // 没有 refs 就用 knownRunIds 造伪 refs
+}</code></pre>
+  </div>
+  <div class="ba after">
+    <div class="ba-label">After</div>
+<pre><code>async compact(
+  timelineRefs: AgentTimelineRef[] = [],
+  customInstructions?: string
+): Promise&lt;void&gt; {
+  await this.pane.harness.compact(customInstructions);
+  await this.rebuildFromCurrentBranch(timelineRefs);
+  this.emitSnapshot();
+}
+
+private async rebuildFromCurrentBranch(
+  timelineRefs: AgentTimelineRef[] = []
+): Promise&lt;void&gt; {
+  // 直接用传入的 refs；不再有伪 refs
+  this.runs = buildPersistedRunsFromSessionEntries(
+    entries, timelineRefs, this.path
+  );
+}</code></pre>
+  </div>
+</div>
+<p>
+  <code>navigateTree</code> 签名不变，仍是 <code>navigateTree(targetId, timelineRefs?)</code>。
+  因为 <code>rebuildFromCurrentBranch</code> 已改为默认 <code>[]</code>，传 <code>undefined</code> 也没问题。
+</p>
+
+<!-- ==================== 第 6 层 ==================== -->
+<h3><span class="layer-num">6</span>IPC 层</h3>
+<span class="file-ref">emain/agent-ipc.ts</span>
+
+<h4>6.1 agent:send 顺序翻转</h4>
+<p>
+  <span class="tag tag-mod">修改</span>
+  以前是「先 AppendAgentRun（mint runId）→ 再 send prompt」；
+  现在是<strong>「先 send → 拿到 userEntryId → 再 AppendAgentRun」</strong>，
+  只填 <code>userentryid</code>（<code>runid</code> 字段已删除）：
+</p>
+<pre><code>const userEntryId = await session.send(opts.text);
+if (opts.blockId) {
+  await RpcApi.AppendAgentRunCommand(ElectronWshClient, {
+    blockid: opts.blockId,
+    sessionpath: metadata.path,
+    userentryid: userEntryId,
+  });
+}</code></pre>
+<p>
+  删掉了 <code>uuidv7</code> 的 import——不再需要凭空 mint。
+</p>
+
+<h4>6.2 /compact 传 rows</h4>
+<p>
+  <span class="tag tag-mod">修改</span>
+  <code>runCompactSessionCommand</code> 增加 <code>blockId?</code> 参数：
+  有 blockId 就 <code>GetCmdBlocksCommand</code> 取 rows，传入 <code>owner.compact(rows, customInstructions)</code>；
+  没有就传空数组（无锚定 refs 时不产生 run）。
+</p>
+
+<h4>6.3 AgentRunCommandInput 加 blockId</h4>
+<p>
+  <code>/compact</code> 的命令输入原先没有 blockId。三处同步加了可选字段：
+</p>
+<div class="grid">
+  <div class="card">
+    <h4>emain 类型</h4>
+    <p><code>agent/commands/types.ts</code><br/><code>AgentRunCommandInput.blockId?: string</code></p>
+  </div>
+  <div class="card">
+    <h4>frontend 类型</h4>
+    <p><code>types/custom.d.ts</code><br/><code>AgentRunCommandInput.blockId?: string</code></p>
+  </div>
+  <div class="card">
+    <h4>renderer 调用</h4>
+    <p><code>agent-chat-host.tsx</code><br/>runCommand 时带上 <code>blockId: outerBlockId</code></p>
+  </div>
+  <div class="card">
+    <h4>IPC validator</h4>
+    <p><code>validateRunCommandInput</code><br/>解析 blockId 到返回对象</p>
+  </div>
+</div>
+
+<h4>6.4 三个重建入口已传 rows（无需改）</h4>
+<p>确认以下三处重建路径本来就从 <code>GetCmdBlocksCommand</code> 拿 rows 并传入：</p>
+<ul>
+  <li><code>ensurePaneSession</code> — 初始化 <code>initialRuns</code></li>
+  <li><code>sendPersistedSnapshot</code> — 首次订阅快照</li>
+  <li><code>navigateAgentTreeForIpc</code> — owner 路径、无 owner 路径、订阅者 sub 路径</li>
+</ul>
+<p>rows 里现在带了 <code>agentuserentryid</code>，自动触发 entryId-join 路径，无需改调用形态。</p>
+
+<!-- ==================== 第 7 层 ==================== -->
+<h3><span class="layer-num">7</span>Renderer 层</h3>
+<span class="file-ref">frontend/app/term/terminal-model.ts</span>
+<p>
+  <span class="tag tag-mod">修改</span>
+  <code>applyAgentTimelineRow</code> 里 join key 的选择：
+</p>
+<div class="before-after">
+  <div class="ba">
+    <div class="ba-label">Before</div>
+<pre><code>const runId = row.agentrunid;
+if (!runId) return;</code></pre>
+  </div>
+  <div class="ba after">
+    <div class="ba-label">After</div>
+<pre><code>const runId = row.agentuserentryid;
+if (!runId) return;</code></pre>
+  </div>
+</div>
+<p>
+  <code>AgentTimelineStorageRow</code> 类型也删除了 <code>agentrunid?</code>，只保留 <code>agentuserentryid?: string</code>。
+  身份完全来自 session entry id，不再有 agentrunid 回退。
+</p>
+
+<h2>改动后链路图</h2>
+<p>用户发一条消息时，数据与身份从 session 产生，向下游各层流动：</p>
+
+<div class="diagram-wrap">
+<div class="mermaid">
+flowchart TD
+  subgraph R[Renderer · terminal-model.ts]
+    R1[agent-chat-host.tsx<br/>send(text)]
+    R2[applyAgentTimelineRow<br/>runId = userEntryId]
+    R3[syncAgentBlocks(activeRunIds)<br/>按 runId 显示/隐藏 block]
+    R1 -->|"IPC agent:send"| I1
+  end
+
+  subgraph I[IPC · agent-ipc.ts]
+    I1["agent:send handler<br/>先 send，拿 userEntryId"]
+    I2["AppendAgentRunCommand<br/>(userentryid=userEntryId)"]
+    I3["runCompactSessionCommand<br/>GetCmdBlocksCommand → owner.compact(rows, ...)"]
+    I1 --> I2
+  end
+
+  subgraph P[PaneSession · pane-agent-session.ts]
+    P1["send(text): Promise&lt;string&gt;<br/>push resolver → FIFO"]
+    P2["applyMessageUpdateToRun<br/>user message_end + entryId"]
+    P3["ensureRun(entryId)<br/>activeRunId = entryId"]
+    P4["pendingEntryIdResolvers.shift()<br/>.resolve(entryId)"]
+    P5["rebuildFromCurrentBranch(rows)<br/>buildPersistedRunsFromSessionEntries"]
+    P6["buildRunsFromEntryIdJoin<br/>按 anchoredEntryIds 精确 join"]
+    P1 --> P2
+    P2 --> P3
+    P2 --> P4
+    P5 --> P6
+  end
+
+  subgraph H[Harness · agent-harness.ts]
+    H1["prompt(text) / followUp(text)<br/>触发 agent 事件流"]
+    H2["handleAgentEvent → message_end<br/>session.appendMessage → entryId"]
+    H3["emit event enriched with entryId"]
+    H1 --> H2
+    H2 --> H3
+  end
+
+  subgraph S[Session · jsonl session]
+    S1["appendMessage(message)<br/>返回 entryId（单一真相源）"]
+    S2["getBranch()<br/>当前分支的全部 entries"]
+    H2 --> S1
+    P5 --> S2
+  end
+
+  subgraph G[Go · cmdblock store]
+    G1["AppendAgentRun<br/>幂等键 = user_entry_id"]
+    G2["GetCmdBlocksCommand<br/>返回行（含 agentuserentryid）"]
+    I2 --> G1
+    I3 --> G2
+  end
+
+  H3 -->|"事件流"| P2
+  I1 --> P1
+  G2 -->|"rows 作 refs"| P5
+  P3 -->|"snapshot 里的 runId"| R3
+  G1 -->|"行事件 →"| R2
+</div>
+</div>
+
+<h2>迁移与不兼容说明</h2>
+<p>仍在开发阶段，<strong>不保留向后兼容</strong>，<code>agent_run_id</code> / <code>runId</code> 已全栈删除：</p>
+<ul>
+  <li><strong>DB</strong>：迁移 <code>000016</code> drop 掉 <code>agent_run_id</code> 列与 <code>idx_cmdblock_agent_run</code> 索引；唯一身份列为 <code>agent_user_entry_id</code>。</li>
+  <li><strong>幂等键</strong>：<code>block_id + agent_user_entry_id</code>。</li>
+  <li><strong>重建</strong>：始终走 entryId-join；位置匹配 legacy 路径（4 个函数）整体删除。</li>
+  <li><strong>Renderer</strong>：只读 <code>row.agentuserentryid</code>，无 agentrunid 回退。</li>
+  <li><strong>旧数据</strong>：未迁移的旧行（仅有 agent_run_id）将随列一起丢弃——开发阶段可接受。</li>
+</ul>
+
+<h2>Review 发现 & 修复</h2>
+<div class="card" style="border-color: rgba(224,123,103,0.4); background: rgba(224,123,103,0.04);">
+  <h4 style="color: var(--bad);">BLOCKER · 已修复（e4b98373）</h4>
+  <p style="color: var(--fg-dim);">
+    Task 7 引入的 <code>pendingEntryIdResolvers</code> FIFO 队列，
+    在 <code>abort</code> 和 <code>dispose</code> 路径上没有 drain。
+    当一个 followUp 还在 harness 队列里未被 drain 就被 abort 清掉时，
+    它对应的 resolver 永远不会 resolve → <code>send()</code> promise 永久挂起，
+    且队头残留的 stale resolver 会让后续 send 错配。
+  </p>
+  <p style="color: var(--fg);">
+    <strong>修复：</strong>新增 <code>rejectPendingSends(err)</code> 辅助方法，
+    在 <code>abort</code> 事件处理和 <code>dispose()</code> 中调用，整队列 reject 并清空。
+    加 2 条回归测试覆盖。
+  </p>
+</div>
+
+<div style="margin-top: 18px;">
+<h4 style="color: var(--fg-dim); font-family: var(--mono); font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; margin: 20px 0 8px;">NIT · 非阻塞，后续处理</h4>
+<ul>
+  <li><span class="tag tag-del">已处理</span> <code>buildPersistedRunsFromTimeline</code> 及其它 3 个 legacy 位置匹配函数已连同测试删除。</li>
+  <li><code>onSendError</code> 的 <code>shift()</code> 在 burst 场景可能 reject 错的 resolver（语义不精，但不影响主路径）。</li>
+  <li>Go 层 <code>AppendAgentRun</code> 现已校验 <code>UserEntryID</code> 非空（在 wshserver handler 层）。</li>
+  <li>几处陈旧注释还在用「mint synthetic runId」的旧措辞，可更新。</li>
+  <li>steer / nextTurn 的 user 消息会错误消费 resolver（当前 renderer 未调用，未来接入需处理）。</li>
+</ul>
+</div>
+
+<hr/>
+
+<p style="font-family: var(--mono); font-size: 12px; color: var(--fg-mute); text-align: center;">
+  — base a785f5a0 · branch agent-timeline-single-source · userEntryId 为唯一 run 身份 —
+</p>
+
+</main>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      primaryColor: '#1f1b15',
+      primaryTextColor: '#ece7de',
+      primaryBorderColor: '#f2a23c',
+      lineColor: '#b57a2a',
+      secondaryColor: '#181511',
+      tertiaryColor: '#0f0d0a',
+      fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
+      fontSize: '12px',
+      background: '#181511',
+      noteBkgColor: '#2a241c',
+      noteTextColor: '#ece7de',
+      noteBorderColor: '#f2a23c',
+      clusterBkg: '#181511',
+      clusterBorder: '#2a241c',
+      titleColor: '#f2a23c',
+      edgeLabelBackground: '#1f1b15',
+    },
+    flowchart: {
+      curve: 'basis',
+      padding: 16,
+      nodeSpacing: 30,
+      rankSpacing: 40,
+    },
+  });
+</script>
+</body>
+</html>

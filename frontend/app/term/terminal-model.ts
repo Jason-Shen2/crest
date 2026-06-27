@@ -66,7 +66,7 @@ const AutoCollapseRowThreshold = 200;
 
 type TimelineStorageRow = CmdBlock;
 type AgentTimelineStorageRow = CmdBlock & {
-    agentrunid?: string;
+    agentuserentryid?: string;
     agentsessionpath?: string;
 };
 
@@ -934,7 +934,7 @@ export class TerminalModel {
     }
 
     private applyAgentTimelineRow(row: AgentTimelineStorageRow): void {
-        const runId = row.agentrunid;
+        const runId = row.agentuserentryid;
         if (!runId) return;
         const sessionPath = row.agentsessionpath;
         if (this.blocks.findById(row.oid)) return;

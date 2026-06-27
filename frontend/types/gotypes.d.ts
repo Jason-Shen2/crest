@@ -249,8 +249,8 @@ declare global {
         tscmdns?: number;
         tsdonens?: number;
         agentsessionid?: string;
-        agentrunid?: string;
         agentsessionpath?: string;
+        agentuserentryid?: string;
         createdat: number;
     };
 
@@ -292,7 +292,7 @@ declare global {
     type CommandAppendAgentRunData = {
         blockid: string;
         sessionpath: string;
-        runid: string;
+        userentryid: string;
     };
 
     // wshrpc.CommandAuthenticateJobManagerData

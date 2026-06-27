@@ -336,6 +336,7 @@ declare global {
         cwd: string;
         command: AgentBackendCommandName;
         argsText: string;
+        blockId?: string;
     };
 
     type ElectronContextMenuItem = {
