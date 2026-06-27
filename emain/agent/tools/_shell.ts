@@ -15,6 +15,29 @@ import { spawn, spawnSync } from "node:child_process";
 export interface ShellConfig {
     shell: string;
     args: string[];
+    /**
+     * How the command reaches the shell. "argv" appends it as a final
+     * argument (the normal `bash -c "<cmd>"` form); "stdin" writes it to
+     * the child's stdin (`bash -s`). Legacy WSL bash
+     * (windows\system32\bash.exe) mishandles the argv form, so it uses
+     * stdin. Defaults to argv when omitted.
+     */
+    commandTransport?: "argv" | "stdin";
+}
+
+/**
+ * Legacy WSL bash (C:\Windows\System32\bash.exe and the sysnative
+ * variant) launches the default WSL distro's bash but mangles commands
+ * passed via `-c`. Detect it so we can switch to stdin transport.
+ */
+function isLegacyWslBashPath(path: string): boolean {
+    const normalized = path.replace(/\//g, "\\").toLowerCase();
+    return /^[a-z]:\\windows\\(?:system32|sysnative)\\bash\.exe$/.test(normalized);
+}
+
+/** Build a ShellConfig for a resolved bash path, picking stdin transport for legacy WSL bash. */
+export function getBashShellConfig(shell: string): ShellConfig {
+    return isLegacyWslBashPath(shell) ? { shell, args: ["-s"], commandTransport: "stdin" } : { shell, args: ["-c"] };
 }
 
 function findBashOnPath(): string | null {
@@ -52,7 +75,7 @@ function findBashOnPath(): string | null {
  */
 export function getShellConfig(customShellPath?: string): ShellConfig {
     if (customShellPath) {
-        if (existsSync(customShellPath)) return { shell: customShellPath, args: ["-c"] };
+        if (existsSync(customShellPath)) return getBashShellConfig(customShellPath);
         throw new Error(`Custom shell path not found: ${customShellPath}`);
     }
 
@@ -63,18 +86,18 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
         const programFilesX86 = process.env["ProgramFiles(x86)"];
         if (programFilesX86) paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
         for (const path of paths) {
-            if (existsSync(path)) return { shell: path, args: ["-c"] };
+            if (existsSync(path)) return getBashShellConfig(path);
         }
         const bashOnPath = findBashOnPath();
-        if (bashOnPath) return { shell: bashOnPath, args: ["-c"] };
+        if (bashOnPath) return getBashShellConfig(bashOnPath);
         throw new Error(
             "No bash shell found. Install Git for Windows (https://git-scm.com/download/win), add bash to PATH, or set shellPath in settings.",
         );
     }
 
-    if (existsSync("/bin/bash")) return { shell: "/bin/bash", args: ["-c"] };
+    if (existsSync("/bin/bash")) return getBashShellConfig("/bin/bash");
     const bashOnPath = findBashOnPath();
-    if (bashOnPath) return { shell: bashOnPath, args: ["-c"] };
+    if (bashOnPath) return getBashShellConfig(bashOnPath);
     return { shell: "sh", args: ["-c"] };
 }
 

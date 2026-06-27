@@ -68,6 +68,8 @@ import { uuidv7 } from "./agent/harness/session/uuid";
 import type { JsonlSessionMetadata } from "./agent/harness/types";
 import { buildPersistedRunsFromSessionEntries, PaneAgentSession, type AgentRun } from "./agent/pane-agent-session";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
+import { loadProjectContextFiles } from "./agent/resource-loader";
+import { loadAgentSkills } from "./agent/skills-loader";
 import {
     createPaneSession,
     defaultSessionsDir,
@@ -414,6 +416,11 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
     // set), failing with "No API key for provider: <provider>".
     const apiKey = await resolveApiKey(opts);
     const model = resolveModelOrThrow(opts.provider, opts.model);
+    // Discover skills from <configHome>/skills and <cwd>/.crest/skills.
+    // Loaded once per harness construction (session open); the skills
+    // section is only injected into the system prompt when the read
+    // tool is active (build-system-prompt.ts).
+    const skills = await loadAgentSkills({ cwd: opts.cwd });
     // Diagnostic: the agent's LLM request goes out from the MAIN process
     // (Node fetch in pi-ai), so it never shows in the renderer's Network
     // tab. Log the resolved model config (never the key itself) so the
@@ -431,6 +438,11 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
         thinkingLevel: opts.reasoning,
         promptInputs: buildPromptInputs(opts),
         tools: getDefaultTools(opts.cwd),
+        // Load AGENTS.md / CLAUDE.md from cwd up to the filesystem root so
+        // project-specific instructions reach the system prompt. Loaded once
+        // per harness construction (session open); cheap sync reads.
+        contextFiles: loadProjectContextFiles({ cwd: opts.cwd }),
+        skills,
         getApiKeyAndHeaders: apiKey == null ? undefined : async () => ({ apiKey }),
         // Bench mode (eval harness sets CREST_AGENT_BENCH=1) bypasses
         // the allowlist entirely. Otherwise: v1 defaults to allowAll

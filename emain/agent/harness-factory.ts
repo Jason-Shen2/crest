@@ -13,9 +13,10 @@
 
 import type { Api, Model } from "../ai";
 import { AgentHarness } from "./harness/agent-harness";
-import type { Session } from "./harness/types";
+import type { Session, Skill } from "./harness/types";
 import { NodeExecutionEnv } from "./node";
 import type { ToolCallHook } from "./permissions";
+import type { ProjectContextFile } from "./resource-loader";
 import type { AgentTool, ThinkingLevel } from "./types";
 import { buildSystemPrompt, type SystemPromptInputs } from "./build-system-prompt";
 
@@ -30,6 +31,17 @@ export interface BuildPaneHarnessOptions {
     promptInputs: SystemPromptInputs;
     /** Tool definitions. Empty until task #10 wires the crest tools. */
     tools?: AgentTool[];
+    /**
+     * Project context files (AGENTS.md / CLAUDE.md) loaded via
+     * loadProjectContextFiles, injected into the system prompt's
+     * <project_context> block. Optional — omit when none apply.
+     */
+    contextFiles?: ProjectContextFile[];
+    /**
+     * Skills available to the model, injected into the system prompt
+     * when the read tool is active. Optional.
+     */
+    skills?: Skill[];
     /**
      * Optional tool_call gate (typically from buildPermissionsHook).
      * AgentHarness invokes this before executing every tool call.
@@ -80,10 +92,27 @@ export function buildPaneHarness(opts: BuildPaneHarnessOptions): PaneHarness {
         thinkingLevel: opts.thinkingLevel ?? "off",
         tools: opts.tools ?? [],
         // Function form so each turn re-reads the latest inputs closure.
-        // The harness invokes this once per LLM call, not once per harness
-        // construction — picker model changes mid-conversation also work
-        // because pi's AgentHarness threads this through every turn.
-        systemPrompt: () => buildSystemPrompt(inputs),
+        // The harness invokes this once per LLM call (not once per harness
+        // construction), passing the turn's activeTools — so the Available
+        // tools list and tool-specific guidelines reflect exactly which
+        // tools are enabled this turn. Mirrors pi's _rebuildSystemPrompt
+        // (coding-agent/src/core/agent-session.ts).
+        systemPrompt: ({ activeTools }) => {
+            const toolSnippets: Record<string, string> = {};
+            const promptGuidelines: string[] = [];
+            for (const tool of activeTools) {
+                if (tool.promptSnippet) toolSnippets[tool.name] = tool.promptSnippet;
+                if (tool.promptGuidelines) promptGuidelines.push(...tool.promptGuidelines);
+            }
+            return buildSystemPrompt({
+                ...inputs,
+                selectedTools: activeTools.map((tool) => tool.name),
+                toolSnippets,
+                promptGuidelines,
+                contextFiles: opts.contextFiles,
+                skills: opts.skills,
+            });
+        },
         getApiKeyAndHeaders: opts.getApiKeyAndHeaders,
     });
     if (opts.toolCallHook) {

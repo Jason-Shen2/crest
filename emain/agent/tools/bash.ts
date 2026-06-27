@@ -59,7 +59,7 @@ export interface BashOperations {
 export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
     return {
         exec: async (command, cwd, { onData, signal, timeout, env }) => {
-            const { shell, args } = getShellConfig(options?.shellPath);
+            const shellConfig = getShellConfig(options?.shellPath);
             try {
                 await fsAccess(cwd, constants.F_OK);
             } catch {
@@ -67,13 +67,24 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
             }
             if (signal?.aborted) throw new Error("aborted");
 
-            const child = spawn(shell, [...args, command], {
-                cwd,
-                detached: process.platform !== "win32",
-                env: env ?? getShellEnv(),
-                stdio: ["ignore", "pipe", "pipe"],
-                windowsHide: true,
-            });
+            // Legacy WSL bash needs the command on stdin (bash -s); every
+            // other shell takes it as the final argv entry (bash -c <cmd>).
+            const commandFromStdin = shellConfig.commandTransport === "stdin";
+            const child = spawn(
+                shellConfig.shell,
+                commandFromStdin ? shellConfig.args : [...shellConfig.args, command],
+                {
+                    cwd,
+                    detached: process.platform !== "win32",
+                    env: env ?? getShellEnv(),
+                    stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+                    windowsHide: true,
+                },
+            );
+            if (commandFromStdin) {
+                child.stdin?.on("error", () => {});
+                child.stdin?.end(command);
+            }
             if (child.pid) trackDetachedChildPid(child.pid);
             let timedOut = false;
             let timeoutHandle: NodeJS.Timeout | undefined;
@@ -127,6 +138,7 @@ export function createBashTool(
         name: "bash",
         label: "bash",
         description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first); if truncated, the full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+        promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
         parameters: bashSchema,
         async execute(_toolCallId, { command, timeout }, signal, onUpdate) {
             const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
