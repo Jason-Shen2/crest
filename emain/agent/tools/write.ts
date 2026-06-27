@@ -71,6 +71,8 @@ export function createWriteTool(cwd: string, options?: WriteToolOptions): AgentT
         label: "write",
         description:
             "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories. Use write only for new files or complete rewrites — use edit for targeted changes.",
+        promptSnippet: "Create or overwrite files",
+        promptGuidelines: ["Use write only for new files or complete rewrites."],
         parameters: writeSchema,
         async execute(toolCallId, { path, content }, signal) {
             const absolutePath = resolveToCwd(path, cwd);

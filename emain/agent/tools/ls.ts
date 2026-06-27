@@ -54,6 +54,7 @@ export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<ty
         name: "ls",
         label: "ls",
         description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+        promptSnippet: "List directory contents",
         parameters: lsSchema,
         async execute(_toolCallId, { path, limit }, signal) {
             if (signal?.aborted) throw new Error("Operation aborted");

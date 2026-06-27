@@ -34,6 +34,7 @@ export const webFetchTool: AgentTool<typeof WebFetchSchema, WebFetchDetails> = {
     label: "Fetch URL",
     description:
         "HTTP GET a URL and return the body as text. Use for fetching docs, API responses, or small assets — not for full HTML page rendering.",
+    promptSnippet: "Fetch a URL over HTTP(S) and return the body as text",
     parameters: WebFetchSchema,
     executionMode: "parallel",
     async execute(_toolCallId, params, signal): Promise<{

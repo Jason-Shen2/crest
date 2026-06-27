@@ -20,6 +20,7 @@ import { createReadTool } from "./read";
 import { createWriteTool } from "./write";
 import { DEFAULT_TOOL_NAMES, getDefaultTools } from "./index";
 import { webFetchTool } from "./web-fetch";
+import { getBashShellConfig } from "./_shell";
 import { expandHome, requireAbsolute, resolveToCwd } from "./_paths";
 
 let tmpDir: string;
@@ -87,6 +88,65 @@ describe("read", () => {
         await fs.writeFile(path.join(tmpDir, "short.txt"), "a\nb\n");
         const tool = createReadTool(tmpDir);
         await expect(tool.execute("tc-1", { path: "short.txt", offset: 999 })).rejects.toThrow(/beyond end/);
+    });
+
+    it("returns a PNG as an image content block (base64 pass-through)", async () => {
+        const png = Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), // PNG signature
+            Buffer.from([0x00, 0x00, 0x00, 0x0d]), // IHDR chunk length (13)
+            Buffer.from("IHDR", "ascii"),
+            Buffer.alloc(13), // IHDR data
+        ]);
+        await fs.writeFile(path.join(tmpDir, "pic.png"), png);
+        const tool = createReadTool(tmpDir);
+        const result = await tool.execute("tc-1", { path: "pic.png" });
+        const image = result.content.find((c) => c.type === "image") as
+            | { type: "image"; data: string; mimeType: string }
+            | undefined;
+        expect(image).toBeDefined();
+        expect(image!.mimeType).toBe("image/png");
+        expect(image!.data).toBe(png.toString("base64"));
+        expect(result.content[0].type).toBe("text");
+        expect(text(result)).toContain("image/png");
+    });
+
+    it("returns a JPEG as an image content block", async () => {
+        const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+        await fs.writeFile(path.join(tmpDir, "pic.jpg"), jpeg);
+        const tool = createReadTool(tmpDir);
+        const result = await tool.execute("tc-1", { path: "pic.jpg" });
+        const image = result.content.find((c) => c.type === "image") as
+            | { type: "image"; data: string; mimeType: string }
+            | undefined;
+        expect(image).toBeDefined();
+        expect(image!.mimeType).toBe("image/jpeg");
+        expect(image!.data).toBe(jpeg.toString("base64"));
+    });
+
+    it("omits an unconvertible BMP with a text-only note", async () => {
+        const bmp = Buffer.alloc(70);
+        bmp[0] = 0x42; // 'B'
+        bmp[1] = 0x4d; // 'M'
+        bmp.writeUInt32LE(70, 2); // declared file size
+        bmp.writeUInt32LE(54, 10); // pixel data offset
+        bmp.writeUInt32LE(40, 14); // DIB header size (BITMAPINFOHEADER)
+        bmp.writeUInt16LE(1, 26); // color planes
+        bmp.writeUInt16LE(24, 28); // bits per pixel
+        await fs.writeFile(path.join(tmpDir, "pic.bmp"), bmp);
+        const tool = createReadTool(tmpDir);
+        const result = await tool.execute("tc-1", { path: "pic.bmp" });
+        expect(result.content.find((c) => c.type === "image")).toBeUndefined();
+        expect(result.content[0].type).toBe("text");
+        expect(text(result)).toContain("image/bmp");
+        expect(text(result)).toContain("omitted");
+    });
+
+    it("still reads text files when image detection misses", async () => {
+        await fs.writeFile(path.join(tmpDir, "plain.txt"), "hello\nworld\n");
+        const tool = createReadTool(tmpDir);
+        const result = await tool.execute("tc-1", { path: "plain.txt" });
+        expect(result.content.find((c) => c.type === "image")).toBeUndefined();
+        expect(text(result)).toContain("hello");
     });
 });
 
@@ -340,6 +400,35 @@ describe("bash", () => {
             if (t) updates.push(t);
         });
         expect(updates.join("")).toContain("streamed");
+    });
+});
+
+describe("getBashShellConfig", () => {
+    it("uses argv transport (-c) for normal bash paths", () => {
+        const config = getBashShellConfig("/bin/bash");
+        expect(config).toEqual({ shell: "/bin/bash", args: ["-c"] });
+        expect(config.commandTransport).toBeUndefined();
+    });
+
+    it("uses stdin transport (-s) for legacy WSL system32 bash", () => {
+        const config = getBashShellConfig("C:\\Windows\\System32\\bash.exe");
+        expect(config).toEqual({
+            shell: "C:\\Windows\\System32\\bash.exe",
+            args: ["-s"],
+            commandTransport: "stdin",
+        });
+    });
+
+    it("uses stdin transport for the sysnative WSL bash variant", () => {
+        const config = getBashShellConfig("C:\\Windows\\Sysnative\\bash.exe");
+        expect(config.commandTransport).toBe("stdin");
+        expect(config.args).toEqual(["-s"]);
+    });
+
+    it("treats Git Bash (not under windows\\system32) as argv transport", () => {
+        const config = getBashShellConfig("C:\\Program Files\\Git\\bin\\bash.exe");
+        expect(config.commandTransport).toBeUndefined();
+        expect(config.args).toEqual(["-c"]);
     });
 });
 

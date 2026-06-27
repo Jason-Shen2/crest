@@ -37,6 +37,7 @@ export function createFindTool(cwd: string): AgentTool<typeof findSchema, FindTo
         name: "find",
         label: "find",
         description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore (repo root). Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+        promptSnippet: "Find files by glob pattern (respects .gitignore)",
         parameters: findSchema,
         async execute(_toolCallId, { pattern, path: searchDir, limit }, signal) {
             if (signal?.aborted) throw new Error("Operation aborted");

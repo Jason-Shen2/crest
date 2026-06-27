@@ -81,7 +81,24 @@ async function runScenario(
         model: provider.buildModel(modelId),
         thinkingLevel: "off",
         tools: getDefaultTools(cwd),
-        systemPrompt: () => buildSystemPrompt({ cwd, recentCmds: [] }),
+        // Match production wiring (harness-factory.ts): feed the turn's
+        // activeTools into the prompt so the Available tools list and
+        // tool guidelines are present, exactly as the real agent sees them.
+        systemPrompt: ({ activeTools }) => {
+            const toolSnippets: Record<string, string> = {};
+            const promptGuidelines: string[] = [];
+            for (const tool of activeTools) {
+                if (tool.promptSnippet) toolSnippets[tool.name] = tool.promptSnippet;
+                if (tool.promptGuidelines) promptGuidelines.push(...tool.promptGuidelines);
+            }
+            return buildSystemPrompt({
+                cwd,
+                recentCmds: [],
+                selectedTools: activeTools.map((tool) => tool.name),
+                toolSnippets,
+                promptGuidelines,
+            });
+        },
         getApiKeyAndHeaders: async () => ({ apiKey }),
     });
 

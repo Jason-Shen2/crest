@@ -67,6 +67,7 @@ export function createGrepTool(cwd: string): AgentTool<typeof grepSchema, GrepTo
         name: "grep",
         label: "grep",
         description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore (repo root). Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
+        promptSnippet: "Search file contents for patterns (respects .gitignore)",
         parameters: grepSchema,
         async execute(_toolCallId, { pattern, path: searchDir, glob, ignoreCase, literal, context, limit }, signal) {
             if (signal?.aborted) throw new Error("Operation aborted");
