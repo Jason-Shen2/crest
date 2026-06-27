@@ -161,10 +161,64 @@ describe("defaultSessionsDir", () => {
 });
 
 describe("buildSystemPrompt", () => {
-    it("renders cwd as the minimum context", () => {
+    it("renders the default body with cwd and date footer", () => {
         const out = buildSystemPrompt({ cwd: "/Users/me/project" });
-        expect(out).toContain("- cwd: /Users/me/project");
-        expect(out).toContain("Pane context");
+        expect(out).toContain("expert coding assistant operating inside crest");
+        expect(out).toContain("Current working directory: /Users/me/project");
+        expect(out).toMatch(/Current date: \d{4}-\d{2}-\d{2}/);
+    });
+
+    it("lists active tools that provide a snippet", () => {
+        const out = buildSystemPrompt({
+            cwd: "/x",
+            selectedTools: ["read", "bash"],
+            toolSnippets: { read: "Read file contents", bash: "Execute bash commands (ls, grep, find, etc.)" },
+        });
+        expect(out).toContain("Available tools:");
+        expect(out).toContain("- read: Read file contents");
+        expect(out).toContain("- bash: Execute bash commands (ls, grep, find, etc.)");
+    });
+
+    it("omits tools without a snippet from the Available tools list", () => {
+        const out = buildSystemPrompt({
+            cwd: "/x",
+            selectedTools: ["read", "web_fetch"],
+            toolSnippets: { read: "Read file contents" },
+        });
+        expect(out).toContain("- read: Read file contents");
+        expect(out).not.toContain("web_fetch:");
+    });
+
+    it("appends tool prompt guidelines and dedupes them", () => {
+        const out = buildSystemPrompt({
+            cwd: "/x",
+            selectedTools: ["read"],
+            toolSnippets: { read: "Read file contents" },
+            promptGuidelines: ["Use read to examine files instead of cat or sed.", "Use read to examine files instead of cat or sed."],
+        });
+        const occurrences = out.split("Use read to examine files instead of cat or sed.").length - 1;
+        expect(occurrences).toBe(1);
+        expect(out).toContain("- Be concise in your responses");
+    });
+
+    it("does NOT contain the legacy 'When uncertain, ask' anti-pattern", () => {
+        const out = buildSystemPrompt({ cwd: "/x" });
+        expect(out).not.toContain("When uncertain");
+    });
+
+    it("does NOT contain pi-specific documentation block", () => {
+        const out = buildSystemPrompt({ cwd: "/x" });
+        expect(out).not.toContain("Pi documentation");
+    });
+
+    it("injects project context files into <project_context>", () => {
+        const out = buildSystemPrompt({
+            cwd: "/x",
+            contextFiles: [{ path: "/x/AGENTS.md", content: "Always run lints." }],
+        });
+        expect(out).toContain("<project_context>");
+        expect(out).toContain('<project_instructions path="/x/AGENTS.md">');
+        expect(out).toContain("Always run lints.");
     });
 
     it("includes git branch when present", () => {

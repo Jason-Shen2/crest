@@ -138,4 +138,26 @@ export const SCENARIOS: Scenario[] = [
             return fails;
         },
     },
+    {
+        // Autonomous tool selection: the prompt asks a question that can only
+        // be answered by reading a file, but it never names a tool. This is
+        // the scenario class the audit flagged — it verifies the agent picks
+        // an appropriate tool on its own (the symptom of the "dumb" agent was
+        // answering from guesswork instead of inspecting the file). It must
+        // (a) call at least one tool, and (b) surface the real answer.
+        id: "autonomous-answer",
+        prompt: 'What is the exact value of the top-level "name" field in {cwd}/package.json?',
+        check: (cap) => {
+            const fails = [...notErrored(cap), ...noToolErrors(cap)];
+            if (cap.toolCalls.length === 0) {
+                fails.push("expected the agent to call a tool to inspect the file, but it called none");
+            }
+            // package.json name is "crest". Getting it right requires actually
+            // reading the file rather than hallucinating.
+            if (!textIncludes(cap, "crest")) {
+                fails.push(`expected final text to report the package name "crest", got: ${JSON.stringify(cap.finalText.slice(0, 160))}`);
+            }
+            return fails;
+        },
+    },
 ];

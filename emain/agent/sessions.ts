@@ -40,19 +40,27 @@ export interface ForkPaneSessionOptions {
 }
 
 /**
- * Resolve the sessions root directory mirroring the Go side's
- * GetWaveConfigDir logic (pkg/wavebase/wavebase.go:130). Sessions
- * sit beside ai.json under the same config home so all of crest's
- * per-user AI state is one tree.
+ * Resolve crest's per-user config home, mirroring the Go side's
+ * GetWaveConfigDir logic (pkg/wavebase/wavebase.go:130). All of crest's
+ * per-user AI state (ai.json, sessions/, skills/) lives under this one
+ * tree.
  */
-export function defaultSessionsDir(): string {
+export function defaultConfigHome(): string {
     const override = process.env.WAVETERM_CONFIG_HOME;
-    if (override) return path.join(override, "sessions");
+    if (override) return override;
     const isDev = process.env.WAVETERM_DEV === "1";
     const dirName = isDev ? "crest-dev" : "crest";
     const xdg = process.env.XDG_CONFIG_HOME;
-    const root = xdg ? path.join(xdg, dirName) : path.join(os.homedir(), ".config", dirName);
-    return path.join(root, "sessions");
+    return xdg ? path.join(xdg, dirName) : path.join(os.homedir(), ".config", dirName);
+}
+
+/**
+ * Resolve the sessions root directory. Sessions sit beside ai.json
+ * under the same config home so all of crest's per-user AI state is one
+ * tree.
+ */
+export function defaultSessionsDir(): string {
+    return path.join(defaultConfigHome(), "sessions");
 }
 
 /**

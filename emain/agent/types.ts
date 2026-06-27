@@ -362,6 +362,16 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	/** Human-readable label for UI display. */
 	label: string;
 	/**
+	 * Optional one-line snippet for the Available tools section in the default system prompt.
+	 * Tools without a snippet are omitted from that section. Ported from pi's ToolDefinition.promptSnippet.
+	 */
+	promptSnippet?: string;
+	/**
+	 * Optional guideline bullets appended to the default system prompt Guidelines section when this tool is active.
+	 * Ported from pi's ToolDefinition.promptGuidelines.
+	 */
+	promptGuidelines?: string[];
+	/**
 	 * Optional compatibility shim for raw tool-call arguments before schema validation.
 	 * Must return an object that matches `TParameters`.
 	 */
