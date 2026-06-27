@@ -615,6 +615,36 @@ export class AgentHarness<
 		}
 	}
 
+	async promptReturningEntryId(
+		text: string,
+		options?: { images?: ImageContent[] },
+	): Promise<{ assistant: AssistantMessage; userEntryId: string }> {
+		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
+		this.phase = "turn";
+		const finishRunPromise = this.startRunPromise();
+		const baseLeafId = await this.session.getLeafId();
+		try {
+			const turnState = await this.createTurnState();
+			const assistant = await this.executeTurn(turnState, text, options);
+			const branch = await this.session.getBranch();
+			const userEntry = branch.find(
+				(e) =>
+					e.type === "message" &&
+					e.parentId === baseLeafId &&
+					(e.message as { role?: string }).role === "user",
+			);
+			if (!userEntry) {
+				throw new AgentHarnessError("unknown", "prompt did not produce a user entry");
+			}
+			return { assistant, userEntryId: userEntry.id };
+		} catch (error) {
+			this.phase = "idle";
+			throw normalizeHarnessError(error, "unknown");
+		} finally {
+			finishRunPromise();
+		}
+	}
+
 	async promptWithCustomEntry(
 		customType: string,
 		data: unknown,
