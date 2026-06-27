@@ -61,8 +61,12 @@ import {
 } from "./agent-ipc";
 import { JsonlSessionRepo } from "./agent/harness/session/jsonl-repo";
 import { NodeExecutionEnv } from "./agent/node";
+import { PaneAgentSession } from "./agent/pane-agent-session";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "./agent/sessions";
 import type { AgentMessage } from "./agent/types";
+import { getModel } from "./ai";
+import { buildPaneHarness } from "./agent/harness-factory";
+import { RpcApi } from "../frontend/app/store/wshclientapi";
 
 function user(text: string): AgentMessage {
     return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;
@@ -459,5 +463,49 @@ describe("agent-ipc command helpers", () => {
         );
         errorSpy.mockRestore();
         expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    it("agent:send prompts first, then anchors the timeline by the returned user entry id", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-send");
+        // Stub the harness build so ensurePaneSession constructs a real
+        // PaneAgentSession without a live model/provider.
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildPaneHarness).mockReturnValue({
+            harness: { subscribe: () => () => {} },
+            session: { buildContext: async () => ({ messages: [] }), getBranch: async () => [] },
+            update: () => {},
+        } as never);
+        // send() resolves with the user entry id (the run identity).
+        const sendSpy = vi.spyOn(PaneAgentSession.prototype, "send").mockResolvedValue("entry-xyz");
+
+        registerAgentIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+
+        const result = (await handlers.get("agent:send")?.(
+            {},
+            {
+                sessionMetadata: metadata,
+                blockId: "block-1",
+                cwd: "/tmp/agent-ipc-send",
+                text: "hello",
+                provider: "p",
+                model: "m",
+            }
+        )) as { sessionMetadata: unknown; runId: string };
+
+        expect(sendSpy).toHaveBeenCalledWith("hello");
+        expect(result.runId).toBe("entry-xyz");
+        expect(vi.mocked(RpcApi.AppendAgentRunCommand)).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+                blockid: "block-1",
+                sessionpath: expect.any(String),
+                userentryid: "entry-xyz",
+            })
+        );
+        sendSpy.mockRestore();
     });
 });
