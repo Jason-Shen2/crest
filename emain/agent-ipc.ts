@@ -1036,7 +1036,6 @@ export function registerAgentIpcHandlers(): void {
                     await RpcApi.AppendAgentRunCommand(ElectronWshClient, {
                         blockid: opts.blockId,
                         sessionpath: metadata.path,
-                        runid: userEntryId,
                         userentryid: userEntryId,
                     });
                 } catch (err) {

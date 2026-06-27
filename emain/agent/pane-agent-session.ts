@@ -52,10 +52,8 @@ export interface AgentRun {
 }
 
 export interface AgentTimelineRef {
-    agentrunid?: string;
     agentsessionpath?: string;
     agentuserentryid?: string;
-    seq?: number;
 }
 
 /**
@@ -95,40 +93,17 @@ function isErroredAssistant(message: AgentMessage): boolean {
     );
 }
 
-export function buildPersistedRunsFromTimeline(
-    messages: AgentMessage[],
-    timelineRefs: AgentTimelineRef[],
-    sessionPath?: string
-): AgentRun[] {
-    const refs = timelineRefs
-        .filter((ref) => ref.agentrunid && (!sessionPath || !ref.agentsessionpath || ref.agentsessionpath === sessionPath))
-        .slice()
-        .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-    if (refs.length === 0) {
-        return buildRunsFromMessagesForward(messages, (_i, userIdx) => `run-synthetic-${userIdx}`);
-    }
-    return buildRunsWithReverseMatch(messages, refs);
-}
-
 export function buildPersistedRunsFromSessionEntries(
     entries: SessionTreeEntry[],
     timelineRefs: AgentTimelineRef[] = [],
     sessionPath?: string
 ): AgentRun[] {
-    const relevant = timelineRefs.filter(
-        (ref) => !sessionPath || !ref.agentsessionpath || ref.agentsessionpath === sessionPath
-    );
     const anchoredEntryIds = new Set<string>();
-    for (const ref of relevant) {
+    for (const ref of timelineRefs) {
+        if (sessionPath && ref.agentsessionpath && ref.agentsessionpath !== sessionPath) continue;
         if (ref.agentuserentryid) anchoredEntryIds.add(ref.agentuserentryid);
     }
-    // Modern path: every run identity comes straight from the session entry id.
-    if (anchoredEntryIds.size > 0) {
-        return buildRunsFromEntryIdJoin(entries, anchoredEntryIds);
-    }
-    // Legacy path: old rows have no userEntryId; fall back to positional match
-    // purely to keep pre-migration data renderable. Not for new writes.
-    return buildRunsLegacyPositional(entries, relevant);
+    return buildRunsFromEntryIdJoin(entries, anchoredEntryIds);
 }
 
 /**
@@ -156,109 +131,6 @@ export function buildRunsFromEntryIdJoin(
                 current = undefined;
             }
         } else if (current && (role === "assistant" || role === "tool" || role === "toolResult")) {
-            current.responseMessages = [...current.responseMessages, message];
-            if (isErroredAssistant(message)) {
-                current.status = "error";
-                current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
-            }
-        }
-    }
-    return runs;
-}
-
-function buildRunsLegacyPositional(
-    entries: SessionTreeEntry[],
-    timelineRefs: AgentTimelineRef[]
-): AgentRun[] {
-    const messages: AgentMessage[] = [];
-    const messageEntryIds: string[] = [];
-    for (const entry of entries) {
-        if (entry.type !== "message") continue;
-        const message = entry.message as AgentMessage;
-        const role = (message as { role?: string }).role;
-        if (role === "user" || role === "assistant" || role === "toolResult" || role === "tool") {
-            messages.push(message);
-            messageEntryIds.push(entry.id);
-        }
-    }
-    const refs = timelineRefs
-        .filter((ref) => ref.agentrunid)
-        .slice()
-        .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-    if (refs.length === 0) {
-        return buildRunsFromMessagesForward(messages, (msgIdx) => `run-${messageEntryIds[msgIdx] ?? msgIdx}`);
-    }
-    return buildRunsWithReverseMatch(messages, refs);
-}
-
-function buildRunsFromMessagesForward(
-    messages: AgentMessage[],
-    runIdForUserMsg: (msgIdx: number, userIdx: number) => string
-): AgentRun[] {
-    const runs: AgentRun[] = [];
-    let current: AgentRun | undefined;
-    let userIdx = 0;
-    for (let i = 0; i < messages.length; i++) {
-        const message = messages[i];
-        const role = (message as { role?: string }).role;
-        if (role === "user") {
-            current = {
-                runId: runIdForUserMsg(i, userIdx),
-                userMessage: message,
-                responseMessages: [],
-                status: "done",
-            };
-            runs.push(current);
-            userIdx++;
-        } else if (current) {
-            current.responseMessages = [...current.responseMessages, message];
-            if (isErroredAssistant(message)) {
-                current.status = "error";
-                current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
-            }
-        }
-    }
-    return runs;
-}
-
-function buildRunsWithReverseMatch(
-    messages: AgentMessage[],
-    sortedRefs: AgentTimelineRef[]
-): AgentRun[] {
-    const userMsgIndices: number[] = [];
-    for (let i = 0; i < messages.length; i++) {
-        const role = (messages[i] as { role?: string }).role;
-        if (role === "user") {
-            userMsgIndices.push(i);
-        }
-    }
-    const runIdByMsgIndex = new Map<number, string>();
-    let refIdx = sortedRefs.length - 1;
-    for (let ui = userMsgIndices.length - 1; ui >= 0 && refIdx >= 0; ui--, refIdx--) {
-        const ref = sortedRefs[refIdx];
-        if (ref?.agentrunid) {
-            runIdByMsgIndex.set(userMsgIndices[ui], ref.agentrunid);
-        }
-    }
-    const runs: AgentRun[] = [];
-    let current: AgentRun | undefined;
-    for (let i = 0; i < messages.length; i++) {
-        const message = messages[i];
-        const role = (message as { role?: string }).role;
-        if (role === "user") {
-            const runId = runIdByMsgIndex.get(i);
-            if (!runId) {
-                current = undefined;
-                continue;
-            }
-            current = {
-                runId,
-                userMessage: message,
-                responseMessages: [],
-                status: "done",
-            };
-            runs.push(current);
-        } else if (current) {
             current.responseMessages = [...current.responseMessages, message];
             if (isErroredAssistant(message)) {
                 current.status = "error";
