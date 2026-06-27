@@ -280,7 +280,6 @@ export class PaneAgentSession {
     status: PaneSessionStatus = "idle";
     errorMessage: string | undefined;
     activeRunId: string | undefined;
-    private knownRunIds: string[] = [];
     // Resolvers for in-flight send() promises, awaiting the userEntryId that
     // arrives on the user message_end event. FIFO: one resolver per send.
     private pendingEntryIdResolvers: Array<{ resolve: (id: string) => void; reject: (err: unknown) => void }> = [];
@@ -310,7 +309,6 @@ export class PaneAgentSession {
         // messages then accumulate via the live stream on top of this.
         this.messages = initialMessages;
         this.runs = initialRuns;
-        this.knownRunIds = initialRuns.map((r) => r.runId);
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
@@ -474,9 +472,9 @@ export class PaneAgentSession {
         return { editorText: result.editorText };
     }
 
-    async compact(customInstructions?: string): Promise<void> {
+    async compact(timelineRefs: AgentTimelineRef[] = [], customInstructions?: string): Promise<void> {
         await this.pane.harness.compact(customInstructions);
-        await this.rebuildFromCurrentBranch();
+        await this.rebuildFromCurrentBranch(timelineRefs);
         this.emitSnapshot();
     }
 
@@ -525,9 +523,6 @@ export class PaneAgentSession {
         if (existing) return existing;
         const run: AgentRun = { runId, responseMessages: [], status: "streaming" };
         this.runs = [...this.runs, run];
-        if (!this.knownRunIds.includes(runId)) {
-            this.knownRunIds = [...this.knownRunIds, runId];
-        }
         return run;
     }
 
@@ -617,20 +612,12 @@ export class PaneAgentSession {
         });
     }
 
-    private async rebuildFromCurrentBranch(timelineRefs?: AgentTimelineRef[]): Promise<void> {
+    private async rebuildFromCurrentBranch(timelineRefs: AgentTimelineRef[] = []): Promise<void> {
         const entries = await this.pane.session.getBranch();
         this.messages = entries
             .filter((entry): entry is Extract<SessionTreeEntry, { type: "message" }> => entry.type === "message")
             .map((entry) => entry.message as AgentMessage);
-        const effectiveRefs = timelineRefs ?? this.knownRunIds.map((runId, i) => ({ agentrunid: runId, agentsessionpath: this.path, seq: i }));
-        this.runs = buildPersistedRunsFromSessionEntries(entries, effectiveRefs, this.path);
-        const rebuiltRunIds = new Set(this.runs.map((r) => r.runId));
-        this.knownRunIds = this.knownRunIds.filter((id) => rebuiltRunIds.has(id));
-        for (const run of this.runs) {
-            if (!this.knownRunIds.includes(run.runId)) {
-                this.knownRunIds.push(run.runId);
-            }
-        }
+        this.runs = buildPersistedRunsFromSessionEntries(entries, timelineRefs, this.path);
         this.steerQueue = [];
         this.followUpQueue = [];
         this.status = "idle";
