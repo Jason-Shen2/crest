@@ -374,6 +374,7 @@ type CommandAppendAgentRunData struct {
 	BlockID     string `json:"blockid"`
 	SessionPath string `json:"sessionpath"`
 	RunID       string `json:"runid"`
+	UserEntryID string `json:"userentryid"`
 }
 
 type CommandGetCmdBlockOutputData struct {
