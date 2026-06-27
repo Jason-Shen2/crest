@@ -3,8 +3,48 @@
 
 import { describe, expect, it } from "vitest";
 
-import { buildAgentForkPointViews, buildAgentTreeEntryViews, previewSessionEntry } from "./session-views";
+import {
+    buildAgentForkPointViews,
+    buildAgentTreeEntryViews,
+    filterTreeForDisplay,
+    isHiddenTreeEntry,
+    previewSessionEntry,
+} from "./session-views";
 import type { SessionTreeEntry } from "../harness/types";
+
+function userMsg(id: string, parentId: string | null, text: string): SessionTreeEntry {
+    return {
+        type: "message",
+        id,
+        parentId,
+        timestamp: `t-${id}`,
+        message: { role: "user", content: [{ type: "text", text }] },
+    } as unknown as SessionTreeEntry;
+}
+
+function asstMsg(id: string, parentId: string | null, text: string): SessionTreeEntry {
+    return {
+        type: "message",
+        id,
+        parentId,
+        timestamp: `t-${id}`,
+        message: { role: "assistant", content: text ? [{ type: "text", text }] : [] },
+    } as unknown as SessionTreeEntry;
+}
+
+function toolMsg(id: string, parentId: string | null, text: string, role: "tool" | "toolResult" = "toolResult"): SessionTreeEntry {
+    return {
+        type: "message",
+        id,
+        parentId,
+        timestamp: `t-${id}`,
+        message: { role, content: [{ type: "text", text }] },
+    } as unknown as SessionTreeEntry;
+}
+
+function leafEntry(id: string, parentId: string | null): SessionTreeEntry {
+    return { type: "leaf", id, parentId, timestamp: `t-${id}` } as SessionTreeEntry;
+}
 
 function messageEntry(id: string, parentId: string | null, role: "user" | "assistant", text: string): SessionTreeEntry {
     return {
@@ -54,5 +94,60 @@ describe("session view helpers", () => {
 
         expect(Array.from(preview.slice(0, -1))).toHaveLength(120);
         expect(preview).toBe(`${"x".repeat(119)}😀…`);
+    });
+
+    describe("isHiddenTreeEntry", () => {
+        it("hides leaf entries", () => {
+            expect(isHiddenTreeEntry(leafEntry("l1", null))).toBe(true);
+        });
+        it("hides tool and toolResult messages", () => {
+            expect(isHiddenTreeEntry(toolMsg("t1", null, "ls output", "tool"))).toBe(true);
+            expect(isHiddenTreeEntry(toolMsg("t2", null, "ls output", "toolResult"))).toBe(true);
+        });
+        it("hides assistant messages with no text content", () => {
+            expect(isHiddenTreeEntry(asstMsg("a1", null, ""))).toBe(true);
+        });
+        it("keeps user messages and non-empty assistant messages", () => {
+            expect(isHiddenTreeEntry(userMsg("u1", null, "hi"))).toBe(false);
+            expect(isHiddenTreeEntry(asstMsg("a2", null, "hello"))).toBe(false);
+        });
+    });
+
+    describe("filterTreeForDisplay", () => {
+        it("removes tool/toolResult/empty-assistant nodes and reparents through them", () => {
+            // Sequence: user -> empty assistant (tool call) -> toolResult -> final assistant
+            const u1 = userMsg("u1", null, "nice");
+            const aEmpty = asstMsg("a-toolcall", "u1", "");
+            const tr = toolMsg("tr1", "a-toolcall", "[.aandroid/ ...]");
+            const aFinal = asstMsg("a-final", "tr1", "I see a file named two_sum.py");
+            const leaf = leafEntry("leaf", "a-final");
+
+            const { entries, effectiveLeafId } = filterTreeForDisplay([u1, aEmpty, tr, aFinal, leaf], "leaf");
+
+            expect(entries.map((e) => e.id)).toEqual(["u1", "a-final"]);
+            expect(entries[1]!.parentId).toBe("u1");
+            expect(effectiveLeafId).toBe("a-final");
+        });
+
+        it("handles chains of multiple hidden nodes", () => {
+            const u1 = userMsg("u1", null, "q1");
+            const a1 = asstMsg("a1", "u1", "thinking...");
+            const aEmpty = asstMsg("a-empty", "a1", "");
+            const tr = toolMsg("tr", "a-empty", "result");
+            const aFinal = asstMsg("a-final", "tr", "done");
+
+            const { entries } = filterTreeForDisplay([u1, a1, aEmpty, tr, aFinal], "a-final");
+            expect(entries.map((e) => e.id)).toEqual(["u1", "a1", "a-final"]);
+            expect(entries[2]!.parentId).toBe("a1");
+        });
+
+        it("passes through when nothing is hidden", () => {
+            const u1 = userMsg("u1", null, "hi");
+            const a1 = asstMsg("a1", "u1", "hello");
+            const { entries, effectiveLeafId } = filterTreeForDisplay([u1, a1], "a1");
+            expect(entries.map((e) => e.id)).toEqual(["u1", "a1"]);
+            expect(entries[1]!.parentId).toBe("u1");
+            expect(effectiveLeafId).toBe("a1");
+        });
     });
 });

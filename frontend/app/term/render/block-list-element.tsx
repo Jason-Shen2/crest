@@ -228,6 +228,8 @@ export const BlockListElement = memo(
                                     runId,
                                     "available run ids:",
                                     agentRunsById ? Array.from(agentRunsById.keys()) : null,
+                                    "blocklist agent blocks:",
+                                    blockList.filter((b) => b.kind === "agent").map((b) => ({ id: b.id, runId: b.agentRef?.runId })),
                                 );
                                 return (
                                     <div key={block.id} data-block-oid={block.id}>

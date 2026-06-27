@@ -938,12 +938,38 @@ export class TerminalModel {
         if (!runId) return;
         const sessionPath = row.agentsessionpath;
         if (this.blocks.findById(row.oid)) return;
+        for (const existing of this.blocks.all()) {
+            if (existing.kind === "agent" && existing.agentRef?.runId === runId) return;
+        }
         this.blocks.appendAgentBlock(runId, 0, {
             id: row.oid,
             sessionPath,
             createdAt: createdAtNsToMs(row.createdat),
         });
         this.bumpRevision();
+    }
+
+    syncAgentBlocks(activeRunIds: Set<string>): void {
+        let changed = false;
+        const blocksByRunId = new Map<string, Block>();
+        for (const block of this.blocks.all()) {
+            if (block.kind !== "agent" || !block.agentRef?.runId) continue;
+            const rid = block.agentRef.runId;
+            blocksByRunId.set(rid, block);
+            const shouldBeVisible = activeRunIds.has(rid);
+            if (block.hidden === shouldBeVisible) {
+                this.blocks.setHidden(block.id, !shouldBeVisible);
+                changed = true;
+            }
+        }
+        for (const runId of activeRunIds) {
+            if (blocksByRunId.has(runId)) continue;
+            this.blocks.appendAgentBlock(runId);
+            changed = true;
+        }
+        if (changed) {
+            this.bumpRevision();
+        }
     }
 
     private async fetchOutputFor(row: CmdBlock): Promise<void> {

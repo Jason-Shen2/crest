@@ -20,6 +20,7 @@ describe("createAgentChatHostApi", () => {
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,
             getPaneCwd: () => "/repo",
+            getBlockId: () => "b_test",
             onSelectorRequest,
         });
 
@@ -52,6 +53,7 @@ describe("createAgentChatHostApi", () => {
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: makeSession,
             getPaneCwd: () => "/repo",
+            getBlockId: () => "b_test",
             onSelectorRequest,
             onSessionMinted,
         });
@@ -87,6 +89,7 @@ describe("createAgentChatHostApi", () => {
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
             getPaneCwd: () => "/repo",
+            getBlockId: () => "b_test",
             onSessionMinted,
         });
 
@@ -102,7 +105,7 @@ describe("createAgentChatHostApi", () => {
 
         expect(runtimeApi.listTree).toHaveBeenCalledWith(session);
         expect(runtimeApi.listForkPoints).toHaveBeenCalledWith(session);
-        expect(runtimeApi.navigateTree).toHaveBeenCalledWith({ sessionMetadata: session, targetId: "e1" });
+        expect(runtimeApi.navigateTree).toHaveBeenCalledWith({ sessionMetadata: session, targetId: "e1", blockId: "b_test" });
         expect(runtimeApi.forkSession).toHaveBeenCalledWith({ sessionMetadata: session, cwd: "/repo", entryId: "e1" });
         expect(runtimeApi.cloneSession).toHaveBeenCalledWith({ sessionMetadata: session, cwd: "/repo" });
         expect(onSessionMinted).toHaveBeenCalledWith({ ...session, path: "/tmp/fork.jsonl" });
@@ -129,6 +132,7 @@ describe("createAgentChatHostApi", () => {
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
             getPaneCwd: () => "/repo",
+            getBlockId: () => "b_test",
             onOpenModelPicker,
         });
 
@@ -161,6 +165,7 @@ describe("createAgentChatHostApi", () => {
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
             getPaneCwd: () => "/repo",
+            getBlockId: () => "b_test",
             onUserError,
         });
 
@@ -191,6 +196,7 @@ describe("createAgentChatHostApi", () => {
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,
             getPaneCwd: () => "/repo",
+            getBlockId: () => "b_test",
             onUserError,
             onCommandResult,
             runCommand,
@@ -223,6 +229,7 @@ describe("createAgentChatHostApi", () => {
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,
             getPaneCwd: () => "/repo",
+            getBlockId: () => "b_test",
             onSessionMinted,
             runCommand,
         });
