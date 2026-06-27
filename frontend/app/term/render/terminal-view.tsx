@@ -426,7 +426,8 @@ export const TerminalView = memo(
         const [agentRunsById, setAgentRunsById] = useState<Map<string, PiRun>>(new Map());
         const onAgentRunsUpdate = useCallback((runs: PiRun[]) => {
             setAgentRunsById(indexRunsById(runs));
-        }, []);
+            model.syncAgentBlocks(new Set(runs.map((r) => r.runId)));
+        }, [model]);
         const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
             setAgentCommandResults((prev) => [...prev, result]);
         }, []);

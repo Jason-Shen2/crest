@@ -340,9 +340,13 @@ export class BlockHandler implements AnsiHandler {
                 this.respondDsr(params[0] || 0, g);
                 return;
             case "c":
-                if (isPrivate || intermediate === ">") {
-                    this.respondDa2();
-                } else {
+                if (isPrivate) {
+                    if (privatePrefix === ">" && params.length <= 1 && (params.length === 0 || params[0] === 0)) {
+                        this.respondDa2();
+                    }
+                    return;
+                }
+                if (params.length === 0 || (params.length === 1 && params[0] === 0)) {
                     this.respondDa1();
                 }
                 return;
@@ -382,8 +386,9 @@ export class BlockHandler implements AnsiHandler {
         const mode = this.ctx.getMode();
         const current = mode.kittyKeyboardFlags;
         if (prefix === "?") {
-            // Query current flags.
-            this.ctx.respond(`${CSI}?${current}u`);
+            if (params.length === 0) {
+                this.ctx.respond(`${CSI}?${current}u`);
+            }
             return;
         }
         if (prefix === ">") {

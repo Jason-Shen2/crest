@@ -133,6 +133,8 @@ interface AgentChatHostApiDeps {
     getRuntimeApi: () => AgentRuntimeApi | undefined;
     getSessionMetadata: () => AgentSessionMeta | undefined;
     getPaneCwd: () => string;
+    /** Parent terminal block ID — threaded to navigateTree so the backend can fetch timeline rows. */
+    getBlockId: () => string;
     runCommand?: (command: AgentImmediateCommandName, argsText: string) => Promise<AgentCommandExecutionResult>;
     onSessionMinted?: (meta: AgentSessionMeta) => void;
     onCommandResult?: (result: AgentInlineCommandResult) => void;
@@ -169,6 +171,7 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         return await requireRuntimeApi().navigateTree({
             sessionMetadata: requireSessionMetadata(),
             targetId,
+            blockId: deps.getBlockId(),
         });
     };
     const forkSession = async (entryId: string): Promise<AgentForkSessionResult> => {
@@ -371,6 +374,7 @@ export function AgentChatHost({
             getRuntimeApi: getAgentRuntimeApi,
             getSessionMetadata: () => sessionMetadataRef.current,
             getPaneCwd: () => paneContextRef.current.cwd,
+            getBlockId: () => outerBlockId,
             onSessionMinted: (meta) => onSessionMintedRef.current?.(meta),
             onCommandResult: (result) => onCommandResultRef.current?.(result),
             onUserError: (message) => onUserErrorRef.current?.(message),
