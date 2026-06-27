@@ -392,6 +392,13 @@ export class PaneAgentSession {
                 this.running = false;
                 this.finishActiveRun(false);
                 if (this.status !== "error") this.status = "idle";
+                // Any send() still awaiting its userEntryId will never get one:
+                // abort clears the harness followUpQueue (agent-harness.ts:999)
+                // so a queued-but-undrained followUp never emits a user
+                // message_end. Reject those promises now — otherwise they hang
+                // forever AND leave a stale resolver at the FIFO head, which
+                // would mis-resolve the NEXT send. See agent-harness abort().
+                this.rejectPendingSends(new Error("send aborted before the user message was committed"));
                 return;
             }
             default:
@@ -485,9 +492,21 @@ export class PaneAgentSession {
     dispose(): void {
         this.unsubscribeHarness();
         this.listeners.clear();
+        // Reject any send() promises still awaiting a userEntryId — the
+        // abort below tears down the run, so their user message_end will
+        // never arrive.
+        this.rejectPendingSends(new Error("session disposed before the user message was committed"));
         void this.pane.harness.abort().catch(() => {
             // best-effort on teardown
         });
+    }
+
+    private rejectPendingSends(err: unknown): void {
+        const pending = this.pendingEntryIdResolvers;
+        this.pendingEntryIdResolvers = [];
+        for (const { reject } of pending) {
+            reject(err);
+        }
     }
 
     private onSendError(where: "prompt" | "followUp", err: unknown): void {
