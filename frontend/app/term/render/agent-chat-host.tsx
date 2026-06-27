@@ -390,6 +390,7 @@ export function AgentChatHost({
                     cwd: paneContextRef.current.cwd,
                     command,
                     argsText,
+                    blockId: outerBlockId,
                 });
             },
         });
