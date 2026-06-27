@@ -346,6 +346,35 @@ describe("PaneAgentSession — owned runs", () => {
         await expect(sendPromise).resolves.toBe("e-a");
     });
 
+    it("rejects a pending send() promise on abort (queued followUp never commits)", async () => {
+        const fake = makeFakeHarness();
+        const owner = new PaneAgentSession("/s", fake.pane);
+
+        const sendPromise = owner.send("hello");
+        // No user message_end arrives; the user aborts. abort() clears the
+        // harness followUpQueue, so the entryId will never come — the promise
+        // must reject rather than hang forever.
+        fake.emit({ type: "abort", clearedSteer: [], clearedFollowUp: [] });
+
+        await expect(sendPromise).rejects.toThrow(/aborted/);
+        // The resolver queue must be drained so the NEXT send isn't
+        // mis-resolved by a stale head.
+        const next = owner.send("again");
+        fake.emit({ type: "message_start", message: user("again") });
+        fake.emit({ type: "message_end", message: user("again"), entryId: "e-next" });
+        await expect(next).resolves.toBe("e-next");
+    });
+
+    it("rejects a pending send() promise on dispose()", async () => {
+        const fake = makeFakeHarness();
+        const owner = new PaneAgentSession("/s", fake.pane);
+
+        const sendPromise = owner.send("hello");
+        owner.dispose();
+
+        await expect(sendPromise).rejects.toThrow(/disposed/);
+    });
+
     it("calls harness.prompt directly without inserting a run-boundary custom entry", async () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
