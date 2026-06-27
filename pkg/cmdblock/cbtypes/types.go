@@ -91,6 +91,7 @@ type CmdBlock struct {
 	AgentSessionID    *string `db:"agent_session_id" json:"agentsessionid,omitempty"`
 	AgentRunID        *string `db:"agent_run_id" json:"agentrunid,omitempty"`
 	AgentSessionPath  *string `db:"agent_session_path" json:"agentsessionpath,omitempty"`
+	AgentUserEntryID  *string `db:"agent_user_entry_id" json:"agentuserentryid,omitempty"`
 	CreatedAt         int64   `db:"created_at" json:"createdat"`
 	// Durable per-block output snapshot. Excluded from JSON (never sent in the
 	// live row/chunk events — those stream output directly); fetched on demand
