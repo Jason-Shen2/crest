@@ -82,6 +82,32 @@ describe("TerminalModel agent surface", () => {
         expect(model.getFirstAgentSessionPath()).toBe("/tmp/session.jsonl");
     });
 
+    it("keys agent block on agentuserentryid when present (falls back to agentrunid)", async () => {
+        model.dispose();
+        vi.mocked(RpcApi.GetCmdBlocksCommand).mockResolvedValueOnce([
+            {
+                oid: "agent-row-2",
+                blockid: "outer-1",
+                seq: 1,
+                kind: "agent",
+                state: "static",
+                agentrunid: "legacy-run",
+                agentuserentryid: "entry-2",
+                agentsessionpath: "/tmp/session.jsonl",
+                promptoffset: 0,
+                tspromptns: 1,
+                createdat: 1,
+            } as unknown as CmdBlock,
+        ]);
+
+        model = new TerminalModel("outer-1", 80);
+        await flush();
+
+        const block = model.getBlocks().findById("agent-row-2");
+        expect(block).toBeDefined();
+        expect(block!.agentRef?.runId).toBe("entry-2");
+    });
+
     it("getRecentCommands returns the last N entries from commandHistoryAtom", () => {
         globalStore.set(model.commandHistoryAtom, ["a", "b", "c", "d", "e"]);
         expect(model.getRecentCommands(3)).toEqual(["c", "d", "e"]);
