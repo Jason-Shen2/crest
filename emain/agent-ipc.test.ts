@@ -503,7 +503,6 @@ describe("agent-ipc command helpers", () => {
             expect.objectContaining({
                 blockid: "block-1",
                 sessionpath: expect.any(String),
-                runid: "entry-xyz",
                 userentryid: "entry-xyz",
             })
         );

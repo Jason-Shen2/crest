@@ -63,7 +63,7 @@ describe("TerminalModel agent surface", () => {
                 seq: 1,
                 kind: "agent",
                 state: "static",
-                agentrunid: "run-123",
+                agentuserentryid: "run-123",
                 agentsessionpath: "/tmp/session.jsonl",
                 promptoffset: 0,
                 tspromptns: 1,
@@ -82,7 +82,7 @@ describe("TerminalModel agent surface", () => {
         expect(model.getFirstAgentSessionPath()).toBe("/tmp/session.jsonl");
     });
 
-    it("keys agent block on agentuserentryid when present (falls back to agentrunid)", async () => {
+    it("keys agent block on agentuserentryid", async () => {
         model.dispose();
         vi.mocked(RpcApi.GetCmdBlocksCommand).mockResolvedValueOnce([
             {
@@ -91,7 +91,6 @@ describe("TerminalModel agent surface", () => {
                 seq: 1,
                 kind: "agent",
                 state: "static",
-                agentrunid: "legacy-run",
                 agentuserentryid: "entry-2",
                 agentsessionpath: "/tmp/session.jsonl",
                 promptoffset: 0,
