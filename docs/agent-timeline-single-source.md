@@ -171,7 +171,7 @@ UserEntryID string `json:"userentryid"`   // 必填，即 run 身份
 3. `prompt`/`followUp` 失败、`abort`、`dispose` 时 drain 队列：队头单个 reject 或整队列 reject（`rejectPendingSends`），避免 IPC promise 永久挂起。
    - 修复 commit `e4b98373`：最初只在成功路径 resolve，abort/dispose 未 drain 导致挂起。
 
-**理解 Promise 与队列。** `send()` 返回的 Promise 是一个"未来才会有值的盒子"——`send("hello")` 被调用时 entryId 还没出生（user 消息还没写进 session），所以立刻返回一个空盒子；等 `message_end` 事件带 entryId 到达时，从队列头拿出最早登记的 `resolve` 函数调一下，盒子里就装进了 entryId，上游 `await session.send(...)` 立刻苏醒拿到值。用**队列**（push/shift）而不是单个变量，是因为 send 可能被连续调多次（`/followUp` 场景：上一轮还在跑，用户又发了第二、第三条），FIFO 保证"第 N 个 send ↔ 第 N 个 user message_end"一一对应，不会错配。
+**为什么需要队列。** `send(text)` 调用时 user 消息还没写入 session、entryId 还不存在，所以 `send()` 必须等到 user `message_end` 事件到达（那时 entryId 才可用）才能返回值——FIFO 队列 `pendingEntryIdResolvers` 就是"每个还在等 entryId 的 send 调用"的登记表：send 时 push 一对 `{resolve, reject}`，user `message_end` 到达时 shift 队头 resolve 出 entryId。之所以用队列而不是单个变量，是因为 send 可被连续调用（`/followUp`：上一轮在跑时用户又发第 2、3 条），FIFO 保证"第 N 个 send ↔ 第 N 个 user message_end"一一对应，不会错配。
 
 ### 2.4 Harness 事件携带 entryId
 
@@ -185,26 +185,24 @@ case "message_end":
   await this.emitAny({ ...event, entryId }, signal);
 ```
 
-**为什么是 message_end，不是 message_start / message_update？** 因为 entryId 是 session 写入消息那一刻才 mint 的——[session.appendMessage](file:///Users/bytedance/Documents/crest/.worktrees/agent-timeline-single-source/emain/agent/harness/session/session.ts#L128-L136) 内部调 `storage.createEntryId()` 生成 id，并把消息挂到 session 树的 leaf 上。start/update 是"消息还在流/还没完成"的阶段，此时消息不能入 session（半成品不能持久化），entryId 还不存在；只有 end 才代表"这条消息定稿、已被 session 收录"，此刻 entryId 才出生。assistant 的 message_end 虽然也会 appendMessage 拿到 entryId，但 PaneSession 对它不敏感——run 的身份永远是**启动它的那条 user 消息**的 entryId。
+**为什么 entryId 只在 message_end 上带。** [session.appendMessage](file:///Users/bytedance/Documents/crest/.worktrees/agent-timeline-single-source/emain/agent/harness/session/session.ts#L128-L136) 内部调 `storage.createEntryId()` 生成 id 并把消息挂到 session 树 leaf——这是 entryId 的唯一 mint 点。`message_start`/`message_update` 时消息还在流、是半成品，不写入 session，entryId 尚未出生；只有 `message_end` 代表"消息定稿、已被 session 收录"，此刻才能 append 并拿到 entryId。所以 harness 在这里 append、把返回的 entryId 塞进事件再 emit 给上层（PaneAgentSession）。assistant 的 message_end 也会 append 拿到 entryId，但 PaneSession 不用它当 runId——run 的身份永远是启动它的那条 **user** 消息的 entryId。
 
-**emitAny / subscribe 事件机制。** Harness 是一个事件泵：内部通过 `emitAny(event)` 把事件广播给所有通过 `subscribe(listener)` 注册的监听者（目前就是 PaneAgentSession）。这种"广播+订阅"模式（观察者模式）让 harness 不需要知道谁在听、也不需要等某个特定的返回——它只要把"发生了 X"这个事实送出去就行。PaneAgentSession 在订阅回调里根据 `event.type` 分发处理（message_start/update 追加 transcript；user message_end 开 run + resolve Promise；assistant message_end 标记 done；abort 整队列 reject 等）。
-
-这是"session 是单一真相源"的直接体现：**身份不是谁 mint 的，是 session 写入时自然产生的**，harness 只是在合适的生命周期点（message_end）把这个 id 夹带出来，交给上层用。
+这是"session 是单一真相源"的直接体现：**身份不是谁 mint 的，是 session 写入时自然产生的**，harness 只是在 message_end 这个生命周期点把 id 夹带出来，交给上层去 resolve send() 的 Promise、去开 run。
 
 #### 2.4.1 一次 send 的事件流时序
 
-以 `session.send("hello")` 为例，从调用到 Promise 兑现的完整时序：
+以 `session.send("hello")` 为例，从调用到 cmdblock 落盘的完整时序：
 
 | 时刻 | 发生的事 | 关键动作 |
 |---|---|---|
-| T0 | IPC 调 `session.send("hello")` | ① 新 Promise，`pendingEntryIdResolvers.push({resolve,reject})`<br/>② `harness.prompt("hello")` 启动（异步，不阻塞）<br/>③ **立刻返回 Promise 空盒子** |
-| T1 | harness 内部发 `message_start`（user） | `emitAny({type:"message_start", message:userMsg})` → PaneSess 收到，只追加 transcript，不开 run |
-| T2 | harness 调 `session.appendMessage(userMsg)` | session 内部 `createEntryId()` → 得到 `"x17a..."`，挂到 session 树 leaf |
-| T3 | harness 发 `message_end`（user, **entryId="x17a..."**） | `emitAny({type:"message_end", ..., entryId:"x17a..."})` → PaneSess 收到：<br/>① `ensureRun("x17a...")` 开 run，置 activeRunId<br/>② `shift()` 队头 resolver，**`resolve("x17a...")` 把 Promise 盒子装值** |
-| T3+ | IPC 的 `await userEntryId` 苏醒 | 拿到 `"x17a..."` → 调 `AppendAgentRunCommand({userentryid:"x17a..."})` 写 cmdblock |
-| T4… | harness 流式发 assistant 的 `message_start` / `message_update` / `message_end` | PaneSess 按 activeRunId 追加到当前 run 的 responseMessages；assistant 自己的 entryId 不影响 run 身份 |
+| T0 | IPC 调 `session.send("hello")` | ① `pendingEntryIdResolvers.push({resolve,reject})` 登记<br/>② `harness.prompt("hello")` 启动（异步）<br/>③ 立即返回 Promise |
+| T1 | harness emit `message_start`（user） | PaneSess 收到，只追加 transcript，**不开 run**（applyMessageStartToRun 对 user 直接 return） |
+| T2 | harness 调 `session.appendMessage(userMsg)` | session 内部 `createEntryId()` → `"x17a..."`，挂到 session 树 leaf |
+| T3 | harness emit `message_end`（user, **entryId="x17a..."**） | PaneSess 收到：<br/>① `ensureRun("x17a...")` 开 run，置 activeRunId<br/>② `shift()` 队头 resolver，`resolve("x17a...")`——send() Promise 兑现 |
+| T3+ | IPC 的 `await userEntryId` 恢复 | 拿到 `"x17a..."` → `AppendAgentRunCommand({userentryid:"x17a..."})` 写 cmdblock |
+| T4… | harness 流式 emit assistant 的 `message_start`/`message_update`/`message_end` | PaneSess 按 activeRunId 追加到当前 run 的 responseMessages；assistant 自己的 entryId 不影响 run 身份 |
 
-关键不变量：**user `message_start` 只攒 transcript，不开 run；user `message_end` 才是"身份确立"的时刻**——这也是为什么代码里 `applyMessageStartToRun` 对 `role === "user"` 直接 return（见 [pane-agent-session.ts:441](file:///Users/bytedance/Documents/crest/.worktrees/agent-timeline-single-source/emain/agent/pane-agent-session.ts#L436-L449)）。
+关键不变量：**user `message_start` 只攒 transcript，不开 run；user `message_end`（带 entryId）才是 run 身份确立的时刻**——见 [applyMessageStartToRun](file:///Users/bytedance/Documents/crest/.worktrees/agent-timeline-single-source/emain/agent/pane-agent-session.ts#L436-L449) 对 `role === "user"` 直接 return。
 
 ### 2.5 确定性 entryId-join
 
