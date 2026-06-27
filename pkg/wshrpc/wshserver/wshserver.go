@@ -1511,7 +1511,7 @@ func (ws *WshServer) AppendAgentRunCommand(ctx context.Context, data wshrpc.Comm
 	if data.RunID == "" {
 		return nil, fmt.Errorf("runid is required")
 	}
-	row, err := cmdblock.AppendAgentRun(ctx, data.BlockID, data.SessionPath, data.RunID)
+	row, err := cmdblock.AppendAgentRun(ctx, data.BlockID, data.SessionPath, data.RunID, data.UserEntryID)
 	if err != nil {
 		return nil, err
 	}
