@@ -53,7 +53,7 @@ func MakePromptStarted(ctx context.Context, blockID string, promptOffset int64, 
 	return cb, nil
 }
 
-func AppendAgentRun(ctx context.Context, blockID string, sessionPath string, runID string) (*CmdBlock, error) {
+func AppendAgentRun(ctx context.Context, blockID string, sessionPath string, runID string, userEntryID string) (*CmdBlock, error) {
 	now := time.Now().UnixNano()
 	cb := &CmdBlock{
 		OID:              uuid.NewString(),
@@ -65,16 +65,19 @@ func AppendAgentRun(ctx context.Context, blockID string, sessionPath string, run
 		CreatedAt:        now,
 		AgentRunID:       &runID,
 		AgentSessionPath: &sessionPath,
+		AgentUserEntryID: &userEntryID,
 	}
 	err := wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
-		if tx.Get(cb, `SELECT * FROM db_cmdblock WHERE blockid = ? AND kind = ? AND agent_run_id = ?`, blockID, KindAgent, runID) {
+		// Idempotency keyed on the durable identity (userEntryID). A retry
+		// of the same turn must not create a second timeline anchor.
+		if tx.Get(cb, `SELECT * FROM db_cmdblock WHERE blockid = ? AND kind = ? AND agent_user_entry_id = ?`, blockID, KindAgent, userEntryID) {
 			return nil
 		}
 		cb.Seq = tx.GetInt64(`SELECT COALESCE(MAX(seq), 0) + 1 FROM db_cmdblock WHERE blockid = ?`, blockID)
 		tx.Exec(`INSERT INTO db_cmdblock
-			(oid, blockid, seq, kind, state, prompt_offset, ts_prompt_ns, agent_run_id, agent_session_path, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			cb.OID, cb.BlockID, cb.Seq, cb.Kind, cb.State, cb.PromptOffset, cb.TsPromptNs, runID, sessionPath, cb.CreatedAt)
+			(oid, blockid, seq, kind, state, prompt_offset, ts_prompt_ns, agent_run_id, agent_session_path, agent_user_entry_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cb.OID, cb.BlockID, cb.Seq, cb.Kind, cb.State, cb.PromptOffset, cb.TsPromptNs, runID, sessionPath, userEntryID, cb.CreatedAt)
 		return nil
 	})
 	if err != nil {
