@@ -7,6 +7,7 @@ import type { PaneHarness } from "./harness-factory";
 import {
     buildPersistedRunsFromSessionEntries,
     buildPersistedRunsFromTimeline,
+    buildRunsFromEntryIdJoin,
     PaneAgentSession,
 } from "./pane-agent-session";
 import type { AgentMessage } from "./types";
@@ -649,6 +650,47 @@ describe("buildPersistedRunsFromTimeline", () => {
 
         expect(runs).toEqual([
             { runId: "run-real", userMessage: q1, responseMessages: [a1], status: "done" },
+        ]);
+    });
+});
+
+describe("buildRunsFromEntryIdJoin", () => {
+    it("builds runs by joining on userEntryId, ignoring position", () => {
+        const preQ = user("hi");
+        const preA = assistant("hello", "stop");
+        const q1 = user("real question");
+        const a1 = assistant("real answer", "stop");
+        const entries: SessionTreeEntry[] = [
+            { type: "message", id: "e0", parentId: null, timestamp: "t0", message: preQ },
+            { type: "message", id: "e1", parentId: "e0", timestamp: "t1", message: preA },
+            { type: "message", id: "e2", parentId: "e1", timestamp: "t2", message: q1 },
+            { type: "message", id: "e3", parentId: "e2", timestamp: "t3", message: a1 },
+        ];
+
+        const runs = buildRunsFromEntryIdJoin(entries, new Set(["e2"]));
+
+        expect(runs).toEqual([
+            { runId: "e2", userMessage: q1, responseMessages: [a1], status: "done" },
+        ]);
+    });
+
+    it("creates one run per anchored userEntryId in branch order", () => {
+        const q1 = user("q1");
+        const a1 = assistant("a1", "stop");
+        const q2 = user("q2");
+        const a2 = assistant("a2", "stop");
+        const entries: SessionTreeEntry[] = [
+            { type: "message", id: "e1", parentId: null, timestamp: "t1", message: q1 },
+            { type: "message", id: "e2", parentId: "e1", timestamp: "t2", message: a1 },
+            { type: "message", id: "e3", parentId: "e2", timestamp: "t3", message: q2 },
+            { type: "message", id: "e4", parentId: "e3", timestamp: "t4", message: a2 },
+        ];
+
+        const runs = buildRunsFromEntryIdJoin(entries, new Set(["e1", "e3"]));
+
+        expect(runs).toEqual([
+            { runId: "e1", userMessage: q1, responseMessages: [a1], status: "done" },
+            { runId: "e3", userMessage: q2, responseMessages: [a2], status: "done" },
         ]);
     });
 });
