@@ -294,6 +294,7 @@ declare global {
     type AgentNavigateTreeInput = {
         sessionMetadata: AgentSessionMeta;
         targetId: string;
+        blockId?: string;
     };
 
     type AgentNavigateTreeResult = {

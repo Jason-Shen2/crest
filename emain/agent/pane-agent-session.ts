@@ -34,6 +34,7 @@
 
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
+import { filterTreeForDisplay } from "./commands/session-views";
 import type { PaneHarness } from "./harness-factory";
 import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
 import type { AgentMessage } from "./types";
@@ -52,6 +53,7 @@ export interface AgentRun {
 
 export interface AgentTimelineRef {
     agentrunid?: string;
+    agentsessionpath?: string;
     seq?: number;
 }
 
@@ -92,46 +94,25 @@ function isErroredAssistant(message: AgentMessage): boolean {
     );
 }
 
-export function buildPersistedRunsFromTimeline(messages: AgentMessage[], timelineRefs: AgentTimelineRef[]): AgentRun[] {
+export function buildPersistedRunsFromTimeline(
+    messages: AgentMessage[],
+    timelineRefs: AgentTimelineRef[],
+    sessionPath?: string
+): AgentRun[] {
     const refs = timelineRefs
-        .filter((ref) => ref.agentrunid)
+        .filter((ref) => ref.agentrunid && (!sessionPath || !ref.agentsessionpath || ref.agentsessionpath === sessionPath))
         .slice()
         .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-    const runs: AgentRun[] = [];
-    let current: AgentRun | undefined;
-    let refIndex = 0;
-
-    for (const message of messages) {
-        const role = (message as { role?: string }).role;
-        if (role === "user") {
-            const ref = refs[refIndex++];
-            if (!ref?.agentrunid) {
-                current = undefined;
-                continue;
-            }
-            current = {
-                runId: ref.agentrunid,
-                userMessage: message,
-                responseMessages: [],
-                status: "done",
-            };
-            runs.push(current);
-            continue;
-        }
-        if (!current) continue;
-        current.responseMessages = [...current.responseMessages, message];
-        if (isErroredAssistant(message)) {
-            current.status = "error";
-            current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
-        }
+    if (refs.length === 0) {
+        return buildRunsFromMessagesForward(messages, (_i, userIdx) => `run-synthetic-${userIdx}`);
     }
-
-    return runs;
+    return buildRunsWithReverseMatch(messages, refs);
 }
 
 export function buildPersistedRunsFromSessionEntries(
     entries: SessionTreeEntry[],
-    timelineRefs: AgentTimelineRef[] = []
+    timelineRefs: AgentTimelineRef[] = [],
+    sessionPath?: string
 ): AgentRun[] {
     const messages: AgentMessage[] = [];
     const messageEntryIds: string[] = [];
@@ -144,28 +125,85 @@ export function buildPersistedRunsFromSessionEntries(
             messageEntryIds.push(entry.id);
         }
     }
-    return buildPersistedRunsFromMessages(messages, messageEntryIds, timelineRefs);
+    return buildPersistedRunsFromMessages(messages, messageEntryIds, timelineRefs, sessionPath);
 }
 
 function buildPersistedRunsFromMessages(
     messages: AgentMessage[],
     messageEntryIds: string[],
-    timelineRefs: AgentTimelineRef[]
+    timelineRefs: AgentTimelineRef[],
+    sessionPath?: string
 ): AgentRun[] {
     const refs = timelineRefs
-        .filter((ref) => ref.agentrunid)
+        .filter((ref) => ref.agentrunid && (!sessionPath || !ref.agentsessionpath || ref.agentsessionpath === sessionPath))
         .slice()
         .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    if (refs.length === 0) {
+        return buildRunsFromMessagesForward(messages, (msgIdx, _userIdx) => `run-${messageEntryIds[msgIdx] ?? msgIdx}`);
+    }
+    return buildRunsWithReverseMatch(messages, refs);
+}
+
+function buildRunsFromMessagesForward(
+    messages: AgentMessage[],
+    runIdForUserMsg: (msgIdx: number, userIdx: number) => string
+): AgentRun[] {
     const runs: AgentRun[] = [];
     let current: AgentRun | undefined;
-    let refIndex = 0;
-    let msgIndex = 0;
-
-    for (const message of messages) {
+    let userIdx = 0;
+    for (let i = 0; i < messages.length; i++) {
+        const message = messages[i];
         const role = (message as { role?: string }).role;
         if (role === "user") {
-            const ref = refs[refIndex++];
-            const runId = ref?.agentrunid ?? `run-${messageEntryIds[msgIndex] ?? msgIndex}`;
+            current = {
+                runId: runIdForUserMsg(i, userIdx),
+                userMessage: message,
+                responseMessages: [],
+                status: "done",
+            };
+            runs.push(current);
+            userIdx++;
+        } else if (current) {
+            current.responseMessages = [...current.responseMessages, message];
+            if (isErroredAssistant(message)) {
+                current.status = "error";
+                current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
+            }
+        }
+    }
+    return runs;
+}
+
+function buildRunsWithReverseMatch(
+    messages: AgentMessage[],
+    sortedRefs: AgentTimelineRef[]
+): AgentRun[] {
+    const userMsgIndices: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+        const role = (messages[i] as { role?: string }).role;
+        if (role === "user") {
+            userMsgIndices.push(i);
+        }
+    }
+    const runIdByMsgIndex = new Map<number, string>();
+    let refIdx = sortedRefs.length - 1;
+    for (let ui = userMsgIndices.length - 1; ui >= 0 && refIdx >= 0; ui--, refIdx--) {
+        const ref = sortedRefs[refIdx];
+        if (ref?.agentrunid) {
+            runIdByMsgIndex.set(userMsgIndices[ui], ref.agentrunid);
+        }
+    }
+    const runs: AgentRun[] = [];
+    let current: AgentRun | undefined;
+    for (let i = 0; i < messages.length; i++) {
+        const message = messages[i];
+        const role = (message as { role?: string }).role;
+        if (role === "user") {
+            const runId = runIdByMsgIndex.get(i);
+            if (!runId) {
+                current = undefined;
+                continue;
+            }
             current = {
                 runId,
                 userMessage: message,
@@ -180,9 +218,7 @@ function buildPersistedRunsFromMessages(
                 current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
             }
         }
-        msgIndex++;
     }
-
     return runs;
 }
 
@@ -198,6 +234,7 @@ export class PaneAgentSession {
     errorMessage: string | undefined;
     activeRunId: string | undefined;
     pendingRunIds: string[] = [];
+    private knownRunIds: string[] = [];
 
     // Synchronous send-routing gate. Flipped true the instant we call
     // prompt() (which itself flips the harness phase synchronously), so a
@@ -224,6 +261,7 @@ export class PaneAgentSession {
         // messages then accumulate via the live stream on top of this.
         this.messages = initialMessages;
         this.runs = initialRuns;
+        this.knownRunIds = initialRuns.map((r) => r.runId);
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
@@ -360,13 +398,14 @@ export class PaneAgentSession {
         leafId: string | null;
         labels: Map<string, string | undefined>;
     }> {
-        const entries = (await this.pane.session.getEntries()).filter((entry) => entry.type !== "leaf");
+        const allEntries = await this.pane.session.getEntries();
         const leafId = await this.pane.session.getLeafId();
+        const { entries, effectiveLeafId } = filterTreeForDisplay(allEntries, leafId);
         const labels = new Map<string, string | undefined>();
         for (const entry of entries) {
             labels.set(entry.id, await this.pane.session.getLabel(entry.id));
         }
-        return { entries, leafId, labels };
+        return { entries, leafId: effectiveLeafId, labels };
     }
 
     async navigateTree(targetId: string, timelineRefs?: AgentTimelineRef[]): Promise<{ editorText?: string }> {
@@ -425,6 +464,9 @@ export class PaneAgentSession {
         if (existing) return existing;
         const run: AgentRun = { runId, responseMessages: [], status: "streaming" };
         this.runs = [...this.runs, run];
+        if (!this.knownRunIds.includes(runId)) {
+            this.knownRunIds = [...this.knownRunIds, runId];
+        }
         return run;
     }
 
@@ -510,7 +552,15 @@ export class PaneAgentSession {
         this.messages = entries
             .filter((entry): entry is Extract<SessionTreeEntry, { type: "message" }> => entry.type === "message")
             .map((entry) => entry.message as AgentMessage);
-        this.runs = buildPersistedRunsFromSessionEntries(entries, timelineRefs);
+        const effectiveRefs = timelineRefs ?? this.knownRunIds.map((runId, i) => ({ agentrunid: runId, agentsessionpath: this.path, seq: i }));
+        this.runs = buildPersistedRunsFromSessionEntries(entries, effectiveRefs, this.path);
+        const rebuiltRunIds = new Set(this.runs.map((r) => r.runId));
+        this.knownRunIds = this.knownRunIds.filter((id) => rebuiltRunIds.has(id));
+        for (const run of this.runs) {
+            if (!this.knownRunIds.includes(run.runId)) {
+                this.knownRunIds.push(run.runId);
+            }
+        }
         this.steerQueue = [];
         this.followUpQueue = [];
         this.status = "idle";

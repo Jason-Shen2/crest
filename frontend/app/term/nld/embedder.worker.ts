@@ -77,7 +77,32 @@ async function ensureLoaded(): Promise<void> {
     if (tokenizer && model) return;
     if (initPromise) return initPromise;
     initPromise = (async () => {
-        tokenizer = await Tokenizer.fromUrl(TOKENIZER_URL);
+        // TODO(edgeflow): docs/INTEGRATION_LOG.md 2026-06-27 — Tokenizer.fromUrl
+        // doesn't check content-type, so SPA fallback HTML surfaces as a cryptic
+        // "Unexpected token '<'" JSON parse error.  Replace with
+        // Tokenizer.fromUrl once edgeflowjs adds a content-type check or a
+        // better error message.
+        const tokResp = await fetch(TOKENIZER_URL);
+        if (!tokResp.ok) {
+            throw new Error(
+                `Failed to load tokenizer from ${TOKENIZER_URL}: HTTP ${tokResp.status}`
+            );
+        }
+        const contentType = tokResp.headers.get("content-type") ?? "";
+        if (!contentType.includes("application/json")) {
+            // Vite dev server (and other static hosts) serve index.html as
+            // an SPA fallback for missing paths, producing a 200 OK with
+            // text/html.  Catch that case explicitly so the parse error
+            // is actionable instead of "Unexpected token '<'".
+            throw new Error(
+                `NLD model files not found at ${TOKENIZER_URL} ` +
+                    `(got ${contentType || "unknown content-type"}; ` +
+                    `expected application/json). Place model_quantized.onnx ` +
+                    `and tokenizer.json under public/nld-model/ to enable tier-2.`
+            );
+        }
+        const tokJson = await tokResp.json();
+        tokenizer = await Tokenizer.fromJSON(tokJson);
         const m = await loadModel(MODEL_URL, { cache: true });
         model = m;
         modelInputNames = new Set(m.metadata.inputs.map((i) => i.name));
