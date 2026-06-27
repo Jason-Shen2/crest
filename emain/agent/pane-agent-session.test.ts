@@ -465,6 +465,28 @@ describe("buildPersistedRunsFromTimeline", () => {
         ]);
     });
 
+    it("buildPersistedRunsFromSessionEntries joins on agentuserentryid when present", () => {
+        const preQ = user("hi");
+        const preA = assistant("hello", "stop");
+        const q1 = user("real");
+        const a1 = assistant("answer", "stop");
+        const entries: SessionTreeEntry[] = [
+            { type: "message", id: "e0", parentId: null, timestamp: "t0", message: preQ },
+            { type: "message", id: "e1", parentId: "e0", timestamp: "t1", message: preA },
+            { type: "message", id: "e2", parentId: "e1", timestamp: "t2", message: q1 },
+            { type: "message", id: "e3", parentId: "e2", timestamp: "t3", message: a1 },
+        ];
+
+        const runs = buildPersistedRunsFromSessionEntries(
+            entries,
+            [{ agentrunid: "run-legacy", agentuserentryid: "e2", seq: 1 }],
+        );
+
+        expect(runs).toEqual([
+            { runId: "e2", userMessage: q1, responseMessages: [a1], status: "done" },
+        ]);
+    });
+
     it("filters out legacy agent_run custom entries and ignores non-message entries", () => {
         const q1 = user("q1");
         const a1 = assistant("a1", "stop");
