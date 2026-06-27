@@ -280,8 +280,10 @@ export class PaneAgentSession {
     status: PaneSessionStatus = "idle";
     errorMessage: string | undefined;
     activeRunId: string | undefined;
-    pendingRunIds: string[] = [];
     private knownRunIds: string[] = [];
+    // Resolvers for in-flight send() promises, awaiting the userEntryId that
+    // arrives on the user message_end event. FIFO: one resolver per send.
+    private pendingEntryIdResolvers: Array<{ resolve: (id: string) => void; reject: (err: unknown) => void }> = [];
 
     // Synchronous send-routing gate. Flipped true the instant we call
     // prompt() (which itself flips the harness phase synchronously), so a
@@ -362,7 +364,11 @@ export class PaneAgentSession {
                     this.status = "error";
                     this.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
                 }
-                this.applyMessageUpdateToRun(message, event.type === "message_end");
+                this.applyMessageUpdateToRun(
+                    message,
+                    event.type === "message_end",
+                    (event as { entryId?: string }).entryId
+                );
                 return;
             }
             case "agent_end": {
@@ -414,24 +420,27 @@ export class PaneAgentSession {
     }
 
     /**
-     * Send a user message. Routes prompt-vs-followUp from our own tracked
-     * run state — pi decides the same way (it checks streaming state /
-     * queue mode before steer/followUp; agent-session.ts:1225/1242), not by
-     * catching the harness "busy" error. `running` flips synchronously so a
-     * burst of sends in one tick is deterministic; prompt() flips the
-     * harness phase synchronously too, so a followUp issued right after
-     * never hits the idle guard.
+     * Send a user message. Resolves with the userEntryId of THIS send's user
+     * message — the run identity, which only becomes known when the user
+     * message_end event arrives (carrying the session entry id). Routes
+     * prompt-vs-followUp from our own tracked run state — pi decides the same
+     * way (it checks streaming state / queue mode before steer/followUp;
+     * agent-session.ts:1225/1242), not by catching the harness "busy" error.
+     * `running` flips synchronously so a burst of sends in one tick is
+     * deterministic; prompt() flips the harness phase synchronously too, so a
+     * followUp issued right after never hits the idle guard.
      */
-    send(runId: string, text: string): void {
-        this.ensureRun(runId);
+    send(text: string): Promise<string> {
+        const promise = new Promise<string>((resolve, reject) => {
+            this.pendingEntryIdResolvers.push({ resolve, reject });
+        });
         if (this.running) {
-            this.pendingRunIds = [...this.pendingRunIds, runId];
             void this.pane.harness.followUp(text).catch((err) => this.onSendError("followUp", err));
-            return;
+            return promise;
         }
         this.running = true;
-        this.activeRunId = runId;
-        void this.startPromptRun(runId, text);
+        void this.startPromptRun(text);
+        return promise;
     }
 
     abort(): void {
@@ -493,10 +502,15 @@ export class PaneAgentSession {
             run.errorMessage = this.errorMessage;
             this.runs = this.runs.map((r) => (r.runId === run.runId ? run : r));
         }
+        // The user message_end that would resolve a waiting send() will never
+        // arrive on a prompt/followUp failure — reject the oldest pending
+        // resolver so callers don't hang forever.
+        const pending = this.pendingEntryIdResolvers.shift();
+        pending?.reject(err);
         console.error(`[pane-session] ${where} error for ${this.path}:`, err);
     }
 
-    private async startPromptRun(runId: string, text: string): Promise<void> {
+    private async startPromptRun(text: string): Promise<void> {
         try {
             await this.pane.harness.prompt(text);
         } catch (err) {
@@ -535,16 +549,12 @@ export class PaneAgentSession {
 
     private applyMessageStartToRun(message: AgentMessage): void {
         const role = (message as { role?: string }).role;
-        if (role === "user" && !this.activeRunId) {
-            const nextRunId = this.pendingRunIds.shift();
-            if (nextRunId) this.activeRunId = nextRunId;
-        }
+        // User runs open on message_end (where the entryId — the run
+        // identity — is available), not here. A user message_start only
+        // accumulates the transcript; we defer run bookkeeping.
+        if (role === "user") return;
         const run = this.getActiveRun();
         if (!run) return;
-        if (role === "user") {
-            this.setRun({ ...run, userMessage: message, status: "streaming", errorMessage: undefined });
-            return;
-        }
         this.setRun({
             ...run,
             responseMessages: [...run.responseMessages, message],
@@ -553,14 +563,27 @@ export class PaneAgentSession {
         });
     }
 
-    private applyMessageUpdateToRun(message: AgentMessage, isEnd: boolean): void {
+    private applyMessageUpdateToRun(message: AgentMessage, isEnd: boolean, entryId?: string): void {
         const role = (message as { role?: string }).role;
-        const run = this.getActiveRun();
-        if (!run) return;
         if (role === "user") {
+            // The run's identity IS the user message's session entry id. It
+            // only becomes known on message_end, so we open/identify the run
+            // here and resolve the matching send() promise.
+            if (isEnd && entryId) {
+                this.activeRunId = entryId;
+                const run = this.ensureRun(entryId);
+                this.setRun({ ...run, userMessage: message, status: "streaming", errorMessage: undefined });
+                const pending = this.pendingEntryIdResolvers.shift();
+                pending?.resolve(entryId);
+                return;
+            }
+            const run = this.getActiveRun();
+            if (!run) return;
             this.setRun({ ...run, userMessage: message });
             return;
         }
+        const run = this.getActiveRun();
+        if (!run) return;
         const responseMessages = run.responseMessages.length === 0 ? [message] : run.responseMessages.slice();
         responseMessages[responseMessages.length - 1] = message;
         const errored = isEnd && isErroredAssistant(message);
@@ -613,7 +636,6 @@ export class PaneAgentSession {
         this.status = "idle";
         this.errorMessage = undefined;
         this.activeRunId = undefined;
-        this.pendingRunIds = [];
         this.running = false;
     }
 
