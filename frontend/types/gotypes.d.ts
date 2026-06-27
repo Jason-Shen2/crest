@@ -251,6 +251,7 @@ declare global {
         agentsessionid?: string;
         agentrunid?: string;
         agentsessionpath?: string;
+        agentuserentryid?: string;
         createdat: number;
     };
 
@@ -293,6 +294,7 @@ declare global {
         blockid: string;
         sessionpath: string;
         runid: string;
+        userentryid: string;
     };
 
     // wshrpc.CommandAuthenticateJobManagerData
