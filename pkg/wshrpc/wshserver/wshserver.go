@@ -1508,10 +1508,10 @@ func (ws *WshServer) AppendAgentRunCommand(ctx context.Context, data wshrpc.Comm
 	if data.SessionPath == "" {
 		return nil, fmt.Errorf("sessionpath is required")
 	}
-	if data.RunID == "" {
-		return nil, fmt.Errorf("runid is required")
+	if data.UserEntryID == "" {
+		return nil, fmt.Errorf("userentryid is required")
 	}
-	row, err := cmdblock.AppendAgentRun(ctx, data.BlockID, data.SessionPath, data.RunID, data.UserEntryID)
+	row, err := cmdblock.AppendAgentRun(ctx, data.BlockID, data.SessionPath, data.UserEntryID)
 	if err != nil {
 		return nil, err
 	}

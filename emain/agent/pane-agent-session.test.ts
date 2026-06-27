@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { PaneHarness } from "./harness-factory";
 import {
     buildPersistedRunsFromSessionEntries,
-    buildPersistedRunsFromTimeline,
     buildRunsFromEntryIdJoin,
     PaneAgentSession,
 } from "./pane-agent-session";
@@ -265,12 +264,12 @@ describe("PaneAgentSession — command operations", () => {
         const seen: unknown[] = [];
         owner.subscribe((event) => seen.push(event));
 
-        await owner.navigateTree("m2", [{ agentrunid: "new-run", seq: 1 }]);
+        await owner.navigateTree("m2", [{ agentuserentryid: "m1" }]);
 
         expect(owner.getSnapshot().messages).toEqual([q, a]);
         expect(owner.getSnapshot().runs).toEqual([
             {
-                runId: "new-run",
+                runId: "m1",
                 userMessage: q,
                 responseMessages: [a],
                 status: "done",
@@ -282,7 +281,7 @@ describe("PaneAgentSession — command operations", () => {
                 messages: [q, a],
                 runs: [
                     {
-                        runId: "new-run",
+                        runId: "m1",
                         userMessage: q,
                         responseMessages: [a],
                         status: "done",
@@ -454,25 +453,8 @@ describe("PaneAgentSession — owned runs", () => {
     });
 });
 
-describe("buildPersistedRunsFromTimeline", () => {
-    it("rebuilds done runs keyed by persisted timeline run ids", () => {
-        const q1 = user("q1");
-        const a1 = assistant("a1", "stop");
-        const q2 = user("q2");
-        const a2 = assistant("a2", "stop");
-
-        const runs = buildPersistedRunsFromTimeline([q1, a1, q2, a2], [
-            { agentrunid: "run-1", seq: 1 },
-            { agentrunid: "run-2", seq: 2 },
-        ]);
-
-        expect(runs).toEqual([
-            { runId: "run-1", userMessage: q1, responseMessages: [a1], status: "done" },
-            { runId: "run-2", userMessage: q2, responseMessages: [a2], status: "done" },
-        ]);
-    });
-
-    it("rebuilds runs from session entries by grouping on user messages, using timeline runIds", () => {
+describe("buildPersistedRunsFromSessionEntries", () => {
+    it("joins on agentuserentryid, keying runs by the user entry id", () => {
         const q1 = user("q1");
         const a1 = assistant("a1", "stop");
         const q2 = user("q2");
@@ -485,17 +467,17 @@ describe("buildPersistedRunsFromTimeline", () => {
         ];
 
         const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-1", seq: 1 },
-            { agentrunid: "run-2", seq: 2 },
+            { agentuserentryid: "m1" },
+            { agentuserentryid: "m3" },
         ]);
 
         expect(runs).toEqual([
-            { runId: "run-1", userMessage: q1, responseMessages: [a1], status: "done" },
-            { runId: "run-2", userMessage: q2, responseMessages: [a2], status: "done" },
+            { runId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
+            { runId: "m3", userMessage: q2, responseMessages: [a2], status: "done" },
         ]);
     });
 
-    it("falls back to entry-id-based runIds when no timeline refs are available", () => {
+    it("returns no runs when there are no anchored refs", () => {
         const q1 = user("q1");
         const a1 = assistant("a1", "stop");
         const entries: SessionTreeEntry[] = [
@@ -503,14 +485,10 @@ describe("buildPersistedRunsFromTimeline", () => {
             { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
         ];
 
-        const runs = buildPersistedRunsFromSessionEntries(entries, []);
-
-        expect(runs).toEqual([
-            { runId: "run-m1", userMessage: q1, responseMessages: [a1], status: "done" },
-        ]);
+        expect(buildPersistedRunsFromSessionEntries(entries, [])).toEqual([]);
     });
 
-    it("buildPersistedRunsFromSessionEntries joins on agentuserentryid when present", () => {
+    it("drops history before the first anchored user entry", () => {
         const preQ = user("hi");
         const preA = assistant("hello", "stop");
         const q1 = user("real");
@@ -522,17 +500,14 @@ describe("buildPersistedRunsFromTimeline", () => {
             { type: "message", id: "e3", parentId: "e2", timestamp: "t3", message: a1 },
         ];
 
-        const runs = buildPersistedRunsFromSessionEntries(
-            entries,
-            [{ agentrunid: "run-legacy", agentuserentryid: "e2", seq: 1 }],
-        );
+        const runs = buildPersistedRunsFromSessionEntries(entries, [{ agentuserentryid: "e2" }]);
 
         expect(runs).toEqual([
             { runId: "e2", userMessage: q1, responseMessages: [a1], status: "done" },
         ]);
     });
 
-    it("filters out legacy agent_run custom entries and ignores non-message entries", () => {
+    it("ignores non-message (custom) entries", () => {
         const q1 = user("q1");
         const a1 = assistant("a1", "stop");
         const entries: SessionTreeEntry[] = [
@@ -548,16 +523,14 @@ describe("buildPersistedRunsFromTimeline", () => {
             { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
         ];
 
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-actual", seq: 1 },
-        ]);
+        const runs = buildPersistedRunsFromSessionEntries(entries, [{ agentuserentryid: "m1" }]);
 
         expect(runs).toEqual([
-            { runId: "run-actual", userMessage: q1, responseMessages: [a1], status: "done" },
+            { runId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
         ]);
     });
 
-    it("filters timeline refs by agentsessionpath when sessionPath is provided", () => {
+    it("filters refs by agentsessionpath when sessionPath is provided", () => {
         const q1 = user("q1");
         const a1 = assistant("a1", "stop");
         const q2 = user("q2");
@@ -569,22 +542,23 @@ describe("buildPersistedRunsFromTimeline", () => {
             { type: "message", id: "m4", parentId: "m3", timestamp: "t4", message: a2 },
         ];
 
-        // Mixed refs: seq 1 belongs to session-A, seq 2 to session-B, seq 3 to session-A
-        // Without filtering, session-A would get refs [seq1(session-A), seq2(session-B)] → wrong runId for q2
-        // With sessionPath filtering, session-A gets [seq1(session-A), seq3(session-A)] → correct
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-A1", seq: 1, agentsessionpath: "/session-A" },
-            { agentrunid: "run-B1", seq: 2, agentsessionpath: "/session-B" },
-            { agentrunid: "run-A2", seq: 3, agentsessionpath: "/session-A" },
-        ], "/session-A");
+        // Only refs for /session-A are honored; the /session-B ref is dropped,
+        // so m3 stays unanchored and produces no run.
+        const runs = buildPersistedRunsFromSessionEntries(
+            entries,
+            [
+                { agentuserentryid: "m1", agentsessionpath: "/session-A" },
+                { agentuserentryid: "m3", agentsessionpath: "/session-B" },
+            ],
+            "/session-A",
+        );
 
         expect(runs).toEqual([
-            { runId: "run-A1", userMessage: q1, responseMessages: [a1], status: "done" },
-            { runId: "run-A2", userMessage: q2, responseMessages: [a2], status: "done" },
+            { runId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
         ]);
     });
 
-    it("includes refs without agentsessionpath for backward compatibility", () => {
+    it("includes refs without agentsessionpath even when sessionPath is provided", () => {
         const q1 = user("q1");
         const a1 = assistant("a1", "stop");
         const entries: SessionTreeEntry[] = [
@@ -592,131 +566,14 @@ describe("buildPersistedRunsFromTimeline", () => {
             { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
         ];
 
-        // A ref without agentsessionpath (legacy data) is still included
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-legacy", seq: 1 },
-        ], "/session-A");
+        const runs = buildPersistedRunsFromSessionEntries(
+            entries,
+            [{ agentuserentryid: "m1" }],
+            "/session-A",
+        );
 
         expect(runs).toEqual([
-            { runId: "run-legacy", userMessage: q1, responseMessages: [a1], status: "done" },
-        ]);
-    });
-
-    it("excludes refs from other sessions when sessionPath is provided", () => {
-        const q1 = user("q1");
-        const a1 = assistant("a1", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "m1", parentId: null, timestamp: "t1", message: q1 },
-            { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
-        ];
-
-        // Only refs for this session should be used; other-session refs are excluded
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-other", seq: 1, agentsessionpath: "/session-B" },
-            { agentrunid: "run-mine", seq: 2, agentsessionpath: "/session-A" },
-        ], "/session-A");
-
-        expect(runs).toEqual([
-            { runId: "run-mine", userMessage: q1, responseMessages: [a1], status: "done" },
-        ]);
-    });
-
-    it("reverse-matches refs to the LATEST user messages when there are more users than refs", () => {
-        const preQ1 = user("hi");
-        const preA1 = assistant("hello", "stop");
-        const preQ2 = user("how are you");
-        const preA2 = assistant("i'm fine", "stop");
-        const q1 = user("sounds great");
-        const a1 = assistant("thanks!", "stop");
-        const q2 = user("nice");
-        const a2 = assistant("cheers", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "m0", parentId: null, timestamp: "t0", message: preQ1 },
-            { type: "message", id: "m1", parentId: "m0", timestamp: "t1", message: preA1 },
-            { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: preQ2 },
-            { type: "message", id: "m3", parentId: "m2", timestamp: "t3", message: preA2 },
-            { type: "message", id: "m4", parentId: "m3", timestamp: "t4", message: q1 },
-            { type: "message", id: "m5", parentId: "m4", timestamp: "t5", message: a1 },
-            { type: "message", id: "m6", parentId: "m5", timestamp: "t6", message: q2 },
-            { type: "message", id: "m7", parentId: "m6", timestamp: "t7", message: a2 },
-        ];
-
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-3", seq: 3 },
-            { agentrunid: "run-4", seq: 4 },
-        ]);
-
-        expect(runs).toEqual([
-            { runId: "run-3", userMessage: q1, responseMessages: [a1], status: "done" },
-            { runId: "run-4", userMessage: q2, responseMessages: [a2], status: "done" },
-        ]);
-    });
-
-    it("reverse-matches correctly when refs equal user messages count", () => {
-        const q1 = user("q1");
-        const a1 = assistant("a1", "stop");
-        const q2 = user("q2");
-        const a2 = assistant("a2", "stop");
-        const q3 = user("q3");
-        const a3 = assistant("a3", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "m1", parentId: null, timestamp: "t1", message: q1 },
-            { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
-            { type: "message", id: "m3", parentId: "m2", timestamp: "t3", message: q2 },
-            { type: "message", id: "m4", parentId: "m3", timestamp: "t4", message: a2 },
-            { type: "message", id: "m5", parentId: "m4", timestamp: "t5", message: q3 },
-            { type: "message", id: "m6", parentId: "m5", timestamp: "t6", message: a3 },
-        ];
-
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-1", seq: 1 },
-            { agentrunid: "run-2", seq: 2 },
-            { agentrunid: "run-3", seq: 3 },
-        ]);
-
-        expect(runs).toEqual([
-            { runId: "run-1", userMessage: q1, responseMessages: [a1], status: "done" },
-            { runId: "run-2", userMessage: q2, responseMessages: [a2], status: "done" },
-            { runId: "run-3", userMessage: q3, responseMessages: [a3], status: "done" },
-        ]);
-    });
-
-    it("ignores extra refs that have no matching user message (more refs than users)", () => {
-        const q1 = user("q1");
-        const a1 = assistant("a1", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "m1", parentId: null, timestamp: "t1", message: q1 },
-            { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
-        ];
-
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-stale", seq: 1 },
-            { agentrunid: "run-current", seq: 5 },
-        ]);
-
-        expect(runs).toEqual([
-            { runId: "run-current", userMessage: q1, responseMessages: [a1], status: "done" },
-        ]);
-    });
-
-    it("drops orphan assistant messages before the first matched user message", () => {
-        const orphanQ = user("early");
-        const orphanA = assistant("orphan reply", "stop");
-        const q1 = user("real question");
-        const a1 = assistant("real answer", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "m0", parentId: null, timestamp: "t0", message: orphanQ },
-            { type: "message", id: "m1", parentId: "m0", timestamp: "t1", message: orphanA },
-            { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: q1 },
-            { type: "message", id: "m3", parentId: "m2", timestamp: "t3", message: a1 },
-        ];
-
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentrunid: "run-real", seq: 3 },
-        ]);
-
-        expect(runs).toEqual([
-            { runId: "run-real", userMessage: q1, responseMessages: [a1], status: "done" },
+            { runId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
         ]);
     });
 });
