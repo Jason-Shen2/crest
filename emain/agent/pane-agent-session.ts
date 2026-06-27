@@ -54,6 +54,7 @@ export interface AgentRun {
 export interface AgentTimelineRef {
     agentrunid?: string;
     agentsessionpath?: string;
+    agentuserentryid?: string;
     seq?: number;
 }
 
@@ -114,18 +115,20 @@ export function buildPersistedRunsFromSessionEntries(
     timelineRefs: AgentTimelineRef[] = [],
     sessionPath?: string
 ): AgentRun[] {
-    const messages: AgentMessage[] = [];
-    const messageEntryIds: string[] = [];
-    for (const entry of entries) {
-        if (entry.type !== "message") continue;
-        const message = entry.message as AgentMessage;
-        const role = (message as { role?: string }).role;
-        if (role === "user" || role === "assistant" || role === "toolResult" || role === "tool") {
-            messages.push(message);
-            messageEntryIds.push(entry.id);
-        }
+    const relevant = timelineRefs.filter(
+        (ref) => !sessionPath || !ref.agentsessionpath || ref.agentsessionpath === sessionPath
+    );
+    const anchoredEntryIds = new Set<string>();
+    for (const ref of relevant) {
+        if (ref.agentuserentryid) anchoredEntryIds.add(ref.agentuserentryid);
     }
-    return buildPersistedRunsFromMessages(messages, messageEntryIds, timelineRefs, sessionPath);
+    // Modern path: every run identity comes straight from the session entry id.
+    if (anchoredEntryIds.size > 0) {
+        return buildRunsFromEntryIdJoin(entries, anchoredEntryIds);
+    }
+    // Legacy path: old rows have no userEntryId; fall back to positional match
+    // purely to keep pre-migration data renderable. Not for new writes.
+    return buildRunsLegacyPositional(entries, relevant);
 }
 
 /**
@@ -163,18 +166,27 @@ export function buildRunsFromEntryIdJoin(
     return runs;
 }
 
-function buildPersistedRunsFromMessages(
-    messages: AgentMessage[],
-    messageEntryIds: string[],
-    timelineRefs: AgentTimelineRef[],
-    sessionPath?: string
+function buildRunsLegacyPositional(
+    entries: SessionTreeEntry[],
+    timelineRefs: AgentTimelineRef[]
 ): AgentRun[] {
+    const messages: AgentMessage[] = [];
+    const messageEntryIds: string[] = [];
+    for (const entry of entries) {
+        if (entry.type !== "message") continue;
+        const message = entry.message as AgentMessage;
+        const role = (message as { role?: string }).role;
+        if (role === "user" || role === "assistant" || role === "toolResult" || role === "tool") {
+            messages.push(message);
+            messageEntryIds.push(entry.id);
+        }
+    }
     const refs = timelineRefs
-        .filter((ref) => ref.agentrunid && (!sessionPath || !ref.agentsessionpath || ref.agentsessionpath === sessionPath))
+        .filter((ref) => ref.agentrunid)
         .slice()
         .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
     if (refs.length === 0) {
-        return buildRunsFromMessagesForward(messages, (msgIdx, _userIdx) => `run-${messageEntryIds[msgIdx] ?? msgIdx}`);
+        return buildRunsFromMessagesForward(messages, (msgIdx) => `run-${messageEntryIds[msgIdx] ?? msgIdx}`);
     }
     return buildRunsWithReverseMatch(messages, refs);
 }
