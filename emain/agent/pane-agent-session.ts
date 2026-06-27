@@ -128,6 +128,41 @@ export function buildPersistedRunsFromSessionEntries(
     return buildPersistedRunsFromMessages(messages, messageEntryIds, timelineRefs, sessionPath);
 }
 
+/**
+ * Deterministic run reconstruction. A run's identity IS the session entry id
+ * of the user message that started it. We walk the branch in order; each user
+ * entry whose id is in `anchoredEntryIds` opens a run keyed by that id, and the
+ * following non-user messages (until the next user entry) become its responses.
+ * User entries with no anchor are dropped (pre-anchor history or non-run sends).
+ */
+export function buildRunsFromEntryIdJoin(
+    entries: SessionTreeEntry[],
+    anchoredEntryIds: Set<string>
+): AgentRun[] {
+    const runs: AgentRun[] = [];
+    let current: AgentRun | undefined;
+    for (const entry of entries) {
+        if (entry.type !== "message") continue;
+        const message = entry.message as AgentMessage;
+        const role = (message as { role?: string }).role;
+        if (role === "user") {
+            if (anchoredEntryIds.has(entry.id)) {
+                current = { runId: entry.id, userMessage: message, responseMessages: [], status: "done" };
+                runs.push(current);
+            } else {
+                current = undefined;
+            }
+        } else if (current && (role === "assistant" || role === "tool" || role === "toolResult")) {
+            current.responseMessages = [...current.responseMessages, message];
+            if (isErroredAssistant(message)) {
+                current.status = "error";
+                current.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
+            }
+        }
+    }
+    return runs;
+}
+
 function buildPersistedRunsFromMessages(
     messages: AgentMessage[],
     messageEntryIds: string[],
