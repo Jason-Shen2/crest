@@ -9,14 +9,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { JsonlSessionRepo } from "./harness/session/jsonl-repo";
-import { NodeExecutionEnv } from "./node";
+import { SqliteSessionRepo } from "./harness/session/sqlite-repo";
 import { buildSystemPrompt } from "./build-system-prompt";
 import {
     _setSessionsRepoForTests,
     createPaneSession,
     defaultSessionsDir,
     forkPaneSession,
+    listAllSessionDetails,
+    listSessionDetailsForCwd,
     listSessionsForCwd,
     openPaneSession,
     openPaneSessionByPath,
@@ -27,13 +28,12 @@ function user(text: string): AgentMessage {
     return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;
 }
 
-describe("sessions — JsonlSessionRepo wiring", () => {
+describe("sessions — SqliteSessionRepo wiring", () => {
     let tmpRoot: string;
 
     beforeEach(async () => {
         tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-sessions-test-"));
-        const env = new NodeExecutionEnv({ cwd: process.cwd() });
-        _setSessionsRepoForTests(new JsonlSessionRepo({ fs: env, sessionsRoot: tmpRoot }));
+        _setSessionsRepoForTests(new SqliteSessionRepo({ sessionsRoot: tmpRoot }));
     });
 
     afterEach(async () => {
@@ -47,15 +47,13 @@ describe("sessions — JsonlSessionRepo wiring", () => {
         expect(metadata.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
         expect(metadata.cwd).toBe("/tmp/some-project");
         expect(metadata.path).toContain(tmpRoot);
-        expect(metadata.path.endsWith(".jsonl")).toBe(true);
+        expect(metadata.path.endsWith(".db")).toBe(true);
     });
 
-    it("createPaneSession writes a JSONL file with a session header on line 1", async () => {
+    it("createPaneSession writes a session readable back with a matching header", async () => {
         const { metadata } = await createPaneSession("/tmp/proj-a");
-        const raw = await fs.readFile(metadata.path, "utf8");
-        const firstLine = raw.split("\n")[0];
-        const header = JSON.parse(firstLine);
-        expect(header.type).toBe("session");
+        const reopened = await openPaneSession(metadata);
+        const header = await reopened.getMetadata();
         expect(header.id).toBe(metadata.id);
         expect(header.cwd).toBe("/tmp/proj-a");
     });
@@ -128,6 +126,70 @@ describe("sessions — JsonlSessionRepo wiring", () => {
         expect(typeof metadata.createdAt).toBe("string");
         expect(typeof metadata.cwd).toBe("string");
         expect(typeof metadata.path).toBe("string");
+    });
+});
+
+describe("sessions — listDetails", () => {
+    let tmpRoot: string;
+
+    beforeEach(async () => {
+        tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-details-test-"));
+        _setSessionsRepoForTests(new SqliteSessionRepo({ sessionsRoot: tmpRoot }));
+    });
+
+    afterEach(async () => {
+        _setSessionsRepoForTests(undefined);
+        await fs.rm(tmpRoot, { recursive: true, force: true });
+    });
+
+    // encodeCwd: `--${cwd without leading slash, slashes/colons → "-"}--`
+    function encodeCwd(cwd: string): string {
+        return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+    }
+
+    it("derives messageCount, firstMessage, and previewText from session content", async () => {
+        const created = await createPaneSession("/tmp/proj-details");
+        await created.session.appendMessage(user("hello there"));
+        await created.session.appendMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "general kenobi" }],
+        } as unknown as AgentMessage);
+
+        const details = await listSessionDetailsForCwd("/tmp/proj-details");
+        expect(details).toHaveLength(1);
+        expect(details[0].id).toBe(created.metadata.id);
+        expect(details[0].messageCount).toBe(2);
+        expect(details[0].firstMessage).toBe("hello there");
+        expect(details[0].previewText).toContain("hello there");
+        expect(details[0].previewText).toContain("general kenobi");
+    });
+
+    it("tolerates malformed and non-session db files without throwing", async () => {
+        const good = await createPaneSession("/tmp/proj-tolerant");
+        await good.session.appendMessage(user("real session"));
+
+        const dir = path.join(tmpRoot, encodeCwd("/tmp/proj-tolerant"));
+        // A .db file that is not a SQLite database at all → open() must reject
+        // it as invalid_session, and listDetails must skip it (not throw).
+        await fs.writeFile(path.join(dir, "broken_aaaaaaaa.db"), "not a sqlite db at all\n", "utf8");
+        // An empty/fresh .db with no session_header table is likewise rejected.
+        await fs.writeFile(path.join(dir, "empty_bbbbbbbb.db"), "", "utf8");
+
+        const details = await listSessionDetailsForCwd("/tmp/proj-tolerant");
+        expect(details).toHaveLength(1);
+        expect(details[0].id).toBe(good.metadata.id);
+    });
+
+    it("bounds the result set with limit, newest first across all cwds", async () => {
+        await createPaneSession("/tmp/proj-lim-a");
+        await new Promise((r) => setTimeout(r, 10));
+        await createPaneSession("/tmp/proj-lim-b");
+        await new Promise((r) => setTimeout(r, 10));
+        const newest = await createPaneSession("/tmp/proj-lim-c");
+
+        const details = await listAllSessionDetails(2);
+        expect(details).toHaveLength(2);
+        expect(details[0].id).toBe(newest.metadata.id);
     });
 });
 

@@ -1,35 +1,30 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// sessions.ts — crest-side accessor for pi's JsonlSessionRepo. See
-// docs/agent-runtime-architecture.md §4 for the storage model and §7.3
-// for why we use pi's repo directly instead of a custom store.
+// sessions.ts — crest-side accessor for the session repo. See
+// docs/agent-runtime-architecture.md §4 for the storage model and
+// docs/agent-dual-mode-design.html §9 for the SQLite carrier.
 //
 // Sessions live under {WAVETERM_CONFIG_HOME or ~/.config/crest{-dev}}/
-// sessions/{encodedCwd}/{timestamp}_{id}.jsonl — pi's cwd-grouped
-// layout (matches pi-coding-agent / Aider / Claude Code: project =
-// conversation context). One repo for the whole process; the env it
-// holds is FS-only (no execution), so its cwd is irrelevant. Per-pane
-// AgentHarness instances build their own NodeExecutionEnv with the
-// pane's actual cwd when tool execution is needed.
+// sessions/{encodedCwd}/{timestamp}_{id}.db — the cwd-grouped layout
+// (matches pi-coding-agent / Aider / Claude Code: project = conversation
+// context). The per-session carrier is a SQLite .db (SqliteSessionRepo);
+// JSONL stays available as an interchange format via import/export.
+// One repo for the whole process; per-pane AgentHarness instances build
+// their own NodeExecutionEnv with the pane's actual cwd when tool
+// execution is needed.
 
-import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { JsonlSessionRepo } from "./harness/session/jsonl-repo";
-import type { JsonlSessionMetadata, Session } from "./harness/types";
-import { NodeExecutionEnv } from "./node";
+import { SqliteSessionRepo } from "./harness/session/sqlite-repo";
+import type { JsonlSessionMetadata, Session, SessionDetailInfo } from "./harness/types";
 
 // AgentSessionMeta from Go-generated TS types (frontend/types/gotypes.d.ts)
 // is structurally a subset of pi's JsonlSessionMetadata. Field names
 // match (Y1 camelCase decision, doc §7.2) so round-trip is identity.
 
-let _repo: JsonlSessionRepo | undefined;
-
-function encodeCwd(cwd: string): string {
-    return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-}
+let _repo: SqliteSessionRepo | undefined;
 
 export interface ForkPaneSessionOptions {
     cwd?: string;
@@ -64,23 +59,18 @@ export function defaultSessionsDir(): string {
 }
 
 /**
- * Process-wide JsonlSessionRepo. Lazily constructed against
+ * Process-wide SqliteSessionRepo. Lazily constructed against
  * defaultSessionsDir(). Tests can substitute via _setSessionsRepoForTests.
  */
-export function getSessionsRepo(): JsonlSessionRepo {
+export function getSessionsRepo(): SqliteSessionRepo {
     if (!_repo) {
-        // The env attached to the repo is used only by JsonlSessionRepo
-        // for filesystem bookkeeping (joinPath/createDir/listDir/...);
-        // its cwd never matters because we pass absolute paths through
-        // the repo API. process.cwd() is a benign default.
-        const env = new NodeExecutionEnv({ cwd: process.cwd() });
-        _repo = new JsonlSessionRepo({ fs: env, sessionsRoot: defaultSessionsDir() });
+        _repo = new SqliteSessionRepo({ sessionsRoot: defaultSessionsDir() });
     }
     return _repo;
 }
 
 /** Test-only escape hatch: swap in a custom repo (e.g. pointed at a tmp dir). */
-export function _setSessionsRepoForTests(repo: JsonlSessionRepo | undefined): void {
+export function _setSessionsRepoForTests(repo: SqliteSessionRepo | undefined): void {
     _repo = repo;
 }
 
@@ -133,6 +123,13 @@ export async function forkPaneSession(
     return { session, metadata };
 }
 
+/**
+ * Import a JSONL session file into a fresh SQLite session for `cwd`.
+ * Unlike the old file-copy import, this parses and replays the JSONL
+ * (rejecting malformed / wrong-version files) into a new .db under the
+ * sessions tree, then returns the live session + its metadata. JSONL is
+ * an interchange format here, not the on-disk carrier (doc §9.1).
+ */
 export async function importPaneSessionFromJsonl(
     inputPath: string,
     cwd: string
@@ -141,16 +138,7 @@ export async function importPaneSessionFromJsonl(
     metadata: JsonlSessionMetadata;
 }> {
     const resolvedInputPath = path.resolve(cwd, inputPath);
-    await fs.access(resolvedInputPath);
-
-    const sessionDir = path.join(defaultSessionsDir(), encodeCwd(cwd));
-    await fs.mkdir(sessionDir, { recursive: true });
-    const destinationPath = path.join(sessionDir, path.basename(resolvedInputPath));
-    if (path.resolve(destinationPath) !== resolvedInputPath) {
-        await fs.copyFile(resolvedInputPath, destinationPath);
-    }
-
-    const session = await openPaneSessionByPath(destinationPath);
+    const session = await getSessionsRepo().importFromJsonl(resolvedInputPath, { cwd });
     const metadata = await session.getMetadata();
     return { session, metadata };
 }
@@ -165,4 +153,12 @@ export async function listSessionsForCwd(cwd: string): Promise<JsonlSessionMetad
     return getSessionsRepo().list({ cwd });
 }
 
-export type { JsonlSessionMetadata, Session } from "./harness/types";
+export async function listSessionDetailsForCwd(cwd: string, limit?: number): Promise<SessionDetailInfo[]> {
+    return getSessionsRepo().listDetails({ cwd, limit });
+}
+
+export async function listAllSessionDetails(limit?: number): Promise<SessionDetailInfo[]> {
+    return getSessionsRepo().listDetails({ limit });
+}
+
+export type { JsonlSessionMetadata, Session, SessionDetailInfo } from "./harness/types";
