@@ -5,7 +5,7 @@ import { uuidv7 } from "./uuid";
 
 type JsonlSessionStorageFileSystem = Pick<FileSystem, "readTextFile" | "readTextLines" | "writeFile" | "appendFile">;
 
-interface SessionHeader {
+export interface SessionHeader {
 	type: "session";
 	version: 3;
 	id: string;
@@ -56,7 +56,7 @@ function invalidEntry(filePath: string, lineNumber: number, message: string, cau
 	);
 }
 
-function parseHeaderLine(line: string, filePath: string): SessionHeader {
+export function parseHeaderLine(line: string, filePath: string): SessionHeader {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(line);
@@ -87,7 +87,7 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 	};
 }
 
-function parseEntryLine(line: string, filePath: string, lineNumber: number): SessionTreeEntry {
+export function parseEntryLine(line: string, filePath: string, lineNumber: number): SessionTreeEntry {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(line);
