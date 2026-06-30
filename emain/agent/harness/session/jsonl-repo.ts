@@ -5,6 +5,8 @@ import type {
 	JsonlSessionMetadata,
 	JsonlSessionRepoApi,
 	Session,
+	SessionDetailInfo,
+	SessionDetailListOptions,
 } from "../types";
 import { SessionError, toError } from "../types";
 import { JsonlSessionStorage, loadJsonlSessionMetadata } from "./jsonl-storage";
@@ -128,6 +130,124 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 		return sessions;
 	}
 
+	async listDetails(options: SessionDetailListOptions = {}): Promise<SessionDetailInfo[]> {
+		const dirs = options.cwd ? [await this.getSessionDir(options.cwd)] : await this.listSessionDirs();
+		// Collect candidate files (with their cheap fs mtime) across all dirs
+		// WITHOUT reading their contents yet. The "all" scope can span many
+		// session directories, so we must avoid reading every file from disk.
+		const candidates: { path: string; mtimeMs: number }[] = [];
+		for (const dir of dirs) {
+			if (!getFileSystemResultOrThrow(await this.fs.exists(dir), `Failed to check session directory ${dir}`)) {
+				continue;
+			}
+			const files = getFileSystemResultOrThrow(
+				await this.fs.listDir(dir),
+				`Failed to list sessions in ${dir}`,
+			).filter((file) => file.kind !== "directory" && file.name.endsWith(".jsonl"));
+			for (const file of files) {
+				candidates.push({ path: file.path, mtimeMs: file.mtimeMs });
+			}
+		}
+		// Pre-sort by fs mtime (a close proxy for last activity) and bound the
+		// number of files we actually read+parse to `limit`, so opening the
+		// resume panel doesn't scale I/O with the total session count.
+		candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+		const toLoad = options.limit ? candidates.slice(0, options.limit) : candidates;
+		const sessions: SessionDetailInfo[] = [];
+		for (const candidate of toLoad) {
+			try {
+				const detail = await this.loadSessionDetail(candidate.path);
+				if (detail) sessions.push(detail);
+			} catch (error) {
+				const cause = toError(error);
+				if (!(cause instanceof SessionError) || cause.code !== "invalid_session") throw cause;
+			}
+		}
+		// Re-sort by the content-accurate modifiedAt now that details are loaded.
+		sessions.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
+		return sessions;
+	}
+
+	private async loadSessionDetail(filePath: string): Promise<SessionDetailInfo | null> {
+		const contentResult = await this.fs.readTextFile(filePath);
+		if (!contentResult.ok) return null;
+		const lines = contentResult.value.split("\n").filter((line) => line.trim());
+		if (lines.length === 0) return null;
+
+		let header: { type?: string; version?: number; id: string; timestamp: string; cwd: string; parentSession?: string } | null = null;
+		let name: string | undefined;
+		let messageCount = 0;
+		let firstMessage = "";
+		let previewParts: string[] = [];
+		let lastActivityTime: string | null = null;
+		const PREVIEW_MAX_LENGTH = 200;
+		const PREVIEW_MAX_MESSAGES = 6;
+
+		try {
+			header = JSON.parse(lines[0]!);
+		} catch {
+			return null;
+		}
+		// Mirror jsonl-storage.parseHeaderLine: only accept the current header
+		// schema. Reject unknown versions instead of silently misparsing them.
+		if (!header || header.type !== "session" || header.version !== 3) return null;
+
+		for (let i = 1; i < lines.length; i++) {
+			let entry: Record<string, unknown>;
+			try {
+				entry = JSON.parse(lines[i]!);
+			} catch {
+				continue;
+			}
+			if (!entry || typeof entry !== "object") continue;
+
+			const ts = typeof entry.timestamp === "string" ? entry.timestamp : null;
+			if (ts) lastActivityTime = ts;
+
+			if (entry.type === "session_info" && typeof entry.name === "string") {
+				const trimmed = entry.name.trim();
+				if (trimmed) name = trimmed;
+			}
+
+			if (entry.type !== "message") continue;
+			messageCount++;
+
+			const msg = entry.message as Record<string, unknown> | undefined;
+			if (!msg) continue;
+			const role = typeof msg.role === "string" ? msg.role : null;
+			if (role !== "user" && role !== "assistant") continue;
+
+			const text = extractMessageText(msg);
+			if (!text) continue;
+
+			if (!firstMessage && role === "user") {
+				firstMessage = text.slice(0, 120);
+			}
+
+			if (previewParts.length < PREVIEW_MAX_MESSAGES) {
+				const prefix = role === "user" ? "" : "‖ ";
+				const snippet = prefix + text.slice(0, 80);
+				previewParts.push(snippet);
+			}
+		}
+
+		const previewText = previewParts.join("  ").slice(0, PREVIEW_MAX_LENGTH);
+		const modifiedAt = lastActivityTime ?? header.timestamp;
+
+		return {
+			id: header.id,
+			path: filePath,
+			cwd: typeof header.cwd === "string" ? header.cwd : "",
+			parentSessionPath: typeof header.parentSession === "string" ? header.parentSession : undefined,
+			createdAt: header.timestamp,
+			modifiedAt,
+			name,
+			messageCount,
+			firstMessage,
+			previewText,
+		};
+	}
+
 	async delete(metadata: JsonlSessionMetadata): Promise<void> {
 		getFileSystemResultOrThrow(
 			await this.fs.remove(metadata.path, { force: true }),
@@ -179,4 +299,17 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 		);
 		return entries.filter((entry) => entry.kind === "directory").map((entry) => entry.path);
 	}
+}
+
+function extractMessageText(msg: Record<string, unknown>): string {
+	const content = msg.content;
+	if (typeof content === "string") return content.trim();
+	if (Array.isArray(content)) {
+		return content
+			.filter((b): b is { type: string; text: string } => b && typeof b === "object" && b.type === "text")
+			.map((b) => b.text)
+			.join(" ")
+			.trim();
+	}
+	return "";
 }

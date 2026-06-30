@@ -442,6 +442,19 @@ export interface JsonlSessionMetadata extends SessionMetadata {
 	parentSessionPath?: string;
 }
 
+export interface SessionDetailInfo {
+	id: string;
+	path: string;
+	cwd: string;
+	parentSessionPath?: string;
+	createdAt: string;
+	modifiedAt: string;
+	name?: string;
+	messageCount: number;
+	firstMessage: string;
+	previewText: string;
+}
+
 export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetadata> {
 	getMetadata(): Promise<TMetadata>;
 	getLeafId(): Promise<string | null>;
@@ -491,8 +504,15 @@ export interface JsonlSessionListOptions {
 	cwd?: string;
 }
 
+export interface SessionDetailListOptions {
+	cwd?: string;
+	limit?: number;
+}
+
 export interface JsonlSessionRepoApi
-	extends SessionRepo<JsonlSessionMetadata, JsonlSessionCreateOptions, JsonlSessionListOptions> {}
+	extends SessionRepo<JsonlSessionMetadata, JsonlSessionCreateOptions, JsonlSessionListOptions> {
+	listDetails(options?: SessionDetailListOptions): Promise<SessionDetailInfo[]>;
+}
 
 export type AgentHarnessPhase = "idle" | "turn" | "compaction" | "branch_summary" | "retry";
 
