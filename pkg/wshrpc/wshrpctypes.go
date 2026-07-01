@@ -99,6 +99,7 @@ type WshRpcInterface interface {
 	GetCmdBlocksCommand(ctx context.Context, data CommandGetCmdBlocksData) ([]*cbtypes.CmdBlock, error)
 	AppendAgentRunCommand(ctx context.Context, data CommandAppendAgentRunData) (*cbtypes.CmdBlock, error)
 	GetCmdBlockOutputCommand(ctx context.Context, data CommandGetCmdBlockOutputData) (*CmdBlockOutputResponse, error)
+	GetCmdBlockTailCommand(ctx context.Context, data CommandGetCmdBlockTailData) (*CmdBlockTailResponse, error)
 	ReadBlockFileRangeCommand(ctx context.Context, data CommandReadBlockFileRangeData) (*BlockFileRangeResponse, error)
 	GetGitInfoCommand(ctx context.Context, cwd string) (*GitInfoResponse, error)
 	RunLocalCmdCommand(ctx context.Context, data CommandRunLocalCmdData) (*CommandRunLocalCmdResponse, error)
@@ -382,6 +383,20 @@ type CommandGetCmdBlockOutputData struct {
 
 type CmdBlockOutputResponse struct {
 	Data64 string `json:"data64"`
+}
+
+type CommandGetCmdBlockTailData struct {
+	BlockID  string `json:"blockid"`
+	OID      string `json:"oid,omitempty"`
+	MaxLines int    `json:"maxlines,omitempty"`
+	MaxBytes int    `json:"maxbytes,omitempty"`
+}
+
+type CmdBlockTailResponse struct {
+	Text      string `json:"text"`
+	IsRunning bool   `json:"isrunning"`
+	ExitCode  *int   `json:"exitcode,omitempty"`
+	AltScreen bool   `json:"altscreen"`
 }
 
 type CommandReadBlockFileRangeData struct {

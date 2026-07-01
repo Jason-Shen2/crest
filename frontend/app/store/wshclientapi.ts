@@ -444,6 +444,12 @@ export class RpcApiType {
         return client.wshRpcCall("getcmdblocks", data, opts);
     }
 
+    // command "getcmdblocktail" [call]
+    GetCmdBlockTailCommand(client: WshClient, data: CommandGetCmdBlockTailData, opts?: RpcOpts): Promise<CmdBlockTailResponse> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "getcmdblocktail", data, opts);
+        return client.wshRpcCall("getcmdblocktail", data, opts);
+    }
+
     // command "getfocusedblockdata" [call]
     GetFocusedBlockDataCommand(client: WshClient, opts?: RpcOpts): Promise<FocusedBlockData> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "getfocusedblockdata", null, opts);

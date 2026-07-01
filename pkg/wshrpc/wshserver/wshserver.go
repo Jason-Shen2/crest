@@ -1539,6 +1539,38 @@ func (ws *WshServer) GetCmdBlockOutputCommand(ctx context.Context, data wshrpc.C
 	return &wshrpc.CmdBlockOutputResponse{Data64: base64.StdEncoding.EncodeToString(out)}, nil
 }
 
+// GetCmdBlockTailCommand returns the recent output tail for a block's
+// current command plus its running/exit/alt-screen status. The subagent's
+// pty_read uses this as its default (transcript-tail) source. It accepts
+// only max_lines/max_bytes — never an absolute offset — so the shared
+// term file's circular-buffer offsets stay hidden from callers.
+func (ws *WshServer) GetCmdBlockTailCommand(ctx context.Context, data wshrpc.CommandGetCmdBlockTailData) (*wshrpc.CmdBlockTailResponse, error) {
+	if data.BlockID == "" {
+		return nil, fmt.Errorf("blockid is required")
+	}
+	tracker := cmdblock.GetTracker(data.BlockID)
+	altScreen := tracker != nil && tracker.AltScreen()
+
+	status := blockcontroller.GetBlockControllerRuntimeStatus(data.BlockID)
+	isRunning := status != nil && status.ShellProcStatus == blockcontroller.Status_Running
+	var exitCode *int
+	if status != nil && status.ShellProcStatus == blockcontroller.Status_Done {
+		ec := status.ShellProcExitCode
+		exitCode = &ec
+	}
+
+	out, err := cmdblock.TailLines(ctx, data.BlockID, data.OID, isRunning, data.MaxLines, data.MaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	return &wshrpc.CmdBlockTailResponse{
+		Text:      string(out),
+		IsRunning: isRunning,
+		ExitCode:  exitCode,
+		AltScreen: altScreen,
+	}, nil
+}
+
 func (ws *WshServer) GetShellHistoryCommand(ctx context.Context, data wshrpc.CommandGetShellHistoryData) (*wshrpc.ShellHistoryResponse, error) {
 	return &wshrpc.ShellHistoryResponse{
 		Lines: cmdblock.LoadShellHistory(data.Shell, data.Limit),

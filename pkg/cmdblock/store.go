@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/s-zx/crest/pkg/filestore"
+	"github.com/s-zx/crest/pkg/wavebase"
 	"github.com/s-zx/crest/pkg/wstore"
 )
 
@@ -247,6 +249,51 @@ func DeleteByBlockID(ctx context.Context, blockID string) error {
 		tx.Exec(`DELETE FROM db_cmdblock WHERE blockid = ?`, blockID)
 		return nil
 	})
+}
+
+// tailLines returns the trailing slice of data bounded by maxLines and
+// maxBytes. A zero bound means "unbounded" for that dimension. Byte
+// bound is applied first (from the end), then line bound. This is a pure
+// helper so it can be unit-tested without a filestore.
+func tailLines(data []byte, maxLines int, maxBytes int) []byte {
+	if maxBytes > 0 && len(data) > maxBytes {
+		data = data[len(data)-maxBytes:]
+	}
+	if maxLines > 0 {
+		count := 0
+		i := len(data)
+		for i > 0 {
+			if data[i-1] == '\n' {
+				count++
+				if count > maxLines {
+					return data[i:]
+				}
+			}
+			i--
+		}
+	}
+	return data
+}
+
+// TailLines returns the trailing output for a block's current command,
+// bounded by maxLines/maxBytes. When isRunning is true it reads the tail
+// of the live term file's valid window (wrap/reset-immune); otherwise it
+// reads the durable per-block output_data snapshot.
+func TailLines(ctx context.Context, blockID string, oid string, isRunning bool, maxLines int, maxBytes int) ([]byte, error) {
+	if !isRunning && oid != "" {
+		snap, err := GetOutputData(ctx, oid)
+		if err != nil {
+			return nil, err
+		}
+		if snap != nil {
+			return tailLines(snap, maxLines, maxBytes), nil
+		}
+	}
+	_, data, err := filestore.WFS.ReadFile(ctx, blockID, wavebase.BlockFile_Term)
+	if err != nil {
+		return nil, err
+	}
+	return tailLines(data, maxLines, maxBytes), nil
 }
 
 func nilableString(p *string) interface{} {
