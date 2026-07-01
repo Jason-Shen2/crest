@@ -492,7 +492,7 @@ git commit -m "feat(agent): add PTY RPC helper wrappers for subagent tools"
 - Create: `emain/agent/tools/pty-write.ts`
 - Test: `emain/agent/tools/pty-write.test.ts`
 
-Implements `AgentTool` (types.ts:361-394). Three modes decorate the bytes (spec §6.1): `raw` passes through, `line` appends `\r`, `block` wraps in bracketed-paste (`\x1b[200~` … `\x1b[201~`).
+Implements `AgentTool` (types.ts:361-394). Three modes decorate the bytes, strictly mirroring Warp `AIAgentPtyWriteMode::decorate_bytes` ([action/mod.rs#L779-L822](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L779-L822), spec §6.1): `raw` passes bytes through unchanged; `line` prepends `SOH(\x01)` ("beginning of line" for readline/prompt-toolkit) then appends the submit char (POSIX `LF(\n)`, Windows `CR(\r)`); `block` wraps in bracketed-paste (`\x1b[200~` … `\x1b[201~`) **only when `is_bracketed_paste_enabled`**, otherwise passes through. First phase defaults `is_bracketed_paste_enabled=true` for `block` (matching Warp's common path) and derives the platform submit char from `process.platform`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -518,14 +518,16 @@ describe("pty_write", () => {
         expect(sent).toEqual([{ blockId: "blk1", input: "\x03" }]);
     });
 
-    it("line mode appends carriage return", async () => {
+    it("line mode wraps input with SOH prefix and submit char", async () => {
         sent.length = 0;
         const tool = createPtyWriteTool("blk1");
         await tool.execute("t1", { block_id: "blk1", input: "yes", mode: "line" });
-        expect(sent[0].input).toBe("yes\r");
+        // SOH(\x01) + input + platform submit char (LF on POSIX, CR on Windows).
+        const submit = process.platform === "win32" ? "\r" : "\n";
+        expect(sent[0].input).toBe(`\x01yes${submit}`);
     });
 
-    it("block mode wraps in bracketed-paste", async () => {
+    it("block mode wraps in bracketed-paste when enabled", async () => {
         sent.length = 0;
         const tool = createPtyWriteTool("blk1");
         await tool.execute("t1", { block_id: "blk1", input: "a\nb", mode: "block" });
@@ -549,7 +551,8 @@ Create `emain/agent/tools/pty-write.ts`:
 //
 // pty-write.ts — subagent-private tool: write input to a running PTY
 // command via ControllerInput. Mirrors Warp's WriteToLongRunningShell-
-// Command + AIAgentPtyWriteMode::decorate_bytes. See spec §6.1.
+// Command + AIAgentPtyWriteMode::decorate_bytes
+// (crates/ai/src/agent/action/mod.rs#L779-L822). See spec §6.1.
 
 import { type Static, Type } from "typebox";
 import type { AgentTool } from "../types";
@@ -563,14 +566,29 @@ const ptyWriteSchema = Type.Object({
 
 export type PtyWriteInput = Static<typeof ptyWriteSchema>;
 
+// C0 / bracketed-paste constants, per Warp escape_sequences.
+const SOH = "\x01"; // ^A — "beginning of line" for readline/prompt-toolkit editors.
+const BRACKETED_PASTE_START = "\x1b[200~";
+const BRACKETED_PASTE_END = "\x1b[201~";
+
 function decorateBytes(input: string, mode: PtyWriteInput["mode"]): string {
     switch (mode) {
         case "raw":
             return input;
-        case "line":
-            return `${input}\r`;
-        case "block":
-            return `\x1b[200~${input}\x1b[201~`;
+        case "line": {
+            // Move to beginning of line, write input, then submit (Enter).
+            // POSIX submits with LF; Windows submits with CR.
+            const submit = process.platform === "win32" ? "\r" : "\n";
+            return `${SOH}${input}${submit}`;
+        }
+        case "block": {
+            // Warp only wraps when is_bracketed_paste_enabled; first phase
+            // defaults enabled (Warp's common path). Otherwise pass through.
+            const isBracketedPasteEnabled = true;
+            return isBracketedPasteEnabled
+                ? `${BRACKETED_PASTE_START}${input}${BRACKETED_PASTE_END}`
+                : input;
+        }
     }
 }
 
@@ -579,7 +597,7 @@ export function createPtyWriteTool(blockId: string): AgentTool<typeof ptyWriteSc
         name: "pty_write",
         label: "pty write",
         description:
-            "Write input to the running PTY command. mode=raw sends bytes as-is (control keys like Ctrl-C=\\x03); mode=line appends Enter (answer a prompt); mode=block wraps in bracketed-paste (multi-line paste without auto-run).",
+            "Write input to the running PTY command. mode=raw sends bytes as-is (control keys like Ctrl-C=\\x03); mode=line goes to line start then submits the input with Enter (answer a prompt); mode=block wraps in bracketed-paste (multi-line paste without auto-run).",
         promptSnippet: "Write input to the running PTY command (raw / line / block).",
         parameters: ptyWriteSchema,
         async execute(_toolCallId, params) {
