@@ -1167,22 +1167,56 @@ git commit -m "feat(agent): add runSubagentToCompletion driver"
 - Modify: `emain/agent/tools/spawn-cli-agent.ts` (add `createSpawnCliAgentTool`)
 - Modify: `emain/agent/tools/spawn-cli-agent.test.ts`
 
-Adds the main-agent tool: start a `source:"agent"` cmd block, build the subagent, drive to completion, return the summary, transparently forwarding abort (spec decisions 5 & 6).
+Adds the main-agent tool: start a `controller:"cmd"` term block (on the parent terminal's tab), build the subagent, drive to completion, return the summary, transparently forwarding abort (spec decisions 5 & 6).
 
-- [ ] **Step 1: Confirm the block-start RPC surface**
+- [ ] **Step 1: Confirm the block-start RPC surface** — DONE (verified 2026-07-01)
 
-Read `pkg/blockcontroller/blockcontroller.go` and `pkg/wshrpc/wshrpctypes.go` for the command that creates a block + starts its shell controller with an initial command (look for `CreateBlockCommand` / `ControllerResyncCommand` / a `source` meta field). Note the exact command name and payload shape. If no single RPC starts a block with an initial command + `source:"agent"`, the minimal addition is a new `StartAgentCmdBlockCommand` — declare it in `wshrpctypes.go` and implement in `wshserver.go` mirroring Task 3's pattern, then `task generate`. Record the chosen approach as a comment in `_pty-rpc.ts`.
+Verified against the real generated RPC surface — the earlier draft symbols were fictional. Confirmed facts:
+- `RpcApi.CreateBlockCommand(client, CommandCreateBlockData)` returns `ORef` (a plain string of the form `block:<uuid>`), NOT `{ blockid }`. Split on `":"` to get the bare blockId. (`wshclientapi.ts:190`, `gotypes.d.ts:1378`.)
+- `CommandCreateBlockData` **requires `tabid`** plus `blockdef` (`gotypes.d.ts:378`). Resolve the tabid from the parent terminal block via `RpcApi.BlockInfoCommand(client, parentBlockId)` → `BlockInfoData.tabid` (`wshclientapi.ts:82`, `gotypes.d.ts:169`).
+- To RUN a command (not just an interactive shell) the meta is `{ view:"term", controller:"cmd", "cmd:cwd":cwd, cmd:command, "cmd:runonce":true, "cmd:runonstart":true }` — mirrors `cmd/wsh/cmd/wshcmd-run.go:107-121` and `pkg/blockcontroller/shellcontroller.go:414-420` (`BlockController_Cmd` reads `MetaKey_Cmd` via `createCmdStrAndOpts`).
+- There is **no `MetaKey_Source`** meta key (checked `pkg/waveobj/metaconsts.go`). Drop `source:"agent"` entirely — it does not exist.
+- Stop/abort uses `RpcApi.ControllerDestroyCommand(client, blockId)` where `data` is a **bare blockId string** (`wshclientapi.ts:172`). There is no `ControllerStopCommand`.
+No new Go RPC is needed. Record this chosen approach as a comment block in `_pty-rpc.ts`.
 
 - [ ] **Step 2: Write the failing test for the RPC helpers**
 
-Append to `emain/agent/tools/_pty-rpc.test.ts` (extend the existing `vi.mock` for `wshclientapi` to include the block commands you confirmed in Step 1 — shown here as `CreateBlockCommand`/`ControllerStopCommand`; substitute the real names):
+Append to `emain/agent/tools/_pty-rpc.test.ts` — extend the existing `vi.mock` for `wshclientapi` to include `BlockInfoCommand`, `CreateBlockCommand`, and `ControllerDestroyCommand`. Add module-level mock fns and augment the existing `RpcApi` mock object:
 
 ```ts
-it("startAgentCommandBlock returns the new blockId", async () => {
+const blockInfo = vi.fn(async () => ({ blockid: "parent", tabid: "tab-1" }));
+const createBlock = vi.fn(async () => "block:blk-new");
+const controllerDestroy = vi.fn(async () => {});
+// ...inside the vi.mock RpcApi object, add:
+//   BlockInfoCommand: (...a: unknown[]) => blockInfo(...a),
+//   CreateBlockCommand: (...a: unknown[]) => createBlock(...a),
+//   ControllerDestroyCommand: (...a: unknown[]) => controllerDestroy(...a),
+
+it("startAgentCommandBlock resolves the tabid and returns the bare blockId", async () => {
     const { startAgentCommandBlock } = await import("./_pty-rpc");
-    const blockId = await startAgentCommandBlock("/tmp", "npm run dev");
-    expect(typeof blockId).toBe("string");
-    expect(blockId.length).toBeGreaterThan(0);
+    const blockId = await startAgentCommandBlock("parent", "/tmp", "npm run dev");
+    expect(blockId).toBe("blk-new");
+    expect(blockInfo).toHaveBeenCalledWith(expect.anything(), "parent");
+    expect(createBlock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+            tabid: "tab-1",
+            blockdef: expect.objectContaining({
+                meta: expect.objectContaining({
+                    view: "term",
+                    controller: "cmd",
+                    "cmd:cwd": "/tmp",
+                    cmd: "npm run dev",
+                }),
+            }),
+        }),
+    );
+});
+
+it("stopBlock destroys the controller with a bare blockId string", async () => {
+    const { stopBlock } = await import("./_pty-rpc");
+    await stopBlock("blk-new");
+    expect(controllerDestroy).toHaveBeenCalledWith(expect.anything(), "blk-new");
 });
 ```
 
@@ -1193,24 +1227,45 @@ Expected: FAIL — `startAgentCommandBlock` is not exported.
 
 - [ ] **Step 4: Implement the RPC helpers**
 
-Append to `emain/agent/tools/_pty-rpc.ts` (substitute the real command names / payload from Step 1):
+Append to `emain/agent/tools/_pty-rpc.ts` (uses the verified symbols from Step 1):
 
 ```ts
 /**
- * Start a cmd block that runs `command` in `cwd`, tagged source:"agent"
- * so the UI shows it as agent-initiated. Returns the new blockId.
+ * Start a term block that RUNS `command` in `cwd` (controller:"cmd"), on the
+ * same tab as the parent terminal block. Returns the new block's bare id.
+ *
+ * Verified RPC surface (Task 10 Step 1):
+ *  - CreateBlockCommand requires `tabid`; resolve it from the parent block via
+ *    BlockInfoCommand. It returns an ORef string "block:<uuid>" — split off the id.
+ *  - controller:"cmd" + MetaKey_Cmd runs a one-shot command (see wshcmd-run.go).
+ *  - There is no `source` meta key; do not set one.
  */
-export async function startAgentCommandBlock(cwd: string, command: string): Promise<string> {
-    const resp = await RpcApi.CreateBlockCommand(ElectronWshClient, {
-        // meta shape confirmed in Task 10 Step 1; source marks it agent-run.
-        blockdef: { meta: { view: "term", "cmd:cwd": cwd, "cmd:cmd": command, source: "agent" } },
-    } as never);
-    return (resp as { blockid: string }).blockid;
+export async function startAgentCommandBlock(
+    parentBlockId: string,
+    cwd: string,
+    command: string,
+): Promise<string> {
+    const info = await RpcApi.BlockInfoCommand(ElectronWshClient, parentBlockId);
+    const oref = await RpcApi.CreateBlockCommand(ElectronWshClient, {
+        tabid: info.tabid,
+        blockdef: {
+            meta: {
+                view: "term",
+                controller: "cmd",
+                "cmd:cwd": cwd,
+                cmd: command,
+                "cmd:runonce": true,
+                "cmd:runonstart": true,
+            },
+        },
+    });
+    const sep = oref.indexOf(":");
+    return sep >= 0 ? oref.slice(sep + 1) : oref;
 }
 
-/** Stop the block's running command (abort path). */
+/** Stop the block's running command (abort path): destroy its controller. */
 export async function stopBlock(blockId: string): Promise<void> {
-    await RpcApi.ControllerStopCommand(ElectronWshClient, { blockid: blockId } as never);
+    await RpcApi.ControllerDestroyCommand(ElectronWshClient, blockId);
 }
 ```
 
@@ -1234,6 +1289,7 @@ it("spawn_cli_agent starts a block, runs the subagent, returns the summary", asy
 
     const { createSpawnCliAgentTool } = await import("./spawn-cli-agent");
     const tool = createSpawnCliAgentTool({
+        parentBlockId: "parent",
         model: { id: "small" } as any,
         createSession: async () => ({ getMetadata: async () => ({}) }) as any,
     });
@@ -1242,6 +1298,7 @@ it("spawn_cli_agent starts a block, runs the subagent, returns the summary", asy
         initial_command: "npm run dev",
         cwd: "/tmp",
     });
+    expect(rpc.startAgentCommandBlock).toHaveBeenCalledWith("parent", "/tmp", "npm run dev");
     expect(r.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("3000") });
     expect(r.details).toMatchObject({ blockId: "blk-new" });
 });
@@ -1277,6 +1334,8 @@ export interface SpawnCliAgentDetails {
 }
 
 export interface SpawnCliAgentDeps {
+    /** The main agent's own terminal pane block id — used to resolve the tab the new run block is created on. */
+    parentBlockId: string;
     model: Model<Api>;
     /** Mint an ephemeral in-memory session for the subagent. */
     createSession: () => Promise<Session>;
@@ -1295,7 +1354,7 @@ export function createSpawnCliAgentTool(deps: SpawnCliAgentDeps): AgentTool<type
         promptSnippet: "Delegate long-running / interactive commands to a CLI subagent.",
         parameters: spawnSchema,
         async execute(_toolCallId, params, signal) {
-            const blockId = await startAgentCommandBlock(params.cwd, params.initial_command);
+            const blockId = await startAgentCommandBlock(deps.parentBlockId, params.cwd, params.initial_command);
             const session = await deps.createSession();
             const sub = buildCliSubagentHarness({
                 session,
@@ -1330,7 +1389,7 @@ Expected: PASS (all cases).
 
 - [ ] **Step 10: Register the tool for the main agent**
 
-Read where the main pane agent's tools are assembled (`emain/agent/tools/index.ts:getDefaultTools` and its caller in `emain/agent-ipc.ts`). Add `spawn_cli_agent` alongside `bash` there — construct it with the pane's resolved model + an in-memory session factory (`() => new InMemorySessionRepo().create()`) + the same `getApiKeyAndHeaders` the pane harness uses. Do NOT add the three PTY tools to `getDefaultTools` — they stay subagent-private. Export `createSpawnCliAgentTool` from `emain/agent/tools/index.ts`.
+Read where the main pane agent's tools are assembled (`emain/agent/tools/index.ts:getDefaultTools` and its caller `ensurePaneSession` in `emain/agent-ipc.ts`). Add `spawn_cli_agent` alongside `bash` there — construct it with `parentBlockId: opts.blockId` (the main agent's own terminal pane block id) + the pane's resolved model + an in-memory session factory (`() => new InMemorySessionRepo().create()`) + the same `getApiKeyAndHeaders` the pane harness uses, and append it to the `tools` array passed to `buildPaneHarness`. Do NOT add the three PTY tools or `spawn_cli_agent` to `getDefaultTools` — the PTY tools stay subagent-private, and `tools.test.ts` hard-asserts the exact `getDefaultTools` name set. Export `createSpawnCliAgentTool` from `emain/agent/tools/index.ts`.
 
 - [ ] **Step 11: Run the full tool test suite**
 
