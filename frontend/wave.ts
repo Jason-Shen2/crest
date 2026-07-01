@@ -4,6 +4,7 @@
 import { App } from "@/app/app";
 import { loadMonaco } from "@/app/monaco/monaco-env";
 import { EdgeFlowEmbedder, setEmbedder } from "@/app/term/nld";
+import { getPtyScreenSnapshot } from "@/app/term/terminal-model";
 import { loadBadges } from "@/app/store/badge";
 import { GlobalModel } from "@/app/store/global-model";
 import { ThemeModel } from "@/app/theme/theme-model";
@@ -52,6 +53,10 @@ let savedInitOpts: WaveInitOpts = null;
 (window as any).countersClear = countersClear;
 (window as any).getLayoutModelForStaticTab = getLayoutModelForStaticTab;
 (window as any).modalsModel = modalsModel;
+// Screen-snapshot accessor for the CLI subagent's pty_read tool. Emain
+// reaches this via executeJavaScript against the tab's webContents to read
+// a running command block's grid (see emain/emain-web.ts webPtyScreenSnapshot).
+(window as any).getPtyScreenSnapshot = getPtyScreenSnapshot;
 
 function updateZoomFactor(zoomFactor: number) {
     console.log("update zoomfactor", zoomFactor);

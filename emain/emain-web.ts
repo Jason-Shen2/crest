@@ -70,6 +70,48 @@ export async function webScreenshot(wc: WebContents): Promise<string> {
     return image.toPNG().toString("base64");
 }
 
+// PtyScreenSnapshot — mirrors the renderer PtyScreenSnapshot / Warp's
+// LongRunningCommandSnapshot. `null` means the renderer has no live model
+// or runtime block for this block id (caller degrades to transcript tail).
+export type PtyScreenSnapshot = {
+    grid_contents: string;
+    cursor: string;
+    is_alt_screen_active: boolean;
+    block_id: string;
+};
+
+// webPtyScreenSnapshot — ask the renderer for a running command block's
+// current screen. The block is a top-level term block (not a webview), so
+// its grid lives in the tab's app-world TerminalModel; we reach it via the
+// window.getPtyScreenSnapshot accessor (frontend/wave.ts) rather than the
+// webview-oriented getWebContentsByBlockId path. Used by the CLI subagent's
+// pty_read screen branch (spec §3, §6.2).
+export async function webPtyScreenSnapshot(wc: WebContents, blockId: string): Promise<PtyScreenSnapshot | null> {
+    if (!wc) {
+        throw new Error("webContents is required");
+    }
+    if (!blockId) {
+        throw new Error("blockId is required");
+    }
+    const escapedBlockId = escapeSelector(blockId);
+    const execExpr = `
+    (() => {
+        try {
+            const fn = window.getPtyScreenSnapshot;
+            if (typeof fn !== "function") return { error: "getPtyScreenSnapshot unavailable" };
+            const snap = fn("${escapedBlockId}");
+            return { value: snap };
+        } catch (error) {
+            return { error: error.message };
+        }
+    })()`;
+    const results = await wc.executeJavaScript(execExpr);
+    if (results.error) {
+        throw new Error(results.error);
+    }
+    return results.value ?? null;
+}
+
 export async function webGetSelector(wc: WebContents, selector: string, opts?: WebGetOpts): Promise<string[]> {
     if (!wc || !selector) {
         return null;
