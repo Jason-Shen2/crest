@@ -127,6 +127,77 @@ function mapState(s: string | undefined, exitcode?: number): BlockLifecycleState
     }
 }
 
+// Registry of live TerminalModels keyed by outerBlockId. The CLI
+// subagent's pty_read tool runs in the Electron main process and needs to
+// reach a running command block's grid (a top-level term block, not a
+// webview) to build a screen snapshot; emain queries this via
+// executeJavaScript against getPtyScreenSnapshot below. Populated in the
+// constructor, cleared on dispose so stale panes never answer.
+const terminalModelRegistry = new Map<string, TerminalModel>();
+
+// Cursor marker string interpolated into the grid text at the cursor
+// position. Mirrors Warp's CURSOR_MARKER (interaction_mode.rs:555).
+const CURSOR_MARKER = "<|cursor|>";
+// Row window cap for non-alt-screen output grids. Matches Warp's
+// Some(1000) in shell_command.rs:454; alt-screen grids use the full grid.
+const SCREEN_SNAPSHOT_MAX_ROWS = 1000;
+
+// PtyScreenSnapshot — renderer→emain payload mirroring Warp's
+// LongRunningCommandSnapshot (action_result/mod.rs:187-193).
+export interface PtyScreenSnapshot {
+    grid_contents: string;
+    cursor: string;
+    is_alt_screen_active: boolean;
+    block_id: string;
+}
+
+// serializeGridForInput — flatten a grid into text with the cursor marker
+// interpolated at the cursor position, windowed to maxRowCount rows
+// centered on the cursor. Mirrors Warp's
+// formatted_terminal_contents_for_input (interaction_mode.rs:562-616).
+function serializeGridForInput(grid: import("./engine/grid").Grid, maxRowCount: number | null): string {
+    const cursor = grid.cursor;
+    const rowCount = grid.rowCount();
+    const maxContentRow = Math.max(rowCount - 1, 0);
+    let startRow: number;
+    let endRow: number;
+    if (maxRowCount != null) {
+        endRow = Math.min(maxContentRow, cursor.row + Math.floor(maxRowCount / 2));
+        startRow = Math.max(endRow - maxRowCount, 0);
+    } else {
+        startRow = 0;
+        endRow = maxContentRow;
+    }
+    const lines: string[] = [];
+    let lastNonblank = -1;
+    for (let r = startRow; r <= endRow; r++) {
+        const row = grid.getRow(r);
+        let s = "";
+        for (let c = 0; c < row.length; c++) {
+            if (r === cursor.row && c === cursor.col) s += CURSOR_MARKER;
+            const cell = row[c];
+            if (!cell || cell.width === 0) continue;
+            s += cell.char.length > 0 ? cell.char : " ";
+        }
+        // Cursor parked at/beyond the last populated cell of its row.
+        if (r === cursor.row && cursor.col >= row.length) s += CURSOR_MARKER;
+        const trimmed = s.replace(/\s+$/g, "");
+        if (trimmed.length > 0) lastNonblank = lines.length;
+        lines.push(trimmed);
+    }
+    if (lastNonblank < 0) return "";
+    return lines.slice(0, lastNonblank + 1).join("\n");
+}
+
+// getPtyScreenSnapshot — resolve the running command block's grid for the
+// given outerBlockId and serialize it. Returns null when no live model or
+// runtime block is found (emain degrades to the transcript tail).
+export function getPtyScreenSnapshot(blockId: string): PtyScreenSnapshot | null {
+    const model = terminalModelRegistry.get(blockId);
+    if (!model) return null;
+    return model.getScreenSnapshotForInput();
+}
+
 export class TerminalModel {
     readonly outerBlockId: string;
     cols: number;
@@ -237,6 +308,7 @@ export class TerminalModel {
     constructor(outerBlockId: string, cols: number = DefaultCols) {
         this.outerBlockId = outerBlockId;
         this.cols = cols;
+        terminalModelRegistry.set(outerBlockId, this);
         const ctx: TerminalContext = {
             respond: (bytes) => {
                 void this.sendBytes(bytes);
@@ -399,6 +471,9 @@ export class TerminalModel {
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
+        if (terminalModelRegistry.get(this.outerBlockId) === this) {
+            terminalModelRegistry.delete(this.outerBlockId);
+        }
         for (const u of this.unsubs) {
             try {
                 u();
@@ -730,6 +805,26 @@ export class TerminalModel {
         const surface = this.getActiveSurfaceState(now);
         if (!surface || surface.blockId !== blockId) return { kind: "terminal" };
         return { kind: "terminal" };
+    }
+
+    // getScreenSnapshotForInput — serialize the running command block's
+    // current screen for the CLI subagent's pty_read screen branch. Reads
+    // the alt-screen grid when active (vim/htop/lazygit), else the output
+    // grid windowed to the last SCREEN_SNAPSHOT_MAX_ROWS rows. Returns null
+    // when there's no runtime block to snapshot. Mirrors Warp's
+    // LongRunningCommandSnapshot construction (shell_command.rs:445-464).
+    getScreenSnapshotForInput(): PtyScreenSnapshot | null {
+        const block = this.activeRuntimeBlock();
+        if (!block) return null;
+        const isAlt = block.altScreen.active;
+        const grid = isAlt ? block.altScreen.grid : block.outputGrid.raw();
+        const gridContents = serializeGridForInput(grid, isAlt ? null : SCREEN_SNAPSHOT_MAX_ROWS);
+        return {
+            grid_contents: gridContents,
+            cursor: CURSOR_MARKER,
+            is_alt_screen_active: isAlt,
+            block_id: block.id,
+        };
     }
 
     getCLIAgentSession(blockId: BlockId): CLIAgentSession | null {
