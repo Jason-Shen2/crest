@@ -64,6 +64,7 @@ import type {
     AgentTreeEntryView,
 } from "./agent/commands/types";
 import { buildPaneHarness } from "./agent/harness-factory";
+import { InMemorySessionRepo } from "./agent/harness/session/memory-repo";
 import type { JsonlSessionMetadata } from "./agent/harness/types";
 import { buildPersistedRunsFromSessionEntries, PaneAgentSession, type AgentRun } from "./agent/pane-agent-session";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
@@ -79,6 +80,7 @@ import {
     openPaneSessionByPath,
 } from "./agent/sessions";
 import { getDefaultTools } from "./agent/tools";
+import { createSpawnCliAgentTool } from "./agent/tools/spawn-cli-agent";
 import type { AgentMessage, ThinkingLevel } from "./agent/types";
 import type { Api, Model } from "./ai";
 import { getModel } from "./ai";
@@ -437,7 +439,20 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
         model,
         thinkingLevel: opts.reasoning,
         promptInputs: buildPromptInputs(opts),
-        tools: getDefaultTools(opts.cwd),
+        tools: [
+            ...getDefaultTools(opts.cwd),
+            // spawn_cli_agent delegates long-running / interactive commands to a
+            // CLI subagent. Only the main pane agent gets it (never in
+            // getDefaultTools, which the subagent factory also draws from). The
+            // subagent runs in an ephemeral in-memory session and shares this
+            // pane's resolved model + API key.
+            createSpawnCliAgentTool({
+                parentBlockId: opts.blockId,
+                model,
+                createSession: () => new InMemorySessionRepo().create(),
+                getApiKeyAndHeaders: apiKey == null ? undefined : async () => ({ apiKey }),
+            }),
+        ],
         // Load AGENTS.md / CLAUDE.md from cwd up to the filesystem root so
         // project-specific instructions reach the system prompt. Loaded once
         // per harness construction (session open); cheap sync reads.

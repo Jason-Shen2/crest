@@ -35,3 +35,41 @@ export async function getCmdBlockTail(
         maxbytes: opts?.maxBytes,
     }) as Promise<CmdBlockTail>;
 }
+
+/**
+ * Start a term block that RUNS `command` in `cwd` (controller:"cmd"), on the
+ * same tab as the parent terminal block. Returns the new block's bare id.
+ *
+ * Verified RPC surface (Task 10 Step 1):
+ *  - CreateBlockCommand requires `tabid`; resolve it from the parent block via
+ *    BlockInfoCommand. It returns an ORef string "block:<uuid>" — split off the id.
+ *  - controller:"cmd" + MetaKey_Cmd runs a one-shot command (see wshcmd-run.go).
+ *  - There is no `source` meta key; do not set one.
+ */
+export async function startAgentCommandBlock(
+    parentBlockId: string,
+    cwd: string,
+    command: string,
+): Promise<string> {
+    const info = await RpcApi.BlockInfoCommand(ElectronWshClient, parentBlockId);
+    const oref = await RpcApi.CreateBlockCommand(ElectronWshClient, {
+        tabid: info.tabid,
+        blockdef: {
+            meta: {
+                view: "term",
+                controller: "cmd",
+                "cmd:cwd": cwd,
+                cmd: command,
+                "cmd:runonce": true,
+                "cmd:runonstart": true,
+            },
+        },
+    });
+    const sep = oref.indexOf(":");
+    return sep >= 0 ? oref.slice(sep + 1) : oref;
+}
+
+/** Stop the block's running command (abort path): destroy its controller. */
+export async function stopBlock(blockId: string): Promise<void> {
+    await RpcApi.ControllerDestroyCommand(ElectronWshClient, blockId);
+}
