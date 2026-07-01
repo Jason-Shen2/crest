@@ -42,7 +42,7 @@ CLI subagent 就是**第二个 [`AgentHarness`](file:///Users/bytedance/Document
 | 一次性（会自然结束） | `ls`、`git status`、`npm run build` | 主 agent 亲自跑 | output 原文进 context | [`bash`](file:///Users/bytedance/Documents/crest/emain/agent/tools/bash.ts#L131-L261) |
 | 长运行 / 交互式 | `npm run dev`、`vim`、`top`、`ssh` 会话 | **委派 CLI subagent** | 只回自然语言总结 | `spawn_cli_agent` → pty 三件套 |
 
-**判定信号**：沿用 Warp 的 `wait_until_completion`（[action/mod.rs L43-57](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action/mod.rs#L43-L57)）。主 agent 决定"这条命令我等不到它结束"时，调 `spawn_cli_agent` 而非 `bash`。辅助字段 `is_read_only` / `is_risky`（同文件 L37-53）可用于门控。
+**判定信号**：沿用 Warp `RequestCommandOutput` 的 `wait_until_completion`（[action/mod.rs#L43-47](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L43-L47)）。主 agent 决定"这条命令我等不到它结束"时，调 `spawn_cli_agent` 而非 `bash`。辅助字段 `is_read_only` / `is_risky`（同 enum，[action/mod.rs#L37-41](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L37-L41)）与 `uses_pager`（[#L49-50](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L49-L50)）可用于门控。
 
 ### 3.1 触发规则
 
@@ -132,13 +132,15 @@ CLI subagent (CliSubagentHarness)  ← 新建②：仿 buildPaneHarness 的 fact
 
 ### 决策 2：pty_write 走 ControllerInput RPC，不碰 node 子进程
 
-写输入复用现成的 [`ControllerInputCommand`](file:///Users/bytedance/Documents/crest/frontend/app/term/terminal-model.ts#L434-L443) → Go [`SendInput`](file:///Users/bytedance/Documents/crest/pkg/blockcontroller/blockcontroller.go)。`BlockInputUnion` 已支持三类输入，覆盖 `pty_write` 三种 mode：
+写输入复用现成的 [`ControllerInputCommand`](file:///Users/bytedance/Documents/crest/frontend/app/term/terminal-model.ts#L434-L443) → Go [`SendInput`](file:///Users/bytedance/Documents/crest/pkg/blockcontroller/blockcontroller.go)。`BlockInputUnion` 已支持原样字节输入，三种 mode 的字节装饰**严格对齐 Warp [`AIAgentPtyWriteMode::decorate_bytes`](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L779-L822)**：
 
-| pty_write mode | BlockInputUnion 字段 | 用途 |
+| pty_write mode | 字节装饰（对齐 Warp） | 用途 |
 | --- | --- | --- |
-| `raw` | `inputdata`（原样字节） | 控制键，如 Ctrl-C = `\x03`（对齐 [`sendInterrupt`](file:///Users/bytedance/Documents/crest/frontend/app/term/terminal-model.ts#L441-L443)） |
-| `line` | `inputdata` + 追加 `\r` | 回答交互式 prompt |
-| `block` | `inputdata` 包 bracketed-paste | 多行粘贴不触发自动执行 |
+| `raw` | 原样透传 `bytes` | 控制键，如 Ctrl-C = `\x03`（对齐 [`sendInterrupt`](file:///Users/bytedance/Documents/crest/frontend/app/term/terminal-model.ts#L441-L443)） |
+| `line` | `SOH(\x01)` + `bytes` + 提交符：POSIX 用 `LF(\n)`、Windows 用 `CR(\r)` | 回答交互式 prompt；`^A` 是 readline/prompt-toolkit 的"行首"，先归位再输入再回车（Warp [action/mod.rs#L791-807](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L791-L807)） |
+| `block` | 仅当 `is_bracketed_paste_enabled` 为真时用 `\x1b[200~` … `\x1b[201~` 包裹，否则原样透传 | 多行粘贴不触发自动执行（Warp [action/mod.rs#L808-819](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L808-L819)） |
+
+> Warp `decorate_bytes` 的第二个参数 `is_bracketed_paste_enabled` 由终端当前状态决定；crest 侧该状态可从 [`cmdblock/tracker`](file:///Users/bytedance/Documents/crest/pkg/cmdblock/tracker.go) 的终端模式位取得（若尚未跟踪，第一阶段可保守地在 `block` 模式默认启用 bracketed-paste，与 Warp 的常见路径一致）。
 
 > emain 已有 [`ElectronWshClient`](file:///Users/bytedance/Documents/crest/emain/emain-wsh.ts#L13-L158) / `RpcApi.*Command` 这条 wshrpc 通道；本设计不是从零打通跨进程通信，而是在现有通道上补齐"agent 发起 cmd block"与"向 block controller 写输入"这两类能力。
 
@@ -243,27 +245,29 @@ async execute(_id, { task, initial_command, cwd }, signal) {
 
 | 工具 | Warp action 对应 | 作用 |
 | --- | --- | --- |
-| `pty_write` | `WriteToLongRunningShellCommand`（[action/mod.rs L59-63](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action/mod.rs#L59-L63)） | 往运行中的 PTY 写输入 |
-| `pty_read` | `ReadShellCommandOutput`（[action/mod.rs L124-127](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action/mod.rs#L124-L127)） | 读 PTY 输出（默认 transcript tail，按需 screen snapshot） |
-| `pty_transfer_to_user` | `TransferShellCommandControlToUser`（[action/mod.rs L162-165](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action/mod.rs#L162-L165)） | 卡住时交还控制权给用户 |
+| `pty_write` | `WriteToLongRunningShellCommand`（[action/mod.rs#L59-63](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L59-L63)） | 往运行中的 PTY 写输入 |
+| `pty_read` | `ReadShellCommandOutput`（[action/mod.rs#L124-127](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L124-L127)） | 读 PTY 输出（默认 transcript tail，按需 screen snapshot） |
+| `pty_transfer_to_user` | `TransferShellCommandControlToUser`（[action/mod.rs#L161-165](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L161-L165)） | 卡住时交还控制权给用户 |
 
 ### 6.1 `pty_write` 参数
-对应 Warp `AIAgentPtyWriteMode::decorate_bytes`（[action/mod.rs L795-846](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action/mod.rs#L795-L846)）：
+对应 Warp `AIAgentPtyWriteMode` + `decorate_bytes`（[action/mod.rs#L771-822](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L771-L822)）：
 
 ```ts
 Type.Object({
   block_id: Type.String({ description: "The running PTY command to write to" }),
   input: Type.String({ description: "Bytes / text to send" }),
   mode: Type.Union([
-    Type.Literal("raw"),   // 原样透传（发控制键，如 Ctrl-C = \x03）
-    Type.Literal("line"),  // 回行首 + 追加 Enter（回答交互式 prompt）
-    Type.Literal("block"), // bracketed-paste 包裹（粘贴多行不触发自动执行）
+    Type.Literal("raw"),   // 原样透传 bytes（发控制键，如 Ctrl-C = \x03）
+    Type.Literal("line"),  // SOH(\x01) + input + 提交符（POSIX 用 \n，Windows 用 \r）
+    Type.Literal("block"), // is_bracketed_paste_enabled 时 bracketed-paste 包裹，否则原样
   ]),
 })
 ```
 
+> **严格对齐 Warp（勿简化）**：`line` **不是**简单追加 `\r`——Warp 先发 `SOH(^A,\x01)` 归到行首、再发 input、再发提交符（POSIX `LF`，Windows `CR`）；`block` 的 bracketed-paste 受 `is_bracketed_paste_enabled` 门控。实现按平台与终端状态分支，见决策 2 表。
+
 ### 6.2 `pty_read` 参数 / 返回
-参数含 `delay`（读之前等多久让输出落定，对应 Warp `ShellCommandDelay` [action/mod.rs L790-793](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action/mod.rs#L790-L793)）和 `mode`：
+参数含 `delay`（读之前等多久让输出落定，对应 Warp `ShellCommandDelay` [action/mod.rs#L765-769](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs#L765-L769)，含 `Duration` / `OnCompletion` 两态）和 `mode`：
 
 ```ts
 Type.Object({
@@ -290,14 +294,16 @@ Type.Object({
 | `approximate` | `true` | transcript tail 不是精确屏幕状态 |
 | `degraded` | `boolean?` | 请求 screen 但 renderer 不可用时置 true |
 
-按需返回 screen snapshot 时，对齐 Warp `LongRunningCommandSnapshot`（[action_result/mod.rs L192-198](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action_result/mod.rs#L192-L198)）：
+按需返回 screen snapshot 时，对齐 Warp `ReadShellCommandOutputResult::LongRunningCommandSnapshot`（[action_result/mod.rs#L561-568](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs#L561-L568)）：
 
 | 字段 | 类型 | 说明 | Warp 源 |
 | --- | --- | --- | --- |
-| `grid_contents` | `string` | 屏幕渲染后的纯文本（**非** ANSI 字节流 / 连续帧） | [L195](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action_result/mod.rs#L195) |
-| `cursor` | `string` | 光标位置描述 | [L196](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action_result/mod.rs#L196) |
-| `is_alt_screen_active` | `bool` | 是否处于 alt-screen（vim/top 等全屏 TUI） | [L197](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action_result/mod.rs#L197) |
-| `block_id` | `string` | 关联的运行块 | — |
+| `grid_contents` | `string` | 屏幕渲染后的纯文本（**非** ANSI 字节流 / 连续帧） | [#L564](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs#L564) |
+| `cursor` | `string` | 光标位置描述 | [#L565](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs#L565) |
+| `is_alt_screen_active` | `bool` | 是否处于 alt-screen（vim/top 等全屏 TUI） | [#L566](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs#L566) |
+| `block_id` | `BlockId` | 关联的运行块 | [#L563](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs#L563) |
+
+> Warp 还带 `is_preempted`（[#L567](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs#L567)）与 `command`（[#L562](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs#L562)）字段；crest 第一阶段可省略 `is_preempted`（无抢占语义），`command` 由 blockId 侧已知。
 
 > **不进主 context**：无论 transcript tail 还是 screen snapshot，都只喂给 CLI subagent 当前循环。主 agent 只收到总结。
 
@@ -327,7 +333,7 @@ Type.Object({
 1. **目标导向**：完成 `task` 即调用 `terminate` 停止（[`AgentToolResult.terminate`](file:///Users/bytedance/Documents/crest/emain/agent/types.ts#L350-L354)），不做额外探索。
 2. **先看后动**：每步操作前先 `pty_read` 确认当前输出 / 屏幕状态，不盲发输入。
 3. **错误原文照抄**：总结里遇到报错 / 关键 file:line **必须逐字引用**，不许有损概括——主 agent 靠这段总结定位问题。
-4. **卡住即移交**：无法判断下一步（等待密码、需要人工决策）时调 `pty_transfer_to_user`（对应 Warp `TransferShellCommandControlToUserResult` [action_result/mod.rs L1362-1379](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action_result/mod.rs#L1362-L1379)），不要瞎猜。
+4. **卡住即移交**：无法判断下一步（等待密码、需要人工决策）时调 `pty_transfer_to_user`（对应 Warp `TransferShellCommandControlToUserResult` [action_result/mod.rs#L1352-1369](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs#L1352-L1369)），不要瞎猜。
 5. **步数上限**：设最大 turn 数，超限即移交，防死循环。
 
 ---
@@ -383,7 +389,9 @@ CLI subagent 干的是机械的"读输出 / 看屏幕—敲键—判断"活，�
 
 ## 附：Warp 源码引用清单
 
-- action 枚举：[`crates/ai/src/agent/action/mod.rs`](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action/mod.rs)
-  - `wait_until_completion` 注释 L43-57 · `WriteToLongRunningShellCommand` L59-63 · `ReadShellCommandOutput` L124-127 · `TransferShellCommandControlToUser` L162-165 · `ShellCommandDelay` L790-793 · `decorate_bytes` L795-846 · 辅助字段 L37-53
-- result 枚举：[`crates/ai/src/agent/action_result/mod.rs`](https://github.com/warpdotdev/warp/blob/main/crates/ai/src/agent/action_result/mod.rs)
-  - `CommandFinished` L184-191 · `LongRunningCommandSnapshot` L192-198 · `triggers_server_subagent` L920-933 · `TransferShellCommandControlToUserResult` L1362-1379
+> 引用基于本地 Warp checkout：`/Users/bytedance/Documents/warp`（Warp 非公开仓库，不用 GitHub 链接；行号以此 checkout 为准，随版本可能漂移，实现前请复核符号名而非仅行号）。
+
+- action 枚举：[`crates/ai/src/agent/action/mod.rs`](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action/mod.rs)
+  - `AIAgentActionType` enum L30-31 · `RequestCommandOutput`（含 `is_read_only`/`is_risky`/`wait_until_completion`/`uses_pager` 字段）L34-57 · `WriteToLongRunningShellCommand` L59-63 · `ReadShellCommandOutput` L124-127 · `TransferShellCommandControlToUser` L161-165 · `ShellCommandDelay` L765-769 · `AIAgentPtyWriteMode` L771-777 · `decorate_bytes` L779-822
+- result 枚举：[`crates/ai/src/agent/action_result/mod.rs`](file:///Users/bytedance/Documents/warp/crates/ai/src/agent/action_result/mod.rs)
+  - `RequestCommandOutputResult::LongRunningCommandSnapshot` L187-193 · `ReadShellCommandOutputResult`（`CommandFinished` L553-560 / `LongRunningCommandSnapshot` L561-568）· `triggers_server_subagent` L910-923 · `TransferShellCommandControlToUserResult` L1352-1369
