@@ -59,6 +59,15 @@ func MakeTracker(blockID string) *Tracker {
 	}
 }
 
+// AltScreen reports whether the tracked command is currently in the
+// alternate screen buffer (a full-screen TUI like vim/top/lazygit).
+// Read by the subagent tail RPC to decide transcript vs screen source.
+func (t *Tracker) AltScreen() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.altScreen
+}
+
 // OnBytes must be called with every PTY chunk in the order it lands in the
 // parent blockfile, AFTER the chunk has been appended. The parser maintains
 // absolute offsets relative to the first byte fed; those offsets are recorded
