@@ -22,3 +22,14 @@ func TestTrackerAltScreenGetter(t *testing.T) {
 		t.Fatalf("expected alt-screen false after exit seq")
 	}
 }
+
+func TestTrackerRegistryLookup(t *testing.T) {
+	tr := MakeTracker("block-reg-1")
+	got := GetTracker("block-reg-1")
+	if got != tr {
+		t.Fatalf("GetTracker returned a different tracker instance")
+	}
+	if GetTracker("block-missing") != nil {
+		t.Fatalf("GetTracker for unknown block should return nil")
+	}
+}
