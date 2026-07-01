@@ -49,14 +49,30 @@ type Tracker struct {
 	lastCwd    string
 }
 
+var trackerRegistry = struct {
+	sync.Mutex
+	byBlock map[string]*Tracker
+}{byBlock: make(map[string]*Tracker)}
+
+// GetTracker returns the live Tracker for a block, or nil if none exists.
+func GetTracker(blockID string) *Tracker {
+	trackerRegistry.Lock()
+	defer trackerRegistry.Unlock()
+	return trackerRegistry.byBlock[blockID]
+}
+
 func MakeTracker(blockID string) *Tracker {
 	if err := MarkRunningAsInterrupted(context.Background(), blockID); err != nil {
 		log.Printf("cmdblock: MarkRunningAsInterrupted blockid=%s: %v", blockID, err)
 	}
-	return &Tracker{
+	t := &Tracker{
 		blockID: blockID,
 		parser:  MakeParser(),
 	}
+	trackerRegistry.Lock()
+	trackerRegistry.byBlock[blockID] = t
+	trackerRegistry.Unlock()
+	return t
 }
 
 // AltScreen reports whether the tracked command is currently in the
