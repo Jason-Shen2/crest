@@ -442,6 +442,12 @@ func GetCmdBlocksCommand(w *wshutil.WshRpc, data wshrpc.CommandGetCmdBlocksData,
 	return resp, err
 }
 
+// command "getcmdblocktail", wshserver.GetCmdBlockTailCommand
+func GetCmdBlockTailCommand(w *wshutil.WshRpc, data wshrpc.CommandGetCmdBlockTailData, opts *wshrpc.RpcOpts) (*wshrpc.CmdBlockTailResponse, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.CmdBlockTailResponse](w, "getcmdblocktail", data, opts)
+	return resp, err
+}
+
 // command "getfocusedblockdata", wshserver.GetFocusedBlockDataCommand
 func GetFocusedBlockDataCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (*wshrpc.FocusedBlockData, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.FocusedBlockData](w, "getfocusedblockdata", nil, opts)

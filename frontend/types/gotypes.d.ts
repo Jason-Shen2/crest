@@ -288,6 +288,14 @@ declare global {
         data64: string;
     };
 
+    // wshrpc.CmdBlockTailResponse
+    type CmdBlockTailResponse = {
+        text: string;
+        isrunning: boolean;
+        exitcode?: number;
+        altscreen: boolean;
+    };
+
     // wshrpc.CommandAppendAgentRunData
     type CommandAppendAgentRunData = {
         blockid: string;
@@ -483,6 +491,14 @@ declare global {
     // wshrpc.CommandGetCmdBlockOutputData
     type CommandGetCmdBlockOutputData = {
         oid: string;
+    };
+
+    // wshrpc.CommandGetCmdBlockTailData
+    type CommandGetCmdBlockTailData = {
+        blockid: string;
+        oid?: string;
+        maxlines?: number;
+        maxbytes?: number;
     };
 
     // wshrpc.CommandGetCmdBlocksData
