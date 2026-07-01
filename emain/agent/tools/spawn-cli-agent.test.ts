@@ -18,7 +18,7 @@ function fakeSub(finalText: string) {
 describe("runSubagentToCompletion", () => {
     it("returns the final assistant text as the summary", async () => {
         const sub = fakeSub("dev server listening on 3000");
-        const summary = await runSubagentToCompletion(sub, "start dev server", { maxTurns: 5 });
+        const summary = await runSubagentToCompletion(sub, "start dev server");
         expect(summary).toBe("dev server listening on 3000");
         expect(sub.harness.prompt).toHaveBeenCalledWith("start dev server");
     });
@@ -28,7 +28,7 @@ describe("runSubagentToCompletion", () => {
         const controller = new AbortController();
         controller.abort();
         await expect(
-            runSubagentToCompletion(sub, "task", { maxTurns: 5, signal: controller.signal }),
+            runSubagentToCompletion(sub, "task", { signal: controller.signal }),
         ).rejects.toThrow();
     });
 });
@@ -52,5 +52,27 @@ describe("createSpawnCliAgentTool", () => {
         expect(rpc.startAgentCommandBlock).toHaveBeenCalledWith("parent", "/tmp", "npm run dev");
         expect(r.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("3000") });
         expect(r.details).toMatchObject({ blockId: "blk-new" });
+        // On success the command block is left running for the user.
+        expect(rpc.stopBlock).not.toHaveBeenCalled();
+    });
+
+    it("tears down the command block when the subagent run fails", async () => {
+        vi.spyOn(rpc, "startAgentCommandBlock").mockResolvedValue("blk-new");
+        const stop = vi.spyOn(rpc, "stopBlock").mockResolvedValue();
+        const sub = fakeSub("unused");
+        sub.harness.prompt = vi.fn(async () => {
+            throw new Error("boom");
+        });
+        vi.spyOn(factory, "buildCliSubagentHarness").mockReturnValue(sub);
+
+        const tool = createSpawnCliAgentTool({
+            parentBlockId: "parent",
+            model: { id: "small" } as any,
+            createSession: async () => ({ getMetadata: async () => ({}) }) as any,
+        });
+        await expect(
+            tool.execute("t1", { task: "t", initial_command: "npm run dev", cwd: "/tmp" }),
+        ).rejects.toThrow("boom");
+        expect(stop).toHaveBeenCalledWith("blk-new");
     });
 });
