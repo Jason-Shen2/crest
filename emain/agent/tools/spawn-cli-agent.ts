@@ -26,7 +26,7 @@ function extractText(message: unknown): string {
 export async function runSubagentToCompletion(
     sub: CliSubagentHarness,
     task: string,
-    opts: { maxTurns: number; signal?: AbortSignal },
+    opts: { signal?: AbortSignal } = {},
 ): Promise<string> {
     if (opts.signal?.aborted) {
         await sub.harness.abort();
@@ -65,7 +65,6 @@ export interface SpawnCliAgentDeps {
     model: Model<Api>;
     /** Mint an ephemeral in-memory session for the subagent. */
     createSession: () => Promise<Session>;
-    maxTurns?: number;
     getApiKeyAndHeaders?: (
         model: Model<Api>,
     ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
@@ -81,27 +80,25 @@ export function createSpawnCliAgentTool(deps: SpawnCliAgentDeps): AgentTool<type
         parameters: spawnSchema,
         async execute(_toolCallId, params, signal) {
             const blockId = await startAgentCommandBlock(deps.parentBlockId, params.cwd, params.initial_command);
-            const session = await deps.createSession();
-            const sub = buildCliSubagentHarness({
-                session,
-                model: deps.model,
-                blockId,
-                cwd: params.cwd,
-                getApiKeyAndHeaders: deps.getApiKeyAndHeaders,
-            });
-            const onAbort = () => {
-                void sub.harness.abort();
-                void stopBlock(blockId);
-            };
-            signal?.addEventListener("abort", onAbort, { once: true });
+            // The command block is now live. On success we leave it running (the
+            // delegated command — e.g. a dev server — is often meant to stay up for
+            // the user). On any failure/abort path we must tear it down so a
+            // delegated command can never be orphaned; runSubagentToCompletion owns
+            // aborting the harness itself when the signal fires.
             try {
-                const summary = await runSubagentToCompletion(sub, params.task, {
-                    maxTurns: deps.maxTurns ?? 20,
-                    signal,
+                const session = await deps.createSession();
+                const sub = buildCliSubagentHarness({
+                    session,
+                    model: deps.model,
+                    blockId,
+                    cwd: params.cwd,
+                    getApiKeyAndHeaders: deps.getApiKeyAndHeaders,
                 });
+                const summary = await runSubagentToCompletion(sub, params.task, { signal });
                 return { content: [{ type: "text", text: summary }], details: { blockId } };
-            } finally {
-                signal?.removeEventListener("abort", onAbort);
+            } catch (err) {
+                await stopBlock(blockId);
+                throw err;
             }
         },
     };

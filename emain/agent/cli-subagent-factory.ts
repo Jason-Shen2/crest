@@ -26,7 +26,7 @@ const CLI_SUBAGENT_SYSTEM_PROMPT = [
     "2. Look before you act: call pty_read to confirm current output/screen before sending input.",
     "3. Quote errors verbatim: include exact error text and file:line in your summary — the main agent relies on it.",
     "4. When stuck (waiting for a password or a human decision), call pty_transfer_to_user instead of guessing.",
-    "5. Respect the step limit; if you hit it, summarize current progress and stop.",
+    "5. When the task is complete (or the command is confirmed running), stop and return a concise summary — do not keep polling.",
 ].join("\n");
 
 export interface BuildCliSubagentOptions {
