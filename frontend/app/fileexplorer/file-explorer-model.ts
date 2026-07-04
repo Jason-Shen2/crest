@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { globalStore } from "@/app/store/jotaiStore";
+import { ObjectService, WorkspaceService } from "@/app/store/services";
+import * as WOS from "@/app/store/wos";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
@@ -299,6 +301,7 @@ export class FileExplorerModel {
                 desturi: formatRemoteUri(newPath, "local"),
             });
             RightEditorModel.getExistingInstance()?.handleFileRenamed(oldPath, newPath);
+            await syncCodeEditorBlockRenames(oldPath, newPath);
         } catch (e) {
             console.error("rename failed:", e);
         }
@@ -337,6 +340,7 @@ export class FileExplorerModel {
                 recursive: true,
             });
             RightEditorModel.getExistingInstance()?.handleFileDeleted(path);
+            await syncCodeEditorBlockDeletes(path);
         } catch (e) {
             console.error("delete failed:", e);
         }
@@ -372,4 +376,84 @@ export class FileExplorerModel {
         }
         await createBlock({ meta: { controller: "shell", view: "term", "cmd:cwd": dir } });
     }
+}
+
+async function syncCodeEditorBlockRenames(oldPath: string, newPath: string): Promise<void> {
+    const matches = await findCodeEditorBlocksForPath(oldPath);
+    await Promise.all(
+        matches.map(({ block, blockId }) =>
+            ObjectService.UpdateObjectMeta(WOS.makeORef("block", blockId), {
+                ...block.meta,
+                file: replacePathPrefix(block.meta.file as string, oldPath, newPath),
+            })
+        )
+    );
+}
+
+async function syncCodeEditorBlockDeletes(path: string): Promise<void> {
+    const matches = await findCodeEditorBlocksForPath(path);
+    const matchesByTabId = new Map<string, CodeEditorBlockMatch[]>();
+    for (const match of matches) {
+        const tabMatches = matchesByTabId.get(match.tabId) ?? [];
+        tabMatches.push(match);
+        matchesByTabId.set(match.tabId, tabMatches);
+    }
+    const operations: Promise<unknown>[] = [];
+    for (const [tabId, tabMatches] of matchesByTabId.entries()) {
+        const tab = tabMatches[0]?.tab;
+        if (!tab) continue;
+        if (tabMatches.length >= tab.blockids.length) {
+            operations.push(WorkspaceService.CloseTab(tabMatches[0].workspaceId, tabId, false));
+            continue;
+        }
+        for (const { blockId } of tabMatches) {
+            operations.push(ObjectService.DeleteBlock(blockId));
+        }
+    }
+    await Promise.all(operations);
+}
+
+type CodeEditorBlockMatch = {
+    tabId: string;
+    workspaceId: string;
+    tab: Tab;
+    blockId: string;
+    block: Block;
+};
+
+async function findCodeEditorBlocksForPath(targetPath: string): Promise<CodeEditorBlockMatch[]> {
+    const workspace = globalStore.get(atoms.workspace);
+    const tabIds = workspace?.tabids ?? [];
+    const workspaceId = workspace?.oid ?? "";
+    const matches: CodeEditorBlockMatch[] = [];
+    for (const tabId of tabIds) {
+        const tab = await loadWaveObject<Tab>("tab", tabId, "codeeditor sync");
+        if (!tab) continue;
+        for (const blockId of tab.blockids ?? []) {
+            const block = await loadWaveObject<Block>("block", blockId, "codeeditor sync");
+            const filePath = block?.meta?.file;
+            if (block?.meta?.view === "codeeditor" && typeof filePath === "string" && isPathOrChild(filePath, targetPath)) {
+                matches.push({ tabId, workspaceId, tab, blockId, block });
+            }
+        }
+    }
+    return matches;
+}
+
+async function loadWaveObject<T extends WaveObj>(otype: string, oid: string, context: string): Promise<T | null> {
+    try {
+        return await WOS.loadAndPinWaveObject<T>(WOS.makeORef(otype, oid));
+    } catch (e) {
+        console.warn(`failed to load ${otype} while ${context}`, oid, e);
+        return null;
+    }
+}
+
+function isPathOrChild(path: string, targetPath: string): boolean {
+    return path === targetPath || path.startsWith(`${targetPath}/`);
+}
+
+function replacePathPrefix(path: string, oldPrefix: string, newPrefix: string): string {
+    if (path === oldPrefix) return newPrefix;
+    return `${newPrefix}${path.slice(oldPrefix.length)}`;
 }
