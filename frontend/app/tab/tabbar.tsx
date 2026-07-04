@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { Tooltip } from "@/app/element/tooltip";
+import { Icon } from "@/app/icon/Icon";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
@@ -16,7 +16,6 @@ import { Tab } from "./tab";
 import "./tabbar.scss";
 import { TabBarEnv } from "./tabbarenv";
 import { UpdateStatusBanner } from "./updatebanner";
-import { WorkspaceSwitcher } from "./workspaceswitcher";
 
 const TabDefaultWidth = 130;
 const TabMinWidth = 100;
@@ -43,6 +42,7 @@ const OSOptions = {
 interface TabBarProps {
     workspace: Workspace;
     noTabs?: boolean;
+    embedded?: boolean;
 }
 
 function strArrayIsEqual(a: string[], b: string[]) {
@@ -64,7 +64,7 @@ function strArrayIsEqual(a: string[], b: string[]) {
     return true;
 }
 
-const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
+const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
     const env = useWaveEnv<TabBarEnv>();
     const [tabIds, setTabIds] = useState<string[]>([]);
     const [dragStartPositions, setDragStartPositions] = useState<number[]>([]);
@@ -91,7 +91,6 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
     const osInstanceRef = useRef<OverlayScrollbars>(null);
     const draggerLeftRef = useRef<HTMLDivElement>(null);
     const rightContainerRef = useRef<HTMLDivElement>(null);
-    const workspaceSwitcherRef = useRef<HTMLDivElement>(null);
     const waveAIButtonRef = useRef<HTMLDivElement>(null);
     const appMenuButtonRef = useRef<HTMLDivElement>(null);
     const tabWidthRef = useRef<number>(TabDefaultWidth);
@@ -158,7 +157,6 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
         const rightContainerWidth = rightContainerRef.current?.getBoundingClientRect().width ?? 0;
         const addBtnWidth = getOuterWidth(addBtnRef.current);
         const appMenuButtonWidth = appMenuButtonRef.current?.getBoundingClientRect().width ?? 0;
-        const workspaceSwitcherWidth = workspaceSwitcherRef.current?.getBoundingClientRect().width ?? 0;
         const waveAIButtonWidth =
             !hideAiButton && waveAIButtonRef.current != null ? getOuterWidth(waveAIButtonRef.current) : 0;
 
@@ -167,7 +165,6 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
             rightContainerWidth +
             addBtnWidth +
             appMenuButtonWidth +
-            workspaceSwitcherWidth +
             waveAIButtonWidth;
         const spaceForTabs = tabbarWrapperWidth - nonTabElementsWidth;
 
@@ -541,11 +538,13 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
     }
 
     const tabsWrapperWidth = tabIds.length * tabWidthRef.current;
-    const showAppMenuButton = env.isWindows() || (!env.isMacOS() && !showMenuBar);
+    const showAppMenuButton = !embedded && (env.isWindows() || (!env.isMacOS() && !showMenuBar));
 
     // Calculate window drag left width based on platform and state
     let windowDragLeftWidth = 10;
-    if (env.isMacOS() && !isFullScreen) {
+    if (embedded) {
+        windowDragLeftWidth = 0;
+    } else if (env.isMacOS() && !isFullScreen) {
         const trafficLightsWidth = isMacOSTahoeOrLater()
             ? MacOSTahoeTrafficLightsWidth
             : MacOSTrafficLightsWidth;
@@ -558,7 +557,9 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
 
     // Calculate window drag right width
     let windowDragRightWidth = 12;
-    if (env.isWindows()) {
+    if (embedded) {
+        windowDragRightWidth = 0;
+    } else if (env.isWindows()) {
         if (zoomFactor > 0) {
             windowDragRightWidth = 139 / zoomFactor;
         } else {
@@ -567,7 +568,7 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
     }
 
     return (
-        <div ref={tabbarWrapperRef} className="tab-bar-wrapper">
+        <div ref={tabbarWrapperRef} className={`tab-bar-wrapper${embedded ? " embedded" : ""}`}>
             <div
                 ref={draggerLeftRef}
                 className="h-full shrink-0 z-window-drag"
@@ -583,15 +584,6 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
                     <i className="fa fa-ellipsis" />
                 </div>
             )}
-            <Tooltip
-                content="Workspace Switcher"
-                placement="bottom"
-                hideOnClick
-                divRef={workspaceSwitcherRef}
-                divClassName="flex items-center"
-            >
-                <WorkspaceSwitcher />
-            </Tooltip>
             <div className="tab-bar" ref={tabBarRef} data-overlayscrollbars-initialize>
                 <div
                     className="tabs-wrapper"
@@ -627,15 +619,15 @@ const TabBar = memo(({ workspace, noTabs }: TabBarProps) => {
             <button
                 ref={addBtnRef}
                 title="Add Tab"
-                className={`flex h-[22px] px-2 mb-1 mx-1 items-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[15px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
+                className={`add-tab flex h-[22px] px-2 mx-1 items-center justify-center rounded-md box-border cursor-pointer hover:bg-hoverbg transition-colors text-[15px] text-secondary hover:text-primary${noTabs ? " invisible" : ""}`}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                 onClick={handleAddTab}
             >
-                <i className="fa fa-solid fa-plus" />
+                <Icon name="plus-sign" size={13} strokeWidth={1.75} />
             </button>
             <div className="flex-1" />
             <div ref={rightContainerRef} className="flex flex-row gap-1 items-end">
-                <UpdateStatusBanner />
+                {!embedded && <UpdateStatusBanner />}
                 <div
                     className="h-full shrink-0 z-window-drag"
                     style={{ width: windowDragRightWidth, WebkitAppRegion: "drag" } as any}

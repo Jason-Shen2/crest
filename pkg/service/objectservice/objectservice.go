@@ -105,7 +105,12 @@ func (svc *ObjectService) DeleteBlock(uiContext waveobj.UIContext, blockId strin
 	ctx, cancelFn := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancelFn()
 	ctx = waveobj.ContextWithUpdates(ctx)
-	err := wcore.DeleteBlock(ctx, blockId, true)
+	// recursive=false: this entry point is invoked by frontend paths (tab close, replace,
+	// cleanup-orphaned). Letting it cascade-delete the parent tab on the last block
+	// turned into a footgun — any misfire (e.g. the prior layoutModel cleanup-orphaned
+	// self-loop) could wipe a tab the user is still working in. Parent-tab cleanup
+	// belongs to an explicit tab-close path, not a single-block delete.
+	err := wcore.DeleteBlock(ctx, blockId, false)
 	if err != nil {
 		return nil, fmt.Errorf("error deleting block: %w", err)
 	}

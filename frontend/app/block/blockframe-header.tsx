@@ -22,10 +22,11 @@ import { globalStore } from "@/app/store/jotaiStore";
 import { uxCloseBlock } from "@/app/store/keymodel";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
+import { Icon } from "@/app/icon/Icon";
 import { IconButton } from "@/element/iconbutton";
 import { NodeModel } from "@/layout/index";
 import * as util from "@/util/util";
-import { cn, makeIconClass } from "@/util/util";
+import { cn } from "@/util/util";
 import * as jotai from "jotai";
 import * as React from "react";
 import { BlockEnv } from "./blockenv";
@@ -93,10 +94,7 @@ const HeaderTextElems = React.memo(({ viewModel, blockId, preview, error }: Head
         };
         headerTextElems.push(
             <div className="iconbutton disabled" key="controller-status" onClick={copyHeaderErr}>
-                <i
-                    className="fa-sharp fa-solid fa-triangle-exclamation"
-                    title={"Error Rendering View Header: " + error.message}
-                />
+                <Icon name="triangle-exclamation" size={14} />
             </div>
         );
     }
@@ -277,7 +275,7 @@ const BlockFrame_Header = ({
             )}
             {useTermHeader && badge && (
                 <div className="pointer-events-none flex items-center px-1" style={{ color: badge.color || "#fbbf24" }}>
-                    <i className={makeIconClass(badge.icon, true, { defaultIcon: "circle-small" })} />
+                    <Icon name={badge.icon ?? "circle"} size={14} />
                 </div>
             )}
             <HeaderTextElems viewModel={viewModel} blockId={nodeModel.blockId} preview={preview} error={error} />

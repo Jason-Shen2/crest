@@ -10,6 +10,7 @@ import { SetSecretDialog } from "@/builder/tabs/builder-secrettab";
 import { AboutModal } from "./about";
 import { AISetupWizard } from "./ai-setup-wizard";
 import { CommandPaletteModal } from "./commandpalette";
+import { SettingsModal } from "@/app/settings/settings";
 import { UserInputModal } from "./userinputmodal";
 
 const modalRegistry: { [key: string]: React.ComponentType<any> } = {
@@ -20,6 +21,7 @@ const modalRegistry: { [key: string]: React.ComponentType<any> } = {
     [AboutModal.displayName || "AboutModal"]: AboutModal,
     [AISetupWizard.displayName || "AISetupWizard"]: AISetupWizard,
     [CommandPaletteModal.displayName || "CommandPaletteModal"]: CommandPaletteModal,
+    [SettingsModal.displayName || "SettingsModal"]: SettingsModal,
     [MessageModal.displayName || "MessageModal"]: MessageModal,
     [PublishAppModal.displayName || "PublishAppModal"]: PublishAppModal,
     [RenameFileModal.displayName || "RenameFileModal"]: RenameFileModal,

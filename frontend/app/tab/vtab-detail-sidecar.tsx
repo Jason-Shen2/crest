@@ -13,6 +13,7 @@ import { FloatingPortal } from "@floating-ui/react";
 import { useAtomValue } from "jotai";
 import { useEffect, useMemo, useState } from "react";
 import type { VTabBarEnv } from "./vtabbarenv";
+import { isTabAutoNamed } from "./tab-name";
 
 // Mirrors `render_detail_sidecar` (warp vertical_tabs.rs 5874-6033) —
 // a ~320px right-anchored panel that fills in metadata for the row the
@@ -208,7 +209,7 @@ export function VtabDetailSidecar({
     const changedFiles = gitInfo?.changedfiles ?? 0;
 
     const tabName = tabData?.name ?? "";
-    const isAutoNamed = /^T\d+$/.test(tabName);
+    const isAutoNamed = isTabAutoNamed(tabData);
     const blockCount = tabData?.blockids?.length ?? 0;
     const isPaneMode = blockId != null;
 

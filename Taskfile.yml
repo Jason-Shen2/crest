@@ -102,6 +102,7 @@ tasks:
             - go.mod
             - go.sum
             - pkg/**/*.go
+            - pkg/**/*.json
             - pkg/**/*.sh
             - cmd/**/*.go
             - tsunami/go.mod

@@ -7,8 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"regexp"
-	"strconv"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +15,7 @@ import (
 	"github.com/s-zx/crest/pkg/telemetry"
 	"github.com/s-zx/crest/pkg/telemetry/telemetrydata"
 	"github.com/s-zx/crest/pkg/util/utilfn"
+	"github.com/s-zx/crest/pkg/wavebase"
 	"github.com/s-zx/crest/pkg/waveobj"
 	"github.com/s-zx/crest/pkg/wconfig"
 	"github.com/s-zx/crest/pkg/wps"
@@ -34,14 +34,14 @@ var WorkspaceColors = [...]string{
 }
 
 var WorkspaceIcons = [...]string{
-	"custom@wave-logo-solid",
-	"triangle",
-	"star",
-	"heart",
-	"bolt",
-	"solid@cloud",
-	"moon",
-	"layer-group",
+	"terminal",   // the starter workspace — a terminal app
+	"folder-01",  // a folder-backed project workspace
+	"sparkles",   // a special / AI-flavored workspace
+	"heart",      // favorites
+	"rocket-01",  // new / launch
+	"cube",       // a project / container
+	"globe-02",   // web / cloud workspace
+	"home-03",    // default home workspace
 	"rocket",
 	"flask",
 	"paperclip",
@@ -82,11 +82,30 @@ func UpdateWorkspace(ctx context.Context, workspaceId string, name string, icon 
 	if err != nil {
 		return nil, updated, fmt.Errorf("workspace %s not found: %w", workspaceId, err)
 	}
+	// Lazy-load the workspace list once when any default branch needs it,
+	// so name + color defaults don't hit the DB twice for a single call.
+	var wsList waveobj.WorkspaceList
+	needList := applyDefaults && ((name == "" && ws.Name == "") || (color == "" && ws.Color == ""))
+	if needList {
+		wsList, err = ListWorkspaces(ctx)
+		if err != nil {
+			log.Printf("error listing workspaces for defaults: %v", err)
+			wsList = waveobj.WorkspaceList{}
+		}
+	}
 	if name != "" {
 		ws.Name = name
 		updated = true
 	} else if applyDefaults && ws.Name == "" {
-		ws.Name = fmt.Sprintf("New Workspace (%s)", ws.OID[0:5])
+		// First workspace is "Default", subsequent ones are "Space N".
+		// Mirrors terax-ai's SpaceSwitcher convention.  Hash suffixes
+		// ("New Workspace (a935b)") are not human-readable and clutter
+		// the popover; users can rename via the inline pencil icon.
+		if len(wsList) == 0 {
+			ws.Name = "Default"
+		} else {
+			ws.Name = fmt.Sprintf("Space %d", len(wsList)+1)
+		}
 		updated = true
 	}
 	if icon != "" {
@@ -100,11 +119,6 @@ func UpdateWorkspace(ctx context.Context, workspaceId string, name string, icon 
 		ws.Color = color
 		updated = true
 	} else if applyDefaults && ws.Color == "" {
-		wsList, err := ListWorkspaces(ctx)
-		if err != nil {
-			log.Printf("error listing workspaces: %v", err)
-			wsList = waveobj.WorkspaceList{}
-		}
 		ws.Color = WorkspaceColors[len(wsList)%len(WorkspaceColors)]
 		updated = true
 	}
@@ -195,49 +209,35 @@ func getTabBackground() string {
 	return config.Settings.TabPreset
 }
 
-var tabNameRe = regexp.MustCompile(`^T(\d+)$`)
-
-// getNextTabName returns the next auto-generated tab name (e.g. "T3") given a
-// slice of existing tab names. It filters to names matching T[N] where N is a
-// positive integer, finds the maximum N, and returns T[max+1]. If no matching
-// names exist it returns "T1".
-func getNextTabName(tabNames []string) string {
-	maxNum := 0
-	for _, name := range tabNames {
-		m := tabNameRe.FindStringSubmatch(name)
-		if m == nil {
-			continue
-		}
-		n, err := strconv.Atoi(m[1])
-		if err != nil || n <= 0 {
-			continue
-		}
-		if n > maxNum {
-			maxNum = n
-		}
+// defaultTabName returns the name a freshly created tab wears before the
+// user renames it. New tabs open a shell in the home directory (see
+// GetNewTabLayout), so we mirror terax and show that directory's basename
+// immediately — no "T<n>" placeholder that later flickers into a real name.
+func defaultTabName() string {
+	home := wavebase.GetHomeDir()
+	base := filepath.Base(home)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return "Terminal"
 	}
-	return "T" + strconv.Itoa(maxNum+1)
+	return base
 }
 
 // returns tabid
 func CreateTab(ctx context.Context, workspaceId string, tabName string, activateTab bool, isInitialLaunch bool) (string, error) {
-	if tabName == "" {
-		ws, err := GetWorkspace(ctx, workspaceId)
-		if err != nil {
-			return "", fmt.Errorf("workspace %s not found: %w", workspaceId, err)
-		}
-		tabNames := make([]string, 0, len(ws.TabIds))
-		for _, tabId := range ws.TabIds {
-			tab, err := wstore.DBMustGet[*waveobj.Tab](ctx, tabId)
-			if err != nil || tab == nil {
-				continue
-			}
-			tabNames = append(tabNames, tab.Name)
-		}
-		tabName = getNextTabName(tabNames)
+	// autoName tracks whether the tab still wears an app-generated label
+	// (as opposed to a user- or caller-chosen one). Auto-named tabs let the
+	// frontend derive their label from block contents (cwd / file name).
+	autoName := tabName == ""
+	if autoName {
+		tabName = defaultTabName()
 	}
 
-	tab, err := createTabObj(ctx, workspaceId, tabName, nil)
+	var meta waveobj.MetaMapType
+	if autoName {
+		meta = waveobj.MetaMapType{waveobj.MetaKey_TabAutoName: true}
+	}
+
+	tab, err := createTabObj(ctx, workspaceId, tabName, meta)
 	if err != nil {
 		return "", fmt.Errorf("error creating tab: %w", err)
 	}

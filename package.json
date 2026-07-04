@@ -76,6 +76,8 @@
         "@codingame/monaco-vscode-model-service-override": "25.1.2",
         "@floating-ui/react": "^0.27.16",
         "@google/genai": "^1.52.0",
+        "@hugeicons/core-free-icons": "^4.2.2",
+        "@hugeicons/react": "^1.1.8",
         "@observablehq/plot": "^0.6.17",
         "@react-hook/resize-observer": "^2.0.2",
         "@table-nav/core": "^0.0.7",

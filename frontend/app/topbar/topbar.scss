@@ -1,11 +1,196 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+//
+// TopBar styles — terax-ai Header.tsx layout, adapted to crest.
+//
+// Bar
+//   h-10 (40px) · bg-card rgba(34,34,34,0.85) + backdrop-blur(20px)
+//   border-b border-white/10 · select-none
+//   layout: flex row items-center gap-2
+//
+// Regions (separated by 1px topbar-vsep dividers):
+//   ① topbar-traffic-spacer  — 80px (tahoe) / 74px (pre-tahoe) on mac
+//                                when not fullscreen; 0 on other platforms
+//   ② topbar-left-chrome     — sidebar + command palette (size-7 icon-btn each)
+//   ③ WorkspaceSwitcher      — "Spaces · Default ▸" pill, opens floating popover
+//   ④ TabBar                 — embedded (flex 1) — sliding pill inside
+//   spacer                    — flex-1, fills the gap between TabBar and ⑤
+//   ⑤ topbar-search + topbar-right-chrome
+//                                (right-panel toggle + bell + settings)
+//
+// Token mapping (terax → crest):
+//   bg-foreground/[0.07]  →  bg-fg-overlay-2 (white@9%)
+//   bg-card              →  rgba(34,34,34,0.85) + backdrop-blur(20px)
+//   border-border/60     →  border-white/10
+//   text-muted-foreground→  text-secondary (#c3c8c2)
+//   text-foreground      →  text-primary   (#f7f7f7)
+//   --dur-base 240ms     →  tab-pill transition
+//   --ease-premium       →  cubic-bezier(.16,1,.3,1)
+
+.topbar-root {
+    display: flex;
+    align-items: center;
+    height: 40px;
+    flex-shrink: 0;
+    width: 100%;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+    background: rgba(34, 34, 34, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-app-region: drag;
+    user-select: none;
+    gap: 8px;
+    padding-right: 8px;
+
+    // Compact mode (future): when width < 720, drop a few chrome items.
+    // The header-level ResizeObserver is in terax's Header.tsx; we
+    // keep the chrome at full density for now.
+}
+
+// ---- ① mac traffic lights spacer ----
 
 .topbar-traffic-spacer {
     flex-shrink: 0;
     width: 74px;
+    height: 100%;
 
-    &[data-tahoe="1"] {
-        width: 80px;
+    // On macOS fullscreen the traffic lights hide; the spacer goes
+    // away too so the chrome starts at the left edge.
+    .topbar-root[data-fullscreen="1"] & {
+        width: 0;
     }
+}
+
+// ---- ② left chrome ----
+
+.topbar-left-chrome {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+}
+
+.topbar-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    color: rgb(195, 200, 194);
+    cursor: pointer;
+    transition: background-color 160ms ease, color 160ms ease;
+    position: relative;
+    -webkit-app-region: no-drag;
+
+    &:hover {
+        background: rgba(255, 255, 255, 0.05);
+        color: #f7f7f7;
+    }
+
+    &.is-active {
+        background: rgba(255, 255, 255, 0.08);
+        color: #f7f7f7;
+    }
+}
+
+.topbar-icon-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 2px;
+    border-radius: 999px;
+    background: #ef4444;
+    color: #ffffff;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+
+// ②b command palette button (a 30-px wide variant of the icon button
+// so it matches terax's slightly-narrower CommandIcon slot).
+.topbar-command-palette {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 28px;
+    border-radius: 6px;
+    background: transparent;
+    border: 0;
+    color: rgb(195, 200, 194);
+    cursor: pointer;
+    transition: background-color 160ms ease, color 160ms ease;
+    -webkit-app-region: no-drag;
+
+    &:hover {
+        background: rgba(255, 255, 255, 0.05);
+        color: #f7f7f7;
+    }
+}
+
+// ---- 1px vertical separator ----
+
+.topbar-vsep {
+    width: 1px;
+    height: 16px;
+    background: rgba(255, 255, 255, 0.18);
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+}
+
+// ---- ④ tab strip spacer (the flex-1 between TabBar and ⑤) ----
+
+.topbar-spacer {
+    flex: 1 1 auto;
+    min-width: 0;
+    -webkit-app-region: drag;
+}
+
+// ---- ⑤ search inline ----
+
+.topbar-search {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    width: 220px;
+    padding: 0 8px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    color: rgb(195, 200, 194);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background-color 160ms ease;
+    -webkit-app-region: no-drag;
+
+    &:hover {
+        background: rgba(255, 255, 255, 0.09);
+    }
+}
+
+.topbar-search-kbd {
+    margin-left: auto;
+    font-size: 10px;
+    color: rgba(195, 200, 194, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+    padding: 1px 4px;
+    font-family: ui-monospace, "SF Mono", monospace;
+}
+
+// ---- right chrome (bell + settings) ----
+
+.topbar-right-chrome {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
 }

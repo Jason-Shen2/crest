@@ -1,7 +1,8 @@
 // Copyright 2025, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { cn, makeIconClass } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
+import { cn } from "@/util/util";
 import { useLayoutEffect, useRef, useState } from "react";
 
 export const EmojiButton = ({
@@ -30,7 +31,7 @@ export const EmojiButton = ({
         prevClickedRef.current = isClicked;
     }, [isClicked, suppressFlyUp]);
 
-    const content = icon ? <i className={makeIconClass(icon, false)} /> : emoji;
+    const content = icon ? <Icon name={icon} size={14} /> : emoji;
 
     return (
         <div className="relative inline-block">

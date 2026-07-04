@@ -5,7 +5,8 @@ import { computeConnColorNum } from "@/app/block/blockutil";
 import { recordTEvent } from "@/app/store/global";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { IconButton } from "@/element/iconbutton";
-import * as util from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
+import { cn } from "@/util/util";
 import * as jotai from "jotai";
 import * as React from "react";
 import DotsSvg from "../asset/dots-anim-4.svg";
@@ -22,7 +23,7 @@ export const ConnectionButton = React.memo(
         ({ connection, changeConnModalAtom, isTerminalBlock }: ConnectionButtonProps, ref) => {
             const waveEnv = useWaveEnv<BlockEnv>();
             const [_connModalOpen, setConnModalOpen] = jotai.useAtom(changeConnModalAtom);
-            const isLocal = util.isLocalConnName(connection);
+            const isLocal = isLocalConnName(connection);
             const connStatus = jotai.useAtomValue(waveEnv.getConnStatusAtom(connection));
             const localName = jotai.useAtomValue(waveEnv.getLocalHostDisplayNameAtom());
             let showDisconnectedSlash = false;
@@ -53,14 +54,11 @@ export const ConnectionButton = React.memo(
                     }
                 }
                 connIconElem = (
-                    <i
-                        className={util.cn(util.makeIconClass("laptop", false), "fa-stack-1x mr-[2px]")}
-                        style={{ color: color }}
-                    />
+                    <Icon name="computer" size={14} className="mr-[2px]" style={{ color: color }} />
                 );
             } else {
                 titleText = "Connected to " + connection;
-                let iconName = "arrow-right-arrow-left";
+                let iconName = "arrow-turn-backward";
                 let iconSvg = null;
                 if (connStatus?.status == "connecting") {
                     color = "var(--warning-color)";
@@ -84,7 +82,7 @@ export const ConnectionButton = React.memo(
                     showDisconnectedSlash = true;
                 } else if (connStatus?.connhealthstatus === "degraded" || connStatus?.connhealthstatus === "stalled") {
                     color = "var(--warning-color)";
-                    iconName = "signal-bars-slash";
+                    iconName = "wifi-off-01";
                     if (connStatus.connhealthstatus === "degraded") {
                         titleText = "Connection degraded: " + connection;
                     } else {
@@ -95,10 +93,7 @@ export const ConnectionButton = React.memo(
                     connIconElem = iconSvg;
                 } else {
                     connIconElem = (
-                        <i
-                            className={util.cn(util.makeIconClass(iconName, false), "fa-stack-1x mr-[2px]")}
-                            style={{ color: color }}
-                        />
+                        <Icon name={iconName} size={14} className="mr-[2px]" style={{ color: color }} />
                     );
                 }
             }
@@ -115,15 +110,17 @@ export const ConnectionButton = React.memo(
                         title={titleText}
                     >
                         <span
-                            className={util.cn(
-                                "fa-stack flex-[1_1_auto] overflow-hidden",
-                                shouldSpin ? "fa-spin" : null
+                            className={cn(
+                                "relative inline-flex items-center justify-center flex-[1_1_auto] overflow-hidden",
+                                shouldSpin ? "animate-spin" : null
                             )}
                         >
                             {connIconElem}
-                            <i
-                                className={util.cn(
-                                    "fa-slash fa-solid fa-stack-1x mr-[2px] [text-shadow:0_1px_black,0_1.5px_black]",
+                            <Icon
+                                name="wifi-off-01"
+                                size={14}
+                                className={cn(
+                                    "absolute mr-[2px] [text-shadow:0_1px_black,0_1.5px_black]",
                                     showDisconnectedSlash ? "opacity-100" : "opacity-0"
                                 )}
                                 style={{ color: color }}
@@ -131,7 +128,7 @@ export const ConnectionButton = React.memo(
                         </span>
                         {connDisplayName ? (
                             <div
-                                className={util.cn(
+                                className={cn(
                                     "flex-[1_2_auto] overflow-hidden pr-1 ellipsis",
                                     extraDisplayNameClassName
                                 )}
@@ -146,7 +143,7 @@ export const ConnectionButton = React.memo(
                         <IconButton
                             decl={{
                                 elemtype: "iconbutton",
-                                icon: "link-slash",
+                                icon: "link-square-01",
                                 title: "wsh is not installed for this connection",
                             }}
                         />
@@ -157,3 +154,11 @@ export const ConnectionButton = React.memo(
     )
 );
 ConnectionButton.displayName = "ConnectionButton";
+
+// Local copy of util.isLocalConnName — we don't import * as util because
+// the only function we need is this one, and dropping makeIconClass
+// from util.ts means there's no util namespace usage left here anyway.
+function isLocalConnName(connection: string): boolean {
+    if (!connection) return false;
+    return connection.startsWith("local:");
+}

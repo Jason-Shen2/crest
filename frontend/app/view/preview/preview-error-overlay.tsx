@@ -3,6 +3,7 @@
 
 import { Button } from "@/app/element/button";
 import { CopyButton } from "@/app/element/copybutton";
+import { Icon } from "@/app/icon/Icon";
 import clsx from "clsx";
 import { OverlayScrollbarsComponent } from "overlayscrollbars-react";
 import { memo, useCallback } from "react";
@@ -11,9 +12,11 @@ export const ErrorOverlay = memo(({ errorMsg, resetOverlay }: { errorMsg: ErrorM
     const showDismiss = errorMsg.showDismiss ?? true;
     const buttonClassName = "outlined grey text-[11px] py-[3px] px-[7px]";
 
-    let iconClass = "fa-solid fa-circle-exclamation text-error text-base";
+    let iconName = "alert-circle";
+    let iconClass = "text-error text-base";
     if (errorMsg.level == "warning") {
-        iconClass = "fa-solid fa-triangle-exclamation text-warning text-base";
+        iconName = "alert-02";
+        iconClass = "text-warning text-base";
     }
 
     const handleCopyToClipboard = useCallback(async () => {
@@ -28,7 +31,7 @@ export const ErrorOverlay = memo(({ errorMsg, resetOverlay }: { errorMsg: ErrorM
                         "items-start": true,
                     })}
                 >
-                    <i className={iconClass}></i>
+                    <Icon name={iconName} size={16} className={iconClass} />
 
                     <div className="flex flex-col items-start gap-1 grow w-full shrink min-w-0">
                         <div className="max-w-full text-xs font-semibold leading-4 tracking-[0.11px] text-white overflow-hidden">
@@ -67,14 +70,16 @@ export const ErrorOverlay = memo(({ errorMsg, resetOverlay }: { errorMsg: ErrorM
                     {showDismiss && (
                         <div className="flex items-start">
                             <Button
-                                className={clsx(buttonClassName, "fa-xmark fa-solid")}
+                                className={buttonClassName}
                                 onClick={() => {
                                     if (errorMsg.closeAction) {
                                         errorMsg.closeAction();
                                     }
                                     resetOverlay();
                                 }}
-                            />
+                            >
+                                <Icon name="cancel-01" size={11} />
+                            </Button>
                         </div>
                     )}
                 </div>

@@ -4,6 +4,7 @@
 import { BlockModel } from "@/app/block/block-model";
 import { BlockFrame_Header } from "@/app/block/blockframe-header";
 import { blockViewToIcon, getViewIconElem, useTabBackground } from "@/app/block/blockutil";
+import { Icon } from "@/app/icon/Icon";
 import { ConnStatusOverlay } from "@/app/block/connstatusoverlay";
 import { ChangeConnectionBlockModal } from "@/app/modals/conntypeahead";
 import { getBlockComponentModel, globalStore, useBlockAtom } from "@/app/store/global";
@@ -15,7 +16,7 @@ import { ErrorBoundary } from "@/element/errorboundary";
 import { NodeModel } from "@/layout/index";
 import { makeORef } from "@/store/wos";
 import * as util from "@/util/util";
-import { cn, makeIconClass } from "@/util/util";
+import { cn } from "@/util/util";
 import { computeBgStyleFromMeta } from "@/util/waveutil";
 import clsx from "clsx";
 import * as jotai from "jotai";
@@ -73,10 +74,9 @@ const BlockMask = React.memo(({ nodeModel }: { nodeModel: NodeModel }) => {
         );
     } else if (blockHighlight) {
         showBlockMask = true;
-        const iconClass = makeIconClass(blockHighlight.icon, false);
         innerElem = (
             <div className="block-mask-inner">
-                <i className={iconClass} style={{ fontSize: "48px", opacity: 0.5 }} />
+                <Icon name={blockHighlight.icon} size={48} className="opacity-50" />
             </div>
         );
     }

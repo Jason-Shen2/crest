@@ -18,7 +18,8 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { ThemeModel } from "@/app/theme/theme-model";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { getLayoutModelForStaticTab, NavigateDirection } from "@/layout/index";
-import { cn, fireAndForget, makeIconClass } from "@/util/util";
+import { cn, fireAndForget } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
 import { useAtomValue } from "jotai";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom";
@@ -80,7 +81,7 @@ function buildThemeCommands(): PaletteCommand[] {
         id: `${THEME_CMD_PREFIX}${entry.key}`,
         label: `Theme: ${entry.name}${entry.key === activeKey ? "  (active)" : ""}`,
         category: "Theme",
-        icon: "fa-solid fa-palette",
+        icon: "color-picker",
         action: () => {
             ThemeModel.getInstance().applyTheme(entry.key, entry.theme);
             fireAndForget(() => RpcApi.SetConfigCommand(TabRpcClient, { "term:theme": entry.key }));
@@ -108,7 +109,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "New Terminal",
             category: "Create",
             shortcut: ["⌘", "N"],
-            icon: "fa-solid fa-terminal",
+            icon: "terminal",
             action: () => fireAndForget(handleCmdN),
         },
         {
@@ -116,7 +117,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Split Horizontal",
             category: "Create",
             shortcut: ["⌘", "D"],
-            icon: "fa-solid fa-table-columns",
+            icon: "table-columns-split",
             action: () => fireAndForget(() => handleSplitHorizontal("after")),
         },
         {
@@ -124,7 +125,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Split Vertical",
             category: "Create",
             shortcut: ["⇧", "⌘", "D"],
-            icon: "fa-solid fa-table-rows",
+            icon: "table-rows-split",
             action: () => fireAndForget(() => handleSplitVertical("after")),
         },
         {
@@ -132,7 +133,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "New Tab",
             category: "Create",
             shortcut: ["⌘", "T"],
-            icon: "fa-solid fa-plus",
+            icon: "plus-sign",
             action: () => fireAndForget(createTab),
         },
         {
@@ -140,7 +141,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Open Launcher",
             category: "Create",
             shortcut: ["⌃", "⇧", "X"],
-            icon: "fa-solid fa-grid-2",
+            icon: "grid-2-x2",
             action: () => {
                 const layoutModel = getLayoutModelForStaticTab();
                 const node = globalStore.get(layoutModel.focusedNode);
@@ -154,7 +155,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Focus Block Above",
             category: "Navigate",
             shortcut: ["⌃", "⇧", "↑"],
-            icon: "fa-solid fa-arrow-up",
+            icon: "arrow-up",
             action: () => switchBlockInDirection(NavigateDirection.Up),
         },
         {
@@ -162,7 +163,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Focus Block Below",
             category: "Navigate",
             shortcut: ["⌃", "⇧", "↓"],
-            icon: "fa-solid fa-arrow-down",
+            icon: "arrow-down-01",
             action: () => switchBlockInDirection(NavigateDirection.Down),
         },
         {
@@ -170,7 +171,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Focus Block Left",
             category: "Navigate",
             shortcut: ["⌃", "⇧", "←"],
-            icon: "fa-solid fa-arrow-left",
+            icon: "arrow-left-01",
             action: () => switchBlockInDirection(NavigateDirection.Left),
         },
         {
@@ -178,7 +179,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Focus Block Right",
             category: "Navigate",
             shortcut: ["⌃", "⇧", "→"],
-            icon: "fa-solid fa-arrow-right",
+            icon: "arrow-right-01",
             action: () => switchBlockInDirection(NavigateDirection.Right),
         },
         {
@@ -186,7 +187,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Next Tab",
             category: "Navigate",
             shortcut: ["⌘", "]"],
-            icon: "fa-solid fa-chevron-right",
+            icon: "chevron-right",
             action: () => switchTab(1),
         },
         {
@@ -194,7 +195,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Previous Tab",
             category: "Navigate",
             shortcut: ["⌘", "["],
-            icon: "fa-solid fa-chevron-left",
+            icon: "chevron-left",
             action: () => switchTab(-1),
         },
         {
@@ -202,7 +203,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Toggle File Explorer",
             category: "View",
             shortcut: ["⌘", "B"],
-            icon: "fa-solid fa-sidebar",
+            icon: "sidebar-left",
             action: () => {
                 const model = WorkspaceLayoutModel.getInstance();
                 model.setVTabVisible(!model.getVTabVisible());
@@ -213,7 +214,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Magnify Current Block",
             category: "View",
             shortcut: ["⌘", "M"],
-            icon: "fa-solid fa-magnifying-glass-plus",
+            icon: "search-add",
             action: () => {
                 const layoutModel = getLayoutModelForStaticTab();
                 const node = globalStore.get(layoutModel.focusedNode);
@@ -226,7 +227,7 @@ function buildCommandList(): PaletteCommand[] {
             id: "open-settings",
             label: "Open Settings",
             category: "View",
-            icon: "fa-solid fa-gear",
+            icon: "settings-01",
             action: () => fireAndForget(() => createBlock({ meta: { view: "waveconfig" } })),
         },
         {
@@ -234,7 +235,7 @@ function buildCommandList(): PaletteCommand[] {
             label: "Close Block",
             category: "Actions",
             shortcut: ["⌘", "W"],
-            icon: "fa-solid fa-xmark",
+            icon: "cancel-01",
             action: genericClose,
         },
         {
@@ -242,14 +243,14 @@ function buildCommandList(): PaletteCommand[] {
             label: "Close Tab",
             category: "Actions",
             shortcut: ["⇧", "⌘", "W"],
-            icon: "fa-solid fa-circle-xmark",
+            icon: "cancel-circle",
             action: simpleCloseStaticTab,
         },
         {
             id: "about",
             label: "About",
             category: "Actions",
-            icon: "fa-solid fa-circle-info",
+            icon: "information-circle",
             action: () => modalsModel.pushModal("AboutModal"),
         },
     ];
@@ -298,13 +299,13 @@ function MatchHighlight({ text, matchpos }: { text: string; matchpos?: number[] 
 
 // ---- file icon helper ----
 
-function fileIcon(suggestion: SuggestionType): string {
+function fileIconName(suggestion: SuggestionType): string {
     if (suggestion.icon) {
-        return makeIconClass(suggestion.icon, false) ?? "fa fa-solid fa-file";
+        return suggestion.icon;
     }
     const mime = suggestion["file:mimetype"] ?? "";
-    if (mime === "directory") return "fa fa-solid fa-folder";
-    return "fa fa-solid fa-file";
+    if (mime === "directory") return "folder-01";
+    return "file";
 }
 
 // ---- main component ----
@@ -502,7 +503,7 @@ const CommandPaletteModal = () => {
                     {isCommandMode ? (
                         <span className="command-palette-mode-icon">{">"}</span>
                     ) : (
-                        <i className="fa-solid fa-magnifying-glass command-palette-search-icon" />
+                        <Icon name="magnifying-glass" size={14} className="command-palette-search-icon" />
                     )}
                     <input
                         ref={inputRef}
@@ -512,10 +513,10 @@ const CommandPaletteModal = () => {
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                     />
-                    {isSearching && <i className="fa-solid fa-spinner fa-spin command-palette-spinner" />}
+                    {isSearching && <Icon name="spinner" size={14} className="command-palette-spinner" spin />}
                     {query && !isSearching && (
                         <button className="command-palette-clear-btn cursor-pointer" onClick={() => setQuery("")}>
-                            <i className="fa-solid fa-xmark" />
+                            <Icon name="xmark" size={14} />
                         </button>
                     )}
                 </div>
@@ -532,7 +533,7 @@ const CommandPaletteModal = () => {
                                 onMouseEnter={() => setSelectedIdx(idx)}
                                 onClick={() => openFile(s)}
                             >
-                                <i className={cn(fileIcon(s), "command-palette-item-icon")} />
+                                <Icon name={fileIconName(s)} size={14} className="command-palette-item-icon" />
                                 <span className="command-palette-item-label">
                                     <MatchHighlight text={s.display} matchpos={s.matchpos} />
                                 </span>
