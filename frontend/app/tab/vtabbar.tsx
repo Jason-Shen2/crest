@@ -93,11 +93,7 @@ function shortenHome(cwd: string, home: string): string {
 }
 
 export async function resetVTabName(env: Pick<VTabBarEnv, "rpc">, tabId: string, resetName: string) {
-    await env.rpc.UpdateTabNameCommand(TabRpcClient, tabId, resetName);
-    await env.rpc.SetMetaCommand(TabRpcClient, {
-        oref: makeORef("tab", tabId),
-        meta: { "tab:autoname": true },
-    });
+    await env.rpc.ResetTabNameCommand(TabRpcClient, tabId, resetName);
 }
 
 // blockViewToUIcon — pane-row icon for each block view type.  Mirrors
