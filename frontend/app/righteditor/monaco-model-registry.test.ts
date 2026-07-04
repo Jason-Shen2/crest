@@ -86,6 +86,32 @@ describe("MonacoModelRegistry", () => {
         expect((model as unknown as MockModel).language).toBe("shell");
     });
 
+    it("keeps a shared file uri model alive until all scoped paths are disposed", () => {
+        const registry = MonacoModelRegistry.getInstance();
+        const first = registry.getOrCreateModel({
+            path: "codeeditor:block-1:/repo/src/app.ts",
+            uri: "file:///repo/src/app.ts",
+            text: "export const a = 1;",
+            language: "typescript",
+        });
+        const second = registry.getOrCreateModel({
+            path: "codeeditor:block-2:/repo/src/app.ts",
+            uri: "file:///repo/src/app.ts",
+            text: "export const a = 2;",
+            language: "typescript",
+        });
+
+        registry.disposePath("codeeditor:block-1:/repo/src/app.ts");
+
+        expect(second).toBe(first);
+        expect((first as unknown as MockModel).disposed).toBe(false);
+        expect(registry.getModelByPath("codeeditor:block-2:/repo/src/app.ts")).toBe(first);
+
+        registry.disposePath("codeeditor:block-2:/repo/src/app.ts");
+
+        expect((first as unknown as MockModel).disposed).toBe(true);
+    });
+
     it("cleans the old model when a file path is renamed", () => {
         const registry = MonacoModelRegistry.getInstance();
         const model = registry.getOrCreateModel({
