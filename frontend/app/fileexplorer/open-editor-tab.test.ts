@@ -233,6 +233,40 @@ describe("open editor tab from file explorer", () => {
         expect(mockElectronApi.setActiveTab).toHaveBeenCalledWith("tab-3");
     });
 
+    it("deduplicates concurrent tab creation for the same workspace and file with different cwd metadata", async () => {
+        globalStore.set(atoms.workspace as any, {
+            oid: "workspace-1",
+            tabids: [],
+        } as Workspace);
+        const createTab = deferred<string>();
+        mockServices.CreateTabWithBlock.mockReturnValue(createTab.promise);
+
+        const firstOpen = openFileInEditorTab("/repo/src/new.ts", { workspaceRoot: "/repo", cwd: "/repo/src" });
+        const secondOpen = openFileInEditorTab("/repo/src/new.ts", {
+            workspaceRoot: "/repo-alt",
+            cwd: "/repo-alt/src",
+        });
+        await Promise.resolve();
+
+        createTab.resolve("tab-3");
+        const [firstResult, secondResult] = await Promise.all([firstOpen, secondOpen]);
+
+        expect(mockServices.CreateTabWithBlock).toHaveBeenCalledTimes(1);
+        expect(mockServices.CreateTabWithBlock).toHaveBeenCalledWith("workspace-1", "", false, {
+            meta: {
+                view: "codeeditor",
+                file: "/repo/src/new.ts",
+                connection: "",
+                "cmd:cwd": "/repo/src",
+            },
+        });
+
+        expect(firstResult).toEqual({ tabId: "tab-3", created: true });
+        expect(secondResult).toEqual({ tabId: "tab-3", created: true });
+        expect(mockElectronApi.setActiveTab).toHaveBeenCalledTimes(1);
+        expect(mockElectronApi.setActiveTab).toHaveBeenCalledWith("tab-3");
+    });
+
     it("includes optional cwd metadata when creating a codeeditor tab", async () => {
         mockServices.CreateTabWithBlock.mockResolvedValue("tab-3");
 
