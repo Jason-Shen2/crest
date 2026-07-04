@@ -7,6 +7,7 @@ import { WaveEnvContext } from "@/app/waveenv/waveenv";
 import { makeMockWaveEnv } from "@/preview/mock/mockwaveenv";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { Tab as TabComponent } from "./tab";
 import { VTab, VTabItem } from "./vtab";
 import { resetVTabName, VTabBar } from "./vtabbar";
 
@@ -51,6 +52,32 @@ function renderVTabBar(tabs: Tab[], blocks: Block[]): string {
     return renderToStaticMarkup(
         <WaveEnvContext.Provider value={env}>
             <VTabBar workspace={workspace} />
+        </WaveEnvContext.Provider>
+    );
+}
+
+function renderTab(tabData: Tab, blocks: Block[] = []): string {
+    const env = makeMockWaveEnv({
+        tabId: tabData.oid,
+        mockWaveObjs: {
+            [`tab:${tabData.oid}`]: tabData,
+            ...Object.fromEntries(blocks.map((blockData) => [`block:${blockData.oid}`, blockData])),
+        },
+    });
+    return renderToStaticMarkup(
+        <WaveEnvContext.Provider value={env}>
+            <TabComponent
+                id={tabData.oid}
+                active={false}
+                showDivider={false}
+                isDragging={false}
+                tabWidth={160}
+                isNew={false}
+                onSelect={() => null}
+                onClose={() => null}
+                onDragStart={() => null}
+                onLoaded={() => null}
+            />
         </WaveEnvContext.Provider>
     );
 }
@@ -246,5 +273,56 @@ describe("VTabBar tab labels", () => {
         expect(manualMarkup).not.toContain("restored-label.ts");
         expect(resetMarkup).toContain("restored-label.ts");
         expect(resetMarkup).not.toContain(">T1<");
+    });
+});
+
+describe("Tab labels", () => {
+    it("renders the first codeeditor block basename for auto-named tabs", () => {
+        const markup = renderTab(
+            tab("top-auto-editor-tab", "T1", ["top-auto-editor-block"], {
+                "tab:autoname": true,
+            } as MetaType),
+            [
+                block("top-auto-editor-block", {
+                    view: "codeeditor",
+                    file: "/repo/src/app.ts",
+                } as MetaType),
+            ]
+        );
+
+        expect(markup).toContain("app.ts");
+        expect(markup).not.toContain(">T1<");
+    });
+
+    it("preserves manual tab names when tab:autoname is false", () => {
+        const markup = renderTab(
+            tab("top-manual-editor-tab", "Pinned Editor", ["top-manual-editor-block"], {
+                "tab:autoname": false,
+            } as MetaType),
+            [
+                block("top-manual-editor-block", {
+                    view: "codeeditor",
+                    file: "/repo/src/app.ts",
+                } as MetaType),
+            ]
+        );
+
+        expect(markup).toContain("Pinned Editor");
+        expect(markup).not.toContain("app.ts");
+    });
+
+    it("derives labels for legacy generated tab names without autoname meta", () => {
+        const markup = renderTab(
+            tab("top-legacy-editor-tab", "T7", ["top-legacy-editor-block"]),
+            [
+                block("top-legacy-editor-block", {
+                    view: "codeeditor",
+                    file: "/repo/src/legacy.ts",
+                } as MetaType),
+            ]
+        );
+
+        expect(markup).toContain("legacy.ts");
+        expect(markup).not.toContain(">T7<");
     });
 });
