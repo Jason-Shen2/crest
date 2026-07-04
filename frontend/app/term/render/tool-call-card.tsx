@@ -1,5 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+// legacy/rollback: keep this older tool-call renderer available for manual
+// rollback paths; production AgentBlockElement defaults to compact tool rows.
 import { UIcon } from "@/app/element/ui-icon";
 import { getApi } from "@/app/store/global";
 import { cn } from "@/util/util";
