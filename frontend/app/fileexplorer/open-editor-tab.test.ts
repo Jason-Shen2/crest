@@ -39,10 +39,12 @@ vi.mock("@/store/global", async () => {
 
 describe("open editor tab from file explorer", () => {
     let consoleLog: ReturnType<typeof vi.spyOn>;
+    let consoleWarn: ReturnType<typeof vi.spyOn>;
 
     beforeEach(() => {
         vi.restoreAllMocks();
         consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         mockServices.CreateTabWithBlock.mockReset();
         mockServices.SetActiveTab.mockReset();
         mockElectronApi.setActiveTab.mockReset();
@@ -66,6 +68,7 @@ describe("open editor tab from file explorer", () => {
 
     afterEach(() => {
         consoleLog.mockRestore();
+        consoleWarn.mockRestore();
         vi.restoreAllMocks();
     });
 
@@ -107,6 +110,86 @@ describe("open editor tab from file explorer", () => {
         expect(loadAndPinWaveObject).toHaveBeenCalledWith(WOS.makeORef("tab", "tab-cold"));
         expect(loadAndPinWaveObject).toHaveBeenCalledWith(WOS.makeORef("block", "block-cold"));
         expect(mockElectronApi.setActiveTab).toHaveBeenCalledWith("tab-cold");
+        expect(mockServices.CreateTabWithBlock).not.toHaveBeenCalled();
+    });
+
+    it("continues scanning when an individual tab load fails and activates a later matching editor tab", async () => {
+        const loadAndPinWaveObject = vi.spyOn(WOS, "loadAndPinWaveObject").mockImplementation(async (oref: string) => {
+            if (oref === WOS.makeORef("tab", "tab-1")) {
+                throw new Error("tab load failed");
+            }
+            if (oref === WOS.makeORef("tab", "tab-2")) {
+                return { oid: "tab-2", otype: "tab", version: 1, blockids: ["block-2"] } as Tab;
+            }
+            if (oref === WOS.makeORef("block", "block-2")) {
+                return {
+                    oid: "block-2",
+                    otype: "block",
+                    version: 1,
+                    meta: { view: "codeeditor", file: "/repo/src/app.ts" },
+                } as Block;
+            }
+            throw new Error(`unexpected oref ${oref}`);
+        });
+
+        const result = await openFileInEditorTab("/repo/src/app.ts");
+
+        expect(result).toEqual({ tabId: "tab-2", created: false });
+        expect(loadAndPinWaveObject).toHaveBeenCalledWith(WOS.makeORef("tab", "tab-1"));
+        expect(loadAndPinWaveObject).toHaveBeenCalledWith(WOS.makeORef("tab", "tab-2"));
+        expect(consoleWarn).toHaveBeenCalledWith(
+            "failed to load tab while searching for existing editor tab",
+            "tab-1",
+            expect.any(Error)
+        );
+        expect(mockElectronApi.setActiveTab).toHaveBeenCalledWith("tab-2");
+        expect(mockServices.CreateTabWithBlock).not.toHaveBeenCalled();
+    });
+
+    it("continues scanning when an individual block load fails and activates a later matching editor tab", async () => {
+        updateWaveObject<Tab>("tab", "tab-1", {
+            blockids: ["block-fails", "block-ignored"],
+        });
+        const loadAndPinWaveObject = vi.spyOn(WOS, "loadAndPinWaveObject").mockImplementation(async (oref: string) => {
+            if (oref === WOS.makeORef("tab", "tab-1")) {
+                return { oid: "tab-1", otype: "tab", version: 1, blockids: ["block-fails", "block-ignored"] } as Tab;
+            }
+            if (oref === WOS.makeORef("block", "block-fails")) {
+                throw new Error("block load failed");
+            }
+            if (oref === WOS.makeORef("block", "block-ignored")) {
+                return {
+                    oid: "block-ignored",
+                    otype: "block",
+                    version: 1,
+                    meta: { view: "termblocks", "cmd:cwd": "/repo" },
+                } as Block;
+            }
+            if (oref === WOS.makeORef("tab", "tab-2")) {
+                return { oid: "tab-2", otype: "tab", version: 1, blockids: ["block-2"] } as Tab;
+            }
+            if (oref === WOS.makeORef("block", "block-2")) {
+                return {
+                    oid: "block-2",
+                    otype: "block",
+                    version: 1,
+                    meta: { view: "codeeditor", file: "/repo/src/app.ts" },
+                } as Block;
+            }
+            throw new Error(`unexpected oref ${oref}`);
+        });
+
+        const result = await openFileInEditorTab("/repo/src/app.ts");
+
+        expect(result).toEqual({ tabId: "tab-2", created: false });
+        expect(loadAndPinWaveObject).toHaveBeenCalledWith(WOS.makeORef("block", "block-fails"));
+        expect(loadAndPinWaveObject).toHaveBeenCalledWith(WOS.makeORef("tab", "tab-2"));
+        expect(consoleWarn).toHaveBeenCalledWith(
+            "failed to load block while searching for existing editor tab",
+            "block-fails",
+            expect.any(Error)
+        );
+        expect(mockElectronApi.setActiveTab).toHaveBeenCalledWith("tab-2");
         expect(mockServices.CreateTabWithBlock).not.toHaveBeenCalled();
     });
 

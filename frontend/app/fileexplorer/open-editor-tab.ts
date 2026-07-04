@@ -19,9 +19,21 @@ export async function findEditorTabForPath(path: string): Promise<string | null>
     const workspace = globalStore.get(atoms.workspace);
     const tabIds = workspace?.tabids ?? [];
     for (const tabId of tabIds) {
-        const tab = await WOS.loadAndPinWaveObject<Tab>(WOS.makeORef("tab", tabId));
+        let tab: Tab | null = null;
+        try {
+            tab = await WOS.loadAndPinWaveObject<Tab>(WOS.makeORef("tab", tabId));
+        } catch (e) {
+            console.warn("failed to load tab while searching for existing editor tab", tabId, e);
+            continue;
+        }
         for (const blockId of tab?.blockids ?? []) {
-            const block = await WOS.loadAndPinWaveObject<Block>(WOS.makeORef("block", blockId));
+            let block: Block | null = null;
+            try {
+                block = await WOS.loadAndPinWaveObject<Block>(WOS.makeORef("block", blockId));
+            } catch (e) {
+                console.warn("failed to load block while searching for existing editor tab", blockId, e);
+                continue;
+            }
             if (block?.meta?.view === "codeeditor" && block.meta.file === path) {
                 return tabId;
             }
