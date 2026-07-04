@@ -174,7 +174,7 @@ declare global {
             forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>; // agent:fork-session
             cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>; // agent:clone-session
             runCommand: (input: AgentRunCommandInput) => Promise<AgentCommandExecutionResult>; // agent:run-command
-            send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
+            send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
             subscribe: (
@@ -197,6 +197,11 @@ declare global {
         baseurl?: string;
         apitoken?: string;
         tokensecretname?: string;
+        // Optional override for the /models endpoint. Used by minimax
+        // (and other Anthropic-compatible providers) whose model list
+        // lives on a separate path from the chat URL. See
+        // ProviderEntry.modelsEndpoint in ai-catalog.ts.
+        modelsendpoint?: string;
     };
 
     type AiProviderModelInfo = {
@@ -274,6 +279,7 @@ declare global {
         type: string;
         role?: string;
         label?: string;
+        stopReason?: string;
         preview: string;
         timestamp?: string;
         isLeaf: boolean;
