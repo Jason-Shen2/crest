@@ -92,6 +92,14 @@ function shortenHome(cwd: string, home: string): string {
     return cwd;
 }
 
+export async function resetVTabName(env: Pick<VTabBarEnv, "rpc">, tabId: string, resetName: string) {
+    await env.rpc.UpdateTabNameCommand(TabRpcClient, tabId, resetName);
+    await env.rpc.SetMetaCommand(TabRpcClient, {
+        oref: makeORef("tab", tabId),
+        meta: { "tab:autoname": true },
+    });
+}
+
 // blockViewToUIcon — pane-row icon for each block view type.  Mirrors
 // `blockViewToIcon` in @/app/block/blockutil.tsx but returns names from
 // our local SVG set (frontend/app/asset/ui-icons) instead of the
@@ -1403,13 +1411,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                       : undefined
                               }
                               onResetTabName={() =>
-                                  fireAndForget(() =>
-                                      env.rpc.UpdateTabNameCommand(
-                                          TabRpcClient,
-                                          tabId,
-                                          `T${index + 1}`
-                                      )
-                                  )
+                                  fireAndForget(() => resetVTabName(env, tabId, `T${index + 1}`))
                               }
                               onOpenMenu={handleOpenMenu}
                           />
@@ -1471,17 +1473,8 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                           ? () => closeTabsByIds(orderedTabIds.slice(index + 1))
                                           : undefined
                                   }
-                                  // "Reset tab name" restores the auto
-                                  // "T<n>" form so the row falls back
-                                  // to the cwd-derived display label.
                                   onResetTabName={() =>
-                                      fireAndForget(() =>
-                                          env.rpc.UpdateTabNameCommand(
-                                              TabRpcClient,
-                                              tabId,
-                                              `T${index + 1}`
-                                          )
-                                      )
+                                      fireAndForget(() => resetVTabName(env, tabId, `T${index + 1}`))
                                   }
                                   onOpenMenu={handleOpenMenu}
                                   onDragStart={(event) => {
