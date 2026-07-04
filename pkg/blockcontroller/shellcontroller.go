@@ -142,16 +142,46 @@ func (sc *ShellController) GetConnName() string {
 	return sc.ConnName
 }
 
+// shellInputChReadyTimeout bounds the time SendInput will wait for the
+// blockcontroller's shell input channel to come up before declaring the
+// controller "not ready". The channel is assigned in a goroutine spawned
+// from `run()` (see manageRunningShellProcess), so a fresh block can
+// briefly observe it as nil — both the FE's term-view mount resize and
+// the agent subagent's first pty_write land here within that window.
+const shellInputChReadyTimeout = 1 * time.Second
+const shellInputChPollInterval = 25 * time.Millisecond
+
 func (sc *ShellController) SendInput(inputUnion *BlockInputUnion) error {
+	// Wait briefly for the input channel to be installed. The blockcontroller
+	// for a newly-created cmd block finishes its `run()` goroutine (which
+	// calls manageRunningShellProcess and sets ShellInputCh) within a few
+	// function calls; the first ControllerInputCommand — typically a
+	// SIGWINCH-equivalent resize from term-view mount, or the agent
+	// subagent's first pty_write — can otherwise race ahead of that and
+	// bounce off a nil channel.
 	var shellInputCh chan *BlockInputUnion
-	sc.WithLock(func() {
-		shellInputCh = sc.ShellInputCh
-	})
-	if shellInputCh == nil {
-		return fmt.Errorf("no shell input chan")
+	deadline := time.Now().Add(shellInputChReadyTimeout)
+	for {
+		sc.WithLock(func() {
+			shellInputCh = sc.ShellInputCh
+		})
+		if shellInputCh != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("no shell input chan (block %q not ready)", sc.BlockId)
+		}
+		time.Sleep(shellInputChPollInterval)
 	}
-	shellInputCh <- inputUnion
-	return nil
+	// Buffered channel (cap 32). Bounded send so a wedged input loop
+	// doesn't block the FE's RPC forever — the next user action will
+	// retry.
+	select {
+	case shellInputCh <- inputUnion:
+		return nil
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("timed out sending to shell input chan (block %q)", sc.BlockId)
+	}
 }
 
 func (sc *ShellController) WithLock(f func()) {

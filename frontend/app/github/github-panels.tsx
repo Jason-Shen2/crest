@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getApi } from "@/store/global";
+import { Icon } from "@/app/icon/Icon";
 import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useEffect, useRef, useState } from "react";
@@ -37,13 +38,13 @@ export const PanelShell = memo(
                         onClick={onClose}
                         className="text-secondary hover:text-primary cursor-pointer transition-colors text-[12px]"
                     >
-                        <i className="fa fa-solid fa-xmark" />
+                        <Icon name="xmark" size={14} />
                     </button>
                 </div>
             </div>
             {loading && (
                 <div className="flex items-center justify-center py-6 text-secondary text-[12px]">
-                    <i className="fa fa-solid fa-spinner fa-spin mr-2" />
+                    <Icon name="spinner" size={14} className="mr-2" spin />
                     Loading…
                 </div>
             )}
@@ -167,12 +168,12 @@ UserPanel.displayName = "UserPanel";
 // ---- Notifications Panel ----
 
 const NotificationRow = memo(({ n, onRead }: { n: GitHubNotification; onRead: () => void }) => {
-    const iconClass =
+    const { iconName, iconColor } =
         n.subject.type === "PullRequest"
-            ? "fa-code-pull-request text-[#a78bfa]"
+            ? { iconName: "git-branch-01", iconColor: "text-[#a78bfa]" }
             : n.subject.type === "Release"
-            ? "fa-tag text-[#22c55e]"
-            : "fa-circle-dot text-[#3b82f6]";
+            ? { iconName: "tag-01", iconColor: "text-[#22c55e]" }
+            : { iconName: "circle", iconColor: "text-[#3b82f6]" };
 
     return (
         <div
@@ -185,7 +186,7 @@ const NotificationRow = memo(({ n, onRead }: { n: GitHubNotification; onRead: ()
                 if (n.unread) onRead();
             }}
         >
-            <i className={`fa fa-solid ${iconClass} mt-0.5 text-[11px] shrink-0`} />
+            <Icon name={iconName} size={11} className={cn("mt-0.5 shrink-0", iconColor)} />
             <div className="flex-1 min-w-0">
                 <div className="text-[12px] text-primary truncate">{n.subject.title}</div>
                 <div className="text-[11px] text-secondary truncate">{n.repository.full_name}</div>
@@ -200,7 +201,7 @@ const NotificationRow = memo(({ n, onRead }: { n: GitHubNotification; onRead: ()
                     className="text-[10px] text-secondary/50 hover:text-secondary opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
                     title="Mark as read"
                 >
-                    <i className="fa fa-check" />
+                    <Icon name="check" size={14} />
                 </button>
             )}
         </div>
@@ -245,7 +246,7 @@ export const NotificationsPanel = memo(() => {
         >
             {notifications.length === 0 ? (
                 <div className="px-3 py-6 text-[12px] text-secondary text-center">
-                    <i className="fa fa-check-circle text-[24px] text-accent/40 block mb-2" />
+                    <Icon name="checkmark-circle-01" size={14} className="text-[24px] text-accent/40 block mb-2" />
                     All caught up!
                 </div>
             ) : (
@@ -279,7 +280,7 @@ const PRRow = memo(({ pr }: { pr: PullRequest }) => (
                 {pr.base.repo.full_name} #{pr.number} · {pr.user.login}
             </div>
         </div>
-        <i className="fa fa-solid fa-arrow-up-right-from-square text-[10px] text-secondary/50 mt-1 shrink-0" />
+        <Icon name="arrow-up-right-from-square" size={14} className="text-[10px] text-secondary/50 mt-1 shrink-0" />
     </div>
 ));
 PRRow.displayName = "PRRow";
@@ -312,13 +313,13 @@ export const CodeReviewPanel = memo(() => {
                     className="text-[11px] text-secondary hover:text-primary cursor-pointer transition-colors"
                     title="Refresh"
                 >
-                    <i className="fa fa-rotate-right" />
+                    <Icon name="rotate-right" size={14} />
                 </button>
             }
         >
             {prs.length === 0 ? (
                 <div className="px-3 py-6 text-[12px] text-secondary text-center">
-                    <i className="fa fa-code-pull-request text-[24px] text-accent/40 block mb-2" />
+                    <Icon name="git-pull-request" size={14} className="text-[24px] text-accent/40 block mb-2" />
                     No review requests
                 </div>
             ) : (

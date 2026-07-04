@@ -1,6 +1,7 @@
 // Copyright 2025, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { Icon } from "@/app/icon/Icon";
 import { SecretNameRegex, type WaveConfigViewModel } from "@/app/view/waveconfig/waveconfig-model";
 import { cn } from "@/util/util";
 import { useAtomValue, useSetAtom } from "jotai";
@@ -12,7 +13,7 @@ interface ErrorDisplayProps {
 }
 
 const ErrorDisplay = memo(({ message, variant = "error" }: ErrorDisplayProps) => {
-    const icon = variant === "error" ? "fa-circle-exclamation" : "fa-triangle-exclamation";
+    const icon = variant === "error" ? "alert-circle" : "alert-02";
     const baseClasses = "flex items-center gap-2 p-4 border rounded-lg";
     const variantClasses =
         variant === "error"
@@ -21,7 +22,7 @@ const ErrorDisplay = memo(({ message, variant = "error" }: ErrorDisplayProps) =>
 
     return (
         <div className={`${baseClasses} ${variantClasses}`}>
-            <i className={`fa-sharp fa-solid ${icon}`} />
+            <Icon name={icon} size={14} />
             <span>{message}</span>
         </div>
     );
@@ -31,7 +32,7 @@ ErrorDisplay.displayName = "ErrorDisplay";
 const LoadingSpinner = memo(({ message }: { message: string }) => {
     return (
         <div className="flex flex-col items-center justify-center gap-3 py-12">
-            <i className="fa-sharp fa-solid fa-spinner fa-spin text-2xl text-zinc-400" />
+            <Icon name="spinner" size={14} className="text-2xl text-zinc-400" spin />
             <span className="text-zinc-400">{message}</span>
         </div>
     );
@@ -41,14 +42,14 @@ LoadingSpinner.displayName = "LoadingSpinner";
 const EmptyState = memo(({ onAddSecret }: { onAddSecret: () => void }) => {
     return (
         <div className="flex flex-col items-center justify-center gap-4 py-12 h-full bg-zinc-800/50 rounded-lg">
-            <i className="fa-sharp fa-solid fa-key text-4xl text-zinc-600" />
+            <Icon name="key" size={14} className="text-4xl text-zinc-600" />
             <h3 className="text-lg font-semibold text-zinc-400">No Secrets</h3>
             <p className="text-zinc-500">Add a secret to get started</p>
             <button
                 className="flex items-center gap-2 px-4 py-2 bg-accent-600 hover:bg-accent-500 rounded cursor-pointer transition-colors"
                 onClick={onAddSecret}
             >
-                <i className="fa-sharp fa-solid fa-plus" />
+                <Icon name="plus" size={14} />
                 <span className="font-medium">Add New Secret</span>
             </button>
         </div>
@@ -60,7 +61,7 @@ const CLIInfoBubble = memo(() => {
     return (
         <div className="flex flex-col gap-2 p-4 m-4 bg-zinc-800/50 rounded-lg">
             <div className="flex items-center gap-2">
-                <i className="fa-sharp fa-solid fa-terminal text-zinc-400" />
+                <Icon name="terminal" size={14} className="text-zinc-400" />
                 <div className="text-sm font-medium text-zinc-300">CLI Access</div>
             </div>
             <div className="font-mono text-xs bg-black/20 px-3 py-2 rounded leading-relaxed text-zinc-300">
@@ -93,9 +94,9 @@ const SecretListView = memo(({ secretNames, onSelectSecret, onAddSecret }: Secre
                         )}
                         onClick={() => onSelectSecret(name)}
                     >
-                        <i className="fa-sharp fa-solid fa-key text-accent-500" />
+                        <Icon name="key" size={14} className="text-accent-500" />
                         <span className="flex-1 font-mono">{name}</span>
-                        <i className="fa-sharp fa-solid fa-chevron-right text-zinc-500 text-sm" />
+                        <Icon name="chevron-right" size={14} className="text-zinc-500 text-sm" />
                     </div>
                 ))}
                 <div
@@ -104,7 +105,7 @@ const SecretListView = memo(({ secretNames, onSelectSecret, onAddSecret }: Secre
                     )}
                     onClick={onAddSecret}
                 >
-                    <i className="fa-sharp fa-solid fa-plus text-accent-500" />
+                    <Icon name="plus" size={14} className="text-accent-500" />
                     <span className="font-medium text-accent-500">Add New Secret</span>
                 </div>
             </div>
@@ -184,7 +185,7 @@ const AddSecretForm = memo(
                     >
                         {isLoading ? (
                             <>
-                                <i className="fa-sharp fa-solid fa-spinner fa-spin" />
+                                <Icon name="spinner" size={14} spin />
                                 Adding...
                             </>
                         ) : (
@@ -216,7 +217,7 @@ const SecretDetailView = memo(({ model }: SecretDetailViewProps) => {
     return (
         <div className="flex flex-col gap-4 min-h-full p-6 bg-zinc-800/50 rounded-lg">
             <div className="flex items-center gap-2">
-                <i className="fa-sharp fa-solid fa-key text-accent-500" />
+                <Icon name="key" size={14} className="text-accent-500" />
                 <h3 className="text-lg font-semibold">{secretName}</h3>
             </div>
             <div className="flex flex-col gap-2">
@@ -245,7 +246,7 @@ const SecretDetailView = memo(({ model }: SecretDetailViewProps) => {
                         The current secret value is not shown by default for security purposes.{" "}
                         {isLoading ? (
                             <span className="text-zinc-500">
-                                <i className="fa-sharp fa-solid fa-spinner fa-spin" /> Loading...
+                                <Icon name="spinner" size={14} spin /> Loading...
                             </span>
                         ) : (
                             <button
@@ -268,12 +269,12 @@ const SecretDetailView = memo(({ model }: SecretDetailViewProps) => {
                 >
                     {isLoading ? (
                         <>
-                            <i className="fa-sharp fa-solid fa-spinner fa-spin" />
+                            <Icon name="spinner" size={14} spin />
                             Deleting...
                         </>
                     ) : (
                         <>
-                            <i className="fa-sharp fa-solid fa-trash" />
+                            <Icon name="trash" size={14} />
                             Delete
                         </>
                     )}
@@ -293,7 +294,7 @@ const SecretDetailView = memo(({ model }: SecretDetailViewProps) => {
                     >
                         {isLoading ? (
                             <>
-                                <i className="fa-sharp fa-solid fa-spinner fa-spin" />
+                                <Icon name="spinner" size={14} spin />
                                 Saving...
                             </>
                         ) : (

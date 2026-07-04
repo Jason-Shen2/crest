@@ -6,7 +6,8 @@ import type { BlockNodeModel } from "@/app/block/blocktypes";
 import { atoms, globalStore, replaceBlock } from "@/app/store/global";
 import type { TabModel } from "@/app/store/tab-model";
 import { checkKeyPressed, keydownWrapper } from "@/util/keyutil";
-import { isBlank, makeIconClass } from "@/util/util";
+import { isBlank } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
 import clsx from "clsx";
 import { atom, useAtom, useAtomValue } from "jotai";
 import React, { useEffect, useLayoutEffect, useRef } from "react";
@@ -254,11 +255,7 @@ function LauncherView({ blockId, model }: ViewComponentProps<LauncherViewModel>)
                         }}
                     >
                         <div style={{ color: widget.color }}>
-                            <i
-                                className={makeIconClass(widget.icon, true, {
-                                    defaultIcon: "browser",
-                                })}
-                            />
+                            <Icon name={widget.icon ?? "globe-02"} size={24} />
                         </div>
                         {gridLayout.showLabel && !isBlank(widget.label) && (
                             <div className="mt-1 w-full text-[11px] leading-4 overflow-hidden text-ellipsis whitespace-nowrap">

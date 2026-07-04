@@ -1,6 +1,6 @@
 {
     "app:defaultnewblock": "termblocks",
-    "app:tabbar": "left",
+    "app:tabbar": "top",
     "app:confirmquit": true,
     "app:hideaibutton": false,
     "term:showsplitbuttons": false,

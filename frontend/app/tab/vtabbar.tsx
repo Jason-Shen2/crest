@@ -13,6 +13,7 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { useResolvedTabFlagColor } from "./tab-color-utils";
+import { isTabAutoNamed } from "./tab-name";
 import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -281,7 +282,7 @@ function VTabWrapper({
     // unknown.  The real cwd replaces whatever standin is showing the
     // moment OSC 7 lands.
     const rawName = tabData?.name ?? "";
-    const isAutoNamed = /^T\d+$/.test(rawName);
+    const isAutoNamed = isTabAutoNamed(tabData);
     const userTitle = isAutoNamed ? "" : rawName;
     // commandText — warp's "command / conversation" line.  For crest
     // (no CLI-agent telemetry yet) we use the user-set tab title and
@@ -796,7 +797,7 @@ function VPaneWrapper({
     // identity beyond their block.
     const paneRenameRef = useRef<(() => void) | null>(null);
     const rawTabName = tabData?.name ?? "";
-    const tabIsAutoNamed = /^T\d+$/.test(rawTabName);
+    const tabIsAutoNamed = isTabAutoNamed(tabData);
     const paneMenuParams = useMemo(
         () => ({
             id: tabId,

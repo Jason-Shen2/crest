@@ -58,3 +58,61 @@
         --os-handle-border-radius: 2px;
     }
 }
+
+.tab-bar-wrapper.embedded {
+    padding-top: 0;
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+    height: 100%;
+    align-items: center;
+    background: transparent;
+    backdrop-filter: none;
+
+    .tabs-wrapper {
+        height: 28px;
+    }
+
+    .tab-bar {
+        height: 28px;
+        margin-bottom: 0;
+    }
+
+    .tab {
+        top: 0;
+        height: 28px;
+
+        .tab-inner {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 28px;
+        }
+
+        .name {
+            position: static;
+            top: auto;
+            left: auto;
+            transform: none;
+            line-height: 16px;
+        }
+    }
+
+    .add-tab {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: auto;
+        height: 22px;
+        padding: 0 8px;
+        margin-top: 0;
+        margin-bottom: 0;
+        font-size: 15px;
+        line-height: 1;
+
+        > svg {
+            display: block;
+            flex-shrink: 0;
+        }
+    }
+}

@@ -321,10 +321,34 @@ func sendConnMonitorInputNotification(controller Controller) {
 	}
 }
 
+// controllerReadyTimeout bounds how long SendInput will wait for the
+// blockcontroller to be registered (and, inside ShellController.SendInput,
+// for the shell input channel to be installed) before declaring the
+// controller "not ready". The first ControllerInputCommand on a freshly
+// created block — typically the term-view mount's SIGWINCH-equivalent
+// resize, or the agent subagent's first pty_write — can race the
+// ControllerResyncCommand that registers the controller.
+const controllerReadyTimeout = 1 * time.Second
+const controllerReadyPollInterval = 25 * time.Millisecond
+
 func SendInput(blockId string, inputUnion *BlockInputUnion) error {
-	controller := getController(blockId)
-	if controller == nil {
-		return fmt.Errorf("no controller found for block %s", blockId)
+	// Wait briefly for the controller to be registered. The FE's term-view
+	// mount fires ControllerInputCommand (resize) and the FE's
+	// TerminalModel.kickoff fires ControllerResyncCommand in parallel; if
+	// the resize RPC wins, getController returns nil here. The fix in
+	// ShellController.SendInput handles the subsequent gap between
+	// registration and the shell input channel being installed.
+	var controller Controller
+	deadline := time.Now().Add(controllerReadyTimeout)
+	for {
+		controller = getController(blockId)
+		if controller != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("no controller found for block %s", blockId)
+		}
+		time.Sleep(controllerReadyPollInterval)
 	}
 	sendConnMonitorInputNotification(controller)
 	return controller.SendInput(inputUnion)

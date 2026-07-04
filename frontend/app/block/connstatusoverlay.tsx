@@ -4,6 +4,7 @@
 import { Button } from "@/app/element/button";
 import { CopyButton } from "@/app/element/copybutton";
 import { useDimensionsWithCallbackRef } from "@/app/hook/useDimensions";
+import { Icon } from "@/app/icon/Icon";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { NodeModel } from "@/layout/index";
@@ -85,10 +86,7 @@ const StalledOverlay = React.memo(
                 ref={overlayRefCallback}
             >
                 <div className="flex items-center gap-3 w-full pt-2.5 pb-2.5 pr-2 pl-3">
-                    <i
-                        className="fa-solid fa-triangle-exclamation text-warning text-base shrink-0"
-                        title="Connection Stalled"
-                    ></i>
+                    <Icon name="triangle-exclamation" size={14} className="text-warning text-base shrink-0" />
                     <div className="text-[11px] font-semibold leading-4 tracking-[0.11px] text-white min-w-0 flex-1 break-words @max-xxs:hidden">
                         Connection to "{connName}" is stalled
                         {elapsedTime && ` (no activity for ${elapsedTime})`}
@@ -100,7 +98,7 @@ const StalledOverlay = React.memo(
                         title="Disconnect"
                     >
                         <span className="@max-w350:hidden!">Disconnect</span>
-                        <i className="fa-solid fa-link-slash hidden! @max-w350:inline!"></i>
+                        <Icon name="link-slash" size={14} className="hidden! @max-w350:inline!" />
                     </Button>
                 </div>
             </div>
@@ -183,7 +181,7 @@ export const ConnStatusOverlay = React.memo(
         let reconDisplay = null;
         let reconClassName = "outlined grey";
         if (width && width < 350) {
-            reconDisplay = <i className="fa-sharp fa-solid fa-rotate-right"></i>;
+            reconDisplay = <Icon name="rotate-right" size={14} />;
             reconClassName = clsx(reconClassName, "text-[12px] py-[5px] px-[6px]");
         } else {
             reconDisplay = "Reconnect";
@@ -231,7 +229,7 @@ export const ConnStatusOverlay = React.memo(
             <div className="connstatus-overlay" ref={overlayRefCallback}>
                 <div className="connstatus-content">
                     <div className={clsx("connstatus-status-icon-wrapper", { "has-error": showError || showWshError })}>
-                        {showIcon && <i className="fa-solid fa-triangle-exclamation"></i>}
+                        {showIcon && <Icon name="triangle-exclamation" size={14} />}
                         <div className="connstatus-status ellipsis">
                             <div className="connstatus-status-text">{statusText}</div>
                             {(showError || showWshError) && (
@@ -260,7 +258,9 @@ export const ConnStatusOverlay = React.memo(
                     ) : null}
                     {showWshError ? (
                         <div className="connstatus-actions">
-                            <Button className={`fa-xmark fa-solid ${reconClassName}`} onClick={handleRemoveWshError} />
+                            <Button className={reconClassName} onClick={handleRemoveWshError}>
+                                <Icon name="cancel-01" size={11} />
+                            </Button>
                         </div>
                     ) : null}
                 </div>
