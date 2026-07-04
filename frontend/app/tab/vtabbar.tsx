@@ -38,6 +38,7 @@ import { VtabDetailSidecar } from "./vtab-detail-sidecar";
 import { getSettingsKeyAtom } from "@/app/store/global";
 import { getLayoutModelForStaticTab } from "@/layout/index";
 import { blockViewToName } from "@/app/block/blockutil";
+import { getFileBackedBlockLabel, isTabAutoNamed } from "./vtab-file-label";
 export type { VTabItem } from "./vtab";
 
 interface VTabBarProps {
@@ -92,6 +93,10 @@ function shortenHome(cwd: string, home: string): string {
     return cwd;
 }
 
+export async function resetVTabName(env: Pick<VTabBarEnv, "rpc">, tabId: string, resetName: string) {
+    await env.rpc.ResetTabNameCommand(TabRpcClient, tabId, resetName);
+}
+
 // blockViewToUIcon — pane-row icon for each block view type.  Mirrors
 // `blockViewToIcon` in @/app/block/blockutil.tsx but returns names from
 // our local SVG set (frontend/app/asset/ui-icons) instead of the
@@ -103,6 +108,7 @@ function blockViewToUIcon(view: string): string {
         case "termblocks":
             return "terminal";
         case "preview":
+        case "codeeditor":
             return "file";
         case "web":
             return "compass-3";
@@ -284,11 +290,12 @@ function VTabWrapper({
     const rawName = tabData?.name ?? "";
     const isAutoNamed = isTabAutoNamed(tabData);
     const userTitle = isAutoNamed ? "" : rawName;
+    const fileLabel = isAutoNamed ? getFileBackedBlockLabel(firstBlock?.meta) : null;
     // commandText — warp's "command / conversation" line.  For crest
     // (no CLI-agent telemetry yet) we use the user-set tab title and
     // fall back to cwd / "~" / "Terminal" so the field is never blank.
-    const commandText = userTitle || cwdShort || (home ? "~" : "") || "Terminal";
-    const workingDirectoryText = cwdShort || userTitle || "Terminal";
+    const commandText = fileLabel?.basename || userTitle || cwdShort || (home ? "~" : "") || "Terminal";
+    const workingDirectoryText = fileLabel?.path || cwdShort || userTitle || "Terminal";
 
     // 3-column compositor — direct port of the table in
     // `render_terminal_row_content` (vertical_tabs.rs:3284-3288).
@@ -706,8 +713,7 @@ function VPaneWrapper({
     // + metadata).  For non-terminal blocks (preview/web/etc.) warp
     // uses a simpler 2-line layout (title + view-specific subtitle)
     // with no third metadata row.
-    const filePath = (block?.meta?.["file:path"] as string) || "";
-    const fileBase = filePath.includes("/") ? filePath.split("/").pop() || filePath : filePath;
+    const fileLabel = getFileBackedBlockLabel(block?.meta);
     const webUrl = (block?.meta?.["url"] as string) || "";
     const isCompact = viewMode === "compact";
 
@@ -749,9 +755,9 @@ function VPaneWrapper({
             default:
                 compactLineTwo = "";
         }
-    } else if (view === "preview") {
-        primaryName = fileBase || "Preview";
-        expandedSubtitle = filePath !== fileBase ? filePath : "";
+    } else if (fileLabel) {
+        primaryName = fileLabel.basename || fileLabel.fallbackTitle;
+        expandedSubtitle = fileLabel.path !== fileLabel.basename ? fileLabel.path : "";
         compactLineTwo = ""; // non-terminal panes have no compact-subtitle setting
     } else if (view === "web") {
         primaryName = webUrl || blockViewToName(view) || "Web";
@@ -796,7 +802,6 @@ function VPaneWrapper({
     // semantics since panes don't have an independent ordering or
     // identity beyond their block.
     const paneRenameRef = useRef<(() => void) | null>(null);
-    const rawTabName = tabData?.name ?? "";
     const tabIsAutoNamed = isTabAutoNamed(tabData);
     const paneMenuParams = useMemo(
         () => ({
@@ -1403,13 +1408,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                       : undefined
                               }
                               onResetTabName={() =>
-                                  fireAndForget(() =>
-                                      env.rpc.UpdateTabNameCommand(
-                                          TabRpcClient,
-                                          tabId,
-                                          `T${index + 1}`
-                                      )
-                                  )
+                                  fireAndForget(() => resetVTabName(env, tabId, `T${index + 1}`))
                               }
                               onOpenMenu={handleOpenMenu}
                           />
@@ -1471,17 +1470,8 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                           ? () => closeTabsByIds(orderedTabIds.slice(index + 1))
                                           : undefined
                                   }
-                                  // "Reset tab name" restores the auto
-                                  // "T<n>" form so the row falls back
-                                  // to the cwd-derived display label.
                                   onResetTabName={() =>
-                                      fireAndForget(() =>
-                                          env.rpc.UpdateTabNameCommand(
-                                              TabRpcClient,
-                                              tabId,
-                                              `T${index + 1}`
-                                          )
-                                      )
+                                      fireAndForget(() => resetVTabName(env, tabId, `T${index + 1}`))
                                   }
                                   onOpenMenu={handleOpenMenu}
                                   onDragStart={(event) => {

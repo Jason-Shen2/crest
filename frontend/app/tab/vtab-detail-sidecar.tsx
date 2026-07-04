@@ -12,6 +12,7 @@ import { cn, fireAndForget } from "@/util/util";
 import { FloatingPortal } from "@floating-ui/react";
 import { useAtomValue } from "jotai";
 import { useEffect, useMemo, useState } from "react";
+import { getFileBackedBlockLabel, isTabAutoNamed, type FileBackedBlockLabel } from "./vtab-file-label";
 import type { VTabBarEnv } from "./vtabbarenv";
 import { isTabAutoNamed } from "./tab-name";
 
@@ -56,6 +57,7 @@ function blockViewToUIcon(view: string): string {
         case "termblocks":
             return "terminal";
         case "preview":
+        case "codeeditor":
             return "file";
         case "web":
             return "compass-3";
@@ -81,6 +83,43 @@ function blockViewToUIcon(view: string): string {
     }
 }
 
+export function resolveVtabDetailHeaderTitle({
+    isPaneMode,
+    isAutoNamed,
+    tabName,
+    cwdShort,
+    fileLabel,
+    view,
+    webUrl,
+}: {
+    isPaneMode: boolean;
+    isAutoNamed: boolean;
+    tabName: string;
+    cwdShort: string;
+    fileLabel: FileBackedBlockLabel | null;
+    view: string;
+    webUrl: string;
+}): string {
+    if (!isPaneMode) {
+        return (
+            (isAutoNamed && (fileLabel?.basename || fileLabel?.fallbackTitle)) ||
+            (!isAutoNamed && tabName) ||
+            cwdShort ||
+            "Terminal"
+        );
+    }
+    if (view === "term" || view === "termblocks" || view === "") {
+        return cwdShort || (!isAutoNamed && tabName) || "Terminal";
+    }
+    if (fileLabel) {
+        return fileLabel.basename || fileLabel.fallbackTitle;
+    }
+    if (view === "web") {
+        return webUrl || "Web";
+    }
+    return viewToName(view);
+}
+
 function viewToName(view: string): string {
     switch (view) {
         case "term":
@@ -88,6 +127,8 @@ function viewToName(view: string): string {
             return "Terminal";
         case "preview":
             return "Preview";
+        case "codeeditor":
+            return "Code editor";
         case "web":
             return "Web";
         case "help":
@@ -138,13 +179,9 @@ export function VtabDetailSidecar({
         // into a sibling.
         blockId == null && secondBlockId ? makeORef("block", secondBlockId) : null
     );
-    const cwd =
-        (effectiveBlock?.meta?.["cmd:cwd"] as string) ||
-        (fallbackBlock?.meta?.["cmd:cwd"] as string) ||
-        "";
+    const cwd = (effectiveBlock?.meta?.["cmd:cwd"] as string) || (fallbackBlock?.meta?.["cmd:cwd"] as string) || "";
     const view = (effectiveBlock?.meta?.["view"] as string) || "";
-    const filePath = (effectiveBlock?.meta?.["file:path"] as string) || "";
-    const fileBase = filePath.includes("/") ? filePath.split("/").pop() || filePath : filePath;
+    const fileLabel = getFileBackedBlockLabel(effectiveBlock?.meta);
     const webUrl = (effectiveBlock?.meta?.["url"] as string) || "";
 
     const home = useMemo(() => {
@@ -164,10 +201,7 @@ export function VtabDetailSidecar({
     // In panes mode "is anything running" is a single-block question;
     // in tabs mode we keep the existing "any block in this tab is
     // running" semantics so the indicator matches the row's badge.
-    const runningKind = getTabRunningKind(
-        blockId ? [blockId] : tabData?.blockids ?? [],
-        blockCmdState
-    );
+    const runningKind = getTabRunningKind(blockId ? [blockId] : (tabData?.blockids ?? []), blockCmdState);
 
     const [gitInfo, setGitInfo] = useState<GitInfoResponse | null>(null);
     useEffect(() => {
@@ -193,14 +227,8 @@ export function VtabDetailSidecar({
     // viewport on the right so the sidecar never disappears off-screen
     // for wide window setups.  Bottom-clamping mirrors warp's height
     // ceiling — the sidecar grows up to 420px and scrolls past that.
-    const top = Math.min(
-        Math.max(8, anchorRect.top - 4),
-        window.innerHeight - SidecarMaxHeight - 8
-    );
-    const left = Math.min(
-        anchorRect.right + GapToRow,
-        window.innerWidth - SidecarWidth - 8
-    );
+    const top = Math.min(Math.max(8, anchorRect.top - 4), window.innerHeight - SidecarMaxHeight - 8);
+    const left = Math.min(anchorRect.right + GapToRow, window.innerWidth - SidecarWidth - 8);
 
     const isRepo = !!gitInfo?.isrepo;
     const branch = gitInfo?.branch ?? "";
@@ -218,20 +246,17 @@ export function VtabDetailSidecar({
     // parent tab name in the footer.  In Tabs mode we keep the
     // original "tab name → first block cwd → 'Terminal'" cascade.
     let headerIcon = "terminal";
-    let headerTitle: string;
+    const headerTitle = resolveVtabDetailHeaderTitle({
+        isPaneMode,
+        isAutoNamed,
+        tabName,
+        cwdShort,
+        fileLabel,
+        view,
+        webUrl,
+    });
     if (isPaneMode) {
         headerIcon = blockViewToUIcon(view);
-        if (view === "term" || view === "termblocks" || view === "") {
-            headerTitle = cwdShort || (!isAutoNamed && tabName) || "Terminal";
-        } else if (view === "preview") {
-            headerTitle = fileBase || "Preview";
-        } else if (view === "web") {
-            headerTitle = webUrl || "Web";
-        } else {
-            headerTitle = viewToName(view);
-        }
-    } else {
-        headerTitle = (!isAutoNamed && tabName) || cwdShort || "Terminal";
     }
 
     // FloatingPortal escapes the VTabBar's backdrop-filter stacking
@@ -239,126 +264,117 @@ export function VtabDetailSidecar({
     // any other workspace children to its right.
     return (
         <FloatingPortal>
-        <div
-            role="dialog"
-            aria-label="Tab details"
-            onMouseEnter={onPointerEnter}
-            onMouseLeave={onPointerLeave}
-            className={cn(
-                "fixed z-40 flex flex-col gap-3 overflow-hidden rounded-md border border-fg-overlay-2 bg-background p-3",
-                "shadow-[0_8px_32px_rgba(0,0,0,0.5)]"
-            )}
-            style={{ top, left, width: SidecarWidth, maxHeight: SidecarMaxHeight }}
-        >
-            <div className="flex items-center gap-2">
-                <UIcon name={headerIcon} size={16} className="text-secondary" />
-                <div className="flex min-w-0 flex-1 flex-col">
-                    <div className="truncate text-[15px] font-medium text-foreground" title={headerTitle}>
-                        {headerTitle}
-                    </div>
-                    {/* In panes mode, surface the parent tab name on a
+            <div
+                role="dialog"
+                aria-label="Tab details"
+                onMouseEnter={onPointerEnter}
+                onMouseLeave={onPointerLeave}
+                className={cn(
+                    "fixed z-40 flex flex-col gap-3 overflow-hidden rounded-md border border-fg-overlay-2 bg-background p-3",
+                    "shadow-[0_8px_32px_rgba(0,0,0,0.5)]"
+                )}
+                style={{ top, left, width: SidecarWidth, maxHeight: SidecarMaxHeight }}
+            >
+                <div className="flex items-center gap-2">
+                    <UIcon name={headerIcon} size={16} className="text-secondary" />
+                    <div className="flex min-w-0 flex-1 flex-col">
+                        <div className="truncate text-[15px] font-medium text-foreground" title={headerTitle}>
+                            {headerTitle}
+                        </div>
+                        {/* In panes mode, surface the parent tab name on a
                         second line so the user can still see which tab
                         this pane belongs to. */}
-                    {isPaneMode && !isAutoNamed && tabName && (
-                        <div className="truncate text-[12px] text-secondary" title={tabName}>
-                            in {tabName}
-                        </div>
+                        {isPaneMode && !isAutoNamed && tabName && (
+                            <div className="truncate text-[12px] text-secondary" title={tabName}>
+                                in {tabName}
+                            </div>
+                        )}
+                    </div>
+                    {runningKind && (
+                        <span className="inline-flex items-center gap-1 rounded bg-fg-overlay-2 px-1.5 py-0.5 text-[12px] uppercase tracking-wide text-secondary">
+                            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                            {AgentLabels[runningKind]}
+                        </span>
                     )}
                 </div>
-                {runningKind && (
-                    <span className="inline-flex items-center gap-1 rounded bg-fg-overlay-2 px-1.5 py-0.5 text-[12px] uppercase tracking-wide text-secondary">
-                        <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                        {AgentLabels[runningKind]}
-                    </span>
-                )}
-            </div>
 
-            {/* Panes mode: surface the view type as a small chip — gives
+                {/* Panes mode: surface the view type as a small chip — gives
                 the user a clear signal that the sidecar is anchored to
                 this specific pane, not just the parent tab. */}
-            {isPaneMode && view && view !== "term" && view !== "termblocks" && (
-                <div className="flex flex-col gap-1">
-                    <div className="text-[12px] uppercase tracking-wide text-secondary">View</div>
-                    <div className="text-[15px] text-foreground">{viewToName(view)}</div>
-                </div>
-            )}
+                {isPaneMode && view && view !== "term" && view !== "termblocks" && (
+                    <div className="flex flex-col gap-1">
+                        <div className="text-[12px] uppercase tracking-wide text-secondary">View</div>
+                        <div className="text-[15px] text-foreground">{viewToName(view)}</div>
+                    </div>
+                )}
 
-            {isPaneMode && view === "preview" && filePath && (
-                <div className="flex flex-col gap-1">
-                    <div className="text-[12px] uppercase tracking-wide text-secondary">File</div>
-                    <div
-                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
-                        title={filePath}
-                    >
-                        {filePath}
-                    </div>
-                </div>
-            )}
-
-            {isPaneMode && view === "web" && webUrl && (
-                <div className="flex flex-col gap-1">
-                    <div className="text-[12px] uppercase tracking-wide text-secondary">URL</div>
-                    <div
-                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
-                        title={webUrl}
-                    >
-                        {webUrl}
-                    </div>
-                </div>
-            )}
-
-            {cwd && (
-                <div className="flex flex-col gap-1">
-                    <div className="text-[12px] uppercase tracking-wide text-secondary">
-                        Working directory
-                    </div>
-                    <div
-                        className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
-                        title={cwd}
-                    >
-                        {cwdShort}
-                    </div>
-                </div>
-            )}
-
-            {isRepo && (
-                <div className="flex flex-col gap-1">
-                    <div className="text-[12px] uppercase tracking-wide text-secondary">Git</div>
-                    <div className="flex items-center gap-2 text-[15px] text-foreground">
-                        <UIcon name="git-branch-02" size={12} className="text-secondary" />
-                        <span className="truncate">{branch || "(no branch)"}</span>
-                    </div>
-                    {(adds > 0 || dels > 0 || changedFiles > 0) && (
-                        <div className="flex items-center gap-3 text-[13px] tabular-nums text-secondary">
-                            {changedFiles > 0 && (
-                                <span>
-                                    {changedFiles} file{changedFiles === 1 ? "" : "s"}
-                                </span>
-                            )}
-                            {adds > 0 && (
-                                <span style={{ color: "var(--color-add-strong)" }}>+{adds}</span>
-                            )}
-                            {dels > 0 && (
-                                <span style={{ color: "var(--color-remove-strong)" }}>−{dels}</span>
-                            )}
+                {isPaneMode && fileLabel && (
+                    <div className="flex flex-col gap-1">
+                        <div className="text-[12px] uppercase tracking-wide text-secondary">File</div>
+                        <div
+                            className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
+                            title={fileLabel.path}
+                        >
+                            {fileLabel.path}
                         </div>
-                    )}
-                </div>
-            )}
+                    </div>
+                )}
 
-            <div className="flex items-center gap-3 border-t border-fg-overlay-1 pt-2 text-[13px] text-secondary">
-                <span>
-                    {blockCount} block{blockCount === 1 ? "" : "s"}
-                </span>
-                <span className="opacity-60">·</span>
-                <span
-                    className="truncate"
-                    title={isPaneMode && effectiveBlockId ? effectiveBlockId : tabId}
-                >
-                    {(isPaneMode && effectiveBlockId ? effectiveBlockId : tabId).slice(0, 8)}…
-                </span>
+                {isPaneMode && view === "web" && webUrl && (
+                    <div className="flex flex-col gap-1">
+                        <div className="text-[12px] uppercase tracking-wide text-secondary">URL</div>
+                        <div
+                            className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
+                            title={webUrl}
+                        >
+                            {webUrl}
+                        </div>
+                    </div>
+                )}
+
+                {cwd && (
+                    <div className="flex flex-col gap-1">
+                        <div className="text-[12px] uppercase tracking-wide text-secondary">Working directory</div>
+                        <div
+                            className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
+                            title={cwd}
+                        >
+                            {cwdShort}
+                        </div>
+                    </div>
+                )}
+
+                {isRepo && (
+                    <div className="flex flex-col gap-1">
+                        <div className="text-[12px] uppercase tracking-wide text-secondary">Git</div>
+                        <div className="flex items-center gap-2 text-[15px] text-foreground">
+                            <UIcon name="git-branch-02" size={12} className="text-secondary" />
+                            <span className="truncate">{branch || "(no branch)"}</span>
+                        </div>
+                        {(adds > 0 || dels > 0 || changedFiles > 0) && (
+                            <div className="flex items-center gap-3 text-[13px] tabular-nums text-secondary">
+                                {changedFiles > 0 && (
+                                    <span>
+                                        {changedFiles} file{changedFiles === 1 ? "" : "s"}
+                                    </span>
+                                )}
+                                {adds > 0 && <span style={{ color: "var(--color-add-strong)" }}>+{adds}</span>}
+                                {dels > 0 && <span style={{ color: "var(--color-remove-strong)" }}>−{dels}</span>}
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                <div className="flex items-center gap-3 border-t border-fg-overlay-1 pt-2 text-[13px] text-secondary">
+                    <span>
+                        {blockCount} block{blockCount === 1 ? "" : "s"}
+                    </span>
+                    <span className="opacity-60">·</span>
+                    <span className="truncate" title={isPaneMode && effectiveBlockId ? effectiveBlockId : tabId}>
+                        {(isPaneMode && effectiveBlockId ? effectiveBlockId : tabId).slice(0, 8)}…
+                    </span>
+                </div>
             </div>
-        </div>
         </FloatingPortal>
     );
 }

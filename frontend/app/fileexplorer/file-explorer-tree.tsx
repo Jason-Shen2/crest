@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ContextMenuModel } from "@/app/store/contextmenu";
-import { atoms, createBlock, getApi, getSettingsKeyAtom } from "@/store/global";
+import { atoms, getApi, getSettingsKeyAtom } from "@/store/global";
 import { fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useEffect, useMemo, useRef } from "react";
@@ -119,6 +119,7 @@ type FileExplorerContextMenuInput = {
         | "cdToDir"
         | "deleteFile"
         | "openFile"
+        | "openFileInRightEditor"
         | "openInNewTab"
         | "startNewFile"
         | "startNewFolder"
@@ -155,18 +156,19 @@ export function buildFileExplorerContextMenu({ model, finfo, root }: FileExplore
 
     if (!isDir) {
         menu.push({
-            label: "Open in Right Editor",
+            label: "Open in Editor Tab",
             click: () => fireAndForget(() => model.openFile(finfo)),
         });
+        menu.push({
+            label: "Open in Right Editor",
+            click: () => fireAndForget(() => model.openFileInRightEditor(finfo)),
+        });
+    } else {
+        menu.push({
+            label: "Open in New Tab",
+            click: () => fireAndForget(() => model.openInNewTab(path)),
+        });
     }
-
-    menu.push({
-        label: "Open in Main Area",
-        click: () =>
-            fireAndForget(() =>
-                isDir ? model.openInNewTab(path) : createBlock({ meta: { view: "preview", file: path, connection: "" } })
-            ),
-    });
 
     menu.push({
         label: "Reveal in Finder",
@@ -202,6 +204,22 @@ export function buildFileExplorerContextMenu({ model, finfo, root }: FileExplore
     return menu;
 }
 
+type FileExplorerRowClickInput = {
+    model: Pick<FileExplorerModel, "openFile" | "setSelected" | "toggleExpand">;
+    finfo: FileInfo;
+    path: string;
+    isDir: boolean;
+};
+
+export function handleFileExplorerRowClick({ model, finfo, path, isDir }: FileExplorerRowClickInput): void {
+    model.setSelected(path);
+    if (isDir) {
+        fireAndForget(() => model.toggleExpand(path));
+        return;
+    }
+    fireAndForget(() => model.openFile(finfo));
+}
+
 const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
     const { path, name, depth, isDir, finfo, expanded, selected } = item;
     const model = FileExplorerModel.getInstance();
@@ -234,13 +252,7 @@ const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
                 selected ? "bg-accent/20" : "hover:bg-white/5"
             }`}
             style={{ paddingLeft: depth * 12 + 6 }}
-            onClick={() => {
-                model.setSelected(path);
-                if (isDir) fireAndForget(() => model.toggleExpand(path));
-            }}
-            onDoubleClick={() => {
-                if (!isDir) fireAndForget(() => model.openFile(finfo));
-            }}
+            onClick={() => handleFileExplorerRowClick({ model, finfo, path, isDir })}
             onContextMenu={onContextMenu}
             title={path}
         >
