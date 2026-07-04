@@ -7,15 +7,12 @@ import { FileExplorer } from "@/app/fileexplorer/file-explorer";
 import { ModalsRenderer } from "@/app/modals/modalsrenderer";
 import { NotificationToastStacker } from "@/app/notifications/notification-toast";
 import { NotificationsModel } from "@/app/notifications/notifications-model";
-import { TabBar } from "@/app/tab/tabbar";
+import { StatusBar } from "@/app/statusbar/status-bar";
 import { TabContent } from "@/app/tab/tabcontent";
 import { VTabBar } from "@/app/tab/vtabbar";
 import { TopBar } from "@/app/topbar/topbar";
 import { ResizeHandle } from "@/app/workspace/resize-handle";
-import {
-    RightToolPanel,
-    RightToolPanelMagnifiedOverlay,
-} from "@/app/workspace/right-tool-panel";
+import { RightToolPanel, RightToolPanelMagnifiedOverlay } from "@/app/workspace/right-tool-panel";
 import { MinRightToolPanelWidth } from "@/app/workspace/right-tool-panel-state";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { atoms, getSettingsKeyAtom } from "@/store/global";
@@ -146,8 +143,11 @@ const WorkspaceElem = memo(() => {
             className="flex flex-col w-full flex-grow overflow-hidden"
             onPointerDownCapture={onWorkspaceChromePointerDownCapture}
         >
-            <TopBar onPointerDownCapture={onWorkspaceChromePointerDownCapture} />
-            {!showLeftTabBar && <TabBar key={ws.oid} workspace={ws} noTabs={false} />}
+            <TopBar
+                workspace={ws}
+                showTabs={!showLeftTabBar}
+                onPointerDownCapture={onWorkspaceChromePointerDownCapture}
+            />
             <div className="flex flex-row flex-grow overflow-hidden min-h-0">
                 {/* Left panel 1: vertical tab bar.  Absent from the
                         flex row when hidden — warp pattern (view.rs:19466
@@ -237,6 +237,7 @@ const WorkspaceElem = memo(() => {
                 <ModalsRenderer />
             </div>
             <NotificationToastStacker />
+            <StatusBar />
         </div>
     );
 });
