@@ -174,26 +174,23 @@ describe("VTabBar tab labels", () => {
         const blockId = "manual-editor-reset-block";
         const updateTabName = vi.fn().mockResolvedValue(undefined);
         const setMeta = vi.fn().mockResolvedValue(undefined);
+        const resetTabName = vi.fn().mockResolvedValue(undefined);
 
         await resetVTabName(
             {
                 rpc: {
                     UpdateTabNameCommand: updateTabName,
                     SetMetaCommand: setMeta,
+                    ResetTabNameCommand: resetTabName,
                 },
             } as any,
             tabId,
             "T1"
         );
 
-        expect(updateTabName.mock.calls[0]?.slice(1)).toEqual([tabId, "T1"]);
-        expect(setMeta.mock.calls[0]?.[1]).toEqual({
-            oref: `tab:${tabId}`,
-            meta: { "tab:autoname": true },
-        });
-        expect(updateTabName.mock.invocationCallOrder[0]).toBeLessThan(
-            setMeta.mock.invocationCallOrder[0]
-        );
+        expect(resetTabName.mock.calls[0]?.slice(1)).toEqual([tabId, "T1"]);
+        expect(updateTabName).not.toHaveBeenCalled();
+        expect(setMeta).not.toHaveBeenCalled();
 
         const manualMarkup = renderVTabBar(
             [
