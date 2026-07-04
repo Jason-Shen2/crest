@@ -221,7 +221,7 @@ describe("CodeEditor", () => {
         expect(RightEditorModel.hasInstance()).toBe(false);
     });
 
-    it("uses a block-scoped Monaco model uri for codeeditor blocks", () => {
+    it("uses an LSP-compatible file Monaco uri for codeeditor blocks without creating RightEditorModel", () => {
         const filePath = "/repo/src/app.ts";
         const rawFileUri = "file:///repo/src/app.ts";
         const model = new FileEditorViewModel(makeFileEditorInitOpts(filePath));
@@ -236,14 +236,10 @@ describe("CodeEditor", () => {
         expect(mockRegistry.getOrCreateModel).toHaveBeenCalledWith(
             expect.objectContaining({
                 path: "codeeditor:block-1:/repo/src/app.ts",
-                uri: expect.stringContaining("block-1"),
-            })
-        );
-        expect(mockRegistry.getOrCreateModel).not.toHaveBeenCalledWith(
-            expect.objectContaining({
                 uri: rawFileUri,
             })
         );
+        expect(RightEditorModel.hasInstance()).toBe(false);
     });
 
     it("ignores stale file reads after the block meta file changes", async () => {

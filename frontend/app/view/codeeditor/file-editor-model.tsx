@@ -54,15 +54,6 @@ function makeBlockScopedModelPath(blockId: string, filePath: string): string {
     return `codeeditor:${blockId}:${filePath}`;
 }
 
-function makeBlockScopedModelUri(blockId: string, filePath: string): string {
-    const encodedBlockId = encodeURIComponent(blockId);
-    const encodedPath = normalizePathSeparators(filePath)
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/");
-    return `codeeditor://${encodedBlockId}/${encodedPath}`;
-}
-
 function getLspStatusInput(activeFile: RightEditorOpenFile, workspaceRoot: string) {
     if (!activeFile) return null;
     const activeWorkspaceRoot = activeFile.workspaceRoot || workspaceRoot;
@@ -268,7 +259,7 @@ function FileEditorView({ blockId, model }: ViewComponentProps<FileEditorViewMod
         if (!activeFile) return null;
         return MonacoModelRegistry.getInstance().getOrCreateModel({
             path: makeBlockScopedModelPath(blockId, activeFile.path),
-            uri: makeBlockScopedModelUri(blockId, activeFile.path),
+            uri: activeFile.uri,
             text,
             language: activeFile.language,
         });

@@ -14,6 +14,7 @@ type ModelInput = {
 export class MonacoModelRegistry {
     private static instance: MonacoModelRegistry = null;
     private readonly modelUrisByPath = new Map<string, string>();
+    private readonly modelPathsByUri = new Map<string, Set<string>>();
 
     static getInstance(): MonacoModelRegistry {
         if (!MonacoModelRegistry.instance) {
@@ -25,8 +26,13 @@ export class MonacoModelRegistry {
     getOrCreateModel(input: ModelInput): monaco.editor.ITextModel {
         loadMonaco();
         const uri = monaco.Uri.parse(input.uri);
+        const existingUri = this.modelUrisByPath.get(input.path);
+        if (existingUri && existingUri !== input.uri) {
+            this.releaseModelPath(input.path, existingUri);
+        }
         const existing = monaco.editor.getModel(uri);
         this.modelUrisByPath.set(input.path, input.uri);
+        this.getOrCreateModelPaths(input.uri).add(input.path);
         if (existing) return existing;
         return monaco.editor.createModel(input.text, input.language, uri);
     }
@@ -44,8 +50,11 @@ export class MonacoModelRegistry {
     }
 
     disposePath(path: string): void {
-        const model = this.getModelByPath(path);
-        this.modelUrisByPath.delete(path);
+        const uriText = this.modelUrisByPath.get(path);
+        if (!uriText) return;
+        const model = monaco.editor.getModel(monaco.Uri.parse(uriText));
+        const shouldDispose = this.releaseModelPath(path, uriText);
+        if (!shouldDispose) return;
         model?.dispose();
     }
 
@@ -58,5 +67,24 @@ export class MonacoModelRegistry {
         for (const path of Array.from(this.modelUrisByPath.keys())) {
             this.disposePath(path);
         }
+    }
+
+    private getOrCreateModelPaths(uriText: string): Set<string> {
+        let paths = this.modelPathsByUri.get(uriText);
+        if (!paths) {
+            paths = new Set();
+            this.modelPathsByUri.set(uriText, paths);
+        }
+        return paths;
+    }
+
+    private releaseModelPath(path: string, uriText: string): boolean {
+        this.modelUrisByPath.delete(path);
+        const paths = this.modelPathsByUri.get(uriText);
+        if (!paths) return true;
+        paths.delete(path);
+        if (paths.size > 0) return false;
+        this.modelPathsByUri.delete(uriText);
+        return true;
     }
 }
