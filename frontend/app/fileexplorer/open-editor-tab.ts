@@ -44,8 +44,9 @@ export async function findEditorTabForPath(path: string): Promise<string | null>
 
 export async function openFileInEditorTab(
     path: string,
-    opts: OpenFileInEditorTabOptions = {}
+    optsOrRoot: OpenFileInEditorTabOptions | string = {}
 ): Promise<OpenFileInEditorTabResult> {
+    const opts = typeof optsOrRoot === "string" ? { workspaceRoot: optsOrRoot } : optsOrRoot;
     const workspace = globalStore.get(atoms.workspace);
     if (!workspace?.oid) {
         throw new Error("cannot open editor tab without an active workspace");

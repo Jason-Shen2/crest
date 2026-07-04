@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFileExplorer = vi.hoisted(() => ({
     createBlock: vi.fn(),
+    openFileInEditorTab: vi.fn(),
     layoutModel: {
         openRightTool: vi.fn(),
         openRightEditorTool: vi.fn(),
@@ -55,6 +56,10 @@ vi.mock("@/app/workspace/workspace-layout-model", () => ({
     },
 }));
 
+vi.mock("./open-editor-tab", () => ({
+    openFileInEditorTab: mockFileExplorer.openFileInEditorTab,
+}));
+
 import { RpcApi } from "@/app/store/wshclientapi";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
 import { FileExplorerModel } from "./file-explorer-model";
@@ -69,12 +74,14 @@ describe("FileExplorerModel", () => {
         mockFileExplorer.layoutModel.openRightEditorTool.mockImplementation(() => {
             mockFileExplorer.layoutModel.openRightTool("editor");
         });
+        mockFileExplorer.openFileInEditorTab.mockReset();
+        mockFileExplorer.openFileInEditorTab.mockResolvedValue({ tabId: "tab-editor", created: true });
         vi.mocked(RpcApi.FileReadCommand).mockClear();
         vi.mocked(RpcApi.FileMoveCommand).mockClear();
         vi.mocked(RpcApi.FileDeleteCommand).mockClear();
     });
 
-    it("opens non-directory files in the right editor before the panel renders", async () => {
+    it("opens non-directory files in a main editor tab without opening the right editor", async () => {
         const model = FileExplorerModel.getInstance();
         globalStore.set(model.rootAtom, "/repo");
 
@@ -84,13 +91,11 @@ describe("FileExplorerModel", () => {
             isdir: false,
         });
 
-        expect(mockFileExplorer.layoutModel.openRightTool).toHaveBeenCalledWith("editor");
-        expect(vi.mocked(RpcApi.FileReadCommand).mock.calls[0][1]).toMatchObject({
-            info: { path: "/repo/src/app.ts" },
-        });
-        expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src/app.ts")).toMatchObject({
-            savedText: "initial",
-        });
+        expect(mockFileExplorer.openFileInEditorTab).toHaveBeenCalledWith("/repo/src/app.ts", "/repo");
+        expect(mockFileExplorer.layoutModel.openRightTool).not.toHaveBeenCalled();
+        expect(mockFileExplorer.layoutModel.openRightEditorTool).not.toHaveBeenCalled();
+        expect(vi.mocked(RpcApi.FileReadCommand)).not.toHaveBeenCalled();
+        expect(RightEditorModel.hasInstance()).toBe(false);
         expect(mockFileExplorer.createBlock).not.toHaveBeenCalled();
     });
 
