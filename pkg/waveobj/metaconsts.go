@@ -90,6 +90,7 @@ const (
 	MetaKey_SysinfoType                      = "sysinfo:type"
 
 	MetaKey_TabFlagColor                     = "tab:flagcolor"
+	MetaKey_TabAutoName                      = "tab:autoname"
 	MetaKey_TabBackground                    = "tab:background"
 
 	MetaKey_BgClear                          = "bg:*"

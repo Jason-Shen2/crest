@@ -126,6 +126,13 @@ func (svc *WorkspaceService) CreateTab_Meta() tsgenmeta.MethodMeta {
 	}
 }
 
+func (svc *WorkspaceService) CreateTabWithBlock_Meta() tsgenmeta.MethodMeta {
+	return tsgenmeta.MethodMeta{
+		ArgNames:   []string{"workspaceId", "tabName", "activateTab", "blockDef"},
+		ReturnDesc: "tabId",
+	}
+}
+
 func (svc *WorkspaceService) GetColors_Meta() tsgenmeta.MethodMeta {
 	return tsgenmeta.MethodMeta{
 		ReturnDesc: "colors",
@@ -158,6 +165,24 @@ func (svc *WorkspaceService) CreateTab(workspaceId string, tabName string, activ
 	go func() {
 		defer func() {
 			panichandler.PanicHandler("WorkspaceService:CreateTab:SendUpdateEvents", recover())
+		}()
+		wps.Broker.SendUpdateEvents(updates)
+	}()
+	return tabId, updates, nil
+}
+
+func (svc *WorkspaceService) CreateTabWithBlock(workspaceId string, tabName string, activateTab bool, blockDef waveobj.BlockDef) (string, waveobj.UpdatesRtnType, error) {
+	ctx, cancelFn := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancelFn()
+	ctx = waveobj.ContextWithUpdates(ctx)
+	tabId, err := wcore.CreateTabWithBlock(ctx, workspaceId, tabName, activateTab, blockDef)
+	if err != nil {
+		return "", nil, fmt.Errorf("error creating tab with block: %w", err)
+	}
+	updates := waveobj.ContextGetUpdatesRtn(ctx)
+	go func() {
+		defer func() {
+			panichandler.PanicHandler("WorkspaceService:CreateTabWithBlock:SendUpdateEvents", recover())
 		}()
 		wps.Broker.SendUpdateEvents(updates)
 	}()
