@@ -113,6 +113,38 @@ func TestCreateTabWithBlockFailuresDoNotLeavePartialState(t *testing.T) {
 	if updatedWorkspace.ActiveTabId != activeTab.OID {
 		t.Fatalf("ActiveTabId = %q, want original active tab %q", updatedWorkspace.ActiveTabId, activeTab.OID)
 	}
+
+	emptyActiveWorkspace := &waveobj.Workspace{
+		OID:    "workspace-layout-failure-empty-active",
+		TabIds: []string{},
+	}
+	if err := wstore.DBInsert(ctx, emptyActiveWorkspace); err != nil {
+		t.Fatalf("DBInsert workspace with empty active tab returned error: %v", err)
+	}
+	firstTab, err := createTabObj(ctx, emptyActiveWorkspace.OID, "First", nil)
+	if err != nil {
+		t.Fatalf("createTabObj firstTab returned error: %v", err)
+	}
+	secondTab, err := createTabObj(ctx, emptyActiveWorkspace.OID, "Second", nil)
+	if err != nil {
+		t.Fatalf("createTabObj secondTab returned error: %v", err)
+	}
+
+	_, err = CreateTabWithBlock(ctx, emptyActiveWorkspace.OID, "Fails Layout", true, blockDef)
+	if err == nil {
+		t.Fatalf("CreateTabWithBlock returned nil error for injected layout failure with empty active tab")
+	}
+
+	updatedWorkspace, err = wstore.DBMustGet[*waveobj.Workspace](ctx, emptyActiveWorkspace.OID)
+	if err != nil {
+		t.Fatalf("DBMustGet workspace with empty active tab returned error: %v", err)
+	}
+	if len(updatedWorkspace.TabIds) != 2 || updatedWorkspace.TabIds[0] != firstTab.OID || updatedWorkspace.TabIds[1] != secondTab.OID {
+		t.Fatalf("TabIds = %#v, want [%q %q]", updatedWorkspace.TabIds, firstTab.OID, secondTab.OID)
+	}
+	if updatedWorkspace.ActiveTabId != "" {
+		t.Fatalf("ActiveTabId = %q, want empty original active tab", updatedWorkspace.ActiveTabId)
+	}
 }
 
 func setupWorkspaceTestWStore(t *testing.T) context.Context {
