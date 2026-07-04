@@ -14,6 +14,7 @@ import * as jotai from "jotai";
 import { debounce } from "throttle-debounce";
 import { quote as shellQuote } from "shell-quote";
 import { getCachedHome } from "./file-explorer-atoms";
+import { openFileInEditorTab } from "./open-editor-tab";
 
 function compareEntries(a: FileInfo, b: FileInfo): number {
     const aDir = a.isdir ? 1 : 0;
@@ -243,6 +244,11 @@ export class FileExplorerModel {
     }
 
     async openFile(finfo: FileInfo): Promise<void> {
+        if (finfo.isdir) { await this.toggleExpand(finfo.path); return; }
+        await openFileInEditorTab(finfo.path, this.getRootNow());
+    }
+
+    async openFileInRightEditor(finfo: FileInfo): Promise<void> {
         if (finfo.isdir) { await this.toggleExpand(finfo.path); return; }
         const layoutModel = WorkspaceLayoutModel.getInstance();
         layoutModel.openRightEditorTool();
