@@ -72,6 +72,17 @@ export interface ProviderEntry {
     // by Google Gemini today; see ApiType_GoogleGemini below).
     defaultEndpoint: string;
     defaultApiType: ApiType;
+    // Optional override for the /models endpoint used by the picker's
+    // live fetch. When omitted, the IPC derives it from defaultEndpoint
+    // (strip `/chat/completions` / `/messages` etc., append `/models`).
+    // Set this when a provider's chat and model-list endpoints live at
+    // different paths on the same host — e.g. minimax: chat goes
+    // through the Anthropic-compatible `/anthropic` path but the
+    // authoritative model list is served by the OpenAI-compatible
+    // `/v1/models` on the same host.  Anthropic itself doesn't expose
+    // any /models, so omitting the override on the direct Anthropic
+    // entry correctly degrades to the static catalog fallback.
+    modelsEndpoint?: string;
     // OS-keychain key name the secretstore looks up by default when the
     // user's ai.json provider entry doesn't override it.  Matches the
     // existing convention in pkg/aiusechat/usechat-mode.go:
@@ -132,6 +143,64 @@ export interface ModelEntry {
 
 import { MODELS_BY_PROVIDER } from "./ai-catalog-models.gen";
 
+// minimax M-series model list — curated inline because LiteLLM's
+// minimax provider doesn't currently expose the full emain-registered
+// set (M2.7 / M2.7-highspeed are missing upstream).  Mirrors
+// emain/ai/models.generated.ts "minimax" + "minimax-cn" blocks
+// exactly so the resolver's model id matches what the backend will
+// accept.  Capabilities: all M-series are reasoning models with
+// function calling — LiteLLM confirms `supports_function_calling`
+// and `supports_reasoning` on every chat entry under
+// `litellm_provider: "minimax"`.  Context windows follow the
+// LiteLLM-published numbers (M2 = 200k, M2.1+ = 1M, M3 = 1M).
+// M2.7 sits at 200k to match the public model card; the resolver
+// falls back to `endpoint` substitution regardless so a mismatch is
+// a budgeting concern, not a correctness one.
+//
+// Note: this inline list is the **fallback** for when the live
+// `/v1/models` fetch (see `modelsEndpoint` on the catalog entries
+// below) fails or the IPC isn't reachable.  Successful live fetch
+// returns the authoritative set straight from minimax, so any new
+// model minimax ships (including M3 on the CN endpoint, future M4,
+// etc.) becomes available automatically without us hand-curating
+// here.  The inline set is also what the picker shows on first
+// mount before the live fetch resolves.
+function makeMinimaxModel(
+    id: string,
+    displayName: string,
+    contextWindow: number
+): ModelEntry {
+    return {
+        id,
+        displayName,
+        capabilities: ["tools", "reasoning"],
+        contextWindow,
+        reasoningLevels: ["low", "medium", "high"],
+    };
+}
+
+const MINIMAX_MODELS: ModelEntry[] = [
+    makeMinimaxModel("MiniMax-M2", "MiniMax-M2", 200000),
+    makeMinimaxModel("MiniMax-M2.1", "MiniMax-M2.1", 1000000),
+    makeMinimaxModel("MiniMax-M2.1-highspeed", "MiniMax-M2.1 Highspeed", 1000000),
+    makeMinimaxModel("MiniMax-M2.5", "MiniMax-M2.5", 1000000),
+    makeMinimaxModel("MiniMax-M2.5-highspeed", "MiniMax-M2.5 Highspeed", 1000000),
+    makeMinimaxModel("MiniMax-M2.7", "MiniMax-M2.7", 200000),
+    makeMinimaxModel("MiniMax-M2.7-highspeed", "MiniMax-M2.7 Highspeed", 200000),
+    makeMinimaxModel("MiniMax-M3", "MiniMax-M3", 1000000),
+];
+
+// minimax-cn ships the same model family as the global endpoint
+// (M2 through M3). Earlier revisions of this file mirrored an older
+// emain/ai/models.generated.ts snapshot that omitted M3 on the CN
+// provider, but minimax's China endpoint now exposes M3 in full.
+// Live `/v1/models` fetches (see modelsEndpoint below) bring in any
+// future additions automatically; this inline list is the
+// first-paint fallback the picker shows before the fetch resolves,
+// so keeping it in sync with reality avoids confusing gaps on
+// initial render.
+const MINIMAX_CN_MODELS: ModelEntry[] = MINIMAX_MODELS;
+
 export const CATALOG: ProviderEntry[] = [
     {
         id: "openai",
@@ -161,6 +230,45 @@ export const CATALOG: ProviderEntry[] = [
         tokenSecretName: "GOOGLE_AI_KEY",
         icon: "stars-01",
         models: MODELS_BY_PROVIDER.google ?? [],
+    },
+    {
+        // minimax global — Anthropic-compatible endpoint at api.minimax.io.
+        // Mirrors emain/ai/models.generated.ts lines 5392+ (provider block).
+        // Model list is curated inline (see MINIMAX_MODELS above) rather
+        // than pulled from LiteLLM sync because the LiteLLM `minimax`
+        // provider block is missing M2.7 / M2.7-highspeed.
+        //
+        // `modelsEndpoint` overrides the picker live fetch so it hits
+        // the OpenAI-compatible `/v1/models` on the same host — that's
+        // where minimax serves its authoritative model list, including
+        // any new M-series releases that haven't been hand-curated into
+        // MINIMAX_MODELS yet.  Without this override the IPC would
+        // derive `/anthropic/models` from defaultEndpoint, which 404s
+        // (Anthropic's surface has no /models, and minimax's compat
+        // surface inherits that gap).
+        id: "minimax",
+        displayName: "minimax",
+        defaultEndpoint: "https://api.minimax.io/anthropic",
+        defaultApiType: "anthropic-messages",
+        modelsEndpoint: "https://api.minimax.io/v1/models",
+        tokenSecretName: "MINIMAX_API_KEY",
+        icon: "stars-01",
+        models: MINIMAX_MODELS,
+    },
+    {
+        // minimax-cn — Anthropic-compatible endpoint at api.minimaxi.com
+        // for users behind the GFW / on Chinese egress.  Same apitype;
+        // model list is the global set minus M3 (matches emain registry).
+        // modelsEndpoint: same routing logic as the global entry —
+        // hit the OpenAI-compatible `/v1/models` so live fetches work.
+        id: "minimax-cn",
+        displayName: "minimax (China)",
+        defaultEndpoint: "https://api.minimaxi.com/anthropic",
+        defaultApiType: "anthropic-messages",
+        modelsEndpoint: "https://api.minimaxi.com/v1/models",
+        tokenSecretName: "MINIMAX_CN_API_KEY",
+        icon: "stars-01",
+        models: MINIMAX_CN_MODELS,
     },
     {
         // OpenRouter is an aggregator — it routes to 300+ upstream models

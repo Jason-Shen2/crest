@@ -10,6 +10,11 @@
 //   - anthropic-messages (Anthropic, header + x-api-key)
 //   - google-gemini (?key=... query string, displayName/inputTokenLimit shape)
 
+import { getModels, getSupportedThinkingLevels } from "../ai/models";
+import { getCapabilityOverlay } from "../ai/models-dev-overlay";
+import type { Api, Model } from "../ai/types";
+import { getSecret } from "./secrets";
+
 const REQUEST_TIMEOUT_MS = 15_000;
 
 // Mirror of the old wshrpc.ProviderModelInfo Go struct. Lowercase JSON
@@ -27,12 +32,95 @@ export interface ProviderModelInfo {
     inputmodalities?: string[];
     tokenizer?: string;
     ismoderated?: boolean;
+    // Derived from OpenRouter's supported_parameters array. These are the
+    // only authoritative *capability* facts the live /models response
+    // carries — without them aggregator rows fall back to a stale static
+    // snapshot. true = the model accepts that parameter; absent = the
+    // endpoint didn't report it (non-OpenRouter providers).
+    reasoning?: boolean;
+    supportstools?: boolean;
+}
+
+// Capability-rich model metadata sourced from the authoritative
+// emain/ai model registry (models.generated.ts). Unlike ProviderModelInfo
+// (a thin /models HTTP echo), this carries the same reasoning / input
+// modality / thinking-level facts the *backend* uses when actually
+// building a request — so the picker can show capabilities that match
+// what the model will really do, instead of re-deriving (or guessing)
+// them from an incomplete live response.
+//
+// Keys are lowercase to match the ProviderModelInfo convention so the
+// renderer consumes both shapes without a translation layer.
+export interface RegistryModelInfo {
+    id: string;
+    name?: string;
+    reasoning: boolean;
+    // pi ThinkingLevels the model actually accepts ("off" filtered out).
+    // Empty when reasoning is false.
+    thinkinglevels: string[];
+    inputmodalities: string[];
+    context?: number;
+    maxoutputtokens?: number;
+    promptcost?: number;
+    completioncost?: number;
+}
+
+function toRegistryModelInfo(provider: string, model: Model<Api>): RegistryModelInfo {
+    // Static snapshot baseline.
+    const base: RegistryModelInfo = {
+        id: model.id,
+        name: model.name,
+        reasoning: !!model.reasoning,
+        thinkinglevels: model.reasoning ? getSupportedThinkingLevels(model).filter((lvl) => lvl !== "off") : [],
+        inputmodalities: model.input ?? [],
+        context: model.contextWindow,
+        maxoutputtokens: model.maxTokens,
+        promptcost: model.cost?.input,
+        completioncost: model.cost?.output,
+    };
+    // Overlay fresher capability facts from models.dev when available.
+    // Each field is only overwritten when models.dev actually carries it,
+    // so missing entries keep the static snapshot value. thinkinglevels
+    // is intentionally NOT overlaid: the exact accepted levels come from
+    // the registry's thinkingLevelMap (request-building authority), which
+    // models.dev doesn't model — we only refresh whether reasoning is on.
+    const ov = getCapabilityOverlay(provider, model.id);
+    if (ov) {
+        if (ov.reasoning !== undefined) {
+            base.reasoning = ov.reasoning;
+            if (!ov.reasoning) base.thinkinglevels = [];
+        }
+        if (ov.inputmodalities !== undefined) base.inputmodalities = ov.inputmodalities;
+        if (ov.context !== undefined) base.context = ov.context;
+        if (ov.maxoutputtokens !== undefined) base.maxoutputtokens = ov.maxoutputtokens;
+        if (ov.promptcost !== undefined) base.promptcost = ov.promptcost;
+        if (ov.completioncost !== undefined) base.completioncost = ov.completioncost;
+    }
+    return base;
+}
+
+// listRegistryModels — return the authoritative registry models for a
+// provider (e.g. all of OpenRouter's baked-in models with correct
+// reasoning/input metadata). Returns [] for providers not present in the
+// registry (direct providers the renderer already covers via its own
+// catalog, or unknown custom endpoints). No network call.
+export function listRegistryModels(provider: string): RegistryModelInfo[] {
+    const models = getModels(provider as never) as Model<Api>[];
+    return models.map((m) => toRegistryModelInfo(provider, m));
 }
 
 export interface ListProviderModelsInput {
     apitype: string;
     baseurl?: string;
     apitoken?: string;
+    tokensecretname?: string;
+    // Optional override for the /models URL. When set, the IPC uses
+    // this URL directly instead of deriving one from baseurl. Lets
+    // providers whose chat and model-list endpoints live at different
+    // paths (e.g. minimax: chat at /anthropic, models at /v1/models)
+    // serve a live model list.  Only honored for apitypes that accept
+    // a separate models URL — see the per-apitype branches below.
+    modelsendpoint?: string;
 }
 
 // Match the API-type string constants from pkg/aiusechat/uctypes/userconfig.go.
@@ -41,25 +129,44 @@ export const APIType_GoogleGemini = "google-gemini";
 export const APIType_OpenAIChat = "openai-chat";
 export const APIType_OpenAIResponses = "openai-responses";
 
-export async function listProviderModels(
-    input: ListProviderModelsInput,
-): Promise<ProviderModelInfo[]> {
+export async function listProviderModels(input: ListProviderModelsInput): Promise<ProviderModelInfo[]> {
     const apiType = (input.apitype ?? "").trim();
     const baseUrl = (input.baseurl ?? "").trim();
     const apiToken = (input.apitoken ?? "").trim();
+    const tokensecretname = (input.tokensecretname ?? "").trim();
+    const modelsEndpoint = (input.modelsendpoint ?? "").trim();
     if (!apiType) throw new Error("apitype is required");
     validateBaseUrl(baseUrl);
     switch (apiType) {
         case APIType_AnthropicMessages:
-            return listAnthropicModels(baseUrl, apiToken);
+            // Anthropic's API has never exposed a /models endpoint on
+            // the chat surface, and Anthropic-compatible surfaces
+            // (minimax, minimax-cn) inherit that gap. But many
+            // Anthropic-compatible providers expose their authoritative
+            // model list on a separate path, usually the OpenAI-
+            // compatible `/v1/models` on the same host (minimax does
+            // this). When the catalog declares `modelsEndpoint`, route
+            // the live fetch through that URL with OpenAI-compat
+            // decoding (Bearer auth, `{data: [...]}` envelope) instead
+            // of trying to derive /models from the chat URL.
+            if (modelsEndpoint) {
+                validateBaseUrl(modelsEndpoint);
+                return listOpenAiCompatibleModels(modelsEndpoint, apiToken, tokensecretname);
+            }
+            // No override → no live model list possible. Return [] so
+            // the picker falls back to the static catalog / registry
+            // path silently. Direct Anthropic users land here; minimax
+            // users only land here when the catalog's `modelsEndpoint`
+            // is missing or wrong.
+            return [];
         case APIType_GoogleGemini:
             return listGeminiModels(baseUrl, apiToken);
         case APIType_OpenAIChat:
         case APIType_OpenAIResponses:
-            return listOpenAiCompatibleModels(baseUrl, apiToken);
+            return listOpenAiCompatibleModels(baseUrl, apiToken, tokensecretname);
         default:
             // Unknown apiType — best-effort try the OpenAI-compatible path.
-            return listOpenAiCompatibleModels(baseUrl, apiToken);
+            return listOpenAiCompatibleModels(baseUrl, apiToken, tokensecretname);
     }
 }
 
@@ -97,10 +204,21 @@ function modelsUrlFromChatUrl(chatUrl: string): string {
 async function listOpenAiCompatibleModels(
     baseUrl: string,
     apiToken: string,
+    tokensecretname?: string
 ): Promise<ProviderModelInfo[]> {
     const endpoint = modelsUrlFromChatUrl(baseUrl) || "https://api.openai.com/v1/models";
     const headers: Record<string, string> = {};
-    if (apiToken) headers.Authorization = `Bearer ${apiToken}`;
+    // Prefer the literal token when the caller passes one (testing /
+    // unauthed local endpoint path). Otherwise resolve the keychain
+    // secret under tokensecretname — minimax's `/v1/models` route via
+    // the catalog's modelsEndpoint lands here with just the secret
+    // name (no literal token in flight).
+    if (apiToken) {
+        headers.Authorization = `Bearer ${apiToken}`;
+    } else if (tokensecretname) {
+        const resolved = await getSecret(tokensecretname);
+        if (resolved) headers.Authorization = `Bearer ${resolved}`;
+    }
     const body = await doRequest(endpoint, { headers });
     // OpenAI returns {data: [{id, ...}]}. OpenRouter returns the same
     // envelope with name/description/context_length plus nested pricing
@@ -113,11 +231,16 @@ async function listOpenAiCompatibleModels(
         pricing?: { prompt?: string; completion?: string; image?: string; request?: string };
         top_provider?: { max_completion_tokens?: number; is_moderated?: boolean };
         architecture?: { input_modalities?: string[]; tokenizer?: string };
+        // OpenRouter only — the live capability flags. Contains entries
+        // like "reasoning", "tools", "response_format", etc. for every
+        // parameter the model accepts.
+        supported_parameters?: string[];
     }
     const resp = JSON.parse(body) as { data?: OaiDataItem[] };
     const out: ProviderModelInfo[] = [];
     for (const m of resp.data ?? []) {
         if (!m.id) continue;
+        const params = m.supported_parameters;
         out.push({
             id: m.id,
             name: m.name,
@@ -131,15 +254,17 @@ async function listOpenAiCompatibleModels(
             inputmodalities: m.architecture?.input_modalities,
             tokenizer: m.architecture?.tokenizer,
             ismoderated: m.top_provider?.is_moderated,
+            // Leave undefined when the endpoint omits supported_parameters
+            // (non-OpenRouter) so the picker can tell "no capability data"
+            // apart from "explicitly unsupported".
+            reasoning: params ? params.includes("reasoning") : undefined,
+            supportstools: params ? params.includes("tools") : undefined,
         });
     }
     return sortModels(out);
 }
 
-async function listAnthropicModels(
-    baseUrl: string,
-    apiToken: string,
-): Promise<ProviderModelInfo[]> {
+async function listAnthropicModels(baseUrl: string, apiToken: string): Promise<ProviderModelInfo[]> {
     if (!apiToken) throw new Error("Anthropic /models requires an API key");
     const endpoint = modelsUrlFromChatUrl(baseUrl) || "https://api.anthropic.com/v1/models";
     const body = await doRequest(endpoint, {
@@ -161,10 +286,7 @@ async function listAnthropicModels(
     return sortModels(out);
 }
 
-async function listGeminiModels(
-    baseUrl: string,
-    apiToken: string,
-): Promise<ProviderModelInfo[]> {
+async function listGeminiModels(baseUrl: string, apiToken: string): Promise<ProviderModelInfo[]> {
     if (!apiToken) throw new Error("Gemini /models requires an API key");
     // Gemini puts the key in the query string. The chat URL is per-model
     // (.../models/<id>:streamGenerateContent), so derive the v1beta root
@@ -222,25 +344,48 @@ function sortModels(models: ProviderModelInfo[]): ProviderModelInfo[] {
 async function doRequest(
     url: string,
     init: { headers: Record<string, string> },
+    timeoutMs: number = REQUEST_TIMEOUT_MS
 ): Promise<string> {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
         const res = await fetch(url, { method: "GET", headers: init.headers, signal: ctrl.signal });
         const text = await res.text();
         if (res.status < 200 || res.status >= 300) {
-            // Surface the upstream body verbatim (truncated) so the user can
-            // see "invalid api key" / etc. directly in the picker.
             const snippet = text.length > 500 ? text.slice(0, 500) + "..." : text;
             throw new Error(`provider returned ${res.status}: ${snippet}`);
         }
         return text;
     } catch (err: unknown) {
         if ((err as Error).name === "AbortError") {
-            throw new Error(`request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+            throw new Error(`request timed out after ${timeoutMs}ms`);
+        }
+        if (err instanceof TypeError && err.message === "fetch failed") {
+            throw new Error(`fetch failed for ${url}: ${formatFetchCause(err)}`);
         }
         throw err;
     } finally {
         clearTimeout(timer);
     }
+}
+
+function formatFetchCause(err: TypeError): string {
+    const cause = (err as TypeError & { cause?: unknown }).cause;
+    if (cause instanceof Error) return cause.message;
+    if (cause && typeof cause === "object") {
+        const details = cause as {
+            code?: unknown;
+            errno?: unknown;
+            syscall?: unknown;
+            address?: unknown;
+            port?: unknown;
+        };
+        if (details.code === "ECONNREFUSED" && details.address === "127.0.0.1") {
+            return `proxy connection refused at ${details.address}:${details.port}; check HTTP_PROXY/HTTPS_PROXY or start the local proxy`;
+        }
+        return [details.code, details.errno, details.syscall, details.address, details.port]
+            .filter((part) => part !== undefined && part !== "")
+            .join(" ");
+    }
+    return err.message;
 }

@@ -58,6 +58,7 @@ import {
 import { ElectronWshClient, initElectronWshClient } from "./emain-wsh";
 import { getLaunchSettings } from "./launchsettings";
 import { configureAutoUpdater, updater } from "./updater";
+import { initModelsDevOverlay } from "./ai/models-dev-overlay";
 
 const electronApp = electron.app;
 
@@ -462,6 +463,10 @@ async function appMain() {
         registerGlobalHotkey(rawGlobalHotKey);
     }
     initGlobalHotkeyEventSubscription();
+    // Kick off a background refresh of the models.dev capability overlay.
+    // Never blocks startup; failures degrade silently to the on-disk
+    // cache and then the baked-in static snapshot.
+    fireAndForget(() => initModelsDevOverlay());
 }
 
 appMain().catch((e) => {

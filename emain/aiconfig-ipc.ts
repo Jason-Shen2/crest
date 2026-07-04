@@ -22,8 +22,10 @@ import * as electron from "electron";
 
 import {
     listProviderModels,
+    listRegistryModels,
     type ListProviderModelsInput,
     type ProviderModelInfo,
+    type RegistryModelInfo,
 } from "./aiconfig/list-provider-models";
 import { getSecret } from "./aiconfig/secrets";
 import {
@@ -59,6 +61,13 @@ export function registerAiConfigIpcHandlers(): void {
                 baseurl: input.baseurl,
                 apitoken: token,
             });
+        },
+    );
+
+    electron.ipcMain.handle(
+        "ai:list-registry-models",
+        async (_event, provider: string): Promise<RegistryModelInfo[]> => {
+            return listRegistryModels(provider);
         },
     );
 
