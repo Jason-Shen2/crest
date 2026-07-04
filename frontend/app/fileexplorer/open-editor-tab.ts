@@ -59,7 +59,7 @@ export async function openFileInEditorTab(
         return { tabId: existingTabId, created: false };
     }
     const cwd = opts.cwd ?? opts.workspaceRoot;
-    const inFlightKey = getInFlightEditorTabOpenKey(path, workspace.oid, cwd);
+    const inFlightKey = getInFlightEditorTabOpenKey(path, workspace.oid);
     const inFlightOpen = inFlightEditorTabOpens.get(inFlightKey);
     if (inFlightOpen) {
         return inFlightOpen;
@@ -91,6 +91,6 @@ export async function openFileInEditorTab(
     }
 }
 
-function getInFlightEditorTabOpenKey(path: string, workspaceId: string, cwd?: string): string {
-    return JSON.stringify([path, workspaceId, cwd ?? ""]);
+function getInFlightEditorTabOpenKey(path: string, workspaceId: string): string {
+    return JSON.stringify([workspaceId, path]);
 }
