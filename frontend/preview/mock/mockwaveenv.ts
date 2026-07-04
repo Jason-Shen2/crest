@@ -252,7 +252,7 @@ export function makeMockRpc(
         const tabORef = "tab:" + tabId;
         const objAtom = wos.getWaveObjectAtom(tabORef);
         const current = globalStore.get(objAtom) as Tab;
-        const updated = { ...current, name: newName };
+        const updated = { ...current, name: newName, meta: { ...(current?.meta ?? {}), "tab:autoname": false } };
         wos.mockSetWaveObj(tabORef, updated);
         return null;
     });
