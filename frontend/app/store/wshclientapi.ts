@@ -534,6 +534,120 @@ export class RpcApiType {
         return client.wshRpcCall("getvar", data, opts);
     }
 
+    // command "gitcheckoutbranch" [call]
+    GitCheckoutBranchCommand(client: WshClient, data: GitBranchData, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitcheckoutbranch", data, opts);
+        return client.wshRpcCall("gitcheckoutbranch", data, opts);
+    }
+
+    // command "gitcommit" [call]
+    GitCommitCommand(client: WshClient, data: GitCommitData, opts?: RpcOpts): Promise<GitCommitResult> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitcommit", data, opts);
+        return client.wshRpcCall("gitcommit", data, opts);
+    }
+
+    // command "gitdiscardallchanges" [call]
+    GitDiscardAllChangesCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitdiscardallchanges", data, opts);
+        return client.wshRpcCall("gitdiscardallchanges", data, opts);
+    }
+
+    // command "gitdiscardchanges" [call]
+    GitDiscardChangesCommand(client: WshClient, data: GitDiscardChangesData, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitdiscardchanges", data, opts);
+        return client.wshRpcCall("gitdiscardchanges", data, opts);
+    }
+
+    // command "gitfetch" [call]
+    GitFetchCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitfetch", data, opts);
+        return client.wshRpcCall("gitfetch", data, opts);
+    }
+
+    // command "gitgetcommitdiff" [call]
+    GitGetCommitDiffCommand(client: WshClient, data: GitCommitData, opts?: RpcOpts): Promise<GitDiffResult> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitgetcommitdiff", data, opts);
+        return client.wshRpcCall("gitgetcommitdiff", data, opts);
+    }
+
+    // command "gitgetcommitfiles" [call]
+    GitGetCommitFilesCommand(client: WshClient, data: GitCommitData, opts?: RpcOpts): Promise<GitCommitFileChange[]> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitgetcommitfiles", data, opts);
+        return client.wshRpcCall("gitgetcommitfiles", data, opts);
+    }
+
+    // command "gitgetdiffcontent" [call]
+    GitGetDiffContentCommand(client: WshClient, data: GitDiffFileData, opts?: RpcOpts): Promise<GitDiffContentResult> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitgetdiffcontent", data, opts);
+        return client.wshRpcCall("gitgetdiffcontent", data, opts);
+    }
+
+    // command "gitgetdiffforfile" [call]
+    GitGetDiffForFileCommand(client: WshClient, data: GitDiffFileData, opts?: RpcOpts): Promise<GitDiffResult> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitgetdiffforfile", data, opts);
+        return client.wshRpcCall("gitgetdiffforfile", data, opts);
+    }
+
+    // command "gitgetlog" [call]
+    GitGetLogCommand(client: WshClient, data: GitLogRequest, opts?: RpcOpts): Promise<GitLogEntry[]> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitgetlog", data, opts);
+        return client.wshRpcCall("gitgetlog", data, opts);
+    }
+
+    // command "gitgetpanelsnapshot" [call]
+    GitGetPanelSnapshotCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<GitPanelSnapshot> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitgetpanelsnapshot", data, opts);
+        return client.wshRpcCall("gitgetpanelsnapshot", data, opts);
+    }
+
+    // command "gitlistbranches" [call]
+    GitListBranchesCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<GitBranchListResult> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitlistbranches", data, opts);
+        return client.wshRpcCall("gitlistbranches", data, opts);
+    }
+
+    // command "gitpull" [call]
+    GitPullCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitpull", data, opts);
+        return client.wshRpcCall("gitpull", data, opts);
+    }
+
+    // command "gitpush" [call]
+    GitPushCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<GitPushResult> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitpush", data, opts);
+        return client.wshRpcCall("gitpush", data, opts);
+    }
+
+    // command "gitstageall" [call]
+    GitStageAllCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitstageall", data, opts);
+        return client.wshRpcCall("gitstageall", data, opts);
+    }
+
+    // command "gitstagefile" [call]
+    GitStageFileCommand(client: WshClient, data: GitFilePathData, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitstagefile", data, opts);
+        return client.wshRpcCall("gitstagefile", data, opts);
+    }
+
+    // command "gitstatus" [call]
+    GitStatusCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<GitStatusSnapshot> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitstatus", data, opts);
+        return client.wshRpcCall("gitstatus", data, opts);
+    }
+
+    // command "gitunstageall" [call]
+    GitUnstageAllCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitunstageall", data, opts);
+        return client.wshRpcCall("gitunstageall", data, opts);
+    }
+
+    // command "gitunstagefile" [call]
+    GitUnstageFileCommand(client: WshClient, data: GitFilePathData, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "gitunstagefile", data, opts);
+        return client.wshRpcCall("gitunstagefile", data, opts);
+    }
+
     // command "jobcmdexited" [call]
     JobCmdExitedCommand(client: WshClient, data: CommandJobCmdExitedData, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "jobcmdexited", data, opts);

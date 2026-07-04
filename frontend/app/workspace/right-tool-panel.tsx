@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
+import { Icon } from "@/app/icon/Icon";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
 import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
 import { RightEditorWorkbench } from "@/app/righteditor/right-editor-workbench";
+import { SourceControlPanel } from "@/app/sourcecontrol/source-control-panel";
 import { getSettingsKeyAtom } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
@@ -31,23 +33,28 @@ export type RightToolPanelProps = {
 const RightToolMetadataById: Record<RightToolId, RightToolMetadata> = {
     editor: {
         label: "Editor",
-        icon: "fa-regular fa-pen-to-square",
+        icon: "edit-02",
         description: "Open files and notes in the side workspace.",
     },
     browser: {
         label: "Browser",
-        icon: "fa-solid fa-globe",
+        icon: "globe-02",
         description: "Browse web content without leaving the workspace.",
     },
     terminal: {
         label: "Terminal",
-        icon: "fa-solid fa-terminal",
+        icon: "terminal",
         description: "Keep a utility terminal attached to the workspace.",
     },
     codeReview: {
         label: "Code Review",
-        icon: "fa-solid fa-code-compare",
+        icon: "git-branch-01",
         description: "Review code changes in a dedicated tool tab.",
+    },
+    sourceControl: {
+        label: "Source Control",
+        icon: "git-branch-01",
+        description: "Manage Git changes, commits, and branches.",
     },
 };
 
@@ -192,7 +199,7 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
                 aria-label="Open right tool"
                 className="flex h-full w-7 cursor-pointer list-none items-center justify-center rounded-md border border-transparent bg-[#202124] text-[#a1a1aa] transition-colors hover:border-[#3f3f46] hover:bg-[#2a2b2f] hover:text-[#f4f4f5] [&::-webkit-details-marker]:hidden"
             >
-                <i className="fa-solid fa-plus text-xs" />
+                <Icon name="plus" size={14} className="text-xs" />
             </summary>
             <button
                 type="button"
@@ -278,7 +285,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                             )}
                             onClick={() => onCloseTool(tool)}
                         >
-                            <i className="fa-solid fa-xmark" />
+                            <Icon name="xmark" size={14} />
                         </button>
                     </div>
                 );
@@ -303,6 +310,9 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
     }
     if (activeTool === "codeReview") {
         return <GitReviewSidebar />;
+    }
+    if (activeTool === "sourceControl") {
+        return <SourceControlPanel />;
     }
     const metadata = RightToolMetadataById[activeTool];
     return (
@@ -404,7 +414,7 @@ export function RightToolPanelMagnifiedOverlayView({
                             className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
                             onClick={onExit}
                         >
-                            <i className="fa-solid fa-down-left-and-up-right-to-center" />
+                            <Icon name="minimize-01" size={14} />
                         </button>
                     }
                 />
@@ -456,7 +466,7 @@ export function RightToolPanel({
                         className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
                         onClick={onHide}
                     >
-                        <i className="fa-solid fa-chevron-right" />
+                        <Icon name="chevron-right" size={14} />
                     </button>
                 }
             />
