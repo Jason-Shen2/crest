@@ -1153,6 +1153,103 @@ declare global {
         buildtime: string;
     };
 
+    // wshrpc.GitBranchData
+    type GitBranchData = {
+        cwd: string;
+        branch: string;
+    };
+
+    // wshrpc.GitBranchEntry
+    type GitBranchEntry = {
+        name: string;
+        kind: string;
+        worktreepath: string;
+        ishead: boolean;
+        isdetached: boolean;
+    };
+
+    // wshrpc.GitBranchListResult
+    type GitBranchListResult = {
+        branches: GitBranchEntry[];
+    };
+
+    // wshrpc.GitChangedFile
+    type GitChangedFile = {
+        path: string;
+        originalpath: string;
+        indexstatus: string;
+        worktreestatus: string;
+        staged: boolean;
+        unstaged: boolean;
+        untracked: boolean;
+        statuslabel: string;
+    };
+
+    // wshrpc.GitCommitData
+    type GitCommitData = {
+        cwd: string;
+        message: string;
+        allowempty?: boolean;
+        sha?: string;
+    };
+
+    // wshrpc.GitCommitFileChange
+    type GitCommitFileChange = {
+        path: string;
+        originalpath: string;
+        status: string;
+        statuslabel: string;
+        added: number;
+        removed: number;
+        isbinary: boolean;
+    };
+
+    // wshrpc.GitCommitResult
+    type GitCommitResult = {
+        commitsha: string;
+        summary: string;
+    };
+
+    // wshrpc.GitDiffContentResult
+    type GitDiffContentResult = {
+        originalcontent: string;
+        modifiedcontent: string;
+        isbinary: boolean;
+        fallbackpatch: string;
+        truncated: boolean;
+    };
+
+    // wshrpc.GitDiffFileData
+    type GitDiffFileData = {
+        cwd: string;
+        path: string;
+        staged: boolean;
+    };
+
+    // wshrpc.GitDiffResult
+    type GitDiffResult = {
+        difftext: string;
+        truncated: boolean;
+    };
+
+    // wshrpc.GitDiscardChangesData
+    type GitDiscardChangesData = {
+        cwd: string;
+        paths: GitDiscardEntry[];
+    };
+
+    // wshrpc.GitDiscardEntry
+    type GitDiscardEntry = {
+        path: string;
+        untracked: boolean;
+    };
+
+    // wshrpc.GitFilePathData
+    type GitFilePathData = {
+        cwd: string;
+        path: string;
+    };
+
     // wshrpc.GitInfoResponse
     type GitInfoResponse = {
         isrepo: boolean;
@@ -1162,6 +1259,62 @@ declare global {
         deletions?: number;
         ahead?: number;
         behind?: number;
+    };
+
+    // wshrpc.GitLogEntry
+    type GitLogEntry = {
+        sha: string;
+        shortsha: string;
+        author: string;
+        authoremail: string;
+        timestampsecs: number;
+        parents: string[];
+        subject: string;
+        fileschanged: number;
+        insertions: number;
+        deletions: number;
+    };
+
+    // wshrpc.GitLogRequest
+    type GitLogRequest = {
+        cwd: string;
+        limit?: number;
+        cursorsha?: string;
+    };
+
+    // wshrpc.GitPanelSnapshot
+    type GitPanelSnapshot = {
+        repo: GitRepoInfo;
+        status: GitStatusSnapshot;
+    };
+
+    // wshrpc.GitPushResult
+    type GitPushResult = {
+        remote: string;
+        branch: string;
+        pushed: boolean;
+    };
+
+    // wshrpc.GitRepoInfo
+    type GitRepoInfo = {
+        reporoot: string;
+        branch: string;
+        upstream: string;
+        remoteurl: string;
+        isdetached: boolean;
+    };
+
+    // wshrpc.GitStatusSnapshot
+    type GitStatusSnapshot = {
+        reporoot: string;
+        branch: string;
+        upstream: string;
+        remoteurl: string;
+        ahead: number;
+        behind: number;
+        isdetached: boolean;
+        truncated: boolean;
+        changedfiles: GitChangedFile[];
     };
 
     // waveobj.Job
@@ -1306,6 +1459,7 @@ declare global {
         "sysinfo:type"?: string;
         "tab:flagcolor"?: string;
         "tab:background"?: string;
+        "tab:autoname"?: boolean;
         "bg:*"?: boolean;
         bg?: string;
         "bg:opacity"?: number;

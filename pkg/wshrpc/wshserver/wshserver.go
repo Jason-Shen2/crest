@@ -22,17 +22,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/skratchdot/open-golang/open"
 	"github.com/s-zx/crest/pkg/baseds"
-	"github.com/s-zx/crest/pkg/contextchip"
 	"github.com/s-zx/crest/pkg/blockcontroller"
 	"github.com/s-zx/crest/pkg/blocklogger"
+	"github.com/s-zx/crest/pkg/buildercontroller"
 	"github.com/s-zx/crest/pkg/cmdblock"
 	"github.com/s-zx/crest/pkg/cmdblock/cbtypes"
-	"github.com/s-zx/crest/pkg/buildercontroller"
+	"github.com/s-zx/crest/pkg/contextchip"
 	"github.com/s-zx/crest/pkg/filebackup"
 	"github.com/s-zx/crest/pkg/filestore"
 	"github.com/s-zx/crest/pkg/genconn"
+	"github.com/s-zx/crest/pkg/gitops"
 	"github.com/s-zx/crest/pkg/jobcontroller"
 	"github.com/s-zx/crest/pkg/panichandler"
 	"github.com/s-zx/crest/pkg/remote"
@@ -59,6 +59,7 @@ import (
 	"github.com/s-zx/crest/pkg/wslconn"
 	"github.com/s-zx/crest/pkg/wstore"
 	"github.com/s-zx/crest/tsunami/build"
+	"github.com/skratchdot/open-golang/open"
 )
 
 var InvalidWslDistroNames = []string{"docker-desktop", "docker-desktop-data"}
@@ -1665,6 +1666,234 @@ func (ws *WshServer) GetGitInfoCommand(ctx context.Context, cwd string) (*wshrpc
 		Ahead:        info.Ahead,
 		Behind:       info.Behind,
 	}, nil
+}
+
+func convertGitRepoInfo(in *gitops.GitRepoInfo) *wshrpc.GitRepoInfo {
+	if in == nil {
+		return nil
+	}
+	return &wshrpc.GitRepoInfo{
+		RepoRoot:   in.RepoRoot,
+		Branch:     in.Branch,
+		Upstream:   in.Upstream,
+		RemoteURL:  in.RemoteURL,
+		IsDetached: in.IsDetached,
+	}
+}
+
+func convertGitChangedFile(in gitops.GitChangedFile) wshrpc.GitChangedFile {
+	return wshrpc.GitChangedFile{
+		Path:           in.Path,
+		OriginalPath:   in.OriginalPath,
+		IndexStatus:    in.IndexStatus,
+		WorktreeStatus: in.WorktreeStatus,
+		Staged:         in.Staged,
+		Unstaged:       in.Unstaged,
+		Untracked:      in.Untracked,
+		StatusLabel:    in.StatusLabel,
+	}
+}
+
+func convertGitStatusSnapshot(in *gitops.GitStatusSnapshot) *wshrpc.GitStatusSnapshot {
+	if in == nil {
+		return nil
+	}
+	files := make([]wshrpc.GitChangedFile, len(in.ChangedFiles))
+	for i, f := range in.ChangedFiles {
+		files[i] = convertGitChangedFile(f)
+	}
+	return &wshrpc.GitStatusSnapshot{
+		RepoRoot:     in.RepoRoot,
+		Branch:       in.Branch,
+		Upstream:     in.Upstream,
+		RemoteURL:    in.RemoteURL,
+		Ahead:        in.Ahead,
+		Behind:       in.Behind,
+		IsDetached:   in.IsDetached,
+		Truncated:    in.Truncated,
+		ChangedFiles: files,
+	}
+}
+
+func (ws *WshServer) GitGetPanelSnapshotCommand(ctx context.Context, cwd string) (*wshrpc.GitPanelSnapshot, error) {
+	snap, err := gitops.GetPanelSnapshot(ctx, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return &wshrpc.GitPanelSnapshot{
+		Repo:   convertGitRepoInfo(snap.Repo),
+		Status: convertGitStatusSnapshot(snap.Status),
+	}, nil
+}
+
+func (ws *WshServer) GitStatusCommand(ctx context.Context, cwd string) (*wshrpc.GitStatusSnapshot, error) {
+	status, err := gitops.GetStatus(ctx, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return convertGitStatusSnapshot(status), nil
+}
+
+func (ws *WshServer) GitStageFileCommand(ctx context.Context, data wshrpc.GitFilePathData) error {
+	return gitops.StageFile(ctx, data.Cwd, data.Path)
+}
+
+func (ws *WshServer) GitUnstageFileCommand(ctx context.Context, data wshrpc.GitFilePathData) error {
+	return gitops.UnstageFile(ctx, data.Cwd, data.Path)
+}
+
+func (ws *WshServer) GitStageAllCommand(ctx context.Context, cwd string) error {
+	return gitops.StageAll(ctx, cwd)
+}
+
+func (ws *WshServer) GitUnstageAllCommand(ctx context.Context, cwd string) error {
+	return gitops.UnstageAll(ctx, cwd)
+}
+
+func (ws *WshServer) GitDiscardChangesCommand(ctx context.Context, data wshrpc.GitDiscardChangesData) error {
+	paths := make([]gitops.DiscardEntry, len(data.Paths))
+	for i, p := range data.Paths {
+		paths[i] = gitops.DiscardEntry{Path: p.Path, Untracked: p.Untracked}
+	}
+	return gitops.DiscardChanges(ctx, data.Cwd, paths)
+}
+
+func (ws *WshServer) GitDiscardAllChangesCommand(ctx context.Context, cwd string) error {
+	return gitops.DiscardAllChanges(ctx, cwd)
+}
+
+func (ws *WshServer) GitCommitCommand(ctx context.Context, data wshrpc.GitCommitData) (*wshrpc.GitCommitResult, error) {
+	res, err := gitops.Commit(ctx, data.Cwd, data.Message, data.AllowEmpty)
+	if err != nil {
+		return nil, err
+	}
+	return &wshrpc.GitCommitResult{CommitSha: res.CommitSha, Summary: res.Summary}, nil
+}
+
+func convertGitDiffResult(in *gitops.GitDiffResult) *wshrpc.GitDiffResult {
+	if in == nil {
+		return nil
+	}
+	return &wshrpc.GitDiffResult{DiffText: in.DiffText, Truncated: in.Truncated}
+}
+
+func (ws *WshServer) GitGetDiffForFileCommand(ctx context.Context, data wshrpc.GitDiffFileData) (*wshrpc.GitDiffResult, error) {
+	res, err := gitops.GetDiffForFile(ctx, data.Cwd, data.Path, data.Staged)
+	if err != nil {
+		return nil, err
+	}
+	return convertGitDiffResult(res), nil
+}
+
+func (ws *WshServer) GitGetDiffContentCommand(ctx context.Context, data wshrpc.GitDiffFileData) (*wshrpc.GitDiffContentResult, error) {
+	res, err := gitops.GetDiffContent(ctx, data.Cwd, data.Path, data.Staged)
+	if err != nil {
+		return nil, err
+	}
+	return &wshrpc.GitDiffContentResult{
+		OriginalContent: res.OriginalContent,
+		ModifiedContent: res.ModifiedContent,
+		IsBinary:        res.IsBinary,
+		FallbackPatch:   res.FallbackPatch,
+		Truncated:       res.Truncated,
+	}, nil
+}
+
+func convertGitLogEntry(in gitops.GitLogEntry) wshrpc.GitLogEntry {
+	return wshrpc.GitLogEntry{
+		Sha:           in.Sha,
+		ShortSha:      in.ShortSha,
+		Author:        in.Author,
+		AuthorEmail:   in.AuthorEmail,
+		TimestampSecs: in.TimestampSecs,
+		Parents:       in.Parents,
+		Subject:       in.Subject,
+		FilesChanged:  in.FilesChanged,
+		Insertions:    in.Insertions,
+		Deletions:     in.Deletions,
+	}
+}
+
+func (ws *WshServer) GitGetLogCommand(ctx context.Context, data wshrpc.GitLogRequest) ([]wshrpc.GitLogEntry, error) {
+	entries, err := gitops.GetLog(ctx, data.Cwd, data.Limit, data.CursorSha)
+	if err != nil {
+		return nil, err
+	}
+	rtn := make([]wshrpc.GitLogEntry, len(entries))
+	for i, e := range entries {
+		rtn[i] = convertGitLogEntry(e)
+	}
+	return rtn, nil
+}
+
+func convertGitCommitFileChange(in gitops.GitCommitFileChange) wshrpc.GitCommitFileChange {
+	return wshrpc.GitCommitFileChange{
+		Path:         in.Path,
+		OriginalPath: in.OriginalPath,
+		Status:       in.Status,
+		StatusLabel:  in.StatusLabel,
+		Added:        in.Added,
+		Removed:      in.Removed,
+		IsBinary:     in.IsBinary,
+	}
+}
+
+func (ws *WshServer) GitGetCommitFilesCommand(ctx context.Context, data wshrpc.GitCommitData) ([]wshrpc.GitCommitFileChange, error) {
+	files, err := gitops.GetCommitFiles(ctx, data.Cwd, data.Sha)
+	if err != nil {
+		return nil, err
+	}
+	rtn := make([]wshrpc.GitCommitFileChange, len(files))
+	for i, f := range files {
+		rtn[i] = convertGitCommitFileChange(f)
+	}
+	return rtn, nil
+}
+
+func (ws *WshServer) GitGetCommitDiffCommand(ctx context.Context, data wshrpc.GitCommitData) (*wshrpc.GitDiffResult, error) {
+	res, err := gitops.GetCommitDiff(ctx, data.Cwd, data.Sha)
+	if err != nil {
+		return nil, err
+	}
+	return convertGitDiffResult(res), nil
+}
+
+func (ws *WshServer) GitPushCommand(ctx context.Context, cwd string) (*wshrpc.GitPushResult, error) {
+	res, err := gitops.Push(ctx, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return &wshrpc.GitPushResult{Remote: res.Remote, Branch: res.Branch, Pushed: res.Pushed}, nil
+}
+
+func (ws *WshServer) GitPullCommand(ctx context.Context, cwd string) error {
+	return gitops.Pull(ctx, cwd)
+}
+
+func (ws *WshServer) GitFetchCommand(ctx context.Context, cwd string) error {
+	return gitops.Fetch(ctx, cwd)
+}
+
+func (ws *WshServer) GitListBranchesCommand(ctx context.Context, cwd string) (*wshrpc.GitBranchListResult, error) {
+	res, err := gitops.ListBranches(ctx, cwd)
+	if err != nil {
+		return nil, err
+	}
+	branches := make([]wshrpc.GitBranchEntry, len(res.Branches))
+	for i, b := range res.Branches {
+		branches[i] = wshrpc.GitBranchEntry{
+			Name:         b.Name,
+			Kind:         b.Kind,
+			WorktreePath: b.WorktreePath,
+			IsHead:       b.IsHead,
+			IsDetached:   b.IsDetached,
+		}
+	}
+	return &wshrpc.GitBranchListResult{Branches: branches}, nil
+}
+
+func (ws *WshServer) GitCheckoutBranchCommand(ctx context.Context, data wshrpc.GitBranchData) error {
+	return gitops.CheckoutBranch(ctx, data.Cwd, data.Branch)
 }
 
 func (ws *WshServer) ReadBlockFileRangeCommand(ctx context.Context, data wshrpc.CommandReadBlockFileRangeData) (*wshrpc.BlockFileRangeResponse, error) {
