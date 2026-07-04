@@ -212,7 +212,7 @@ describe("compact tool helpers", () => {
         expect(compactToolSummary(search)).toBe("Searching src for TODO");
 
         expect(compactToolLabel(edit)).toBe("Edit app.ts");
-        expect(compactToolSummary(edit)).toBe("Updated frontend/app.ts");
+        expect(compactToolSummary(edit)).toBe("Updated frontend/app.ts - review in diff");
 
         expect(compactToolLabel(command)).toBe("Run command");
         expect(compactToolIcon(command)).toBe("terminal");
@@ -222,6 +222,193 @@ describe("compact tool helpers", () => {
         expect(compactToolLabel(failedWeb)).toBe("Fetch example.com");
         expect(compactToolIcon(failedWeb)).toBe("globe");
         expect(compactToolSummary(failedWeb)).toBe("Failed to fetch https://example.com/docs");
+    });
+
+    it("summarizes compact mutation tools without echoing large inputs", () => {
+        const write = compactItem(
+            compactCall({
+                id: "write-1",
+                name: "write",
+                input: {
+                    path: "src/app.ts",
+                    content: "export const a = 1;\nexport const b = 2;\n",
+                },
+            }),
+            doneResult
+        );
+        const edit = compactItem(
+            compactCall({
+                id: "edit-2",
+                name: "edit_text_file",
+                input: {
+                    file_path: "src/app.ts",
+                    oldText: "const oldValue = true;",
+                    newText: "const newValue = true;\nconst nextValue = false;",
+                },
+            }),
+            doneResult
+        );
+        const patch = compactItem(
+            compactCall({
+                id: "patch-1",
+                name: "functions.apply_patch",
+                input:
+                    "*** Begin Patch\n" +
+                    "*** Update File: src/app.ts\n" +
+                    "@@\n" +
+                    "-const oldValue = true;\n" +
+                    "+const newValue = true;\n" +
+                    "+const nextValue = false;\n" +
+                    "*** End Patch\n",
+            }),
+            doneResult
+        );
+
+        expect(compactToolSummary(write)).toBe("Updated src/app.ts (2 new lines) - review in diff");
+        expect(compactToolSummary(edit)).toBe("Updated src/app.ts (1 old line, 2 new lines) - review in diff");
+        expect(compactToolSummary(patch)).toBe("Updated src/app.ts (+2 -1) - review in diff");
+    });
+
+    it("extracts mutation paths from patch and diff object fields", () => {
+        const patchObject = compactItem(
+            compactCall({
+                id: "patch-object",
+                name: "functions.apply_patch",
+                input: {
+                    patch: "*** Begin Patch\n*** Update File: src/from-patch.ts\n@@\n-old\n+new\n*** End Patch\n",
+                },
+            }),
+            doneResult
+        );
+        const diffObject = compactItem(
+            compactCall({
+                id: "diff-object",
+                name: "functions.apply_patch",
+                input: {
+                    diff: "*** Begin Patch\n*** Update File: src/from-diff.ts\n@@\n-old\n+new\n*** End Patch\n",
+                },
+            }),
+            doneResult
+        );
+
+        expect(compactToolPath(patchObject)).toBe("src/from-patch.ts");
+        expect(compactToolSummary(patchObject)).toBe("Updated src/from-patch.ts (+1 -1) - review in diff");
+        expect(compactToolPath(diffObject)).toBe("src/from-diff.ts");
+        expect(compactToolSummary(diffObject)).toBe("Updated src/from-diff.ts (+1 -1) - review in diff");
+    });
+
+    it("treats modify tools as compact edit tools", () => {
+        const modify = compactItem(
+            compactCall({
+                id: "modify-1",
+                name: "modify_file",
+                input: {
+                    path: "src/modify.ts",
+                    oldText: "old",
+                    newText: "new",
+                },
+            }),
+            doneResult
+        );
+
+        expect(compactToolKind(modify.call)).toBe("edit");
+        expect(compactToolLabel(modify)).toBe("Edit modify.ts");
+        expect(compactToolSummary(modify)).toBe("Updated src/modify.ts (1 old line, 1 new line) - review in diff");
+    });
+
+    it("counts patch content lines that look like file headers", () => {
+        const patch = compactItem(
+            compactCall({
+                id: "patch-header-like-content",
+                name: "functions.apply_patch",
+                input:
+                    "diff --git a/src/app.ts b/src/app.ts\n" +
+                    "--- a/src/app.ts\n" +
+                    "+++ b/src/app.ts\n" +
+                    "@@\n" +
+                    "-const removed = true;\n" +
+                    "---bar\n" +
+                    "+const added = true;\n" +
+                    "+++foo\n",
+            }),
+            doneResult
+        );
+
+        expect(compactToolSummary(patch)).toBe("Updated src/app.ts (+2 -2) - review in diff");
+    });
+
+    it("caps large mutation line counts in summaries", () => {
+        const largeContent = `${"line\n".repeat(1001)}tail`;
+        const largePatch = compactItem(
+            compactCall({
+                id: "large-patch",
+                name: "functions.apply_patch",
+                input: {
+                    patch:
+                        "*** Begin Patch\n" +
+                        "*** Update File: src/large.ts\n" +
+                        "@@\n" +
+                        `${"+line\n".repeat(1001)}` +
+                        "*** End Patch\n",
+                },
+            }),
+            doneResult
+        );
+        const write = compactItem(
+            compactCall({
+                id: "large-write",
+                name: "write",
+                input: {
+                    path: "src/large.ts",
+                    content: largeContent,
+                },
+            }),
+            doneResult
+        );
+
+        expect(compactToolSummary(write)).toBe("Updated src/large.ts (1000+ new lines) - review in diff");
+        expect(compactToolSummary(largePatch)).toBe("Updated src/large.ts (+1000+ -0) - review in diff");
+    });
+
+    it("caps large old and new replacement line counts", () => {
+        const edit = compactItem(
+            compactCall({
+                id: "large-replacement",
+                name: "edit",
+                input: {
+                    path: "src/large-replacement.ts",
+                    oldText: `${"old\n".repeat(1001)}tail`,
+                    newText: `${"new\n".repeat(1001)}tail`,
+                },
+            }),
+            doneResult
+        );
+
+        expect(compactToolSummary(edit)).toBe(
+            "Updated src/large-replacement.ts (1000+ old lines, 1000+ new lines) - review in diff"
+        );
+    });
+
+    it("caps old and new line counts across many edits", () => {
+        const edits = Array.from({ length: 1001 }, (_, idx) => ({
+            oldText: `old ${idx}`,
+            newText: `new ${idx}`,
+        }));
+        const edit = compactItem(
+            compactCall({
+                id: "many-edits",
+                name: "edit",
+                input: {
+                    path: "src/many-edits.ts",
+                    edits,
+                },
+            }),
+            doneResult
+        );
+
+        expect(compactToolSummary(edit)).toBe(
+            "Updated src/many-edits.ts (1000+ old lines, 1000+ new lines) - review in diff"
+        );
     });
 
     it("renders compact result text from top-level and nested text parts", () => {

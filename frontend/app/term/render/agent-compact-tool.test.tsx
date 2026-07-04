@@ -90,6 +90,28 @@ describe("AgentCompactToolRow", () => {
         expect(html).toContain("&quot;changedFiles&quot;");
         expect(html).toContain("src/app.ts");
     });
+
+    it("renders mutation summaries without displaying full write content", () => {
+        const item = compactItem(
+            compactCall({
+                id: "write-1",
+                name: "write",
+                input: {
+                    path: "src/app.ts",
+                    content: "first line\nsecond line\nthird line\n",
+                },
+            }),
+            { content: [{ type: "text", text: "Successfully wrote src/app.ts" }], isError: false }
+        );
+
+        const html = renderToStaticMarkup(<AgentCompactToolRow item={item} />);
+
+        expect(html).toContain("Updated src/app.ts (3 new lines) - review in diff");
+        expect(html).toContain("Edit app.ts");
+        expect(html).not.toContain("first line");
+        expect(html).not.toContain("second line");
+        expect(html).not.toContain("third line");
+    });
 });
 
 describe("AgentCompactToolList", () => {
