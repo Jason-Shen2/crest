@@ -116,6 +116,12 @@ const WorkDescriptor: ToolDescriptor = {
 };
 
 const ValidationCommandRe = /\b(test|tests|vitest|jest|lint|typecheck|tsc|build)\b/i;
+const MaxMutationLineCount = 1000;
+
+interface CappedLineCount {
+    count: number;
+    capped: boolean;
+}
 
 export function deriveAgentToolViewModel(run: PiRun): AgentToolViewModel {
     const resultsByCallId = indexToolResults(run.responseMessages);
@@ -205,9 +211,11 @@ export function compactToolIcon(item: CompactToolItem): CompactToolIcon {
 export function compactToolSummary(item: CompactToolItem): string {
     const path = compactToolPath(item);
     const command = compactToolCommand(item);
+    const mutationSummary = compactToolMutationSummary(item);
     if (item.status === "failed") {
         switch (item.kind) {
             case "edit":
+                if (mutationSummary) return `Could not update ${mutationSummary}`;
                 return path ? `Could not update ${path}` : "File update failed.";
             case "command":
                 return command ? `Command failed: ${command}` : "Command failed.";
@@ -231,6 +239,7 @@ export function compactToolSummary(item: CompactToolItem): string {
                 return pattern ? `Searching ${path || "workspace"} for ${pattern}` : `Searching ${path || "workspace"}`;
             }
             case "edit":
+                if (mutationSummary) return `Updating ${mutationSummary}`;
                 return path ? `Updating ${path}` : "Updating files.";
             case "command":
                 return command ? `Running ${command}` : "Running command.";
@@ -252,6 +261,7 @@ export function compactToolSummary(item: CompactToolItem): string {
             return pattern ? `Searched ${path || "workspace"} for ${pattern}` : `Searched ${path || "workspace"}`;
         }
         case "edit":
+            if (mutationSummary) return `Updated ${mutationSummary}`;
             return path ? `Updated ${path}` : "Updated files.";
         case "command":
             return command ? `Ran ${command}` : "Ran command.";
@@ -274,6 +284,15 @@ export function compactToolPath(itemOrCall: CompactToolItem | CompactToolCall): 
 export function compactToolCommand(itemOrCall: CompactToolItem | CompactToolCall): string {
     const input = "call" in itemOrCall ? itemOrCall.call.input : itemOrCall.input;
     return inputCommand(input);
+}
+
+export function compactToolMutationSummary(itemOrCall: CompactToolItem | CompactToolCall): string {
+    const call = "call" in itemOrCall ? itemOrCall.call : itemOrCall;
+    if (!isEditTool(call.name.toLowerCase())) return "";
+    const path = compactToolPath(call);
+    const stats = mutationStats(call);
+    if (!path && !stats) return "";
+    return `${path || "files"}${stats ? ` (${stats})` : ""} - review in diff`;
 }
 
 export function renderCompactToolResultText(result?: CompactToolResult): string {
@@ -401,9 +420,15 @@ function isSearchTool(name: string): boolean {
 }
 
 function isEditTool(name: string): boolean {
-    return [/^write$/, /^edit$/, /(^|[._:-])write/, /(^|[._:-])edit/, /(^|[._:-])apply[_-]?patch$/].some((pattern) =>
-        pattern.test(name)
-    );
+    return [
+        /^write$/,
+        /^edit$/,
+        /^modify$/,
+        /(^|[._:-])write/,
+        /(^|[._:-])edit/,
+        /(^|[._:-])modify([_-]?file)?$/,
+        /(^|[._:-])apply[_-]?patch$/,
+    ].some((pattern) => pattern.test(name));
 }
 
 function isCommandTool(name: string): boolean {
@@ -430,6 +455,159 @@ function inputCommand(input: unknown): string {
     return stringField(input, "command") || stringField(input, "cmd");
 }
 
+function mutationStats(call: CompactToolCall): string {
+    const input = call.input;
+    const name = call.name.toLowerCase();
+    const patchText = patchMutationText(input);
+    if (patchText && (name.includes("patch") || looksLikePatch(patchText))) {
+        const stats = countPatchLines(patchText);
+        if (stats.added.count || stats.deleted.count) return `+${formatCappedCount(stats.added)} -${formatCappedCount(stats.deleted)}`;
+    }
+    const replacementStats = replacementMutationStats(input);
+    if (replacementStats) return replacementStats;
+    const content = stringField(input, "content");
+    if (content) return lineCountLabel(countTextLines(content, MaxMutationLineCount), "new");
+    return "";
+}
+
+function replacementMutationStats(input: unknown): string {
+    const oldLines = makeCappedLineCount();
+    const newLines = makeCappedLineCount();
+    addTextLineCountFromFields(oldLines, input, ["oldText", "old_text", "oldString", "old_string", "old"]);
+    addTextLineCountFromFields(newLines, input, ["newText", "new_text", "newString", "new_string", "new"]);
+    addEditLineCounts(oldLines, newLines, input);
+    if (!oldLines.count && !newLines.count) return "";
+    return [lineCountLabel(oldLines, "old"), lineCountLabel(newLines, "new")].filter(Boolean).join(", ");
+}
+
+function makeCappedLineCount(): CappedLineCount {
+    return { count: 0, capped: false };
+}
+
+function addTextLineCountFromFields(total: CappedLineCount, input: unknown, fields: string[]): void {
+    for (const field of fields) {
+        addTextLineCount(total, stringField(input, field));
+        if (total.capped) return;
+    }
+}
+
+function addEditLineCounts(oldLines: CappedLineCount, newLines: CappedLineCount, input: unknown): void {
+    if (!input || typeof input !== "object") return;
+    const edits = (input as Record<string, unknown>).edits;
+    if (!Array.isArray(edits)) return;
+    for (const edit of edits) {
+        addTextLineCountFromFields(oldLines, edit, ["oldText", "old_text", "oldString", "old_string", "old"]);
+        addTextLineCountFromFields(newLines, edit, ["newText", "new_text", "newString", "new_string", "new"]);
+        if (oldLines.capped && newLines.capped) return;
+    }
+}
+
+function addTextLineCount(total: CappedLineCount, text: string): void {
+    if (!text || total.capped) return;
+    if (total.count >= MaxMutationLineCount) {
+        total.capped = true;
+        return;
+    }
+    const remaining = MaxMutationLineCount - total.count;
+    const next = countTextLines(text, remaining);
+    total.count += next.count;
+    if (next.capped) {
+        total.count = MaxMutationLineCount;
+        total.capped = true;
+    }
+}
+
+function patchMutationText(input: unknown): string {
+    if (typeof input === "string") return input;
+    return stringField(input, "patch") || stringField(input, "diff") || stringField(input, "text");
+}
+
+function looksLikePatch(text: string): boolean {
+    return /^\*\*\* (?:Add|Update|Delete) File: /m.test(text) || /^@@ /m.test(text) || /^diff --git /m.test(text);
+}
+
+function countPatchLines(text: string): { added: CappedLineCount; deleted: CappedLineCount } {
+    const stats = {
+        added: { count: 0, capped: false },
+        deleted: { count: 0, capped: false },
+    };
+    let mutationLineCount = 0;
+    scanLines(text, (line) => {
+        if (line.startsWith("+") && !isPatchFileHeader(line, "+")) {
+            if (mutationLineCount >= MaxMutationLineCount) {
+                stats.added.capped = true;
+                return true;
+            }
+            stats.added.count += 1;
+            mutationLineCount += 1;
+        } else if (line.startsWith("-") && !isPatchFileHeader(line, "-")) {
+            if (mutationLineCount >= MaxMutationLineCount) {
+                stats.deleted.capped = true;
+                return true;
+            }
+            stats.deleted.count += 1;
+            mutationLineCount += 1;
+        }
+        return false;
+    });
+    return stats;
+}
+
+function isPatchFileHeader(line: string, marker: "+" | "-"): boolean {
+    return line.startsWith(`${marker}${marker}${marker} `) || line.startsWith(`${marker}${marker}${marker}\t`);
+}
+
+function countTextLines(text: string, limit: number): CappedLineCount {
+    const result = { count: 0, capped: false };
+    if (!text) return result;
+    result.count = 1;
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (char !== "\n" && char !== "\r") continue;
+        const nextIdx = char === "\r" && text[i + 1] === "\n" ? i + 1 : i;
+        if (nextIdx === text.length - 1) return result;
+        incrementCappedCount(result, limit);
+        if (result.capped) return result;
+        i = nextIdx;
+    }
+    return result;
+}
+
+function scanLines(text: string, visit: (line: string) => boolean | void): void {
+    let lineStart = 0;
+    for (let i = 0; i <= text.length; i++) {
+        const char = text[i];
+        if (i !== text.length && char !== "\n" && char !== "\r") continue;
+        const shouldStop = visit(text.slice(lineStart, i));
+        if (shouldStop) return;
+        if (char === "\r" && text[i + 1] === "\n") {
+            i += 1;
+        }
+        lineStart = i + 1;
+    }
+}
+
+function incrementCappedCount(value: CappedLineCount, limit = MaxMutationLineCount): void {
+    if (value.capped) return;
+    if (value.count >= limit) {
+        value.capped = true;
+        value.count = limit;
+        return;
+    }
+    value.count += 1;
+}
+
+function formatCappedCount(value: CappedLineCount): string {
+    return `${value.count}${value.capped ? "+" : ""}`;
+}
+
+function lineCountLabel(value: CappedLineCount | number, label: "old" | "new"): string {
+    const count = typeof value === "number" ? value : value.count;
+    if (!count) return "";
+    const capped = typeof value === "number" ? "" : value.capped ? "+" : "";
+    return `${count}${capped} ${label} ${count === 1 && !capped ? "line" : "lines"}`;
+}
+
 function fileEvidence(input: unknown): string {
     const directPath =
         stringField(input, "path") ||
@@ -438,9 +616,20 @@ function fileEvidence(input: unknown): string {
         stringField(input, "file_path") ||
         stringField(input, "filePath");
     if (directPath) return directPath;
-    const patchText = typeof input === "string" ? input : stringField(input, "text");
-    const match = patchText.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/m);
-    return match?.[1]?.trim() ?? "";
+    const patchText = patchMutationText(input);
+    return patchPathEvidence(patchText);
+}
+
+function patchPathEvidence(patchText: string): string {
+    const applyPatchMatch = patchText.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/m);
+    if (applyPatchMatch?.[1]) return applyPatchMatch[1].trim();
+    const diffGitMatch = patchText.match(/^diff --git a\/(.+?) b\/(.+)$/m);
+    if (diffGitMatch?.[2]) return diffGitMatch[2].trim();
+    const unifiedNewFileMatch = patchText.match(/^\+\+\+ (?:b\/)?(.+)$/m);
+    if (unifiedNewFileMatch?.[1] && unifiedNewFileMatch[1] !== "/dev/null") return unifiedNewFileMatch[1].trim();
+    const unifiedOldFileMatch = patchText.match(/^--- (?:a\/)?(.+)$/m);
+    if (unifiedOldFileMatch?.[1] && unifiedOldFileMatch[1] !== "/dev/null") return unifiedOldFileMatch[1].trim();
+    return "";
 }
 
 function basename(path: string): string {
