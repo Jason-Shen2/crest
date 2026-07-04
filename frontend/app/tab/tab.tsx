@@ -13,6 +13,7 @@ import clsx from "clsx";
 import { useAtomValue } from "jotai";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { makeORef } from "../store/wos";
+import { deriveBlockDisplayName, isTabAutoNamed } from "./tab-name";
 import { TabBadges } from "./tabbadges";
 import "./tab.scss";
 import { buildTabContextMenu } from "./tabcontextmenu";
@@ -238,6 +239,20 @@ const TabInner = forwardRef<HTMLDivElement, TabProps>((props, ref) => {
     const env = useWaveEnv<TabEnv>();
     const [tabData, _] = env.wos.useWaveObjectValue<Tab>(makeORef("tab", id));
     const badges = useAtomValue(getTabBadgeAtom(id, env));
+    const rawTabName = tabData?.name ?? "";
+    const layoutStateId = tabData?.layoutstate;
+    const [layoutState] = env.wos.useWaveObjectValue<LayoutState>(
+        layoutStateId ? makeORef("layout", layoutStateId) : null
+    );
+    const focusedNodeId = layoutState?.focusednodeid;
+    const focusedBlockId =
+        (focusedNodeId && layoutState?.leaforder?.find((e) => e.nodeid === focusedNodeId)?.blockid) ||
+        tabData?.blockids?.[0];
+    const [namingBlock] = env.wos.useWaveObjectValue<Block>(
+        focusedBlockId ? makeORef("block", focusedBlockId) : null
+    );
+    const derivedName = isTabAutoNamed(tabData) ? deriveBlockDisplayName(namingBlock) : "";
+    const displayTabName = derivedName || rawTabName;
 
     const rawFlagColor = tabData?.meta?.["tab:flagcolor"];
     let flagColor: string | null = null;
@@ -296,7 +311,7 @@ const TabInner = forwardRef<HTMLDivElement, TabProps>((props, ref) => {
         <TabV
             ref={ref}
             tabId={id}
-            tabName={tabData?.name ?? ""}
+            tabName={displayTabName}
             active={active}
             showDivider={showDivider}
             isDragging={isDragging}

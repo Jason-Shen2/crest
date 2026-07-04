@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { makeIconClass } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import React, {
@@ -481,11 +481,9 @@ export const TreeView = forwardRef<TreeViewRef, TreeViewProps>((props, ref) => {
                                                 toggleExpand(row.id);
                                             }}
                                         >
-                                            <i
-                                                className={clsx(
-                                                    "fa-sharp fa-solid text-[11px]",
-                                                    row.isExpanded ? "fa-chevron-down" : "fa-chevron-right"
-                                                )}
+                                            <Icon
+                                                name={row.isExpanded ? "chevron-down" : "chevron-right"}
+                                                size={11}
                                             />
                                         </button>
                                     ) : (
@@ -494,8 +492,9 @@ export const TreeView = forwardRef<TreeViewRef, TreeViewProps>((props, ref) => {
                                 </div>
                                 {row.kind === "node" ? (
                                     <>
-                                        <i
-                                            className={makeIconClass(getNodeIcon(row.node, row.isExpanded), true)}
+                                        <Icon
+                                            name={getNodeIcon(row.node, row.isExpanded)}
+                                            size={14}
                                             style={{
                                                 color: row.node.notfound || row.node.staterror ? "var(--color-error)" : "inherit",
                                             }}

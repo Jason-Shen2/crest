@@ -6,7 +6,8 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv, WaveEnv, WaveEnvSubset } from "@/app/waveenv/waveenv";
 import { shouldIncludeWidgetForWorkspace } from "@/app/workspace/widgetfilter";
 import { modalsModel } from "@/store/modalmodel";
-import { fireAndForget, isBlank, makeIconClass } from "@/util/util";
+import { fireAndForget, isBlank } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
 import {
     autoUpdate,
     FloatingPortal,
@@ -85,7 +86,7 @@ const Widget = memo(({ widget, mode, env }: WidgetPropsType) => {
             divOnClick={() => handleWidgetSelect(widget, env)}
         >
             <div style={{ color: widget.color }}>
-                <i className={makeIconClass(widget.icon, true, { defaultIcon: "browser" })}></i>
+                <Icon name={widget.icon ?? "globe-02"} size={24} />
             </div>
             {mode === "normal" && !isBlank(widget.label) ? (
                 <div
@@ -115,7 +116,7 @@ function SettingsTooltipContent({ hasConfigErrors }: { hasConfigErrors: boolean 
         <div className="flex flex-col p-1">
             <div className="mb-1">Settings &amp; Help</div>
             <div className="flex items-center gap-1 mt-0.5 text-error">
-                <i className="fa fa-solid fa-circle-exclamation"></i>
+                <Icon name="circle-exclamation" size={14} />
                 <span>Config Errors</span>
             </div>
         </div>
@@ -193,7 +194,7 @@ const AppsFloatingWindow = memo(({ isOpen, onClose, referenceElement }: Floating
                 <div className="p-4">
                     {loading ? (
                         <div className="flex items-center justify-center p-8">
-                            <i className="fa fa-solid fa-spinner fa-spin text-2xl text-muted"></i>
+                            <Icon name="spinner" size={14} className="text-2xl text-muted" spin />
                         </div>
                     ) : apps.length === 0 ? (
                         <div className="text-muted text-sm p-4 text-center">No local apps found</div>
@@ -228,7 +229,7 @@ const AppsFloatingWindow = memo(({ isOpen, onClose, referenceElement }: Floating
                                         }}
                                     >
                                         <div style={{ color: iconColor }} className="text-3xl mb-1">
-                                            <i className={makeIconClass(icon, false)}></i>
+                                            <Icon name={icon} size={24} />
                                         </div>
                                         <div className="text-xxs text-center text-secondary break-words w-full px-1">
                                             {displayName}
@@ -244,7 +245,7 @@ const AppsFloatingWindow = memo(({ isOpen, onClose, referenceElement }: Floating
                     className="w-full px-4 py-2 border-t border-border text-xs text-secondary text-center hover:bg-hoverbg hover:text-white transition-colors cursor-pointer flex items-center justify-center gap-2"
                     onClick={handleOpenBuilder}
                 >
-                    <i className="fa fa-solid fa-hammer"></i>
+                    <Icon name="hammer" size={14} />
                     Build/Edit Apps
                 </button>
             </div>
@@ -351,11 +352,11 @@ const SettingsFloatingWindow = memo(
                             onClick={item.onClick}
                         >
                             <div className="text-lg w-5 flex justify-center">
-                                <i className={makeIconClass(item.icon, false)}></i>
+                                <Icon name={item.icon} size={14} />
                             </div>
                             <div className="text-sm whitespace-nowrap">{item.label}</div>
                             {item.hasError && (
-                                <i className="fa fa-solid fa-circle-exclamation text-error text-[16px] ml-auto"></i>
+                                <Icon name="circle-exclamation" size={14} className="text-error text-[16px] ml-auto" />
                             )}
                         </div>
                     ))}
@@ -478,7 +479,7 @@ const Widgets = memo(() => {
                                 >
                                     <Tooltip content="Local WaveApps" placement="left" disable={isAppsOpen}>
                                         <div>
-                                            <i className={makeIconClass("cube", true)}></i>
+                                            <Icon name="cube" size={32} />
                                         </div>
                                     </Tooltip>
                                 </div>
@@ -494,9 +495,9 @@ const Widgets = memo(() => {
                                     disable={isSettingsOpen}
                                 >
                                     <div className="relative">
-                                        <i className={makeIconClass("gear", true)}></i>
+                                        <Icon name="settings-01" size={32} />
                                         {hasConfigErrors && (
-                                            <i className="fa fa-solid fa-circle-exclamation text-error absolute top-0 right-0 text-[12px] pointer-events-none"></i>
+                                            <Icon name="circle-exclamation" size={14} className="text-error absolute top-0 right-0 text-[12px] pointer-events-none" />
                                         )}
                                     </div>
                                 </Tooltip>
@@ -518,7 +519,7 @@ const Widgets = memo(() => {
                                 <Tooltip content="Local WaveApps" placement="left" disable={isAppsOpen}>
                                     <div className="flex flex-col items-center w-full">
                                         <div>
-                                            <i className={makeIconClass("cube", true)}></i>
+                                            <Icon name="cube" size={32} />
                                         </div>
                                         {mode === "normal" && (
                                             <div className="text-xxs mt-0.5 w-full px-0.5 text-center whitespace-nowrap overflow-hidden text-ellipsis">
@@ -541,11 +542,12 @@ const Widgets = memo(() => {
                             >
                                 <div className="flex flex-col items-center w-full">
                                     <div className="relative">
-                                        <i className={makeIconClass("gear", true)}></i>
+                                        <Icon name="settings-01" size={32} />
                                         {hasConfigErrors && (
-                                            <i
-                                                className={`fa fa-solid fa-circle-exclamation text-error absolute top-0 right-[-4px] pointer-events-none ${mode === "normal" ? "text-[16px]" : "text-[14px]"}`}
-                                            ></i>
+                                            <Icon
+                                                name="circle-exclamation"
+                                                className={`text-error absolute top-0 right-[-4px] pointer-events-none ${mode === "normal" ? "text-[16px]" : "text-[14px]"}`}
+                                            />
                                         )}
                                     </div>
                                     {mode === "normal" && (
@@ -563,7 +565,7 @@ const Widgets = memo(() => {
                         className="flex justify-center items-center w-full py-1 text-accent text-[30px]"
                         title="Running Wave Dev Build"
                     >
-                        <i className="fa fa-brands fa-dev fa-fw" />
+                        <Icon name="code" size={14} />
                     </div>
                 ) : null}
             </div>
@@ -593,14 +595,14 @@ const Widgets = memo(() => {
                 <div className="flex-grow" />
                 <div className="flex flex-col justify-center items-center w-full py-1.5 pr-0.5 text-lg">
                     <div>
-                        <i className={makeIconClass("gear", true)}></i>
+                        <Icon name="settings-01" size={32} />
                     </div>
                     <div className="text-xxs mt-0.5 w-full px-0.5 text-center">settings</div>
                 </div>
                 {env.isDev() ? (
                     <div className="flex flex-col justify-center items-center w-full py-1.5 pr-0.5 text-lg">
                         <div>
-                            <i className={makeIconClass("cube", true)}></i>
+                            <Icon name="cube" size={32} />
                         </div>
                         <div className="text-xxs mt-0.5 w-full px-0.5 text-center">apps</div>
                     </div>
@@ -610,7 +612,7 @@ const Widgets = memo(() => {
                         className="flex justify-center items-center w-full py-1 text-accent text-[30px]"
                         title="Running Wave Dev Build"
                     >
-                        <i className="fa fa-brands fa-dev fa-fw" />
+                        <Icon name="code" size={14} />
                     </div>
                 ) : null}
             </div>

@@ -13,6 +13,19 @@
     --color-muted-foreground: rgb(195, 200, 194);
     --color-secondary: rgb(195, 200, 194);
     --color-muted: rgb(140, 145, 140);
+
+    /* shadcn-style tokens used by terax-aligned components
+       (CustomEndpointCard, future Settings rows, etc).  Mapped to
+       crest's actual palette so the class names from terax's source
+       (e.g. `bg-card/60 border-border/60 text-muted-foreground
+       text-destructive`) resolve to the same visual in crest.
+         card       → a touch lighter than --color-background for
+                      card-surface separation; matches terax dark.
+         destructive→ same hue as --color-remove-strong (muted red,
+                      not ANSI-bright) — used by shadcn's destructive
+                      variant. */
+    --color-card: rgb(38, 40, 44);
+    --color-destructive: rgb(217, 119, 87);
     --color-accent-50: rgb(236, 253, 232);
     --color-accent-100: rgb(209, 250, 202);
     --color-accent-200: rgb(167, 243, 168);

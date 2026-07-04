@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Button } from "@/app/element/button";
+import { Icon } from "@/app/icon/Icon";
 import {
     MetaKeyAtomFnType,
     WaveEnv,
@@ -88,11 +89,7 @@ export function processTitleString(titleString: string): React.ReactNode[] {
             if (tagParam == null) {
                 continue;
             }
-            const iconClass = util.makeIconClass(tagParam, false);
-            if (iconClass == null) {
-                continue;
-            }
-            lastPart.push(<i key={match.index} className={iconClass} />);
+            lastPart.push(<Icon key={match.index} name={tagParam} size={14} />);
             continue;
         }
         if (tagName == "c" || tagName == "color") {
@@ -147,10 +144,9 @@ export function getBlockHeaderIcon(blockIcon: string, overrideIconColor?: string
     if (!util.isBlank(iconColor)) {
         iconStyle = { color: iconColor };
     }
-    const iconClass = util.makeIconClass(blockIcon, true);
-    if (iconClass != null) {
-        blockIconElem = <i key="icon" style={iconStyle} className={clsx(`block-frame-icon`, iconClass)} />;
-    }
+    blockIconElem = (
+        <Icon key="icon" name={blockIcon} size={14} style={iconStyle} className="block-frame-icon" />
+    );
     return blockIconElem;
 }
 

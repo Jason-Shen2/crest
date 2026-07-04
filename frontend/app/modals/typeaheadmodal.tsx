@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Input, InputGroup, InputRightElement } from "@/app/element/input";
+import { Icon } from "@/app/icon/Icon";
 import { useDimensionsWithExistingRef } from "@/app/hook/useDimensions";
-import { makeIconClass } from "@/util/util";
 import clsx from "clsx";
 import React, { forwardRef, useLayoutEffect, useRef } from "react";
 import ReactDOM from "react-dom";
@@ -20,7 +20,7 @@ const Suggestions = forwardRef<HTMLDivElement, SuggestionsProps>(
     ({ suggestions, onSelect, selectIndex }: SuggestionsProps, ref) => {
         const renderIcon = (icon: string | React.ReactNode, color: string) => {
             if (typeof icon === "string") {
-                return <i className={makeIconClass(icon, false)} style={{ color: color }}></i>;
+                return <Icon name={icon} size={14} style={{ color: color }} />;
             }
             return icon;
         };
@@ -43,7 +43,7 @@ const Suggestions = forwardRef<HTMLDivElement, SuggestionsProps>(
                     {item.label}
                 </div>
                 {"current" in item && item.current && (
-                    <i className={clsx(makeIconClass("check", false), "typeahead-current-checkbox")} />
+                    <Icon name="tick-02" size={14} className="typeahead-current-checkbox" />
                 )}
             </div>
         );
@@ -228,7 +228,7 @@ const TypeAheadModal = ({
                         placeholder={label}
                     />
                     <InputRightElement>
-                        <i className="fa-regular fa-magnifying-glass"></i>
+                        <Icon name="magnifying-glass" size={14} />
                     </InputRightElement>
                 </InputGroup>
                 <div

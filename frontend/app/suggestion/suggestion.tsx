@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { atoms } from "@/app/store/global";
-import { isBlank, makeIconClass } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
+import { isBlank } from "@/util/util";
 import { offset, useFloating } from "@floating-ui/react";
 import clsx from "clsx";
 import { Atom, useAtomValue } from "jotai";
@@ -89,14 +90,13 @@ function SuggestionIcon({ suggestion }: { suggestion: SuggestionType }) {
         return <img src={suggestion.iconsrc} alt="favicon" className="w-4 h-4 object-contain" />;
     }
     if (suggestion.icon) {
-        const iconClass = makeIconClass(suggestion.icon, true);
+        const iconName = suggestion.icon;
         const iconColor = suggestion.iconcolor;
-        return <i className={iconClass} style={{ color: iconColor }} />;
+        return <Icon name={iconName} size={14} style={{ color: iconColor }} />;
     }
     if (suggestion.type === "url") {
-        const iconClass = makeIconClass("globe", true);
         const iconColor = suggestion.iconcolor;
-        return <i className={iconClass} style={{ color: iconColor }} />;
+        return <Icon name="globe-02" size={14} style={{ color: iconColor }} />;
     } else if (suggestion.type === "file") {
         // For file suggestions, use the existing logic.
         const fullConfig = useAtomValue(atoms.fullConfigAtom);
@@ -105,11 +105,10 @@ function SuggestionIcon({ suggestion }: { suggestion: SuggestionType }) {
         if (icon == null && suggestion["file:mimetype"] != null) {
             [icon, iconColor] = getMimeTypeIconAndColor(fullConfig, suggestion["file:mimetype"]);
         }
-        const iconClass = makeIconClass(icon, true, { defaultIcon: "file" });
-        return <i className={iconClass} style={{ color: iconColor }} />;
+        if (icon == null) icon = "file";
+        return <Icon name={icon} size={14} style={{ color: iconColor }} />;
     }
-    const iconClass = makeIconClass("file", true);
-    return <i className={iconClass} />;
+    return <Icon name="file" size={14} />;
 }
 
 function SuggestionContent({ suggestion }: { suggestion: SuggestionType }) {

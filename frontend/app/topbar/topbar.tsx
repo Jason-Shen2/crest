@@ -1,71 +1,86 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+//
+// TopBar — terax-ai Header.tsx layout, adapted to crest.
+//
+// Region layout (5 regions, separated by 1px vertical dividers):
+//   ┌────────────────────────────────────────────────────────────────────┐
+//   │ ①mac   ② chrome (sidebar + ⋯) │ ③ space pill (Default ▸) │ ④ tabs │ ⑤ search + right chrome │
+//   └────────────────────────────────────────────────────────────────────┘
+//
+// Crest differences from terax:
+//   - "left chrome" carries the file-explorer toggle (terax has
+//     sidebar + command palette).  We render the explorer toggle
+//     plus a "search-files" trigger that opens the CommandPalette
+//     modal — gives a similar two-button feel without copying the
+//     terax icons verbatim.
+//   - Workspace switcher is a "Spaces · Default ▸" text pill.  The
+//     click handler is driven by floating-ui directly (we bypass
+//     <PopoverButton> which renders a crest <Button> that injects
+//     `wave-button.solid.grey` styles and breaks the pill styling).
+//   - Right chrome = right-panel toggle (sidebar-right-01),
+//     notifications bell, settings gear.
+//   - h-10 (40px) bar, bg-card rgba(34,34,34,0.85) + blur(20px).
+//
+// Compact mode (width < 720px) is a future enhancement — the
+// trigger is `ResizeObserver` on the root, but the visible behavior
+// here just keeps the chrome at full density.  Toggle later.
 
 import { Tooltip } from "@/app/element/tooltip";
+import { Icon } from "@/app/icon/Icon";
 import { NotificationsPanel } from "@/app/notifications/notifications-panel";
 import { NotificationsModel } from "@/app/notifications/notifications-model";
 import { GitHubModel } from "@/app/github/github-model";
 import { atoms } from "@/app/store/global";
 import { modalsModel } from "@/app/store/modalmodel";
+import { TabBar } from "@/app/tab/tabbar";
 import { WorkspaceSwitcher } from "@/app/tab/workspaceswitcher";
+import {
+    getRightPanelButtonActive,
+    toggleRightPanelFromTopBar,
+} from "@/app/topbar/topbar-right-panel";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
-import { cn } from "@/util/util";
-import { isMacOS, isMacOSTahoeOrLater } from "@/util/platformutil";
 import { FloatingPortal, flip, offset, shift, useClick, useDismiss, useFloating, useInteractions } from "@floating-ui/react";
 import { useAtomValue } from "jotai";
-import { memo } from "react";
+import { memo, useCallback } from "react";
 import type { PointerEventHandler } from "react";
-import { getRightPanelButtonActive, toggleRightPanelFromTopBar } from "./topbar-right-panel";
 import "./topbar.scss";
 
 // ---- Generic icon button ----
+// Mirrors terax's `Button size="icon-sm" variant="ghost"` styling:
+// size-7 (28×28) rounded-md, muted → hover:text-foreground +
+// hover:bg-accent, with tooltip + click handler.
 type ToolbarButtonProps = {
     icon: string;
     label: string;
     active?: boolean;
     badgeCount?: number;
     onClick?: () => void;
-    // "neutral" matches the WorkspaceSwitcher pill on the far right —
-    // white-opacity background, no accent color when active.
-    variant?: "accent" | "neutral";
 };
 
-const ToolbarButton = memo(({ icon, label, active, badgeCount, onClick, variant = "accent" }: ToolbarButtonProps) => {
-    const activeCls =
-        variant === "neutral"
-            ? "text-primary bg-white/[0.14]"
-            : "text-accent bg-white/10";
-    const inactiveCls =
-        variant === "neutral"
-            ? "text-secondary bg-white/[0.08] hover:text-primary hover:bg-white/[0.14]"
-            : "text-secondary hover:text-primary hover:bg-white/5";
+const ToolbarButton = memo(({ icon, label, active, badgeCount, onClick }: ToolbarButtonProps) => {
     return (
         <Tooltip
             content={label}
             placement="bottom"
             hideOnClick
-            divClassName={cn(
-                "relative flex items-center justify-center h-7 w-7 rounded-md text-[13px] transition-colors cursor-pointer",
-                active ? activeCls : inactiveCls
-            )}
+            divClassName={`topbar-icon-btn ${active ? "is-active" : ""}`}
             divStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             divOnClick={onClick}
         >
-            <i className={`fa fa-solid ${icon}`} />
+            <Icon name={icon} size={15} strokeWidth={1.75} />
             {badgeCount != null && badgeCount > 0 && (
-                <span className="absolute top-0.5 right-0.5 min-w-[14px] h-[14px] rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center px-0.5 leading-none">
-                    {badgeCount > 99 ? "99+" : badgeCount}
-                </span>
+                <span className="topbar-icon-badge">{badgeCount > 99 ? "99+" : badgeCount}</span>
             )}
         </Tooltip>
     );
 });
 ToolbarButton.displayName = "ToolbarButton";
 
-// ---- Panel wrapper using floating-ui click popover ----
+// ---- Panel anchor for floating popovers (notifications) ----
 type PanelAnchorProps = {
-    children: React.ReactNode; // button trigger
-    panel: React.ReactNode;    // panel content
+    children: React.ReactNode;
+    panel: React.ReactNode;
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
 };
@@ -106,11 +121,66 @@ const PanelAnchor = memo(({ children, panel, isOpen, onOpenChange }: PanelAnchor
 });
 PanelAnchor.displayName = "PanelAnchor";
 
-// ---- Right panel buttons ----
-const RightPanelButtons = memo(() => {
-    const layoutModel = WorkspaceLayoutModel.getInstance();
+// ---- Left chrome: explorer + search trigger ----
+const LeftChrome = memo(() => {
+    const model = WorkspaceLayoutModel.getInstance();
+    const explorerVisible = useAtomValue(model.fileExplorerVisibleAtom);
+    return (
+        <div className="topbar-left-chrome">
+            <ToolbarButton
+                icon="list-tree"
+                label="Toggle File Explorer"
+                active={explorerVisible}
+                onClick={() => model.setFileExplorerVisible(!model.getFileExplorerVisible())}
+            />
+            <button
+                type="button"
+                title="Search files, commands"
+                className="topbar-command-palette"
+                onClick={() =>
+                    modalsModel.isModalOpen("CommandPaletteModal")
+                        ? modalsModel.popModal()
+                        : modalsModel.pushModal("CommandPaletteModal")
+                }
+            >
+                <Icon name="command" size={14} strokeWidth={1.75} />
+            </button>
+        </div>
+    );
+});
+LeftChrome.displayName = "LeftChrome";
+
+// ---- Search inline (right side, just an icon button) ----
+// terax's SearchInline expands to a full input on focus; for this
+// iteration we keep it as a single-button trigger that opens the
+// CommandPalette modal.  Replace with the full search component
+// once it lands.
+const SearchInline = memo(() => {
+    const onOpen = useCallback(() => {
+        modalsModel.isModalOpen("CommandPaletteModal")
+            ? modalsModel.popModal()
+            : modalsModel.pushModal("CommandPaletteModal");
+    }, []);
+    return (
+        <button
+            type="button"
+            title="Search"
+            className="topbar-search"
+            onClick={onOpen}
+        >
+            <Icon name="search-01" size={12} strokeWidth={1.75} />
+            <span>Search</span>
+            <span className="topbar-search-kbd">Cmd K</span>
+        </button>
+    );
+});
+SearchInline.displayName = "SearchInline";
+
+// ---- Right chrome: right-panel toggle + notifications + settings ----
+const RightChrome = memo(() => {
     const ghModel = GitHubModel.getInstance();
     const notifModel = NotificationsModel.getInstance();
+    const layoutModel = WorkspaceLayoutModel.getInstance();
     const ghActivePanel = useAtomValue(ghModel.activePanelAtom);
     const notifUnread = useAtomValue(notifModel.unreadCountAtom);
     const workspace = useAtomValue(atoms.workspace);
@@ -120,123 +190,69 @@ const RightPanelButtons = memo(() => {
         hydratedRightToolPanelState
     );
     const rightPanelActive = getRightPanelButtonActive(rightToolPanelState);
-
     return (
-        <>
+        <div className="topbar-right-chrome">
             <ToolbarButton
-                icon="fa-table-columns"
+                icon="sidebar-right-01"
                 label="Toggle Right Panel"
                 active={rightPanelActive}
                 onClick={() => toggleRightPanelFromTopBar(layoutModel, rightToolPanelState.visible)}
             />
-
-            {/* Notifications: floating popover */}
             <PanelAnchor
                 isOpen={ghActivePanel === "notifications"}
                 onOpenChange={(open) => ghModel.togglePanel(open ? "notifications" : null)}
                 panel={<NotificationsPanel />}
             >
                 <ToolbarButton
-                    icon="fa-bell"
+                    icon="bell"
                     label="Notifications"
                     active={ghActivePanel === "notifications"}
                     badgeCount={notifUnread}
                 />
             </PanelAnchor>
-
-            {/* Workspace switcher */}
-            <WorkspaceSwitcher />
-        </>
+            <ToolbarButton
+                icon="settings-01"
+                label="Settings"
+                onClick={() => modalsModel.pushModal("SettingsModal")}
+            />
+        </div>
     );
 });
-RightPanelButtons.displayName = "RightPanelButtons";
-
-// ---- VTabBar toggle ----
-const VTabToggleButton = memo(() => {
-    const model = WorkspaceLayoutModel.getInstance();
-    const visible = useAtomValue(model.vtabVisibleAtom);
-    return (
-        <ToolbarButton
-            icon="fa-sidebar"
-            label="Toggle Sidebar  ⌘B"
-            active={visible}
-            onClick={() => model.setVTabVisible(!model.getVTabVisible())}
-            variant="neutral"
-        />
-    );
-});
-VTabToggleButton.displayName = "VTabToggleButton";
-
-// ---- FileExplorer toggle ----
-const FileExplorerToggleButton = memo(() => {
-    const model = WorkspaceLayoutModel.getInstance();
-    const visible = useAtomValue(model.fileExplorerVisibleAtom);
-    return (
-        <ToolbarButton
-            icon="fa-folder-tree"
-            label="Toggle File Explorer"
-            active={visible}
-            onClick={() => model.setFileExplorerVisible(!model.getFileExplorerVisible())}
-            variant="neutral"
-        />
-    );
-});
-FileExplorerToggleButton.displayName = "FileExplorerToggleButton";
-
-// ---- Search trigger ----
-const SearchTrigger = memo(() => (
-    <button
-        type="button"
-        className="flex items-center gap-2 h-7 w-full max-w-[400px] px-3 rounded-md bg-white/5 text-[12px] text-secondary hover:bg-white/10 hover:text-primary transition-colors cursor-pointer"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-        onClick={() => modalsModel.isModalOpen("CommandPaletteModal") ? modalsModel.popModal() : modalsModel.pushModal("CommandPaletteModal")}
-    >
-        <i className="fa fa-solid fa-magnifying-glass text-[11px]" />
-        <span className="flex-1 text-left">Search files, commands...</span>
-        <span className="text-[10px] text-secondary/60 border border-white/10 rounded px-1 py-0.5 leading-none">⌘P</span>
-    </button>
-));
-SearchTrigger.displayName = "SearchTrigger";
+RightChrome.displayName = "RightChrome";
 
 type TopBarProps = {
+    workspace: Workspace;
+    showTabs?: boolean;
     onPointerDownCapture?: PointerEventHandler<HTMLDivElement>;
 };
 
-// ---- TopBar ----
-export const TopBar = memo(({ onPointerDownCapture }: TopBarProps) => {
-    const mac = isMacOS();
-    const tahoe = isMacOSTahoeOrLater();
+export const TopBar = memo(({ workspace, showTabs = true, onPointerDownCapture }: TopBarProps) => {
     const isFullScreen = useAtomValue(atoms.isFullScreen);
 
     return (
         <div
-            className="flex items-center h-9 shrink-0 w-full border-b border-white/5 select-none"
-            style={{ WebkitAppRegion: "drag", backdropFilter: "blur(20px)", background: "rgba(0,0,0,0.35)" } as React.CSSProperties}
+            className="topbar-root"
             onPointerDownCapture={onPointerDownCapture}
+            data-fullscreen={isFullScreen ? "1" : "0"}
         >
-            {mac && !isFullScreen && <div className="topbar-traffic-spacer" data-tahoe={tahoe ? "1" : "0"} />}
+            {/* ① mac traffic lights spacer (h-10) */}
+            <div className="topbar-traffic-spacer" />
 
-            {/* Left: sidebar + explorer toggles */}
-            <div
-                className="flex items-center gap-1 shrink-0 pl-1"
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            >
-                <VTabToggleButton />
-                <FileExplorerToggleButton />
-            </div>
+            {/* ② left chrome: file explorer + command palette */}
+            <LeftChrome />
+            <span className="topbar-vsep" />
 
-            {/* Middle: search */}
-            <div className="flex-1 flex justify-center px-4">
-                <SearchTrigger />
-            </div>
+            {/* ③ space pill (Default ▸) */}
+            <WorkspaceSwitcher />
 
-            {/* Right: panels + workspace switcher */}
-            <div
-                className="flex items-center gap-0.5 shrink-0 pr-2"
-                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-            >
-                <RightPanelButtons />
-            </div>
+            {/* ④ tab strip (sliding pill) */}
+            {showTabs && <TabBar key={workspace.oid} workspace={workspace} embedded />}
+
+            {/* ⑤ search + right chrome (notifications + settings) */}
+            <div className="topbar-spacer" />
+            <SearchInline />
+            <span className="topbar-vsep" />
+            <RightChrome />
         </div>
     );
 });

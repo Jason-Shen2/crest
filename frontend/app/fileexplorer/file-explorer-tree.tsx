@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ContextMenuModel } from "@/app/store/contextmenu";
-import { atoms, createBlock, getApi } from "@/store/global";
+import { atoms, createBlock, getApi, getSettingsKeyAtom } from "@/store/global";
 import { fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useEffect, useMemo, useRef } from "react";
@@ -304,6 +304,7 @@ export const FileExplorerTree = memo(() => {
     const version = useAtomValue(model.childrenVersionAtom);
     const editing = useAtomValue(model.editingAtom);
     const fullConfig = useAtomValue(atoms.fullConfigAtom);
+    const showHiddenFiles = useAtomValue(getSettingsKeyAtom("preview:showhiddenfiles")) ?? false;
 
     useEffect(() => {
         if (!root) return;
@@ -313,6 +314,10 @@ export const FileExplorerTree = memo(() => {
         model.startAutoRefresh();
         return () => { /* keep subscription across re-mounts */ };
     }, [root]);
+
+    useEffect(() => {
+        model.syncShowHiddenFiles(showHiddenFiles);
+    }, [showHiddenFiles]);
 
     const rootChildren = model.getChildren(root);
     const rootLoading = loadingPaths.has(root);

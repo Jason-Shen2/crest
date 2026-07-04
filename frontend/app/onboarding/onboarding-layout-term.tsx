@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { MagnifyIcon } from "@/app/element/magnify";
-import { cn, makeIconClass } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
+import { cn } from "@/util/util";
 import { useCallback, useLayoutEffect, useState } from "react";
 import { CommandReveal } from "./onboarding-command";
 
@@ -39,23 +40,22 @@ export const FakeTermBlock = ({
             <div className="flex items-center gap-2 px-2 py-1.5 bg-border/20 border-b border-border/50 pl-[2px]">
                 <div className="group flex items-center flex-nowrap overflow-hidden text-ellipsis min-w-0 font-normal text-primary rounded-sm">
                     <span className="fa-stack flex-[1_1_auto] overflow-hidden">
-                        <i
-                            className={cn(makeIconClass("arrow-right-arrow-left", false), "fa-stack-1x mr-[2px]")}
-                            style={{ color: color }}
-                        />
+                        <i className="relative inline-flex items-center mr-[2px]">
+                            <Icon name="arrow-turn-backward" size={14} style={{ color: color }} />
+                        </i>
                     </span>
                     <div className="flex-[1_2_auto] overflow-hidden pr-1 ellipsis">{connectionName}</div>
                 </div>
                 {durableStatus && (
                     <div className="iconbutton disabled text-[13px] ml-[-4px]">
-                        <i className={`fa-sharp fa-solid fa-shield ${durableIconColor}`} />
+                        <Icon name="shield-01" size={13} className={durableIconColor} />
                     </div>
                 )}
                 <div className="flex-1" />
                 <span className="inline-block [&_svg]:fill-foreground/50 [&_svg_path]:!fill-foreground/50">
                     <MagnifyIcon enabled={false} />
                 </span>
-                <i className={makeIconClass("xmark-large", false) + " text-xs text-foreground/50"} />
+                <Icon name="cancel-01" size={12} className="text-xs text-foreground/50" />
             </div>
             <div className="flex-1 overflow-auto p-4">
                 {children ? (
@@ -66,7 +66,7 @@ export const FakeTermBlock = ({
                     </div>
                 ) : (
                     <div className="flex items-center justify-center h-full">
-                        <i className={makeIconClass("terminal", false) + " text-4xl text-foreground/50"} />
+                        <Icon name="terminal" size={48} className="text-foreground/50" />
                     </div>
                 )}
             </div>

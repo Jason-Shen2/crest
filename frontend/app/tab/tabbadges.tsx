@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { sortBadgesForTab } from "@/app/store/badge";
-import { cn, makeIconClass } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
+import { cn } from "@/util/util";
 import { useMemo } from "react";
 import { v7 as uuidv7 } from "uuid";
 
@@ -32,8 +33,10 @@ export function TabBadges({ badges, flagColor, className }: TabBadgesProps) {
     const extraBadges = allBadges.slice(1, 3);
     return (
         <div className={cn(DefaultClassName, className)}>
-            <i
-                className={makeIconClass(firstBadge.icon, true, { defaultIcon: "circle-small" }) + " text-[14px]"}
+            <Icon
+                name={firstBadge.icon ?? "circle"}
+                size={14}
+                className="text-[14px]"
                 style={{ color: firstBadge.color || "#fbbf24" }}
             />
             {extraBadges.length > 0 && (

@@ -7,7 +7,7 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
 import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
-import { atoms, createBlock, getApi, getFocusedBlockId } from "@/store/global";
+import { atoms, createBlock, getApi, getFocusedBlockId, getSettingsKeyAtom } from "@/store/global";
 import { fireAndForget, sleep, stringToBase64 } from "@/util/util";
 import { formatRemoteUri } from "@/util/waveutil";
 import * as jotai from "jotai";
@@ -24,6 +24,10 @@ function compareEntries(a: FileInfo, b: FileInfo): number {
     if (an < bn) return -1;
     if (an > bn) return 1;
     return 0;
+}
+
+function isDotfile(finfo: FileInfo): boolean {
+    return (finfo.name ?? "").startsWith(".");
 }
 
 export type InlineEditState =
@@ -45,6 +49,7 @@ export class FileExplorerModel {
 
     childrenCache: Map<string, FileInfo[]>;
     inFlight: Map<string, Promise<void>>;
+    private showHiddenFiles: boolean;
     private watchedPaths: Set<string> = new Set();
     // Queue of directories that need refreshing — batched per debounce window.
     private pendingRefreshPaths: Set<string> = new Set();
@@ -62,6 +67,7 @@ export class FileExplorerModel {
         this.editingAtom = jotai.atom(null) as jotai.PrimitiveAtom<InlineEditState>;
         this.childrenCache = new Map();
         this.inFlight = new Map();
+        this.showHiddenFiles = this.getShowHiddenFilesNow();
 
         // Flush only the directories that actually changed (targeted refresh).
         this.debouncedFlushRefresh = debounce(400, () => {
@@ -143,6 +149,19 @@ export class FileExplorerModel {
         return this.childrenCache.get(path);
     }
 
+    getShowHiddenFilesNow(): boolean {
+        return globalStore.get(getSettingsKeyAtom("preview:showhiddenfiles")) ?? false;
+    }
+
+    syncShowHiddenFiles(showHiddenFiles: boolean): void {
+        if (this.showHiddenFiles === showHiddenFiles) return;
+        this.showHiddenFiles = showHiddenFiles;
+        this.childrenCache.clear();
+        this.inFlight.clear();
+        globalStore.set(this.childrenVersionAtom, globalStore.get(this.childrenVersionAtom) + 1);
+        fireAndForget(() => this.fetchChildren(globalStore.get(this.rootAtom)));
+    }
+
     isExpanded(path: string): boolean {
         return globalStore.get(this.expandedAtom).has(path);
     }
@@ -183,6 +202,11 @@ export class FileExplorerModel {
                 const stream = RpcApi.FileListStreamCommand(TabRpcClient, { path: uri }, null);
                 for await (const chunk of stream) {
                     if (chunk?.fileinfo) entries.push(...chunk.fileinfo);
+                }
+                if (!this.getShowHiddenFilesNow()) {
+                    for (let i = entries.length - 1; i >= 0; i--) {
+                        if (isDotfile(entries[i])) entries.splice(i, 1);
+                    }
                 }
                 entries.sort(compareEntries);
                 this.childrenCache.set(path, entries);
@@ -364,6 +388,12 @@ export class FileExplorerModel {
             if (current !== before && current !== "") break;
             await sleep(30);
         }
-        await createBlock({ meta: { controller: "shell", view: "term", "cmd:cwd": dir } });
+        // `block:kind: "folder"` is the marker the workspace switcher
+        // reads to render the tab as a folder-explorer tab (folder icon
+        // + dir-name label + cwd subtitle) instead of a plain terminal.
+        // MetaType is a closed-string index but ts-ignore keeps the build
+        // green until we extend the index.
+        // @ts-ignore — MetaType is closed; the switcher reads this key.
+        await createBlock({ meta: { controller: "shell", view: "term", "cmd:cwd": dir, "block:kind": "folder" } });
     }
 }

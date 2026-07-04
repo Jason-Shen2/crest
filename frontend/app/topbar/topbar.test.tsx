@@ -65,7 +65,11 @@ vi.mock("@/app/store/modalmodel", () => ({
 }));
 
 vi.mock("@/app/tab/workspaceswitcher", () => ({
-    WorkspaceSwitcher: () => <div>Workspace Switcher</div>,
+    WorkspaceSwitcher: () => <div className="mock-workspace-switcher">Workspace Switcher</div>,
+}));
+
+vi.mock("@/app/tab/tabbar", () => ({
+    TabBar: () => <div className="mock-tabbar">TabBar</div>,
 }));
 
 vi.mock("@/app/workspace/workspace-layout-model", async () => {
@@ -131,13 +135,35 @@ vi.mock("@/util/platformutil", () => ({
 
 import { TopBar } from "./topbar";
 
-describe("TopBar right panel entry", () => {
-    it("renders a workspace right panel toggle instead of a Code Review button", () => {
-        const markup = renderToStaticMarkup(<TopBar />);
+describe("TopBar chrome layout", () => {
+    it("renders the 5-region chrome with terax-style buttons, workspace pill, and right panel toggle", () => {
+        const mockWorkspace: Workspace = {
+            otype: "workspace",
+            oid: "ws-a",
+            version: 1,
+            meta: {},
+            tabids: [],
+            activetabid: "",
+            name: "Test",
+            icon: "computer",
+            color: "#10b981",
+        } as Workspace;
+        const markup = renderToStaticMarkup(<TopBar workspace={mockWorkspace} />);
 
+        // Left chrome: file explorer toggle + command palette button.
+        expect(markup).toContain('aria-label="Toggle File Explorer"');
+        expect(markup).toContain('title="Search files, commands"');
+
+        // Workspace switcher pill is in the topbar (mocked).
+        expect(markup).toContain("mock-workspace-switcher");
+
+        // TabBar (mocked) is embedded in the topbar.
+        expect(markup).toContain("mock-tabbar");
+
+        // Right chrome: right-panel toggle + notifications + settings.
+        expect(markup).toContain('title="Search"');
         expect(markup).toContain('aria-label="Toggle Right Panel"');
-        expect(markup).toContain("fa-table-columns");
-        expect(markup).not.toContain('aria-label="Code Review"');
-        expect(markup).not.toContain("fa-code-branch");
+        expect(markup).toContain('aria-label="Notifications"');
+        expect(markup).toContain('aria-label="Settings"');
     });
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { globalStore } from "@/app/store/jotaiStore";
+import type { PrimitiveAtom } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFileExplorer = vi.hoisted(() => ({
@@ -10,6 +11,7 @@ const mockFileExplorer = vi.hoisted(() => ({
         openRightTool: vi.fn(),
         openRightEditorTool: vi.fn(),
     },
+    settingsAtoms: new Map<string, any>(),
 }));
 
 vi.mock("@/store/global", async () => {
@@ -26,6 +28,15 @@ vi.mock("@/store/global", async () => {
             unwatchDir: vi.fn(),
         }),
         getFocusedBlockId: () => null,
+        getSettingsKeyAtom: (key: string) => {
+            let settingAtom = mockFileExplorer.settingsAtoms.get(key);
+            if (settingAtom != null) {
+                return settingAtom;
+            }
+            settingAtom = jotaiActual.atom(null);
+            mockFileExplorer.settingsAtoms.set(key, settingAtom);
+            return settingAtom;
+        },
     };
 });
 
@@ -57,6 +68,7 @@ vi.mock("@/app/workspace/workspace-layout-model", () => ({
 
 import { RpcApi } from "@/app/store/wshclientapi";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
+import { getSettingsKeyAtom } from "@/store/global";
 import { FileExplorerModel } from "./file-explorer-model";
 
 describe("FileExplorerModel", () => {
@@ -69,7 +81,11 @@ describe("FileExplorerModel", () => {
         mockFileExplorer.layoutModel.openRightEditorTool.mockImplementation(() => {
             mockFileExplorer.layoutModel.openRightTool("editor");
         });
+        for (const settingAtom of mockFileExplorer.settingsAtoms.values()) {
+            globalStore.set(settingAtom, null);
+        }
         vi.mocked(RpcApi.FileReadCommand).mockClear();
+        vi.mocked(RpcApi.FileListStreamCommand).mockClear();
         vi.mocked(RpcApi.FileMoveCommand).mockClear();
         vi.mocked(RpcApi.FileDeleteCommand).mockClear();
     });
@@ -92,6 +108,33 @@ describe("FileExplorerModel", () => {
             savedText: "initial",
         });
         expect(mockFileExplorer.createBlock).not.toHaveBeenCalled();
+    });
+
+    it("hides dotfiles from fetched children by default", async () => {
+        vi.mocked(RpcApi.FileListStreamCommand).mockReturnValue(makeFileListStream([
+            { path: "/repo/.env", name: ".env", isdir: false },
+            { path: "/repo/src", name: "src", isdir: true },
+            { path: "/repo/app.ts", name: "app.ts", isdir: false },
+        ]));
+        const model = FileExplorerModel.getInstance();
+
+        await model.fetchChildren("/repo");
+
+        expect(model.getChildren("/repo")?.map((entry) => entry.name)).toEqual(["src", "app.ts"]);
+    });
+
+    it("includes dotfiles when the file explorer show hidden setting is enabled", async () => {
+        globalStore.set(getSettingsKeyAtom("preview:showhiddenfiles") as PrimitiveAtom<boolean>, true);
+        vi.mocked(RpcApi.FileListStreamCommand).mockReturnValue(makeFileListStream([
+            { path: "/repo/.env", name: ".env", isdir: false },
+            { path: "/repo/src", name: "src", isdir: true },
+            { path: "/repo/app.ts", name: "app.ts", isdir: false },
+        ]));
+        const model = FileExplorerModel.getInstance();
+
+        await model.fetchChildren("/repo");
+
+        expect(model.getChildren("/repo")?.map((entry) => entry.name)).toEqual(["src", ".env", "app.ts"]);
     });
 
     it("syncs successful renames to the right editor", async () => {
@@ -174,4 +217,8 @@ function makeTestRpc() {
         readFile: vi.fn(async () => ({ text: "initial", readonly: false })),
         writeFile: vi.fn(async () => undefined),
     };
+}
+
+async function* makeFileListStream(fileinfo: FileInfo[]): AsyncGenerator<CommandRemoteListEntriesRtnData, void, boolean> {
+    yield { fileinfo };
 }

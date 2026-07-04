@@ -4,7 +4,8 @@
 import { MagnifyIcon } from "@/app/element/magnify";
 import { WaveStreamdown } from "@/app/element/streamdown";
 import { CodeEditor } from "@/app/view/codeeditor/codeeditor";
-import { cn, makeIconClass } from "@/util/util";
+import { Icon } from "@/app/icon/Icon";
+import { cn } from "@/util/util";
 import { useLayoutEffect, useRef, useState } from "react";
 
 export type FakeBlockProps = {
@@ -39,12 +40,12 @@ export const FakeBlock = ({
             )}
         >
             <div className="flex items-center gap-2 px-2 py-1.5 bg-border/20 border-b border-border/50">
-                <i className={makeIconClass(icon, false) + " text-xs text-foreground/70"} />
+                <Icon name={icon} size={12} className="text-xs text-foreground/70" />
                 <span className="text-xs text-foreground/70 flex-1">{name}</span>
                 <span className="inline-block [&_svg]:fill-foreground/50 [&_svg_path]:!fill-foreground/50">
                     <MagnifyIcon enabled={false} />
                 </span>
-                <i className={makeIconClass("xmark-large", false) + " text-xs text-foreground/50"} />
+                <Icon name="cancel-01" size={12} className="text-xs text-foreground/50" />
             </div>
             <div className="flex-1 flex items-center justify-center overflow-auto p-4">
                 {editorText ? (
@@ -64,7 +65,7 @@ export const FakeBlock = ({
                         <WaveStreamdown text={markdown} />
                     </div>
                 ) : (
-                    <i className={makeIconClass(icon, false) + " text-4xl text-foreground/50"} />
+                    <Icon name={icon} size={48} className="text-foreground/50" />
                 )}
             </div>
         </div>

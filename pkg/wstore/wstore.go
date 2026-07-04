@@ -48,6 +48,11 @@ func UpdateTabName(ctx context.Context, tabId, name string) error {
 		}
 		if tabId != "" {
 			tab.Name = name
+			// A user-chosen name overrides the derived label: drop the
+			// auto-name flag so the frontend stops deriving from blocks.
+			if tab.Meta != nil {
+				delete(tab.Meta, waveobj.MetaKey_TabAutoName)
+			}
 			DBUpdate(tx.Context(), tab)
 		}
 		return nil
