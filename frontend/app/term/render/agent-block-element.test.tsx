@@ -99,6 +99,43 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).not.toContain('data-tool-callid="tc1"');
     });
 
+    it("renders progress view instead of compact tool rows when requested", () => {
+        const html = renderToStaticMarkup(
+            <AgentBlockElement
+                toolPresentation="progress"
+                run={makeRun(
+                    [],
+                    [
+                        {
+                            role: "assistant",
+                            content: [
+                                {
+                                    type: "toolCall",
+                                    id: "grep-1",
+                                    name: "grep",
+                                    input: { pattern: "AgentProgressView", path: "frontend/app/term/render" },
+                                },
+                            ],
+                        },
+                        {
+                            role: "toolResult",
+                            toolCallId: "grep-1",
+                            toolName: "grep",
+                            content: [{ type: "text", text: "agent-progress-view.tsx" }],
+                            isError: false,
+                        },
+                    ]
+                )}
+            />
+        );
+
+        expect(html).toContain('data-agent-progress-view="true"');
+        expect(html).toContain('data-agent-progress-rail="true"');
+        expect(html).toContain("Inspected project files and existing implementation.");
+        expect(html).not.toContain('data-agent-compact-tool-list="true"');
+        expect(html).not.toContain('data-agent-compact-tool-row="grep-1"');
+    });
+
     it("interleaves compact tool rows with assistant text, thinking, and images in order", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement

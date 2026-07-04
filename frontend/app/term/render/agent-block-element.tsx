@@ -21,6 +21,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { AgentCompactToolList } from "./agent-compact-tool";
+import { deriveAgentProgress } from "./agent-progress";
+import { AgentProgressView } from "./agent-progress-view";
 import {
     compactToolKind,
     deriveCompactToolStatus,
@@ -42,10 +44,11 @@ export interface AgentBlockElementProps {
     fontSize?: number;
     /** Click handler to mark this block as selected. */
     onSelect?: () => void;
+    toolPresentation?: "compact" | "progress";
 }
 
 export const AgentBlockElement = memo(
-    ({ run, selected, fontSize = 16, onSelect }: AgentBlockElementProps) => {
+    ({ run, selected, fontSize = 16, onSelect, toolPresentation = "compact" }: AgentBlockElementProps) => {
         const userText = useMemo(() => extractText(run.userMessage), [run.userMessage]);
         const isStreaming = run.status === "streaming";
         const isError = run.status === "error";
@@ -71,7 +74,13 @@ export const AgentBlockElement = memo(
             >
                 <AgentBlockHeader status={run.status} />
                 <UserMessage text={userText} fontSize={fontSize} />
-                <AssistantContent responseMessages={run.responseMessages} streaming={isStreaming} fontSize={fontSize} />
+                <AssistantContent
+                    run={run}
+                    responseMessages={run.responseMessages}
+                    streaming={isStreaming}
+                    fontSize={fontSize}
+                    toolPresentation={toolPresentation}
+                />
                 {isError && run.errorMessage && (
                     // Warp's error style (block/view_impl/common.rs:3013): a row
                     // of [red alert icon] + [muted message text], no box / no red
@@ -120,13 +129,20 @@ function extractText(message: PiAgentMessage | undefined): string {
 // toolUseId across subsequent toolResult messages).
 // =========================================================================
 interface AssistantContentProps {
+    run: PiRun;
     responseMessages: PiAgentMessage[];
     streaming: boolean;
     fontSize: number;
+    toolPresentation: "compact" | "progress";
 }
 
 const AssistantContent = memo(
-    ({ responseMessages, streaming, fontSize }: AssistantContentProps) => {
+    ({ run, responseMessages, streaming, fontSize, toolPresentation }: AssistantContentProps) => {
+        const progress = useMemo(() => {
+            if (toolPresentation !== "progress") return null;
+            return deriveAgentProgress(run);
+        }, [run, toolPresentation]);
+
         // Index toolResults by toolUseId for O(1) lookup. Pi places
         // tool results in dedicated messages (role: "toolResult"); each
         // message's content array may carry multiple toolResult entries
@@ -179,6 +195,7 @@ const AssistantContent = memo(
             textBuf = "";
         };
         const flushToolItems = () => {
+            if (toolPresentation === "progress") return;
             if (pendingToolItems.length === 0) return;
             rendered.push(<AgentCompactToolList key={`tools-${keyIdx++}`} groups={groupCompactTools(pendingToolItems)} />);
             pendingToolItems = [];
@@ -236,6 +253,7 @@ const AssistantContent = memo(
 
         return (
             <div>
+                {progress && <AgentProgressView progress={progress} />}
                 {rendered}
                 {streaming && rendered.length === 0 && (
                     <div className="text-secondary/70 text-[12px] italic">Thinking…</div>
