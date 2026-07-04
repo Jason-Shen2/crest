@@ -22,14 +22,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/skratchdot/open-golang/open"
 	"github.com/s-zx/crest/pkg/baseds"
-	"github.com/s-zx/crest/pkg/contextchip"
 	"github.com/s-zx/crest/pkg/blockcontroller"
 	"github.com/s-zx/crest/pkg/blocklogger"
+	"github.com/s-zx/crest/pkg/buildercontroller"
 	"github.com/s-zx/crest/pkg/cmdblock"
 	"github.com/s-zx/crest/pkg/cmdblock/cbtypes"
-	"github.com/s-zx/crest/pkg/buildercontroller"
+	"github.com/s-zx/crest/pkg/contextchip"
 	"github.com/s-zx/crest/pkg/filebackup"
 	"github.com/s-zx/crest/pkg/filestore"
 	"github.com/s-zx/crest/pkg/genconn"
@@ -59,6 +58,7 @@ import (
 	"github.com/s-zx/crest/pkg/wslconn"
 	"github.com/s-zx/crest/pkg/wstore"
 	"github.com/s-zx/crest/tsunami/build"
+	"github.com/skratchdot/open-golang/open"
 )
 
 var InvalidWslDistroNames = []string{"docker-desktop", "docker-desktop-data"}
@@ -161,6 +161,16 @@ func (ws *WshServer) UpdateTabNameCommand(ctx context.Context, tabId string, new
 	err := wstore.UpdateTabName(ctx, tabId, newName)
 	if err != nil {
 		return fmt.Errorf("error updating tab name: %w", err)
+	}
+	wcore.SendWaveObjUpdate(oref)
+	return nil
+}
+
+func (ws *WshServer) ResetTabNameCommand(ctx context.Context, tabId string, resetName string) error {
+	oref := waveobj.ORef{OType: waveobj.OType_Tab, OID: tabId}
+	err := wstore.ResetTabName(ctx, tabId, resetName)
+	if err != nil {
+		return fmt.Errorf("error resetting tab name: %w", err)
 	}
 	wcore.SendWaveObjUpdate(oref)
 	return nil
