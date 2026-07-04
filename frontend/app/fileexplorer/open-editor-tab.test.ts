@@ -210,6 +210,29 @@ describe("open editor tab from file explorer", () => {
         expect(mockServices.SetActiveTab).not.toHaveBeenCalled();
     });
 
+    it("deduplicates concurrent tab creation for the same file before creation resolves", async () => {
+        globalStore.set(atoms.workspace as any, {
+            oid: "workspace-1",
+            tabids: [],
+        } as Workspace);
+        const createTab = deferred<string>();
+        mockServices.CreateTabWithBlock.mockReturnValue(createTab.promise);
+
+        const firstOpen = openFileInEditorTab("/repo/src/new.ts", "/repo");
+        const secondOpen = openFileInEditorTab("/repo/src/new.ts", "/repo");
+        await Promise.resolve();
+
+        expect(mockServices.CreateTabWithBlock).toHaveBeenCalledTimes(1);
+
+        createTab.resolve("tab-3");
+        const [firstResult, secondResult] = await Promise.all([firstOpen, secondOpen]);
+
+        expect(firstResult).toEqual({ tabId: "tab-3", created: true });
+        expect(secondResult).toEqual({ tabId: "tab-3", created: true });
+        expect(mockElectronApi.setActiveTab).toHaveBeenCalledTimes(1);
+        expect(mockElectronApi.setActiveTab).toHaveBeenCalledWith("tab-3");
+    });
+
     it("includes optional cwd metadata when creating a codeeditor tab", async () => {
         mockServices.CreateTabWithBlock.mockResolvedValue("tab-3");
 
@@ -238,4 +261,18 @@ function updateWaveObject<T extends WaveObj>(otype: string, oid: string, obj: Pa
     WOS.mockObjectForPreview(oref, value);
     WOS.getWaveObjectAtom<T>(oref);
     WOS.setObjectValue(value);
+}
+
+function deferred<T>(): {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+    reject: (reason?: unknown) => void;
+} {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
 }
