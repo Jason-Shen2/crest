@@ -3,28 +3,25 @@
 
 import { WorkspaceService } from "@/app/store/services";
 import * as WOS from "@/app/store/wos";
-import { atoms, globalStore } from "@/store/global";
+import { atoms, getApi, globalStore } from "@/store/global";
 
 export type OpenFileInEditorTabResult = {
     tabId: string;
     created: boolean;
 };
 
-function getBlockForId(blockId: string): Block | null {
-    return globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", blockId))) ?? null;
-}
+export type OpenFileInEditorTabOptions = {
+    workspaceRoot?: string;
+    cwd?: string;
+};
 
-function getTabForId(tabId: string): Tab | null {
-    return globalStore.get(WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tabId))) ?? null;
-}
-
-export function findEditorTabForPath(path: string): string | null {
+export async function findEditorTabForPath(path: string): Promise<string | null> {
     const workspace = globalStore.get(atoms.workspace);
     const tabIds = workspace?.tabids ?? [];
     for (const tabId of tabIds) {
-        const tab = getTabForId(tabId);
+        const tab = await WOS.loadAndPinWaveObject<Tab>(WOS.makeORef("tab", tabId));
         for (const blockId of tab?.blockids ?? []) {
-            const block = getBlockForId(blockId);
+            const block = await WOS.loadAndPinWaveObject<Block>(WOS.makeORef("block", blockId));
             if (block?.meta?.view === "codeeditor" && block.meta.file === path) {
                 return tabId;
             }
@@ -33,22 +30,33 @@ export function findEditorTabForPath(path: string): string | null {
     return null;
 }
 
-export async function openFileInEditorTab(path: string): Promise<OpenFileInEditorTabResult> {
+export async function openFileInEditorTab(
+    path: string,
+    opts: OpenFileInEditorTabOptions = {}
+): Promise<OpenFileInEditorTabResult> {
     const workspace = globalStore.get(atoms.workspace);
     if (!workspace?.oid) {
         throw new Error("cannot open editor tab without an active workspace");
     }
-    const existingTabId = findEditorTabForPath(path);
+    const existingTabId = await findEditorTabForPath(path);
     if (existingTabId) {
-        await WorkspaceService.SetActiveTab(workspace.oid, existingTabId);
+        getApi().setActiveTab(existingTabId);
         return { tabId: existingTabId, created: false };
     }
-    const tabId = await WorkspaceService.CreateTabWithBlock(workspace.oid, "", true, {
+    const cwd = opts.cwd ?? opts.workspaceRoot;
+    const meta: MetaType = {
+        view: "codeeditor",
+        file: path,
+        connection: "",
+    };
+    if (cwd) {
+        meta["cmd:cwd"] = cwd;
+    }
+    const tabId = await WorkspaceService.CreateTabWithBlock(workspace.oid, "", false, {
         meta: {
-            view: "codeeditor",
-            file: path,
-            connection: "",
+            ...meta,
         },
     });
+    getApi().setActiveTab(tabId);
     return { tabId, created: true };
 }
