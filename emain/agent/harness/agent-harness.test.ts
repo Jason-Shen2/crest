@@ -41,11 +41,12 @@ function fakeAssistantMessage(model: Model<any>): AssistantMessage {
     };
 }
 
-function registerFakeProvider(): void {
+function registerFakeProvider(capturedContexts?: Context[]): void {
     registerApiProvider({
         api: FAKE_API,
         stream: () => new AssistantMessageEventStream(),
-        streamSimple: (model: Model<any>, _context: Context, _options?: SimpleStreamOptions) => {
+        streamSimple: (model: Model<any>, context: Context, _options?: SimpleStreamOptions) => {
+            capturedContexts?.push(context);
             const out = new AssistantMessageEventStream();
             const message = fakeAssistantMessage(model);
             out.push({ type: "start", partial: message });
@@ -70,8 +71,8 @@ function fakeModel(): Model<any> {
     };
 }
 
-async function buildHarness() {
-    registerFakeProvider();
+async function buildHarness(capturedContexts?: Context[]) {
+    registerFakeProvider(capturedContexts);
     const repo = new InMemorySessionRepo();
     const session = await repo.create({});
     const env = new NodeExecutionEnv({ cwd: process.cwd() });
@@ -100,5 +101,51 @@ describe("AgentHarness — promptReturningEntryId", () => {
             (e) => e.type === "message" && (e.message as { role?: string }).role === "user",
         );
         expect(result.userEntryId).toBe(userEntry?.id);
+    });
+});
+
+describe("AgentHarness — navigateTree to the first message (parentId=null)", () => {
+    afterEach(() => {
+        resetApiProviders();
+    });
+
+    it("navigates to the first user message instead of falling off the tree", async () => {
+        const { harness, session } = await buildHarness();
+        const first = await harness.promptReturningEntryId("first prompt");
+        await harness.prompt("second prompt");
+
+        // Navigating to the very first user message: its parentId is null, so
+        // the leaf must fall back to the target entry itself (not null) — the
+        // bug was newLeafId = parentId = null, which collapsed the branch.
+        const result = await harness.navigateTree(first.userEntryId);
+        expect(result.cancelled).toBe(false);
+        expect(await session.getLeafId()).toBe(first.userEntryId);
+
+        const branch = await session.getBranch();
+        const userMessages = branch.filter(
+            (e) => e.type === "message" && (e.message as { role?: string }).role === "user",
+        );
+        expect(userMessages).toHaveLength(1);
+        expect(userMessages[0]?.id).toBe(first.userEntryId);
+    });
+
+    it("strips the trailing user message from context so the next prompt has no duplicate", async () => {
+        const contexts: Context[] = [];
+        const { harness } = await buildHarness(contexts);
+        const first = await harness.promptReturningEntryId("first prompt");
+        await harness.navigateTree(first.userEntryId);
+
+        contexts.length = 0;
+        await harness.prompt("resumed prompt");
+
+        // The leaf sits on the first user message after navigate. createTurnState
+        // must strip that trailing user message so executeTurn's freshly-built
+        // user message is not duplicated back-to-back in the LLM context.
+        expect(contexts).toHaveLength(1);
+        const messages = contexts[0]!.messages;
+        const userTexts = messages
+            .filter((m) => m.role === "user")
+            .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+        expect(userTexts).toEqual([expect.stringContaining("resumed prompt")]);
     });
 });

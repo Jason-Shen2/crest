@@ -24,6 +24,11 @@ describe("agent command registry", () => {
         ]);
     });
 
+    it("exposes /clear as an alias of /new for Claude Code compatibility", () => {
+        const newCommand = getBuiltInAgentCommands().find((command) => command.name === "new");
+        expect(newCommand?.aliases).toEqual(["clear"]);
+    });
+
     it("parses slash command input", () => {
         expect(parseAgentCommandInput("/tree")).toEqual({ commandName: "tree", argsText: "" });
         expect(parseAgentCommandInput("/fork   entry text")).toEqual({

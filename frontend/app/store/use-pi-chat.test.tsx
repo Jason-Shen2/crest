@@ -163,6 +163,36 @@ describe("reducePiRunsEvent", () => {
         expect(out).toEqual([run]);
     });
 
+    it("maps main-owned turns to renderer runs keyed by turnId", () => {
+        const userMessage = { role: "user", content: [{ type: "text", text: "q" }] } as PiAgentMessage;
+        const assistantMessage = {
+            role: "assistant",
+            content: [{ type: "text", text: "a" }],
+            stopReason: "stop",
+        } as PiAgentMessage;
+
+        const out = reducePiRunsEvent([], {
+            type: "snapshot",
+            turns: [
+                {
+                    turnId: "entry-xyz",
+                    userMessage,
+                    responseMessages: [assistantMessage],
+                    status: "done",
+                },
+            ],
+        });
+
+        expect(out).toEqual([
+            {
+                runId: "entry-xyz",
+                userMessage,
+                responseMessages: [assistantMessage],
+                status: "done",
+            },
+        ]);
+    });
+
 });
 
 describe("resolveAbortSessionPath", () => {

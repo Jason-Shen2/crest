@@ -312,6 +312,16 @@ export class AgentHarness<
 
 	private async createTurnState(): Promise<AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>> {
 		const context = await this.session.buildContext();
+		const messages = context.messages;
+		// When the leaf is positioned on a user message (e.g. after navigating
+		// to the first message in a session where parentId=null falls back to
+		// the target entry itself), strip that trailing user message from the
+		// LLM context. executeTurn will append a fresh user message from the
+		// prompt text, so leaving the old user message in context would produce
+		// duplicate consecutive user messages that confuse the model.
+		if (messages.length > 0 && messages[messages.length - 1]?.role === "user") {
+			messages.splice(-1, 1);
+		}
 		const resources = this.getResources();
 		const sessionMetadata = await this.session.getMetadata();
 		const tools = [...this.tools.values()];
@@ -847,7 +857,7 @@ export class AgentHarness<
 			let editorText: string | undefined;
 			let newLeafId: string | null;
 			if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-				newLeafId = targetEntry.parentId;
+				newLeafId = targetEntry.parentId ?? targetId;
 				const content = targetEntry.message.content;
 				editorText =
 					typeof content === "string"
@@ -857,7 +867,7 @@ export class AgentHarness<
 								.map((c) => c.text)
 								.join("");
 			} else if (targetEntry.type === "custom_message") {
-				newLeafId = targetEntry.parentId;
+				newLeafId = targetEntry.parentId ?? targetId;
 				editorText =
 					typeof targetEntry.content === "string"
 						? targetEntry.content
