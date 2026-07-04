@@ -5,6 +5,7 @@ package wcore
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/s-zx/crest/pkg/wavebase"
@@ -25,7 +26,7 @@ func TestDefaultTabNameAndMetaExplicitName(t *testing.T) {
 	}
 }
 
-func TestCreateTabWithBlockInvalidBlockDefDoesNotLeavePartialState(t *testing.T) {
+func TestCreateTabWithBlockFailuresDoNotLeavePartialState(t *testing.T) {
 	ctx := setupWorkspaceTestWStore(t)
 	workspace := &waveobj.Workspace{
 		OID:    "workspace-invalid-blockdef",
@@ -63,6 +64,54 @@ func TestCreateTabWithBlockInvalidBlockDefDoesNotLeavePartialState(t *testing.T)
 	}
 	if len(tabs) != 1 || tabs[0].OID != existingTab.OID {
 		t.Fatalf("tabs = %#v, want only tab %q", tabs, existingTab.OID)
+	}
+
+	layoutFailureWorkspace := &waveobj.Workspace{
+		OID:    "workspace-layout-failure",
+		TabIds: []string{},
+	}
+	if err := wstore.DBInsert(ctx, layoutFailureWorkspace); err != nil {
+		t.Fatalf("DBInsert workspace returned error: %v", err)
+	}
+	activeTab, err := createTabObj(ctx, layoutFailureWorkspace.OID, "Active A", nil)
+	if err != nil {
+		t.Fatalf("createTabObj activeTab returned error: %v", err)
+	}
+	otherTab, err := createTabObj(ctx, layoutFailureWorkspace.OID, "Other B", nil)
+	if err != nil {
+		t.Fatalf("createTabObj otherTab returned error: %v", err)
+	}
+	if err := SetActiveTab(ctx, layoutFailureWorkspace.OID, activeTab.OID); err != nil {
+		t.Fatalf("SetActiveTab returned error: %v", err)
+	}
+
+	origApplyPortableLayout := applyPortableLayoutForCreateTabWithBlock
+	applyPortableLayoutForCreateTabWithBlock = func(context.Context, string, PortableLayout, bool) error {
+		return fmt.Errorf("injected apply failure")
+	}
+	defer func() {
+		applyPortableLayoutForCreateTabWithBlock = origApplyPortableLayout
+	}()
+
+	blockDef := waveobj.BlockDef{
+		Meta: waveobj.MetaMapType{
+			waveobj.MetaKey_View: "preview",
+		},
+	}
+	_, err = CreateTabWithBlock(ctx, layoutFailureWorkspace.OID, "Fails Layout", true, blockDef)
+	if err == nil {
+		t.Fatalf("CreateTabWithBlock returned nil error for injected layout failure")
+	}
+
+	updatedWorkspace, err = wstore.DBMustGet[*waveobj.Workspace](ctx, layoutFailureWorkspace.OID)
+	if err != nil {
+		t.Fatalf("DBMustGet workspace returned error: %v", err)
+	}
+	if len(updatedWorkspace.TabIds) != 2 || updatedWorkspace.TabIds[0] != activeTab.OID || updatedWorkspace.TabIds[1] != otherTab.OID {
+		t.Fatalf("TabIds = %#v, want [%q %q]", updatedWorkspace.TabIds, activeTab.OID, otherTab.OID)
+	}
+	if updatedWorkspace.ActiveTabId != activeTab.OID {
+		t.Fatalf("ActiveTabId = %q, want original active tab %q", updatedWorkspace.ActiveTabId, activeTab.OID)
 	}
 }
 
