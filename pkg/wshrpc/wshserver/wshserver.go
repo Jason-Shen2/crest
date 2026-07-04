@@ -167,6 +167,16 @@ func (ws *WshServer) UpdateTabNameCommand(ctx context.Context, tabId string, new
 	return nil
 }
 
+func (ws *WshServer) ResetTabNameCommand(ctx context.Context, tabId string, resetName string) error {
+	oref := waveobj.ORef{OType: waveobj.OType_Tab, OID: tabId}
+	err := wstore.ResetTabName(ctx, tabId, resetName)
+	if err != nil {
+		return fmt.Errorf("error resetting tab name: %w", err)
+	}
+	wcore.SendWaveObjUpdate(oref)
+	return nil
+}
+
 func (ws *WshServer) UpdateWorkspaceTabIdsCommand(ctx context.Context, workspaceId string, tabIds []string) error {
 	oref := waveobj.ORef{OType: waveobj.OType_Workspace, OID: workspaceId}
 	err := wcore.UpdateWorkspaceTabIds(ctx, workspaceId, tabIds)

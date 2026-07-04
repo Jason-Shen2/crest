@@ -93,8 +93,8 @@ type MetaTSType struct {
 
 	// for tabs
 	TabFlagColor        string  `json:"tab:flagcolor,omitempty"`
-	TabBackground       string  `json:"tab:background,omitempty"`
 	TabAutoName         bool    `json:"tab:autoname,omitempty"`
+	TabBackground       string  `json:"tab:background,omitempty"`
 	BgClear             bool    `json:"bg:*,omitempty"`
 	Bg                  string  `json:"bg,omitempty"`
 	BgOpacity           float64 `json:"bg:opacity,omitempty"`
@@ -106,7 +106,7 @@ type MetaTSType struct {
 	LayoutVTabBarWidth        int   `json:"layout:vtabbarwidth,omitempty"`
 	LayoutWidgetsVisible      *bool `json:"layout:widgetsvisible,omitempty"`
 	LayoutFileExplorerVisible *bool `json:"layout:fileexplorervisible,omitempty"`
-	LayoutFileExplorerWidth int `json:"layout:fileexplorerwidth,omitempty"`
+	LayoutFileExplorerWidth   int   `json:"layout:fileexplorerwidth,omitempty"`
 
 	TermClear               bool     `json:"term:*,omitempty"`
 	TermFontSize            int      `json:"term:fontsize,omitempty"`

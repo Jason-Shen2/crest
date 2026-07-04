@@ -22,11 +22,8 @@ import (
 )
 
 func CreateSubBlock(ctx context.Context, blockId string, blockDef *waveobj.BlockDef) (*waveobj.Block, error) {
-	if blockDef == nil {
-		return nil, fmt.Errorf("blockDef is nil")
-	}
-	if blockDef.Meta == nil || blockDef.Meta.GetString(waveobj.MetaKey_View, "") == "" {
-		return nil, fmt.Errorf("no view provided for new block")
+	if err := validateBlockDef(blockDef); err != nil {
+		return nil, err
 	}
 	blockData, err := createSubBlockObj(ctx, blockId, blockDef)
 	if err != nil {
@@ -72,11 +69,8 @@ func CreateBlockWithTelemetry(ctx context.Context, tabId string, blockDef *waveo
 			filestore.WFS.DeleteZone(ctx, newBlockOID)
 		}
 	}()
-	if blockDef == nil {
-		return nil, fmt.Errorf("blockDef is nil")
-	}
-	if blockDef.Meta == nil || blockDef.Meta.GetString(waveobj.MetaKey_View, "") == "" {
-		return nil, fmt.Errorf("no view provided for new block")
+	if err := validateBlockDef(blockDef); err != nil {
+		return nil, err
 	}
 	blockData, err := createBlockObj(ctx, tabId, blockDef, rtOpts)
 	if err != nil {
@@ -103,6 +97,16 @@ func CreateBlockWithTelemetry(ctx context.Context, tabId string, blockDef *waveo
 		go recordBlockCreationTelemetry(blockView, blockController)
 	}
 	return blockData, nil
+}
+
+func validateBlockDef(blockDef *waveobj.BlockDef) error {
+	if blockDef == nil {
+		return fmt.Errorf("blockDef is nil")
+	}
+	if blockDef.Meta == nil || blockDef.Meta.GetString(waveobj.MetaKey_View, "") == "" {
+		return fmt.Errorf("no view provided for new block")
+	}
+	return nil
 }
 
 func recordBlockCreationTelemetry(blockView string, blockController string) {

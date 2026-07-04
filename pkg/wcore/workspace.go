@@ -7,7 +7,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path/filepath"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,7 +16,6 @@ import (
 	"github.com/s-zx/crest/pkg/telemetry"
 	"github.com/s-zx/crest/pkg/telemetry/telemetrydata"
 	"github.com/s-zx/crest/pkg/util/utilfn"
-	"github.com/s-zx/crest/pkg/wavebase"
 	"github.com/s-zx/crest/pkg/waveobj"
 	"github.com/s-zx/crest/pkg/wconfig"
 	"github.com/s-zx/crest/pkg/wps"
@@ -34,14 +34,14 @@ var WorkspaceColors = [...]string{
 }
 
 var WorkspaceIcons = [...]string{
-	"terminal",   // the starter workspace — a terminal app
-	"folder-01",  // a folder-backed project workspace
-	"sparkles",   // a special / AI-flavored workspace
-	"heart",      // favorites
-	"rocket-01",  // new / launch
-	"cube",       // a project / container
-	"globe-02",   // web / cloud workspace
-	"home-03",    // default home workspace
+	"terminal",  // the starter workspace — a terminal app
+	"folder-01", // a folder-backed project workspace
+	"sparkles",  // a special / AI-flavored workspace
+	"heart",     // favorites
+	"rocket-01", // new / launch
+	"cube",      // a project / container
+	"globe-02",  // web / cloud workspace
+	"home-03",   // default home workspace
 	"rocket",
 	"flask",
 	"paperclip",
@@ -209,32 +209,82 @@ func getTabBackground() string {
 	return config.Settings.TabPreset
 }
 
-// defaultTabName returns the name a freshly created tab wears before the
-// user renames it. New tabs open a shell in the home directory (see
-// GetNewTabLayout), so we mirror terax and show that directory's basename
-// immediately — no "T<n>" placeholder that later flickers into a real name.
-func defaultTabName() string {
-	home := wavebase.GetHomeDir()
-	base := filepath.Base(home)
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		return "Terminal"
+var tabNameRe = regexp.MustCompile(`^T(\d+)$`)
+
+// getNextTabName returns the next auto-generated tab name (e.g. "T3") given a
+// slice of existing tab names. It filters to names matching T[N] where N is a
+// positive integer, finds the maximum N, and returns T[max+1]. If no matching
+// names exist it returns "T1".
+func getNextTabName(tabNames []string) string {
+	maxNum := 0
+	for _, name := range tabNames {
+		m := tabNameRe.FindStringSubmatch(name)
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n <= 0 {
+			continue
+		}
+		if n > maxNum {
+			maxNum = n
+		}
 	}
-	return base
+	return "T" + strconv.Itoa(maxNum+1)
+}
+
+func defaultTabName(ctx context.Context, workspaceId string) (string, error) {
+	ws, err := GetWorkspace(ctx, workspaceId)
+	if err != nil {
+		return "", fmt.Errorf("workspace %s not found: %w", workspaceId, err)
+	}
+	tabNames := make([]string, 0, len(ws.TabIds))
+	for _, tabId := range ws.TabIds {
+		tab, err := wstore.DBMustGet[*waveobj.Tab](ctx, tabId)
+		if err != nil || tab == nil {
+			continue
+		}
+		tabNames = append(tabNames, tab.Name)
+	}
+	return getNextTabName(tabNames), nil
+}
+
+func defaultTabNameAndMeta(ctx context.Context, workspaceId string, tabName string) (string, waveobj.MetaMapType, error) {
+	autoName := tabName == ""
+	if autoName {
+		var err error
+		tabName, err = defaultTabName(ctx, workspaceId)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	if !autoName {
+		return tabName, nil, nil
+	}
+	return tabName, waveobj.MetaMapType{waveobj.MetaKey_TabAutoName: true}, nil
+}
+
+func applyTabBackground(ctx context.Context, tab *waveobj.Tab) {
+	tabBg := getTabBackground()
+	if tabBg == "" {
+		return
+	}
+	tabORef := waveobj.ORefFromWaveObj(tab)
+	wstore.UpdateObjectMeta(ctx, *tabORef, waveobj.MetaMapType{waveobj.MetaKey_TabBackground: tabBg}, false)
+}
+
+func recordCreateTabTelemetry() {
+	telemetry.GoUpdateActivityWrap(wshrpc.ActivityUpdate{NewTab: 1}, "createtab")
+	telemetry.GoRecordTEventWrap(&telemetrydata.TEvent{
+		Event: "action:createtab",
+	})
 }
 
 // returns tabid
 func CreateTab(ctx context.Context, workspaceId string, tabName string, activateTab bool, isInitialLaunch bool) (string, error) {
-	// autoName tracks whether the tab still wears an app-generated label
-	// (as opposed to a user- or caller-chosen one). Auto-named tabs let the
-	// frontend derive their label from block contents (cwd / file name).
-	autoName := tabName == ""
-	if autoName {
-		tabName = defaultTabName()
-	}
-
-	var meta waveobj.MetaMapType
-	if autoName {
-		meta = waveobj.MetaMapType{waveobj.MetaKey_TabAutoName: true}
+	tabName, meta, err := defaultTabNameAndMeta(ctx, workspaceId, tabName)
+	if err != nil {
+		return "", err
 	}
 
 	tab, err := createTabObj(ctx, workspaceId, tabName, meta)
@@ -254,16 +304,71 @@ func CreateTab(ctx context.Context, workspaceId string, tabName string, activate
 		if err != nil {
 			return tab.OID, fmt.Errorf("error applying new tab layout: %w", err)
 		}
-		tabBg := getTabBackground()
-		if tabBg != "" {
-			tabORef := waveobj.ORefFromWaveObj(tab)
-			wstore.UpdateObjectMeta(ctx, *tabORef, waveobj.MetaMapType{waveobj.MetaKey_TabBackground: tabBg}, false)
+		applyTabBackground(ctx, tab)
+	}
+	recordCreateTabTelemetry()
+	return tab.OID, nil
+}
+
+var applyPortableLayoutForCreateTabWithBlock = ApplyPortableLayout
+
+func CreateTabWithBlock(ctx context.Context, workspaceId string, tabName string, activateTab bool, blockDef waveobj.BlockDef) (rtnTabId string, rtnErr error) {
+	tabName, meta, err := defaultTabNameAndMeta(ctx, workspaceId, tabName)
+	if err != nil {
+		return "", err
+	}
+	if err := validateBlockDef(&blockDef); err != nil {
+		return "", err
+	}
+	ws, err := GetWorkspace(ctx, workspaceId)
+	if err != nil {
+		return "", err
+	}
+	originalActiveTabId := ws.ActiveTabId
+
+	tab, err := createTabObj(ctx, workspaceId, tabName, meta)
+	if err != nil {
+		return "", fmt.Errorf("error creating tab: %w", err)
+	}
+	defer func() {
+		if rtnErr == nil {
+			return
+		}
+		_, rollbackErr := DeleteTab(ctx, workspaceId, tab.OID, false)
+		if rollbackErr != nil {
+			rtnErr = fmt.Errorf("%w; additionally failed to rollback tab %s: %v", rtnErr, tab.OID, rollbackErr)
+			return
+		}
+		if activateTab {
+			if originalActiveTabId != "" {
+				rollbackErr = SetActiveTab(ctx, workspaceId, originalActiveTabId)
+			} else {
+				ws, rollbackErr = GetWorkspace(ctx, workspaceId)
+				if rollbackErr == nil {
+					ws.ActiveTabId = ""
+					rollbackErr = wstore.DBUpdate(ctx, ws)
+				}
+			}
+			if rollbackErr != nil {
+				rtnErr = fmt.Errorf("%w; additionally failed to restore active tab %s: %v", rtnErr, originalActiveTabId, rollbackErr)
+			}
+		}
+	}()
+	if activateTab {
+		err = SetActiveTab(ctx, workspaceId, tab.OID)
+		if err != nil {
+			return "", fmt.Errorf("error setting active tab: %w", err)
 		}
 	}
-	telemetry.GoUpdateActivityWrap(wshrpc.ActivityUpdate{NewTab: 1}, "createtab")
-	telemetry.GoRecordTEventWrap(&telemetrydata.TEvent{
-		Event: "action:createtab",
-	})
+	layout := PortableLayout{
+		{IndexArr: []int{0}, BlockDef: &blockDef, Focused: true},
+	}
+	err = applyPortableLayoutForCreateTabWithBlock(ctx, tab.OID, layout, true)
+	if err != nil {
+		return "", fmt.Errorf("error applying single-block tab layout: %w", err)
+	}
+	applyTabBackground(ctx, tab)
+	recordCreateTabTelemetry()
 	return tab.OID, nil
 }
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it, vi } from "vitest";
-import { buildFileExplorerContextMenu } from "./file-explorer-tree";
+import { buildFileExplorerContextMenu, handleFileExplorerRowClick } from "./file-explorer-tree";
 
 const mockFileExplorerTree = vi.hoisted(() => ({
     createBlock: vi.fn(),
@@ -39,17 +39,19 @@ vi.mock("@/app/store/wshrpcutil", () => ({
 }));
 
 describe("buildFileExplorerContextMenu", () => {
-    it("offers right editor and main area open actions for files", () => {
+    it("offers editor tab and explicit right editor open actions for files", () => {
+        const model = {
+            openFile: vi.fn(),
+            openFileInRightEditor: vi.fn(),
+            openInNewTab: vi.fn(),
+            startRename: vi.fn(),
+            deleteFile: vi.fn(),
+            startNewFile: vi.fn(),
+            startNewFolder: vi.fn(),
+            cdToDir: vi.fn(),
+        };
         const menu = buildFileExplorerContextMenu({
-            model: {
-                openFile: vi.fn(),
-                openInNewTab: vi.fn(),
-                startRename: vi.fn(),
-                deleteFile: vi.fn(),
-                startNewFile: vi.fn(),
-                startNewFolder: vi.fn(),
-                cdToDir: vi.fn(),
-            },
+            model,
             finfo: {
                 path: "/repo/src/app.ts",
                 dir: "/repo/src",
@@ -60,14 +62,32 @@ describe("buildFileExplorerContextMenu", () => {
         });
         const menuLabels = menu.map((item) => item.label);
 
+        expect(menuLabels).toContain("Open in Editor Tab");
         expect(menuLabels).toContain("Open in Right Editor");
-        expect(menuLabels).toContain("Open in Main Area");
+        expect(menuLabels).not.toContain("Open in Main Area");
+
+        menu.find((item) => item.label === "Open in Editor Tab")?.click?.();
+        menu.find((item) => item.label === "Open in Right Editor")?.click?.();
+
+        expect(model.openFile).toHaveBeenCalledWith({
+            path: "/repo/src/app.ts",
+            dir: "/repo/src",
+            name: "app.ts",
+            isdir: false,
+        });
+        expect(model.openFileInRightEditor).toHaveBeenCalledWith({
+            path: "/repo/src/app.ts",
+            dir: "/repo/src",
+            name: "app.ts",
+            isdir: false,
+        });
     });
 
-    it("hides the right editor open action for directories", () => {
+    it("hides file editor actions for directories and keeps directory tab action", () => {
         const menu = buildFileExplorerContextMenu({
             model: {
                 openFile: vi.fn(),
+                openFileInRightEditor: vi.fn(),
                 openInNewTab: vi.fn(),
                 startRename: vi.fn(),
                 deleteFile: vi.fn(),
@@ -85,6 +105,49 @@ describe("buildFileExplorerContextMenu", () => {
         const menuLabels = menu.map((item) => item.label);
 
         expect(menuLabels).not.toContain("Open in Right Editor");
-        expect(menuLabels).toContain("Open in Main Area");
+        expect(menuLabels).not.toContain("Open in Editor Tab");
+        expect(menuLabels).toContain("Open in New Tab");
+        expect(menuLabels).not.toContain("Open in Main Area");
+    });
+});
+
+describe("handleFileExplorerRowClick", () => {
+    it("opens files through the model on single row click", () => {
+        const finfo = {
+            path: "/repo/src/app.ts",
+            dir: "/repo/src",
+            name: "app.ts",
+            isdir: false,
+        };
+        const model = {
+            setSelected: vi.fn(),
+            toggleExpand: vi.fn(),
+            openFile: vi.fn(),
+        };
+
+        handleFileExplorerRowClick({ model, finfo, path: finfo.path, isDir: false });
+
+        expect(model.setSelected).toHaveBeenCalledWith("/repo/src/app.ts");
+        expect(model.openFile).toHaveBeenCalledWith(finfo);
+        expect(model.toggleExpand).not.toHaveBeenCalled();
+    });
+
+    it("keeps directory row clicks scoped to expand and select", () => {
+        const finfo = {
+            path: "/repo/src",
+            name: "src",
+            isdir: true,
+        };
+        const model = {
+            setSelected: vi.fn(),
+            toggleExpand: vi.fn(),
+            openFile: vi.fn(),
+        };
+
+        handleFileExplorerRowClick({ model, finfo, path: finfo.path, isDir: true });
+
+        expect(model.setSelected).toHaveBeenCalledWith("/repo/src");
+        expect(model.toggleExpand).toHaveBeenCalledWith("/repo/src");
+        expect(model.openFile).not.toHaveBeenCalled();
     });
 });

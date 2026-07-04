@@ -948,6 +948,12 @@ export class RpcApiType {
         return client.wshRpcCall("renameappfile", data, opts);
     }
 
+    // command "resettabname" [call]
+    ResetTabNameCommand(client: WshClient, arg1: string, arg2: string, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "resettabname", { args: [arg1, arg2] }, opts);
+        return client.wshRpcCall("resettabname", { args: [arg1, arg2] }, opts);
+    }
+
     // command "resolveids" [call]
     ResolveIdsCommand(client: WshClient, data: CommandResolveIdsData, opts?: RpcOpts): Promise<CommandResolveIdsRtnData> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "resolveids", data, opts);
