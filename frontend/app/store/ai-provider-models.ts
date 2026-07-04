@@ -71,6 +71,10 @@ interface FetchInputs {
     baseurl?: string;
     apitoken?: string;
     tokensecretname?: string;
+    // Optional override for the /models endpoint. When set, the IPC
+    // uses this URL instead of deriving one from baseurl (which is the
+    // chat URL). See ProviderEntry.modelsEndpoint in ai-catalog.ts.
+    modelsendpoint?: string;
 }
 
 // Resolve the (apitype, baseurl, tokensecretname) the listprovidermodels
@@ -93,6 +97,7 @@ function resolveFetchInputs(
             baseurl: catalogProvider.defaultEndpoint,
             tokensecretname: creds?.tokensecretname ?? catalogProvider.tokenSecretName,
             apitoken: creds?.token,
+            modelsendpoint: catalogProvider.modelsEndpoint,
         };
     }
     const custom = userConfig?.custom_endpoints?.[providerId];
@@ -155,6 +160,7 @@ function runFetch(providerId: string, userConfig: UserConfig | null): Promise<vo
                 baseurl: inputs.baseurl,
                 apitoken: inputs.apitoken,
                 tokensecretname: inputs.tokensecretname,
+                modelsendpoint: inputs.modelsendpoint,
             });
             setSlice(providerId, {
                 status: "ok",

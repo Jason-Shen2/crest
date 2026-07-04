@@ -139,6 +139,7 @@ contextBridge.exposeInMainWorld("api", {
     // See emain/aiconfig-ipc.ts. Replaces the Go ListProviderModelsCommand.
     ai: {
         listProviderModels: (input: unknown) => ipcRenderer.invoke("ai:list-provider-models", input),
+        listRegistryModels: (provider: string) => ipcRenderer.invoke("ai:list-registry-models", provider),
         getUserConfig: () => ipcRenderer.invoke("ai:get-user-config"),
         writeUserConfig: (cfg: unknown) => ipcRenderer.invoke("ai:write-user-config", cfg),
     },
@@ -147,6 +148,8 @@ contextBridge.exposeInMainWorld("api", {
     agent: {
         createSession: (cwd: string) => ipcRenderer.invoke("agent:create-session", cwd),
         listSessionsForCwd: (cwd: string) => ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
+        listSessionDetailsForCwd: (cwd: string, limit?: number) => ipcRenderer.invoke("agent:list-session-details-for-cwd", cwd, limit),
+        listAllSessionDetails: (limit?: number) => ipcRenderer.invoke("agent:list-all-session-details", limit),
         listCommands: () => ipcRenderer.invoke("agent:list-commands"),
         listTree: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:list-tree", sessionMetadata),
         listForkPoints: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:list-fork-points", sessionMetadata),
@@ -158,17 +161,17 @@ contextBridge.exposeInMainWorld("api", {
         abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
         subscribe: (
             sessionPath: string,
-            callback: (event: unknown) => void,
-            opts?: { blockId?: string }
+            callback: (event: unknown) => void
         ): (() => void) => {
             let entry = agentEventCallbacks.get(sessionPath);
+            const isNew = !entry;
             if (!entry) {
                 entry = new Set();
                 agentEventCallbacks.set(sessionPath, entry);
-                entry.add(callback);
-                ipcRenderer.send("agent:subscribe", sessionPath, opts);
-            } else {
-                entry.add(callback);
+            }
+            entry.add(callback);
+            if (isNew) {
+                ipcRenderer.send("agent:subscribe", sessionPath);
             }
             return () => {
                 const cur = agentEventCallbacks.get(sessionPath);
