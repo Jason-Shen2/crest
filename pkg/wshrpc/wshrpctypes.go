@@ -102,6 +102,25 @@ type WshRpcInterface interface {
 	GetCmdBlockTailCommand(ctx context.Context, data CommandGetCmdBlockTailData) (*CmdBlockTailResponse, error)
 	ReadBlockFileRangeCommand(ctx context.Context, data CommandReadBlockFileRangeData) (*BlockFileRangeResponse, error)
 	GetGitInfoCommand(ctx context.Context, cwd string) (*GitInfoResponse, error)
+	GitGetPanelSnapshotCommand(ctx context.Context, cwd string) (*GitPanelSnapshot, error)
+	GitStatusCommand(ctx context.Context, cwd string) (*GitStatusSnapshot, error)
+	GitStageFileCommand(ctx context.Context, data GitFilePathData) error
+	GitUnstageFileCommand(ctx context.Context, data GitFilePathData) error
+	GitStageAllCommand(ctx context.Context, cwd string) error
+	GitUnstageAllCommand(ctx context.Context, cwd string) error
+	GitDiscardChangesCommand(ctx context.Context, data GitDiscardChangesData) error
+	GitDiscardAllChangesCommand(ctx context.Context, cwd string) error
+	GitCommitCommand(ctx context.Context, data GitCommitData) (*GitCommitResult, error)
+	GitGetDiffForFileCommand(ctx context.Context, data GitDiffFileData) (*GitDiffResult, error)
+	GitGetDiffContentCommand(ctx context.Context, data GitDiffFileData) (*GitDiffContentResult, error)
+	GitGetLogCommand(ctx context.Context, data GitLogRequest) ([]GitLogEntry, error)
+	GitGetCommitFilesCommand(ctx context.Context, data GitCommitData) ([]GitCommitFileChange, error)
+	GitGetCommitDiffCommand(ctx context.Context, data GitCommitData) (*GitDiffResult, error)
+	GitPushCommand(ctx context.Context, cwd string) (*GitPushResult, error)
+	GitPullCommand(ctx context.Context, cwd string) error
+	GitFetchCommand(ctx context.Context, cwd string) error
+	GitListBranchesCommand(ctx context.Context, cwd string) (*GitBranchListResult, error)
+	GitCheckoutBranchCommand(ctx context.Context, data GitBranchData) error
 	RunLocalCmdCommand(ctx context.Context, data CommandRunLocalCmdData) (*CommandRunLocalCmdResponse, error)
 	FetchContextChipCommand(ctx context.Context, data CommandFetchContextChipData) (*CommandFetchContextChipResponse, error)
 	GetShellHistoryCommand(ctx context.Context, data CommandGetShellHistoryData) (*ShellHistoryResponse, error)
@@ -346,7 +365,6 @@ type CommandEventReadHistoryData struct {
 	MaxItems int    `json:"maxitems"`
 }
 
-
 type CpuDataRequest struct {
 	Id    string `json:"id"`
 	Count int    `json:"count"`
@@ -419,6 +437,140 @@ type GitInfoResponse struct {
 	Deletions    int    `json:"deletions,omitempty"`
 	Ahead        int    `json:"ahead,omitempty"`
 	Behind       int    `json:"behind,omitempty"`
+}
+
+type GitRepoInfo struct {
+	RepoRoot   string `json:"reporoot"`
+	Branch     string `json:"branch"`
+	Upstream   string `json:"upstream"`
+	RemoteURL  string `json:"remoteurl"`
+	IsDetached bool   `json:"isdetached"`
+}
+
+type GitChangedFile struct {
+	Path           string `json:"path"`
+	OriginalPath   string `json:"originalpath"`
+	IndexStatus    string `json:"indexstatus"`
+	WorktreeStatus string `json:"worktreestatus"`
+	Staged         bool   `json:"staged"`
+	Unstaged       bool   `json:"unstaged"`
+	Untracked      bool   `json:"untracked"`
+	StatusLabel    string `json:"statuslabel"`
+}
+
+type GitStatusSnapshot struct {
+	RepoRoot     string           `json:"reporoot"`
+	Branch       string           `json:"branch"`
+	Upstream     string           `json:"upstream"`
+	RemoteURL    string           `json:"remoteurl"`
+	Ahead        int              `json:"ahead"`
+	Behind       int              `json:"behind"`
+	IsDetached   bool             `json:"isdetached"`
+	Truncated    bool             `json:"truncated"`
+	ChangedFiles []GitChangedFile `json:"changedfiles"`
+}
+
+type GitPanelSnapshot struct {
+	Repo   *GitRepoInfo       `json:"repo"`
+	Status *GitStatusSnapshot `json:"status"`
+}
+
+type GitDiffResult struct {
+	DiffText  string `json:"difftext"`
+	Truncated bool   `json:"truncated"`
+}
+
+type GitDiffContentResult struct {
+	OriginalContent string `json:"originalcontent"`
+	ModifiedContent string `json:"modifiedcontent"`
+	IsBinary        bool   `json:"isbinary"`
+	FallbackPatch   string `json:"fallbackpatch"`
+	Truncated       bool   `json:"truncated"`
+}
+
+type GitCommitResult struct {
+	CommitSha string `json:"commitsha"`
+	Summary   string `json:"summary"`
+}
+
+type GitCommitFileChange struct {
+	Path         string `json:"path"`
+	OriginalPath string `json:"originalpath"`
+	Status       string `json:"status"`
+	StatusLabel  string `json:"statuslabel"`
+	Added        int    `json:"added"`
+	Removed      int    `json:"removed"`
+	IsBinary     bool   `json:"isbinary"`
+}
+
+type GitLogEntry struct {
+	Sha           string   `json:"sha"`
+	ShortSha      string   `json:"shortsha"`
+	Author        string   `json:"author"`
+	AuthorEmail   string   `json:"authoremail"`
+	TimestampSecs int64    `json:"timestampsecs"`
+	Parents       []string `json:"parents"`
+	Subject       string   `json:"subject"`
+	FilesChanged  int      `json:"fileschanged"`
+	Insertions    int      `json:"insertions"`
+	Deletions     int      `json:"deletions"`
+}
+
+type GitPushResult struct {
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
+	Pushed bool   `json:"pushed"`
+}
+
+type GitBranchEntry struct {
+	Name         string `json:"name"`
+	Kind         string `json:"kind"`
+	WorktreePath string `json:"worktreepath"`
+	IsHead       bool   `json:"ishead"`
+	IsDetached   bool   `json:"isdetached"`
+}
+
+type GitBranchListResult struct {
+	Branches []GitBranchEntry `json:"branches"`
+}
+
+type GitFilePathData struct {
+	Cwd  string `json:"cwd"`
+	Path string `json:"path"`
+}
+
+type GitCommitData struct {
+	Cwd        string `json:"cwd"`
+	Message    string `json:"message"`
+	AllowEmpty bool   `json:"allowempty,omitempty"`
+	Sha        string `json:"sha,omitempty"`
+}
+
+type GitDiffFileData struct {
+	Cwd    string `json:"cwd"`
+	Path   string `json:"path"`
+	Staged bool   `json:"staged"`
+}
+
+type GitDiscardEntry struct {
+	Path      string `json:"path"`
+	Untracked bool   `json:"untracked"`
+}
+
+type GitDiscardChangesData struct {
+	Cwd   string            `json:"cwd"`
+	Paths []GitDiscardEntry `json:"paths"`
+}
+
+type GitLogRequest struct {
+	Cwd       string `json:"cwd"`
+	Limit     int    `json:"limit,omitempty"`
+	CursorSha string `json:"cursorsha,omitempty"`
+}
+
+type GitBranchData struct {
+	Cwd    string `json:"cwd"`
+	Branch string `json:"branch"`
 }
 
 type CommandRunLocalCmdData struct {

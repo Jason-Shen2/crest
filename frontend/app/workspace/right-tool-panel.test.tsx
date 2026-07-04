@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { Icon } from "@/app/icon/Icon";
 import { isValidElement, ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -172,7 +173,7 @@ describe("RightToolPanel parts", () => {
                 onCloseTool={() => null}
                 action={
                     <button type="button" aria-label="Hide right tool panel" onClick={onAction}>
-                        <i className="fa-solid fa-chevron-right" />
+                        <Icon name="chevron-right" size={14} />
                     </button>
                 }
             />
@@ -182,7 +183,12 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('aria-label="Open right tool"');
         expect(markup).toContain('aria-label="Hide right tool panel"');
         expect(markup).toContain('data-add-placement="tab-strip-end"');
-        expect(markup).toContain("fa-solid fa-chevron-right");
+        // The action button wraps <Icon name="chevron-right" />, which the
+        // Hugeicons registry renders as an inline SVG.  Verify the icon
+        // actually mounted (not a stale fontawesome-class assertion).
+        const actionButton = markup.match(/aria-label="Hide right tool panel"[^>]*>[\s\S]*?<\/button>/);
+        expect(actionButton).not.toBeNull();
+        expect(actionButton![0]).toContain("<svg");
         expect(markup).toContain('aria-current="page"');
         expect(markup.indexOf('aria-label="Right tool tabs"')).toBeLessThan(
             markup.indexOf('aria-label="Open right tool"')
@@ -204,7 +210,7 @@ describe("RightToolPanel parts", () => {
             onCloseTool: () => null,
             action: (
                 <button type="button" aria-label="Hide right tool panel" onClick={onAction}>
-                    <i className="fa-solid fa-chevron-right" />
+                    <Icon name="chevron-right" size={14} />
                 </button>
             ),
         });
@@ -339,7 +345,9 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('data-tab-content-align="center"');
         expect(markup).not.toContain('data-close-visibility="always"');
         expect(markup).not.toContain(" opacity-100");
-        expect(markup).toContain("fa-regular fa-pen-to-square");
+        // Editor tab icon is rendered via the hugeicons-vue font class
+        // "edit-02" (mapped from FA's "pen-to-square" in icon-aliases).
+        expect(markup).toContain("edit-02");
     });
 
     it("uses adaptive tool tab widths without horizontal scrolling", () => {

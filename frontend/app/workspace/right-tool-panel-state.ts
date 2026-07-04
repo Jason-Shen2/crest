@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-export type RightToolId = "editor" | "browser" | "terminal" | "codeReview";
+export type RightToolId = "editor" | "browser" | "terminal" | "codeReview" | "sourceControl";
 
 export type RightToolPanelState = {
     visible: boolean;
@@ -13,7 +13,7 @@ export type RightToolPanelState = {
     magnified: boolean;
 };
 
-export const RightToolIds: RightToolId[] = ["editor", "browser", "terminal", "codeReview"];
+export const RightToolIds: RightToolId[] = ["editor", "browser", "terminal", "codeReview", "sourceControl"];
 export const DefaultRightToolPanelWidth = 400;
 export const MinRightToolPanelWidth = 320;
 export const MaxRightToolPanelWidthRatio = 0.7;
