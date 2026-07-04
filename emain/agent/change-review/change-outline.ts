@@ -28,14 +28,14 @@ export interface ChangeOutline {
 }
 
 export interface ExtractChangeOperationsOptions {
-    runId?: string;
+    turnId?: string;
 }
 
 export interface GenerateChangeOutlineOptions<TApi extends Api = Api> {
     model: Model<TApi>;
     operations?: ChangeOperation[];
     messages?: Message[];
-    runId?: string;
+    turnId?: string;
     customInstructions?: string;
     apiKey?: string;
     headers?: Record<string, string>;
@@ -92,7 +92,7 @@ export function extractChangeOperationsFromMessages(
         if (message.isError === true) {
             continue;
         }
-        appendOperation(operations, operationFromDetails(message.details, options.runId, message.toolCallId));
+        appendOperation(operations, operationFromDetails(message.details, options.turnId, message.toolCallId));
         for (const content of message.content ?? []) {
             const nested = content as unknown as {
                 type?: string;
@@ -106,7 +106,7 @@ export function extractChangeOperationsFromMessages(
             }
             appendOperation(
                 operations,
-                operationFromDetails(nested.details, options.runId, nested.toolCallId || nested.toolUseId)
+                operationFromDetails(nested.details, options.turnId, nested.toolCallId || nested.toolUseId)
             );
         }
     }
@@ -193,7 +193,7 @@ export async function generateChangeOutline<TApi extends Api = Api>(
 ): Promise<ChangeOutline | undefined> {
     const operations =
         options.operations ??
-        (options.messages ? extractChangeOperationsFromMessages(options.messages, { runId: options.runId }) : []);
+        (options.messages ? extractChangeOperationsFromMessages(options.messages, { turnId: options.turnId }) : []);
     if (operations.length === 0) {
         return { modules: [] };
     }
@@ -234,7 +234,7 @@ function appendOperation(operations: ChangeOperation[], operation: ChangeOperati
     operations.push(operation);
 }
 
-function operationFromDetails(details: unknown, runId?: string, toolCallId?: string): ChangeOperation | undefined {
+function operationFromDetails(details: unknown, turnId?: string, toolCallId?: string): ChangeOperation | undefined {
     if (!isRecord(details)) {
         return undefined;
     }
@@ -244,7 +244,7 @@ function operationFromDetails(details: unknown, runId?: string, toolCallId?: str
     }
     return {
         ...operation,
-        ...(runId ? { runId } : {}),
+        ...(turnId ? { turnId } : {}),
         ...(toolCallId ? { toolCallId } : {}),
     };
 }

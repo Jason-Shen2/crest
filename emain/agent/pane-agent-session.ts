@@ -40,20 +40,17 @@ import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
 import type { AgentMessage } from "./types";
 
 export type PaneSessionStatus = "idle" | "streaming" | "error";
-export type AgentRunStatus = "streaming" | "done" | "error";
+export type AgentTurnStatus = "streaming" | "done" | "error";
 
-export interface AgentRun {
-    runId: string;
+export interface AgentTurn {
+    // Identity of the turn = the session entry id of the user message that
+    // started it (see applyMessageUpdateToTurn).
+    turnId: string;
     userMessage?: AgentMessage;
     responseMessages: AgentMessage[];
-    status: AgentRunStatus;
+    status: AgentTurnStatus;
     errorMessage?: string;
     changeOutline?: ChangeOutline;
-}
-
-export interface AgentTimelineRef {
-    agentsessionpath?: string;
-    agentuserentryid?: string;
 }
 
 /**
@@ -63,7 +60,7 @@ export interface AgentTimelineRef {
  */
 export interface PaneSessionSnapshot {
     messages: AgentMessage[];
-    runs: AgentRun[];
+    turns: AgentTurn[];
     steerQueue: AgentMessage[];
     followUpQueue: AgentMessage[];
     status: PaneSessionStatus;
@@ -71,19 +68,19 @@ export interface PaneSessionSnapshot {
 }
 
 export type PaneSessionListener = (event: AgentHarnessEvent) => void;
-export type PaneRunFinishedHook = (run: AgentRun) => void | Promise<void>;
+export type PaneTurnFinishedHook = (turn: AgentTurn) => void | Promise<void>;
 
 interface PaneSnapshotEvent {
     type: "snapshot";
     messages: AgentMessage[];
-    runs: AgentRun[];
+    turns: AgentTurn[];
     status: PaneSessionStatus;
     steer: AgentMessage[];
     followUp: AgentMessage[];
 }
 
 export interface PaneAgentSessionOptions {
-    onRunFinished?: PaneRunFinishedHook;
+    onTurnFinished?: PaneTurnFinishedHook;
 }
 
 function isErroredAssistant(message: AgentMessage): boolean {
@@ -93,43 +90,23 @@ function isErroredAssistant(message: AgentMessage): boolean {
     );
 }
 
-export function buildPersistedRunsFromSessionEntries(
-    entries: SessionTreeEntry[],
-    timelineRefs: AgentTimelineRef[] = [],
-    sessionPath?: string
-): AgentRun[] {
-    const anchoredEntryIds = new Set<string>();
-    for (const ref of timelineRefs) {
-        if (sessionPath && ref.agentsessionpath && ref.agentsessionpath !== sessionPath) continue;
-        if (ref.agentuserentryid) anchoredEntryIds.add(ref.agentuserentryid);
-    }
-    return buildRunsFromEntryIdJoin(entries, anchoredEntryIds);
-}
-
 /**
- * Deterministic run reconstruction. A run's identity IS the session entry id
- * of the user message that started it. We walk the branch in order; each user
- * entry whose id is in `anchoredEntryIds` opens a run keyed by that id, and the
- * following non-user messages (until the next user entry) become its responses.
- * User entries with no anchor are dropped (pre-anchor history or non-run sends).
+ * Deterministic turn reconstruction from a session branch. The session is the
+ * single source of truth: each user message entry starts a turn keyed by its
+ * own entry id, and the following non-user messages (until the next user
+ * entry) become its responses. This mirrors the live stream, where a turn's
+ * identity is the user message's session entry id (see applyMessageUpdateToTurn).
  */
-export function buildRunsFromEntryIdJoin(
-    entries: SessionTreeEntry[],
-    anchoredEntryIds: Set<string>
-): AgentRun[] {
-    const runs: AgentRun[] = [];
-    let current: AgentRun | undefined;
+export function buildPersistedTurnsFromSessionEntries(entries: SessionTreeEntry[]): AgentTurn[] {
+    const turns: AgentTurn[] = [];
+    let current: AgentTurn | undefined;
     for (const entry of entries) {
         if (entry.type !== "message") continue;
         const message = entry.message as AgentMessage;
         const role = (message as { role?: string }).role;
         if (role === "user") {
-            if (anchoredEntryIds.has(entry.id)) {
-                current = { runId: entry.id, userMessage: message, responseMessages: [], status: "done" };
-                runs.push(current);
-            } else {
-                current = undefined;
-            }
+            current = { turnId: entry.id, userMessage: message, responseMessages: [], status: "done" };
+            turns.push(current);
         } else if (current && (role === "assistant" || role === "tool" || role === "toolResult")) {
             current.responseMessages = [...current.responseMessages, message];
             if (isErroredAssistant(message)) {
@@ -138,7 +115,7 @@ export function buildRunsFromEntryIdJoin(
             }
         }
     }
-    return runs;
+    return turns;
 }
 
 export class PaneAgentSession {
@@ -146,12 +123,12 @@ export class PaneAgentSession {
     pane: PaneHarness;
 
     messages: AgentMessage[] = [];
-    runs: AgentRun[] = [];
+    turns: AgentTurn[] = [];
     steerQueue: AgentMessage[] = [];
     followUpQueue: AgentMessage[] = [];
     status: PaneSessionStatus = "idle";
     errorMessage: string | undefined;
-    activeRunId: string | undefined;
+    activeTurnId: string | undefined;
     // Resolvers for in-flight send() promises, awaiting the userEntryId that
     // arrives on the user message_end event. FIFO: one resolver per send.
     private pendingEntryIdResolvers: Array<{ resolve: (id: string) => void; reject: (err: unknown) => void }> = [];
@@ -164,23 +141,23 @@ export class PaneAgentSession {
 
     listeners = new Set<PaneSessionListener>();
     unsubscribeHarness: () => void;
-    onRunFinished: PaneRunFinishedHook | undefined;
+    onTurnFinished: PaneTurnFinishedHook | undefined;
 
     constructor(
         path: string,
         pane: PaneHarness,
         initialMessages: AgentMessage[] = [],
-        initialRuns: AgentRun[] = [],
+        initialTurns: AgentTurn[] = [],
         options: PaneAgentSessionOptions = {}
     ) {
         this.path = path;
         this.pane = pane;
-        this.onRunFinished = options.onRunFinished;
+        this.onTurnFinished = options.onTurnFinished;
         // Seed the transcript from the persisted session so a REOPENED
         // conversation shows its history. A fresh session passes []. New
         // messages then accumulate via the live stream on top of this.
         this.messages = initialMessages;
-        this.runs = initialRuns;
+        this.turns = initialTurns;
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
@@ -216,7 +193,7 @@ export class PaneAgentSession {
                 const message = (event as { message?: AgentMessage }).message;
                 if (!message) return;
                 this.messages = [...this.messages, message];
-                this.applyMessageStartToRun(message);
+                this.applyMessageStartToTurn(message);
                 return;
             }
             case "message_update":
@@ -234,7 +211,7 @@ export class PaneAgentSession {
                     this.status = "error";
                     this.errorMessage = (message as { errorMessage?: string }).errorMessage ?? "agent error";
                 }
-                this.applyMessageUpdateToRun(
+                this.applyMessageUpdateToTurn(
                     message,
                     event.type === "message_end",
                     (event as { entryId?: string }).entryId
@@ -251,7 +228,7 @@ export class PaneAgentSession {
                 // full transcript on top of the seeded history. agent_end is
                 // only a run-lifecycle signal here.
                 this.running = false;
-                this.finishActiveRun();
+                this.finishActiveTurn();
                 if (this.status !== "error") this.status = "idle";
                 return;
             }
@@ -262,7 +239,7 @@ export class PaneAgentSession {
             }
             case "abort": {
                 this.running = false;
-                this.finishActiveRun(false);
+                this.finishActiveTurn(false);
                 if (this.status !== "error") this.status = "idle";
                 // Any send() still awaiting its userEntryId will never get one:
                 // abort clears the harness followUpQueue (agent-harness.ts:999)
@@ -281,7 +258,7 @@ export class PaneAgentSession {
     getSnapshot(): PaneSessionSnapshot {
         return {
             messages: this.messages,
-            runs: this.runs,
+            turns: this.turns,
             steerQueue: this.steerQueue,
             followUpQueue: this.followUpQueue,
             status: this.status,
@@ -316,7 +293,7 @@ export class PaneAgentSession {
             return promise;
         }
         this.running = true;
-        void this.startPromptRun(text);
+        void this.startPromptTurn(text);
         return promise;
     }
 
@@ -341,19 +318,19 @@ export class PaneAgentSession {
         return { entries, leafId: effectiveLeafId, labels };
     }
 
-    async navigateTree(targetId: string, timelineRefs?: AgentTimelineRef[]): Promise<{ editorText?: string }> {
+    async navigateTree(targetId: string): Promise<{ editorText?: string }> {
         const result = await this.pane.harness.navigateTree(targetId, { summarize: false });
         if (result.cancelled) {
             return {};
         }
-        await this.rebuildFromCurrentBranch(timelineRefs);
+        await this.rebuildFromCurrentBranch();
         this.emitSnapshot();
         return { editorText: result.editorText };
     }
 
-    async compact(timelineRefs: AgentTimelineRef[] = [], customInstructions?: string): Promise<void> {
+    async compact(customInstructions?: string): Promise<void> {
         await this.pane.harness.compact(customInstructions);
-        await this.rebuildFromCurrentBranch(timelineRefs);
+        await this.rebuildFromCurrentBranch();
         this.emitSnapshot();
     }
 
@@ -385,11 +362,11 @@ export class PaneAgentSession {
         this.running = false;
         this.status = "error";
         this.errorMessage = err instanceof Error ? err.message : String(err);
-        const run = this.getActiveRun();
-        if (run) {
-            run.status = "error";
-            run.errorMessage = this.errorMessage;
-            this.runs = this.runs.map((r) => (r.runId === run.runId ? run : r));
+        const turn = this.getActiveTurn();
+        if (turn) {
+            turn.status = "error";
+            turn.errorMessage = this.errorMessage;
+            this.turns = this.turns.map((t) => (t.turnId === turn.turnId ? turn : t));
         }
         // The user message_end that would resolve a waiting send() will never
         // arrive on a prompt/followUp failure — reject the oldest pending
@@ -399,7 +376,7 @@ export class PaneAgentSession {
         console.error(`[pane-session] ${where} error for ${this.path}:`, err);
     }
 
-    private async startPromptRun(text: string): Promise<void> {
+    private async startPromptTurn(text: string): Promise<void> {
         try {
             await this.pane.harness.prompt(text);
         } catch (err) {
@@ -409,111 +386,111 @@ export class PaneAgentSession {
         }
     }
 
-    private ensureRun(runId: string): AgentRun {
-        const existing = this.runs.find((run) => run.runId === runId);
+    private ensureTurn(turnId: string): AgentTurn {
+        const existing = this.turns.find((turn) => turn.turnId === turnId);
         if (existing) return existing;
-        const run: AgentRun = { runId, responseMessages: [], status: "streaming" };
-        this.runs = [...this.runs, run];
-        return run;
+        const turn: AgentTurn = { turnId, responseMessages: [], status: "streaming" };
+        this.turns = [...this.turns, turn];
+        return turn;
     }
 
-    private getActiveRun(): AgentRun | undefined {
-        if (!this.activeRunId) return undefined;
-        return this.runs.find((run) => run.runId === this.activeRunId);
+    private getActiveTurn(): AgentTurn | undefined {
+        if (!this.activeTurnId) return undefined;
+        return this.turns.find((turn) => turn.turnId === this.activeTurnId);
     }
 
-    private setRun(nextRun: AgentRun): void {
-        this.runs = this.runs.map((run) => (run.runId === nextRun.runId ? nextRun : run));
+    private setTurn(nextTurn: AgentTurn): void {
+        this.turns = this.turns.map((turn) => (turn.turnId === nextTurn.turnId ? nextTurn : turn));
     }
 
-    setRunChangeOutline(runId: string, changeOutline: ChangeOutline | undefined): void {
-        const run = this.runs.find((item) => item.runId === runId);
-        if (!run) return;
-        this.setRun({ ...run, changeOutline });
-        this.emitRunUpdate();
+    setTurnChangeOutline(turnId: string, changeOutline: ChangeOutline | undefined): void {
+        const turn = this.turns.find((item) => item.turnId === turnId);
+        if (!turn) return;
+        this.setTurn({ ...turn, changeOutline });
+        this.emitTurnUpdate();
     }
 
-    private applyMessageStartToRun(message: AgentMessage): void {
+    private applyMessageStartToTurn(message: AgentMessage): void {
         const role = (message as { role?: string }).role;
-        // User runs open on message_end (where the entryId — the run
+        // User turns open on message_end (where the entryId — the turn
         // identity — is available), not here. A user message_start only
-        // accumulates the transcript; we defer run bookkeeping.
+        // accumulates the transcript; we defer turn bookkeeping.
         if (role === "user") return;
-        const run = this.getActiveRun();
-        if (!run) return;
-        this.setRun({
-            ...run,
-            responseMessages: [...run.responseMessages, message],
+        const turn = this.getActiveTurn();
+        if (!turn) return;
+        this.setTurn({
+            ...turn,
+            responseMessages: [...turn.responseMessages, message],
             status: "streaming",
             errorMessage: undefined,
         });
     }
 
-    private applyMessageUpdateToRun(message: AgentMessage, isEnd: boolean, entryId?: string): void {
+    private applyMessageUpdateToTurn(message: AgentMessage, isEnd: boolean, entryId?: string): void {
         const role = (message as { role?: string }).role;
         if (role === "user") {
-            // The run's identity IS the user message's session entry id. It
-            // only becomes known on message_end, so we open/identify the run
+            // The turn's identity IS the user message's session entry id. It
+            // only becomes known on message_end, so we open/identify the turn
             // here and resolve the matching send() promise.
             if (isEnd && entryId) {
-                this.activeRunId = entryId;
-                const run = this.ensureRun(entryId);
-                this.setRun({ ...run, userMessage: message, status: "streaming", errorMessage: undefined });
+                this.activeTurnId = entryId;
+                const turn = this.ensureTurn(entryId);
+                this.setTurn({ ...turn, userMessage: message, status: "streaming", errorMessage: undefined });
                 const pending = this.pendingEntryIdResolvers.shift();
                 pending?.resolve(entryId);
                 return;
             }
-            const run = this.getActiveRun();
-            if (!run) return;
-            this.setRun({ ...run, userMessage: message });
+            const turn = this.getActiveTurn();
+            if (!turn) return;
+            this.setTurn({ ...turn, userMessage: message });
             return;
         }
-        const run = this.getActiveRun();
-        if (!run) return;
-        const responseMessages = run.responseMessages.length === 0 ? [message] : run.responseMessages.slice();
+        const turn = this.getActiveTurn();
+        if (!turn) return;
+        const responseMessages = turn.responseMessages.length === 0 ? [message] : turn.responseMessages.slice();
         responseMessages[responseMessages.length - 1] = message;
         const errored = isEnd && isErroredAssistant(message);
-        this.setRun({
-            ...run,
+        this.setTurn({
+            ...turn,
             responseMessages,
-            status: errored ? "error" : run.status,
+            status: errored ? "error" : turn.status,
             errorMessage: errored
                 ? ((message as { errorMessage?: string }).errorMessage ?? "agent error")
-                : run.errorMessage,
+                : turn.errorMessage,
         });
     }
 
-    private finishActiveRun(notifyFinished = true): void {
-        const run = this.getActiveRun();
-        let finishedRun = run;
-        if (run && run.status !== "error") {
-            finishedRun = { ...run, status: "done" };
-            this.setRun(finishedRun);
+    private finishActiveTurn(notifyFinished = true): void {
+        const turn = this.getActiveTurn();
+        let finishedTurn = turn;
+        if (turn && turn.status !== "error") {
+            finishedTurn = { ...turn, status: "done" };
+            this.setTurn(finishedTurn);
         }
-        this.activeRunId = undefined;
-        if (notifyFinished && finishedRun?.status === "done") {
-            this.notifyRunFinished(finishedRun);
+        this.activeTurnId = undefined;
+        if (notifyFinished && finishedTurn?.status === "done") {
+            this.notifyTurnFinished(finishedTurn);
         }
     }
 
-    private notifyRunFinished(run: AgentRun): void {
-        if (!this.onRunFinished) return;
-        void Promise.resolve(this.onRunFinished(run)).catch((err) => {
-            console.error(`[pane-session] onRunFinished error for ${this.path}:`, err);
+    private notifyTurnFinished(turn: AgentTurn): void {
+        if (!this.onTurnFinished) return;
+        void Promise.resolve(this.onTurnFinished(turn)).catch((err) => {
+            console.error(`[pane-session] onTurnFinished error for ${this.path}:`, err);
         });
     }
 
-    private async rebuildFromCurrentBranch(timelineRefs: AgentTimelineRef[] = []): Promise<void> {
+    private async rebuildFromCurrentBranch(): Promise<void> {
         const entries = await this.pane.session.getBranch();
         this.messages = entries
             .filter((entry): entry is Extract<SessionTreeEntry, { type: "message" }> => entry.type === "message")
             .map((entry) => entry.message as AgentMessage);
-        this.runs = buildPersistedRunsFromSessionEntries(entries, timelineRefs, this.path);
+        this.turns = buildPersistedTurnsFromSessionEntries(entries);
         this.steerQueue = [];
         this.followUpQueue = [];
         this.status = "idle";
         this.errorMessage = undefined;
-        this.activeRunId = undefined;
+        this.activeTurnId = undefined;
         this.running = false;
     }
 
@@ -521,7 +498,7 @@ export class PaneAgentSession {
         const event: PaneSnapshotEvent = {
             type: "snapshot",
             messages: this.messages,
-            runs: this.runs,
+            turns: this.turns,
             status: this.status,
             steer: this.steerQueue,
             followUp: this.followUpQueue,
@@ -535,8 +512,8 @@ export class PaneAgentSession {
         }
     }
 
-    private emitRunUpdate(): void {
-        const event = { type: "agent_run_update" } as AgentHarnessEvent;
+    private emitTurnUpdate(): void {
+        const event = { type: "agent_turn_update" } as unknown as AgentHarnessEvent;
         for (const listener of this.listeners) {
             try {
                 listener(event);

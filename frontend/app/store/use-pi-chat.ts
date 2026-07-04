@@ -103,6 +103,15 @@ export interface PiRun {
     changeOutline?: PiChangeOutline;
 }
 
+interface PiTurn {
+    turnId: string;
+    userMessage?: PiAgentMessage;
+    responseMessages: PiAgentMessage[];
+    status: PiRunStatus;
+    errorMessage?: string;
+    changeOutline?: PiChangeOutline;
+}
+
 /**
  * Mirror of pi's AgentEvent + AgentHarnessEvent at the renderer
  * boundary. Flat shape (one field per known variant + a string-indexed
@@ -117,8 +126,10 @@ export interface PiAgentEvent {
     message?: PiAgentMessage;
     /** agent_end + snapshot carry this. */
     messages?: PiAgentMessage[];
-    /** snapshot carries main-owned runs keyed by stable run id. */
+    /** Legacy snapshot field carrying main-owned runs keyed by stable run id. */
     runs?: PiRun[];
+    /** Current snapshot field carrying main-owned turns keyed by the user entry id. */
+    turns?: PiTurn[];
     /** snapshot carries the owner's run status (idle/streaming/error). */
     status?: string;
     /** queue_update + snapshot carry the pending queues (user messages). */
@@ -203,7 +214,7 @@ export interface UsePiChatReturn {
 interface AgentApiSurface {
     createSession: (cwd: string) => Promise<AgentSessionMeta>;
     listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
-    send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; runId: string }>;
+    send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
     abort: (sessionPath: string) => void;
     subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
 }
@@ -279,8 +290,16 @@ export function reducePiChatEvent(
 }
 
 export function reducePiRunsEvent(runs: PiRun[], event: PiAgentEvent): PiRun[] {
-    if (!event.runs) return runs;
-    return event.runs;
+    if (event.runs) return event.runs;
+    if (!event.turns) return runs;
+    return event.turns.map((turn) => ({
+        runId: turn.turnId,
+        userMessage: turn.userMessage,
+        responseMessages: turn.responseMessages,
+        status: turn.status,
+        errorMessage: turn.errorMessage,
+        changeOutline: turn.changeOutline,
+    }));
 }
 
 export function indexRunsById(runs: PiRun[]): Map<string, PiRun> {

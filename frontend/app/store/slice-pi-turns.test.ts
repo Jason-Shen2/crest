@@ -1,0 +1,205 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { describe, expect, it } from "vitest";
+
+import { findTurnByPersistedId, indexTurnsById, slicePiTurns } from "./slice-pi-turns";
+import type { PiAgentMessage } from "./use-pi-chat";
+
+function user(text: string): PiAgentMessage {
+    return { role: "user", content: [{ type: "text", text }] };
+}
+function assistant(text: string, stopReason?: string, errorMessage?: string): PiAgentMessage {
+    return {
+        role: "assistant",
+        content: [{ type: "text", text }],
+        ...(stopReason !== undefined ? { stopReason } : {}),
+        ...(errorMessage !== undefined ? { errorMessage } : {}),
+    };
+}
+function assistantWithToolCall(
+    text: string,
+    toolCall: { id: string; name: string; input: unknown },
+    stopReason?: string,
+): PiAgentMessage {
+    return {
+        role: "assistant",
+        content: [
+            { type: "text", text },
+            { type: "toolCall", id: toolCall.id, name: toolCall.name, input: toolCall.input },
+        ],
+        ...(stopReason !== undefined ? { stopReason } : {}),
+    };
+}
+function toolResult(toolUseId: string, text: string, isError = false): PiAgentMessage {
+    return {
+        role: "toolResult",
+        content: [
+            { type: "toolResult", toolUseId, content: [{ type: "text", text }], isError },
+        ],
+    };
+}
+
+describe("slicePiTurns", () => {
+    it("returns [] for an empty messages array", () => {
+        expect(slicePiTurns([])).toEqual([]);
+    });
+
+    it("ignores leading non-user messages (defensive)", () => {
+        // Shouldn't happen in practice — pi messages always start with
+        // a user — but the slicer shouldn't crash if it sees noise.
+        const messages = [assistant("orphan"), user("real start")];
+        const turns = slicePiTurns(messages);
+        expect(turns).toHaveLength(1);
+        expect(turns[0].userMessageIndex).toBe(1);
+    });
+
+    it("one user + no responses → one streaming turn", () => {
+        const turns = slicePiTurns([user("hi")]);
+        expect(turns).toHaveLength(1);
+        expect(turns[0].turnId).toBe("run-0");
+        expect(turns[0].status).toBe("streaming");
+        expect(turns[0].responseMessages).toEqual([]);
+        expect(turns[0].userMessage).toEqual(user("hi"));
+    });
+
+    it("user + completed assistant → done", () => {
+        const turns = slicePiTurns([user("q"), assistant("a", "stop")]);
+        expect(turns).toHaveLength(1);
+        expect(turns[0].status).toBe("done");
+        expect(turns[0].responseMessages).toHaveLength(1);
+    });
+
+    it("user + erroring assistant → error with message", () => {
+        const turns = slicePiTurns([user("q"), assistant("", "error", "rate limited")]);
+        expect(turns[0].status).toBe("error");
+        expect(turns[0].errorMessage).toBe("rate limited");
+    });
+
+    it("user + assistant mid-stream (no stopReason) → streaming", () => {
+        const turns = slicePiTurns([user("q"), assistant("partial answer...")]);
+        expect(turns[0].status).toBe("streaming");
+    });
+
+    it("multiple user messages → multiple turns", () => {
+        const messages = [
+            user("q1"),
+            assistant("a1", "stop"),
+            user("q2"),
+            assistant("a2", "stop"),
+        ];
+        const turns = slicePiTurns(messages);
+        expect(turns).toHaveLength(2);
+        expect(turns[0].turnId).toBe("run-0");
+        expect(turns[1].turnId).toBe("run-2");
+        expect(turns[0].responseMessages).toHaveLength(1);
+        expect(turns[1].responseMessages).toHaveLength(1);
+    });
+
+    it("tool-call turn: user + assistant(toolCall) + toolResult + assistant final → all in one turn", () => {
+        const messages = [
+            user("read foo"),
+            assistantWithToolCall("I'll read it", { id: "tc1", name: "read_file", input: { path: "/x" } }),
+            toolResult("tc1", "file contents"),
+            assistant("here's what I found", "stop"),
+        ];
+        const turns = slicePiTurns(messages);
+        expect(turns).toHaveLength(1);
+        expect(turns[0].responseMessages).toHaveLength(3);
+        expect(turns[0].responseMessages[0].role).toBe("assistant");
+        expect(turns[0].responseMessages[1].role).toBe("toolResult");
+        expect(turns[0].responseMessages[2].role).toBe("assistant");
+        expect(turns[0].status).toBe("done");
+    });
+
+    it("error mid-tool-loop: user + assistant(toolCall) + toolResult + assistant(error) → error", () => {
+        const messages = [
+            user("q"),
+            assistantWithToolCall("trying", { id: "tc1", name: "shell_exec", input: { command: "x" } }),
+            toolResult("tc1", "boom", true),
+            assistant("", "error", "tool crashed"),
+        ];
+        const turns = slicePiTurns(messages);
+        expect(turns[0].status).toBe("error");
+        expect(turns[0].errorMessage).toBe("tool crashed");
+    });
+
+    it("status reads the LAST assistant message, not the first", () => {
+        // First turn: assistant requested tool (no stopReason yet on
+        // older protocol shapes); second turn: final answer with stop.
+        const messages = [
+            user("q"),
+            assistant("partial"), // streaming-looking
+            toolResult("tc1", "data"),
+            assistant("done", "stop"),
+        ];
+        const turns = slicePiTurns(messages);
+        expect(turns[0].status).toBe("done");
+    });
+
+    it("turn with only a toolResult after user (no assistant) → streaming", () => {
+        // Edge case: somehow a toolResult arrives before an assistant
+        // message — status stays streaming because no assistant has
+        // signaled completion.
+        const messages = [user("q"), toolResult("tc1", "early")];
+        const turns = slicePiTurns(messages);
+        expect(turns[0].status).toBe("streaming");
+    });
+});
+
+describe("indexTurnsById", () => {
+    it("builds a Map keyed by turnId", () => {
+        const turns = slicePiTurns([user("a"), assistant("x", "stop"), user("b")]);
+        const idx = indexTurnsById(turns);
+        expect(idx.size).toBe(2);
+        expect(idx.get("run-0")?.userMessage).toEqual(user("a"));
+        expect(idx.get("run-2")?.userMessage).toEqual(user("b"));
+    });
+
+    it("returns empty map for empty turns", () => {
+        expect(indexTurnsById([]).size).toBe(0);
+    });
+});
+
+describe("turnId stability (timestamp-keyed)", () => {
+    function userAt(text: string, timestamp: number): PiAgentMessage {
+        return { role: "user", content: [{ type: "text", text }], timestamp };
+    }
+
+    it("derives turnId from the user message timestamp, not the index", () => {
+        const turns = slicePiTurns([userAt("hi", 1000), assistant("yo", "stop")]);
+        expect(turns[0].turnId).toBe("run-1000");
+    });
+
+    it("keeps the same turnId when the message is re-indexed", () => {
+        // The bug: the agent_end snapshot (or a mid-stream subscribe)
+        // shifts a user message's array index. A positional id would
+        // change and desync the frozen timeline block; the timestamp id
+        // must not.
+        const u = userAt("question", 1234);
+        const beforeShift = slicePiTurns([u, assistant("a", "stop")]);
+        const afterShift = slicePiTurns([
+            userAt("earlier", 500),
+            assistant("b", "stop"),
+            u, // same message, now at a later index
+            assistant("a", "stop"),
+        ]);
+        const matchedBefore = beforeShift.find((t) => t.userMessage === u);
+        const matchedAfter = afterShift.find((t) => t.userMessage === u);
+        expect(matchedBefore?.turnId).toBe("run-1234");
+        expect(matchedAfter?.turnId).toBe("run-1234"); // unchanged despite re-index
+    });
+
+    it("resolves legacy positional turn ids against timestamp-keyed turns", () => {
+        const turns = slicePiTurns([
+            userAt("earlier", 500),
+            assistant("b", "stop"),
+            userAt("question", 1234),
+            assistant("a", "stop"),
+        ]);
+        const idx = indexTurnsById(turns);
+        const matched = findTurnByPersistedId(idx, "run-2");
+        expect(matched?.turnId).toBe("run-1234");
+        expect(matched?.userMessage.content[0].text).toBe("question");
+    });
+});

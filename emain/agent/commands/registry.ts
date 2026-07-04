@@ -31,6 +31,11 @@ const BuiltInAgentCommands: AgentCommandInfo[] = [
     {
         name: "new",
         description: "Create a fresh agent session",
+        // Claude Code compatibility: /clear is an alias for /new. The
+        // frontend router normalizes "clear" → "new" before dispatch, so
+        // the backend only ever receives "new"; the alias just lets /clear
+        // match this row in the command menu (rendered as "/new (clear)").
+        aliases: ["clear"],
         source: "builtin",
         action: { type: "backend", command: "new" },
     },

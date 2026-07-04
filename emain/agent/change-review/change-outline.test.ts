@@ -64,10 +64,10 @@ describe("extractChangeOperationsFromMessages", () => {
             extractChangeOperationsFromMessages(
                 [toolResult({ changeOperation: operation }, { toolCallId: "tc-edit" })],
                 {
-                    runId: "run-1",
+                    turnId: "run-1",
                 }
             )
-        ).toEqual([{ ...operation, runId: "run-1", toolCallId: "tc-edit" }]);
+        ).toEqual([{ ...operation, turnId: "run-1", toolCallId: "tc-edit" }]);
     });
 
     it("ignores errored tool results and messages without change operations", () => {

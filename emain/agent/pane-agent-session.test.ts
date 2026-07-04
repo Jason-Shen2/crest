@@ -5,8 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { PaneHarness } from "./harness-factory";
 import {
-    buildPersistedRunsFromSessionEntries,
-    buildRunsFromEntryIdJoin,
+    buildPersistedTurnsFromSessionEntries,
     PaneAgentSession,
 } from "./pane-agent-session";
 import type { AgentMessage } from "./types";
@@ -128,31 +127,31 @@ describe("PaneAgentSession — owned transcript", () => {
         expect(owner.getSnapshot().messages).toBe(history);
     });
 
-    it("does NOT clobber the accumulated transcript on agent_end (run-scoped)", () => {
-        // The bug: agent_end.messages carries only the CURRENT run's
+    it("does NOT clobber the accumulated transcript on agent_end (turn-scoped)", () => {
+        // The bug: agent_end.messages carries only the CURRENT turn's
         // messages, not the whole conversation. Replacing on agent_end wiped
-        // prior runs → their blocks went "…loading agent run…". The owner
+        // prior turns → their blocks went "…loading agent turn…". The owner
         // must keep the incrementally-built array.
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
         fake.emit({ type: "message_start", message: user("q1") });
         fake.emit({ type: "message_start", message: assistant("a1") });
         fake.emit({ type: "message_end", message: assistant("a1", "stop") });
-        // agent_end for run 1 carries only run-1 messages — fine, matches.
+        // agent_end for turn 1 carries only turn-1 messages — fine, matches.
         fake.emit({ type: "agent_end", messages: [user("q1"), assistant("a1", "stop")] });
         expect(owner.getSnapshot().messages).toHaveLength(2);
     });
 
-    it("accumulates messages across multiple runs (run-scoped agent_end ignored)", () => {
+    it("accumulates messages across multiple turns (turn-scoped agent_end ignored)", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
-        // Run 1
+        // Turn 1
         fake.emit({ type: "message_start", message: user("q1") });
         fake.emit({ type: "message_end", message: user("q1") });
         fake.emit({ type: "message_start", message: assistant("a1") });
         fake.emit({ type: "message_end", message: assistant("a1", "stop") });
         fake.emit({ type: "agent_end", messages: [user("q1"), assistant("a1", "stop")] });
-        // Run 2 — agent_end here is run-scoped ([q2, a2]); must NOT drop q1/a1.
+        // Turn 2 — agent_end here is turn-scoped ([q2, a2]); must NOT drop q1/a1.
         fake.emit({ type: "message_start", message: user("q2") });
         fake.emit({ type: "message_end", message: user("q2") });
         fake.emit({ type: "message_start", message: assistant("a2") });
@@ -264,12 +263,12 @@ describe("PaneAgentSession — command operations", () => {
         const seen: unknown[] = [];
         owner.subscribe((event) => seen.push(event));
 
-        await owner.navigateTree("m2", [{ agentuserentryid: "m1" }]);
+        await owner.navigateTree("m2");
 
         expect(owner.getSnapshot().messages).toEqual([q, a]);
-        expect(owner.getSnapshot().runs).toEqual([
+        expect(owner.getSnapshot().turns).toEqual([
             {
-                runId: "m1",
+                turnId: "m1",
                 userMessage: q,
                 responseMessages: [a],
                 status: "done",
@@ -279,9 +278,9 @@ describe("PaneAgentSession — command operations", () => {
             expect.objectContaining({
                 type: "snapshot",
                 messages: [q, a],
-                runs: [
+                turns: [
                     {
-                        runId: "m1",
+                        turnId: "m1",
                         userMessage: q,
                         responseMessages: [a],
                         status: "done",
@@ -289,6 +288,61 @@ describe("PaneAgentSession — command operations", () => {
                 ],
             }),
         );
+    });
+
+    it("shows history up to the parent when navigating to a user message (leaf = parentId)", async () => {
+        // Scenario: m1(user)->a1(assistant)->m2(user)->a2(assistant). User clicks m2 in
+        // the tree. Harness moves leaf to m2.parentId = a1, so getBranch() returns
+        // [m1,a1] (NOT m2). The user entry m1 must produce turn(m1).
+        const fake = makeFakeHarness();
+        const m1 = user("first question");
+        const a1 = assistant("first answer", "stop");
+        const m2 = user("second question");
+        const branchAfterNavigate: SessionTreeEntry[] = [
+            { type: "message", id: "m1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: m1 },
+            { type: "message", id: "a1", parentId: "m1", timestamp: "2026-01-01T00:00:02.000Z", message: a1 },
+        ];
+        fake.session.getBranch.mockResolvedValue(branchAfterNavigate);
+        const owner = new PaneAgentSession("/s", fake.pane);
+        owner.subscribe(() => {});
+
+        // navigateTree targetId=m2 (a user message); harness returns editorText and
+        // has already moved leaf to a1.
+        fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "second question" }));
+        const result = await owner.navigateTree("m2");
+
+        expect(result).toEqual({ editorText: "second question" });
+        const snap = owner.getSnapshot();
+        expect(snap.messages).toEqual([m1, a1]);
+        expect(snap.turns).toEqual([
+            { turnId: "m1", userMessage: m1, responseMessages: [a1], status: "done" },
+        ]);
+    });
+
+    it("shows history including the target when navigating to the first user message (parentId=null fallback)", async () => {
+        // Scenario: m1(user)->a1(assistant)->m2(user)->a2(assistant). User clicks m1
+        // (the first message, parentId=null). Previously newLeafId=null produced an
+        // empty branch hiding all messages. Fix: newLeafId = targetEntry.parentId ??
+        // targetId falls back to m1 itself, so getBranch() returns [m1] and the
+        // user entry m1 produces turn(m1) with empty responseMessages.
+        const fake = makeFakeHarness();
+        const m1 = user("first question");
+        const branchAfterNavigate: SessionTreeEntry[] = [
+            { type: "message", id: "m1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: m1 },
+        ];
+        fake.session.getBranch.mockResolvedValue(branchAfterNavigate);
+        const owner = new PaneAgentSession("/s", fake.pane);
+        owner.subscribe(() => {});
+
+        fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "first question" }));
+        const result = await owner.navigateTree("m1");
+
+        expect(result).toEqual({ editorText: "first question" });
+        const snap = owner.getSnapshot();
+        expect(snap.messages).toEqual([m1]);
+        expect(snap.turns).toEqual([
+            { turnId: "m1", userMessage: m1, responseMessages: [], status: "done" },
+        ]);
     });
 
     it("returns an empty navigation result when tree navigation is cancelled", async () => {
@@ -308,8 +362,8 @@ describe("PaneAgentSession — command operations", () => {
     });
 });
 
-describe("PaneAgentSession — owned runs", () => {
-    it("builds a completed run keyed by the user entry id", () => {
+describe("PaneAgentSession — owned turns", () => {
+    it("builds a completed turn keyed by the user entry id", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
         const q = user("hello");
@@ -323,9 +377,9 @@ describe("PaneAgentSession — owned runs", () => {
         fake.emit({ type: "message_end", message: final });
         fake.emit({ type: "agent_end", messages: [q, final] });
 
-        expect(owner.getSnapshot().runs).toEqual([
+        expect(owner.getSnapshot().turns).toEqual([
             {
-                runId: "e-a",
+                turnId: "e-a",
                 userMessage: q,
                 responseMessages: [final],
                 status: "done",
@@ -374,7 +428,7 @@ describe("PaneAgentSession — owned runs", () => {
         await expect(sendPromise).rejects.toThrow(/disposed/);
     });
 
-    it("calls harness.prompt directly without inserting a run-boundary custom entry", async () => {
+    it("calls harness.prompt directly without inserting a turn-boundary custom entry", async () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
 
@@ -385,7 +439,7 @@ describe("PaneAgentSession — owned runs", () => {
         expect(fake.calls.prompt).toEqual(["hello"]);
     });
 
-    it("marks the active run errored from an errored assistant message", () => {
+    it("marks the active turn errored from an errored assistant message", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
         const q = user("hello");
@@ -397,9 +451,9 @@ describe("PaneAgentSession — owned runs", () => {
         fake.emit({ type: "message_start", message: assistant("") });
         fake.emit({ type: "message_end", message: final });
 
-        expect(owner.getSnapshot().runs).toEqual([
+        expect(owner.getSnapshot().turns).toEqual([
             {
-                runId: "e-err",
+                turnId: "e-err",
                 userMessage: q,
                 responseMessages: [final],
                 status: "error",
@@ -408,10 +462,10 @@ describe("PaneAgentSession — owned runs", () => {
         ]);
     });
 
-    it("calls onRunFinished with the completed run after agent_end", () => {
+    it("calls onTurnFinished with the completed turn after agent_end", () => {
         const fake = makeFakeHarness();
-        const onRunFinished = vi.fn();
-        const owner = new PaneAgentSession("/s", fake.pane, [], [], { onRunFinished });
+        const onTurnFinished = vi.fn();
+        const owner = new PaneAgentSession("/s", fake.pane, [], [], { onTurnFinished });
         const q = user("hello");
         const final = assistant("hello back", "stop");
 
@@ -422,15 +476,15 @@ describe("PaneAgentSession — owned runs", () => {
         fake.emit({ type: "message_end", message: final });
         fake.emit({ type: "agent_end", messages: [q, final] });
 
-        expect(onRunFinished).toHaveBeenCalledWith({
-            runId: "e-a",
+        expect(onTurnFinished).toHaveBeenCalledWith({
+            turnId: "e-a",
             userMessage: q,
             responseMessages: [final],
             status: "done",
         });
     });
 
-    it("updates a completed run change outline and notifies subscribers", () => {
+    it("updates a completed turn change outline and notifies subscribers", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
         const seen: string[] = [];
@@ -442,19 +496,19 @@ describe("PaneAgentSession — owned runs", () => {
         fake.emit({ type: "message_start", message: assistant("hello back") });
         fake.emit({ type: "message_end", message: assistant("hello back", "stop") });
         fake.emit({ type: "agent_end", messages: [] });
-        owner.setRunChangeOutline("e-a", {
+        owner.setTurnChangeOutline("e-a", {
             modules: [{ id: "ui", title: "UI changes", files: [{ path: "src/app.ts" }] }],
         });
 
-        expect(owner.getSnapshot().runs[0].changeOutline).toEqual({
+        expect(owner.getSnapshot().turns[0].changeOutline).toEqual({
             modules: [{ id: "ui", title: "UI changes", files: [{ path: "src/app.ts" }] }],
         });
-        expect(seen).toContain("agent_run_update");
+        expect(seen).toContain("agent_turn_update");
     });
 });
 
-describe("buildPersistedRunsFromSessionEntries", () => {
-    it("joins on agentuserentryid, keying runs by the user entry id", () => {
+describe("buildPersistedTurnsFromSessionEntries", () => {
+    it("opens one turn per user entry, keyed by the user entry id", () => {
         const q1 = user("q1");
         const a1 = assistant("a1", "stop");
         const q2 = user("q2");
@@ -466,29 +520,19 @@ describe("buildPersistedRunsFromSessionEntries", () => {
             { type: "message", id: "m4", parentId: "m3", timestamp: "t4", message: a2 },
         ];
 
-        const runs = buildPersistedRunsFromSessionEntries(entries, [
-            { agentuserentryid: "m1" },
-            { agentuserentryid: "m3" },
-        ]);
+        const turns = buildPersistedTurnsFromSessionEntries(entries);
 
-        expect(runs).toEqual([
-            { runId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
-            { runId: "m3", userMessage: q2, responseMessages: [a2], status: "done" },
+        expect(turns).toEqual([
+            { turnId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
+            { turnId: "m3", userMessage: q2, responseMessages: [a2], status: "done" },
         ]);
     });
 
-    it("returns no runs when there are no anchored refs", () => {
-        const q1 = user("q1");
-        const a1 = assistant("a1", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "m1", parentId: null, timestamp: "t1", message: q1 },
-            { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
-        ];
-
-        expect(buildPersistedRunsFromSessionEntries(entries, [])).toEqual([]);
+    it("returns no turns for an empty branch", () => {
+        expect(buildPersistedTurnsFromSessionEntries([])).toEqual([]);
     });
 
-    it("drops history before the first anchored user entry", () => {
+    it("opens a turn for every user entry from the start of the branch", () => {
         const preQ = user("hi");
         const preA = assistant("hello", "stop");
         const q1 = user("real");
@@ -500,10 +544,11 @@ describe("buildPersistedRunsFromSessionEntries", () => {
             { type: "message", id: "e3", parentId: "e2", timestamp: "t3", message: a1 },
         ];
 
-        const runs = buildPersistedRunsFromSessionEntries(entries, [{ agentuserentryid: "e2" }]);
+        const turns = buildPersistedTurnsFromSessionEntries(entries);
 
-        expect(runs).toEqual([
-            { runId: "e2", userMessage: q1, responseMessages: [a1], status: "done" },
+        expect(turns).toEqual([
+            { turnId: "e0", userMessage: preQ, responseMessages: [preA], status: "done" },
+            { turnId: "e2", userMessage: q1, responseMessages: [a1], status: "done" },
         ]);
     });
 
@@ -523,98 +568,27 @@ describe("buildPersistedRunsFromSessionEntries", () => {
             { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
         ];
 
-        const runs = buildPersistedRunsFromSessionEntries(entries, [{ agentuserentryid: "m1" }]);
+        const turns = buildPersistedTurnsFromSessionEntries(entries);
 
-        expect(runs).toEqual([
-            { runId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
+        expect(turns).toEqual([
+            { turnId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
         ]);
     });
 
-    it("filters refs by agentsessionpath when sessionPath is provided", () => {
-        const q1 = user("q1");
-        const a1 = assistant("a1", "stop");
-        const q2 = user("q2");
-        const a2 = assistant("a2", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "m1", parentId: null, timestamp: "t1", message: q1 },
-            { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
-            { type: "message", id: "m3", parentId: "m2", timestamp: "t3", message: q2 },
-            { type: "message", id: "m4", parentId: "m3", timestamp: "t4", message: a2 },
-        ];
-
-        // Only refs for /session-A are honored; the /session-B ref is dropped,
-        // so m3 stays unanchored and produces no run.
-        const runs = buildPersistedRunsFromSessionEntries(
-            entries,
-            [
-                { agentuserentryid: "m1", agentsessionpath: "/session-A" },
-                { agentuserentryid: "m3", agentsessionpath: "/session-B" },
-            ],
-            "/session-A",
-        );
-
-        expect(runs).toEqual([
-            { runId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
-        ]);
-    });
-
-    it("includes refs without agentsessionpath even when sessionPath is provided", () => {
-        const q1 = user("q1");
-        const a1 = assistant("a1", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "m1", parentId: null, timestamp: "t1", message: q1 },
-            { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
-        ];
-
-        const runs = buildPersistedRunsFromSessionEntries(
-            entries,
-            [{ agentuserentryid: "m1" }],
-            "/session-A",
-        );
-
-        expect(runs).toEqual([
-            { runId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
-        ]);
-    });
-});
-
-describe("buildRunsFromEntryIdJoin", () => {
-    it("builds runs by joining on userEntryId, ignoring position", () => {
-        const preQ = user("hi");
-        const preA = assistant("hello", "stop");
-        const q1 = user("real question");
-        const a1 = assistant("real answer", "stop");
-        const entries: SessionTreeEntry[] = [
-            { type: "message", id: "e0", parentId: null, timestamp: "t0", message: preQ },
-            { type: "message", id: "e1", parentId: "e0", timestamp: "t1", message: preA },
-            { type: "message", id: "e2", parentId: "e1", timestamp: "t2", message: q1 },
-            { type: "message", id: "e3", parentId: "e2", timestamp: "t3", message: a1 },
-        ];
-
-        const runs = buildRunsFromEntryIdJoin(entries, new Set(["e2"]));
-
-        expect(runs).toEqual([
-            { runId: "e2", userMessage: q1, responseMessages: [a1], status: "done" },
-        ]);
-    });
-
-    it("creates one run per anchored userEntryId in branch order", () => {
-        const q1 = user("q1");
-        const a1 = assistant("a1", "stop");
-        const q2 = user("q2");
-        const a2 = assistant("a2", "stop");
+    it("creates a turn with empty responseMessages for a user message without a reply", () => {
+        // After navigating to the first user message (parentId=null → leaf falls
+        // back to the target entry), the branch contains just that user message
+        // with no assistant reply yet. The turn should still be created so the
+        // agent block is visible.
+        const q1 = user("first question");
         const entries: SessionTreeEntry[] = [
             { type: "message", id: "e1", parentId: null, timestamp: "t1", message: q1 },
-            { type: "message", id: "e2", parentId: "e1", timestamp: "t2", message: a1 },
-            { type: "message", id: "e3", parentId: "e2", timestamp: "t3", message: q2 },
-            { type: "message", id: "e4", parentId: "e3", timestamp: "t4", message: a2 },
         ];
 
-        const runs = buildRunsFromEntryIdJoin(entries, new Set(["e1", "e3"]));
+        const turns = buildPersistedTurnsFromSessionEntries(entries);
 
-        expect(runs).toEqual([
-            { runId: "e1", userMessage: q1, responseMessages: [a1], status: "done" },
-            { runId: "e3", userMessage: q2, responseMessages: [a2], status: "done" },
+        expect(turns).toEqual([
+            { turnId: "e1", userMessage: q1, responseMessages: [], status: "done" },
         ]);
     });
 });
