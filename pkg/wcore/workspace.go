@@ -296,9 +296,12 @@ func CreateTab(ctx context.Context, workspaceId string, tabName string, activate
 	return tab.OID, nil
 }
 
-func CreateTabWithBlock(ctx context.Context, workspaceId string, tabName string, activateTab bool, blockDef waveobj.BlockDef) (string, error) {
+func CreateTabWithBlock(ctx context.Context, workspaceId string, tabName string, activateTab bool, blockDef waveobj.BlockDef) (rtnTabId string, rtnErr error) {
 	tabName, meta, err := defaultTabNameAndMeta(ctx, workspaceId, tabName)
 	if err != nil {
+		return "", err
+	}
+	if err := validateBlockDef(&blockDef); err != nil {
 		return "", err
 	}
 
@@ -306,6 +309,15 @@ func CreateTabWithBlock(ctx context.Context, workspaceId string, tabName string,
 	if err != nil {
 		return "", fmt.Errorf("error creating tab: %w", err)
 	}
+	defer func() {
+		if rtnErr == nil {
+			return
+		}
+		_, rollbackErr := DeleteTab(ctx, workspaceId, tab.OID, false)
+		if rollbackErr != nil {
+			rtnErr = fmt.Errorf("%w; additionally failed to rollback tab %s: %v", rtnErr, tab.OID, rollbackErr)
+		}
+	}()
 	if activateTab {
 		err = SetActiveTab(ctx, workspaceId, tab.OID)
 		if err != nil {
@@ -317,7 +329,7 @@ func CreateTabWithBlock(ctx context.Context, workspaceId string, tabName string,
 	}
 	err = ApplyPortableLayout(ctx, tab.OID, layout, true)
 	if err != nil {
-		return tab.OID, fmt.Errorf("error applying single-block tab layout: %w", err)
+		return "", fmt.Errorf("error applying single-block tab layout: %w", err)
 	}
 	applyTabBackground(ctx, tab)
 	recordCreateTabTelemetry()
