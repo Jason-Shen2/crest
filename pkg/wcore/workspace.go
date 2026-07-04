@@ -325,8 +325,16 @@ func CreateTabWithBlock(ctx context.Context, workspaceId string, tabName string,
 			rtnErr = fmt.Errorf("%w; additionally failed to rollback tab %s: %v", rtnErr, tab.OID, rollbackErr)
 			return
 		}
-		if activateTab && originalActiveTabId != "" {
-			rollbackErr = SetActiveTab(ctx, workspaceId, originalActiveTabId)
+		if activateTab {
+			if originalActiveTabId != "" {
+				rollbackErr = SetActiveTab(ctx, workspaceId, originalActiveTabId)
+			} else {
+				ws, rollbackErr = GetWorkspace(ctx, workspaceId)
+				if rollbackErr == nil {
+					ws.ActiveTabId = ""
+					rollbackErr = wstore.DBUpdate(ctx, ws)
+				}
+			}
 			if rollbackErr != nil {
 				rtnErr = fmt.Errorf("%w; additionally failed to restore active tab %s: %v", rtnErr, originalActiveTabId, rollbackErr)
 			}
