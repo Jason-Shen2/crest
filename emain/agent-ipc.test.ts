@@ -59,8 +59,7 @@ import {
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
-import { JsonlSessionRepo } from "./agent/harness/session/jsonl-repo";
-import { NodeExecutionEnv } from "./agent/node";
+import { SqliteSessionRepo } from "./agent/harness/session/sqlite-repo";
 import { PaneAgentSession } from "./agent/pane-agent-session";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "./agent/sessions";
 import type { AgentMessage } from "./agent/types";
@@ -87,8 +86,7 @@ describe("agent-ipc command helpers", () => {
         previousConfigHome = process.env.WAVETERM_CONFIG_HOME;
         tmpConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-ipc-test-"));
         process.env.WAVETERM_CONFIG_HOME = tmpConfigHome;
-        const env = new NodeExecutionEnv({ cwd: process.cwd() });
-        _setSessionsRepoForTests(new JsonlSessionRepo({ fs: env, sessionsRoot: defaultSessionsDir() }));
+        _setSessionsRepoForTests(new SqliteSessionRepo({ sessionsRoot: defaultSessionsDir() }));
     });
 
     afterEach(async () => {
@@ -264,13 +262,14 @@ describe("agent-ipc command helpers", () => {
         });
     });
 
-    it("creates a new agent session from /new", async () => {
+    it("signals a new agent session from /new without minting one (lazy creation)", async () => {
         const result = await runAgentCommandForIpc({ command: "new", cwd: "/tmp/agent-ipc-new", argsText: "" });
 
-        expect(result).toMatchObject({
+        // /new only resets the pane; the session is lazily created on the
+        // next prompt, so no sessionMetadata is returned by design.
+        expect(result).toEqual({
             status: "success",
             message: "New session started",
-            sessionMetadata: expect.objectContaining({ cwd: "/tmp/agent-ipc-new" }),
         });
     });
 
@@ -494,10 +493,10 @@ describe("agent-ipc command helpers", () => {
                 provider: "p",
                 model: "m",
             }
-        )) as { sessionMetadata: unknown; runId: string };
+        )) as { sessionMetadata: unknown; turnId: string };
 
         expect(sendSpy).toHaveBeenCalledWith("hello");
-        expect(result.runId).toBe("entry-xyz");
+        expect(result.turnId).toBe("entry-xyz");
         expect(vi.mocked(RpcApi.AppendAgentRunCommand)).toHaveBeenCalledWith(
             expect.anything(),
             expect.objectContaining({

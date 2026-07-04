@@ -100,12 +100,12 @@ describe("session view helpers", () => {
         it("hides leaf entries", () => {
             expect(isHiddenTreeEntry(leafEntry("l1", null))).toBe(true);
         });
-        it("hides tool and toolResult messages", () => {
-            expect(isHiddenTreeEntry(toolMsg("t1", null, "ls output", "tool"))).toBe(true);
-            expect(isHiddenTreeEntry(toolMsg("t2", null, "ls output", "toolResult"))).toBe(true);
+        it("keeps tool and toolResult messages (FilterMode decides at display time)", () => {
+            expect(isHiddenTreeEntry(toolMsg("t1", null, "ls output", "tool"))).toBe(false);
+            expect(isHiddenTreeEntry(toolMsg("t2", null, "ls output", "toolResult"))).toBe(false);
         });
-        it("hides assistant messages with no text content", () => {
-            expect(isHiddenTreeEntry(asstMsg("a1", null, ""))).toBe(true);
+        it("keeps assistant messages with no text content (tool-only turns reach the renderer)", () => {
+            expect(isHiddenTreeEntry(asstMsg("a1", null, ""))).toBe(false);
         });
         it("keeps user messages and non-empty assistant messages", () => {
             expect(isHiddenTreeEntry(userMsg("u1", null, "hi"))).toBe(false);
@@ -114,7 +114,7 @@ describe("session view helpers", () => {
     });
 
     describe("filterTreeForDisplay", () => {
-        it("removes tool/toolResult/empty-assistant nodes and reparents through them", () => {
+        it("keeps tool/toolResult/empty-assistant nodes (only leaf/label are stripped)", () => {
             // Sequence: user -> empty assistant (tool call) -> toolResult -> final assistant
             const u1 = userMsg("u1", null, "nice");
             const aEmpty = asstMsg("a-toolcall", "u1", "");
@@ -124,21 +124,10 @@ describe("session view helpers", () => {
 
             const { entries, effectiveLeafId } = filterTreeForDisplay([u1, aEmpty, tr, aFinal, leaf], "leaf");
 
-            expect(entries.map((e) => e.id)).toEqual(["u1", "a-final"]);
-            expect(entries[1]!.parentId).toBe("u1");
+            // Only the leaf pointer is removed; everything else survives untouched.
+            expect(entries.map((e) => e.id)).toEqual(["u1", "a-toolcall", "tr1", "a-final"]);
+            expect(entries[3]!.parentId).toBe("tr1");
             expect(effectiveLeafId).toBe("a-final");
-        });
-
-        it("handles chains of multiple hidden nodes", () => {
-            const u1 = userMsg("u1", null, "q1");
-            const a1 = asstMsg("a1", "u1", "thinking...");
-            const aEmpty = asstMsg("a-empty", "a1", "");
-            const tr = toolMsg("tr", "a-empty", "result");
-            const aFinal = asstMsg("a-final", "tr", "done");
-
-            const { entries } = filterTreeForDisplay([u1, a1, aEmpty, tr, aFinal], "a-final");
-            expect(entries.map((e) => e.id)).toEqual(["u1", "a1", "a-final"]);
-            expect(entries[2]!.parentId).toBe("a1");
         });
 
         it("passes through when nothing is hidden", () => {

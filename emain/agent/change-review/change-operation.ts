@@ -10,7 +10,7 @@ export type ChangeOperationKind = "patch" | "write" | "create" | "delete" | "ren
 
 export interface ChangeOperation {
     id: string;
-    runId?: string;
+    turnId?: string;
     toolCallId?: string;
     kind: ChangeOperationKind;
     path: string;

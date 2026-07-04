@@ -26,6 +26,14 @@ export interface AgentCommandInfo {
     name: string;
     description: string;
     argumentHint?: string;
+    /**
+     * Alternate names that resolve to this command. Used for compatibility
+     * with other agents' command vocabularies (e.g. Claude Code's /clear is
+     * an alias for /new). The frontend slash-command router normalizes an
+     * alias to the canonical `name` before dispatch, so the backend only ever
+     * sees the canonical command.
+     */
+    aliases?: string[];
     source: AgentCommandSource;
     action: AgentCommandAction;
 }
@@ -43,8 +51,6 @@ export interface AgentRunCommandInput {
     cwd: string;
     command: AgentBackendCommandName;
     argsText: string;
-    /** Parent terminal block id, used by /compact to fetch timeline anchor rows. */
-    blockId?: string;
 }
 
 export interface ParsedAgentCommandInput {
@@ -58,6 +64,8 @@ export interface AgentTreeEntryView {
     type: string;
     role?: string;
     label?: string;
+    /** Assistant stopReason, used by the renderer's FilterMode (Pi parity). */
+    stopReason?: string;
     preview: string;
     timestamp?: string;
     isLeaf: boolean;
