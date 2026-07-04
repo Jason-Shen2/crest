@@ -15,6 +15,8 @@ export type OpenFileInEditorTabOptions = {
     cwd?: string;
 };
 
+const inFlightEditorTabOpens = new Map<string, Promise<OpenFileInEditorTabResult>>();
+
 export async function findEditorTabForPath(path: string): Promise<string | null> {
     const workspace = globalStore.get(atoms.workspace);
     const tabIds = workspace?.tabids ?? [];
@@ -57,6 +59,11 @@ export async function openFileInEditorTab(
         return { tabId: existingTabId, created: false };
     }
     const cwd = opts.cwd ?? opts.workspaceRoot;
+    const inFlightKey = getInFlightEditorTabOpenKey(path, workspace.oid, cwd);
+    const inFlightOpen = inFlightEditorTabOpens.get(inFlightKey);
+    if (inFlightOpen) {
+        return inFlightOpen;
+    }
     const meta: MetaType = {
         view: "codeeditor",
         file: path,
@@ -65,11 +72,25 @@ export async function openFileInEditorTab(
     if (cwd) {
         meta["cmd:cwd"] = cwd;
     }
-    const tabId = await WorkspaceService.CreateTabWithBlock(workspace.oid, "", false, {
-        meta: {
-            ...meta,
-        },
-    });
-    getApi().setActiveTab(tabId);
-    return { tabId, created: true };
+    const openPromise = (async (): Promise<OpenFileInEditorTabResult> => {
+        const tabId = await WorkspaceService.CreateTabWithBlock(workspace.oid, "", false, {
+            meta: {
+                ...meta,
+            },
+        });
+        getApi().setActiveTab(tabId);
+        return { tabId, created: true };
+    })();
+    inFlightEditorTabOpens.set(inFlightKey, openPromise);
+    try {
+        return await openPromise;
+    } finally {
+        if (inFlightEditorTabOpens.get(inFlightKey) === openPromise) {
+            inFlightEditorTabOpens.delete(inFlightKey);
+        }
+    }
+}
+
+function getInFlightEditorTabOpenKey(path: string, workspaceId: string, cwd?: string): string {
+    return JSON.stringify([path, workspaceId, cwd ?? ""]);
 }
