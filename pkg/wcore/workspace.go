@@ -219,25 +219,61 @@ func getNextTabName(tabNames []string) string {
 	return "T" + strconv.Itoa(maxNum+1)
 }
 
+func defaultTabName(ctx context.Context, workspaceId string) (string, error) {
+	ws, err := GetWorkspace(ctx, workspaceId)
+	if err != nil {
+		return "", fmt.Errorf("workspace %s not found: %w", workspaceId, err)
+	}
+	tabNames := make([]string, 0, len(ws.TabIds))
+	for _, tabId := range ws.TabIds {
+		tab, err := wstore.DBMustGet[*waveobj.Tab](ctx, tabId)
+		if err != nil || tab == nil {
+			continue
+		}
+		tabNames = append(tabNames, tab.Name)
+	}
+	return getNextTabName(tabNames), nil
+}
+
+func defaultTabNameAndMeta(ctx context.Context, workspaceId string, tabName string) (string, waveobj.MetaMapType, error) {
+	autoName := tabName == ""
+	if autoName {
+		var err error
+		tabName, err = defaultTabName(ctx, workspaceId)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	if !autoName {
+		return tabName, nil, nil
+	}
+	return tabName, waveobj.MetaMapType{waveobj.MetaKey_TabAutoName: true}, nil
+}
+
+func applyTabBackground(ctx context.Context, tab *waveobj.Tab) {
+	tabBg := getTabBackground()
+	if tabBg == "" {
+		return
+	}
+	tabORef := waveobj.ORefFromWaveObj(tab)
+	wstore.UpdateObjectMeta(ctx, *tabORef, waveobj.MetaMapType{waveobj.MetaKey_TabBackground: tabBg}, false)
+}
+
+func recordCreateTabTelemetry() {
+	telemetry.GoUpdateActivityWrap(wshrpc.ActivityUpdate{NewTab: 1}, "createtab")
+	telemetry.GoRecordTEventWrap(&telemetrydata.TEvent{
+		Event: "action:createtab",
+	})
+}
+
 // returns tabid
 func CreateTab(ctx context.Context, workspaceId string, tabName string, activateTab bool, isInitialLaunch bool) (string, error) {
-	if tabName == "" {
-		ws, err := GetWorkspace(ctx, workspaceId)
-		if err != nil {
-			return "", fmt.Errorf("workspace %s not found: %w", workspaceId, err)
-		}
-		tabNames := make([]string, 0, len(ws.TabIds))
-		for _, tabId := range ws.TabIds {
-			tab, err := wstore.DBMustGet[*waveobj.Tab](ctx, tabId)
-			if err != nil || tab == nil {
-				continue
-			}
-			tabNames = append(tabNames, tab.Name)
-		}
-		tabName = getNextTabName(tabNames)
+	tabName, meta, err := defaultTabNameAndMeta(ctx, workspaceId, tabName)
+	if err != nil {
+		return "", err
 	}
 
-	tab, err := createTabObj(ctx, workspaceId, tabName, nil)
+	tab, err := createTabObj(ctx, workspaceId, tabName, meta)
 	if err != nil {
 		return "", fmt.Errorf("error creating tab: %w", err)
 	}
@@ -254,16 +290,37 @@ func CreateTab(ctx context.Context, workspaceId string, tabName string, activate
 		if err != nil {
 			return tab.OID, fmt.Errorf("error applying new tab layout: %w", err)
 		}
-		tabBg := getTabBackground()
-		if tabBg != "" {
-			tabORef := waveobj.ORefFromWaveObj(tab)
-			wstore.UpdateObjectMeta(ctx, *tabORef, waveobj.MetaMapType{waveobj.MetaKey_TabBackground: tabBg}, false)
+		applyTabBackground(ctx, tab)
+	}
+	recordCreateTabTelemetry()
+	return tab.OID, nil
+}
+
+func CreateTabWithBlock(ctx context.Context, workspaceId string, tabName string, activateTab bool, blockDef waveobj.BlockDef) (string, error) {
+	tabName, meta, err := defaultTabNameAndMeta(ctx, workspaceId, tabName)
+	if err != nil {
+		return "", err
+	}
+
+	tab, err := createTabObj(ctx, workspaceId, tabName, meta)
+	if err != nil {
+		return "", fmt.Errorf("error creating tab: %w", err)
+	}
+	if activateTab {
+		err = SetActiveTab(ctx, workspaceId, tab.OID)
+		if err != nil {
+			return "", fmt.Errorf("error setting active tab: %w", err)
 		}
 	}
-	telemetry.GoUpdateActivityWrap(wshrpc.ActivityUpdate{NewTab: 1}, "createtab")
-	telemetry.GoRecordTEventWrap(&telemetrydata.TEvent{
-		Event: "action:createtab",
-	})
+	layout := PortableLayout{
+		{IndexArr: []int{0}, BlockDef: &blockDef, Focused: true},
+	}
+	err = ApplyPortableLayout(ctx, tab.OID, layout, true)
+	if err != nil {
+		return tab.OID, fmt.Errorf("error applying single-block tab layout: %w", err)
+	}
+	applyTabBackground(ctx, tab)
+	recordCreateTabTelemetry()
 	return tab.OID, nil
 }
 
