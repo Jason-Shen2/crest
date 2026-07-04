@@ -48,6 +48,10 @@ func UpdateTabName(ctx context.Context, tabId, name string) error {
 		}
 		if tabId != "" {
 			tab.Name = name
+			if tab.Meta == nil {
+				tab.Meta = make(waveobj.MetaMapType)
+			}
+			tab.Meta[waveobj.MetaKey_TabAutoName] = false
 			DBUpdate(tx.Context(), tab)
 		}
 		return nil

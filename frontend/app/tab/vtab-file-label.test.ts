@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "vitest";
-import { getFileBackedBlockLabel } from "./vtab-file-label";
+import { getFileBackedBlockLabel, isTabAutoNamed } from "./vtab-file-label";
 
 function meta(value: Record<string, string>): MetaType {
     return value as MetaType;
@@ -11,11 +11,13 @@ function meta(value: Record<string, string>): MetaType {
 describe("getFileBackedBlockLabel", () => {
     it("uses meta.file for codeeditor labels before file:path", () => {
         expect(
-            getFileBackedBlockLabel(meta({
-                view: "codeeditor",
-                file: "/repo/src/editor.ts",
-                "file:path": "/repo/src/stale-preview.ts",
-            }))
+            getFileBackedBlockLabel(
+                meta({
+                    view: "codeeditor",
+                    file: "/repo/src/editor.ts",
+                    "file:path": "/repo/src/stale-preview.ts",
+                })
+            )
         ).toEqual({
             path: "/repo/src/editor.ts",
             basename: "editor.ts",
@@ -25,10 +27,12 @@ describe("getFileBackedBlockLabel", () => {
 
     it("keeps preview labels backed by file:path", () => {
         expect(
-            getFileBackedBlockLabel(meta({
-                view: "preview",
-                "file:path": "/repo/README.md",
-            }))
+            getFileBackedBlockLabel(
+                meta({
+                    view: "preview",
+                    "file:path": "/repo/README.md",
+                })
+            )
         ).toEqual({
             path: "/repo/README.md",
             basename: "README.md",
@@ -38,11 +42,35 @@ describe("getFileBackedBlockLabel", () => {
 
     it("does not treat unrelated views as file-backed", () => {
         expect(
-            getFileBackedBlockLabel(meta({
-                view: "web",
-                file: "/repo/src/editor.ts",
-                "file:path": "/repo/README.md",
-            }))
+            getFileBackedBlockLabel(
+                meta({
+                    view: "web",
+                    file: "/repo/src/editor.ts",
+                    "file:path": "/repo/README.md",
+                })
+            )
         ).toBeNull();
+    });
+});
+
+describe("isTabAutoNamed", () => {
+    it("treats tab:autoname=false as a manual name even when the name looks generated", () => {
+        expect(
+            isTabAutoNamed({
+                name: "T1",
+                meta: {
+                    "tab:autoname": false,
+                },
+            } as Tab)
+        ).toBe(false);
+    });
+
+    it("preserves legacy generated tab names when tab:autoname is missing", () => {
+        expect(
+            isTabAutoNamed({
+                name: "T12",
+                meta: {},
+            } as Tab)
+        ).toBe(true);
     });
 });
