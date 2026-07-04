@@ -37,6 +37,7 @@ import { VtabDetailSidecar } from "./vtab-detail-sidecar";
 import { getSettingsKeyAtom } from "@/app/store/global";
 import { getLayoutModelForStaticTab } from "@/layout/index";
 import { blockViewToName } from "@/app/block/blockutil";
+import { getFileBackedBlockLabel } from "./vtab-file-label";
 export type { VTabItem } from "./vtab";
 
 interface VTabBarProps {
@@ -102,6 +103,7 @@ function blockViewToUIcon(view: string): string {
         case "termblocks":
             return "terminal";
         case "preview":
+        case "codeeditor":
             return "file";
         case "web":
             return "compass-3";
@@ -705,8 +707,7 @@ function VPaneWrapper({
     // + metadata).  For non-terminal blocks (preview/web/etc.) warp
     // uses a simpler 2-line layout (title + view-specific subtitle)
     // with no third metadata row.
-    const filePath = (block?.meta?.["file:path"] as string) || "";
-    const fileBase = filePath.includes("/") ? filePath.split("/").pop() || filePath : filePath;
+    const fileLabel = getFileBackedBlockLabel(block?.meta);
     const webUrl = (block?.meta?.["url"] as string) || "";
     const isCompact = viewMode === "compact";
 
@@ -748,9 +749,9 @@ function VPaneWrapper({
             default:
                 compactLineTwo = "";
         }
-    } else if (view === "preview") {
-        primaryName = fileBase || "Preview";
-        expandedSubtitle = filePath !== fileBase ? filePath : "";
+    } else if (fileLabel) {
+        primaryName = fileLabel.basename || fileLabel.fallbackTitle;
+        expandedSubtitle = fileLabel.path !== fileLabel.basename ? fileLabel.path : "";
         compactLineTwo = ""; // non-terminal panes have no compact-subtitle setting
     } else if (view === "web") {
         primaryName = webUrl || blockViewToName(view) || "Web";

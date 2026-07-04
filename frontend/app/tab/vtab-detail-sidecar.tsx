@@ -13,6 +13,7 @@ import { FloatingPortal } from "@floating-ui/react";
 import { useAtomValue } from "jotai";
 import { useEffect, useMemo, useState } from "react";
 import type { VTabBarEnv } from "./vtabbarenv";
+import { getFileBackedBlockLabel } from "./vtab-file-label";
 
 // Mirrors `render_detail_sidecar` (warp vertical_tabs.rs 5874-6033) —
 // a ~320px right-anchored panel that fills in metadata for the row the
@@ -55,6 +56,7 @@ function blockViewToUIcon(view: string): string {
         case "termblocks":
             return "terminal";
         case "preview":
+        case "codeeditor":
             return "file";
         case "web":
             return "compass-3";
@@ -87,6 +89,8 @@ function viewToName(view: string): string {
             return "Terminal";
         case "preview":
             return "Preview";
+        case "codeeditor":
+            return "Code editor";
         case "web":
             return "Web";
         case "help":
@@ -142,8 +146,7 @@ export function VtabDetailSidecar({
         (fallbackBlock?.meta?.["cmd:cwd"] as string) ||
         "";
     const view = (effectiveBlock?.meta?.["view"] as string) || "";
-    const filePath = (effectiveBlock?.meta?.["file:path"] as string) || "";
-    const fileBase = filePath.includes("/") ? filePath.split("/").pop() || filePath : filePath;
+    const fileLabel = getFileBackedBlockLabel(effectiveBlock?.meta);
     const webUrl = (effectiveBlock?.meta?.["url"] as string) || "";
 
     const home = useMemo(() => {
@@ -222,8 +225,8 @@ export function VtabDetailSidecar({
         headerIcon = blockViewToUIcon(view);
         if (view === "term" || view === "termblocks" || view === "") {
             headerTitle = cwdShort || (!isAutoNamed && tabName) || "Terminal";
-        } else if (view === "preview") {
-            headerTitle = fileBase || "Preview";
+        } else if (fileLabel) {
+            headerTitle = fileLabel.basename || fileLabel.fallbackTitle;
         } else if (view === "web") {
             headerTitle = webUrl || "Web";
         } else {
@@ -282,14 +285,14 @@ export function VtabDetailSidecar({
                 </div>
             )}
 
-            {isPaneMode && view === "preview" && filePath && (
+            {isPaneMode && fileLabel && (
                 <div className="flex flex-col gap-1">
                     <div className="text-[12px] uppercase tracking-wide text-secondary">File</div>
                     <div
                         className="overflow-hidden text-ellipsis whitespace-nowrap text-[15px] text-foreground"
-                        title={filePath}
+                        title={fileLabel.path}
                     >
-                        {filePath}
+                        {fileLabel.path}
                     </div>
                 </div>
             )}
