@@ -5,9 +5,9 @@ import { setWaveWindowType } from "@/app/store/windowtype";
 import { WaveEnvContext } from "@/app/waveenv/waveenv";
 import { makeMockWaveEnv } from "@/preview/mock/mockwaveenv";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { VTab, VTabItem } from "./vtab";
-import { VTabBar } from "./vtabbar";
+import { resetVTabName, VTabBar } from "./vtabbar";
 
 const OriginalCss = globalThis.CSS;
 const HexColorRegex = /^#([\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i;
@@ -167,5 +167,64 @@ describe("VTabBar tab labels", () => {
 
         expect(markup).toContain("T1");
         expect(markup).not.toContain("not-the-tab-title.ts");
+    });
+
+    it("resets manual codeeditor tab names back to auto-derived labels", async () => {
+        const tabId = "manual-editor-reset-tab";
+        const blockId = "manual-editor-reset-block";
+        const updateTabName = vi.fn().mockResolvedValue(undefined);
+        const setMeta = vi.fn().mockResolvedValue(undefined);
+
+        await resetVTabName(
+            {
+                rpc: {
+                    UpdateTabNameCommand: updateTabName,
+                    SetMetaCommand: setMeta,
+                },
+            } as any,
+            tabId,
+            "T1"
+        );
+
+        expect(updateTabName.mock.calls[0]?.slice(1)).toEqual([tabId, "T1"]);
+        expect(setMeta.mock.calls[0]?.[1]).toEqual({
+            oref: `tab:${tabId}`,
+            meta: { "tab:autoname": true },
+        });
+        expect(updateTabName.mock.invocationCallOrder[0]).toBeLessThan(
+            setMeta.mock.invocationCallOrder[0]
+        );
+
+        const manualMarkup = renderVTabBar(
+            [
+                tab(tabId, "T1", [blockId], {
+                    "tab:autoname": false,
+                } as MetaType),
+            ],
+            [
+                block(blockId, {
+                    view: "codeeditor",
+                    file: "/repo/src/restored-label.ts",
+                } as MetaType),
+            ]
+        );
+        const resetMarkup = renderVTabBar(
+            [
+                tab(tabId, "T1", [blockId], {
+                    "tab:autoname": true,
+                } as MetaType),
+            ],
+            [
+                block(blockId, {
+                    view: "codeeditor",
+                    file: "/repo/src/restored-label.ts",
+                } as MetaType),
+            ]
+        );
+
+        expect(manualMarkup).toContain("T1");
+        expect(manualMarkup).not.toContain("restored-label.ts");
+        expect(resetMarkup).toContain("restored-label.ts");
+        expect(resetMarkup).not.toContain(">T1<");
     });
 });
