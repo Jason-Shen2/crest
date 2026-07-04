@@ -48,13 +48,28 @@ func UpdateTabName(ctx context.Context, tabId, name string) error {
 		}
 		if tabId != "" {
 			tab.Name = name
-			// A user-chosen name overrides the derived label: drop the
-			// auto-name flag so the frontend stops deriving from blocks.
-			if tab.Meta != nil {
-				delete(tab.Meta, waveobj.MetaKey_TabAutoName)
+			if tab.Meta == nil {
+				tab.Meta = make(waveobj.MetaMapType)
 			}
+			tab.Meta[waveobj.MetaKey_TabAutoName] = false
 			DBUpdate(tx.Context(), tab)
 		}
+		return nil
+	})
+}
+
+func ResetTabName(ctx context.Context, tabId, name string) error {
+	return WithTx(ctx, func(tx *TxWrap) error {
+		tab, _ := DBGet[*waveobj.Tab](tx.Context(), tabId)
+		if tab == nil {
+			return fmt.Errorf("tab not found: %q", tabId)
+		}
+		tab.Name = name
+		if tab.Meta == nil {
+			tab.Meta = make(waveobj.MetaMapType)
+		}
+		tab.Meta[waveobj.MetaKey_TabAutoName] = true
+		DBUpdate(tx.Context(), tab)
 		return nil
 	})
 }

@@ -7,6 +7,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFileExplorer = vi.hoisted(() => ({
     createBlock: vi.fn(),
+    openFileInEditorTab: vi.fn(),
+    objectService: {
+        DeleteBlock: vi.fn(),
+        UpdateObjectMeta: vi.fn(),
+    },
+    workspaceService: {
+        CloseTab: vi.fn(),
+    },
     layoutModel: {
         openRightTool: vi.fn(),
         openRightEditorTool: vi.fn(),
@@ -19,6 +27,7 @@ vi.mock("@/store/global", async () => {
     return {
         atoms: {
             staticTabId: jotaiActual.atom("tab-a"),
+            workspace: jotaiActual.atom(null),
         },
         createBlock: mockFileExplorer.createBlock,
         getApi: () => ({
@@ -39,6 +48,16 @@ vi.mock("@/store/global", async () => {
         },
     };
 });
+
+vi.mock("@/app/store/windowtype", () => ({
+    isPreviewWindow: () => true,
+    setWaveWindowType: vi.fn(),
+}));
+
+vi.mock("@/app/store/services", () => ({
+    ObjectService: mockFileExplorer.objectService,
+    WorkspaceService: mockFileExplorer.workspaceService,
+}));
 
 vi.mock("@/app/store/wshclientapi", () => ({
     RpcApi: {
@@ -66,10 +85,17 @@ vi.mock("@/app/workspace/workspace-layout-model", () => ({
     },
 }));
 
+vi.mock("./open-editor-tab", () => ({
+    openFileInEditorTab: mockFileExplorer.openFileInEditorTab,
+}));
+
 import { RpcApi } from "@/app/store/wshclientapi";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
-import { getSettingsKeyAtom } from "@/store/global";
+import * as WOS from "@/app/store/wos";
+import { atoms, getSettingsKeyAtom } from "@/store/global";
 import { FileExplorerModel } from "./file-explorer-model";
+
+let nextWaveObjectVersion = 1;
 
 describe("FileExplorerModel", () => {
     beforeEach(() => {
@@ -84,13 +110,22 @@ describe("FileExplorerModel", () => {
         for (const settingAtom of mockFileExplorer.settingsAtoms.values()) {
             globalStore.set(settingAtom, null);
         }
+        mockFileExplorer.openFileInEditorTab.mockReset();
+        mockFileExplorer.openFileInEditorTab.mockResolvedValue({ tabId: "tab-editor", created: true });
+        mockFileExplorer.objectService.DeleteBlock.mockReset();
+        mockFileExplorer.objectService.UpdateObjectMeta.mockReset();
+        mockFileExplorer.workspaceService.CloseTab.mockReset();
         vi.mocked(RpcApi.FileReadCommand).mockClear();
         vi.mocked(RpcApi.FileListStreamCommand).mockClear();
         vi.mocked(RpcApi.FileMoveCommand).mockClear();
         vi.mocked(RpcApi.FileDeleteCommand).mockClear();
+        globalStore.set(atoms.workspace as any, {
+            oid: "workspace-1",
+            tabids: [],
+        } as Workspace);
     });
 
-    it("opens non-directory files in the right editor before the panel renders", async () => {
+    it("opens non-directory files in a main editor tab without opening the right editor", async () => {
         const model = FileExplorerModel.getInstance();
         globalStore.set(model.rootAtom, "/repo");
 
@@ -100,13 +135,11 @@ describe("FileExplorerModel", () => {
             isdir: false,
         });
 
-        expect(mockFileExplorer.layoutModel.openRightTool).toHaveBeenCalledWith("editor");
-        expect(vi.mocked(RpcApi.FileReadCommand).mock.calls[0][1]).toMatchObject({
-            info: { path: "/repo/src/app.ts" },
-        });
-        expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src/app.ts")).toMatchObject({
-            savedText: "initial",
-        });
+        expect(mockFileExplorer.openFileInEditorTab).toHaveBeenCalledWith("/repo/src/app.ts", "/repo");
+        expect(mockFileExplorer.layoutModel.openRightTool).not.toHaveBeenCalled();
+        expect(mockFileExplorer.layoutModel.openRightEditorTool).not.toHaveBeenCalled();
+        expect(vi.mocked(RpcApi.FileReadCommand)).not.toHaveBeenCalled();
+        expect(RightEditorModel.hasInstance()).toBe(false);
         expect(mockFileExplorer.createBlock).not.toHaveBeenCalled();
     });
 
@@ -150,6 +183,28 @@ describe("FileExplorerModel", () => {
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/b.ts")?.dirtyText).toBe("dirty");
     });
 
+    it("syncs successful renames to matching codeeditor block metadata", async () => {
+        const model = FileExplorerModel.getInstance();
+        globalStore.set(model.rootAtom, "/repo");
+        seedWorkspaceTabs([
+            makeTab("tab-1", ["block-1"]),
+            makeTab("tab-2", ["block-2"]),
+        ]);
+        seedBlock("block-1", { view: "termblocks", "cmd:cwd": "/repo" });
+        seedBlock("block-2", { view: "codeeditor", file: "/repo/a.ts", connection: "" });
+
+        await model.commitRename("/repo/a.ts", "b.ts");
+
+        expect(vi.mocked(RpcApi.FileMoveCommand)).toHaveBeenCalled();
+        expect(mockFileExplorer.objectService.UpdateObjectMeta).toHaveBeenCalledWith("block:block-2", {
+            view: "codeeditor",
+            file: "/repo/b.ts",
+            connection: "",
+        });
+        expect(mockFileExplorer.workspaceService.CloseTab).not.toHaveBeenCalled();
+        expect(mockFileExplorer.objectService.DeleteBlock).not.toHaveBeenCalled();
+    });
+
     it("syncs directory renames to open child files in the right editor", async () => {
         const model = FileExplorerModel.getInstance();
         globalStore.set(model.rootAtom, "/repo");
@@ -161,6 +216,23 @@ describe("FileExplorerModel", () => {
         expect(vi.mocked(RpcApi.FileMoveCommand)).toHaveBeenCalled();
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src/a.ts")).toBeUndefined();
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/lib/a.ts")?.dirtyText).toBe("dirty");
+    });
+
+    it("syncs directory renames to matching child codeeditor block metadata only", async () => {
+        const model = FileExplorerModel.getInstance();
+        globalStore.set(model.rootAtom, "/repo");
+        seedWorkspaceTabs([makeTab("tab-1", ["block-1"]), makeTab("tab-2", ["block-2"])]);
+        seedBlock("block-1", { view: "codeeditor", file: "/repo/src/a.ts", connection: "" });
+        seedBlock("block-2", { view: "codeeditor", file: "/repo/src-not-child/b.ts", connection: "" });
+
+        await model.commitRename("/repo/src", "lib");
+
+        expect(mockFileExplorer.objectService.UpdateObjectMeta).toHaveBeenCalledTimes(1);
+        expect(mockFileExplorer.objectService.UpdateObjectMeta).toHaveBeenCalledWith("block:block-1", {
+            view: "codeeditor",
+            file: "/repo/lib/a.ts",
+            connection: "",
+        });
     });
 
     it("does not create a right editor model when syncing a rename with no open editor", async () => {
@@ -186,6 +258,34 @@ describe("FileExplorerModel", () => {
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/a.ts")).toBeUndefined();
     });
 
+    it("closes the codeeditor tab when deleting the file in its sole block", async () => {
+        const model = FileExplorerModel.getInstance();
+        globalStore.set(model.rootAtom, "/repo");
+        seedWorkspaceTabs([makeTab("tab-1", ["block-1"])]);
+        seedBlock("block-1", { view: "codeeditor", file: "/repo/a.ts", connection: "" });
+
+        await model.deleteFile("/repo/a.ts");
+
+        expect(vi.mocked(RpcApi.FileDeleteCommand)).toHaveBeenCalled();
+        expect(mockFileExplorer.workspaceService.CloseTab).toHaveBeenCalledWith("workspace-1", "tab-1", false);
+        expect(mockFileExplorer.objectService.DeleteBlock).not.toHaveBeenCalled();
+        expect(mockFileExplorer.objectService.UpdateObjectMeta).not.toHaveBeenCalled();
+    });
+
+    it("removes only the matching codeeditor block when deleting a file in a multi-block tab", async () => {
+        const model = FileExplorerModel.getInstance();
+        globalStore.set(model.rootAtom, "/repo");
+        seedWorkspaceTabs([makeTab("tab-1", ["block-1", "block-2"])]);
+        seedBlock("block-1", { view: "codeeditor", file: "/repo/a.ts", connection: "" });
+        seedBlock("block-2", { view: "termblocks", "cmd:cwd": "/repo" });
+
+        await model.deleteFile("/repo/a.ts");
+
+        expect(mockFileExplorer.objectService.DeleteBlock).toHaveBeenCalledWith("block-1");
+        expect(mockFileExplorer.workspaceService.CloseTab).not.toHaveBeenCalled();
+        expect(mockFileExplorer.objectService.UpdateObjectMeta).not.toHaveBeenCalled();
+    });
+
     it("syncs directory deletes to open child files in the right editor", async () => {
         const model = FileExplorerModel.getInstance();
         globalStore.set(model.rootAtom, "/repo");
@@ -197,6 +297,20 @@ describe("FileExplorerModel", () => {
         expect(vi.mocked(RpcApi.FileDeleteCommand)).toHaveBeenCalled();
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src/a.ts")).toBeUndefined();
         expect(RightEditorModel.getInstance().getOpenFileNow("/repo/src-not-child/b.ts")).toBeDefined();
+    });
+
+    it("removes child codeeditor tabs and preserves sibling-like paths when deleting a directory", async () => {
+        const model = FileExplorerModel.getInstance();
+        globalStore.set(model.rootAtom, "/repo");
+        seedWorkspaceTabs([makeTab("tab-1", ["block-1"]), makeTab("tab-2", ["block-2"])]);
+        seedBlock("block-1", { view: "codeeditor", file: "/repo/src/a.ts", connection: "" });
+        seedBlock("block-2", { view: "codeeditor", file: "/repo/src-not-child/b.ts", connection: "" });
+
+        await model.deleteFile("/repo/src");
+
+        expect(mockFileExplorer.workspaceService.CloseTab).toHaveBeenCalledTimes(1);
+        expect(mockFileExplorer.workspaceService.CloseTab).toHaveBeenCalledWith("workspace-1", "tab-1", false);
+        expect(mockFileExplorer.objectService.DeleteBlock).not.toHaveBeenCalled();
     });
 
     it("does not create a right editor model when syncing a delete with no open editor", async () => {
@@ -221,4 +335,40 @@ function makeTestRpc() {
 
 async function* makeFileListStream(fileinfo: FileInfo[]): AsyncGenerator<CommandRemoteListEntriesRtnData, void, boolean> {
     yield { fileinfo };
+}
+
+function seedWorkspaceTabs(tabs: Tab[]): void {
+    globalStore.set(atoms.workspace as any, {
+        oid: "workspace-1",
+        tabids: tabs.map((tab) => tab.oid),
+    } as Workspace);
+    for (const tab of tabs) {
+        WOS.mockObjectForPreview(WOS.makeORef("tab", tab.oid), tab);
+        WOS.updateWaveObject({ otype: "tab", oid: tab.oid, updatetype: "update", obj: tab });
+    }
+}
+
+function seedBlock(blockId: string, meta: MetaType): void {
+    const block = {
+        oid: blockId,
+        otype: "block",
+        version: nextWaveObjectVersion++,
+        meta,
+    } as Block;
+    WOS.mockObjectForPreview(WOS.makeORef("block", blockId), block);
+    WOS.updateWaveObject({
+        otype: "block",
+        oid: blockId,
+        updatetype: "update",
+        obj: block,
+    });
+}
+
+function makeTab(tabId: string, blockids: string[]): Tab {
+    return {
+        oid: tabId,
+        otype: "tab",
+        version: nextWaveObjectVersion++,
+        blockids,
+    } as Tab;
 }

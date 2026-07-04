@@ -1458,6 +1458,7 @@ declare global {
         "graph:metrics"?: string[];
         "sysinfo:type"?: string;
         "tab:flagcolor"?: string;
+        "tab:autoname"?: boolean;
         "tab:background"?: string;
         "tab:autoname"?: boolean;
         "bg:*"?: boolean;

@@ -13,10 +13,11 @@ import clsx from "clsx";
 import { useAtomValue } from "jotai";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { makeORef } from "../store/wos";
-import { deriveBlockDisplayName, isTabAutoNamed } from "./tab-name";
+import { deriveBlockDisplayName } from "./tab-name";
 import { TabBadges } from "./tabbadges";
 import "./tab.scss";
 import { buildTabContextMenu } from "./tabcontextmenu";
+import { getFileBackedBlockLabel, isTabAutoNamed } from "./vtab-file-label";
 
 export type TabEnv = WaveEnvSubset<{
     rpc: {
@@ -238,6 +239,8 @@ const TabInner = forwardRef<HTMLDivElement, TabProps>((props, ref) => {
     const { id, active, showDivider, isDragging, tabWidth, isNew, onLoaded, onSelect, onClose, onDragStart } = props;
     const env = useWaveEnv<TabEnv>();
     const [tabData, _] = env.wos.useWaveObjectValue<Tab>(makeORef("tab", id));
+    const firstBlockId = tabData?.blockids?.[0];
+    const [firstBlock] = env.wos.useWaveObjectValue<Block>(firstBlockId ? makeORef("block", firstBlockId) : null);
     const badges = useAtomValue(getTabBadgeAtom(id, env));
     const rawTabName = tabData?.name ?? "";
     const layoutStateId = tabData?.layoutstate;
@@ -251,8 +254,9 @@ const TabInner = forwardRef<HTMLDivElement, TabProps>((props, ref) => {
     const [namingBlock] = env.wos.useWaveObjectValue<Block>(
         focusedBlockId ? makeORef("block", focusedBlockId) : null
     );
+    const fileLabel = isTabAutoNamed(tabData) ? getFileBackedBlockLabel(firstBlock?.meta) : null;
     const derivedName = isTabAutoNamed(tabData) ? deriveBlockDisplayName(namingBlock) : "";
-    const displayTabName = derivedName || rawTabName;
+    const displayTabName = fileLabel?.basename || derivedName || rawTabName;
 
     const rawFlagColor = tabData?.meta?.["tab:flagcolor"];
     let flagColor: string | null = null;
