@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { globalStore } from "@/app/store/jotaiStore";
 import { setWaveWindowType } from "@/app/store/windowtype";
 import { WaveEnvContext } from "@/app/waveenv/waveenv";
 import { makeMockWaveEnv } from "@/preview/mock/mockwaveenv";
@@ -167,6 +168,28 @@ describe("VTabBar tab labels", () => {
 
         expect(markup).toContain("T1");
         expect(markup).not.toContain("not-the-tab-title.ts");
+    });
+
+    it("mock tab rename preserves meta and marks the tab name manual", async () => {
+        const tabId = "mock-rename-tab";
+        const env = makeMockWaveEnv({
+            tabId,
+            mockWaveObjs: {
+                [`tab:${tabId}`]: tab(tabId, "T1", [], {
+                    "tab:autoname": true,
+                    "tab:color": "blue",
+                } as MetaType),
+            },
+        });
+
+        await env.rpc.UpdateTabNameCommand(null as any, tabId, "Manual name");
+
+        const updated = globalStore.get(env.wos.getWaveObjectAtom<Tab>(`tab:${tabId}`));
+        expect(updated.name).toBe("Manual name");
+        expect(updated.meta).toEqual({
+            "tab:autoname": false,
+            "tab:color": "blue",
+        });
     });
 
     it("resets manual codeeditor tab names back to auto-derived labels", async () => {
