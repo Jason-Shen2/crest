@@ -1,6 +1,6 @@
 # Crest Agent User Guide
 
-Crest includes a built-in coding agent that runs directly in your terminal. Invoke it with `:` prefix commands in the terminal input. Agent responses appear inline alongside your command blocks.
+Crest includes a built-in coding agent that runs directly in your terminal. The same input bar handles shell commands and agent prompts; the active **Input Mode** (terminal / agent / auto) decides what Enter does. Agent responses appear inline alongside your command blocks.
 
 ---
 
@@ -134,118 +134,72 @@ For maintainers / contributors: see [`docs/ai-config-architecture.md`](./ai-conf
 
 ---
 
-## Modes
+## Input Mode
 
-Crest's agent operates in three modes, each with different permission levels.
+The input bar has three modes, controlled by the mode toggle in the input area:
 
-### :ask — Read-Only Q&A
+| Mode | Behavior on Enter |
+|------|-------------------|
+| **terminal** | Send the line to the shell. |
+| **agent** | Send the line to the configured AI model as a prompt. |
+| **auto** | The NLD classifier (tier-1 heuristic + tier-2 embedder) decides per line — see [`docs/agent-architecture.md`](./agent-architecture.md). |
 
-Explores your codebase and answers questions without making any changes.
+In `auto` mode, lines that look like shell (`git status`, `ls -la`, `npm test`) go to the shell; natural-language prompts go to the agent. The classifier also biases toward the previous turn's mode for short follow-ups ("yes", "continue", "do it") so you don't have to repeat yourself.
 
-```
-:ask what does the auth middleware do?
-:ask where is the database connection configured?
-```
-
-- All read tools (file reads, directory listings, web fetches) are auto-approved.
-- Cannot write files, run shell commands, or modify anything.
-
-### :plan — Plan Creation
-
-Analyzes a task and produces a step-by-step plan file.
-
-```
-:plan add a dark mode toggle to the settings page
-:plan refactor the payment module to use the new API
-```
-
-- Read tools are auto-approved.
-- Plan file writes (to `.crest-plans/`) are auto-approved.
-- Cannot write project files or run shell commands.
-- When complete, an **Execute Plan** button appears (see Plan-to-Do Handoff below).
-
-### :do — Full Mutation
-
-Performs real changes: writes files, runs commands, creates blocks.
-
-```
-:do add input validation to the signup form
-:do fix the failing test in auth.test.ts
-```
-
-- Read tools are auto-approved.
-- File writes, edits, and shell commands require your approval.
-- MCP tools always require approval.
+The mode badge in the input area shows the current **effective** mode — the one that will fire if you press Enter right now.
 
 ---
 
 ## Inline Agent Blocks
 
-- Type `:` in the terminal input to activate agent mode. A mode badge (ask/plan/do) appears in the input area.
-- Press **Escape** to clear the agent input and return to normal terminal mode.
+- Slash commands (`/tree`, `/new`, `/model`, …) activate agent features regardless of input mode. The full list is below.
 - Agent responses render inline in the terminal block stream, not as a floating overlay or separate panel.
 
 ---
 
 ## Tools
 
-The agent has access to the following tools. Tools marked "auto" are approved automatically in the indicated modes. Tools marked "approval" require explicit confirmation before execution.
+The agent's tool surface is grouped by approval policy. **Auto** tools run without prompting; **Approval** tools pause for confirmation in a card before each invocation.
 
-### File & Directory
-
-| Tool | Description | Approval |
-|------|-------------|----------|
-| `read_text_file` | Read file contents | Auto (all modes) |
-| `read_dir` | List directory contents | Auto (all modes) |
-| `write_text_file` | Create or overwrite a file | Approval (:do only) |
-| `edit_text_file` | Search/replace edits in a file | Approval (:do only) |
-
-### Shell & System
-
-| Tool | Description | Approval |
-|------|-------------|----------|
-| `shell_exec` | Run a shell command in a visible terminal block | Approval |
-| `cmd_history` | View recent command history | Auto |
-| `get_scrollback` | Read terminal output from a block | Auto |
-| `web_fetch` | Fetch a URL and extract text content | Auto in :ask, Approval in :do |
-
-### Workspace
-
-| Tool | Description | Approval |
-|------|-------------|----------|
-| `write_plan` | Write a plan file (used in :plan mode) | Auto in :plan |
-| `create_block` | Create a new terminal or preview block | Approval |
-| `focus_block` | Bring focus to a specific block | Auto |
-| `spawn_task` | Delegate a sub-task to a child agent | Approval (:do only) |
-
-### Browser
-
-| Tool | Description | Approval |
-|------|-------------|----------|
-| `browser.navigate` | Navigate to a URL | Approval |
-| `browser.read_text` | Read text content from the page | Approval |
-| `browser.click` | Click an element on the page | Approval |
-| `browser.screenshot` | Capture a screenshot of the page | Approval |
+| Category | Tools | Approval |
+|----------|-------|----------|
+| File reading | `read_text_file`, `read_dir` | Auto |
+| Shell | `shell_exec` | **Approval** + dangerous-command detection |
+| Shell history | `cmd_history`, `get_scrollback` | Auto |
+| File mutation | `write_text_file`, `edit_text_file` | **Approval** (with diff preview — see below) |
+| Workspace | `create_block`, `focus_block` | Approval (`focus_block` is Auto) |
+| Web | `web_fetch` | Auto |
+| Browser | `browser.navigate`, `browser.read_text`, `browser.click`, `browser.screenshot` | **Approval** |
+| MCP | any `mcp__<server>__<tool>` | **Always Approval** |
 
 ---
 
-## Session Commands
+## Slash Commands
 
-All session commands are prefixed with `:`.
+All built-in commands start with `/` and fire in the current input bar. The list lives in [`frontend/app/term/render/agent-slash-command-routing.ts`](../frontend/app/term/render/agent-slash-command-routing.ts) and the LocalSlashCommands fallback in [`frontend/app/view/cmdblock/cmdblock-input.tsx`](../frontend/app/view/cmdblock/cmdblock-input.tsx).
 
-| Command | Description |
-|---------|-------------|
-| `:new` | Clear the conversation and start a fresh session. |
-| `:model <name>` | Switch to a different model. Resets the chat. |
-| `:rewind` | Restore files changed by the last agent turn to their previous state. |
-| `:worktree [name]` | Create a git worktree for sandboxed changes. |
-| `:worktree exit` | Remove the active worktree and return to the main tree. |
+| Command | Aliases | Action |
+|---------|---------|--------|
+| `/tree` | — | Open the agent tree view (session lineage). |
+| `/fork` | — | Fork the current session into a new branch. |
+| `/clone` | — | Clone the current agent session branch. |
+| `/model` | — | Open the model picker (shortcut for clicking the model chip). |
+| `/new` | `/clear` | Clear the conversation and start a fresh session. |
+| `/resume` | — | Resume an existing agent session for this workspace. |
+| `/compact` | — | Compact the current session context. |
+| `/session` | — | Show current agent session information. |
+| `/copy` | — | Copy the last assistant response. |
+| `/export` | — | Export the current session as JSONL `[path]`. |
+| `/import` | — | Import a JSONL session `<path>`. |
+| `/reload` | — | Reload agent command metadata. |
+
+Unknown commands (anything not in the table) pass through to the agent as a normal prompt — the agent decides what to do.
 
 ### Switching Models
 
 Use the **model chip** at the right end of the input bar (see "AI Provider Configuration" above). Open the picker, pick a model, the next message uses it. The choice persists on the current pane's outer block — different panes can run different models.
 
-The `:model` slash command from earlier crest versions is gone; the picker replaces it.
+`/model` is a shortcut for opening the picker; the legacy `<name>` argument form was removed when the picker replaced it.
 
 ---
 
@@ -256,59 +210,6 @@ When the agent writes or edits a file, the approval card includes a diff preview
 - Changed lines are shown with **3 lines of surrounding context** for orientation.
 - **New files** display a green "New file" indicator.
 - If a write produces no changes, a **"No changes"** label appears instead.
-
----
-
-## Plan-to-Do Handoff
-
-After `:plan` finishes and creates a plan file:
-
-1. An **Execute Plan** button appears below the agent response.
-2. Clicking it switches to `:do` mode and sends "go" to begin execution.
-3. The plan is already in the conversation history, so the agent has full context.
-
----
-
-## File Checkpointing and :rewind
-
-Every file write or edit the agent performs automatically creates a backup of the original content.
-
-```
-:rewind
-```
-
-- **Modified files** are restored to their pre-turn state.
-- **Newly created files** are deleted.
-- **Conversation history is not affected** — only files on disk change.
-- Only tracks changes made by the Write and Edit tools. Changes made by shell commands (e.g., `sed`, `mv`) are not tracked.
-
----
-
-## Git Worktree Sandboxing
-
-Worktrees let you isolate agent changes in a separate git branch without affecting your working tree.
-
-```
-:worktree                   # creates worktree with random name (e.g., "calm-brook")
-:worktree my-feature        # creates worktree with a specific name
-:worktree exit              # removes the active worktree
-```
-
-- Creates `.crest/worktrees/<name>/` with branch `worktree-<name>`.
-- All subsequent `:do` operations target the worktree directory.
-- Persists across turns — the worktree stays active until you exit it.
-- Add `.crest/worktrees/` to your `.gitignore`.
-
----
-
-## Sub-Agent Delegation
-
-The `spawn_task` tool (available in `:do` mode) delegates a scoped sub-task to a child agent.
-
-- The child agent runs with the same model and tools but in an **isolated conversation context**.
-- Each sub-task is limited to **15 steps**.
-- The child returns a completion summary when finished.
-- Requires approval before spawning.
 
 ---
 
@@ -328,15 +229,9 @@ shell_exec with background: true
 
 ## Dangerous Command Detection
 
-Certain destructive commands force an approval prompt regardless of context:
+`shell_exec` is always an Approval tool (see the Tools table above), but the frontend also flags high-risk commands with a `destructive` risk level (`frontend/app/term/render/agent-progress.ts`) so the approval card can warn the user before the command runs. Patterns flagged as destructive include `rm -rf`, `git push --force`, `git reset --hard`, `curl | sh`, `wget | sh`, `dd`, `mkfs`, `chmod 777`, and similar disk/git/permission operations.
 
-- `rm -rf`
-- `git push --force`, `git reset --hard`
-- `curl | sh`, `wget | sh`
-- `dd`, `mkfs`, `chmod 777`
-- And other patterns covering destructive disk, git, and permission operations.
-
-There are 12 regex patterns in total. These commands will never auto-approve.
+The exact pattern list lives in the approval pipeline and may grow; this doc captures the intent rather than a frozen list.
 
 ---
 

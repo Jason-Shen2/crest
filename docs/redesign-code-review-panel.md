@@ -19,9 +19,60 @@ Warp's interface treats each shell command as a **block** — a self-contained, 
 
 Apply this to the code review panel by converting the current flat row list into a **stack of file blocks**, elevating the branch summary into a dedicated header card, and reworking the diff viewport to mirror Warp's command-output frame.
 
+### 1.1 Current state (baseline)
+
+The panel in `main` today renders as a flat, row-per-file table with a left file list and a right detail column. Header chrome sits in a single 36 px bar; status uses a single uppercase letter; the diff viewport uses a heavier row tint and full-width background fill on add/remove rows. This is the baseline being replaced:
+
+
+### 1.2 Reference (target)
+
+The target aesthetic borrows the block-per-command feel from Warp's terminal UI: rounded cards with hairline borders, generous internal padding, status expressed as a 6 px colored dot rather than a letter, and a much quieter diff (left indicator bar + 6 % tint instead of full-row fill). File content, paths, and branch name in any implementation mock should be treated as illustrative, not literal:
+
+
 ---
 
 ## 2. Layout anatomy
+
+### 2.0 Current layout (as built on `main`)
+
+This is what `git-panel.tsx` actually renders today — useful for the PR description so reviewers can map code changes against the present structure, not just the future target. Three regions: header bar, optional FileSidebar + FileCard stack, CommentsPanel footer. FileCards are flat rows separated by a 1 px divider, not rounded cards.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ ~/Documents/crest : ⎇ main  +862 −102  7 files               │  <- Header bar (flex-wrap, border-b)
+│                                  [Uncommitted ▾] [≡][⟲][📎] [Commit] [⤢][✕]
+├──────────────────────────────────────────────────────────────┤
+│ ┌─────────────────┐ ┌──────────────────────────────────────┐ │
+│ │ git-panel.tsx   │ │ ▾ git-panel.tsx          Added  ⌥  │ │  <- Sidebar (default) + FileCard row
+│ │   +126 −101     │ │ ─────────────────────────────────────  │ │
+│ │ modalreg.tsx M  │ │  6  import { UpgradeOnboarding…  │ │     FileCard header: chevron (icon
+│ │    +2 −0        │ │ +11  import { CommandPalette…     │ │     swap, not rotate) + status text
+│ │ pkg/foo/bar.tsx │ │  12  import { UserInput…           │ │     ("Added"/"Deleted"/"Renamed"
+│ │    +19 −4  M    │ │                                      │ │     in colored text, 10px font-
+│ │                 │ │  13  import { ConfirmModal…         │ │     medium uppercase tracking)
+│ │ ...             │ │                                      │ │     + StatBadge pill +
+│ │                 │ │                                      │ │     [📎][💬][⟲][↗] hover-only
+│ └─────────────────┘ └──────────────────────────────────────┘ │
+│   ↑ sidebar width                                              │
+│   160–480 px,           ↑ FileCard stack:                      │
+│   resizable,           • `border-b border-fg-overlay-1` (flat) │
+│   middle-ellipsis      • diff body: `bg-black/30` + 2px left   │
+│   on long dirs            bar + 6% tint + line numbers +     │
+│                            Shiki-highlighted content         │
+├──────────────────────────────────────────────────────────────┤
+│ ▸ 0 comments                                       Show      │  <- CommentsPanel (hidden when empty)
+└──────────────────────────────────────────────────────────────┘
+```
+
+Structural details worth preserving in the rewrite:
+
+- **Sidebar is collapsible** via the `[≡]` button in the header — toggles `model.toggleFileSidebar()` and `fileSidebarCollapsedAtom`. Without this, switching files requires scrolling through the right-side stack.
+- **Action buttons in each FileCard are hover-only** (`paperclip`, `new-conversation`, `reverse-left`, `share-01`) at `git-panel.tsx:519-568` — known discoverability gap (see §4.7).
+- **Sidebar status indicator is a single uppercase letter** (`status.label[0]` at `git-panel.tsx:753`) — quietest visual element on the panel; easy to miss, easy to confuse (D = Deleted or just "data"?).
+- **`prettyCwd` collapses `$HOME` to `~`** in the header at `git-panel.tsx:176-185`; the spec's branch summary card loses this slot, so the helper should be hoisted (or inlined into the new card).
+- **Middle-ellipsis on sidebar paths** (`middleEllipsis` at `git-panel.tsx:167-172`) keeps the tail segment visible. Useful even after the sidebar goes away if file paths show in the new card.
+
+### 2.1 Target layout (Warp-inspired)
 
 ```
 ┌───────────────────────────────────────────────┐
@@ -319,16 +370,39 @@ None that affect `GitModel`. The model stays untouched. All changes are presenta
 
 ## 6. Acceptance checklist
 
-- [ ] No hardcoded hex colors remain in `git-panel.tsx` (the `#16161e` on line 184 is replaced).
-- [ ] File list renders as a gap-separated stack of rounded blocks, not a bordered row list.
-- [ ] Branch summary becomes a card with the `Uncommitted · +N · −N` pattern; no file-count icon.
-- [ ] Status letter is replaced by a 6px colored dot with a tooltip.
-- [ ] Diff rows use a 2px left indicator bar + 6% background tint (not 30%).
-- [ ] All mono numerics use `tabular-nums`.
-- [ ] Empty, loading, and error states follow the muted 18px-glyph pattern.
-- [ ] Chevron uses `rotate-90` transform with a 150 ms transition (not a swap between two icons).
-- [ ] Header icon buttons use the shared `IconButton` component with a hover background.
-- [ ] Expanded block gets a brighter border (`border-white/[0.14]`) so it reads as focused.
+Each item is checked against the **current state of `git-panel.tsx` on `main`** (post `feat(code-review): resizable panel, syntax-highlighted diffs, global actions`). "Where" points at the existing line range so a reviewer can sanity-check directly. Status values: ✅ done · ⚠️ partially done · ❌ not done.
+
+| # | Spec item | Status | Where in code today | Gap |
+| - | --------- | ------ | ------------------- | --- |
+| 1 | No hardcoded hex colors in `git-panel.tsx` (the old `#16161e` is gone) | ✅ | All colors via theme tokens (`bg-panel`, `border-fg-overlay-2`, `bg-emerald-400/[0.06]`, …) | None. |
+| 2 | File list renders as a `gap-2` stack of rounded blocks (`rounded-lg`, hairline border), not a bordered row list | ❌ | `FileCard` root at `git-panel.tsx:479-483` still uses `border-b border-fg-overlay-1` — flat rows with a 1px divider | Convert the row into a `<div className="mx-3 my-1 rounded-lg border border-white/[0.08] bg-white/[0.025] …">`; drop `border-b`. |
+| 3 | Branch summary becomes a card with the `Uncommitted · +N · −N` pattern; no file-count icon | ❌ | Header is a single `flex flex-wrap items-center gap-2 border-b border-fg-overlay-2 px-3 py-2` at `git-panel.tsx:898-922` | Extract into a `<div className="mx-3 mt-3 rounded-lg border border-white/[0.08] bg-white/[0.025] px-3 py-2.5">` per §4.2; remove the cwd-truncation block (`prettyCwd`) and the "N files" inline text. |
+| 4 | Status letter replaced by a 6 px colored dot with a tooltip (`StatusDot` in §4.4) | ❌ | Sidebar (`git-panel.tsx:746-755`) still renders a single uppercase letter (`status.label[0]`) in colored text; FileCard (`git-panel.tsx:499-503`) renders the full word ("Added"/"Deleted"/"Renamed") in colored text | Introduce `StatusDot` and use it in both locations; delete `statusLabel` once migrated. |
+| 5 | Diff rows use a 2 px left indicator bar + 6 % background tint (not 30 %) | ✅ | `DiffLineRow` at `git-panel.tsx:299-306` renders `<span className="absolute bottom-0 left-0 top-0 w-[2px] bg-emerald-400|bg-rose-400">` and the row itself uses `bg-emerald-400/[0.06]` / `bg-rose-400/[0.06]` | None — match spec exactly. |
+| 6 | All mono numerics use `tabular-nums` | ✅ | `StatBadge` (`git-panel.tsx:145`), `DiffLineRow` line-number columns (`git-panel.tsx:307, 310`), and the "N files" inline count (`git-panel.tsx:918`) all carry `tabular-nums` | None. |
+| 7 | Empty / loading / error states follow the muted ~18 px-glyph + one-line label pattern | ⚠️ | States are centered blocks at `git-panel.tsx:998-1022`; glyph sizes are 20–22 px (`alert-triangle size={20}`, `git-branch-02 size={22}`, `check-circle-broken size={20}`) — slightly heavier than the 18 px target | Drop glyphs to `size={18}` and use the same `text-secondary/70` muted palette. Loading state still shows "Loading…" text; spec wants 3 skeleton blocks. |
+| 8 | Chevron uses `rotate-90` transform with a 150 ms transition (no icon swap) | ❌ | `FileCard` swap at `git-panel.tsx:492-494` toggles between `chevron-down` and `chevron-right`; sidebar / comments footer do the same (`git-panel.tsx:785`) | Replace with a single `chevron-right` and add `transition-transform duration-150` + conditional `rotate-90` per §4.3. |
+| 9 | Header icon buttons use the shared `IconButton` component with a hover background | ⚠️ | The header does use a shared component, but it is the local `HeaderIconButton` (`git-panel.tsx:82-112`), not the §4.1 `IconButton`. `HeaderIconButton` is `h-7 w-7`; spec calls for `w-6 h-6` with `text-secondary/70 → hover:text-primary` and `hover:bg-white/[0.06]` | Rename / alias to the spec's `IconButton`, shrink to `w-6 h-6`, retune colors. |
+| 10 | Expanded block gets a brighter border (`border-white/[0.14]`) so it reads as focused | ❌ | `FileCard` has no outer border; expanded state is signaled only by the diff body `border-t border-fg-overlay-1` (`git-panel.tsx:587`) and a `bg-surface-1` selected-row tint | Wrap each FileCard in `rounded-lg border`; toggle to `border-white/[0.14]` when expanded (and `bg-white/[0.03]`). |
+
+### Out-of-spec items that have already landed (worth preserving in the redesign PR)
+
+These weren't in the original checklist but are visible today and worth preserving as we rewrite:
+
+- ✅ **Line numbers in diff viewport** — both old and new columns, derived from `@@` hunk headers via `numberDiffLines` (`git-panel.tsx:228-260`). The §4.6 phase-1 fallback ("drop both number columns") is no longer needed; keep the implementation.
+- ✅ **Stat-badge pill** — `StatBadge` is already wrapped in `border border-fg-overlay-2 bg-fg-overlay-1/70` (`git-panel.tsx:509-518`), giving the "rounded stat pill" look from §4.5 for free. Retain this when collapsing into the new block chrome.
+- ✅ **Middle-ellipsis on long sidebar directories** — `middleEllipsis` (`git-panel.tsx:167-172`) keeps the tail segment visible. Useful even after we drop the sidebar (file list will live inside each block); consider hoisting into a shared util.
+- ✅ **`prettyCwd` collapses `$HOME` to `~`** in the header (`git-panel.tsx:176-185`). The header is being replaced per item 3, but the helper is general-purpose — keep it for the branch summary card's "cwd pill" sub-label if we add one.
+- ✅ **Syntax-highlighted diff content** via Shiki (`codeToHtml` in `FileCard` effect at `git-panel.tsx:418-…`). The spec doesn't call this out either way; preserve it — it materially improves scannability.
+- ✅ **`bg-black/30` diff viewport surface** (`git-panel.tsx:587`) already matches the token map row in §3.
+
+### Open questions before code review
+
+These need a product call before item 2/3/10 land — flag in the PR description:
+
+1. **Status dot vs. status word**: spec says dot. Current FileCard shows the full word. Either we drop the word everywhere (the dot + tooltip carries the meaning) or we keep a subtle word in the expanded-block header and use the dot only in collapsed/overview rows. Recommendation: dot only, tooltip on hover, no word — matches Warp's quieter chrome.
+2. **Branch summary card placement**: spec puts it as the first block in the gutter. Current code has a wider header (cwd + branch + actions + Commit button) in a fixed bar. Move the Commit button into the new card? Or keep it pinned to the top bar with just diff-mode toggle? Recommendation: card carries branch + stats; Commit stays in the top bar with the magnify/close buttons.
+3. **Skeleton blocks for loading**: spec §4.8 wants 3 stacked skeleton blocks. Current code shows "Loading…" text. Worth doing while we're rewriting the block chrome — same effort, much nicer first paint.
 
 ---
 
