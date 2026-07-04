@@ -37,7 +37,7 @@ import { VtabDetailSidecar } from "./vtab-detail-sidecar";
 import { getSettingsKeyAtom } from "@/app/store/global";
 import { getLayoutModelForStaticTab } from "@/layout/index";
 import { blockViewToName } from "@/app/block/blockutil";
-import { getFileBackedBlockLabel } from "./vtab-file-label";
+import { getFileBackedBlockLabel, isTabAutoNamed } from "./vtab-file-label";
 export type { VTabItem } from "./vtab";
 
 interface VTabBarProps {
@@ -283,7 +283,7 @@ function VTabWrapper({
     // unknown.  The real cwd replaces whatever standin is showing the
     // moment OSC 7 lands.
     const rawName = tabData?.name ?? "";
-    const isAutoNamed = /^T\d+$/.test(rawName);
+    const isAutoNamed = isTabAutoNamed(tabData);
     const userTitle = isAutoNamed ? "" : rawName;
     const fileLabel = isAutoNamed ? getFileBackedBlockLabel(firstBlock?.meta) : null;
     // commandText — warp's "command / conversation" line.  For crest
@@ -797,8 +797,7 @@ function VPaneWrapper({
     // semantics since panes don't have an independent ordering or
     // identity beyond their block.
     const paneRenameRef = useRef<(() => void) | null>(null);
-    const rawTabName = tabData?.name ?? "";
-    const tabIsAutoNamed = /^T\d+$/.test(rawTabName);
+    const tabIsAutoNamed = isTabAutoNamed(tabData);
     const paneMenuParams = useMemo(
         () => ({
             id: tabId,

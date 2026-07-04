@@ -1,11 +1,11 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { setWaveWindowType } from "@/app/store/windowtype";
+import { WaveEnvContext } from "@/app/waveenv/waveenv";
+import { makeMockWaveEnv } from "@/preview/mock/mockwaveenv";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeMockWaveEnv } from "@/preview/mock/mockwaveenv";
-import { WaveEnvContext } from "@/app/waveenv/waveenv";
-import { setWaveWindowType } from "@/app/store/windowtype";
 import { VTab, VTabItem } from "./vtab";
 import { VTabBar } from "./vtabbar";
 
@@ -54,14 +54,14 @@ function renderVTabBar(tabs: Tab[], blocks: Block[]): string {
     );
 }
 
-function tab(oid: string, name: string, blockids: string[]): Tab {
+function tab(oid: string, name: string, blockids: string[], meta: MetaType = {}): Tab {
     return {
         otype: "tab",
         oid,
         version: 1,
         name,
         blockids,
-        meta: {},
+        meta,
     } as Tab;
 }
 
@@ -148,5 +148,24 @@ describe("VTabBar tab labels", () => {
         expect(markup).toContain("Pinned Editor");
         expect(markup).not.toContain("manual.ts");
         expect(markup).toContain("/repo");
+    });
+
+    it("preserves a manual tab name T1 when tab:autoname is false", () => {
+        const markup = renderVTabBar(
+            [
+                tab("manual-t1-tab", "T1", ["manual-t1-block"], {
+                    "tab:autoname": false,
+                } as MetaType),
+            ],
+            [
+                block("manual-t1-block", {
+                    view: "codeeditor",
+                    file: "/repo/src/not-the-tab-title.ts",
+                } as MetaType),
+            ]
+        );
+
+        expect(markup).toContain("T1");
+        expect(markup).not.toContain("not-the-tab-title.ts");
     });
 });
