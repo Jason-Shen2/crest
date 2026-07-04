@@ -36,6 +36,11 @@ const IconByCompactToolIcon: Record<CompactToolIcon, string> = {
     tool: "gear",
 };
 
+const CompactDetailMaxChars = 6_000;
+const CompactDetailMaxDepth = 5;
+const CompactDetailMaxEntries = 80;
+const CompactDetailTruncatedMessage = "\n\n[truncated]";
+
 function statusClasses(status: CompactToolItem["status"]): { icon: string; accent: string } {
     switch (status) {
         case "failed":
@@ -49,12 +54,60 @@ function statusClasses(status: CompactToolItem["status"]): { icon: string; accen
 
 function stringifyDetails(details: unknown): string {
     if (details == null) return "";
-    if (typeof details === "string") return details;
+    if (typeof details === "string") return truncateCompactDetailText(details);
     try {
-        return JSON.stringify(details, null, 2);
+        return truncateCompactDetailText(JSON.stringify(boundDetails(details), null, 2));
     } catch {
-        return String(details);
+        return truncateCompactDetailText(String(details));
     }
+}
+
+function truncateCompactDetailText(text: string): string {
+    if (text.length <= CompactDetailMaxChars) return text;
+    return `${text.slice(0, CompactDetailMaxChars)}${CompactDetailTruncatedMessage}`;
+}
+
+function hasRenderableDetail(result: CompactToolItem["result"]): boolean {
+    if (!result) return false;
+    if (result.details != null) return true;
+    return Boolean(result.content?.some((part) => textPartHasContent(part)));
+}
+
+function textPartHasContent(part: { type: string; text?: string; [field: string]: unknown }): boolean {
+    if (typeof part.text === "string" && part.text.length > 0) return true;
+    if (typeof part.content === "string" && part.content.length > 0) return true;
+    if (Array.isArray(part.content)) {
+        return part.content.some((child) => typeof child?.text === "string" && child.text.length > 0);
+    }
+    return false;
+}
+
+function boundDetails(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+    if (typeof value === "string") return truncateCompactDetailText(value);
+    if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+    if (typeof value === "bigint") return value.toString();
+    if (typeof value !== "object") return String(value);
+    if (seen.has(value)) return "[Circular]";
+    if (depth >= CompactDetailMaxDepth) return "[truncated]";
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+        const next = value.slice(0, CompactDetailMaxEntries).map((item) => boundDetails(item, depth + 1, seen));
+        if (value.length > CompactDetailMaxEntries) next.push(`[truncated ${value.length - CompactDetailMaxEntries} items]`);
+        return next;
+    }
+
+    const out: Record<string, unknown> = {};
+    const entries = Object.entries(value).slice(0, CompactDetailMaxEntries);
+    for (const [key, entryValue] of entries) {
+        if (typeof entryValue === "function") continue;
+        out[key] = boundDetails(entryValue, depth + 1, seen);
+    }
+    const extraCount = Object.keys(value).length - entries.length;
+    if (extraCount > 0) {
+        out.__truncated = `${extraCount} entries`;
+    }
+    return out;
 }
 
 function fileNameFromPath(path: string): string {
@@ -84,9 +137,15 @@ export const AgentCompactToolRow = memo(({ item, defaultExpanded = false }: Agen
     const status = statusClasses(item.status);
     const label = useMemo(() => compactToolLabel(item), [item]);
     const summary = useMemo(() => compactToolSummary(item), [item]);
-    const resultText = useMemo(() => renderCompactToolResultText(item.result), [item.result]);
-    const detailText = useMemo(() => stringifyDetails(item.result?.details), [item.result?.details]);
-    const hasDetail = Boolean(resultText || detailText);
+    const hasDetail = useMemo(() => hasRenderableDetail(item.result), [item.result]);
+    const resultText = useMemo(
+        () => (expanded ? truncateCompactDetailText(renderCompactToolResultText(item.result)) : ""),
+        [expanded, item.result]
+    );
+    const detailText = useMemo(
+        () => (expanded ? stringifyDetails(item.result?.details) : ""),
+        [expanded, item.result?.details]
+    );
 
     useEffect(() => {
         if (item.status !== "failed") return;

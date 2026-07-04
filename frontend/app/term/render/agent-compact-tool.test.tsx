@@ -91,6 +91,39 @@ describe("AgentCompactToolRow", () => {
         expect(html).toContain("src/app.ts");
     });
 
+    it("does not stringify collapsed structured details", () => {
+        const item = compactItem(compactCall({ id: "edit-1", name: "edit", input: { path: "src/app.ts" } }), {
+            content: [{ type: "text", text: "Updated src/app.ts" }],
+            details: {
+                toJSON() {
+                    throw new Error("collapsed details should not stringify");
+                },
+            },
+            isError: false,
+        });
+
+        const html = renderToStaticMarkup(<AgentCompactToolRow item={item} />);
+
+        expect(html).toContain('data-agent-compact-tool-row="edit-1"');
+        expect(html).toContain('aria-expanded="false"');
+        expect(html).not.toContain('data-agent-compact-tool-detail="edit-1"');
+    });
+
+    it("truncates expanded result and details text", () => {
+        const item = compactItem(compactCall({ id: "edit-1", name: "edit", input: { path: "src/app.ts" } }), {
+            content: [{ type: "text", text: `${"result ".repeat(1200)}RESULT_TAIL` }],
+            details: { log: `${"detail ".repeat(1200)}DETAIL_TAIL` },
+            isError: false,
+        });
+
+        const html = renderToStaticMarkup(<AgentCompactToolRow item={item} defaultExpanded />);
+
+        expect(html).toContain('data-agent-compact-tool-detail="edit-1"');
+        expect(html).toContain("truncated");
+        expect(html).not.toContain("RESULT_TAIL");
+        expect(html).not.toContain("DETAIL_TAIL");
+    });
+
     it("renders mutation summaries without displaying full write content", () => {
         const item = compactItem(
             compactCall({

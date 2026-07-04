@@ -99,6 +99,58 @@ describe("AgentBlockElement content rendering", () => {
         expect(html).not.toContain('data-tool-callid="tc1"');
     });
 
+    it("keeps change review reachable in compact tool presentation", () => {
+        const patch = `--- a/src/app.ts
++++ b/src/app.ts
+@@ -1 +1,2 @@
+ const keep = true;
++const added = true;
+`;
+        const html = renderToStaticMarkup(
+            <AgentBlockElement
+                run={makeRun(
+                    [],
+                    [
+                        {
+                            role: "assistant",
+                            content: [
+                                {
+                                    type: "toolCall",
+                                    id: "edit-1",
+                                    name: "edit_text_file",
+                                    input: { path: "src/app.ts" },
+                                },
+                            ],
+                        },
+                        {
+                            role: "toolResult",
+                            toolCallId: "edit-1",
+                            toolName: "edit_text_file",
+                            content: [{ type: "text", text: "patched" }],
+                            details: {
+                                changeOperation: {
+                                    id: "op-1",
+                                    toolCallId: "edit-1",
+                                    kind: "patch",
+                                    path: "src/app.ts",
+                                    patch,
+                                    patchStatus: "complete",
+                                },
+                            },
+                            isError: false,
+                        },
+                    ]
+                )}
+            />
+        );
+
+        expect(html).toContain('data-agent-compact-tool-list="true"');
+        expect(html).toContain('data-agent-compact-tool-row="edit-1"');
+        expect(html).toContain('data-agent-progress-view="true"');
+        expect(html).toContain('data-agent-progress-stage-toggle="modify-files"');
+        expect(html).toContain("Modify files");
+    });
+
     it("renders progress view instead of compact tool rows when requested", () => {
         const html = renderToStaticMarkup(
             <AgentBlockElement
