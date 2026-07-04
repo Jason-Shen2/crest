@@ -139,9 +139,9 @@ interface AssistantContentProps {
 const AssistantContent = memo(
     ({ run, responseMessages, streaming, fontSize, toolPresentation }: AssistantContentProps) => {
         const progress = useMemo(() => {
-            if (toolPresentation !== "progress") return null;
             return deriveAgentProgress(run);
-        }, [run, toolPresentation]);
+        }, [run]);
+        const showProgress = toolPresentation === "progress" || progress.changeReview != null;
 
         // Index toolResults by toolUseId for O(1) lookup. Pi places
         // tool results in dedicated messages (role: "toolResult"); each
@@ -253,7 +253,7 @@ const AssistantContent = memo(
 
         return (
             <div>
-                {progress && <AgentProgressView progress={progress} />}
+                {showProgress && <AgentProgressView progress={progress} />}
                 {rendered}
                 {streaming && rendered.length === 0 && (
                     <div className="text-secondary/70 text-[12px] italic">Thinking…</div>
