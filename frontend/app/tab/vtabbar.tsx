@@ -285,11 +285,12 @@ function VTabWrapper({
     const rawName = tabData?.name ?? "";
     const isAutoNamed = /^T\d+$/.test(rawName);
     const userTitle = isAutoNamed ? "" : rawName;
+    const fileLabel = isAutoNamed ? getFileBackedBlockLabel(firstBlock?.meta) : null;
     // commandText — warp's "command / conversation" line.  For crest
     // (no CLI-agent telemetry yet) we use the user-set tab title and
     // fall back to cwd / "~" / "Terminal" so the field is never blank.
-    const commandText = userTitle || cwdShort || (home ? "~" : "") || "Terminal";
-    const workingDirectoryText = cwdShort || userTitle || "Terminal";
+    const commandText = fileLabel?.basename || userTitle || cwdShort || (home ? "~" : "") || "Terminal";
+    const workingDirectoryText = fileLabel?.path || cwdShort || userTitle || "Terminal";
 
     // 3-column compositor — direct port of the table in
     // `render_terminal_row_content` (vertical_tabs.rs:3284-3288).
