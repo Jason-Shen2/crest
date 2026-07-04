@@ -16,6 +16,7 @@ import { makeORef } from "../store/wos";
 import { TabBadges } from "./tabbadges";
 import "./tab.scss";
 import { buildTabContextMenu } from "./tabcontextmenu";
+import { getFileBackedBlockLabel, isTabAutoNamed } from "./vtab-file-label";
 
 export type TabEnv = WaveEnvSubset<{
     rpc: {
@@ -237,6 +238,8 @@ const TabInner = forwardRef<HTMLDivElement, TabProps>((props, ref) => {
     const { id, active, showDivider, isDragging, tabWidth, isNew, onLoaded, onSelect, onClose, onDragStart } = props;
     const env = useWaveEnv<TabEnv>();
     const [tabData, _] = env.wos.useWaveObjectValue<Tab>(makeORef("tab", id));
+    const firstBlockId = tabData?.blockids?.[0];
+    const [firstBlock] = env.wos.useWaveObjectValue<Block>(firstBlockId ? makeORef("block", firstBlockId) : null);
     const badges = useAtomValue(getTabBadgeAtom(id, env));
 
     const rawFlagColor = tabData?.meta?.["tab:flagcolor"];
@@ -292,11 +295,14 @@ const TabInner = forwardRef<HTMLDivElement, TabProps>((props, ref) => {
         [id, env]
     );
 
+    const fileLabel = isTabAutoNamed(tabData) ? getFileBackedBlockLabel(firstBlock?.meta) : null;
+    const tabName = fileLabel?.basename ?? tabData?.name ?? "";
+
     return (
         <TabV
             ref={ref}
             tabId={id}
-            tabName={tabData?.name ?? ""}
+            tabName={tabName}
             active={active}
             showDivider={showDivider}
             isDragging={isDragging}
