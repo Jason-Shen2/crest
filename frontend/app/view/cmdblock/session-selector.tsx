@@ -103,6 +103,29 @@ export function getInitialAgentSelectorFocusEntryId(
     return entries.find((entry) => entry.isCurrent)?.id ?? entries[0]?.id;
 }
 
+export function isAgentSelectorGlobalNavigationKey(key: string): boolean {
+    return key === "ArrowDown" || key === "ArrowUp" || key === "Enter" || key === "Escape";
+}
+
+function basenameOfPath(input: string): string {
+    const normalized = input.replace(/[\\/]+$/, "");
+    const parts = normalized.split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] || normalized || "session";
+}
+
+function formatSessionTimestamp(iso: string): string {
+    if (!iso) return "unknown time";
+    return iso.slice(0, 16).replace("T", " ");
+}
+
+export function getResumeSessionDisplayText(session: AgentSessionDetail): string {
+    const name = session.name?.trim();
+    if (name) return name;
+    if (session.firstMessage) return session.firstMessage;
+    if (session.previewText) return session.previewText;
+    return `${basenameOfPath(session.cwd)} · ${formatSessionTimestamp(session.createdAt)}`;
+}
+
 function successMessage(type: AgentSelectorRequestType): string {
     if (type === "tree") return "Navigated agent session tree.";
     if (type === "resume") return "Resumed session.";
@@ -143,7 +166,7 @@ async function loadSelectorEntries(request: AgentSelectorRequest, scopeCwd?: str
         return sessions.map((session, index) => {
             const parentPath = session.parentSessionPath;
             const parentExists = parentPath ? sessionsByPath.has(parentPath) : false;
-            const displayText = session.name?.trim() || session.firstMessage || session.path.split(/[\\/]/).pop() || "session";
+            const displayText = getResumeSessionDisplayText(session);
             return {
                 id: session.path || session.id || String(index),
                 parentId: parentExists ? parentPath : undefined,
@@ -924,6 +947,50 @@ export const AgentSelectorPanel = memo(
             [visibleCount, visibleIds, activeIdx, state.entries, busyEntryId, onPick, query]
         );
 
+        const handleGlobalKeyDown = useCallback(
+            (e: KeyboardEvent) => {
+                const activeElement = document.activeElement;
+                const focusInsidePanel =
+                    activeElement instanceof Node &&
+                    ((panelRef?.current?.contains(activeElement) ?? false) ||
+                        activeElement === searchInputRef?.current ||
+                        activeElement === listRef.current);
+                if (focusInsidePanel) return;
+
+                if (isAgentSelectorGlobalNavigationKey(e.key)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.key === "ArrowDown") {
+                        if (visibleCount > 0) setActiveIdx((prev) => (prev + 1) % visibleCount);
+                        return;
+                    }
+                    if (e.key === "ArrowUp") {
+                        if (visibleCount > 0) setActiveIdx((prev) => (prev - 1 + visibleCount) % visibleCount);
+                        return;
+                    }
+                    if (e.key === "Enter") {
+                        if (visibleCount > 0 && busyEntryId == null) commitIndex(activeIdx);
+                        return;
+                    }
+                    onCancel();
+                    return;
+                }
+
+                if (e.key === "/" && (isTree || isResume) && searchInputRef?.current) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    searchInputRef.current.focus();
+                    searchInputRef.current.select();
+                }
+            },
+            [activeIdx, busyEntryId, commitIndex, isResume, isTree, onCancel, panelRef, searchInputRef, setActiveIdx, visibleCount]
+        );
+
+        useEffect(() => {
+            window.addEventListener("keydown", handleGlobalKeyDown, true);
+            return () => window.removeEventListener("keydown", handleGlobalKeyDown, true);
+        }, [handleGlobalKeyDown]);
+
         const handleRowClick = useCallback(
             (entryId: string) => {
                 if (busyEntryId != null) return;
@@ -1354,7 +1421,7 @@ const ResumeRow = memo(function ResumeRow({ entry, idx, isActive, isBusy, onHove
     const hasName = !!entry.label;
     const msgCount = detail?.messageCount ?? 0;
     const age = formatRelativeTime(entry.timestamp || new Date(0).toISOString());
-    const displayText = hasName ? entry.label! : (detail?.firstMessage || entry.preview || "");
+    const displayText = hasName ? entry.label! : (entry.preview || "");
     const secondaryText = detail?.cwd || "";
 
     return (
@@ -1365,7 +1432,7 @@ const ResumeRow = memo(function ResumeRow({ entry, idx, isActive, isBusy, onHove
             data-agent-selector-active={isActive ? "true" : undefined}
             aria-disabled={isBusy || undefined}
             className={cn(
-                "resume-row group flex cursor-pointer select-none items-center px-3",
+                "resume-row resume-row-grid group cursor-pointer select-none px-3",
                 isActive && "resume-row-active",
                 isBusy && "pointer-events-none opacity-60"
             )}
@@ -1764,6 +1831,12 @@ const TreeListStyles = `
     gap: 8px;
     color: rgba(226, 232, 240, 0.70);
     transition: background-color 80ms ease, color 80ms ease;
+}
+.resume-row-grid {
+    display: grid;
+    grid-template-columns: 12px 14px minmax(0, 1fr) max-content;
+    align-items: center;
+    column-gap: 8px;
 }
 .resume-row:hover {
     background: rgba(255, 255, 255, 0.04);

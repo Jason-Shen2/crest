@@ -13,6 +13,8 @@ import {
     editorTextFromAgentSelectorResult,
     getAgentSelectorTitle,
     getInitialAgentSelectorFocusEntryId,
+    getResumeSessionDisplayText,
+    isAgentSelectorGlobalNavigationKey,
     shouldAllowAgentSelectorCancel,
     type AgentSelectorViewState,
 } from "./session-selector";
@@ -269,6 +271,66 @@ describe("agent selector popover", () => {
         // The active scope gets the accent text color; switching scope moves it.
         expect(cwdScoped.indexOf("text-cyan-300/90")).toBeLessThan(cwdScoped.indexOf("All"));
         expect(allScoped.indexOf("text-cyan-300/90")).toBeGreaterThan(allScoped.indexOf("Current Folder"));
+    });
+
+    it("does not use sqlite database filenames as resume row fallback text", () => {
+        expect(
+            getResumeSessionDisplayText({
+                id: "s1",
+                path: "/tmp/sessions/2026-07-04T09-22-51Z_s1.db",
+                cwd: "/Users/bytedance/Documents/crest",
+                createdAt: "2026-07-04T09:22:51.000Z",
+                modifiedAt: "2026-07-04T09:23:51.000Z",
+                messageCount: 0,
+                firstMessage: "",
+                previewText: "",
+            })
+        ).toBe("crest · 2026-07-04 09:22");
+    });
+
+    it("recognizes selector navigation keys even when focus is outside the panel", () => {
+        expect(isAgentSelectorGlobalNavigationKey("ArrowDown")).toBe(true);
+        expect(isAgentSelectorGlobalNavigationKey("ArrowUp")).toBe(true);
+        expect(isAgentSelectorGlobalNavigationKey("Enter")).toBe(true);
+        expect(isAgentSelectorGlobalNavigationKey("Escape")).toBe(true);
+        expect(isAgentSelectorGlobalNavigationKey("a")).toBe(false);
+    });
+
+    it("renders resume rows with a fixed grid so active rows align", () => {
+        const state: AgentSelectorViewState = {
+            status: "ready",
+            entries: [
+                {
+                    id: "s1",
+                    preview: "first session",
+                    role: "session",
+                    timestamp: "2026-07-04T09:23:51.000Z",
+                    sessionDetail: {
+                        id: "s1",
+                        path: "/tmp/sessions/s1.db",
+                        cwd: "/repo",
+                        createdAt: "2026-07-04T09:22:51.000Z",
+                        modifiedAt: "2026-07-04T09:23:51.000Z",
+                        messageCount: 1,
+                        firstMessage: "first session",
+                        previewText: "first session",
+                    },
+                },
+            ],
+        };
+
+        const html = renderToStaticMarkup(
+            <AgentSelectorPanel
+                requestType="resume"
+                state={state}
+                busyEntryId={null}
+                onPick={() => undefined}
+                onCancel={() => undefined}
+            />
+        );
+
+        expect(html).toContain("resume-row-grid");
+        expect(html).toContain("resume-row-active");
     });
 
     it("omits the scope toggle for non-resume selectors", () => {
