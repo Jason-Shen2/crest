@@ -31,7 +31,7 @@ import {
     type AgentSelectorRequest,
 } from "./agent-chat-host";
 import { AgentCommandResultList } from "./agent-command-result";
-import { AgentSelectorPopover } from "./agent-selector-popover";
+import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
@@ -887,7 +887,7 @@ export const TerminalView = memo(
                     )}
                     {!inAltScreen && (
                         <div ref={agentSelectorAnchorRef}>
-                            <AgentSelectorPopover
+                            <SessionSelector
                                 anchorRef={agentSelectorAnchorRef}
                                 request={agentSelectorRequest}
                                 onClose={() => setAgentSelectorRequest(null)}
@@ -900,8 +900,6 @@ export const TerminalView = memo(
                                 // Branch prefers the precmd value (instant) and falls back
                                 // to the chip-model fetch (covers shells with no precmd).
                                 branch={liveBlock?.gitBranch || chipValues.gitBranch}
-                                venv={liveBlock?.virtualEnv}
-                                nodeVersion={liveBlock?.nodeVersion}
                                 // Diff stats: precmd if shell sent it, else chip-model.
                                 gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
                                 gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}

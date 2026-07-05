@@ -107,7 +107,8 @@ export type AgentSelectorRequest =
       }
     | {
           type: "resume";
-          listSessions: () => Promise<AgentSessionMeta[]>;
+          cwd: string;
+          listSessions: (cwd?: string) => Promise<AgentSessionDetail[]>;
           resumeSession: (sessionMetadata: AgentSessionMeta) => Promise<AgentNavigateTreeResult>;
       };
 
@@ -164,8 +165,12 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
     const listForkPoints = async (): Promise<AgentForkPointView[]> => {
         return await requireRuntimeApi().listForkPoints(requireSessionMetadata());
     };
-    const listSessions = async (): Promise<AgentSessionMeta[]> => {
-        return await requireRuntimeApi().listSessionsForCwd(deps.getPaneCwd());
+    const listSessions = async (cwd?: string): Promise<AgentSessionDetail[]> => {
+        const runtimeApi = requireRuntimeApi();
+        if (cwd) {
+            return await runtimeApi.listSessionDetailsForCwd(cwd);
+        }
+        return await runtimeApi.listAllSessionDetails();
     };
     const navigateTree = async (targetId: string): Promise<AgentNavigateTreeResult> => {
         return await requireRuntimeApi().navigateTree({
@@ -247,7 +252,7 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
                 return true;
             }
             if (route.command === "resume") {
-                deps.onSelectorRequest?.({ type: "resume", listSessions, resumeSession });
+                deps.onSelectorRequest?.({ type: "resume", cwd: deps.getPaneCwd(), listSessions, resumeSession });
                 return true;
             }
             if (isImmediateCommand(route.command)) {
@@ -405,6 +410,8 @@ export function AgentChatHost({
 
 interface AgentRuntimeApi {
     listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
+    listSessionDetailsForCwd: (cwd: string, limit?: number) => Promise<AgentSessionDetail[]>;
+    listAllSessionDetails: (limit?: number) => Promise<AgentSessionDetail[]>;
     listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>;
     listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>;
     navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>;

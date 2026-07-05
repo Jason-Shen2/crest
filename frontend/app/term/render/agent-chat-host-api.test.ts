@@ -34,6 +34,13 @@ describe("createAgentChatHostApi", () => {
 
     it("routes resume slash commands to selector requests without sending prompts", async () => {
         const session = makeSession();
+        const detail = {
+            ...session,
+            modifiedAt: "later",
+            messageCount: 2,
+            firstMessage: "debug sqlite resume",
+            previewText: "debug sqlite resume assistant reply",
+        };
         const sendPrompt = vi.fn(() => true);
         const onSelectorRequest = vi.fn();
         const onSessionMinted = vi.fn();
@@ -45,6 +52,8 @@ describe("createAgentChatHostApi", () => {
             cloneSession: vi.fn(),
             runCommand: vi.fn(),
             listSessionsForCwd: vi.fn(async () => [session]),
+            listSessionDetailsForCwd: vi.fn(async () => [detail]),
+            listAllSessionDetails: vi.fn(),
         };
         const api = createAgentChatHostApi({
             sendPrompt,
@@ -63,9 +72,10 @@ describe("createAgentChatHostApi", () => {
         expect(sendPrompt).not.toHaveBeenCalled();
         expect(onSelectorRequest).toHaveBeenCalledWith(expect.objectContaining({ type: "resume" }));
         const request = onSelectorRequest.mock.calls[0][0];
-        await expect(request.listSessions()).resolves.toEqual([session]);
-        await expect(request.resumeSession(session)).resolves.toEqual({ sessionMetadata: session });
-        expect(onSessionMinted).toHaveBeenCalledWith(session);
+        await expect(request.listSessions("/repo")).resolves.toEqual([detail]);
+        expect(runtimeApi.listSessionDetailsForCwd).toHaveBeenCalledWith("/repo");
+        await expect(request.resumeSession(detail)).resolves.toEqual({ sessionMetadata: detail });
+        expect(onSessionMinted).toHaveBeenCalledWith(detail);
     });
 
     it("exposes session tree helpers for selector UI consumption", async () => {
@@ -80,6 +90,8 @@ describe("createAgentChatHostApi", () => {
             cloneSession: vi.fn(async () => ({ sessionMetadata: { ...session, path: "/tmp/clone.jsonl" } })),
             runCommand: vi.fn(),
             listSessionsForCwd: vi.fn(),
+            listSessionDetailsForCwd: vi.fn(),
+            listAllSessionDetails: vi.fn(),
         };
         const onSessionMinted = vi.fn();
         const api = createAgentChatHostApi({
@@ -124,6 +136,8 @@ describe("createAgentChatHostApi", () => {
             cloneSession: vi.fn(async () => ({ sessionMetadata: { ...session, path: "/tmp/clone.jsonl" } })),
             runCommand: vi.fn(),
             listSessionsForCwd: vi.fn(),
+            listSessionDetailsForCwd: vi.fn(),
+            listAllSessionDetails: vi.fn(),
         };
         const api = createAgentChatHostApi({
             sendPrompt,
@@ -157,6 +171,8 @@ describe("createAgentChatHostApi", () => {
             cloneSession: vi.fn(async () => ({ message: "No session branch to clone yet." })),
             runCommand: vi.fn(),
             listSessionsForCwd: vi.fn(),
+            listSessionDetailsForCwd: vi.fn(),
+            listAllSessionDetails: vi.fn(),
         };
         const api = createAgentChatHostApi({
             sendPrompt,
@@ -186,7 +202,7 @@ describe("createAgentChatHostApi", () => {
         "/reload",
     ])("routes %s to inline command results without sending prompts or toast notifications", async (commandText) => {
         const sendPrompt = vi.fn(() => true);
-        const runCommand = vi.fn(async () => ({ status: "success", message: "ok" }));
+        const runCommand = vi.fn(async () => ({ status: "success" as const, message: "ok" }));
         const onUserError = vi.fn();
         const onCommandResult = vi.fn();
         const api = createAgentChatHostApi({
@@ -218,7 +234,7 @@ describe("createAgentChatHostApi", () => {
     it("switches to a new session after /new", async () => {
         const onSessionMinted = vi.fn();
         const runCommand = vi.fn(async () => ({
-            status: "success",
+            status: "success" as const,
             message: "Created a new agent session.",
             sessionMetadata: { id: "s2", createdAt: "later", cwd: "/tmp", path: "/tmp/session.jsonl" },
         }));

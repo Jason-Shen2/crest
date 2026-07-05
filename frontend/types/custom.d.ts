@@ -167,6 +167,8 @@ declare global {
         agent: {
             createSession: (cwd: string) => Promise<AgentSessionMeta>;
             listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
+            listSessionDetailsForCwd: (cwd: string, limit?: number) => Promise<AgentSessionDetail[]>;
+            listAllSessionDetails: (limit?: number) => Promise<AgentSessionDetail[]>;
             listCommands: () => Promise<AgentCommandInfo[]>; // agent:list-commands
             listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>; // agent:list-tree
             listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>; // agent:list-fork-points
@@ -290,6 +292,15 @@ declare global {
         entryId: string;
         preview: string;
         timestamp?: string;
+    };
+
+    type AgentSessionDetail = AgentSessionMeta & {
+        parentSessionPath?: string;
+        modifiedAt: string;
+        name?: string;
+        messageCount: number;
+        firstMessage: string;
+        previewText: string;
     };
 
     type AgentTreeResult = {
