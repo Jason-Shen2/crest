@@ -62,12 +62,27 @@ export function ensureMonacoVscodeServices(): Promise<void> {
     return monacoVscodeServicesPromise;
 }
 
+function hasBrowserViewportDimensions() {
+    if (window.innerWidth > 0 && window.innerHeight > 0) {
+        return true;
+    }
+    if (document.body?.clientWidth > 0 && document.body.clientHeight > 0) {
+        return true;
+    }
+    return document.documentElement?.clientWidth > 0 && document.documentElement.clientHeight > 0;
+}
+
 export function loadMonaco() {
     if (monacoConfigured) {
+        if (hasBrowserViewportDimensions()) {
+            void ensureMonacoVscodeServices();
+        }
         return;
     }
     monacoConfigured = true;
-    void ensureMonacoVscodeServices();
+    if (hasBrowserViewportDimensions()) {
+        void ensureMonacoVscodeServices();
+    }
     monaco.editor.defineTheme("wave-theme-dark", {
         base: "vs-dark",
         inherit: true,
