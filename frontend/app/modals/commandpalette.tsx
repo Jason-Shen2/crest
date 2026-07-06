@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { focusedBlockCwdAtom, getCachedHome } from "@/app/fileexplorer/file-explorer-atoms";
+import { getCachedHome, workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { atoms, createBlock, createTab, globalStore, replaceBlock } from "@/app/store/global";
 import { modalsModel } from "@/app/store/modalmodel";
 import {
@@ -337,7 +337,7 @@ const CommandPaletteModal = () => {
     // in sync and any user-added termthemes show up without a reload.
     const fullConfig = useAtomValue(atoms.fullConfigAtom);
     const allCommands = useMemo(() => [...buildCommandList(), ...buildThemeCommands()], [fullConfig]);
-    const { cwd } = useAtomValue(focusedBlockCwdAtom);
+    const cwd = useAtomValue(workspaceDirAtom);
 
     const isCommandMode = query.startsWith(">");
     const cmdQuery = isCommandMode ? query.slice(1).trimStart() : "";
