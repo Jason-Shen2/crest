@@ -36,7 +36,7 @@ const previewElectronApi: ElectronApi = {
     setWebviewFocus: (_focusedId: number) => {},
     registerGlobalWebviewKeys: (_keys: string[]) => {},
     onControlShiftStateUpdate: (_callback: (state: boolean) => void) => {},
-    createWorkspace: () => {},
+    createWorkspace: (_dir: string) => {},
     selectDirectory: () => Promise.resolve(null),
     switchWorkspace: (_workspaceId: string) => {},
     deleteWorkspace: (_workspaceId: string) => {},
