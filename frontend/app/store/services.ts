@@ -179,7 +179,7 @@ export class WorkspaceServiceType {
     }
 
     // @returns workspaceId
-    CreateWorkspace(name: string, icon: string, color: string, applyDefaults: boolean): Promise<string> {
+    CreateWorkspace(name: string, icon: string, color: string, applyDefaults: boolean, dir: string): Promise<string> {
         return callBackendService(this?.waveEnv, "workspace", "CreateWorkspace", Array.from(arguments))
     }
 
