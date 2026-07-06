@@ -1,4 +1,4 @@
-import { UserConfig, defineConfig, mergeConfig } from "vitest/config";
+import { UserConfig, configDefaults, defineConfig, mergeConfig } from "vitest/config";
 import electronViteConfig from "./electron.vite.config";
 
 export default mergeConfig(
@@ -6,6 +6,7 @@ export default mergeConfig(
     defineConfig({
         test: {
             reporters: ["verbose", "junit"],
+            exclude: [...configDefaults.exclude, ".worktrees/**"],
             outputFile: {
                 junit: "test-results.xml",
             },
