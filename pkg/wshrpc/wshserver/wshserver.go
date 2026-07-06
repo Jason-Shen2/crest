@@ -969,6 +969,14 @@ func (ws *WshServer) WorkspaceListCommand(ctx context.Context) ([]wshrpc.Workspa
 	return rtn, nil
 }
 
+func (ws *WshServer) CreateWorkspaceCommand(ctx context.Context, data wshrpc.CreateWorkspaceData) (string, error) {
+	newWS, err := wcore.CreateWorkspace(ctx, data.Name, "", "", true, false, data.Dir)
+	if err != nil {
+		return "", fmt.Errorf("error creating workspace: %w", err)
+	}
+	return newWS.OID, nil
+}
+
 func (ws *WshServer) ListAllAppsCommand(ctx context.Context) ([]wshrpc.AppInfo, error) {
 	return waveappstore.ListAllApps()
 }

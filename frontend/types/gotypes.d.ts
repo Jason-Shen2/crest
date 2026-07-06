@@ -1016,6 +1016,12 @@ declare global {
         count: number;
     };
 
+    // wshrpc.CreateWorkspaceData
+    type CreateWorkspaceData = {
+        name?: string;
+        dir?: string;
+    };
+
     // wshrpc.DirEntryOut
     type DirEntryOut = {
         name: string;
