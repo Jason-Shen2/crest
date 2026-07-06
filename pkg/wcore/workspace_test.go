@@ -187,6 +187,35 @@ func TestCreateWorkspaceExplicitNameOverridesBasename(t *testing.T) {
 	}
 }
 
+func TestDiscardDirlessWorkspaces(t *testing.T) {
+	ctx := setupWorkspaceTestWStore(t)
+	withDir, err := CreateWorkspace(ctx, "", "", "", true, false, "/tmp/proj")
+	if err != nil {
+		t.Fatalf("create with dir: %v", err)
+	}
+	dirless, err := CreateWorkspace(ctx, "", "", "", true, false, "")
+	if err != nil {
+		t.Fatalf("create dirless: %v", err)
+	}
+	if err := DiscardDirlessWorkspaces(ctx); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	list, err := ListWorkspaces(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, w := range list {
+		ids[w.WorkspaceId] = true
+	}
+	if !ids[withDir.OID] {
+		t.Fatalf("dir-backed workspace was wrongly discarded")
+	}
+	if ids[dirless.OID] {
+		t.Fatalf("dirless workspace was not discarded")
+	}
+}
+
 func setupWorkspaceTestWStore(t *testing.T) context.Context {
 	t.Helper()
 	wavebase.DataHome_VarCache = t.TempDir()

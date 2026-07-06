@@ -203,6 +203,29 @@ func DeleteWorkspace(ctx context.Context, workspaceId string, force bool) (bool,
 	return true, "", nil
 }
 
+// DiscardDirlessWorkspaces removes any workspace that has no workspace:dir
+// meta. Space = Project requires every Space to be bound to a directory; this
+// clears dev-era data from before that model. No backward compatibility.
+func DiscardDirlessWorkspaces(ctx context.Context) error {
+	list, err := ListWorkspaces(ctx)
+	if err != nil {
+		return fmt.Errorf("error listing workspaces: %w", err)
+	}
+	for _, entry := range list {
+		wsId := entry.WorkspaceId
+		ws, err := GetWorkspace(ctx, wsId)
+		if err != nil {
+			continue
+		}
+		if ws.Meta.GetString(waveobj.MetaKey_WorkspaceDir, "") == "" {
+			if _, _, err := DeleteWorkspace(ctx, wsId, true); err != nil {
+				log.Printf("error discarding dirless workspace %s: %v", wsId, err)
+			}
+		}
+	}
+	return nil
+}
+
 func GetWorkspace(ctx context.Context, wsID string) (*waveobj.Workspace, error) {
 	return wstore.DBMustGet[*waveobj.Workspace](ctx, wsID)
 }
