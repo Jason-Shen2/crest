@@ -59,6 +59,9 @@ vi.mock("@/store/global", async () => {
             workspace: mockLayout.workspaceAtom,
             isFullScreen: mockLayout.isFullScreenAtom,
         },
+        getApi: () => ({
+            getHomeDir: () => "/repo",
+        }),
         getSettingsKeyAtom: () => mockLayout.tabBarSettingAtom,
     };
 });
@@ -149,6 +152,10 @@ vi.mock("@/app/notifications/notifications-model", () => ({
 
 vi.mock("@/app/notifications/notifications-panel", () => ({
     NotificationsPanel: () => <div>Notifications Panel</div>,
+}));
+
+vi.mock("@/app/statusbar/status-bar", () => ({
+    StatusBar: () => <footer>Status Bar</footer>,
 }));
 
 vi.mock("@/app/github/github-model", () => ({

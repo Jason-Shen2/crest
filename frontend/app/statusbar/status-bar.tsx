@@ -17,15 +17,16 @@
 // terminal-only behavior.
 
 import { CwdBreadcrumb } from "@/app/statusbar/cwd-breadcrumb";
-import { atoms, getApi } from "@/app/store/global";
+import { atoms, createBlock, getApi, getFocusedBlockId } from "@/app/store/global";
 import * as WOS from "@/app/store/wos";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { getLayoutModelForStaticTab } from "@/layout/index";
 import type { LayoutNode } from "@/layout/lib/types";
-import { fireAndForget, NullAtom } from "@/util/util";
+import { fireAndForget, NullAtom, stringToBase64 } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { useCallback, useMemo } from "react";
+import { quote as shellQuote } from "shell-quote";
 import "./status-bar.scss";
 
 export function StatusBar() {
@@ -53,25 +54,37 @@ export function StatusBar() {
     const filePath = (block?.meta?.["file:path"] as string) || "";
     const cwd = (block?.meta?.["cmd:cwd"] as string) || "";
 
-    // onCd — wire to a terminal-cd only when the focused block is a
-    // term/termblocks.  File preview + other views: no-op.
-    const isTermFocused = (block?.meta?.view === "term" || block?.meta?.view === "termblocks") && !!focusedBlockId;
-    const onCd = useCallback(
-        (target: string) => {
-            if (!isTermFocused || !focusedBlockId) return;
+    // onCd — direct port of FileExplorerModel.cdToDir
+    // (frontend/app/fileexplorer/file-explorer-model.ts:374):
+    //   1. If a block is focused, inject `cd <quoted>\n` into it via
+    //      ControllerInputCommand.
+    //   2. Otherwise, open a new term block rooted at the target dir.
+    // No view-type gate — file-explorer doesn't gate, and any focused
+    // block here is user-chosen.
+    const onCd = useCallback((target: string) => {
+        const blockId = getFocusedBlockId();
+        if (blockId) {
+            const cmd = `cd ${shellQuote([target])}\n`;
             fireAndForget(async () => {
                 try {
                     await RpcApi.ControllerInputCommand(TabRpcClient, {
-                        blockid: focusedBlockId,
-                        inputdata64: Buffer.from(`cd ${target}\n`, "utf8").toString("base64"),
+                        blockid: blockId,
+                        inputdata64: stringToBase64(cmd),
                     });
                 } catch (e) {
                     console.log("statusbar cd failed", e);
                 }
             });
-        },
-        [isTermFocused, focusedBlockId]
-    );
+        } else {
+            fireAndForget(async () => {
+                try {
+                    await createBlock({ meta: { controller: "shell", view: "term", "cmd:cwd": target } });
+                } catch (e) {
+                    console.log("statusbar createBlock failed", e);
+                }
+            });
+        }
+    }, []);
 
     return (
         <footer className="statusbar-root" aria-label="Workspace status">
