@@ -1223,6 +1223,7 @@ declare global {
     type GitDiffFileData = {
         cwd: string;
         path: string;
+        originalpath: string;
         staged: boolean;
     };
 
