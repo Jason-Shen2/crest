@@ -7,7 +7,7 @@ const mockOpenGitDiffTab = vi.hoisted(() => vi.fn());
 vi.mock("@/app/fileexplorer/file-explorer-atoms", async () => {
     const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
     return {
-        focusedCwdAtom: jotaiActual.atom(""),
+        workspaceDirAtom: jotaiActual.atom(""),
     };
 });
 
