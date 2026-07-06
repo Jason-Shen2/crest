@@ -195,7 +195,37 @@ describe("PaneAgentSession — command operations", () => {
         expect(fake.session.getLabel).toHaveBeenCalledWith("1");
     });
 
-    it("hides all internal custom entries and reparents through chains of hidden nodes", async () => {
+    it("hides structural entries and reparents through chains of hidden nodes", async () => {
+        const fake = makeFakeHarness();
+        const leafEntry = {
+            type: "leaf" as const,
+            id: "leaf-1",
+            parentId: null,
+            timestamp: "t0",
+            targetId: "m2",
+        };
+        const labelEntry = {
+            type: "label" as const,
+            id: "label-1",
+            parentId: "leaf-1",
+            timestamp: "t0b",
+            targetId: "m1",
+            label: "Start",
+        };
+        const userMsg = { type: "message" as const, id: "m1", parentId: "label-1", timestamp: "t1", message: user("hi") };
+        const asstMsg = { type: "message" as const, id: "m2", parentId: "m1", timestamp: "t2", message: assistant("hi") };
+        fake.session.getEntries.mockResolvedValue([leafEntry, labelEntry, userMsg, asstMsg]);
+        fake.session.getLeafId.mockResolvedValue("m2");
+
+        const owner = new PaneAgentSession("/s", fake.pane);
+        const result = await owner.listTreeEntries();
+
+        expect(result.entries).toHaveLength(2);
+        expect(result.entries[0]).toEqual(expect.objectContaining({ id: "m1", parentId: null }));
+        expect(result.entries[1]).toEqual(expect.objectContaining({ id: "m2", parentId: "m1" }));
+    });
+
+    it("passes custom entries through for renderer filter modes", async () => {
         const fake = makeFakeHarness();
         const runEntry = {
             type: "custom" as const,
@@ -205,25 +235,14 @@ describe("PaneAgentSession — command operations", () => {
             customType: "agent_run",
             data: { runId: "stale" },
         };
-        const otherCustom = {
-            type: "custom" as const,
-            id: "cust-1",
-            parentId: "run-1",
-            timestamp: "t0b",
-            customType: "internal_meta",
-            data: {},
-        };
-        const userMsg = { type: "message" as const, id: "m1", parentId: "cust-1", timestamp: "t1", message: user("hi") };
-        const asstMsg = { type: "message" as const, id: "m2", parentId: "m1", timestamp: "t2", message: assistant("hi") };
-        fake.session.getEntries.mockResolvedValue([runEntry, otherCustom, userMsg, asstMsg]);
-        fake.session.getLeafId.mockResolvedValue("m2");
+        const userMsg = { type: "message" as const, id: "m1", parentId: "run-1", timestamp: "t1", message: user("hi") };
+        fake.session.getEntries.mockResolvedValue([runEntry, userMsg]);
+        fake.session.getLeafId.mockResolvedValue("m1");
 
         const owner = new PaneAgentSession("/s", fake.pane);
         const result = await owner.listTreeEntries();
 
-        expect(result.entries).toHaveLength(2);
-        expect(result.entries[0]).toEqual(expect.objectContaining({ id: "m1", parentId: null }));
-        expect(result.entries[1]).toEqual(expect.objectContaining({ id: "m2", parentId: "m1" }));
+        expect(result.entries).toEqual([runEntry, userMsg]);
     });
 
     it("navigates the session tree without branch summarization", async () => {
