@@ -5,6 +5,7 @@
 // TerminalModel for this outer block, mounts the block list, and the input
 // bar.  Replaces the old `TermBlocksView` from view/termblocks/termblocks.tsx.
 
+import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { CATALOG } from "@/app/store/ai-catalog";
 import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
 import { resolveAIConfig } from "@/app/store/ai-resolver";
@@ -155,6 +156,10 @@ export const TerminalView = memo(
                 return "";
             }
         }, []);
+        // Project (Space) dir — the anchor for agent session context so all
+        // conversations in this Space group under the same sessions/{cwd}/,
+        // independent of an in-terminal `cd` (which only moves one shell).
+        const workspaceDir = useAtomValue(workspaceDirAtom);
         // Initial cwd from the outer block's `cmd:cwd` meta — the value the
         // shell was spawned in.  Acts as a fallback before the shell's first
         // OSC precmd sends a live `pwd` update.
@@ -406,10 +411,10 @@ export const TerminalView = memo(
             return {
                 id: "",
                 createdAt: "",
-                cwd: liveCwd,
+                cwd: workspaceDir,
                 path: timelineAgentSessionPath,
             };
-        }, [persistedAgentSession, timelineAgentSessionPath, liveCwd]);
+        }, [persistedAgentSession, timelineAgentSessionPath, workspaceDir]);
         const onSessionMintedHandler = useCallback(
             (meta: AgentSessionMeta) => {
                 void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
@@ -833,7 +838,7 @@ export const TerminalView = memo(
                                   : undefined
                         }
                         paneContext={{
-                            cwd: liveCwd,
+                            cwd: workspaceDir,
                             gitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
                             recentCmds,
                             connection: liveConnection,
