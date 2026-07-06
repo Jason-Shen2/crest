@@ -249,6 +249,21 @@ describe("CodeEditor", () => {
         expect(RightEditorModel.hasInstance()).toBe(false);
     });
 
+    it("stretches the editor tab content across the available width", () => {
+        const filePath = "/repo/src/app.ts";
+        const model = new FileEditorViewModel(makeFileEditorInitOpts(filePath));
+        globalStore.set(model.stateAtom, {
+            openFiles: [makeOpenFile(filePath)],
+            activePath: filePath,
+            workspaceRoot: "/repo",
+        });
+
+        const html = renderFileEditor(model);
+
+        expect(html).toContain("flex h-full min-h-0 w-full flex-col");
+        expect(html).toContain("min-h-0 min-w-0 flex-1 w-full");
+    });
+
     it("ignores stale file reads after the block meta file changes", async () => {
         const firstRead = makeDeferredRead("old text");
         const secondRead = makeDeferredRead("new text");
