@@ -313,8 +313,8 @@ function FileEditorView({ blockId, model }: ViewComponentProps<FileEditorViewMod
     const lspStatusLabel = getRightEditorLspStatusLabel(lspStatusDetails?.status, lspStatusDetails?.installHint);
 
     return (
-        <div className="flex h-full min-h-0 flex-col bg-[#111113]">
-            <div className="min-h-0 flex-1">
+        <div className="flex h-full min-h-0 w-full flex-col bg-[#111113]">
+            <div className="min-h-0 min-w-0 flex-1 w-full">
                 <CodeEditor
                     blockId={blockId}
                     text={text}
