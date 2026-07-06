@@ -197,22 +197,31 @@ func TestDiscardDirlessWorkspaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create dirless: %v", err)
 	}
+	// Bare workspace: no dir AND empty Name/Icon/Color, so ListWorkspaces
+	// would hide it. It must still be discarded.
+	bare, err := CreateWorkspace(ctx, "", "", "", false, false, "")
+	if err != nil {
+		t.Fatalf("create bare: %v", err)
+	}
 	if err := DiscardDirlessWorkspaces(ctx); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
-	list, err := ListWorkspaces(ctx)
+	all, err := wstore.DBGetAllObjsByType[*waveobj.Workspace](ctx, waveobj.OType_Workspace)
 	if err != nil {
-		t.Fatalf("list: %v", err)
+		t.Fatalf("list all: %v", err)
 	}
 	ids := map[string]bool{}
-	for _, w := range list {
-		ids[w.WorkspaceId] = true
+	for _, w := range all {
+		ids[w.OID] = true
 	}
 	if !ids[withDir.OID] {
 		t.Fatalf("dir-backed workspace was wrongly discarded")
 	}
 	if ids[dirless.OID] {
 		t.Fatalf("dirless workspace was not discarded")
+	}
+	if ids[bare.OID] {
+		t.Fatalf("bare dirless workspace (no name/icon/color) was not discarded")
 	}
 }
 
