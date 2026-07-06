@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld("api", {
     onControlShiftStateUpdate: (callback) =>
         ipcRenderer.on("control-shift-state-update", (_event, state) => callback(state)),
     createWorkspace: () => ipcRenderer.send("create-workspace"),
+    selectDirectory: () => ipcRenderer.invoke("select-directory"),
     switchWorkspace: (workspaceId) => ipcRenderer.send("switch-workspace", workspaceId),
     deleteWorkspace: (workspaceId) => ipcRenderer.send("delete-workspace", workspaceId),
     setActiveTab: (tabId) => ipcRenderer.send("set-active-tab", tabId),
