@@ -1461,13 +1461,13 @@ declare global {
         "tab:flagcolor"?: string;
         "tab:autoname"?: boolean;
         "tab:background"?: string;
-        "tab:autoname"?: boolean;
         "bg:*"?: boolean;
         bg?: string;
         "bg:opacity"?: number;
         "bg:blendmode"?: string;
         "bg:bordercolor"?: string;
         "bg:activebordercolor"?: string;
+        "workspace:dir"?: string;
         "layout:vtabbarwidth"?: number;
         "layout:widgetsvisible"?: boolean;
         "layout:fileexplorervisible"?: boolean;

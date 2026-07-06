@@ -103,10 +103,11 @@ type MetaTSType struct {
 	BgActiveBorderColor string  `json:"bg:activebordercolor,omitempty"` // frame:activebordercolor
 
 	// for workspace
-	LayoutVTabBarWidth        int   `json:"layout:vtabbarwidth,omitempty"`
-	LayoutWidgetsVisible      *bool `json:"layout:widgetsvisible,omitempty"`
-	LayoutFileExplorerVisible *bool `json:"layout:fileexplorervisible,omitempty"`
-	LayoutFileExplorerWidth   int   `json:"layout:fileexplorerwidth,omitempty"`
+	WorkspaceDir              string `json:"workspace:dir,omitempty"` // project dir; set at Space creation, immutable
+	LayoutVTabBarWidth        int    `json:"layout:vtabbarwidth,omitempty"`
+	LayoutWidgetsVisible      *bool  `json:"layout:widgetsvisible,omitempty"`
+	LayoutFileExplorerVisible *bool  `json:"layout:fileexplorervisible,omitempty"`
+	LayoutFileExplorerWidth   int    `json:"layout:fileexplorerwidth,omitempty"`
 
 	TermClear               bool     `json:"term:*,omitempty"`
 	TermFontSize            int      `json:"term:fontsize,omitempty"`
