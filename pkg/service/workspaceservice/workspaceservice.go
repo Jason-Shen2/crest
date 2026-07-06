@@ -23,13 +23,13 @@ type WorkspaceService struct{}
 
 func (svc *WorkspaceService) CreateWorkspace_Meta() tsgenmeta.MethodMeta {
 	return tsgenmeta.MethodMeta{
-		ArgNames:   []string{"ctx", "name", "icon", "color", "applyDefaults"},
+		ArgNames:   []string{"ctx", "name", "icon", "color", "applyDefaults", "dir"},
 		ReturnDesc: "workspaceId",
 	}
 }
 
-func (svc *WorkspaceService) CreateWorkspace(ctx context.Context, name string, icon string, color string, applyDefaults bool) (string, error) {
-	newWS, err := wcore.CreateWorkspace(ctx, name, icon, color, applyDefaults, false, "")
+func (svc *WorkspaceService) CreateWorkspace(ctx context.Context, name string, icon string, color string, applyDefaults bool, dir string) (string, error) {
+	newWS, err := wcore.CreateWorkspace(ctx, name, icon, color, applyDefaults, false, dir)
 	if err != nil {
 		return "", fmt.Errorf("error creating workspace: %w", err)
 	}
