@@ -44,8 +44,8 @@ all sub-views derive from.
 - **New Space flow**: pick a directory via a native dialog, then create and
   switch to the Space in the current window (no new OS window).
 - **Scope of this round**: core refactor only (data model + cwd SSoT + creation
-  flow). Fixed UI layout (dedicated agent/editor/browser regions) is deferred to
-  a separate spec.
+  flow). This is almost entirely a backend / state-model change — the only UI
+  touch is the "New Space" directory picker (§5). No layout rework.
 
 ## 3. Data Model
 
@@ -140,5 +140,6 @@ block, so:
 - One-project-per-OS-window model.
 - Session-list-switcher replacing Tabs.
 
-These are deferred to a follow-up spec once the core "Space = directory" model
-lands.
+This round is almost entirely a backend / state-model change; the only UI touch
+is the "New Space" directory picker. Any broader UI/layout rework is explicitly
+not part of this effort.
