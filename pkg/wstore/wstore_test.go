@@ -42,7 +42,7 @@ func TestUpdateTabNameMarksTabAsManual(t *testing.T) {
 	}
 }
 
-func TestResetTabNameSetsNameAndAutoNameInOneCall(t *testing.T) {
+func TestResetTabNameClearsPersistentNameAndMarksAutoName(t *testing.T) {
 	ctx := setupWStoreTest(t)
 	tab := &waveobj.Tab{
 		OID:  "tab-reset-name",
@@ -55,7 +55,7 @@ func TestResetTabNameSetsNameAndAutoNameInOneCall(t *testing.T) {
 		t.Fatalf("DBInsert returned error: %v", err)
 	}
 
-	if err := ResetTabName(ctx, tab.OID, "T1"); err != nil {
+	if err := ResetTabName(ctx, tab.OID, "ignored-reset-name"); err != nil {
 		t.Fatalf("ResetTabName returned error: %v", err)
 	}
 
@@ -63,8 +63,8 @@ func TestResetTabNameSetsNameAndAutoNameInOneCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DBMustGet returned error: %v", err)
 	}
-	if updatedTab.Name != "T1" {
-		t.Fatalf("Name = %q, want %q", updatedTab.Name, "T1")
+	if updatedTab.Name != "" {
+		t.Fatalf("Name = %q, want empty persistent name", updatedTab.Name)
 	}
 	if updatedTab.Meta[waveobj.MetaKey_TabAutoName] != true {
 		t.Fatalf("tab:autoname = %#v, want true", updatedTab.Meta[waveobj.MetaKey_TabAutoName])

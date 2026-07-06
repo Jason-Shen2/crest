@@ -45,9 +45,8 @@ export interface TabContextMenuParams {
     tabTitle?: string; // resolved display title (custom name OR cwd-derived fallback)
     cwd?: string;
     gitBranch?: string;
-    // Whether the tab name has been user-customized (i.e. not the
-    // "T<n>" auto-generated form).  Drives "Reset tab name" visibility
-    // (warp's `if title.is_some()` gate at tab.rs:413).
+    // Whether the tab name has been user-customized. Drives "Reset tab name"
+    // visibility (warp's `if title.is_some()` gate at tab.rs:413).
     hasCustomName?: boolean;
 
     // Panes-mode flag — flips the title-copy label from "Copy tab

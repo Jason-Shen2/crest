@@ -7,8 +7,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"regexp"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -209,59 +207,12 @@ func getTabBackground() string {
 	return config.Settings.TabPreset
 }
 
-var tabNameRe = regexp.MustCompile(`^T(\d+)$`)
-
-// getNextTabName returns the next auto-generated tab name (e.g. "T3") given a
-// slice of existing tab names. It filters to names matching T[N] where N is a
-// positive integer, finds the maximum N, and returns T[max+1]. If no matching
-// names exist it returns "T1".
-func getNextTabName(tabNames []string) string {
-	maxNum := 0
-	for _, name := range tabNames {
-		m := tabNameRe.FindStringSubmatch(name)
-		if m == nil {
-			continue
-		}
-		n, err := strconv.Atoi(m[1])
-		if err != nil || n <= 0 {
-			continue
-		}
-		if n > maxNum {
-			maxNum = n
-		}
-	}
-	return "T" + strconv.Itoa(maxNum+1)
-}
-
-func defaultTabName(ctx context.Context, workspaceId string) (string, error) {
-	ws, err := GetWorkspace(ctx, workspaceId)
-	if err != nil {
-		return "", fmt.Errorf("workspace %s not found: %w", workspaceId, err)
-	}
-	tabNames := make([]string, 0, len(ws.TabIds))
-	for _, tabId := range ws.TabIds {
-		tab, err := wstore.DBMustGet[*waveobj.Tab](ctx, tabId)
-		if err != nil || tab == nil {
-			continue
-		}
-		tabNames = append(tabNames, tab.Name)
-	}
-	return getNextTabName(tabNames), nil
-}
-
 func defaultTabNameAndMeta(ctx context.Context, workspaceId string, tabName string) (string, waveobj.MetaMapType, error) {
 	autoName := tabName == ""
-	if autoName {
-		var err error
-		tabName, err = defaultTabName(ctx, workspaceId)
-		if err != nil {
-			return "", nil, err
-		}
-	}
 	if !autoName {
 		return tabName, nil, nil
 	}
-	return tabName, waveobj.MetaMapType{waveobj.MetaKey_TabAutoName: true}, nil
+	return "", waveobj.MetaMapType{waveobj.MetaKey_TabAutoName: true}, nil
 }
 
 func applyTabBackground(ctx context.Context, tab *waveobj.Tab) {

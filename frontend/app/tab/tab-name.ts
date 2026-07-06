@@ -10,16 +10,7 @@ import { blockViewToName } from "@/app/block/blockutil";
 // labelFor()). A user-set name clears the flag and always takes precedence.
 export function isTabAutoNamed(tab: Tab | null | undefined): boolean {
     if (!tab) return false;
-    if (tab.meta?.["tab:autoname"]) return true;
-    // Legacy tabs created before tab:autoname existed still wear the old
-    // "T<n>" placeholder — treat those as auto-named too.
-    return isAutoTabName(tab.name);
-}
-
-// isAutoTabName — matches the legacy "T<number>" placeholder that older
-// persisted tabs may still carry (see pkg/wcore's former getNextTabName).
-export function isAutoTabName(name: string | undefined | null): boolean {
-    return /^T\d+$/.test(name ?? "");
+    return tab.meta?.["tab:autoname"] === true;
 }
 
 // basename — last path segment, tolerant of both "/" and "\" separators.
@@ -42,6 +33,11 @@ export function deriveBlockDisplayName(block: Block | null | undefined): string 
     if (view === "codeeditor" || view === "preview") {
         const file = (block?.meta?.["file"] as string) || "";
         return file ? basename(file) : blockViewToName(view);
+    }
+    if (view === "gitdiff") {
+        const path = (block?.meta?.["gitdiff:path"] as string) || "";
+        const mode = (block?.meta?.["gitdiff:mode"] as string) || "-";
+        return path ? `${basename(path)} (${mode})` : blockViewToName(view);
     }
     if (view === "term" || view === "termblocks") {
         const cwd = (block?.meta?.["cmd:cwd"] as string) || "";

@@ -13,7 +13,6 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { useResolvedTabFlagColor } from "./tab-color-utils";
-import { isTabAutoNamed } from "./tab-name";
 import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -110,6 +109,8 @@ function blockViewToUIcon(view: string): string {
         case "preview":
         case "codeeditor":
             return "file";
+        case "gitdiff":
+            return "git-branch-02";
         case "web":
             return "compass-3";
         case "help":
@@ -281,12 +282,10 @@ function VTabWrapper({
     const isRepo = !!gitInfo?.isrepo;
     const gitBranchName = isRepo ? gitInfo?.branch : undefined;
 
-    // Auto-generated tab names follow the "T<number>" pattern from
-    // pkg/wcore.getNextTabName.  Hide that placeholder completely:
-    // prefer the real cwd, fall back to ~ (shells almost always start
-    // there) or a generic "Terminal" label when even the home dir is
-    // unknown.  The real cwd replaces whatever standin is showing the
-    // moment OSC 7 lands.
+    // Auto-named tabs keep an empty persistent name and derive their visible
+    // title from block metadata. Prefer the real cwd, fall back to ~ (shells
+    // almost always start there) or a generic "Terminal" label when even the
+    // home dir is unknown. The real cwd replaces the standin when OSC 7 lands.
     const rawName = tabData?.name ?? "";
     const isAutoNamed = isTabAutoNamed(tabData);
     const userTitle = isAutoNamed ? "" : rawName;
@@ -1407,9 +1406,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                       ? () => closeTabsByIds(orderedTabIds.slice(index + 1))
                                       : undefined
                               }
-                              onResetTabName={() =>
-                                  fireAndForget(() => resetVTabName(env, tabId, `T${index + 1}`))
-                              }
+                              onResetTabName={() => fireAndForget(() => resetVTabName(env, tabId, ""))}
                               onOpenMenu={handleOpenMenu}
                           />
                       ))
@@ -1470,9 +1467,7 @@ export function VTabBar({ workspace, className }: VTabBarProps) {
                                           ? () => closeTabsByIds(orderedTabIds.slice(index + 1))
                                           : undefined
                                   }
-                                  onResetTabName={() =>
-                                      fireAndForget(() => resetVTabName(env, tabId, `T${index + 1}`))
-                                  }
+                                  onResetTabName={() => fireAndForget(() => resetVTabName(env, tabId, ""))}
                                   onOpenMenu={handleOpenMenu}
                                   onDragStart={(event) => {
                                       if (!dragReorderEnabled) {
