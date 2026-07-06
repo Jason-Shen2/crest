@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { focusedCwdAtom } from "@/app/fileexplorer/file-explorer-atoms";
+import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { globalStore } from "@/app/store/jotaiStore";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
@@ -220,7 +220,7 @@ export class GitModel {
     }
 
     syncCwd(): void {
-        const cwd = globalStore.get(focusedCwdAtom);
+        const cwd = globalStore.get(workspaceDirAtom);
         if (cwd && cwd !== globalStore.get(this.cwdAtom)) {
             globalStore.set(this.cwdAtom, cwd);
             globalStore.set(this.expandedFilesAtom, new Set());
