@@ -29,7 +29,7 @@ func (svc *WorkspaceService) CreateWorkspace_Meta() tsgenmeta.MethodMeta {
 }
 
 func (svc *WorkspaceService) CreateWorkspace(ctx context.Context, name string, icon string, color string, applyDefaults bool) (string, error) {
-	newWS, err := wcore.CreateWorkspace(ctx, name, icon, color, applyDefaults, false)
+	newWS, err := wcore.CreateWorkspace(ctx, name, icon, color, applyDefaults, false, "")
 	if err != nil {
 		return "", fmt.Errorf("error creating workspace: %w", err)
 	}

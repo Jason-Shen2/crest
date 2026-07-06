@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,13 +49,16 @@ var WorkspaceIcons = [...]string{
 	"mug-hot",
 }
 
-func CreateWorkspace(ctx context.Context, name string, icon string, color string, applyDefaults bool, isInitialLaunch bool) (*waveobj.Workspace, error) {
+func CreateWorkspace(ctx context.Context, name string, icon string, color string, applyDefaults bool, isInitialLaunch bool, dir string) (*waveobj.Workspace, error) {
 	ws := &waveobj.Workspace{
 		OID:    uuid.NewString(),
 		TabIds: []string{},
 		Name:   "",
 		Icon:   "",
 		Color:  "",
+	}
+	if dir != "" {
+		ws.Meta = waveobj.MetaMapType{waveobj.MetaKey_WorkspaceDir: dir}
 	}
 	err := wstore.DBInsert(ctx, ws)
 	if err != nil {
@@ -68,6 +72,10 @@ func CreateWorkspace(ctx context.Context, name string, icon string, color string
 	wps.Broker.Publish(wps.WaveEvent{
 		Event: wps.Event_WorkspaceUpdate,
 	})
+
+	if name == "" && dir != "" {
+		name = filepath.Base(dir)
+	}
 
 	ws, _, err = UpdateWorkspace(ctx, ws.OID, name, icon, color, applyDefaults)
 	return ws, err
