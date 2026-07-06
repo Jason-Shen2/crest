@@ -243,6 +243,7 @@ const TabInner = forwardRef<HTMLDivElement, TabProps>((props, ref) => {
     const [firstBlock] = env.wos.useWaveObjectValue<Block>(firstBlockId ? makeORef("block", firstBlockId) : null);
     const badges = useAtomValue(getTabBadgeAtom(id, env));
     const rawTabName = tabData?.name ?? "";
+    const isAutoNamed = isTabAutoNamed(tabData);
     const layoutStateId = tabData?.layoutstate;
     const [layoutState] = env.wos.useWaveObjectValue<LayoutState>(
         layoutStateId ? makeORef("layout", layoutStateId) : null
@@ -254,9 +255,9 @@ const TabInner = forwardRef<HTMLDivElement, TabProps>((props, ref) => {
     const [namingBlock] = env.wos.useWaveObjectValue<Block>(
         focusedBlockId ? makeORef("block", focusedBlockId) : null
     );
-    const fileLabel = isTabAutoNamed(tabData) ? getFileBackedBlockLabel(firstBlock?.meta) : null;
-    const derivedName = isTabAutoNamed(tabData) ? deriveBlockDisplayName(namingBlock) : "";
-    const displayTabName = fileLabel?.basename || derivedName || rawTabName;
+    const fileLabel = isAutoNamed ? getFileBackedBlockLabel(firstBlock?.meta) : null;
+    const derivedName = isAutoNamed ? deriveBlockDisplayName(namingBlock) : "";
+    const displayTabName = isAutoNamed ? fileLabel?.basename || derivedName || "Terminal" : rawTabName;
 
     const rawFlagColor = tabData?.meta?.["tab:flagcolor"];
     let flagColor: string | null = null;

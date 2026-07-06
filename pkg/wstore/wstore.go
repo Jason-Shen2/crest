@@ -64,7 +64,7 @@ func ResetTabName(ctx context.Context, tabId, name string) error {
 		if tab == nil {
 			return fmt.Errorf("tab not found: %q", tabId)
 		}
-		tab.Name = name
+		tab.Name = ""
 		if tab.Meta == nil {
 			tab.Meta = make(waveobj.MetaMapType)
 		}

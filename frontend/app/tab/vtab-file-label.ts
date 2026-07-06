@@ -7,12 +7,9 @@ export type FileBackedBlockLabel = {
     fallbackTitle: string;
 };
 
-export function isTabAutoNamed(tab: Pick<Tab, "name" | "meta"> | undefined | null): boolean {
+export function isTabAutoNamed(tab: Pick<Tab, "meta"> | undefined | null): boolean {
     const autoName = tab?.meta?.["tab:autoname"];
-    if (typeof autoName === "boolean") {
-        return autoName;
-    }
-    return /^T\d+$/.test(tab?.name ?? "");
+    return autoName === true;
 }
 
 function basename(path: string): string {
@@ -21,12 +18,23 @@ function basename(path: string): string {
 
 export function getFileBackedBlockLabel(meta: MetaType | undefined | null): FileBackedBlockLabel | null {
     const view = (meta?.view as string) || "";
-    if (view !== "preview" && view !== "codeeditor") {
+    if (view !== "preview" && view !== "codeeditor" && view !== "gitdiff") {
         return null;
     }
-    const path = ((meta?.file as string) || (meta?.["file:path"] as string) || "").trim();
+    const path =
+        view === "gitdiff"
+            ? ((meta?.["gitdiff:path"] as string) || "").trim()
+            : ((meta?.file as string) || (meta?.["file:path"] as string) || "").trim();
     if (!path) {
         return null;
+    }
+    if (view === "gitdiff") {
+        const mode = ((meta?.["gitdiff:mode"] as string) || "-").trim() || "-";
+        return {
+            path,
+            basename: `${basename(path)} (${mode})`,
+            fallbackTitle: "Git diff",
+        };
     }
     return {
         path,
