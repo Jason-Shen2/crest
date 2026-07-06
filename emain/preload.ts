@@ -82,7 +82,7 @@ contextBridge.exposeInMainWorld("api", {
     registerGlobalWebviewKeys: (keys) => ipcRenderer.send("register-global-webview-keys", keys),
     onControlShiftStateUpdate: (callback) =>
         ipcRenderer.on("control-shift-state-update", (_event, state) => callback(state)),
-    createWorkspace: () => ipcRenderer.send("create-workspace"),
+    createWorkspace: (dir: string) => ipcRenderer.send("create-workspace", dir),
     selectDirectory: () => ipcRenderer.invoke("select-directory"),
     switchWorkspace: (workspaceId) => ipcRenderer.send("switch-workspace", workspaceId),
     deleteWorkspace: (workspaceId) => ipcRenderer.send("delete-workspace", workspaceId),

@@ -31,6 +31,7 @@ export type WorkspaceSwitcherEnv = WaveEnvSubset<{
     electron: {
         deleteWorkspace: WaveEnv["electron"]["deleteWorkspace"];
         createWorkspace: WaveEnv["electron"]["createWorkspace"];
+        selectDirectory: WaveEnv["electron"]["selectDirectory"];
         switchWorkspace: WaveEnv["electron"]["switchWorkspace"];
         setActiveTab: WaveEnv["electron"]["setActiveTab"];
         closeTab: WaveEnv["electron"]["closeTab"];
@@ -240,7 +241,9 @@ const WorkspaceSwitcher = forwardRef<HTMLDivElement>((_, ref) => {
 
     const onNewSpace = useCallback(() => {
         fireAndForget(async () => {
-            env.electron.createWorkspace();
+            const dir = await env.electron.selectDirectory();
+            if (!dir) return;
+            env.electron.createWorkspace(dir);
         });
         setIsOpen(false);
     }, [env.electron]);
