@@ -41,7 +41,6 @@ import { isMacOS } from "@/util/platformutil";
 import { cn } from "@/util/util";
 import { CornerDownLeft } from "lucide-react";
 import { memo, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { formatPromptCwd } from "./cmdblock-status";
 import { ModelPickerInline, ModelPickerPopover } from "./model-picker-popover";
 
 // "auto" maps to warp's InputToggleMode::AutoDetection
@@ -53,8 +52,6 @@ export interface CmdBlockInputProps {
     cwd?: string;
     home?: string;
     branch?: string;
-    venv?: string;
-    nodeVersion?: string;
     // SSH session context — non-empty `sshHost` makes the SshChip appear.
     sshHost?: string;
     sshUser?: string;
@@ -527,30 +524,6 @@ const SshChip = memo(({ user, host, onClick }: SshChipProps) => {
     );
 });
 SshChip.displayName = "SshChip";
-
-// CwdChip — warp ContextChipKind::WorkingDirectory.  Just the working
-// directory (no branch — that lives in GitBranchChip).  An env-marker
-// (venv name / node version) renders ahead of the path when present.
-interface CwdChipProps {
-    cwd?: string;
-    home?: string;
-    venv?: string;
-    nodeVersion?: string;
-    onContextMenu?: (e: React.MouseEvent) => void;
-}
-
-const CwdChip = memo(({ cwd, home, venv, nodeVersion, onContextMenu }: CwdChipProps) => {
-    const prettyCwd = formatPromptCwd(cwd, home ?? "");
-    if (!prettyCwd && !venv && !nodeVersion) return null;
-    const env = venv ?? nodeVersion;
-    return (
-        <ContextChip icon="notebook" title={cwd} onContextMenu={onContextMenu}>
-            {env && <span className="shrink-0 opacity-70">{env}</span>}
-            {prettyCwd && <span className="max-w-[260px] truncate">{prettyCwd}</span>}
-        </ContextChip>
-    );
-});
-CwdChip.displayName = "CwdChip";
 
 // GitBranchChip — warp ContextChipKind::ShellGitBranch.
 interface GitBranchChipProps {
@@ -1485,8 +1458,6 @@ export const CmdBlockInput = memo(
         cwd,
         home,
         branch,
-        venv,
-        nodeVersion,
         sshHost,
         sshUser,
         gitAdded,
@@ -2170,13 +2141,6 @@ export const CmdBlockInput = memo(
                     padding match warp agent.rs:49,55 (16 px). */}
                     <div className="flex flex-wrap items-center px-4 pb-4 pt-2" style={{ gap: `${UI_GAP_PX}px` }}>
                         <SshChip user={sshUser} host={sshHost} />
-                        <CwdChip
-                            cwd={cwd}
-                            home={home}
-                            venv={venv}
-                            nodeVersion={nodeVersion}
-                            onContextMenu={onPromptContextMenu}
-                        />
                         <GitBranchChip branch={branch} />
                         <GitDiffStatsChip added={gitAdded} removed={gitRemoved} />
                         <GithubPrChip number={prNumber} title={prTitle} onClick={onPrClick} />
