@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { BlockNodeModel } from "@/app/block/blocktypes";
+import { GitDiffViewModel } from "@/app/gitdiff";
 import type { TabModel } from "@/app/store/tab-model";
 import { FileEditorViewModel } from "@/app/view/codeeditor/file-editor-model";
 import { LauncherViewModel } from "@/app/view/launcher/launcher";
@@ -25,6 +26,7 @@ BlockRegistry.set("term", TermViewModel);
 BlockRegistry.set("preview", PreviewModel);
 BlockRegistry.set("codeeditor", FileEditorViewModel);
 BlockRegistry.set("web", WebViewModel);
+BlockRegistry.set("gitdiff", GitDiffViewModel);
 BlockRegistry.set("cpuplot", SysinfoViewModel);
 BlockRegistry.set("sysinfo", SysinfoViewModel);
 BlockRegistry.set("vdom", VDomModel);

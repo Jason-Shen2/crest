@@ -788,7 +788,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                     const entry = focusedEntry();
                     if (entry) {
                         event.preventDefault();
-                        model.selectPath(entry.path);
+                        model.selectEntry(entry);
                     }
                     break;
                 }
@@ -1072,7 +1072,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                                                         selectedPath={selectedPath}
                                                         actionBusy={actionBusy}
                                                         onFocus={() => setFocusedRowKey(row.key)}
-                                                        onSelect={() => model.selectPath(row.entry.path)}
+                                                        onSelect={() => model.selectEntry(row.entry)}
                                                         onToggleStage={() => void model.toggleStageFile(row.entry)}
                                                         onDiscard={() => model.requestDiscardFile(row.entry)}
                                                     />

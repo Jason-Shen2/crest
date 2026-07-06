@@ -70,6 +70,54 @@ func TestGetCommitFilesIncludesFilesAndNumstat(t *testing.T) {
 	}
 }
 
+func TestGetDiffContentUsesOriginalPathForRenamedFile(t *testing.T) {
+	repo := makeTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "old.txt"), []byte("old line\nshared\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, repo, "add", "old.txt")
+	runTestGit(t, repo, "commit", "-m", "add old")
+	runTestGit(t, repo, "mv", "old.txt", "new.txt")
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new line\nshared\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, repo, "add", "new.txt")
+
+	content, err := GetDiffContent(context.Background(), repo, "new.txt", "old.txt", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.OriginalContent != "old line\nshared\n" {
+		t.Fatalf("OriginalContent = %q, want content from old.txt", content.OriginalContent)
+	}
+	if content.ModifiedContent != "new line\nshared\n" {
+		t.Fatalf("ModifiedContent = %q, want content from new.txt", content.ModifiedContent)
+	}
+}
+
+func TestGetDiffContentReturnsOriginalForUnstagedTrackedFile(t *testing.T) {
+	repo := makeTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("old line\nshared\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, repo, "add", "tracked.txt")
+	runTestGit(t, repo, "commit", "-m", "add tracked")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("new line\nshared\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	content, err := GetDiffContent(context.Background(), repo, "tracked.txt", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content.OriginalContent != "old line\nshared\n" {
+		t.Fatalf("OriginalContent = %q, want content from index", content.OriginalContent)
+	}
+	if content.ModifiedContent != "new line\nshared\n" {
+		t.Fatalf("ModifiedContent = %q, want content from working tree", content.ModifiedContent)
+	}
+}
+
 func TestParseDiffTreeCombinedNameStatusAndNumstat(t *testing.T) {
 	stdout := []byte("M\x00README.md\x001\t0\tREADME.md\x00")
 

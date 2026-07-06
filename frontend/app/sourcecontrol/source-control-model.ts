@@ -8,6 +8,7 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { fireAndForget } from "@/util/util";
 import * as jotai from "jotai";
 import { debounce } from "throttle-debounce";
+import { openGitDiffTab } from "./open-git-diff-tab";
 
 type PanelState = "closed" | "loading" | "no-repo" | "ready" | "error";
 type CheckState = "checked" | "indeterminate" | "unchecked";
@@ -566,6 +567,20 @@ export class SourceControlModel {
 
     selectPath(path: string | null): void {
         globalStore.set(this.selectedpathAtom, path);
+    }
+
+    selectEntry(entry: SourceControlFileEntry): void {
+        this.selectPath(entry.path);
+        const repo = globalStore.get(this.repoAtom);
+        if (!repo) return;
+        fireAndForget(() =>
+            openGitDiffTab({
+                repoRoot: repo.reporoot,
+                path: entry.path,
+                mode: entry.unstaged ? "-" : "+",
+                originalPath: entry.originalpath,
+            })
+        );
     }
 
     dismissActionMessage(): void {
