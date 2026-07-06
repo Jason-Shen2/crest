@@ -122,6 +122,7 @@ declare global {
         registerGlobalWebviewKeys: (keys: string[]) => void; // register-global-webview-keys
         onControlShiftStateUpdate: (callback: (state: boolean) => void) => void; // control-shift-state-update
         createWorkspace: () => void; // create-workspace
+        selectDirectory: () => Promise<string | null>; // select-directory
         switchWorkspace: (workspaceId: string) => void; // switch-workspace
         deleteWorkspace: (workspaceId: string) => void; // delete-workspace
         setActiveTab: (tabId: string) => void; // set-active-tab
