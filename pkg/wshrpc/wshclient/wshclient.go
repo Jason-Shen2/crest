@@ -197,6 +197,12 @@ func CreateSubBlockCommand(w *wshutil.WshRpc, data wshrpc.CommandCreateSubBlockD
 	return resp, err
 }
 
+// command "createworkspace", wshserver.CreateWorkspaceCommand
+func CreateWorkspaceCommand(w *wshutil.WshRpc, data wshrpc.CreateWorkspaceData, opts *wshrpc.RpcOpts) (string, error) {
+	resp, err := sendRpcRequestCallHelper[string](w, "createworkspace", data, opts)
+	return resp, err
+}
+
 // command "debugterm", wshserver.DebugTermCommand
 func DebugTermCommand(w *wshutil.WshRpc, data wshrpc.CommandDebugTermData, opts *wshrpc.RpcOpts) (*wshrpc.CommandDebugTermRtnData, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.CommandDebugTermRtnData](w, "debugterm", data, opts)
