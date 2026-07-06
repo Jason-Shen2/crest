@@ -40,6 +40,22 @@ describe("getFileBackedBlockLabel", () => {
         });
     });
 
+    it("uses gitdiff path and mode for git diff labels", () => {
+        expect(
+            getFileBackedBlockLabel(
+                meta({
+                    view: "gitdiff",
+                    "gitdiff:path": "/repo/src/source-control-panel.tsx",
+                    "gitdiff:mode": "-",
+                })
+            )
+        ).toEqual({
+            path: "/repo/src/source-control-panel.tsx",
+            basename: "source-control-panel.tsx (-)",
+            fallbackTitle: "Git diff",
+        });
+    });
+
     it("does not treat unrelated views as file-backed", () => {
         expect(
             getFileBackedBlockLabel(
@@ -65,12 +81,12 @@ describe("isTabAutoNamed", () => {
         ).toBe(false);
     });
 
-    it("preserves legacy generated tab names when tab:autoname is missing", () => {
+    it("does not infer auto-name state when tab:autoname is missing", () => {
         expect(
             isTabAutoNamed({
                 name: "T12",
                 meta: {},
             } as Tab)
-        ).toBe(true);
+        ).toBe(false);
     });
 });

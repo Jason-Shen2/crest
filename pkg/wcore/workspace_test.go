@@ -26,6 +26,19 @@ func TestDefaultTabNameAndMetaExplicitName(t *testing.T) {
 	}
 }
 
+func TestDefaultTabNameAndMetaAutoNameUsesEmptyPersistentName(t *testing.T) {
+	tabName, meta, err := defaultTabNameAndMeta(context.Background(), "workspace-1", "")
+	if err != nil {
+		t.Fatalf("defaultTabNameAndMeta returned error: %v", err)
+	}
+	if tabName != "" {
+		t.Fatalf("tabName = %q, want empty persistent name", tabName)
+	}
+	if meta == nil || meta[waveobj.MetaKey_TabAutoName] != true {
+		t.Fatalf("meta = %#v, want tab auto-name marker", meta)
+	}
+}
+
 func TestCreateTabWithBlockFailuresDoNotLeavePartialState(t *testing.T) {
 	ctx := setupWorkspaceTestWStore(t)
 	workspace := &waveobj.Workspace{

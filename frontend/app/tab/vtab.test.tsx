@@ -152,9 +152,13 @@ describe("VTabBar tab labels", () => {
     it("uses the first codeeditor block basename for default tabs granularity only when the tab is auto-named", () => {
         const markup = renderVTabBar(
             [
-                tab("auto-editor-tab", "T1", ["auto-editor-block"]),
+                tab("auto-editor-tab", "", ["auto-editor-block"], {
+                    "tab:autoname": true,
+                } as MetaType),
                 tab("manual-editor-tab", "Pinned Editor", ["manual-editor-block"]),
-                tab("auto-terminal-tab", "T3", ["terminal-block"]),
+                tab("auto-terminal-tab", "", ["terminal-block"], {
+                    "tab:autoname": true,
+                } as MetaType),
             ],
             [
                 block("auto-editor-block", {
@@ -197,6 +201,24 @@ describe("VTabBar tab labels", () => {
         expect(markup).not.toContain("not-the-tab-title.ts");
     });
 
+    it("does not expose generated names while auto tab block metadata is pending", () => {
+        const markup = renderVTabBar(
+            [
+                tab("pending-auto-tab", "T1", ["pending-auto-block"], {
+                    "tab:autoname": true,
+                } as MetaType),
+            ],
+            [
+                block("pending-auto-block", {
+                    view: "term",
+                } as MetaType),
+            ]
+        );
+
+        expect(markup).toContain("Terminal");
+        expect(markup).not.toContain(">T1<");
+    });
+
     it("mock tab rename preserves meta and marks the tab name manual", async () => {
         const tabId = "mock-rename-tab";
         const env = makeMockWaveEnv({
@@ -235,10 +257,10 @@ describe("VTabBar tab labels", () => {
                 },
             } as any,
             tabId,
-            "T1"
+            ""
         );
 
-        expect(resetTabName.mock.calls[0]?.slice(1)).toEqual([tabId, "T1"]);
+        expect(resetTabName.mock.calls[0]?.slice(1)).toEqual([tabId, ""]);
         expect(updateTabName).not.toHaveBeenCalled();
         expect(setMeta).not.toHaveBeenCalled();
 
@@ -311,7 +333,7 @@ describe("Tab labels", () => {
         expect(markup).not.toContain("app.ts");
     });
 
-    it("derives labels for legacy generated tab names without autoname meta", () => {
+    it("preserves T-number tab names when tab:autoname is missing", () => {
         const markup = renderTab(
             tab("top-legacy-editor-tab", "T7", ["top-legacy-editor-block"]),
             [
@@ -322,7 +344,7 @@ describe("Tab labels", () => {
             ]
         );
 
-        expect(markup).toContain("legacy.ts");
-        expect(markup).not.toContain(">T7<");
+        expect(markup).toContain("T7");
+        expect(markup).not.toContain("legacy.ts");
     });
 });
