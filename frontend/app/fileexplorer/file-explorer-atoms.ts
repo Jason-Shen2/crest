@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getLayoutModelForStaticTab } from "@/layout/lib/layoutModelHooks";
-import { atoms, getApi, getBlockMetaKeyAtom } from "@/store/global";
+import { atoms, getApi, getBlockMetaKeyAtom, getOrefMetaKeyAtom } from "@/store/global";
+import * as WOS from "@/store/wos";
 import * as jotai from "jotai";
 
 // Snapshot the user's home dir once; getApi().getHomeDir() is synchronous IPC
@@ -13,6 +14,18 @@ const CachedHome: string = getApi().getHomeDir() ?? "~";
 export function getCachedHome(): string {
     return CachedHome;
 }
+
+// SSoT for the project directory. Every Space is bound to one directory at
+// creation (workspace:dir, immutable). File explorer / git / command palette /
+// agent all anchor here rather than following the focused terminal's cwd.
+export const workspaceDirAtom: jotai.Atom<string> = jotai.atom((get) => {
+    const wsId = get(atoms.workspace)?.oid;
+    if (!wsId) return CachedHome;
+    const dir = get(getOrefMetaKeyAtom(WOS.makeORef("workspace", wsId), "workspace:dir")) as
+        | string
+        | undefined;
+    return dir || CachedHome;
+});
 
 // Tracks tabId + blockId + cwd together so the file explorer can distinguish
 // three events with different desired behaviours:
