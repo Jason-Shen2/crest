@@ -288,7 +288,7 @@ func GetDiffForFile(ctx context.Context, repoRoot string, path string, staged bo
 	}, nil
 }
 
-func GetDiffContent(ctx context.Context, repoRoot string, path string, staged bool) (*GitDiffContentResult, error) {
+func GetDiffContent(ctx context.Context, repoRoot string, path string, originalPath string, staged bool) (*GitDiffContentResult, error) {
 	root, err := ResolveRepoRoot(repoRoot)
 	if err != nil {
 		return nil, err
@@ -300,6 +300,17 @@ func GetDiffContent(ctx context.Context, repoRoot string, path string, staged bo
 	rel, err := relPath(root, safePath)
 	if err != nil {
 		return nil, err
+	}
+	originalRel := rel
+	if strings.TrimSpace(originalPath) != "" {
+		safeOriginalPath, err := SanitizePath(root, originalPath)
+		if err != nil {
+			return nil, err
+		}
+		originalRel, err = relPath(root, safeOriginalPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 	isBin, err := isBinaryFile(ctx, root, rel, staged)
 	if err != nil {
@@ -316,7 +327,7 @@ func GetDiffContent(ctx context.Context, repoRoot string, path string, staged bo
 			Truncated:     patch.Truncated,
 		}, nil
 	}
-	original, err := getFileContent(ctx, root, rel, staged, true)
+	original, err := getFileContent(ctx, root, originalRel, staged, true)
 	if err != nil {
 		original = ""
 	}
@@ -335,7 +346,7 @@ func getFileContent(ctx context.Context, repoRoot, path string, staged, original
 	var spec string
 	if original {
 		if staged {
-			spec = "HEAD"
+			spec = "HEAD:" + path
 		} else {
 			spec = ":" + path
 		}
@@ -350,7 +361,7 @@ func getFileContent(ctx context.Context, repoRoot, path string, staged, original
 			return readFileContent(abs)
 		}
 	}
-	out, err := runGit(ctx, repoRoot, DefaultTimeoutSecs, "show", spec+":"+path)
+	out, err := runGit(ctx, repoRoot, DefaultTimeoutSecs, "show", spec)
 	if err != nil {
 		return "", err
 	}

@@ -1796,7 +1796,7 @@ func (ws *WshServer) GitGetDiffForFileCommand(ctx context.Context, data wshrpc.G
 }
 
 func (ws *WshServer) GitGetDiffContentCommand(ctx context.Context, data wshrpc.GitDiffFileData) (*wshrpc.GitDiffContentResult, error) {
-	res, err := gitops.GetDiffContent(ctx, data.Cwd, data.Path, data.Staged)
+	res, err := gitops.GetDiffContent(ctx, data.Cwd, data.Path, data.OriginalPath, data.Staged)
 	if err != nil {
 		return nil, err
 	}

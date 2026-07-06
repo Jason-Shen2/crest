@@ -548,9 +548,10 @@ type GitCommitData struct {
 }
 
 type GitDiffFileData struct {
-	Cwd    string `json:"cwd"`
-	Path   string `json:"path"`
-	Staged bool   `json:"staged"`
+	Cwd          string `json:"cwd"`
+	Path         string `json:"path"`
+	OriginalPath string `json:"originalpath"`
+	Staged       bool   `json:"staged"`
 }
 
 type GitDiscardEntry struct {
