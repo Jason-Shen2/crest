@@ -42,6 +42,7 @@ function fakeModel() {
 }
 
 const deps: AgentPaneDeps = {
+    model: fakeModel(),
     fontSize: 16,
     focusRequest: 0,
     liveCwd: "/x",

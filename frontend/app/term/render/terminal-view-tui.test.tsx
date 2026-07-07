@@ -94,6 +94,10 @@ vi.mock("@/app/store/jotaiStore", () => ({
     },
 }));
 
+vi.mock("@/app/fileexplorer/file-explorer-atoms", () => ({
+    workspaceDirAtom: testState.atomValue(""),
+}));
+
 vi.mock("@/app/store/modalmodel", () => ({
     modalsModel: {
         pushModal: vi.fn(),
