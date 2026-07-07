@@ -62,7 +62,7 @@ func GetStarterLayout() PortableLayout {
 
 func GetNewTabLayout(cwd string) PortableLayout {
 	termMeta := waveobj.MetaMapType{
-		waveobj.MetaKey_View:       "termblocks",
+		waveobj.MetaKey_View:       "agent",
 		waveobj.MetaKey_Controller: "shell",
 	}
 	// Anchor the terminal's spawn cwd to the Space (workspace) dir so new
