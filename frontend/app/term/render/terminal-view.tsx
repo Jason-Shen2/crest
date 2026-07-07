@@ -6,37 +6,25 @@
 // bar.  Replaces the old `TermBlocksView` from view/termblocks/termblocks.tsx.
 
 import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
-import { CATALOG } from "@/app/store/ai-catalog";
-import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
-import { resolveAIConfig } from "@/app/store/ai-resolver";
-import { AgentSelection, ResolvedAIConfig, ResolveError } from "@/app/store/ai-types";
-import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { globalStore } from "@/app/store/jotaiStore";
-import { modalsModel } from "@/app/store/modalmodel";
-import { ObjectService } from "@/app/store/services";
-import { indexRunsById, type PiRun } from "@/app/store/use-pi-chat";
+import { type PiRun } from "@/app/store/use-pi-chat";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
-import { atoms, getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
+import { getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContextChipModel } from "../contextchip/chip-model";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
-import { AgentActivityBar } from "./agent-activity-bar";
-import {
-    AgentChatHost,
-    type AgentChatHostApi,
-    type AgentHostState,
-    type AgentInlineCommandResult,
-    type AgentSelectorRequest,
-} from "./agent-chat-host";
-import { AgentCommandResultList } from "./agent-command-result";
-import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
 import { PaletteContext, PaletteOverrides } from "./palette-context";
+
+// Stable empty runs map for the pure-terminal form (no agent runs).  A
+// module-level constant keeps the reference identity stable across renders
+// so BlockListElement's memoization isn't defeated when agentSlot is null.
+const EMPTY_RUNS: Map<string, PiRun> = new Map();
 
 export interface TerminalViewProps {
     outerBlockId: string;
@@ -54,6 +42,10 @@ export interface TerminalViewProps {
     // for `term:mode = "vdom"` where the whole pane becomes a single
     // VDom subblock instead of a shell.
     replaceContent?: React.ReactNode;
+    // Agent 会话形态用此回调构造 slot —— TerminalView 在算好实时上下文
+    // (cwd/branch/inputMode/…) 后调用，交给 useAgentPane 生成 AgentSlot。
+    // 纯终端形态不传此 prop，agentSlot 保持 null。
+    renderAgentSlot?: (deps: import("./agent-pane").AgentPaneDeps) => import("./agent-pane").AgentSlot;
 }
 
 export function blurActiveEditableInRoot(root: HTMLElement | null): void {
@@ -99,7 +91,15 @@ function useContextChipModel(outerBlockId: string): ContextChipModel {
 }
 
 export const TerminalView = memo(
-    ({ outerBlockId, fontSize = 16, focusRequest = 0, topSlot, overlaySlot, replaceContent }: TerminalViewProps) => {
+    ({
+        outerBlockId,
+        fontSize = 16,
+        focusRequest = 0,
+        topSlot,
+        overlaySlot,
+        replaceContent,
+        renderAgentSlot,
+    }: TerminalViewProps) => {
         const model = useTerminalModel(outerBlockId);
         const loading = useAtomValue(model.loadingAtom);
         const error = useAtomValue(model.errorAtom);
@@ -126,7 +126,6 @@ export const TerminalView = memo(
         const bellTick = useAtomValue(model.bellTickAtom);
         const commandHistory = useAtomValue(model.commandHistoryAtom);
         const [bellFlash, setBellFlash] = useState(false);
-        const [agentCommandResults, setAgentCommandResults] = useState<AgentInlineCommandResult[]>([]);
 
         // Visual bell — C0 BEL bumps bellTick; flash a brief ring around the
         // pane for ~180ms.  Cheap, low-distraction; no audio permission ask.
@@ -156,10 +155,6 @@ export const TerminalView = memo(
                 return "";
             }
         }, []);
-        // Project (Space) dir — the anchor for agent session context so all
-        // conversations in this Space group under the same sessions/{cwd}/,
-        // independent of an in-terminal `cd` (which only moves one shell).
-        const workspaceDir = useAtomValue(workspaceDirAtom);
         // Initial cwd from the outer block's `cmd:cwd` meta — the value the
         // shell was spawned in.  Acts as a fallback before the shell's first
         // OSC precmd sends a live `pwd` update.
@@ -205,112 +200,6 @@ export const TerminalView = memo(
         const chipModel = useContextChipModel(outerBlockId);
         const chipValues = useAtomValue(chipModel.valuesAtom);
         const effectiveMode = useAtomValue(nld.effectiveModeAtom);
-
-        // AI model picker (Phase D of the ai-config refactor).  Two
-        // sources of truth: CATALOG (in-repo) + ~/.config/crest/ai.json
-        // (via aiUserConfigAtom).  Selection is persisted per-pane in
-        // block.meta["agent:selection"] as a {provider, model, reasoning?}
-        // triple.  See docs/ai-config-architecture.md §5.
-        const userConfigState = useAtomValue(aiUserConfigAtom);
-        const blockAgentSelection = useOrefMetaKeyAtom(WOS.makeORef("block", outerBlockId), "agent:selection");
-        // Effective selection — block override beats the ai.json default.
-        // Null is a valid state (user hasn't picked, no default) and the
-        // picker handles it via its empty/loading banners.
-        const activeSelection = useMemo<AgentSelection | null>(() => {
-            if (blockAgentSelection?.provider && blockAgentSelection?.model) {
-                return {
-                    provider: blockAgentSelection.provider,
-                    model: blockAgentSelection.model,
-                    reasoning: blockAgentSelection.reasoning as "low" | "medium" | "high" | undefined,
-                };
-            }
-            const def = userConfigState.config?.default;
-            if (def?.provider && def?.model) {
-                return {
-                    provider: def.provider,
-                    model: def.model,
-                    reasoning: def.reasoning as "low" | "medium" | "high" | undefined,
-                };
-            }
-            return null;
-        }, [blockAgentSelection, userConfigState.config]);
-
-        const providerModelsMap = useAtomValue(providerModelsMapAtom);
-
-        // Chip label — show just the friendly model name. Resolution order:
-        //   1. Catalog displayName (curated)
-        //   2. Live /models name (e.g. OpenRouter returns "Anthropic: Claude…")
-        //   3. Wire id with any "vendor/" prefix stripped
-        // Whatever wins also goes through cleanModelLabel to strip the
-        // provider marker baked into many real-world names: catalog uses
-        // " (OpenRouter)" suffix, OpenRouter uses "Vendor: " prefix.
-        const modelDisplayLabel = useMemo(() => {
-            if (!activeSelection) return "Pick model";
-            const provider = CATALOG.find((p) => p.id === activeSelection.provider);
-            const modelMeta = provider?.models.find((m) => m.id === activeSelection.model);
-            const liveMatch = providerModelsMap[activeSelection.provider]?.models.find(
-                (m) => m.id === activeSelection.model
-            );
-            const fallbackId = stripVendorPrefix(activeSelection.model);
-            const base = cleanModelLabel(modelMeta?.displayName ?? liveMatch?.name ?? fallbackId);
-            return activeSelection.reasoning ? `${base} · ${activeSelection.reasoning}` : base;
-        }, [activeSelection, providerModelsMap]);
-
-        const onSelectionChange = useCallback(
-            (next: AgentSelection) => {
-                void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
-                    "agent:selection": {
-                        provider: next.provider,
-                        model: next.model,
-                        reasoning: next.reasoning ?? "",
-                    },
-                });
-            },
-            [outerBlockId]
-        );
-
-        // Resolve the active selection through the catalog + user config
-        // into the final wire shape the backend ingests.  Recomputed on
-        // every selection / config change.  When the resolver fails
-        // (no creds, unknown model, etc.) we keep the structured error so
-        // AgentChatHost can surface it inline in the agent block instead of
-        // a 3.5s self-dismissing toast.  Note: an absent selection is also
-        // surfaced as a synthetic no_default error here so the downstream
-        // path is uniform (one nullable error, never both null).
-        // Separate config/error pair (instead of a discriminated union here)
-        // because the project has `strict: false`, which makes TS unreliable
-        // at narrowing `{ ok: true; config } | { ok: false; error }` after a
-        // ternary on `.ok`. Returning the pair explicitly sidesteps that.
-        const { resolvedAIConfig, aiConfigError } = useMemo<{
-            resolvedAIConfig: ResolvedAIConfig | null;
-            aiConfigError: ResolveError | null;
-        }>(() => {
-            if (!activeSelection) {
-                return {
-                    resolvedAIConfig: null,
-                    aiConfigError: {
-                        code: "no_default",
-                        message: "No model selected. Open the picker or set a default in ai.json.",
-                    },
-                };
-            }
-            const r = resolveAIConfig(activeSelection, userConfigState.config ?? undefined, CATALOG);
-            if (r.ok) return { resolvedAIConfig: r.config, aiConfigError: null };
-            // TS with strict:false doesn't narrow the `!r.ok` branch of the
-            // ResolveResult union; assert via the false-branch object shape
-            // so we can read `.error` without `// @ts-ignore`.
-            const errResult = r as { ok: false; error: ResolveError };
-            return { resolvedAIConfig: null, aiConfigError: errResult.error };
-        }, [activeSelection, userConfigState.config]);
-
-        // Open the AI setup wizard.  Replaces the earlier "open the JSON
-        // file in $EDITOR" affordance — picker now hands off to a guided
-        // 2-step modal (provider checkboxes -> API keys)
-        // that writes ai.json + keychain entries without the user ever
-        // touching the file.
-        const onOpenAIConfigFile = useCallback(() => {
-            modalsModel.pushModal("AISetupWizard");
-        }, []);
 
         // Feed the chip model with the current cwd / branch + finished-block
         // events.  Each input is a fingerprint dimension (warp's
@@ -367,124 +256,9 @@ export const TerminalView = memo(
             [nld, commandHistory]
         );
         const [submitting, setSubmitting] = useState(false);
-
-        // ---------- agent wiring ----------
-        //
-        // AgentChatHost owns usePiChat for this pane. It exposes a small
-        // API (send / abort / getRuns) via onReady so cmdblock-input can
-        // submit and the timeline can render runs. block.meta["agent:session"]
-        // is the persistent pane→session link; first send mints metadata,
-        // onSessionMintedHandler writes it back to meta.
-        const agentApiRef = useRef<AgentChatHostApi | null>(null);
-        const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
-            agentApiRef.current = api;
-        }, []);
-        const [modelPickerRequest, setModelPickerRequest] = useState(0);
-        const onOpenAgentModelPicker = useCallback(() => {
-            setModelPickerRequest((value) => value + 1);
-        }, []);
-        const [agentSelectorRequest, setAgentSelectorRequest] = useState<AgentSelectorRequest | null>(null);
-        const onAgentSelectorRequest = useCallback((request: AgentSelectorRequest) => {
-            setAgentSelectorRequest(request);
-        }, []);
-        const agentSelectorAnchorRef = useRef<HTMLDivElement>(null);
-        const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
-            { text: string; requestId: number } | undefined
-        >(undefined);
-        const onAgentEditorText = useCallback((text: string) => {
-            setAgentRestoredTextRequest((prev) => ({ text, requestId: (prev?.requestId ?? 0) + 1 }));
-        }, []);
-        // Reactive agent state (status + pending queue) for the activity bar above
-        // the input. The host's onReady api is imperative; this is the live view.
-        const [agentState, setAgentState] = useState<AgentHostState>({
-            status: "idle",
-            queuedMessages: [],
-        });
-        const onAgentStop = useCallback(() => {
-            agentApiRef.current?.abort();
-        }, []);
-        const persistedAgentSession = useOrefMetaKeyAtom(WOS.makeORef("block", outerBlockId), "agent:session");
-        const timelineAgentSessionPath = useMemo(() => model.getFirstAgentSessionPath(), [model, revision]);
-        const agentSession = useMemo<AgentSessionMeta | undefined>(() => {
-            if (persistedAgentSession?.path) return persistedAgentSession;
-            if (!timelineAgentSessionPath) return undefined;
-            return {
-                id: "",
-                createdAt: "",
-                cwd: workspaceDir,
-                path: timelineAgentSessionPath,
-            };
-        }, [persistedAgentSession, timelineAgentSessionPath, workspaceDir]);
-        const onSessionMintedHandler = useCallback(
-            (meta: AgentSessionMeta) => {
-                void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), {
-                    "agent:session": meta,
-                });
-            },
-            [outerBlockId]
-        );
-        // Renderer state for agent runs. AgentChatHost watches usePiChat
-        // and announces runIds to the model; here we read the same source
-        // (via the API) to feed AgentBlockElement via BlockListElement.
-        // For the timeline render we keep the runs map in a small state
-        // hook updated on each api refresh.
-        const [agentRunsById, setAgentRunsById] = useState<Map<string, PiRun>>(new Map());
-        const onAgentRunsUpdate = useCallback((runs: PiRun[]) => {
-            setAgentRunsById(indexRunsById(runs));
-            model.syncAgentBlocks(new Set(runs.map((r) => r.runId)));
-        }, [model]);
-        const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
-            setAgentCommandResults((prev) => [...prev, result]);
-        }, []);
-        const tabId = useAtomValue(atoms.staticTabId);
-        const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
-        const liveConnection = useMemo(() => connectionName || "", [connectionName]);
-
-        // V1 file-citation jump.  Proper "scroll to the block whose output
-        // touched this file" requires a filename→block index we don't have
-        // yet — until then we copy `filename:line` to clipboard so the user
-        // can paste into their editor.  Real scroll-to-block is a P-future
-        // punch list item.
-        const onAgentFileJump = useCallback(
-            (filename: string, line?: number) => {
-                const ref = line != null ? `${filename}:${line}` : filename;
-                try {
-                    void navigator.clipboard.writeText(ref);
-                    globalStore.set(model.notificationAtom, `Copied ${ref}`);
-                } catch {
-                    // sandbox / permissions failure — drop silently
-                }
-            },
-            [model]
-        );
-
-        // V1 open-block — when a tool-use card carries a blockid (e.g. the
-        // headless shell block that ran a shell_exec call), let the user
-        // scroll the timeline to that block.  Works for blocks already in
-        // this pane; "open hidden block" UX is future polish.
-        const onAgentOpenBlock = useCallback(
-            (blockId: string) => {
-                const found = model.getBlocks().findById(blockId);
-                if (!found) {
-                    globalStore.set(model.notificationAtom, `Block ${blockId} is not in this pane`);
-                    return;
-                }
-                model.setScrollPosition({ kind: "anchored", blockId });
-            },
-            [model]
-        );
-
         const onSubmit = useCallback(
-            (text: string, mode: InputMode) => {
+            (text: string) => {
                 if (!text) return;
-                if (mode === "agent") {
-                    const api = agentApiRef.current;
-                    if (!api) {
-                        globalStore.set(model.notificationAtom, "Agent is still starting. Try again in a moment.");
-                        return false;
-                    }
-                    return api.submit(text);
-                }
                 setSubmitting(true);
                 void model.submitInput(text).finally(() => setSubmitting(false));
             },
@@ -516,6 +290,44 @@ export const TerminalView = memo(
 
         const isRunning = liveBlock?.state === "running";
         const inAltScreen = terminalInputState.kind !== "input-editor";
+
+        // Project (Space) dir — anchors agent session context so all
+        // conversations in this Space group under the same sessions/{cwd}/.
+        const workspaceDir = useAtomValue(workspaceDirAtom);
+        // Recent commands feed the agent input's history affordances.
+        const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
+        // Connection string ("" = local) forwarded to the agent surface.
+        const liveConnection = connectionName || "";
+        // Agent 会话形态：TerminalView 算好实时上下文后回调构造 slot。
+        // 纯终端形态 renderAgentSlot 未传 → slot 保持 null（无 agent UI）。
+        const agentSlot = renderAgentSlot
+            ? renderAgentSlot({
+                  model,
+                  fontSize,
+                  focusRequest,
+                  liveCwd,
+                  home,
+                  branch: liveBlock?.gitBranch || chipValues.gitBranch,
+                  gitAdded: liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded,
+                  gitRemoved: liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved,
+                  prNumber: chipValues.prNumber,
+                  prTitle: chipValues.prTitle,
+                  kubernetesContext: chipValues.kubernetesContext,
+                  sshHost,
+                  sshUser,
+                  workspaceDir,
+                  liveGitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
+                  recentCmds,
+                  liveConnection,
+                  commandHistory,
+                  inputMode,
+                  effectiveMode,
+                  onModeChange: setInputMode,
+                  onInputTextChange,
+                  isRunning,
+                  inAltScreen,
+              })
+            : null;
         const rootRef = useRef<HTMLDivElement>(null);
 
         useEffect(() => {
@@ -812,46 +624,7 @@ export const TerminalView = memo(
                 >
                     {topSlot}
                     <FindBar model={model} />
-                    <AgentChatHost
-                        outerBlockId={outerBlockId}
-                        sessionMetadata={agentSession}
-                        onSessionMinted={onSessionMintedHandler}
-                        modelSelection={
-                            resolvedAIConfig
-                                ? {
-                                      // Resolved config carries the credential ref
-                                      // (tokensecretname / token) main needs to find
-                                      // the provider API key — activeSelection alone
-                                      // doesn't, which left agent sends keyless.
-                                      provider: resolvedAIConfig.provider,
-                                      model: resolvedAIConfig.model,
-                                      reasoning: resolvedAIConfig.reasoning,
-                                      token: resolvedAIConfig.token,
-                                      tokenSecretName: resolvedAIConfig.tokensecretname,
-                                  }
-                                : activeSelection
-                                  ? {
-                                        provider: activeSelection.provider,
-                                        model: activeSelection.model,
-                                        reasoning: activeSelection.reasoning,
-                                    }
-                                  : undefined
-                        }
-                        paneContext={{
-                            cwd: workspaceDir,
-                            gitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
-                            recentCmds,
-                            connection: liveConnection,
-                        }}
-                        selectionError={aiConfigError}
-                        onReady={onAgentHostReady}
-                        onRunsChange={onAgentRunsUpdate}
-                        onStateChange={setAgentState}
-                        onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
-                        onCommandResult={onAgentCommandResult}
-                        onOpenModelPicker={onOpenAgentModelPicker}
-                        onSelectorRequest={onAgentSelectorRequest}
-                    />
+                    {agentSlot?.chatHost}
                     {error && (
                         <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
                             {error}
@@ -870,9 +643,9 @@ export const TerminalView = memo(
                                 onCopyBlock={onCopyBlock}
                                 onLinkClick={onLinkClick}
                                 charWidth={charWidth}
-                                agentRunsById={agentRunsById}
+                                agentRunsById={agentSlot?.agentRunsById ?? EMPTY_RUNS}
                             />
-                            <AgentCommandResultList results={agentCommandResults} />
+                            {agentSlot?.commandResults}
                         </>
                     )}
                     {/* prompt_to_editor_padding — warp settings/mod.rs:551 keeps a
@@ -883,22 +656,11 @@ export const TerminalView = memo(
                     {/* Agent footer (warp's bottom orchestration bar): working status +
                 Stop on the right, queued messages on the left. Between the
                 conversation and the input editor; hidden when idle + empty. */}
-                    {!inAltScreen && (
-                        <AgentActivityBar
-                            status={agentState.status}
-                            queuedMessages={agentState.queuedMessages}
-                            onStop={onAgentStop}
-                        />
-                    )}
-                    {!inAltScreen && (
-                        <div ref={agentSelectorAnchorRef}>
-                            <SessionSelector
-                                anchorRef={agentSelectorAnchorRef}
-                                request={agentSelectorRequest}
-                                onClose={() => setAgentSelectorRequest(null)}
-                                onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
-                                onEditorText={onAgentEditorText}
-                            />
+                    {!inAltScreen && agentSlot?.activityBar}
+                    {!inAltScreen &&
+                        (agentSlot ? (
+                            agentSlot.inputBar
+                        ) : (
                             <CmdBlockInput
                                 cwd={liveCwd}
                                 home={home}
@@ -913,8 +675,8 @@ export const TerminalView = memo(
                                 kubernetesContext={chipValues.kubernetesContext}
                                 sshHost={sshHost}
                                 sshUser={sshUser}
-                                mode={inputMode}
-                                onModeChange={setInputMode}
+                                mode="terminal"
+                                onModeChange={() => {}}
                                 onSubmit={onSubmit}
                                 submitting={submitting}
                                 disabled={false}
@@ -922,25 +684,13 @@ export const TerminalView = memo(
                                 focusRequest={focusRequest}
                                 history={commandHistory}
                                 onTextChange={onInputTextChange}
-                                restoredTextRequest={agentRestoredTextRequest}
-                                effectiveMode={effectiveMode}
-                                modelDisplayLabel={modelDisplayLabel}
-                                catalog={CATALOG}
-                                userConfig={userConfigState.config}
-                                userConfigStatus={userConfigState.status}
-                                userConfigError={userConfigState.error}
-                                selection={activeSelection}
-                                onSelectionChange={onSelectionChange}
-                                onOpenAIConfigFile={onOpenAIConfigFile}
-                                openModelPickerRequest={modelPickerRequest}
                                 placeholder={
                                     isRunning
                                         ? "Press Ctrl+C in the running block to interrupt, or type the next command"
                                         : undefined
                                 }
                             />
-                        </div>
-                    )}
+                        ))}
                     {overlaySlot}
                     {notification && (
                         <div className="pointer-events-none absolute right-3 top-3 max-w-[60%] rounded border border-fg-overlay-2 bg-background/95 px-3 py-2 text-[12px] text-foreground shadow-lg">
@@ -953,27 +703,3 @@ export const TerminalView = memo(
     }
 );
 TerminalView.displayName = "TerminalView";
-
-// stripVendorPrefix — OpenRouter / Together style model ids carry the
-// upstream vendor as a slash-prefixed namespace ("anthropic/claude-…").
-// The chip should surface just the model name, not the vendor segment.
-function stripVendorPrefix(modelId: string): string {
-    const i = modelId.lastIndexOf("/");
-    if (i < 0 || i === modelId.length - 1) return modelId;
-    return modelId.slice(i + 1);
-}
-
-// cleanModelLabel — display labels arrive with the provider baked in,
-// in two flavors:
-//   - " (OpenRouter)" suffix on the curated catalog displayName
-//   - "Vendor: " prefix on the live /models name for OpenRouter etc.
-// Both look like noise in the chip. Strip them so the chip shows just
-// the model. The detail tooltip still surfaces the provider explicitly.
-function cleanModelLabel(label: string): string {
-    let s = label.replace(/\s*\([^)]*\)\s*$/, "");
-    const idx = s.indexOf(": ");
-    if (idx > 0 && idx < s.length - 2) {
-        s = s.slice(idx + 2);
-    }
-    return s.trim();
-}
