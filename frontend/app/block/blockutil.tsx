@@ -28,6 +28,9 @@ export function blockViewToIcon(view: string): string {
     if (view == "term") {
         return "terminal";
     }
+    if (view == "agent") {
+        return "sparkles";
+    }
     if (view == "preview") {
         return "file";
     }
@@ -52,6 +55,9 @@ export function blockViewToName(view: string): string {
     }
     if (view == "term") {
         return "Terminal";
+    }
+    if (view == "agent") {
+        return "Agent";
     }
     if (view == "preview") {
         return "Preview";
