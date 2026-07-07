@@ -54,6 +54,10 @@ export interface TerminalViewProps {
     // for `term:mode = "vdom"` where the whole pane becomes a single
     // VDom subblock instead of a shell.
     replaceContent?: React.ReactNode;
+    // Agent 装配。null → 纯终端形态（无 agent UI）；非 null → agent 会话
+    // 形态，承载 chat host / activity bar / session selector / agent 输入栏。
+    // 由 AgentPaneView 通过 useAgentPane() 构造并传入；TerminalPaneView 传 null。
+    agentSlot?: import("./agent-pane").AgentSlot | null;
 }
 
 export function blurActiveEditableInRoot(root: HTMLElement | null): void {
