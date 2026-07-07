@@ -809,8 +809,8 @@ ipcMain.on("switch-workspace", (event, workspaceId) => {
     });
 });
 
-export async function createWorkspace(window: WaveBrowserWindow) {
-    const newWsId = await WorkspaceService.CreateWorkspace("", "", "", true);
+export async function createWorkspace(window: WaveBrowserWindow, dir: string = "") {
+    const newWsId = await WorkspaceService.CreateWorkspace("", "", "", true, dir);
     if (newWsId) {
         if (window) {
             await window.switchWorkspace(newWsId);
@@ -820,11 +820,11 @@ export async function createWorkspace(window: WaveBrowserWindow) {
     }
 }
 
-ipcMain.on("create-workspace", (event) => {
+ipcMain.on("create-workspace", (event, dir: string) => {
     fireAndForget(async () => {
         const ww = getWaveWindowByWebContentsId(event.sender.id);
-        console.log("create-workspace", ww?.waveWindowId);
-        await createWorkspace(ww);
+        console.log("create-workspace", ww?.waveWindowId, dir);
+        await createWorkspace(ww, dir);
     });
 });
 

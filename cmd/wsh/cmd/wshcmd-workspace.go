@@ -17,6 +17,9 @@ var workspaceCommand = &cobra.Command{
 
 func init() {
 	workspaceCommand.AddCommand(workspaceListCommand)
+	workspaceCreateCommand.Flags().StringVar(&workspaceCreateDir, "dir", "", "project directory to bind the workspace to (required)")
+	workspaceCreateCommand.Flags().StringVar(&workspaceCreateName, "name", "", "workspace name (defaults to dir basename)")
+	workspaceCommand.AddCommand(workspaceCreateCommand)
 	rootCmd.AddCommand(workspaceCommand)
 }
 
@@ -48,4 +51,30 @@ func workspaceListRun(cmd *cobra.Command, args []string) {
 		}
 	}
 	WriteStdout("]\n")
+}
+
+var workspaceCreateDir string
+var workspaceCreateName string
+
+var workspaceCreateCommand = &cobra.Command{
+	Use:     "create --dir <path> [--name <name>]",
+	Short:   "Create a workspace bound to a project directory",
+	Run:     workspaceCreateRun,
+	PreRunE: preRunSetupRpcClient,
+}
+
+func workspaceCreateRun(cmd *cobra.Command, args []string) {
+	if workspaceCreateDir == "" {
+		WriteStderr("--dir is required\n")
+		return
+	}
+	wsId, err := wshclient.CreateWorkspaceCommand(RpcClient, wshrpc.CreateWorkspaceData{
+		Name: workspaceCreateName,
+		Dir:  workspaceCreateDir,
+	}, &wshrpc.RpcOpts{Timeout: 2000})
+	if err != nil {
+		WriteStderr("Unable to create workspace: %v\n", err)
+		return
+	}
+	WriteStdout("%s\n", wsId)
 }
