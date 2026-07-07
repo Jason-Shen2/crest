@@ -44,6 +44,7 @@ export interface AgentSlot {
 // 输入栏渲染需要的、来自 TerminalView 的实时上下文。这些值 TerminalView
 // 已经算好（cwd/branch/ssh/history 等），通过 deps 传入避免重复计算。
 export interface AgentPaneDeps {
+    model: TerminalModel;
     fontSize: number;
     focusRequest: number;
     liveCwd: string;

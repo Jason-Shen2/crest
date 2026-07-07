@@ -5,6 +5,7 @@
 // TerminalModel for this outer block, mounts the block list, and the input
 // bar.  Replaces the old `TermBlocksView` from view/termblocks/termblocks.tsx.
 
+import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { globalStore } from "@/app/store/jotaiStore";
 import { type PiRun } from "@/app/store/use-pi-chat";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
@@ -41,10 +42,10 @@ export interface TerminalViewProps {
     // for `term:mode = "vdom"` where the whole pane becomes a single
     // VDom subblock instead of a shell.
     replaceContent?: React.ReactNode;
-    // Agent 装配。null → 纯终端形态（无 agent UI）；非 null → agent 会话
-    // 形态，承载 chat host / activity bar / session selector / agent 输入栏。
-    // 由 AgentPaneView 通过 useAgentPane() 构造并传入；TerminalPaneView 传 null。
-    agentSlot?: import("./agent-pane").AgentSlot | null;
+    // Agent 会话形态用此回调构造 slot —— TerminalView 在算好实时上下文
+    // (cwd/branch/inputMode/…) 后调用，交给 useAgentPane 生成 AgentSlot。
+    // 纯终端形态不传此 prop，agentSlot 保持 null。
+    renderAgentSlot?: (deps: import("./agent-pane").AgentPaneDeps) => import("./agent-pane").AgentSlot;
 }
 
 export function blurActiveEditableInRoot(root: HTMLElement | null): void {
@@ -97,7 +98,7 @@ export const TerminalView = memo(
         topSlot,
         overlaySlot,
         replaceContent,
-        agentSlot,
+        renderAgentSlot,
     }: TerminalViewProps) => {
         const model = useTerminalModel(outerBlockId);
         const loading = useAtomValue(model.loadingAtom);
@@ -289,6 +290,44 @@ export const TerminalView = memo(
 
         const isRunning = liveBlock?.state === "running";
         const inAltScreen = terminalInputState.kind !== "input-editor";
+
+        // Project (Space) dir — anchors agent session context so all
+        // conversations in this Space group under the same sessions/{cwd}/.
+        const workspaceDir = useAtomValue(workspaceDirAtom);
+        // Recent commands feed the agent input's history affordances.
+        const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
+        // Connection string ("" = local) forwarded to the agent surface.
+        const liveConnection = connectionName || "";
+        // Agent 会话形态：TerminalView 算好实时上下文后回调构造 slot。
+        // 纯终端形态 renderAgentSlot 未传 → slot 保持 null（无 agent UI）。
+        const agentSlot = renderAgentSlot
+            ? renderAgentSlot({
+                  model,
+                  fontSize,
+                  focusRequest,
+                  liveCwd,
+                  home,
+                  branch: liveBlock?.gitBranch || chipValues.gitBranch,
+                  gitAdded: liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded,
+                  gitRemoved: liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved,
+                  prNumber: chipValues.prNumber,
+                  prTitle: chipValues.prTitle,
+                  kubernetesContext: chipValues.kubernetesContext,
+                  sshHost,
+                  sshUser,
+                  workspaceDir,
+                  liveGitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
+                  recentCmds,
+                  liveConnection,
+                  commandHistory,
+                  inputMode,
+                  effectiveMode,
+                  onModeChange: setInputMode,
+                  onInputTextChange,
+                  isRunning,
+                  inAltScreen,
+              })
+            : null;
         const rootRef = useRef<HTMLDivElement>(null);
 
         useEffect(() => {
