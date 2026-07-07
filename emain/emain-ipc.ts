@@ -605,4 +605,16 @@ export function initIpcHandlers() {
             return false;
         }
     });
+
+    electron.ipcMain.handle("select-directory", async (event) => {
+        const ww = electron.BrowserWindow.fromWebContents(event.sender);
+        const result = await electron.dialog.showOpenDialog(ww, {
+            title: "Open Project Folder",
+            properties: ["openDirectory", "createDirectory"],
+        });
+        if (result.canceled || result.filePaths.length === 0) {
+            return null;
+        }
+        return result.filePaths[0];
+    });
 }

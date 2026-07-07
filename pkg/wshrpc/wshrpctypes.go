@@ -176,6 +176,7 @@ type WshRpcInterface interface {
 	GetSecretsLinuxStorageBackendCommand(ctx context.Context) (string, error)
 
 	WorkspaceListCommand(ctx context.Context) ([]WorkspaceInfoData, error)
+	CreateWorkspaceCommand(ctx context.Context, data CreateWorkspaceData) (string, error)
 	GetUpdateChannelCommand(ctx context.Context) (string, error)
 
 	// terminal
@@ -752,6 +753,11 @@ type WaveInfoData struct {
 type WorkspaceInfoData struct {
 	WindowId      string             `json:"windowid"`
 	WorkspaceData *waveobj.Workspace `json:"workspacedata"`
+}
+
+type CreateWorkspaceData struct {
+	Name string `json:"name,omitempty"`
+	Dir  string `json:"dir,omitempty"`
 }
 
 type BlocksListRequest struct {

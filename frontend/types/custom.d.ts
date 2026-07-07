@@ -121,7 +121,8 @@ declare global {
         setWebviewFocus: (focusedId: number) => void; // webview-focus, focusedId is the getWebContentsId of the webview
         registerGlobalWebviewKeys: (keys: string[]) => void; // register-global-webview-keys
         onControlShiftStateUpdate: (callback: (state: boolean) => void) => void; // control-shift-state-update
-        createWorkspace: () => void; // create-workspace
+        createWorkspace: (dir: string) => void; // create-workspace
+        selectDirectory: () => Promise<string | null>; // select-directory
         switchWorkspace: (workspaceId: string) => void; // switch-workspace
         deleteWorkspace: (workspaceId: string) => void; // delete-workspace
         setActiveTab: (tabId: string) => void; // set-active-tab

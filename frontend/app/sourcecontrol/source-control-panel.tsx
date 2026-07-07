@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { focusedCwdAtom } from "@/app/fileexplorer/file-explorer-atoms";
+import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { Icon } from "@/app/icon/Icon";
 import { cn } from "@/util/util";
@@ -590,7 +590,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
     const pendingDiscard = useAtomValue(model.pendingdiscardAtom);
     const selectedPath = useAtomValue(model.selectedpathAtom);
 	const [view, setView] = useAtom(model.viewAtom);
-    const focusedCwd = useAtomValue(focusedCwdAtom);
+    const focusedCwd = useAtomValue(workspaceDirAtom);
 
     useEffect(() => {
         model.syncCwd();
