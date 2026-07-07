@@ -58,6 +58,12 @@ func EnsureInitialData() (bool, error) {
 	}
 	log.Printf("clientid: %s\n", client.OID)
 	wstore.SetClientId(client.OID)
+	// Space = Project: discard any dev-era workspaces that were created
+	// before every Space was bound to a directory. Log and continue on
+	// error so a migration failure never blocks boot.
+	if err := DiscardDirlessWorkspaces(ctx); err != nil {
+		log.Printf("error discarding dirless workspaces: %v", err)
+	}
 	if len(client.WindowIds) == 1 {
 		log.Println("client has one window")
 		CheckAndFixWindow(ctx, client.WindowIds[0])
@@ -70,7 +76,7 @@ func EnsureInitialData() (bool, error) {
 	wsId := ""
 	if firstLaunch {
 		log.Println("client has no windows and first launch, creating starter workspace")
-		starterWs, err := CreateWorkspace(ctx, "Starter workspace", "terminal", "#58C142", false, true)
+		starterWs, err := CreateWorkspace(ctx, "Starter workspace", "terminal", "#58C142", false, true, "")
 		if err != nil {
 			return firstLaunch, fmt.Errorf("error creating starter workspace: %w", err)
 		}

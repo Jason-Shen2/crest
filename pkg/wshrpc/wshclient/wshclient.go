@@ -197,6 +197,12 @@ func CreateSubBlockCommand(w *wshutil.WshRpc, data wshrpc.CommandCreateSubBlockD
 	return resp, err
 }
 
+// command "createworkspace", wshserver.CreateWorkspaceCommand
+func CreateWorkspaceCommand(w *wshutil.WshRpc, data wshrpc.CreateWorkspaceData, opts *wshrpc.RpcOpts) (string, error) {
+	resp, err := sendRpcRequestCallHelper[string](w, "createworkspace", data, opts)
+	return resp, err
+}
+
 // command "debugterm", wshserver.DebugTermCommand
 func DebugTermCommand(w *wshutil.WshRpc, data wshrpc.CommandDebugTermData, opts *wshrpc.RpcOpts) (*wshrpc.CommandDebugTermRtnData, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.CommandDebugTermRtnData](w, "debugterm", data, opts)
@@ -530,6 +536,120 @@ func GetUpdateChannelCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) (string, e
 func GetVarCommand(w *wshutil.WshRpc, data wshrpc.CommandVarData, opts *wshrpc.RpcOpts) (*wshrpc.CommandVarResponseData, error) {
 	resp, err := sendRpcRequestCallHelper[*wshrpc.CommandVarResponseData](w, "getvar", data, opts)
 	return resp, err
+}
+
+// command "gitcheckoutbranch", wshserver.GitCheckoutBranchCommand
+func GitCheckoutBranchCommand(w *wshutil.WshRpc, data wshrpc.GitBranchData, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitcheckoutbranch", data, opts)
+	return err
+}
+
+// command "gitcommit", wshserver.GitCommitCommand
+func GitCommitCommand(w *wshutil.WshRpc, data wshrpc.GitCommitData, opts *wshrpc.RpcOpts) (*wshrpc.GitCommitResult, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitCommitResult](w, "gitcommit", data, opts)
+	return resp, err
+}
+
+// command "gitdiscardallchanges", wshserver.GitDiscardAllChangesCommand
+func GitDiscardAllChangesCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitdiscardallchanges", data, opts)
+	return err
+}
+
+// command "gitdiscardchanges", wshserver.GitDiscardChangesCommand
+func GitDiscardChangesCommand(w *wshutil.WshRpc, data wshrpc.GitDiscardChangesData, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitdiscardchanges", data, opts)
+	return err
+}
+
+// command "gitfetch", wshserver.GitFetchCommand
+func GitFetchCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitfetch", data, opts)
+	return err
+}
+
+// command "gitgetcommitdiff", wshserver.GitGetCommitDiffCommand
+func GitGetCommitDiffCommand(w *wshutil.WshRpc, data wshrpc.GitCommitData, opts *wshrpc.RpcOpts) (*wshrpc.GitDiffResult, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitDiffResult](w, "gitgetcommitdiff", data, opts)
+	return resp, err
+}
+
+// command "gitgetcommitfiles", wshserver.GitGetCommitFilesCommand
+func GitGetCommitFilesCommand(w *wshutil.WshRpc, data wshrpc.GitCommitData, opts *wshrpc.RpcOpts) ([]wshrpc.GitCommitFileChange, error) {
+	resp, err := sendRpcRequestCallHelper[[]wshrpc.GitCommitFileChange](w, "gitgetcommitfiles", data, opts)
+	return resp, err
+}
+
+// command "gitgetdiffcontent", wshserver.GitGetDiffContentCommand
+func GitGetDiffContentCommand(w *wshutil.WshRpc, data wshrpc.GitDiffFileData, opts *wshrpc.RpcOpts) (*wshrpc.GitDiffContentResult, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitDiffContentResult](w, "gitgetdiffcontent", data, opts)
+	return resp, err
+}
+
+// command "gitgetdiffforfile", wshserver.GitGetDiffForFileCommand
+func GitGetDiffForFileCommand(w *wshutil.WshRpc, data wshrpc.GitDiffFileData, opts *wshrpc.RpcOpts) (*wshrpc.GitDiffResult, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitDiffResult](w, "gitgetdiffforfile", data, opts)
+	return resp, err
+}
+
+// command "gitgetlog", wshserver.GitGetLogCommand
+func GitGetLogCommand(w *wshutil.WshRpc, data wshrpc.GitLogRequest, opts *wshrpc.RpcOpts) ([]wshrpc.GitLogEntry, error) {
+	resp, err := sendRpcRequestCallHelper[[]wshrpc.GitLogEntry](w, "gitgetlog", data, opts)
+	return resp, err
+}
+
+// command "gitgetpanelsnapshot", wshserver.GitGetPanelSnapshotCommand
+func GitGetPanelSnapshotCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (*wshrpc.GitPanelSnapshot, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitPanelSnapshot](w, "gitgetpanelsnapshot", data, opts)
+	return resp, err
+}
+
+// command "gitlistbranches", wshserver.GitListBranchesCommand
+func GitListBranchesCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (*wshrpc.GitBranchListResult, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitBranchListResult](w, "gitlistbranches", data, opts)
+	return resp, err
+}
+
+// command "gitpull", wshserver.GitPullCommand
+func GitPullCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitpull", data, opts)
+	return err
+}
+
+// command "gitpush", wshserver.GitPushCommand
+func GitPushCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (*wshrpc.GitPushResult, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitPushResult](w, "gitpush", data, opts)
+	return resp, err
+}
+
+// command "gitstageall", wshserver.GitStageAllCommand
+func GitStageAllCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitstageall", data, opts)
+	return err
+}
+
+// command "gitstagefile", wshserver.GitStageFileCommand
+func GitStageFileCommand(w *wshutil.WshRpc, data wshrpc.GitFilePathData, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitstagefile", data, opts)
+	return err
+}
+
+// command "gitstatus", wshserver.GitStatusCommand
+func GitStatusCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (*wshrpc.GitStatusSnapshot, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.GitStatusSnapshot](w, "gitstatus", data, opts)
+	return resp, err
+}
+
+// command "gitunstageall", wshserver.GitUnstageAllCommand
+func GitUnstageAllCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitunstageall", data, opts)
+	return err
+}
+
+// command "gitunstagefile", wshserver.GitUnstageFileCommand
+func GitUnstageFileCommand(w *wshutil.WshRpc, data wshrpc.GitFilePathData, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "gitunstagefile", data, opts)
+	return err
 }
 
 // command "jobcmdexited", wshserver.JobCmdExitedCommand
@@ -1107,3 +1227,5 @@ func WslStatusCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) ([]wshrpc.ConnSta
 	resp, err := sendRpcRequestCallHelper[[]wshrpc.ConnStatus](w, "wslstatus", nil, opts)
 	return resp, err
 }
+
+

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,13 +49,16 @@ var WorkspaceIcons = [...]string{
 	"mug-hot",
 }
 
-func CreateWorkspace(ctx context.Context, name string, icon string, color string, applyDefaults bool, isInitialLaunch bool) (*waveobj.Workspace, error) {
+func CreateWorkspace(ctx context.Context, name string, icon string, color string, applyDefaults bool, isInitialLaunch bool, dir string) (*waveobj.Workspace, error) {
 	ws := &waveobj.Workspace{
 		OID:    uuid.NewString(),
 		TabIds: []string{},
 		Name:   "",
 		Icon:   "",
 		Color:  "",
+	}
+	if dir != "" {
+		ws.Meta = waveobj.MetaMapType{waveobj.MetaKey_WorkspaceDir: dir}
 	}
 	err := wstore.DBInsert(ctx, ws)
 	if err != nil {
@@ -68,6 +72,10 @@ func CreateWorkspace(ctx context.Context, name string, icon string, color string
 	wps.Broker.Publish(wps.WaveEvent{
 		Event: wps.Event_WorkspaceUpdate,
 	})
+
+	if name == "" && dir != "" {
+		name = filepath.Base(dir)
+	}
 
 	ws, _, err = UpdateWorkspace(ctx, ws.OID, name, icon, color, applyDefaults)
 	return ws, err
@@ -195,6 +203,27 @@ func DeleteWorkspace(ctx context.Context, workspaceId string, force bool) (bool,
 	return true, "", nil
 }
 
+// DiscardDirlessWorkspaces removes any workspace that has no workspace:dir
+// meta. Space = Project requires every Space to be bound to a directory; this
+// clears dev-era data from before that model. No backward compatibility. It
+// enumerates ALL workspaces directly from the store (not via ListWorkspaces,
+// which hides workspaces lacking Name/Icon/Color) so bare legacy workspaces
+// are also purged.
+func DiscardDirlessWorkspaces(ctx context.Context) error {
+	workspaces, err := wstore.DBGetAllObjsByType[*waveobj.Workspace](ctx, waveobj.OType_Workspace)
+	if err != nil {
+		return fmt.Errorf("error listing workspaces: %w", err)
+	}
+	for _, ws := range workspaces {
+		if ws.Meta.GetString(waveobj.MetaKey_WorkspaceDir, "") == "" {
+			if _, _, err := DeleteWorkspace(ctx, ws.OID, true); err != nil {
+				log.Printf("error discarding dirless workspace %s: %v", ws.OID, err)
+			}
+		}
+	}
+	return nil
+}
+
 func GetWorkspace(ctx context.Context, wsID string) (*waveobj.Workspace, error) {
 	return wstore.DBMustGet[*waveobj.Workspace](ctx, wsID)
 }
@@ -251,7 +280,13 @@ func CreateTab(ctx context.Context, workspaceId string, tabName string, activate
 
 	// No need to apply an initial layout for the initial launch, since the starter layout will get applied after onboarding modal dismissal
 	if !isInitialLaunch {
-		err = ApplyPortableLayout(ctx, tab.OID, GetNewTabLayout(), true)
+		// Anchor the new terminal's spawn cwd to the Space (workspace) dir
+		// so terminals open in the project directory.
+		var workspaceDir string
+		if ws, wsErr := GetWorkspace(ctx, workspaceId); wsErr == nil {
+			workspaceDir = ws.Meta.GetString(waveobj.MetaKey_WorkspaceDir, "")
+		}
+		err = ApplyPortableLayout(ctx, tab.OID, GetNewTabLayout(workspaceDir), true)
 		if err != nil {
 			return tab.OID, fmt.Errorf("error applying new tab layout: %w", err)
 		}

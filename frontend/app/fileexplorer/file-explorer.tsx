@@ -29,7 +29,7 @@ import { Icon } from "@/app/icon/Icon";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { useAtomValue } from "jotai";
 import { memo, useEffect } from "react";
-import { focusedBlockCwdAtom, getCachedHome } from "./file-explorer-atoms";
+import { getCachedHome, workspaceDirAtom } from "./file-explorer-atoms";
 import { FileExplorerModel } from "./file-explorer-model";
 import { FileExplorerTree } from "./file-explorer-tree";
 
@@ -52,12 +52,12 @@ function prettyRoot(path: string): string {
 export const FileExplorer = memo(() => {
     const model = FileExplorerModel.getInstance();
     const root = useAtomValue(model.rootAtom);
-    const { tabId, blockId, cwd } = useAtomValue(focusedBlockCwdAtom);
+    const cwd = useAtomValue(workspaceDirAtom);
 
     useEffect(() => {
         if (!cwd) return;
         if (cwd !== model.getRootNow()) model.setRoot(cwd);
-    }, [tabId, blockId, cwd]);
+    }, [cwd]);
 
     const onNewFile = () => model.startNewFile(root);
     const onNewFolder = () => model.startNewFolder(root);
