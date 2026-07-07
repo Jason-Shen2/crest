@@ -57,7 +57,7 @@ export function blockViewToName(view: string): string {
         return "Terminal";
     }
     if (view == "agent") {
-        return "Agent";
+        return "Terminal";
     }
     if (view == "preview") {
         return "Preview";

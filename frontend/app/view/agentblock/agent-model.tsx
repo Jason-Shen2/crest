@@ -19,7 +19,7 @@ export class AgentViewModel implements ViewModel {
     readonly viewType = "agent";
     readonly blockId: string;
     readonly viewIcon = jotai.atom("sparkles");
-    readonly viewName = jotai.atom("Agent");
+    readonly viewName = jotai.atom("");
     readonly noPadding = jotai.atom(true);
     readonly termFontSizeAtom: jotai.Atom<number>;
     readonly focusRequestAtom = jotai.atom(0);
