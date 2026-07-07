@@ -511,3 +511,37 @@ describe("TerminalView TUI mode", () => {
         expect(activeElement.blur).not.toHaveBeenCalled();
     });
 });
+
+describe("TerminalView pure-terminal form", () => {
+    beforeEach(() => {
+        testState.effectCleanups.length = 0;
+        testState.activeElement = null;
+        testState.loading = false;
+        testState.blocks = null;
+        testState.modeOverride = null;
+        testState.inputStateOverride = { kind: "input-editor" };
+        testState.surfaceStateOverride = null;
+        testState.memoHookIndex = 0;
+        testState.memoCache = [];
+        installDocumentStub();
+    });
+
+    afterEach(() => {
+        for (const cleanup of testState.effectCleanups.splice(0).reverse()) {
+            cleanup();
+        }
+        testState.documentListeners.clear();
+        vi.unstubAllGlobals();
+    });
+
+    it("renders no agent chat host or activity bar without agentSlot", () => {
+        const html = renderTerminalView();
+        expect(html).not.toContain('data-testid="agent-chat-host"');
+        expect(html).not.toContain('data-testid="agent-activity-bar"');
+    });
+
+    it("still renders the command input in terminal mode", () => {
+        const html = renderTerminalView();
+        expect(html).toContain('data-testid="cmd-input"');
+    });
+});
