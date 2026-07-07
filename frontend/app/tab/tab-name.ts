@@ -22,7 +22,7 @@ export function basename(path: string): string {
 // deriveBlockDisplayName — the tab label derived from a single block,
 // mirroring terax's per-tab labelFor():
 //   - codeeditor / preview → the file's basename (its file name)
-//   - term / termblocks    → the cwd's basename (its directory name)
+//   - term / termblocks / agent → the cwd's basename (its directory name)
 //   - web                  → the URL
 //   - anything else        → the human-readable view name
 // Returns "" when there is no block/view/cwd resolved yet, letting callers
@@ -39,7 +39,7 @@ export function deriveBlockDisplayName(block: Block | null | undefined): string 
         const mode = (block?.meta?.["gitdiff:mode"] as string) || "-";
         return path ? `${basename(path)} (${mode})` : blockViewToName(view);
     }
-    if (view === "term" || view === "termblocks") {
+    if (view === "term" || view === "termblocks" || view === "agent") {
         const cwd = (block?.meta?.["cmd:cwd"] as string) || "";
         return cwd ? basename(cwd) : "";
     }
