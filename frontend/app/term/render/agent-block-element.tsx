@@ -20,9 +20,17 @@ import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { AgentCompactToolList } from "./agent-compact-tool";
 import { deriveAgentProgress } from "./agent-progress";
 import { AgentProgressView } from "./agent-progress-view";
-import { type PiToolCall, type PiToolResultContent, ToolCallCard } from "./tool-call-card";
+import {
+    compactToolKind,
+    deriveCompactToolStatus,
+    groupCompactTools,
+    type CompactToolCall,
+    type CompactToolItem,
+    type CompactToolResult,
+} from "./agent-tool-view-model";
 
 const HORIZONTAL_PAD_PX = 16;
 const VERTICAL_PAD_PX = 12;
@@ -36,15 +44,14 @@ export interface AgentBlockElementProps {
     fontSize?: number;
     /** Click handler to mark this block as selected. */
     onSelect?: () => void;
+    toolPresentation?: "compact" | "progress";
 }
 
 export const AgentBlockElement = memo(
-    ({ run, selected, fontSize = 16, onSelect }: AgentBlockElementProps) => {
+    ({ run, selected, fontSize = 16, onSelect, toolPresentation = "compact" }: AgentBlockElementProps) => {
         const userText = useMemo(() => extractText(run.userMessage), [run.userMessage]);
         const isStreaming = run.status === "streaming";
         const isError = run.status === "error";
-        const hasToolCalls = useMemo(() => runHasToolCalls(run), [run]);
-        const progress = useMemo(() => (hasToolCalls ? deriveAgentProgress(run) : undefined), [hasToolCalls, run]);
 
         return (
             <div
@@ -67,12 +74,12 @@ export const AgentBlockElement = memo(
             >
                 <AgentBlockHeader status={run.status} />
                 <UserMessage text={userText} fontSize={fontSize} />
-                {progress && <AgentProgressView progress={progress} />}
                 <AssistantContent
+                    run={run}
                     responseMessages={run.responseMessages}
                     streaming={isStreaming}
                     fontSize={fontSize}
-                    renderToolCalls={!hasToolCalls}
+                    toolPresentation={toolPresentation}
                 />
                 {isError && run.errorMessage && (
                     // Warp's error style (block/view_impl/common.rs:3013): a row
@@ -115,35 +122,33 @@ function extractText(message: PiAgentMessage | undefined): string {
     return out.join("");
 }
 
-function runHasToolCalls(run: PiRun): boolean {
-    return run.responseMessages.some((msg) => msg.content?.some((content) => content.type === "toolCall"));
-}
-
 // =========================================================================
 // AssistantContent — walk the run's response messages in order, render
-// text from assistant messages as markdown, render toolCall blocks as
-// ToolCallCards paired with their matching toolResult (looked up by
+// text from assistant messages as markdown, and render toolCall blocks as
+// compact trace rows paired with their matching toolResult (looked up by
 // toolUseId across subsequent toolResult messages).
 // =========================================================================
 interface AssistantContentProps {
+    run: PiRun;
     responseMessages: PiAgentMessage[];
     streaming: boolean;
     fontSize: number;
-    renderToolCalls: boolean;
-}
-
-interface PiToolResultLite extends PiToolResultContent {
-    toolUseId: string;
+    toolPresentation: "compact" | "progress";
 }
 
 const AssistantContent = memo(
-    ({ responseMessages, streaming, fontSize, renderToolCalls }: AssistantContentProps) => {
+    ({ run, responseMessages, streaming, fontSize, toolPresentation }: AssistantContentProps) => {
+        const progress = useMemo(() => {
+            return deriveAgentProgress(run);
+        }, [run]);
+        const showProgress = toolPresentation === "progress" || progress.changeReview != null;
+
         // Index toolResults by toolUseId for O(1) lookup. Pi places
         // tool results in dedicated messages (role: "toolResult"); each
         // message's content array may carry multiple toolResult entries
         // when the assistant called several tools in one turn.
         const resultsByCallId = useMemo(() => {
-            const map = new Map<string, PiToolResultLite>();
+            const map = new Map<string, CompactToolResult>();
             for (const msg of responseMessages) {
                 if (msg.role !== "toolResult") continue;
                 if (!msg.content) continue;
@@ -155,8 +160,7 @@ const AssistantContent = memo(
                           : "";
                 if (messageToolUseId) {
                     map.set(messageToolUseId, {
-                        toolUseId: messageToolUseId,
-                        content: msg.content as PiToolResultContent["content"],
+                        content: msg.content as CompactToolResult["content"],
                         details: msg.details,
                         isError: msg.isError === true,
                     });
@@ -172,8 +176,7 @@ const AssistantContent = memo(
                               : "";
                     if (!toolUseId) continue;
                     map.set(toolUseId, {
-                        toolUseId,
-                        content: c.content as PiToolResultContent["content"],
+                        content: c.content as CompactToolResult["content"],
                         details: c.details,
                         isError: c.isError === true,
                     });
@@ -184,36 +187,47 @@ const AssistantContent = memo(
 
         const rendered: React.ReactNode[] = [];
         let textBuf = "";
+        let pendingToolItems: CompactToolItem[] = [];
         let keyIdx = 0;
         const flushText = () => {
             if (!textBuf) return;
             rendered.push(<AssistantMarkdown key={`text-${keyIdx++}`} text={textBuf} fontSize={fontSize} />);
             textBuf = "";
         };
+        const flushToolItems = () => {
+            if (toolPresentation === "progress") return;
+            if (pendingToolItems.length === 0) return;
+            rendered.push(<AgentCompactToolList key={`tools-${keyIdx++}`} groups={groupCompactTools(pendingToolItems)} />);
+            pendingToolItems = [];
+        };
 
         for (const msg of responseMessages) {
             if (msg.role !== "assistant" || !msg.content) continue;
             for (const c of msg.content) {
                 if (c.type === "text" && typeof c.text === "string") {
+                    flushToolItems();
                     textBuf += c.text;
                     continue;
                 }
                 if (c.type === "toolCall") {
                     flushText();
-                    if (!renderToolCalls) {
-                        continue;
-                    }
-                    const call: PiToolCall = {
+                    const call: CompactToolCall = {
                         id: String(c.id ?? ""),
                         name: String(c.name ?? ""),
                         input: c.input != null ? c.input : c.arguments,
                     };
                     const result = resultsByCallId.get(call.id);
-                    rendered.push(<ToolCallCard key={`tool-${call.id}`} call={call} result={result} />);
+                    pendingToolItems.push({
+                        call,
+                        status: deriveCompactToolStatus(call, result),
+                        kind: compactToolKind(call),
+                        result,
+                    });
                     continue;
                 }
                 if (c.type === "thinking" && typeof c.thinking === "string") {
                     flushText();
+                    flushToolItems();
                     rendered.push(
                         <ThinkingBlock
                             key={`thinking-${keyIdx++}`}
@@ -228,15 +242,18 @@ const AssistantContent = memo(
                     const src = imageContentSrc(c);
                     if (!src) continue;
                     flushText();
+                    flushToolItems();
                     rendered.push(<AssistantImage key={`image-${keyIdx++}`} src={src} />);
                     continue;
                 }
             }
         }
         flushText();
+        flushToolItems();
 
         return (
             <div>
+                {showProgress && <AgentProgressView progress={progress} />}
                 {rendered}
                 {streaming && rendered.length === 0 && (
                     <div className="text-secondary/70 text-[12px] italic">Thinking…</div>
