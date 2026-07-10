@@ -21,10 +21,6 @@ vi.mock("./block-element", () => ({
     BlockElement: () => <div data-testid="block-element" />,
 }));
 
-vi.mock("./agent-block-element", () => ({
-    AgentBlockElement: () => <div data-testid="agent-block-element" />,
-}));
-
 vi.mock("@/app/element/ui-icon", () => ({
     UIcon: () => <span data-testid="ui-icon" />,
 }));
@@ -83,9 +79,7 @@ function makeModel(
 
 describe("BlockListElement TUI layout", () => {
     it("lets the active TUI block wrapper fill the pane", () => {
-        const html = renderToStaticMarkup(
-            <BlockListElement model={makeModel(makeActiveTuiBlock()) as any} />
-        );
+        const html = renderToStaticMarkup(<BlockListElement model={makeModel(makeActiveTuiBlock()) as any} />);
 
         expect(html).toMatch(/data-block-oid="block-1"[^>]*class="[^"]*h-full/);
         expect(html).toMatch(/data-block-oid="block-1"[^>]*class="[^"]*min-h-full/);
@@ -94,30 +88,35 @@ describe("BlockListElement TUI layout", () => {
     it("lets a running raw-capture TUI block wrapper fill the pane", () => {
         const html = renderToStaticMarkup(
             <BlockListElement
-                model={{
-                    ...makeModel({
-                        id: "block-raw",
-                        kind: "shell",
-                        hidden: false,
-                        state: "running",
-                        isBackground: false,
-                        isStatic: false,
-                        altScreen: { active: false },
-                        commandText: () => "claude",
-                    } as any, { kind: "terminal-capture", blockId: "block-raw" }),
-                    getMode: () => ({
-                        appCursor: true,
-                        focusReport: false,
-                        mouseX10: false,
-                        mouseClick: true,
-                        mouseButton: false,
-                        mouseMotion: false,
-                        mouseSgr: false,
-                        mouseUtf8: false,
-                        mouseUrxvt: false,
-                        alternateScroll: false,
-                    }),
-                } as any}
+                model={
+                    {
+                        ...makeModel(
+                            {
+                                id: "block-raw",
+                                kind: "shell",
+                                hidden: false,
+                                state: "running",
+                                isBackground: false,
+                                isStatic: false,
+                                altScreen: { active: false },
+                                commandText: () => "claude",
+                            } as any,
+                            { kind: "terminal-capture", blockId: "block-raw" }
+                        ),
+                        getMode: () => ({
+                            appCursor: true,
+                            focusReport: false,
+                            mouseX10: false,
+                            mouseClick: true,
+                            mouseButton: false,
+                            mouseMotion: false,
+                            mouseSgr: false,
+                            mouseUtf8: false,
+                            mouseUrxvt: false,
+                            alternateScroll: false,
+                        }),
+                    } as any
+                }
             />
         );
 

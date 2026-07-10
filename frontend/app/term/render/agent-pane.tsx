@@ -16,7 +16,7 @@ import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { globalStore } from "@/app/store/jotaiStore";
 import { modalsModel } from "@/app/store/modalmodel";
 import { ObjectService } from "@/app/store/services";
-import { indexRunsById, type PiRun } from "@/app/store/use-pi-chat";
+import type { PiRun } from "@/app/store/use-pi-chat";
 import type { InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
@@ -40,7 +40,6 @@ export interface AgentSlot {
     commandResults: React.ReactNode;
     activityBar: React.ReactNode;
     inputBar: React.ReactNode;
-    agentRunsById: Map<string, PiRun>;
     replacesBlockList: boolean;
 }
 
@@ -185,11 +184,9 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
         },
         [outerBlockId]
     );
-    const [agentRunsById, setAgentRunsById] = useState<Map<string, PiRun>>(new Map());
     const [agentRuns, setAgentRuns] = useState<PiRun[]>([]);
     const onAgentRunsUpdate = useCallback((runs: PiRun[]) => {
         setAgentRuns(runs);
-        setAgentRunsById(indexRunsById(runs));
     }, []);
     const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
         setAgentCommandResults((prev) => [...prev, result]);
@@ -294,7 +291,7 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
 
     const inputBar = null;
 
-    return { chatHost, commandResults, activityBar, inputBar, agentRunsById, replacesBlockList: true };
+    return { chatHost, commandResults, activityBar, inputBar, replacesBlockList: true };
 }
 
 function AgentComposerTextRestore({ request }: { request?: { text: string; requestId: number } }) {

@@ -100,9 +100,7 @@ function deriveStatus(responseMessages: PiAgentMessage[]): {
 }
 
 /**
- * Build a Map<turnId, PiTurn> for O(1) lookup. Use when many
- * AgentBlockElement instances each need to find their own turn on the
- * same messages snapshot.
+ * Build a Map<turnId, PiTurn> for O(1) lookup.
  */
 export function indexTurnsById(turns: PiTurn[]): Map<string, PiTurn> {
     const map = new Map<string, PiTurn>();

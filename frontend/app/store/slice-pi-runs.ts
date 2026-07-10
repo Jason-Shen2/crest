@@ -7,15 +7,11 @@
 // non-user message until the next user message or end of array.
 //
 // Pure function. runId is derived from the user message's *timestamp*,
-// not its array index, on purpose: an agent timeline block freezes the
-// runId it was created with, while agentRunsById is rebuilt from the
-// current array on every change. The `agent_end` event replaces the
+// not its array index, on purpose. The `agent_end` event replaces the
 // whole array with the authoritative session snapshot, and the renderer
-// subscribes mid-stream — both can shift a message's index. A positional
-// id ("run-0") then desyncs (frozen block id vs recomputed map key) and
-// the block sticks on "…loading agent run…" forever. The timestamp is
-// assigned once in the main process and travels unchanged through every
-// event and the snapshot, so block id and map key always agree.
+// subscribes mid-stream — both can shift a message's index. The timestamp
+// is assigned once in the main process and travels unchanged through
+// every event and the snapshot.
 
 import type { PiAgentMessage } from "./use-pi-chat";
 
@@ -99,9 +95,7 @@ function deriveStatus(responseMessages: PiAgentMessage[]): {
 }
 
 /**
- * Build a Map<runId, PiRun> for O(1) lookup. Use when many
- * AgentBlockElement instances each need to find their own run on the
- * same messages snapshot.
+ * Build a Map<runId, PiRun> for O(1) lookup.
  */
 export function indexRunsById(runs: PiRun[]): Map<string, PiRun> {
     const map = new Map<string, PiRun>();
