@@ -1,22 +1,32 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { renderToStaticMarkup } from "react-dom/server";
 import type { PropsWithChildren, ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 function mockAssistantUi(messages: Array<{ role: "user" | "assistant" | "system" }>, isEmpty: boolean) {
     vi.doMock("@assistant-ui/react", () => ({
         ThreadPrimitive: {
-            Root: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => <div {...props}>{children}</div>,
-            Viewport: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => <div {...props}>{children}</div>,
+            Root: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => (
+                <div {...props}>{children}</div>
+            ),
+            Viewport: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => (
+                <div {...props}>{children}</div>
+            ),
             Empty: ({ children }: PropsWithChildren) => (isEmpty ? <>{children}</> : null),
             Messages: ({ children }: { children: (value: { message: { role: string } }) => ReactNode }) => (
-                <>{messages.map((message, index) => <span key={index}>{children({ message })}</span>)}</>
+                <>
+                    {messages.map((message, index) => (
+                        <span key={index}>{children({ message })}</span>
+                    ))}
+                </>
             ),
         },
         MessagePrimitive: {
-            Root: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => <div {...props}>{children}</div>,
+            Root: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => (
+                <div {...props}>{children}</div>
+            ),
             Parts: () => null,
         },
         makeAssistantToolUI: (config: unknown) => config,
