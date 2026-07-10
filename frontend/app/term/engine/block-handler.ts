@@ -30,13 +30,13 @@
 //     notification, OSC 52 clipboard write, OSC 133 with extended
 //     A/B/C/D/P key-value properties, OSC 1337 dropped (deferred)
 
-import { AnsiHandler } from "./handler";
-import { Block } from "./block";
-import { Grid } from "./grid";
-import { applySgr, withLink } from "./style";
-import { CharsetMode, CursorShape, DefaultTermMode, TermMode } from "./types";
 import { base64ToArray } from "@/util/util";
 import { parseColorSpec } from "../render/color";
+import { Block } from "./block";
+import { Grid } from "./grid";
+import { AnsiHandler } from "./handler";
+import { applySgr, withLink } from "./style";
+import { CharsetMode, CursorShape, DefaultTermMode, TermMode } from "./types";
 
 // TerminalContext — capability surface the BlockHandler needs from its
 // owner (TerminalModel).  Optional; without one, reply-bearing CSI
@@ -105,8 +105,7 @@ export class BlockHandler implements AnsiHandler {
         return this.block.activeGrid().raw();
     }
 
-    // Defensive guard — agent blocks bypass the ANSI parser entirely
-    // (their rendering lives in AgentBlockElement, not BlockElement).
+    // Defensive guard — agent blocks bypass the ANSI parser entirely.
     // In normal operation BlockHandler never gets pointed at an agent
     // block (the host swaps to a fresh shell block when a command starts),
     // but if it did, writes would corrupt the dummy outputGrid we keep
@@ -154,13 +153,7 @@ export class BlockHandler implements AnsiHandler {
 
     // ---------- CSI ----------
 
-    onCsi(
-        final: string,
-        params: number[],
-        intermediate: string,
-        isPrivate: boolean,
-        privatePrefix?: string
-    ): void {
+    onCsi(final: string, params: number[], intermediate: string, isPrivate: boolean, privatePrefix?: string): void {
         if (this.isAgent()) return;
         // Mode set/reset routes by private vs ANSI standard.
         if (isPrivate && (final === "h" || final === "l")) {
@@ -766,8 +759,7 @@ export class BlockHandler implements AnsiHandler {
                 return;
             case "D": {
                 const exitStr = parts[1];
-                const exit =
-                    exitStr != null && exitStr.length > 0 ? parseInt(exitStr, 10) : undefined;
+                const exit = exitStr != null && exitStr.length > 0 ? parseInt(exitStr, 10) : undefined;
                 this.block.finishCommand(Number.isFinite(exit as number) ? exit : undefined);
                 // Defensive recovery on command completion — matches warp's
                 // command_finished (terminal_model.rs:2787): force-clears
@@ -842,12 +834,7 @@ export class BlockHandler implements AnsiHandler {
 
         // Charset selection: ESC ( c (G0), ESC ) c (G1).  * / + slots are
         // obsolete and aliased to G0 / G1 here.
-        if (
-            intermediate === "(" ||
-            intermediate === ")" ||
-            intermediate === "*" ||
-            intermediate === "+"
-        ) {
+        if (intermediate === "(" || intermediate === ")" || intermediate === "*" || intermediate === "+") {
             const slot: 0 | 1 = intermediate === "(" || intermediate === "*" ? 0 : 1;
             const mode: CharsetMode = final === "0" ? "dec-special" : "ascii";
             g.selectCharsetSlot(slot, mode);

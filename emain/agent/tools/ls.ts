@@ -4,7 +4,7 @@
 // ls — list directory contents. Ported from pi's
 // packages/coding-agent/src/core/tools/ls.ts (earendil-works/pi, MIT),
 // with the pi-tui render layer stripped: crest renders tool output in
-// React (ToolCallCard), so only the schema + execute logic is kept.
+// assistant-ui tool components, so only the schema + execute logic is kept.
 //
 // pi tools are cwd-bound — createLsTool(cwd) resolves relative paths
 // against the pane's cwd. The pluggable LsOperations seam is preserved
@@ -16,7 +16,7 @@ import { type Static, Type } from "typebox";
 
 import type { AgentTool } from "../types";
 import { pathExists, resolveToCwd } from "./_paths";
-import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./_truncate";
+import { DEFAULT_MAX_BYTES, formatSize, truncateHead, type TruncationResult } from "./_truncate";
 
 const lsSchema = Type.Object({
     path: Type.Optional(Type.String({ description: "Directory to list (default: current directory)" })),
@@ -48,7 +48,10 @@ export interface LsToolOptions {
     operations?: LsOperations;
 }
 
-export function createLsTool(cwd: string, options?: LsToolOptions): AgentTool<typeof lsSchema, LsToolDetails | undefined> {
+export function createLsTool(
+    cwd: string,
+    options?: LsToolOptions
+): AgentTool<typeof lsSchema, LsToolDetails | undefined> {
     const ops = options?.operations ?? defaultLsOperations;
     return {
         name: "ls",

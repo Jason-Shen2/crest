@@ -15,7 +15,6 @@ vi.mock("@/app/store/ai-user-config", () => ({
 vi.mock("@/app/store/jotaiStore", () => ({ globalStore: { set: vi.fn() } }));
 vi.mock("@/app/store/modalmodel", () => ({ modalsModel: { pushModal: vi.fn() } }));
 vi.mock("@/app/store/services", () => ({ ObjectService: { UpdateObjectMeta: vi.fn() } }));
-vi.mock("@/app/store/use-pi-chat", () => ({ indexRunsById: () => new Map() }));
 vi.mock("@/app/view/cmdblock/cmdblock-input", () => ({ CmdBlockInput: () => <div data-testid="cmd-input" /> }));
 vi.mock("@/app/view/cmdblock/model-picker-popover", () => ({
     ModelPickerInline: () => <div data-testid="model-picker-inline" />,
@@ -114,7 +113,6 @@ describe("useAgentPane", () => {
         expect(html).toContain('data-testid="session-selector"');
         expect(html).toContain('data-testid="model-picker-inline"');
         expect(model.syncAgentBlocks).not.toHaveBeenCalled();
-        expect(captured!.agentRunsById instanceof Map).toBe(true);
         expect(captured!.replacesBlockList).toBe(true);
     });
 
