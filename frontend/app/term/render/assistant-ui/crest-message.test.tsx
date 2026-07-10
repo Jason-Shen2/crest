@@ -1,19 +1,25 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { renderToStaticMarkup } from "react-dom/server";
-import type { PropsWithChildren, ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MessageStatus, ToolCallMessagePartProps } from "@assistant-ui/react";
+import type { PropsWithChildren, ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 type TestPart = { type: string; [key: string]: unknown };
 
 function mockAssistantUi(parts: TestPart[], messageStatus: MessageStatus = { type: "complete", reason: "stop" }) {
     vi.doMock("@assistant-ui/react", () => ({
         MessagePrimitive: {
-            Root: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => <div {...props}>{children}</div>,
+            Root: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => (
+                <div {...props}>{children}</div>
+            ),
             Parts: ({ children }: { children: (value: { part: TestPart }) => ReactNode }) => (
-                <>{parts.map((part, index) => <span key={index}>{children({ part })}</span>)}</>
+                <>
+                    {parts.map((part, index) => (
+                        <span key={index}>{children({ part })}</span>
+                    ))}
+                </>
             ),
         },
         makeAssistantToolUI: (config: unknown) => config,
@@ -55,18 +61,30 @@ afterEach(() => {
 
 describe("Crest message rendering", () => {
     it("renders user messages separately from assistant messages", async () => {
-        mockAssistantUi([{ type: "text", text: "hello crest" }]);
-        const { CrestUserMessage, CrestAssistantMessage } = await import("./crest-message");
+        mockAssistantUi([
+            { type: "text", text: "hello crest" },
+            { type: "image", image: "https://example.com/user.png", filename: "user-upload.png" },
+        ]);
+        const { CrestUserMessage } = await import("./crest-message");
 
         const userHtml = renderToStaticMarkup(<CrestUserMessage />);
-        mockAssistantUi([{ type: "text", text: "hello human" }]);
-        const assistantHtml = renderToStaticMarkup(<CrestAssistantMessage />);
+        vi.doUnmock("@assistant-ui/react");
+        vi.doUnmock("@assistant-ui/react-markdown");
+        vi.resetModules();
+        mockAssistantUi([
+            { type: "text", text: "hello human" },
+            { type: "image", image: "https://example.com/assistant.png" },
+        ]);
+        const { CrestAssistantMessage: AssistantMessageWithAssistantParts } = await import("./crest-message");
+        const assistantHtml = renderToStaticMarkup(<AssistantMessageWithAssistantParts />);
 
         expect(userHtml).toContain('data-testid="crest-user-message"');
         expect(userHtml).toContain("hello crest");
+        expect(userHtml).toContain('alt="user-upload.png"');
         expect(assistantHtml).toContain('data-testid="crest-assistant-message"');
         expect(assistantHtml).toContain("AI");
         expect(assistantHtml).toContain('data-markdown-primitive="true"');
+        expect(assistantHtml).toContain('alt="Assistant image attachment"');
     });
 
     it("renders assistant text parts with @assistant-ui/react-markdown", async () => {
@@ -80,7 +98,9 @@ describe("Crest message rendering", () => {
     });
 
     it("expands running reasoning parts and collapses completed reasoning parts", async () => {
-        mockAssistantUi([{ type: "reasoning", text: "still thinking", status: { type: "running" } }], { type: "running" });
+        mockAssistantUi([{ type: "reasoning", text: "still thinking", status: { type: "running" } }], {
+            type: "running",
+        });
         const { CrestAssistantMessage } = await import("./crest-message");
         const runningHtml = renderToStaticMarkup(<CrestAssistantMessage />);
 

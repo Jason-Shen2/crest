@@ -1,15 +1,16 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { memo } from "react";
 import {
     MessagePrimitive,
     useAuiState,
+    type ImageMessagePartProps,
     type ReasoningMessagePartProps,
     type ToolCallMessagePartComponent,
     type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
+import { memo } from "react";
 
 import { cn } from "@/util/util";
 
@@ -19,6 +20,11 @@ export function getCrestToolRenderer(toolName: string): ToolCallMessagePartCompo
     return assistantToolRenderersByName[toolName] ?? ToolFallback;
 }
 
+export function getCrestImageAlt(filename: string | undefined, role: "user" | "assistant"): string {
+    if (filename) return filename;
+    return role === "user" ? "User image attachment" : "Assistant image attachment";
+}
+
 export const CrestUserMessage = memo(() => {
     return (
         <MessagePrimitive.Root className="flex justify-end py-3" data-testid="crest-user-message">
@@ -26,7 +32,7 @@ export const CrestUserMessage = memo(() => {
                 <MessagePrimitive.Parts>
                     {({ part }) => {
                         if (part.type === "text") return <p className="whitespace-pre-wrap">{part.text}</p>;
-                        if (part.type === "image") return <img className="max-w-full rounded-lg" src={part.image} alt="" />;
+                        if (part.type === "image") return <CrestImagePart {...part} role="user" />;
                         return null;
                     }}
                 </MessagePrimitive.Parts>
@@ -48,7 +54,7 @@ export const CrestAssistantMessage = memo(() => {
                         if (part.type === "text") return <CrestMarkdownText />;
                         if (part.type === "reasoning") return <CrestReasoningPart {...part} />;
                         if (part.type === "tool-call") return <CrestToolCallPart {...part} />;
-                        if (part.type === "image") return <img className="max-w-full rounded-lg" src={part.image} alt="" />;
+                        if (part.type === "image") return <CrestImagePart {...part} role="assistant" />;
                         return null;
                     }}
                 </MessagePrimitive.Parts>
@@ -86,7 +92,9 @@ export const CrestReasoningPart = memo((props: ReasoningMessagePartProps) => {
             <summary className="cursor-pointer select-none px-3 py-2 font-medium text-secondary/85">
                 {isRunning ? "Thinking..." : "Thought process"}
             </summary>
-            <div className="whitespace-pre-wrap border-t border-fg-overlay-2 px-3 py-2 text-secondary/80">{props.text}</div>
+            <div className="whitespace-pre-wrap border-t border-fg-overlay-2 px-3 py-2 text-secondary/80">
+                {props.text}
+            </div>
         </details>
     );
 });
@@ -97,3 +105,10 @@ export const CrestToolCallPart = memo((props: ToolCallMessagePartProps) => {
     return <ToolRenderer {...props} />;
 });
 CrestToolCallPart.displayName = "CrestToolCallPart";
+
+export const CrestImagePart = memo((props: ImageMessagePartProps & { role: "user" | "assistant" }) => {
+    return (
+        <img className="max-w-full rounded-lg" src={props.image} alt={getCrestImageAlt(props.filename, props.role)} />
+    );
+});
+CrestImagePart.displayName = "CrestImagePart";
