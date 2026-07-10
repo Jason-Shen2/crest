@@ -62,8 +62,8 @@ export class Block {
     readonly seq: number;
     readonly sessionId?: SessionId;
     // Partitions block timeline into shell (PTY-driven) vs agent (LLM
-    // exchange).  Agent blocks bypass the ANSI parser entirely and render
-    // via AgentBlockElement instead of BlockElement.
+    // exchange). Agent blocks bypass the ANSI parser; the assistant-ui
+    // pane owns conversation rendering.
     readonly kind: BlockKind;
     // Populated only when kind === "agent". Thin reference to a pi run
     // (see usePiChat + slicePiRuns). The actual message data lives on
@@ -172,12 +172,7 @@ export class Block {
             // routing.
             return this.outputGrid;
         }
-        if (
-            this.state === "running" ||
-            this.state === "done-with-execution" ||
-            this.isBackground ||
-            this.isStatic
-        ) {
+        if (this.state === "running" || this.state === "done-with-execution" || this.isBackground || this.isStatic) {
             return this.outputGrid;
         }
         // Header phase — route to the active sub-grid of HeaderGrid.

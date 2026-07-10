@@ -18,12 +18,10 @@
 // queries that already exist on Blocks.
 
 import { UIcon } from "@/app/element/ui-icon";
-import type { PiRun } from "@/app/store/use-pi-chat";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { FindMatch, TerminalModel } from "../terminal-model";
-import { AgentBlockElement } from "./agent-block-element";
 import { BlockElement } from "./block-element";
 import { computeBlockSlice } from "./selection";
 
@@ -42,25 +40,10 @@ export interface BlockListElementProps {
     // Pixel width of one monospace cell — TerminalView measures and
     // threads it through.  Used by per-block mouse-to-cell math.
     charWidth?: number;
-    // Agent run index — keyed by Block.agentRef.runId, populated by
-    // the parent (TerminalView) which slices usePiChat's messages.
-    // Agent blocks (kind === "agent") look up their messages here at
-    // render time. When a runId is missing from the map, the block
-    // renders an empty/streaming placeholder.
-    agentRunsById?: Map<string, PiRun>;
 }
 
 export const BlockListElement = memo(
-    ({
-        model,
-        fontSize = 16,
-        home,
-        onCopyBlock,
-        onAskAI,
-        onLinkClick,
-        charWidth,
-        agentRunsById,
-    }: BlockListElementProps) => {
+    ({ model, fontSize = 16, home, onCopyBlock, onAskAI, onLinkClick, charWidth }: BlockListElementProps) => {
         const revision = useAtomValue(model.revisionAtom);
         const scrollPos = useAtomValue(model.scrollPositionAtom);
         const selectedBlockId = useAtomValue(model.selectedBlockIdAtom);
@@ -69,9 +52,7 @@ export const BlockListElement = memo(
         const findCurrentIndex = useAtomValue(model.findCurrentIndexAtom);
         const snackbarVisible = useAtomValue(model.snackbarVisibleAtom);
         const activeMatch =
-            findCurrentIndex >= 0 && findCurrentIndex < findMatches.length
-                ? findMatches[findCurrentIndex]
-                : null;
+            findCurrentIndex >= 0 && findCurrentIndex < findMatches.length ? findMatches[findCurrentIndex] : null;
 
         // Group matches by block id once per render so each BlockElement
         // gets only its slice.  Linear over the flat match list — cheap
@@ -102,7 +83,6 @@ export const BlockListElement = memo(
                 if (slice) map.set(block.id, slice);
             }
             return map;
-            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [selection, revision]);
 
         // Pull the (mutable) blocks snapshot — depends on revision so React
@@ -111,7 +91,6 @@ export const BlockListElement = memo(
             // The slice is intentional: hand React a stable identity per
             // revision so .map's diff key works as intended.
             return model.getBlocks().all().slice();
-            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [revision, model]);
 
         const scrollRef = useRef<HTMLDivElement>(null);
@@ -206,52 +185,8 @@ export const BlockListElement = memo(
                         if (hasActiveTui && !isActiveTuiBlock && block.kind !== "agent") {
                             return null;
                         }
-                        // Agent blocks render through a dedicated element
-                        // (no shell-block chrome, no ANSI grid).  Dispatch
-                        // by kind happens here so BlockElement stays
-                        // unconcerned with agent payloads.
                         if (block.kind === "agent") {
-                            const runId = block.agentRef?.runId;
-                            const run = runId && agentRunsById ? agentRunsById.get(runId) : undefined;
-                            if (!run) {
-                                // Marker block exists but run data hasn't
-                                // landed yet (first message_start in flight,
-                                // or pane re-opened pre-history-load).
-                                // Render a thin placeholder rather than
-                                // disappearing entries from the timeline.
-                                // Diagnostic: if this persists, the block's
-                                // frozen runId no longer matches any recomputed
-                                // map key (an id-derivation drift). Log both so
-                                // the mismatch is visible in DevTools.
-                                console.warn(
-                                    "[agent] no run for block",
-                                    runId,
-                                    "available run ids:",
-                                    agentRunsById ? Array.from(agentRunsById.keys()) : null,
-                                    "blocklist agent blocks:",
-                                    blockList.filter((b) => b.kind === "agent").map((b) => ({ id: b.id, runId: b.agentRef?.runId })),
-                                );
-                                return (
-                                    <div key={block.id} data-block-oid={block.id}>
-                                        <div
-                                            className="border-b border-fg-overlay-1/40 px-4 py-3 text-[12px] italic text-secondary/60"
-                                            data-agent-block-runid={runId}
-                                        >
-                                            …loading agent run…
-                                        </div>
-                                    </div>
-                                );
-                            }
-                            return (
-                                <div key={block.id} data-block-oid={block.id}>
-                                    <AgentBlockElement
-                                        run={run}
-                                        selected={block.id === selectedBlockId}
-                                        fontSize={fontSize}
-                                        onSelect={() => model.selectBlock(block.id)}
-                                    />
-                                </div>
-                            );
+                            return null;
                         }
                         // Active waiting block — warp's missing_command()
                         // case (block.rs:2023-2025).  Warp collapses
@@ -273,9 +208,7 @@ export const BlockListElement = memo(
                             <div
                                 key={block.id}
                                 data-block-oid={block.id}
-                                className={cn(
-                                    isActiveTuiBlock ? "flex-1 min-h-0" : ""
-                                )}
+                                className={cn(isActiveTuiBlock ? "flex-1 min-h-0" : "")}
                             >
                                 <BlockElement
                                     block={block}
@@ -284,9 +217,7 @@ export const BlockListElement = memo(
                                     fontSize={fontSize}
                                     home={home}
                                     onSelect={() => model.selectBlock(block.id)}
-                                    onJumpBack={() =>
-                                        model.setScrollPosition({ kind: "anchored", blockId: block.id })
-                                    }
+                                    onJumpBack={() => model.setScrollPosition({ kind: "anchored", blockId: block.id })}
                                     onLinkClick={onLinkClick}
                                     selectionSlice={sliceByBlock.get(block.id) ?? null}
                                     charWidth={charWidth}

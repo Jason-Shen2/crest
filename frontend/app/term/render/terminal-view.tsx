@@ -7,12 +7,11 @@
 
 import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { globalStore } from "@/app/store/jotaiStore";
-import { type PiRun } from "@/app/store/use-pi-chat";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import { getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { ContextChipModel } from "../contextchip/chip-model";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
@@ -21,11 +20,6 @@ import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
 import { PaletteContext, PaletteOverrides } from "./palette-context";
-
-// Stable empty runs map for the pure-terminal form (no agent runs).  A
-// module-level constant keeps the reference identity stable across renders
-// so BlockListElement's memoization isn't defeated when agentSlot is null.
-const EMPTY_RUNS: Map<string, PiRun> = new Map();
 
 export interface TerminalViewProps {
     outerBlockId: string;
@@ -43,9 +37,15 @@ export interface TerminalViewProps {
     // for `term:mode = "vdom"` where the whole pane becomes a single
     // VDom subblock instead of a shell.
     replaceContent?: React.ReactNode;
-    // Agent 会话形态用此渲染器挂载 AgentPane。TerminalView 只负责算好
-    // 实时上下文；useAgentPane 必须在 AgentPane 组件边界内调用。
-    renderAgentSlot?: (deps: AgentPaneDeps, children: (slot: AgentSlot) => React.ReactNode) => React.ReactNode;
+    // Agent 会话形态传入真实 React 组件，组件在顶层调用 useAgentPane。
+    // 纯终端形态不传此 prop，agentSlot 保持 null。
+    agentSlotComponent?: ComponentType<AgentSlotComponentProps>;
+}
+
+export interface AgentSlotComponentProps {
+    outerBlockId: string;
+    deps: AgentPaneDeps;
+    children: (agentSlot: AgentSlot) => React.ReactNode;
 }
 
 export function blurActiveEditableInRoot(root: HTMLElement | null): void {
@@ -98,7 +98,7 @@ export const TerminalView = memo(
         topSlot,
         overlaySlot,
         replaceContent,
-        renderAgentSlot,
+        agentSlotComponent: AgentSlotComponent,
     }: TerminalViewProps) => {
         const model = useTerminalModel(outerBlockId);
         const loading = useAtomValue(model.loadingAtom);
@@ -187,12 +187,10 @@ export const TerminalView = memo(
                 if (all[i].state === "running") return all[i];
             }
             return all[all.length - 1];
-            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [revision]);
         const [longRunningTick, setLongRunningTick] = useState(0);
         const terminalInputState = useMemo(() => {
             return model.getTerminalInputState();
-            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [model, revision, longRunningTick, loading]);
 
         const nld = useNLDModel(outerBlockId);
@@ -229,7 +227,6 @@ export const TerminalView = memo(
                 const cmd = b.cmd ?? "";
                 if (cmd) chipModel.onCommandCompleted(cmd);
             }
-            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [revision, chipModel]);
         const setInputMode = useCallback(
             (next: InputMode, currentText?: string) => {
@@ -298,36 +295,6 @@ export const TerminalView = memo(
         const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
         // Connection string ("" = local) forwarded to the agent surface.
         const liveConnection = connectionName || "";
-        // Agent 会话形态：TerminalView 算好实时上下文，AgentPane 在组件
-        // 边界内调用 hooks 并通过 render-prop 把 slot 交回布局。
-        const agentSlotDeps: AgentPaneDeps | null = renderAgentSlot
-            ? {
-                  model,
-                  fontSize,
-                  focusRequest,
-                  liveCwd,
-                  home,
-                  branch: liveBlock?.gitBranch || chipValues.gitBranch,
-                  gitAdded: liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded,
-                  gitRemoved: liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved,
-                  prNumber: chipValues.prNumber,
-                  prTitle: chipValues.prTitle,
-                  kubernetesContext: chipValues.kubernetesContext,
-                  sshHost,
-                  sshUser,
-                  workspaceDir,
-                  liveGitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
-                  recentCmds,
-                  liveConnection,
-                  commandHistory,
-                  inputMode,
-                  effectiveMode,
-                  onModeChange: setInputMode,
-                  onInputTextChange,
-                  isRunning,
-                  inAltScreen,
-              }
-            : null;
         const rootRef = useRef<HTMLDivElement>(null);
 
         useEffect(() => {
@@ -607,7 +574,115 @@ export const TerminalView = memo(
             );
         }
 
-        const renderFrame = (agentSlot: AgentSlot | null) => (
+        const agentSlotDeps: AgentPaneDeps = {
+            model,
+            fontSize,
+            focusRequest,
+            liveCwd,
+            home,
+            branch: liveBlock?.gitBranch || chipValues.gitBranch,
+            gitAdded: liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded,
+            gitRemoved: liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved,
+            prNumber: chipValues.prNumber,
+            prTitle: chipValues.prTitle,
+            kubernetesContext: chipValues.kubernetesContext,
+            sshHost,
+            sshUser,
+            workspaceDir,
+            liveGitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
+            recentCmds,
+            liveConnection,
+            commandHistory,
+            inputMode,
+            effectiveMode,
+            onModeChange: setInputMode,
+            onInputTextChange,
+            isRunning,
+            inAltScreen,
+        };
+
+        const renderTerminalBody = (agentSlot: AgentSlot | null) => (
+            <>
+                {topSlot}
+                <FindBar model={model} />
+                {agentSlot?.chatHost}
+                {error && (
+                    <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
+                        {error}
+                    </div>
+                )}
+                {agentSlot?.replacesBlockList ? (
+                    agentSlot.commandResults
+                ) : loading && model.getBlocks().length() === 0 ? (
+                    <div className="flex flex-1 items-center justify-center text-[12px] text-secondary/70">
+                        Loading terminal…
+                    </div>
+                ) : (
+                    <>
+                        <BlockListElement
+                            model={model}
+                            fontSize={fontSize}
+                            home={home}
+                            onCopyBlock={onCopyBlock}
+                            onLinkClick={onLinkClick}
+                            charWidth={charWidth}
+                        />
+                        {agentSlot?.commandResults}
+                    </>
+                )}
+                {/* prompt_to_editor_padding — warp settings/mod.rs:551 keeps a
+                10px breathing room between the last block's output and the
+                top of the input editor.  Without this the input's border-t
+                hugs the last command's stdout. */}
+                {!inAltScreen && <div className="mt-2.5" />}
+                {/* Agent footer (warp's bottom orchestration bar): working status +
+                Stop on the right, queued messages on the left. Between the
+                conversation and the input editor; hidden when idle + empty. */}
+                {!inAltScreen && agentSlot?.activityBar}
+                {!inAltScreen &&
+                    (agentSlot ? (
+                        agentSlot.inputBar
+                    ) : (
+                        <CmdBlockInput
+                            cwd={liveCwd}
+                            home={home}
+                            // Branch prefers the precmd value (instant) and falls back
+                            // to the chip-model fetch (covers shells with no precmd).
+                            branch={liveBlock?.gitBranch || chipValues.gitBranch}
+                            // Diff stats: precmd if shell sent it, else chip-model.
+                            gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
+                            gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
+                            prNumber={chipValues.prNumber}
+                            prTitle={chipValues.prTitle}
+                            kubernetesContext={chipValues.kubernetesContext}
+                            sshHost={sshHost}
+                            sshUser={sshUser}
+                            mode="terminal"
+                            onModeChange={() => {}}
+                            onSubmit={onSubmit}
+                            submitting={submitting}
+                            disabled={false}
+                            fontSize={fontSize}
+                            focusRequest={focusRequest}
+                            history={commandHistory}
+                            onTextChange={onInputTextChange}
+                            placeholder={
+                                isRunning
+                                    ? "Press Ctrl+C in the running block to interrupt, or type the next command"
+                                    : undefined
+                            }
+                        />
+                    ))}
+                {overlaySlot}
+                {notification && (
+                    <div className="pointer-events-none absolute right-3 top-3 max-w-[60%] rounded border border-fg-overlay-2 bg-background/95 px-3 py-2 text-[12px] text-foreground shadow-lg">
+                        {notification}
+                    </div>
+                )}
+            </>
+        );
+
+        return (
             <PaletteContext.Provider value={paletteValue}>
                 <div
                     ref={rootRef}
@@ -622,89 +697,16 @@ export const TerminalView = memo(
                         bellFlash && "ring-2 ring-inset ring-amber-400/50"
                     )}
                 >
-                    {topSlot}
-                    <FindBar model={model} />
-                    {agentSlot?.chatHost}
-                    {error && (
-                        <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
-                            {error}
-                        </div>
-                    )}
-                    {loading && model.getBlocks().length() === 0 ? (
-                        <div className="flex flex-1 items-center justify-center text-[12px] text-secondary/70">
-                            Loading terminal…
-                        </div>
+                    {AgentSlotComponent ? (
+                        <AgentSlotComponent outerBlockId={outerBlockId} deps={agentSlotDeps}>
+                            {renderTerminalBody}
+                        </AgentSlotComponent>
                     ) : (
-                        <>
-                            <BlockListElement
-                                model={model}
-                                fontSize={fontSize}
-                                home={home}
-                                onCopyBlock={onCopyBlock}
-                                onLinkClick={onLinkClick}
-                                charWidth={charWidth}
-                                agentRunsById={agentSlot?.agentRunsById ?? EMPTY_RUNS}
-                            />
-                            {agentSlot?.commandResults}
-                        </>
-                    )}
-                    {/* prompt_to_editor_padding — warp settings/mod.rs:551 keeps a
-                10px breathing room between the last block's output and the
-                top of the input editor.  Without this the input's border-t
-                hugs the last command's stdout. */}
-                    {!inAltScreen && <div className="mt-2.5" />}
-                    {/* Agent footer (warp's bottom orchestration bar): working status +
-                Stop on the right, queued messages on the left. Between the
-                conversation and the input editor; hidden when idle + empty. */}
-                    {!inAltScreen && agentSlot?.activityBar}
-                    {!inAltScreen &&
-                        (agentSlot ? (
-                            agentSlot.inputBar
-                        ) : (
-                            <CmdBlockInput
-                                cwd={liveCwd}
-                                home={home}
-                                // Branch prefers the precmd value (instant) and falls back
-                                // to the chip-model fetch (covers shells with no precmd).
-                                branch={liveBlock?.gitBranch || chipValues.gitBranch}
-                                // Diff stats: precmd if shell sent it, else chip-model.
-                                gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
-                                gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
-                                prNumber={chipValues.prNumber}
-                                prTitle={chipValues.prTitle}
-                                kubernetesContext={chipValues.kubernetesContext}
-                                sshHost={sshHost}
-                                sshUser={sshUser}
-                                mode="terminal"
-                                onModeChange={() => {}}
-                                onSubmit={onSubmit}
-                                submitting={submitting}
-                                disabled={false}
-                                fontSize={fontSize}
-                                focusRequest={focusRequest}
-                                history={commandHistory}
-                                onTextChange={onInputTextChange}
-                                placeholder={
-                                    isRunning
-                                        ? "Press Ctrl+C in the running block to interrupt, or type the next command"
-                                        : undefined
-                                }
-                            />
-                        ))}
-                    {overlaySlot}
-                    {notification && (
-                        <div className="pointer-events-none absolute right-3 top-3 max-w-[60%] rounded border border-fg-overlay-2 bg-background/95 px-3 py-2 text-[12px] text-foreground shadow-lg">
-                            {notification}
-                        </div>
+                        renderTerminalBody(null)
                     )}
                 </div>
             </PaletteContext.Provider>
         );
-
-        if (renderAgentSlot && agentSlotDeps) {
-            return renderAgentSlot(agentSlotDeps, renderFrame);
-        }
-        return renderFrame(null);
     }
 );
 TerminalView.displayName = "TerminalView";
