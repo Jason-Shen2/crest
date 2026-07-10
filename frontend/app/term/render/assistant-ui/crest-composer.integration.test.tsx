@@ -19,8 +19,8 @@ import { CrestComposer } from "./crest-composer";
 interface HarnessOptions {
     isRunning?: boolean;
     modelLabel?: string;
-    onNew?: (message: AppendMessage) => void | Promise<void>;
-    onCancel?: () => void | Promise<void>;
+    onNew?: (message: AppendMessage) => Promise<void>;
+    onCancel?: () => Promise<void>;
     onOpenModelPicker?: () => void;
 }
 
@@ -36,8 +36,15 @@ const RuntimeProvider: FC<PropsWithChildren<HarnessOptions>> = ({
         messages: [],
         isRunning,
         convertMessage: (message) => message,
-        onNew,
-        onCancel,
+        onNew: async (message) => {
+            await onNew(message);
+        },
+        onCancel:
+            onCancel == null
+                ? undefined
+                : async () => {
+                      await onCancel();
+                  },
     } satisfies ExternalStoreAdapter<ThreadMessageLike>);
 
     return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
@@ -65,7 +72,10 @@ async function flushRuntimeWork(): Promise<void> {
 
 describe("CrestComposer assistant-ui runtime integration", () => {
     it("sends textarea text through the real assistant-ui composer runtime", async () => {
-        const onNew = vi.fn();
+        const sentMessages: AppendMessage[] = [];
+        const onNew = vi.fn(async (message: AppendMessage) => {
+            sentMessages.push(message);
+        });
         renderComposer({ onNew });
 
         capturedAui?.composer().setText("Explain the failing test");
@@ -73,21 +83,24 @@ describe("CrestComposer assistant-ui runtime integration", () => {
         await flushRuntimeWork();
 
         expect(onNew).toHaveBeenCalledTimes(1);
-        expect(onNew.mock.calls[0][0]).toMatchObject({
+        expect(sentMessages[0]).toMatchObject({
             role: "user",
             content: [{ type: "text", text: "Explain the failing test" }],
         });
     });
 
     it("keeps multi-line input intact when sending", async () => {
-        const onNew = vi.fn();
+        const sentMessages: AppendMessage[] = [];
+        const onNew = vi.fn(async (message: AppendMessage) => {
+            sentMessages.push(message);
+        });
         renderComposer({ onNew });
 
         capturedAui?.composer().setText("first line\nsecond line");
         capturedAui?.composer().send();
         await flushRuntimeWork();
 
-        expect(onNew.mock.calls[0][0].content).toEqual([{ type: "text", text: "first line\nsecond line" }]);
+        expect(sentMessages[0]?.content).toEqual([{ type: "text", text: "first line\nsecond line" }]);
     });
 
     it("disables empty sends but exposes the model picker affordance", () => {
@@ -103,7 +116,7 @@ describe("CrestComposer assistant-ui runtime integration", () => {
     });
 
     it("shows stop while running and routes cancel through the real thread runtime", async () => {
-        const onCancel = vi.fn();
+        const onCancel = vi.fn(async () => {});
         const html = renderComposer({ isRunning: true, onCancel });
 
         expect(html).toContain("Stop");
@@ -114,5 +127,14 @@ describe("CrestComposer assistant-ui runtime integration", () => {
         await flushRuntimeWork();
 
         expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it("disables stop while running when the runtime cannot cancel", () => {
+        const html = renderComposer({ isRunning: true });
+
+        expect(html).toContain("Stop");
+        expect(html).toContain('aria-label="Stop agent response"');
+        expect(html).toMatch(/aria-label="Stop agent response"[^>]*disabled=""/);
+        expect(() => capturedAui?.thread().cancelRun()).toThrow("Runtime does not support cancelling runs.");
     });
 });
