@@ -1,8 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { memo } from "react";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import { memo } from "react";
 
 import {
     ToolDetailSection,
@@ -44,7 +44,11 @@ export const WebTool = memo((props: ToolCallMessagePartProps) => {
                         <ToolDetailSection label="Request" name="args">
                             {argsText || renderToolValuePreview(args)}
                         </ToolDetailSection>
-                        <ToolDetailSection label={status === "error" ? "Error" : "Result"} name="result" tone={status === "error" ? "error" : undefined}>
+                        <ToolDetailSection
+                            label={status === "error" ? "Error" : "Result"}
+                            name="result"
+                            tone={status === "error" ? "error" : undefined}
+                        >
                             {output}
                         </ToolDetailSection>
                     </>

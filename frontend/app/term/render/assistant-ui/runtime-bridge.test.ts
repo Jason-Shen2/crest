@@ -94,8 +94,16 @@ describe("piRunToAuiMessages", () => {
 
     it("keeps multiple runs in user assistant order", () => {
         const messages = piRunToAuiMessages([
-            makeRun({ runId: "a", userMessage: user("first"), responseMessages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }] }),
-            makeRun({ runId: "b", userMessage: user("second"), responseMessages: [{ role: "assistant", content: [{ type: "text", text: "two" }] }] }),
+            makeRun({
+                runId: "a",
+                userMessage: user("first"),
+                responseMessages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }],
+            }),
+            makeRun({
+                runId: "b",
+                userMessage: user("second"),
+                responseMessages: [{ role: "assistant", content: [{ type: "text", text: "two" }] }],
+            }),
         ]);
 
         expect(messages.map((message) => message.id)).toEqual(["user-a", "assistant-a", "user-b", "assistant-b"]);
@@ -222,12 +230,16 @@ describe("piRunToAuiMessages", () => {
             makeRun({
                 runId: "aborted",
                 status: "done",
-                responseMessages: [{ role: "assistant", stopReason: "aborted", content: [{ type: "text", text: "stopped" }] }],
+                responseMessages: [
+                    { role: "assistant", stopReason: "aborted", content: [{ type: "text", text: "stopped" }] },
+                ],
             }),
             makeRun({
                 runId: "length",
                 status: "done",
-                responseMessages: [{ role: "assistant", stopReason: "length", content: [{ type: "text", text: "truncated" }] }],
+                responseMessages: [
+                    { role: "assistant", stopReason: "length", content: [{ type: "text", text: "truncated" }] },
+                ],
             }),
         ]);
 
@@ -240,9 +252,11 @@ describe("createCrestAssistantRuntimeAdapter", () => {
     it("bridges Pi runs and running state into an external-store adapter", () => {
         const adapter = createCrestAssistantRuntimeAdapter(
             makeChat({
-                runs: [makeRun({ responseMessages: [{ role: "assistant", content: [{ type: "text", text: "answer" }] }] })],
+                runs: [
+                    makeRun({ responseMessages: [{ role: "assistant", content: [{ type: "text", text: "answer" }] }] }),
+                ],
                 status: "streaming",
-            }),
+            })
         );
 
         expect(adapter.messages).toHaveLength(2);
