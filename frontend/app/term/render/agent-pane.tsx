@@ -41,6 +41,13 @@ export interface AgentSlot {
     agentRunsById: Map<string, PiRun>;
 }
 
+export interface AgentPaneProps {
+    outerBlockId: string;
+    model: TerminalModel;
+    deps: AgentPaneDeps;
+    children: (slot: AgentSlot) => React.ReactNode;
+}
+
 // 输入栏渲染需要的、来自 TerminalView 的实时上下文。这些值 TerminalView
 // 已经算好（cwd/branch/ssh/history 等），通过 deps 传入避免重复计算。
 export interface AgentPaneDeps {
@@ -308,6 +315,12 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
 
     return { chatHost, commandResults, activityBar, inputBar, agentRunsById };
 }
+
+export function AgentPane({ outerBlockId, model, deps, children }: AgentPaneProps) {
+    const slot = useAgentPane(outerBlockId, model, deps);
+    return <>{children(slot)}</>;
+}
+AgentPane.displayName = "AgentPane";
 
 // stripVendorPrefix — OpenRouter / Together style model ids carry the
 // upstream vendor as a slash-prefixed namespace ("anthropic/claude-…").

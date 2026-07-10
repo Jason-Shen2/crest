@@ -101,11 +101,13 @@ export async function resetVTabName(env: Pick<VTabBarEnv, "rpc">, tabId: string,
 // our local SVG set (frontend/app/asset/ui-icons) instead of the
 // FontAwesome class names used by legacy code.  Unmapped views fall
 // back to a neutral file/code glyph.
-function blockViewToUIcon(view: string): string {
+export function blockViewToUIcon(view: string): string {
     switch (view) {
         case "term":
         case "termblocks":
             return "terminal";
+        case "agent":
+            return "sparkle";
         case "preview":
         case "codeeditor":
             return "file";
@@ -133,6 +135,103 @@ function blockViewToUIcon(view: string): string {
         default:
             return "code-02";
     }
+}
+
+interface PaneVTabItemInput {
+    view: string;
+    cwdShort: string;
+    gitBranchName?: string;
+    isRepo: boolean;
+    primaryInfo: VtabPrimaryInfo;
+    compactSubtitle: VtabCompactSubtitle;
+    viewMode: VtabViewMode;
+    blockMeta?: MetaType;
+    flagColor: string | null;
+    runningKind?: VTabItem["runningKind"];
+    showDiffStats: boolean;
+    gitInfo?: GitInfoResponse | null;
+}
+
+export function resolvePaneVTabItem({
+    view,
+    cwdShort,
+    gitBranchName,
+    isRepo,
+    primaryInfo,
+    compactSubtitle,
+    viewMode,
+    blockMeta,
+    flagColor,
+    runningKind,
+    showDiffStats,
+    gitInfo,
+}: PaneVTabItemInput): Omit<VTabItem, "id"> {
+    const fileLabel = getFileBackedBlockLabel(blockMeta);
+    const webUrl = (blockMeta?.["url"] as string) || "";
+    const isCompact = viewMode === "compact";
+
+    let primaryName: string;
+    let expandedSubtitle = "";
+    let compactLineTwo = "";
+    let metadataLeftKind: "branch" | "workingdir" | undefined;
+    let metadataLeftValue: string | undefined;
+
+    if (view === "term" || view === "termblocks" || view === "agent") {
+        const commandText = cwdShort || "Terminal";
+        const workingDirectoryText = cwdShort || "Terminal";
+        if (primaryInfo === "workingdir") {
+            primaryName = workingDirectoryText;
+            expandedSubtitle = commandText;
+            metadataLeftKind = "branch";
+            metadataLeftValue = gitBranchName;
+        } else if (primaryInfo === "branch") {
+            primaryName = gitBranchName || workingDirectoryText;
+            expandedSubtitle = commandText;
+            metadataLeftKind = "workingdir";
+            metadataLeftValue = workingDirectoryText;
+        } else {
+            primaryName = commandText;
+            expandedSubtitle = workingDirectoryText;
+            metadataLeftKind = "branch";
+            metadataLeftValue = gitBranchName;
+        }
+        switch (compactSubtitle) {
+            case "command":
+                compactLineTwo = commandText;
+                break;
+            case "workingdir":
+                compactLineTwo = workingDirectoryText;
+                break;
+            case "branch":
+                compactLineTwo = gitBranchName || "";
+                break;
+            default:
+                compactLineTwo = "";
+        }
+    } else if (fileLabel) {
+        primaryName = fileLabel.basename || fileLabel.fallbackTitle;
+        expandedSubtitle = fileLabel.path !== fileLabel.basename ? fileLabel.path : "";
+        compactLineTwo = "";
+    } else if (view === "web") {
+        primaryName = webUrl || blockViewToName(view) || "Web";
+        expandedSubtitle = "";
+    } else {
+        primaryName = blockViewToName(view) || "Block";
+        expandedSubtitle = "";
+    }
+
+    return {
+        name: primaryName,
+        flagColor,
+        subtitle: isCompact ? compactLineTwo : expandedSubtitle,
+        metadataLeftKind: isCompact ? undefined : metadataLeftKind,
+        metadataLeftValue: isCompact ? undefined : metadataLeftValue,
+        gitAdds: !isCompact && isRepo && showDiffStats ? gitInfo?.additions : undefined,
+        gitDels: !isCompact && isRepo && showDiffStats ? gitInfo?.deletions : undefined,
+        gitChangedFiles: !isCompact && isRepo && showDiffStats ? gitInfo?.changedfiles : undefined,
+        runningKind,
+        iconName: blockViewToUIcon(view),
+    };
 }
 
 // Shared git-info poller: one interval + one RPC per unique cwd for all tabs.
@@ -708,80 +807,26 @@ function VPaneWrapper({
     const isRepo = !!gitInfo?.isrepo;
     const gitBranchName = isRepo ? gitInfo?.branch : undefined;
 
-    // For terminal blocks: full 3-line warp layout (title + subtitle
-    // + metadata).  For non-terminal blocks (preview/web/etc.) warp
-    // uses a simpler 2-line layout (title + view-specific subtitle)
-    // with no third metadata row.
-    const fileLabel = getFileBackedBlockLabel(block?.meta);
-    const webUrl = (block?.meta?.["url"] as string) || "";
-    const isCompact = viewMode === "compact";
-
-    let primaryName: string;
-    let expandedSubtitle = "";
-    let compactLineTwo = "";
-    let metadataLeftKind: "branch" | "workingdir" | undefined;
-    let metadataLeftValue: string | undefined;
-
-    if (view === "term" || view === "termblocks") {
-        const commandText = cwdShort || "Terminal";
-        const workingDirectoryText = cwdShort || "Terminal";
-        if (primaryInfo === "workingdir") {
-            primaryName = workingDirectoryText;
-            expandedSubtitle = commandText;
-            metadataLeftKind = "branch";
-            metadataLeftValue = gitBranchName;
-        } else if (primaryInfo === "branch") {
-            primaryName = gitBranchName || workingDirectoryText;
-            expandedSubtitle = commandText;
-            metadataLeftKind = "workingdir";
-            metadataLeftValue = workingDirectoryText;
-        } else {
-            primaryName = commandText;
-            expandedSubtitle = workingDirectoryText;
-            metadataLeftKind = "branch";
-            metadataLeftValue = gitBranchName;
-        }
-        switch (compactSubtitle) {
-            case "command":
-                compactLineTwo = commandText;
-                break;
-            case "workingdir":
-                compactLineTwo = workingDirectoryText;
-                break;
-            case "branch":
-                compactLineTwo = gitBranchName || "";
-                break;
-            default:
-                compactLineTwo = "";
-        }
-    } else if (fileLabel) {
-        primaryName = fileLabel.basename || fileLabel.fallbackTitle;
-        expandedSubtitle = fileLabel.path !== fileLabel.basename ? fileLabel.path : "";
-        compactLineTwo = ""; // non-terminal panes have no compact-subtitle setting
-    } else if (view === "web") {
-        primaryName = webUrl || blockViewToName(view) || "Web";
-        expandedSubtitle = "";
-    } else {
-        primaryName = blockViewToName(view) || "Block";
-        expandedSubtitle = "";
-    }
-
     const rawFlagColor = (tabData?.meta?.["tab:flagcolor"] as string | undefined) ?? null;
     const flagColor = useResolvedTabFlagColor(rawFlagColor);
+    const paneTab = resolvePaneVTabItem({
+        view,
+        cwdShort,
+        gitBranchName,
+        isRepo,
+        primaryInfo,
+        compactSubtitle,
+        viewMode,
+        blockMeta: block?.meta,
+        flagColor,
+        runningKind,
+        showDiffStats,
+        gitInfo,
+    });
 
     const tab: VTabItem = {
         id: blockId,
-        name: primaryName,
-        flagColor,
-        subtitle: isCompact ? compactLineTwo : expandedSubtitle,
-        metadataLeftKind: isCompact ? undefined : metadataLeftKind,
-        metadataLeftValue: isCompact ? undefined : metadataLeftValue,
-        gitAdds: !isCompact && isRepo && showDiffStats ? gitInfo?.additions : undefined,
-        gitDels: !isCompact && isRepo && showDiffStats ? gitInfo?.deletions : undefined,
-        gitChangedFiles:
-            !isCompact && isRepo && showDiffStats ? gitInfo?.changedfiles : undefined,
-        runningKind,
-        iconName: blockViewToUIcon(view),
+        ...paneTab,
     };
 
     const matched = matchesQuery(tab);
@@ -807,7 +852,7 @@ function VPaneWrapper({
             id: tabId,
             renameRef: paneRenameRef,
             env,
-            tabTitle: primaryName,
+            tabTitle: paneTab.name,
             hasCustomName: !tabIsAutoNamed,
             cwd,
             gitBranch: gitBranchName,
@@ -825,7 +870,7 @@ function VPaneWrapper({
         [
             tabId,
             env,
-            primaryName,
+            paneTab.name,
             tabIsAutoNamed,
             cwd,
             gitBranchName,
