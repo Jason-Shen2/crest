@@ -95,6 +95,16 @@ function statusKey(status: ToolCallMessagePartProps["status"]): string {
     return `${status.type}:${status.reason}`;
 }
 
+function statusErrorValue(status: ToolCallMessagePartProps["status"]): unknown {
+    if (status.type !== "incomplete" || status.reason !== "error") return undefined;
+    return status.error;
+}
+
+function resultValueForDisplay(result: unknown, status: ToolCallMessagePartProps["status"]): unknown {
+    if (typeof result === "string" && result.length === 0) return statusErrorValue(status);
+    return result ?? statusErrorValue(status);
+}
+
 function DetailSection({ label, name, children }: { label: string; name: string; children: string }) {
     if (!children) return null;
     return (
@@ -123,7 +133,10 @@ export const ToolFallback = memo((props: ToolCallMessagePartProps) => {
         () => (expanded ? argsText || renderToolFallbackPreview(args) : ""),
         [args, argsText, expanded]
     );
-    const resultPreview = useMemo(() => (expanded ? renderToolFallbackPreview(result) : ""), [expanded, result]);
+    const resultPreview = useMemo(
+        () => (expanded ? renderToolFallbackPreview(resultValueForDisplay(result, partStatus)) : ""),
+        [expanded, partStatus, result]
+    );
     const artifactPreview = useMemo(() => (expanded ? renderToolFallbackPreview(artifact) : ""), [artifact, expanded]);
 
     useEffect(() => {
