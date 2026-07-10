@@ -70,6 +70,28 @@ describe("piRunToAuiMessages", () => {
         });
     });
 
+    it("maps user text and image parts without reordering", () => {
+        const messages = piRunToAuiMessages([
+            makeRun({
+                userMessage: {
+                    role: "user",
+                    timestamp: 1,
+                    content: [
+                        { type: "text", text: "before" },
+                        { type: "image", data: "userimg", mimeType: "image/jpeg" },
+                        { type: "text", text: "after" },
+                    ],
+                },
+            }),
+        ]);
+
+        expect(messages[0].content).toEqual([
+            { type: "text", text: "before" },
+            { type: "image", image: "data:image/jpeg;base64,userimg" },
+            { type: "text", text: "after" },
+        ]);
+    });
+
     it("keeps multiple runs in user assistant order", () => {
         const messages = piRunToAuiMessages([
             makeRun({ runId: "a", userMessage: user("first"), responseMessages: [{ role: "assistant", content: [{ type: "text", text: "one" }] }] }),
@@ -193,6 +215,24 @@ describe("piRunToAuiMessages", () => {
         expect(messages[1]).toMatchObject({ status: { type: "running" } });
         expect(messages[3]).toMatchObject({ status: { type: "complete" } });
         expect(messages[5]).toMatchObject({ status: { type: "incomplete", reason: "error", error: "boom" } });
+    });
+
+    it("maps done runs with aborted or length stop reasons to incomplete statuses", () => {
+        const messages = piRunToAuiMessages([
+            makeRun({
+                runId: "aborted",
+                status: "done",
+                responseMessages: [{ role: "assistant", stopReason: "aborted", content: [{ type: "text", text: "stopped" }] }],
+            }),
+            makeRun({
+                runId: "length",
+                status: "done",
+                responseMessages: [{ role: "assistant", stopReason: "length", content: [{ type: "text", text: "truncated" }] }],
+            }),
+        ]);
+
+        expect(messages[1]).toMatchObject({ status: { type: "incomplete", reason: "cancelled" } });
+        expect(messages[3]).toMatchObject({ status: { type: "incomplete", reason: "length" } });
     });
 });
 
