@@ -558,7 +558,6 @@ describe("TerminalView pure-terminal form", () => {
                 commandResults: <div data-testid="agent-command-results" />,
                 activityBar: <div data-testid="agent-activity-bar" />,
                 inputBar: null,
-                agentRunsById: new Map(),
                 replacesBlockList: true,
             }),
         });

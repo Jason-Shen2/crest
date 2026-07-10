@@ -110,14 +110,17 @@ export class Blocks {
     //
     // The returned Block carries an outputGrid + headerGrid for shape
     // uniformity with shell blocks, but neither grid is ever written
-    // into (BlockHandler no-ops for kind === "agent"). Rendering goes
-    // through AgentBlockElement which looks up the main-owned run by
-    // agentRef.runId from usePiChat state.
+    // into (BlockHandler no-ops for kind === "agent"). Conversation
+    // rendering lives in the assistant-ui pane.
     //
     // runId is minted by Electron main when it creates the agent run and
     // corresponding timeline row. The block holds it as the only piece of
     // agent state; all message data lives in PaneAgentSession/usePiChat.
-    appendAgentBlock(runId: string, height: number = 0, opts?: { id?: BlockId; sessionPath?: string; createdAt?: number }): Block {
+    appendAgentBlock(
+        runId: string,
+        height: number = 0,
+        opts?: { id?: BlockId; sessionPath?: string; createdAt?: number }
+    ): Block {
         const ref: AgentBlockRef = {
             runId,
             sessionPath: opts?.sessionPath,

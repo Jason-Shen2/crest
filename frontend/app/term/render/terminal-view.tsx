@@ -7,7 +7,6 @@
 
 import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { globalStore } from "@/app/store/jotaiStore";
-import { type PiRun } from "@/app/store/use-pi-chat";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import { getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { cn } from "@/util/util";
@@ -20,11 +19,6 @@ import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
 import { PaletteContext, PaletteOverrides } from "./palette-context";
-
-// Stable empty runs map for the pure-terminal form (no agent runs).  A
-// module-level constant keeps the reference identity stable across renders
-// so BlockListElement's memoization isn't defeated when agentSlot is null.
-const EMPTY_RUNS: Map<string, PiRun> = new Map();
 
 export interface TerminalViewProps {
     outerBlockId: string;
@@ -642,7 +636,6 @@ export const TerminalView = memo(
                                 onCopyBlock={onCopyBlock}
                                 onLinkClick={onLinkClick}
                                 charWidth={charWidth}
-                                agentRunsById={agentSlot?.agentRunsById ?? EMPTY_RUNS}
                             />
                             {agentSlot?.commandResults}
                         </>
