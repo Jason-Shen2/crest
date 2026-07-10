@@ -1,8 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
-import { memo, useCallback } from "react";
+import { ComposerPrimitive, useAuiState } from "@assistant-ui/react";
+import { memo } from "react";
 
 import { cn } from "@/util/util";
 
@@ -12,14 +12,9 @@ export interface CrestComposerProps {
 }
 
 export const CrestComposer = memo(({ modelLabel = "Pick model", onOpenModelPicker }: CrestComposerProps) => {
-    const aui = useAui();
     const isRunning = useAuiState((s) => s.thread.isRunning);
     const composerText = useAuiState((s) => (s.composer.isEditing ? s.composer.text : ""));
     const hasModelPicker = onOpenModelPicker != null;
-
-    const handleStop = useCallback(() => {
-        aui.thread().cancelRun();
-    }, [aui]);
 
     return (
         <ComposerPrimitive.Root
@@ -55,14 +50,12 @@ export const CrestComposer = memo(({ modelLabel = "Pick model", onOpenModelPicke
                     <span className="text-[11px] text-secondary/55">Ctrl+Enter to send · Enter for newline</span>
                     <div className="ml-auto">
                         {isRunning ? (
-                            <button
-                                type="button"
+                            <ComposerPrimitive.Cancel
                                 aria-label="Stop agent response"
-                                onClick={handleStop}
-                                className="h-8 cursor-pointer rounded-full border border-fg-overlay-2 px-3 text-sm text-foreground transition-colors hover:bg-fg-overlay-1"
+                                className="h-8 cursor-pointer rounded-full border border-fg-overlay-2 px-3 text-sm text-foreground transition-colors hover:bg-fg-overlay-1 disabled:cursor-default disabled:opacity-45"
                             >
                                 Stop
-                            </button>
+                            </ComposerPrimitive.Cancel>
                         ) : (
                             <ComposerPrimitive.Send
                                 aria-label="Send message"
