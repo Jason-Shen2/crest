@@ -7,7 +7,7 @@
 // useAgentPane.  Created explicitly by the launcher's Agent widget and as the
 // default block in new tabs.  See docs/superpowers/specs/2026-07-07-block-dual-form-split-design.md.
 
-import { useAgentPane, type AgentPaneDeps, type AgentSlot } from "@/app/term/render/agent-pane";
+import { AgentPane } from "@/app/term/render/agent-pane";
 import { TerminalView } from "@/app/term/render/terminal-view";
 import { globalStore } from "@/app/store/jotaiStore";
 import { getBlockMetaKeyAtom, getSettingsKeyAtom } from "@/store/global";
@@ -59,16 +59,16 @@ const AgentSurfaceHost: React.FC<{ blockId: string; fontSize: number; focusReque
     fontSize,
     focusRequest,
 }) => {
-    const renderAgentSlot = (ctx: AgentPaneDeps): AgentSlot => {
-        // eslint-disable-next-line react-hooks/rules-of-hooks
-        return useAgentPane(blockId, ctx.model, ctx);
-    };
     return (
         <TerminalView
             outerBlockId={blockId}
             fontSize={fontSize}
             focusRequest={focusRequest}
-            renderAgentSlot={renderAgentSlot}
+            renderAgentSlot={(ctx, children) => (
+                <AgentPane outerBlockId={blockId} model={ctx.model} deps={ctx}>
+                    {children}
+                </AgentPane>
+            )}
         />
     );
 };

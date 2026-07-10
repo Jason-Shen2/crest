@@ -16,6 +16,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContextChipModel } from "../contextchip/chip-model";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
+import type { AgentPaneDeps, AgentSlot } from "./agent-pane";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
@@ -42,10 +43,9 @@ export interface TerminalViewProps {
     // for `term:mode = "vdom"` where the whole pane becomes a single
     // VDom subblock instead of a shell.
     replaceContent?: React.ReactNode;
-    // Agent 会话形态用此回调构造 slot —— TerminalView 在算好实时上下文
-    // (cwd/branch/inputMode/…) 后调用，交给 useAgentPane 生成 AgentSlot。
-    // 纯终端形态不传此 prop，agentSlot 保持 null。
-    renderAgentSlot?: (deps: import("./agent-pane").AgentPaneDeps) => import("./agent-pane").AgentSlot;
+    // Agent 会话形态用此渲染器挂载 AgentPane。TerminalView 只负责算好
+    // 实时上下文；useAgentPane 必须在 AgentPane 组件边界内调用。
+    renderAgentSlot?: (deps: AgentPaneDeps, children: (slot: AgentSlot) => React.ReactNode) => React.ReactNode;
 }
 
 export function blurActiveEditableInRoot(root: HTMLElement | null): void {
@@ -298,10 +298,10 @@ export const TerminalView = memo(
         const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
         // Connection string ("" = local) forwarded to the agent surface.
         const liveConnection = connectionName || "";
-        // Agent 会话形态：TerminalView 算好实时上下文后回调构造 slot。
-        // 纯终端形态 renderAgentSlot 未传 → slot 保持 null（无 agent UI）。
-        const agentSlot = renderAgentSlot
-            ? renderAgentSlot({
+        // Agent 会话形态：TerminalView 算好实时上下文，AgentPane 在组件
+        // 边界内调用 hooks 并通过 render-prop 把 slot 交回布局。
+        const agentSlotDeps: AgentPaneDeps | null = renderAgentSlot
+            ? {
                   model,
                   fontSize,
                   focusRequest,
@@ -326,7 +326,7 @@ export const TerminalView = memo(
                   onInputTextChange,
                   isRunning,
                   inAltScreen,
-              })
+              }
             : null;
         const rootRef = useRef<HTMLDivElement>(null);
 
@@ -607,7 +607,7 @@ export const TerminalView = memo(
             );
         }
 
-        return (
+        const renderFrame = (agentSlot: AgentSlot | null) => (
             <PaletteContext.Provider value={paletteValue}>
                 <div
                     ref={rootRef}
@@ -700,6 +700,11 @@ export const TerminalView = memo(
                 </div>
             </PaletteContext.Provider>
         );
+
+        if (renderAgentSlot && agentSlotDeps) {
+            return renderAgentSlot(agentSlotDeps, renderFrame);
+        }
+        return renderFrame(null);
     }
 );
 TerminalView.displayName = "TerminalView";
