@@ -9,11 +9,9 @@
 // Replaces the pre-pi version which mounted @ai-sdk/react useChat and
 // translated UIMessage parts into ai-sdk's WaveUIDataToolUse shape
 // via TerminalModel.applyAgentParts. Post-pi: messages live in
-// usePiChat state, runs are derived via slicePiRuns, and rendering
-// looks them up directly — TerminalModel just holds the marker blocks.
+// usePiChat state, and AgentPane bridges those runs into assistant-ui.
 //
-// Returns null — purely a state-bridge component. UI lives in
-// AgentBlockElement (mounted by BlockListElement per agent block).
+// Returns null — purely a state-bridge component. UI lives in AgentPane.
 
 import { useEffect, useRef } from "react";
 
@@ -46,7 +44,7 @@ export interface AgentChatHostProps {
     selectionError?: ResolveError | null;
     /** Wired once with a send fn the input bar can call. Mirrors the previous useChat host's pattern. */
     onReady?: (api: AgentChatHostApi) => void;
-    /** Called on every runs change so the parent can feed AgentBlockElement via BlockListElement. */
+    /** Called on every runs change so AgentPane can feed the assistant-ui runtime. */
     onRunsChange?: (runs: PiRun[]) => void;
     /**
      * Called when the agent's live status or pending queue changes. Drives the

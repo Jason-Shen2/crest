@@ -9,13 +9,12 @@ import { AgentViewModel } from "./agent-model";
 
 vi.mock("@/app/term/render/terminal-view", () => ({ TerminalView: () => null }));
 vi.mock("@/app/term/render/agent-pane", () => ({
-    AgentPane: () => null,
     useAgentPane: () => ({
         chatHost: null,
         commandResults: null,
         activityBar: null,
         inputBar: null,
-        agentRunsById: new Map(),
+        replacesBlockList: true,
     }),
 }));
 
@@ -32,6 +31,7 @@ describe("AgentViewModel", () => {
         const source = readFileSync(join(process.cwd(), "frontend/app/view/agentblock/agent-model.tsx"), "utf8");
 
         expect(source).not.toContain("react-hooks/rules-of-hooks");
-        expect(source).toContain("<AgentPane");
+        expect(source).toContain("agentSlotComponent={AgentPaneSlot}");
+        expect(source).toContain("const AgentPaneSlot");
     });
 });

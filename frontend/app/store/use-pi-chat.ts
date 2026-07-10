@@ -5,16 +5,6 @@
 // via Electron IPC (window.api.agent.*). Replaces the legacy
 // @ai-sdk/react useChat path; see docs/agent-runtime-architecture.md.
 //
-// STATUS (task #12, half-done by the autonomous handoff):
-//   - This hook is implemented + tested in isolation.
-//   - It is NOT YET wired into AgentChatHost / agent-block-element /
-//     terminal-model / terminal-view. The legacy useChat → Go-backend
-//     path is still the only one the renderer actually uses.
-//   - Wiring is left to a human review pass because the message-shape
-//     differences (ai-sdk UIMessage parts vs pi AgentMessage content)
-//     require touching the rendering code and one wrong assumption
-//     could break the whole agent panel.
-//
 // What the hook gives consumers:
 //
 //   const {
@@ -31,17 +21,6 @@
 // initialSession or returned by the first send). Pre-session messages
 // are kept locally and merged in once the subscription starts.
 //
-// Replacement strategy (for the human doing the wiring):
-//   1. AgentChatHost: swap useChat for usePiChat. Drop transport prop —
-//      the hook talks to main directly.
-//   2. agent-block-element: rewrite the parts-iteration loop to walk
-//      AgentMessage.content (text / toolCall / toolResult / etc.)
-//      instead of UIMessagePart parts (tool-<name> / text / ...).
-//   3. terminal-model: keep applyAgentParts / applyAgentText if you
-//      want the existing per-block atoms, but the data flowing in is
-//      AgentMessage shape now — adapt the mapping.
-//   4. package.json: remove @ai-sdk/react and any direct ai-sdk
-//      provider deps that came with it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -227,7 +206,7 @@ function getAgentApi(): AgentApiSurface | undefined {
 
 export function resolveAbortSessionPath(
     sessionMetadata: AgentSessionMeta | undefined,
-    activeSessionPath: string,
+    activeSessionPath: string
 ): string {
     return sessionMetadata?.path || activeSessionPath;
 }
@@ -241,10 +220,7 @@ export function resolveAbortSessionPath(
  * by replacing the in-progress entry; commit on message_end. user /
  * toolResult messages are appended on message_start.
  */
-export function reducePiChatEvent(
-    messages: PiAgentMessage[],
-    event: PiAgentEvent,
-): PiAgentMessage[] {
+export function reducePiChatEvent(messages: PiAgentMessage[], event: PiAgentEvent): PiAgentMessage[] {
     switch (event.type) {
         case "message_start": {
             if (!event.message) return messages;
@@ -310,7 +286,7 @@ export function indexRunsById(runs: PiRun[]): Map<string, PiRun> {
 
 export function adoptInitialSessionMetadata(
     current: AgentSessionMeta | undefined,
-    incoming: AgentSessionMeta | undefined,
+    incoming: AgentSessionMeta | undefined
 ): AgentSessionMeta | undefined {
     if (!incoming?.path) return current;
     if (current?.path === incoming.path) return current;
@@ -323,9 +299,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [status, setStatus] = useState<UsePiChatStatus>("idle");
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
     const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
-    const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(
-        opts.initialSession,
-    );
+    const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(opts.initialSession);
     const sessionMetadataRef = useRef<AgentSessionMeta | undefined>(opts.initialSession);
     const activeSessionPathRef = useRef(opts.initialSession?.path ?? "");
 
@@ -362,54 +336,58 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         if (!sessionPath) return;
         const api = getAgentApi();
         if (!api) return;
-        const unsubscribe = api.subscribe(sessionPath, (raw) => {
-            const event = raw as PiAgentEvent;
-            setMessages((prev) => reducePiChatEvent(prev, event));
-            setRuns((prev) => reducePiRunsEvent(prev, event));
-            switch (event.type) {
-                case "snapshot": {
-                    // Replayed once on (re)subscribe: seed status from the
-                    // owner so a renderer that attaches mid-stream reflects
-                    // "streaming" instead of a stale "idle". reducePiChatEvent
-                    // already mirrored the messages above.
-                    const snapStatus = event.status as UsePiChatStatus | undefined;
-                    if (snapStatus) {
-                        setStatus(snapStatus);
-                        setErrorMessage(snapStatus === "error" ? "agent error" : undefined);
+        const unsubscribe = api.subscribe(
+            sessionPath,
+            (raw) => {
+                const event = raw as PiAgentEvent;
+                setMessages((prev) => reducePiChatEvent(prev, event));
+                setRuns((prev) => reducePiRunsEvent(prev, event));
+                switch (event.type) {
+                    case "snapshot": {
+                        // Replayed once on (re)subscribe: seed status from the
+                        // owner so a renderer that attaches mid-stream reflects
+                        // "streaming" instead of a stale "idle". reducePiChatEvent
+                        // already mirrored the messages above.
+                        const snapStatus = event.status as UsePiChatStatus | undefined;
+                        if (snapStatus) {
+                            setStatus(snapStatus);
+                            setErrorMessage(snapStatus === "error" ? "agent error" : undefined);
+                        }
+                        setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
+                        break;
                     }
-                    setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
-                    break;
-                }
-                case "queue_update":
-                    // Authoritative pending-queue state from the owner; the
-                    // harness emits this on every enqueue AND drain, so the
-                    // mirror stays exact (empty when nothing is pending).
-                    setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
-                    break;
-                case "agent_start":
-                case "turn_start":
-                    setStatus("streaming");
-                    setErrorMessage(undefined);
-                    break;
-                case "message_end": {
-                    const m = event.message;
-                    if (m.role === "assistant" && m.stopReason === "error") {
-                        setStatus("error");
-                        setErrorMessage(m.errorMessage ?? "agent error");
+                    case "queue_update":
+                        // Authoritative pending-queue state from the owner; the
+                        // harness emits this on every enqueue AND drain, so the
+                        // mirror stays exact (empty when nothing is pending).
+                        setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
+                        break;
+                    case "agent_start":
+                    case "turn_start":
+                        setStatus("streaming");
+                        setErrorMessage(undefined);
+                        break;
+                    case "message_end": {
+                        const m = event.message;
+                        if (m.role === "assistant" && m.stopReason === "error") {
+                            setStatus("error");
+                            setErrorMessage(m.errorMessage ?? "agent error");
+                        }
+                        break;
                     }
-                    break;
+                    case "agent_end":
+                    case "abort":
+                        // Run finished or was stopped. abort() also clears the
+                        // queues and emits queue_update, so queuedMessages empties
+                        // on its own; here we just settle the status.
+                        setStatus("idle");
+                        break;
+                    default:
+                        break;
                 }
-                case "agent_end":
-                case "abort":
-                    // Run finished or was stopped. abort() also clears the
-                    // queues and emits queue_update, so queuedMessages empties
-                    // on its own; here we just settle the status.
-                    setStatus("idle");
-                    break;
-                default:
-                    break;
-            }
-        }, { blockId: blockIdRef.current });
+            },
+            { blockId: blockIdRef.current }
+        );
         return unsubscribe;
     }, [sessionPath]);
 
@@ -458,21 +436,18 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 setErrorMessage(err instanceof Error ? err.message : String(err));
             }
         },
-        [sessionMetadata],
+        [sessionMetadata]
     );
 
     const abort = useCallback((): void => {
         const api = getAgentApi();
-        const abortSessionPath = resolveAbortSessionPath(
-            sessionMetadataRef.current,
-            activeSessionPathRef.current,
-        );
+        const abortSessionPath = resolveAbortSessionPath(sessionMetadataRef.current, activeSessionPathRef.current);
         if (!api || !abortSessionPath) return;
         api.abort(abortSessionPath);
     }, []);
 
     return useMemo(
         () => ({ messages, runs, status, errorMessage, sessionMetadata, queuedMessages, send, abort }),
-        [messages, runs, status, errorMessage, sessionMetadata, queuedMessages, send, abort],
+        [messages, runs, status, errorMessage, sessionMetadata, queuedMessages, send, abort]
     );
 }
