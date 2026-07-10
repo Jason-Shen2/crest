@@ -187,12 +187,10 @@ export const TerminalView = memo(
                 if (all[i].state === "running") return all[i];
             }
             return all[all.length - 1];
-            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [revision]);
         const [longRunningTick, setLongRunningTick] = useState(0);
         const terminalInputState = useMemo(() => {
             return model.getTerminalInputState();
-            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [model, revision, longRunningTick, loading]);
 
         const nld = useNLDModel(outerBlockId);
@@ -229,7 +227,6 @@ export const TerminalView = memo(
                 const cmd = b.cmd ?? "";
                 if (cmd) chipModel.onCommandCompleted(cmd);
             }
-            // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [revision, chipModel]);
         const setInputMode = useCallback(
             (next: InputMode, currentText?: string) => {
@@ -630,7 +627,9 @@ export const TerminalView = memo(
                             {error}
                         </div>
                     )}
-                    {loading && model.getBlocks().length() === 0 ? (
+                    {agentSlot?.replacesBlockList ? (
+                        agentSlot.commandResults
+                    ) : loading && model.getBlocks().length() === 0 ? (
                         <div className="flex flex-1 items-center justify-center text-[12px] text-secondary/70">
                             Loading terminal…
                         </div>
