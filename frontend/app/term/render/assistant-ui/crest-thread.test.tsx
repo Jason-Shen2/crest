@@ -23,6 +23,21 @@ function mockAssistantUi(messages: Array<{ role: "user" | "assistant" | "system"
                 </>
             ),
         },
+        ComposerPrimitive: {
+            Root: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => (
+                <form {...props}>{children}</form>
+            ),
+            Input: (props: Record<string, unknown>) => {
+                const inputProps = { ...props };
+                delete inputProps.minRows;
+                delete inputProps.maxRows;
+                delete inputProps.submitMode;
+                return <textarea {...inputProps} />;
+            },
+            Send: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => (
+                <button {...props}>{children}</button>
+            ),
+        },
         MessagePrimitive: {
             Root: ({ children, ...props }: PropsWithChildren<Record<string, unknown>>) => (
                 <div {...props}>{children}</div>
@@ -30,7 +45,8 @@ function mockAssistantUi(messages: Array<{ role: "user" | "assistant" | "system"
             Parts: () => null,
         },
         makeAssistantToolUI: (config: unknown) => config,
-        useAuiState: () => false,
+        useAui: () => ({ thread: () => ({ cancelRun: () => undefined }) }),
+        useAuiState: () => "",
     }));
     vi.doMock("@assistant-ui/react-markdown", () => ({
         MarkdownTextPrimitive: () => <div />,
