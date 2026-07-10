@@ -7,9 +7,9 @@
 // useAgentPane.  Created explicitly by the launcher's Agent widget and as the
 // default block in new tabs.  See docs/superpowers/specs/2026-07-07-block-dual-form-split-design.md.
 
-import { AgentPane } from "@/app/term/render/agent-pane";
-import { TerminalView } from "@/app/term/render/terminal-view";
 import { globalStore } from "@/app/store/jotaiStore";
+import { useAgentPane } from "@/app/term/render/agent-pane";
+import { TerminalView, type AgentSlotComponentProps } from "@/app/term/render/terminal-view";
 import { getBlockMetaKeyAtom, getSettingsKeyAtom } from "@/store/global";
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
@@ -64,12 +64,14 @@ const AgentSurfaceHost: React.FC<{ blockId: string; fontSize: number; focusReque
             outerBlockId={blockId}
             fontSize={fontSize}
             focusRequest={focusRequest}
-            renderAgentSlot={(ctx, children) => (
-                <AgentPane outerBlockId={blockId} model={ctx.model} deps={ctx}>
-                    {children}
-                </AgentPane>
-            )}
+            agentSlotComponent={AgentPaneSlot}
         />
     );
 };
 AgentSurfaceHost.displayName = "AgentSurfaceHost";
+
+const AgentPaneSlot: React.FC<AgentSlotComponentProps> = ({ outerBlockId, deps, children }) => {
+    const agentSlot = useAgentPane(outerBlockId, deps.model, deps);
+    return <>{children(agentSlot)}</>;
+};
+AgentPaneSlot.displayName = "AgentPaneSlot";
