@@ -36,7 +36,7 @@ func GetStarterLayout() PortableLayout {
 	return PortableLayout{
 		{IndexArr: []int{0}, BlockDef: &waveobj.BlockDef{
 			Meta: waveobj.MetaMapType{
-				waveobj.MetaKey_View:       "termblocks",
+				waveobj.MetaKey_View:       "agent",
 				waveobj.MetaKey_Controller: "shell",
 			},
 		}, Focused: true},
@@ -61,19 +61,19 @@ func GetStarterLayout() PortableLayout {
 }
 
 func GetNewTabLayout(cwd string) PortableLayout {
-	termMeta := waveobj.MetaMapType{
+	blockMeta := waveobj.MetaMapType{
 		waveobj.MetaKey_View:       "agent",
 		waveobj.MetaKey_Controller: "shell",
 	}
-	// Anchor the terminal's spawn cwd to the Space (workspace) dir so new
-	// terminals open in the project directory. An in-terminal `cd` still
-	// only moves that one shell.
+	// Anchor the block's spawn cwd to the Space (workspace) dir so new
+	// agent shells open in the project directory. An in-terminal `cd`
+	// still only moves that one shell.
 	if cwd != "" {
-		termMeta[waveobj.MetaKey_CmdCwd] = cwd
+		blockMeta[waveobj.MetaKey_CmdCwd] = cwd
 	}
 	return PortableLayout{
 		{IndexArr: []int{0}, BlockDef: &waveobj.BlockDef{
-			Meta: termMeta,
+			Meta: blockMeta,
 		}, Focused: true},
 	}
 }

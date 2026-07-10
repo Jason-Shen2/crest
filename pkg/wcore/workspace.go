@@ -280,8 +280,8 @@ func CreateTab(ctx context.Context, workspaceId string, tabName string, activate
 
 	// No need to apply an initial layout for the initial launch, since the starter layout will get applied after onboarding modal dismissal
 	if !isInitialLaunch {
-		// Anchor the new terminal's spawn cwd to the Space (workspace) dir
-		// so terminals open in the project directory.
+		// Anchor the new block's spawn cwd to the Space (workspace) dir so
+		// agent shells open in the project directory.
 		var workspaceDir string
 		if ws, wsErr := GetWorkspace(ctx, workspaceId); wsErr == nil {
 			workspaceDir = ws.Meta.GetString(waveobj.MetaKey_WorkspaceDir, "")

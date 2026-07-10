@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Tab as TabComponent } from "./tab";
 import { VTab, VTabItem } from "./vtab";
-import { resetVTabName, VTabBar } from "./vtabbar";
+import { blockViewToUIcon, resolvePaneVTabItem, VTabBar, resetVTabName } from "./vtabbar";
 
 const OriginalCss = globalThis.CSS;
 const HexColorRegex = /^#([\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i;
@@ -295,6 +295,33 @@ describe("VTabBar tab labels", () => {
         expect(manualMarkup).not.toContain("restored-label.ts");
         expect(resetMarkup).toContain("restored-label.ts");
         expect(resetMarkup).not.toContain(">T1<");
+    });
+});
+
+describe("pane tab metadata", () => {
+    it("treats agent panes like terminal panes for cwd labels and git metadata", () => {
+        const tabItem = resolvePaneVTabItem({
+            view: "agent",
+            cwdShort: "/repo",
+            gitBranchName: "main",
+            isRepo: true,
+            primaryInfo: "workingdir",
+            compactSubtitle: "branch",
+            viewMode: "expanded",
+            blockMeta: {},
+            flagColor: null,
+            showDiffStats: false,
+        });
+
+        expect(tabItem.name).toBe("/repo");
+        expect(tabItem.subtitle).toBe("/repo");
+        expect(tabItem.metadataLeftKind).toBe("branch");
+        expect(tabItem.metadataLeftValue).toBe("main");
+        expect(tabItem.iconName).toBe("sparkle");
+    });
+
+    it("uses the agent icon in panes mode", () => {
+        expect(blockViewToUIcon("agent")).toBe("sparkle");
     });
 });
 

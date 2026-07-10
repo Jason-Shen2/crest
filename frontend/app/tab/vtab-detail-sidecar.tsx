@@ -55,6 +55,8 @@ function blockViewToUIcon(view: string): string {
         case "term":
         case "termblocks":
             return "terminal";
+        case "agent":
+            return "sparkle";
         case "preview":
         case "codeeditor":
             return "file";
@@ -109,7 +111,7 @@ export function resolveVtabDetailHeaderTitle({
             "Terminal"
         );
     }
-    if (view === "term" || view === "termblocks" || view === "") {
+    if (view === "term" || view === "termblocks" || view === "agent" || view === "") {
         return cwdShort || (!isAutoNamed && tabName) || "Terminal";
     }
     if (fileLabel) {
@@ -125,6 +127,7 @@ function viewToName(view: string): string {
     switch (view) {
         case "term":
         case "termblocks":
+        case "agent":
             return "Terminal";
         case "preview":
             return "Preview";

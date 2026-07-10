@@ -10,11 +10,13 @@ describe("terminal view selector implementation", () => {
         // The agent surface (SessionSelector + agent input bar) now lives in
         // agent-pane.tsx; the pure-terminal TerminalView no longer imports it.
         const source = readFileSync(join(process.cwd(), "frontend/app/term/render/agent-pane.tsx"), "utf8");
+        const terminalViewSource = readFileSync(join(process.cwd(), "frontend/app/term/render/terminal-view.tsx"), "utf8");
 
         expect(source).toContain('import { SessionSelector } from "@/app/view/cmdblock/session-selector";');
         expect(source).toContain("<SessionSelector");
         expect(source).not.toContain('import { AgentSelectorPopover } from "./agent-selector-popover";');
         expect(source).not.toContain("<AgentSelectorPopover");
+        expect(terminalViewSource).not.toContain("SessionSelector");
     });
 
     it("removes the legacy term selector implementation", () => {
