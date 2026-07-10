@@ -90,8 +90,18 @@ function createAssistantMessage(run: PiRun): ThreadMessage {
 }
 
 function userContentFromPiMessage(message: PiAgentMessage | undefined): ThreadUserMessagePart[] {
-    const text = textFromPiMessage(message);
-    return text ? [{ type: "text", text }] : [];
+    const parts: ThreadUserMessagePart[] = [];
+    for (const content of message?.content ?? []) {
+        if (content.type === "text" && typeof content.text === "string") {
+            parts.push({ type: "text", text: content.text });
+            continue;
+        }
+        if (content.type === "image") {
+            const image = imageContentSrc(content);
+            if (image) parts.push({ type: "image", image });
+        }
+    }
+    return parts;
 }
 
 function assistantContentFromRun(run: PiRun): ThreadAssistantMessagePart[] {
@@ -183,6 +193,9 @@ function statusFromPiRun(run: PiRun): MessageStatus {
     if (run.status === "error") {
         return { type: "incomplete", reason: "error", error: run.errorMessage ?? "agent error" };
     }
+    const stopReason = lastAssistantStopReason(run);
+    if (stopReason === "aborted") return { type: "incomplete", reason: "cancelled" };
+    if (stopReason === "length") return { type: "incomplete", reason: "length" };
     return { type: "complete", reason: "stop" };
 }
 
@@ -206,6 +219,14 @@ function dateFromPiMessage(message: PiAgentMessage | undefined): Date {
 
 function firstResponseMessage(run: PiRun): PiAgentMessage | undefined {
     return run.responseMessages[0] ?? run.userMessage;
+}
+
+function lastAssistantStopReason(run: PiRun): string {
+    for (let i = run.responseMessages.length - 1; i >= 0; i--) {
+        const message = run.responseMessages[i];
+        if (message.role === "assistant" && typeof message.stopReason === "string") return message.stopReason;
+    }
+    return "";
 }
 
 function metadataForRun(run: PiRun) {
