@@ -4,9 +4,15 @@
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { memo } from "react";
 
+import { CrestComposer } from "./crest-composer";
 import { CrestAssistantMessage, CrestUserMessage } from "./crest-message";
 
-export const CrestThread = memo(() => {
+export interface CrestThreadProps {
+    modelLabel?: string;
+    onOpenModelPicker?: () => void;
+}
+
+export const CrestThread = memo(({ modelLabel, onOpenModelPicker }: CrestThreadProps) => {
     return (
         <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col" data-testid="crest-thread">
             <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
@@ -25,6 +31,7 @@ export const CrestThread = memo(() => {
                     </ThreadPrimitive.Messages>
                 </div>
             </ThreadPrimitive.Viewport>
+            <CrestComposer modelLabel={modelLabel} onOpenModelPicker={onOpenModelPicker} />
         </ThreadPrimitive.Root>
     );
 });
