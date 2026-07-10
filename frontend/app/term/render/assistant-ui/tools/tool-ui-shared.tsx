@@ -1,8 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { memo, ReactNode, useEffect, useMemo, useState } from "react";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import { memo, ReactNode, useEffect, useMemo, useState } from "react";
 
 import { cn } from "@/util/util";
 
@@ -133,7 +133,8 @@ function boundToolPreview(value: unknown, depth = 0, seen = new WeakSet<object>(
 
     if (Array.isArray(value)) {
         const next = value.slice(0, ToolPreviewMaxEntries).map((item) => boundToolPreview(item, depth + 1, seen));
-        if (value.length > ToolPreviewMaxEntries) next.push(`[truncated ${value.length - ToolPreviewMaxEntries} items]`);
+        if (value.length > ToolPreviewMaxEntries)
+            next.push(`[truncated ${value.length - ToolPreviewMaxEntries} items]`);
         return next;
     }
 
@@ -206,7 +207,10 @@ export function ToolDisclosureContent(props: ToolDisclosureProps) {
                 <span className="mt-0.5 shrink-0 text-[12px] text-secondary/80">{expanded ? "⌄" : "›"}</span>
             </button>
             {expanded && (
-                <div className="space-y-2 border-t border-fg-overlay-2 bg-background/80 p-3" data-assistant-tool-detail={toolCallId}>
+                <div
+                    className="space-y-2 border-t border-fg-overlay-2 bg-background/80 p-3"
+                    data-assistant-tool-detail={toolCallId}
+                >
                     {renderDetails()}
                 </div>
             )}

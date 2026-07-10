@@ -1,15 +1,11 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-    ToolFallback,
-    getToolFallbackInitialExpanded,
-    renderToolFallbackPreview,
-} from "./tool-fallback";
+import { ToolFallback, getToolFallbackInitialExpanded, renderToolFallbackPreview } from "./tool-fallback";
 
 function toolProps(overrides: Partial<ToolCallMessagePartProps> = {}): ToolCallMessagePartProps {
     return {
