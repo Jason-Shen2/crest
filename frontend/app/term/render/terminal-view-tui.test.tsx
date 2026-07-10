@@ -553,13 +553,14 @@ describe("TerminalView pure-terminal form", () => {
     it("lets an agent slot replace the legacy block list content area", () => {
         testState.modeOverride = {};
         const html = renderTerminalView({
-            renderAgentSlot: () => ({
-                chatHost: <div data-testid="agent-chat-host" />,
-                commandResults: <div data-testid="agent-command-results" />,
-                activityBar: <div data-testid="agent-activity-bar" />,
-                inputBar: null,
-                replacesBlockList: true,
-            }),
+            agentSlotComponent: ({ children }) =>
+                children({
+                    chatHost: <div data-testid="agent-chat-host" />,
+                    commandResults: <div data-testid="agent-command-results" />,
+                    activityBar: <div data-testid="agent-activity-bar" />,
+                    inputBar: null,
+                    replacesBlockList: true,
+                }),
         });
 
         expect(html).toContain('data-testid="agent-chat-host"');

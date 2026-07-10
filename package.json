@@ -22,7 +22,7 @@
         "dev": "electron-vite dev",
         "start": "electron-vite preview",
         "build:dev": "node --max-old-space-size=8192 ./node_modules/electron-vite/bin/electron-vite.js build --mode development",
-        "build:prod": "electron-vite build --mode production",
+        "build:prod": "node --max-old-space-size=8192 ./node_modules/electron-vite/bin/electron-vite.js build --mode production",
         "coverage": "vitest run --coverage",
         "test": "vitest",
         "postinstall": "node ./postinstall.cjs"
