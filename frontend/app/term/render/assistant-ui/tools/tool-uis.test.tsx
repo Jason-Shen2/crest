@@ -1,8 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 function toolProps(overrides: Partial<ToolCallMessagePartProps> = {}): ToolCallMessagePartProps {
@@ -53,13 +53,21 @@ describe("assistant-ui specialized tool UIs", () => {
         const { AssistantToolUIs, assistantToolRenderersByName, getAssistantToolRenderer } = await import("./index");
 
         expect(getAssistantToolRenderer("read_text_file")).toBe(assistantToolRenderersByName.read_text_file);
-        expect(getAssistantToolRenderer("functions.read_text_file")).toBe(assistantToolRenderersByName["functions.read_text_file"]);
+        expect(getAssistantToolRenderer("functions.read_text_file")).toBe(
+            assistantToolRenderersByName["functions.read_text_file"]
+        );
         expect(getAssistantToolRenderer("edit_text_file")).toBe(assistantToolRenderersByName.edit_text_file);
-        expect(getAssistantToolRenderer("functions.apply_patch")).toBe(assistantToolRenderersByName["functions.apply_patch"]);
+        expect(getAssistantToolRenderer("functions.apply_patch")).toBe(
+            assistantToolRenderersByName["functions.apply_patch"]
+        );
         expect(getAssistantToolRenderer("bash")).toBe(assistantToolRenderersByName.bash);
-        expect(getAssistantToolRenderer("functions.exec_command")).toBe(assistantToolRenderersByName["functions.exec_command"]);
+        expect(getAssistantToolRenderer("functions.exec_command")).toBe(
+            assistantToolRenderersByName["functions.exec_command"]
+        );
         expect(getAssistantToolRenderer("web_fetch")).toBe(assistantToolRenderersByName.web_fetch);
-        expect(getAssistantToolRenderer("functions.web_fetch")).toBe(assistantToolRenderersByName["functions.web_fetch"]);
+        expect(getAssistantToolRenderer("functions.web_fetch")).toBe(
+            assistantToolRenderersByName["functions.web_fetch"]
+        );
         expect(getAssistantToolRenderer("unknown_tool")).toBeUndefined();
         expect(AssistantToolUIs.length).toBe(Object.keys(assistantToolRenderersByName).length);
     });
@@ -69,7 +77,9 @@ describe("assistant-ui specialized tool UIs", () => {
         const ReadRenderer = getAssistantToolRenderer("read_text_file")!;
         const running = renderToStaticMarkup(<ReadRenderer {...toolProps({ status: { type: "running" } })} />);
         const complete = renderToStaticMarkup(
-            <ReadRenderer {...toolProps({ status: { type: "complete" }, result: { content: [{ type: "text", text: "hello" }] } })} />
+            <ReadRenderer
+                {...toolProps({ status: { type: "complete" }, result: { content: [{ type: "text", text: "hello" }] } })}
+            />
         );
         const error = renderToStaticMarkup(
             <ReadRenderer
@@ -97,10 +107,20 @@ describe("assistant-ui specialized tool UIs", () => {
         const WebRenderer = getAssistantToolRenderer("web_fetch")!;
 
         const writeHtml = renderToStaticMarkup(
-            <WriteRenderer {...toolProps({ toolName: "edit_text_file", args: { file_path: "src/app.ts", oldText: "a", newText: "b" } })} />
+            <WriteRenderer
+                {...toolProps({
+                    toolName: "edit_text_file",
+                    args: { file_path: "src/app.ts", oldText: "a", newText: "b" },
+                })}
+            />
         );
         const shellHtml = renderToStaticMarkup(
-            <ShellRenderer {...toolProps({ toolName: "functions.exec_command", args: { cmd: "npm test -- --run tool-uis.test.tsx" } })} />
+            <ShellRenderer
+                {...toolProps({
+                    toolName: "functions.exec_command",
+                    args: { cmd: "npm test -- --run tool-uis.test.tsx" },
+                })}
+            />
         );
         const webHtml = renderToStaticMarkup(
             <WebRenderer {...toolProps({ toolName: "web_fetch", args: { url: "https://example.com/docs" } })} />
@@ -181,7 +201,11 @@ describe("assistant-ui specialized tool UIs", () => {
 
         expect(getToolInitialExpanded({ status: { type: "complete" }, isError: false })).toBe(false);
         expect(() =>
-            renderToStaticMarkup(<Renderer {...toolProps({ toolName: "functions.exec_command", status: { type: "complete" }, result })} />)
+            renderToStaticMarkup(
+                <Renderer
+                    {...toolProps({ toolName: "functions.exec_command", status: { type: "complete" }, result })}
+                />
+            )
         ).not.toThrow();
     });
 });

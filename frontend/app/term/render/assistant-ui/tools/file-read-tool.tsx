@@ -1,8 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { memo } from "react";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
+import { memo } from "react";
 
 import {
     ToolDetailSection,
@@ -15,7 +15,13 @@ import {
     resultText,
 } from "./tool-ui-shared";
 
-export const FileReadToolNames = ["read", "read_file", "read_text_file", "functions.read_file", "functions.read_text_file"];
+export const FileReadToolNames = [
+    "read",
+    "read_file",
+    "read_text_file",
+    "functions.read_file",
+    "functions.read_text_file",
+];
 
 export const FileReadTool = memo((props: ToolCallMessagePartProps) => {
     const { toolCallId, args, argsText, result, status: partStatus } = props;
@@ -38,7 +44,11 @@ export const FileReadTool = memo((props: ToolCallMessagePartProps) => {
                         <ToolDetailSection label="Arguments" name="args">
                             {argsText || renderToolValuePreview(args)}
                         </ToolDetailSection>
-                        <ToolDetailSection label={status === "error" ? "Error" : "Content"} name="result" tone={status === "error" ? "error" : undefined}>
+                        <ToolDetailSection
+                            label={status === "error" ? "Error" : "Content"}
+                            name="result"
+                            tone={status === "error" ? "error" : undefined}
+                        >
                             {output}
                         </ToolDetailSection>
                     </>
