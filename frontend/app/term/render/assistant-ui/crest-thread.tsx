@@ -1,8 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { memo } from "react";
 import { ThreadPrimitive } from "@assistant-ui/react";
+import { memo } from "react";
 
 import { CrestAssistantMessage, CrestUserMessage } from "./crest-message";
 
