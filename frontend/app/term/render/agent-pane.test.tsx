@@ -6,17 +6,46 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/app/store/ai-catalog", () => ({ CATALOG: [] }));
 vi.mock("@/app/store/ai-provider-models", () => ({ providerModelsMapAtom: { read: () => ({}) } }));
-vi.mock("@/app/store/ai-resolver", () => ({ resolveAIConfig: () => ({ ok: false, error: { code: "x", message: "x" } }) }));
-vi.mock("@/app/store/ai-user-config", () => ({ aiUserConfigAtom: { read: () => ({ config: null, status: "loaded", error: null }) } }));
+vi.mock("@/app/store/ai-resolver", () => ({
+    resolveAIConfig: () => ({ ok: false, error: { code: "x", message: "x" } }),
+}));
+vi.mock("@/app/store/ai-user-config", () => ({
+    aiUserConfigAtom: { read: () => ({ config: null, status: "loaded", error: null }) },
+}));
 vi.mock("@/app/store/jotaiStore", () => ({ globalStore: { set: vi.fn() } }));
 vi.mock("@/app/store/modalmodel", () => ({ modalsModel: { pushModal: vi.fn() } }));
 vi.mock("@/app/store/services", () => ({ ObjectService: { UpdateObjectMeta: vi.fn() } }));
 vi.mock("@/app/store/use-pi-chat", () => ({ indexRunsById: () => new Map() }));
 vi.mock("@/app/view/cmdblock/cmdblock-input", () => ({ CmdBlockInput: () => <div data-testid="cmd-input" /> }));
-vi.mock("@/app/view/cmdblock/session-selector", () => ({ SessionSelector: () => <div data-testid="session-selector" /> }));
+vi.mock("@/app/view/cmdblock/model-picker-popover", () => ({
+    ModelPickerInline: () => <div data-testid="model-picker-inline" />,
+}));
+vi.mock("@/app/view/cmdblock/session-selector", () => ({
+    SessionSelector: () => <div data-testid="session-selector" />,
+}));
 vi.mock("./agent-activity-bar", () => ({ AgentActivityBar: () => <div data-testid="agent-activity-bar" /> }));
-vi.mock("./agent-chat-host", () => ({ AgentChatHost: () => <div data-testid="agent-chat-host" /> }));
+vi.mock("./agent-chat-host", () => ({
+    AgentChatHost: ({
+        onReady,
+        onRunsChange,
+    }: {
+        onReady?: (api: unknown) => void;
+        onRunsChange?: (runs: unknown[]) => void;
+    }) => {
+        onReady?.({ submit: vi.fn(), abort: vi.fn() });
+        onRunsChange?.([{ runId: "run-1" }]);
+        return <div data-testid="agent-chat-host" />;
+    },
+}));
 vi.mock("./agent-command-result", () => ({ AgentCommandResultList: () => <div data-testid="agent-cmd-results" /> }));
+vi.mock("./assistant-ui", () => ({
+    AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => (
+        <div data-testid="assistant-runtime-provider">{children}</div>
+    ),
+    CrestThread: ({ modelLabel }: { modelLabel?: string }) => <div data-testid="crest-thread">{modelLabel}</div>,
+    useAui: () => ({ composer: () => ({ setText: vi.fn() }) }),
+    useCrestAssistantRuntime: () => ({ runtime: true }),
+}));
 vi.mock("jotai", async (importOriginal) => {
     const actual = await importOriginal<typeof import("jotai")>();
     return {
@@ -59,28 +88,34 @@ const deps: AgentPaneDeps = {
     inAltScreen: false,
 };
 
-function Probe({ onSlot }: { onSlot: (slot: ReturnType<typeof useAgentPane>) => void }) {
-    const slot = useAgentPane("outer", fakeModel(), deps);
-    onSlot(slot);
-    return (
-        <>
-            {slot.chatHost}
-            {slot.activityBar}
-            {slot.inputBar}
-            {slot.commandResults}
-        </>
-    );
-}
-
 describe("useAgentPane", () => {
-    it("produces a full agent slot with all surfaces", () => {
+    it("produces a full assistant-ui agent slot with the state host and activity surfaces", () => {
         let captured: ReturnType<typeof useAgentPane> | null = null;
-        const html = renderToStaticMarkup(<Probe onSlot={(s) => (captured = s)} />);
+        const model = fakeModel();
+        const probeDeps = { ...deps, model };
+        function LocalProbe({ onSlot }: { onSlot: (slot: ReturnType<typeof useAgentPane>) => void }) {
+            const slot = useAgentPane("outer", model, probeDeps);
+            onSlot(slot);
+            return (
+                <>
+                    {slot.chatHost}
+                    {slot.activityBar}
+                    {slot.inputBar}
+                    {slot.commandResults}
+                </>
+            );
+        }
+        const html = renderToStaticMarkup(<LocalProbe onSlot={(s) => (captured = s)} />);
         expect(html).toContain('data-testid="agent-chat-host"');
+        expect(html).toContain('data-testid="assistant-runtime-provider"');
+        expect(html).toContain('data-testid="crest-thread"');
         expect(html).toContain('data-testid="agent-activity-bar"');
-        expect(html).toContain('data-testid="cmd-input"');
+        expect(html).not.toContain('data-testid="cmd-input"');
         expect(html).toContain('data-testid="session-selector"');
+        expect(html).toContain('data-testid="model-picker-inline"');
+        expect(model.syncAgentBlocks).not.toHaveBeenCalled();
         expect(captured!.agentRunsById instanceof Map).toBe(true);
+        expect(captured!.replacesBlockList).toBe(true);
     });
 
     it("omits activity bar and input bar in alt-screen", () => {

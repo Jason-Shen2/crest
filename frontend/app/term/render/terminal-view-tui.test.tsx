@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -259,9 +260,9 @@ function makeModel() {
     return model;
 }
 
-function renderTerminalView() {
+function renderTerminalView(props: Partial<ComponentProps<typeof TerminalView>> = {}) {
     testState.memoHookIndex = 0;
-    return renderToStaticMarkup(<TerminalView outerBlockId="outer" />);
+    return renderToStaticMarkup(<TerminalView outerBlockId="outer" {...props} />);
 }
 
 function installDocumentStub() {
@@ -547,5 +548,24 @@ describe("TerminalView pure-terminal form", () => {
     it("still renders the command input in terminal mode", () => {
         const html = renderTerminalView();
         expect(html).toContain('data-testid="cmd-input"');
+    });
+
+    it("lets an agent slot replace the legacy block list content area", () => {
+        testState.modeOverride = {};
+        const html = renderTerminalView({
+            renderAgentSlot: () => ({
+                chatHost: <div data-testid="agent-chat-host" />,
+                commandResults: <div data-testid="agent-command-results" />,
+                activityBar: <div data-testid="agent-activity-bar" />,
+                inputBar: null,
+                agentRunsById: new Map(),
+                replacesBlockList: true,
+            }),
+        });
+
+        expect(html).toContain('data-testid="agent-chat-host"');
+        expect(html).toContain('data-testid="agent-command-results"');
+        expect(html).not.toContain('data-testid="block-list"');
+        expect(html).not.toContain('data-testid="cmd-input"');
     });
 });

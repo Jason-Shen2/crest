@@ -17,11 +17,12 @@ import { globalStore } from "@/app/store/jotaiStore";
 import { modalsModel } from "@/app/store/modalmodel";
 import { ObjectService } from "@/app/store/services";
 import { indexRunsById, type PiRun } from "@/app/store/use-pi-chat";
-import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
+import type { InputMode } from "@/app/view/cmdblock/cmdblock-input";
+import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import { useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { useAtomValue } from "jotai";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TerminalModel } from "../terminal-model";
 import { AgentActivityBar } from "./agent-activity-bar";
 import {
@@ -32,6 +33,7 @@ import {
     type AgentSelectorRequest,
 } from "./agent-chat-host";
 import { AgentCommandResultList } from "./agent-command-result";
+import { AssistantRuntimeProvider, CrestThread, useAui, useCrestAssistantRuntime } from "./assistant-ui";
 
 export interface AgentSlot {
     chatHost: React.ReactNode;
@@ -39,6 +41,7 @@ export interface AgentSlot {
     activityBar: React.ReactNode;
     inputBar: React.ReactNode;
     agentRunsById: Map<string, PiRun>;
+    replacesBlockList: boolean;
 }
 
 // 输入栏渲染需要的、来自 TerminalView 的实时上下文。这些值 TerminalView
@@ -146,14 +149,13 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
     }, []);
 
     // ---- agent wiring ----
-    const [submitting, setSubmitting] = useState(false);
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
     const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
         agentApiRef.current = api;
     }, []);
-    const [modelPickerRequest, setModelPickerRequest] = useState(0);
+    const [modelPickerOpen, setModelPickerOpen] = useState(false);
     const onOpenAgentModelPicker = useCallback(() => {
-        setModelPickerRequest((value) => value + 1);
+        setModelPickerOpen(true);
     }, []);
     const [agentSelectorRequest, setAgentSelectorRequest] = useState<AgentSelectorRequest | null>(null);
     const onAgentSelectorRequest = useCallback((request: AgentSelectorRequest) => {
@@ -184,71 +186,104 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
         [outerBlockId]
     );
     const [agentRunsById, setAgentRunsById] = useState<Map<string, PiRun>>(new Map());
-    const onAgentRunsUpdate = useCallback(
-        (runs: PiRun[]) => {
-            setAgentRunsById(indexRunsById(runs));
-            model.syncAgentBlocks(new Set(runs.map((r) => r.runId)));
-        },
-        [model]
-    );
+    const [agentRuns, setAgentRuns] = useState<PiRun[]>([]);
+    const onAgentRunsUpdate = useCallback((runs: PiRun[]) => {
+        setAgentRuns(runs);
+        setAgentRunsById(indexRunsById(runs));
+    }, []);
     const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
         setAgentCommandResults((prev) => [...prev, result]);
     }, []);
 
-    const onSubmit = useCallback(
-        (text: string, mode: InputMode) => {
+    const onAgentSubmit = useCallback(
+        (text: string) => {
             if (!text) return;
-            if (mode === "agent") {
-                const api = agentApiRef.current;
-                if (!api) {
-                    globalStore.set(model.notificationAtom, "Agent is still starting. Try again in a moment.");
-                    return false;
-                }
-                return api.submit(text);
+            const api = agentApiRef.current;
+            if (!api) {
+                globalStore.set(model.notificationAtom, "Agent is still starting. Try again in a moment.");
+                return false;
             }
-            setSubmitting(true);
-            void model.submitInput(text).finally(() => setSubmitting(false));
+            return api.submit(text);
         },
         [model]
     );
+    const assistantRuntimeBridge = useMemo(
+        () => ({
+            runs: agentRuns,
+            status: agentState.status,
+            submit: onAgentSubmit,
+            abort: onAgentStop,
+        }),
+        [agentRuns, agentState.status, onAgentSubmit, onAgentStop]
+    );
+    const assistantRuntime = useCrestAssistantRuntime(assistantRuntimeBridge);
 
     const chatHost = (
-        <AgentChatHost
-            outerBlockId={outerBlockId}
-            sessionMetadata={agentSession}
-            onSessionMinted={onSessionMintedHandler}
-            modelSelection={
-                resolvedAIConfig
-                    ? {
-                          provider: resolvedAIConfig.provider,
-                          model: resolvedAIConfig.model,
-                          reasoning: resolvedAIConfig.reasoning,
-                          token: resolvedAIConfig.token,
-                          tokenSecretName: resolvedAIConfig.tokensecretname,
-                      }
-                    : activeSelection
-                      ? {
-                            provider: activeSelection.provider,
-                            model: activeSelection.model,
-                            reasoning: activeSelection.reasoning,
-                        }
-                      : undefined
-            }
-            paneContext={{
-                cwd: deps.workspaceDir,
-                gitBranch: deps.liveGitBranch,
-                recentCmds: deps.recentCmds,
-                connection: deps.liveConnection,
-            }}
-            selectionError={aiConfigError}
-            onReady={onAgentHostReady}
-            onRunsChange={onAgentRunsUpdate}
-            onStateChange={setAgentState}
-            onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
-            onCommandResult={onAgentCommandResult}
-            onOpenModelPicker={onOpenAgentModelPicker}
-            onSelectorRequest={onAgentSelectorRequest}
-        />
+        <>
+            <AgentChatHost
+                outerBlockId={outerBlockId}
+                sessionMetadata={agentSession}
+                onSessionMinted={onSessionMintedHandler}
+                modelSelection={
+                    resolvedAIConfig
+                        ? {
+                              provider: resolvedAIConfig.provider,
+                              model: resolvedAIConfig.model,
+                              reasoning: resolvedAIConfig.reasoning,
+                              token: resolvedAIConfig.token,
+                              tokenSecretName: resolvedAIConfig.tokensecretname,
+                          }
+                        : activeSelection
+                          ? {
+                                provider: activeSelection.provider,
+                                model: activeSelection.model,
+                                reasoning: activeSelection.reasoning,
+                            }
+                          : undefined
+                }
+                paneContext={{
+                    cwd: deps.workspaceDir,
+                    gitBranch: deps.liveGitBranch,
+                    recentCmds: deps.recentCmds,
+                    connection: deps.liveConnection,
+                }}
+                selectionError={aiConfigError}
+                onReady={onAgentHostReady}
+                onRunsChange={onAgentRunsUpdate}
+                onStateChange={setAgentState}
+                onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
+                onCommandResult={onAgentCommandResult}
+                onOpenModelPicker={onOpenAgentModelPicker}
+                onSelectorRequest={onAgentSelectorRequest}
+            />
+            {!deps.inAltScreen && (
+                <div className="min-h-0 flex-1" ref={agentSelectorAnchorRef}>
+                    <AssistantRuntimeProvider runtime={assistantRuntime}>
+                        <SessionSelector
+                            anchorRef={agentSelectorAnchorRef}
+                            request={agentSelectorRequest}
+                            onClose={() => setAgentSelectorRequest(null)}
+                            onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
+                            onEditorText={onAgentEditorText}
+                        />
+                        <ModelPickerInline
+                            open={modelPickerOpen}
+                            onOpenChange={setModelPickerOpen}
+                            selection={activeSelection}
+                            onSelectionChange={onSelectionChange}
+                            userConfig={userConfigState.config}
+                            userConfigStatus={userConfigState.status}
+                            userConfigError={userConfigState.error}
+                            catalog={CATALOG}
+                            onOpenConfigFile={onOpenAIConfigFile}
+                            anchorRef={agentSelectorAnchorRef}
+                        />
+                        <AgentComposerTextRestore request={agentRestoredTextRequest} />
+                        <CrestThread modelLabel={modelDisplayLabel} onOpenModelPicker={onOpenAgentModelPicker} />
+                    </AssistantRuntimeProvider>
+                </div>
+            )}
+        </>
     );
 
     const commandResults = <AgentCommandResultList results={agentCommandResults} />;
@@ -257,56 +292,18 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
         <AgentActivityBar status={agentState.status} queuedMessages={agentState.queuedMessages} onStop={onAgentStop} />
     );
 
-    const inputBar = deps.inAltScreen ? null : (
-        <div ref={agentSelectorAnchorRef}>
-            <SessionSelector
-                anchorRef={agentSelectorAnchorRef}
-                request={agentSelectorRequest}
-                onClose={() => setAgentSelectorRequest(null)}
-                onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
-                onEditorText={onAgentEditorText}
-            />
-            <CmdBlockInput
-                cwd={deps.liveCwd}
-                home={deps.home}
-                branch={deps.branch}
-                gitAdded={deps.gitAdded}
-                gitRemoved={deps.gitRemoved}
-                prNumber={deps.prNumber}
-                prTitle={deps.prTitle}
-                kubernetesContext={deps.kubernetesContext}
-                sshHost={deps.sshHost}
-                sshUser={deps.sshUser}
-                mode={deps.inputMode}
-                onModeChange={deps.onModeChange}
-                onSubmit={onSubmit}
-                submitting={submitting}
-                disabled={false}
-                fontSize={deps.fontSize}
-                focusRequest={deps.focusRequest}
-                history={deps.commandHistory}
-                onTextChange={deps.onInputTextChange}
-                restoredTextRequest={agentRestoredTextRequest}
-                effectiveMode={deps.effectiveMode}
-                modelDisplayLabel={modelDisplayLabel}
-                catalog={CATALOG}
-                userConfig={userConfigState.config}
-                userConfigStatus={userConfigState.status}
-                userConfigError={userConfigState.error}
-                selection={activeSelection}
-                onSelectionChange={onSelectionChange}
-                onOpenAIConfigFile={onOpenAIConfigFile}
-                openModelPickerRequest={modelPickerRequest}
-                placeholder={
-                    deps.isRunning
-                        ? "Press Ctrl+C in the running block to interrupt, or type the next command"
-                        : undefined
-                }
-            />
-        </div>
-    );
+    const inputBar = null;
 
-    return { chatHost, commandResults, activityBar, inputBar, agentRunsById };
+    return { chatHost, commandResults, activityBar, inputBar, agentRunsById, replacesBlockList: true };
+}
+
+function AgentComposerTextRestore({ request }: { request?: { text: string; requestId: number } }) {
+    const aui = useAui();
+    useEffect(() => {
+        if (!request) return;
+        aui.composer().setText(request.text);
+    }, [aui, request]);
+    return null;
 }
 
 // stripVendorPrefix — OpenRouter / Together style model ids carry the

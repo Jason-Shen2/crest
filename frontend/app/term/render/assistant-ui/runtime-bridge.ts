@@ -1,7 +1,6 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useMemo } from "react";
 import {
     useExternalStoreRuntime,
     type AppendMessage,
@@ -13,14 +12,9 @@ import {
     type ThreadUserMessagePart,
     type ToolCallMessagePart,
 } from "@assistant-ui/react";
+import { useMemo } from "react";
 
-import {
-    usePiChat,
-    type PiAgentMessage,
-    type PiRun,
-    type UsePiChatOptions,
-    type UsePiChatReturn,
-} from "@/app/store/use-pi-chat";
+import { type PiAgentMessage, type PiRun, type UsePiChatReturn, type UsePiChatStatus } from "@/app/store/use-pi-chat";
 
 interface ToolResultPayload {
     content?: unknown;
@@ -29,6 +23,15 @@ interface ToolResultPayload {
 }
 
 type PiContentPart = NonNullable<PiAgentMessage["content"]>[number];
+
+export interface CrestAssistantRuntimeBridge {
+    runs: PiRun[];
+    status: UsePiChatStatus;
+    submit: (text: string) => boolean | Promise<boolean | void> | void;
+    abort: () => void;
+}
+
+type CrestAssistantRuntimeSource = UsePiChatReturn | CrestAssistantRuntimeBridge;
 
 export function piRunToAuiMessages(runs: PiRun[]): ThreadMessage[] {
     const messages: ThreadMessage[] = [];
@@ -39,25 +42,30 @@ export function piRunToAuiMessages(runs: PiRun[]): ThreadMessage[] {
     return messages;
 }
 
-export function createCrestAssistantRuntimeAdapter(chat: UsePiChatReturn): ExternalStoreAdapter<ThreadMessage> {
+export function createCrestAssistantRuntimeAdapter(
+    source: CrestAssistantRuntimeSource
+): ExternalStoreAdapter<ThreadMessage> {
     return {
-        messages: piRunToAuiMessages(chat.runs),
-        isRunning: chat.status === "streaming",
+        messages: piRunToAuiMessages(source.runs),
+        isRunning: source.status === "streaming",
         onNew: async (message: AppendMessage): Promise<void> => {
             if (message.role !== "user") return;
             const text = textFromUserMessage(message);
             if (!text) return;
-            await chat.send(text);
+            if ("send" in source) {
+                await source.send(text);
+                return;
+            }
+            await source.submit(text);
         },
         onCancel: async (): Promise<void> => {
-            chat.abort();
+            source.abort();
         },
     };
 }
 
-export function useCrestAssistantRuntime(opts: UsePiChatOptions): AssistantRuntime {
-    const chat = usePiChat(opts);
-    const adapter = useMemo(() => createCrestAssistantRuntimeAdapter(chat), [chat]);
+export function useCrestAssistantRuntime(source: CrestAssistantRuntimeSource): AssistantRuntime {
+    const adapter = useMemo(() => createCrestAssistantRuntimeAdapter(source), [source]);
     return useExternalStoreRuntime(adapter);
 }
 
@@ -119,7 +127,7 @@ function assistantContentFromRun(run: PiRun): ThreadAssistantMessagePart[] {
 
 function assistantPartFromPiContent(
     content: PiContentPart,
-    resultsByCallId: Map<string, ToolResultPayload>,
+    resultsByCallId: Map<string, ToolResultPayload>
 ): ThreadAssistantMessagePart | undefined {
     if (content.type === "text" && typeof content.text === "string") {
         return { type: "text", text: content.text };
@@ -139,7 +147,7 @@ function assistantPartFromPiContent(
 
 function toolCallPartFromPiContent(
     content: PiContentPart,
-    resultsByCallId: Map<string, ToolResultPayload>,
+    resultsByCallId: Map<string, ToolResultPayload>
 ): ToolCallMessagePart {
     const toolCallId = String(content.id ?? content.toolCallId ?? content.toolUseId ?? "");
     const args = content.input ?? content.arguments ?? {};
