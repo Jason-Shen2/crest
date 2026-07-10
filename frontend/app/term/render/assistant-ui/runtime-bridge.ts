@@ -206,13 +206,6 @@ function textFromUserMessage(message: AppendMessage): string {
         .join("\n");
 }
 
-function textFromPiMessage(message: PiAgentMessage | undefined): string {
-    return (message?.content ?? [])
-        .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text as string)
-        .join("\n");
-}
-
 function dateFromPiMessage(message: PiAgentMessage | undefined): Date {
     return new Date(typeof message?.timestamp === "number" ? message.timestamp : Date.now());
 }
