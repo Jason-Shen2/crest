@@ -78,14 +78,14 @@ function makeModel(
 }
 
 describe("BlockListElement TUI layout", () => {
-    it("lets the active TUI block wrapper fill the pane", () => {
+    it("lets the active TUI block wrapper flex-fill the pane", () => {
         const html = renderToStaticMarkup(<BlockListElement model={makeModel(makeActiveTuiBlock()) as any} />);
 
-        expect(html).toMatch(/data-block-oid="block-1"[^>]*class="[^"]*h-full/);
-        expect(html).toMatch(/data-block-oid="block-1"[^>]*class="[^"]*min-h-full/);
+        expect(html).toMatch(/data-block-oid="block-1"[^>]*class="[^"]*flex-1/);
+        expect(html).toMatch(/data-block-oid="block-1"[^>]*class="[^"]*min-h-0/);
     });
 
-    it("lets a running raw-capture TUI block wrapper fill the pane", () => {
+    it("lets a running raw-capture TUI block wrapper flex-fill the pane", () => {
         const html = renderToStaticMarkup(
             <BlockListElement
                 model={
@@ -120,11 +120,11 @@ describe("BlockListElement TUI layout", () => {
             />
         );
 
-        expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*h-full/);
-        expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*min-h-full/);
+        expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*flex-1/);
+        expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*min-h-0/);
     });
 
-    it("lets the active surface wrapper fill the pane from TerminalSurfaceState", () => {
+    it("lets the active surface wrapper flex-fill the pane from TerminalSurfaceState", () => {
         const html = renderToStaticMarkup(
             <BlockListElement
                 model={
@@ -148,6 +148,7 @@ describe("BlockListElement TUI layout", () => {
             />
         );
 
-        expect(html).toMatch(/data-block-oid="block-surface"[^>]*class="[^"]*h-full/);
+        expect(html).toMatch(/data-block-oid="block-surface"[^>]*class="[^"]*flex-1/);
+        expect(html).toMatch(/data-block-oid="block-surface"[^>]*class="[^"]*min-h-0/);
     });
 });
