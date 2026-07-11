@@ -19,16 +19,21 @@ export type TooltipIconButtonProps = ComponentPropsWithRef<typeof Button> & {
 };
 
 export const TooltipIconButton = forwardRef<HTMLButtonElement, TooltipIconButtonProps>(
-    ({ children, tooltip, side = "bottom", className, ...rest }, ref) => {
+    ({ children, tooltip, side = "bottom", className, size = "icon", ...rest }, ref) => {
+        const sizeCls = size === "icon-xs" ? "" : "size-6 p-1";
         return (
             <TooltipProvider delayDuration={0}>
                 <Tooltip>
                     <TooltipTrigger asChild>
                         <Button
                             variant="ghost"
-                            size="icon"
+                            size={size}
                             {...rest}
-                            className={cn("aui-button-icon size-6 p-1 active:scale-90", className)}
+                            className={cn(
+                                "aui-button-icon cursor-pointer transition-[background-color,color,transform,opacity] duration-100 hover:!bg-fg-overlay-1 hover:!text-foreground active:!bg-fg-overlay-2 active:!text-foreground active:scale-95 data-[state=open]:!bg-fg-overlay-2 data-[state=open]:!text-foreground focus-visible:!bg-fg-overlay-2",
+                                sizeCls,
+                                className
+                            )}
                             ref={ref}
                         >
                             <Slot.Slottable>{children}</Slot.Slottable>
