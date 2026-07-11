@@ -608,14 +608,14 @@ const UserMessage: FC = () => {
     return (
         <MessagePrimitive.Root
             data-slot="aui_user-message-root"
-            className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
+            className="group/user-message fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-0 px-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
             data-role="user"
             data-testid="crest-user-message"
         >
             <UserMessageAttachments />
 
-            <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
-                <div className="aui-user-message-content peer bg-muted text-foreground rounded-xl px-4 py-2 wrap-break-word empty:hidden">
+            <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0 justify-self-end">
+                <div className="aui-user-message-content bg-muted text-foreground rounded-xl px-4 py-2 wrap-break-word empty:hidden">
                     <MessagePrimitive.Parts>
                         {({ part }) => {
                             if (part.type === "text") return <p className="whitespace-pre-wrap">{part.text}</p>;
@@ -624,10 +624,12 @@ const UserMessage: FC = () => {
                         }}
                     </MessagePrimitive.Parts>
                 </div>
-                <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
+                <div className="aui-user-action-bar-wrapper absolute end-0 top-full z-10 pt-1">
                     <UserActionBar />
                 </div>
             </div>
+
+            <div aria-hidden="true" className="col-start-2 h-8 w-0" />
 
             <BranchPicker
                 data-slot="aui_user-branch-picker"
@@ -637,25 +639,39 @@ const UserMessage: FC = () => {
     );
 };
 
+const CopyButtonIcon: FC = () => {
+    return (
+        <>
+            <AuiIf condition={(s) => s.message.isCopied}>
+                <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
+            </AuiIf>
+            <AuiIf condition={(s) => !s.message.isCopied}>
+                <CopyIcon />
+            </AuiIf>
+        </>
+    );
+};
+
 const UserActionBar: FC = () => {
+    const isLast = useAuiState((s) => s.message.isLast);
+
     return (
         <ActionBarPrimitive.Root
             hideWhenRunning
-            autohide="not-last"
-            className="aui-user-action-bar-root flex flex-col items-end"
+            className={cn(
+                "aui-user-action-bar-root flex items-center gap-0.5 transition-opacity duration-100",
+                isLast
+                    ? "opacity-100"
+                    : "pointer-events-none opacity-0 group-hover/user-message:pointer-events-auto group-hover/user-message:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100"
+            )}
         >
             <ActionBarPrimitive.Copy asChild>
-                <TooltipIconButton tooltip="Copy">
-                    <AuiIf condition={(s) => s.message.isCopied}>
-                        <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
-                    </AuiIf>
-                    <AuiIf condition={(s) => !s.message.isCopied}>
-                        <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
-                    </AuiIf>
+                <TooltipIconButton tooltip="Copy" side="top" size="icon-xs">
+                    <CopyButtonIcon />
                 </TooltipIconButton>
             </ActionBarPrimitive.Copy>
             <ActionBarPrimitive.Edit asChild>
-                <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+                <TooltipIconButton tooltip="Edit" side="top" size="icon-xs" className="aui-user-action-edit">
                     <PencilIcon />
                 </TooltipIconButton>
             </ActionBarPrimitive.Edit>
