@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import {
+    CompositeAttachmentAdapter,
+    SimpleImageAttachmentAdapter,
+    SimpleTextAttachmentAdapter,
     useExternalStoreRuntime,
     type AppendMessage,
     type AssistantRuntime,
@@ -27,7 +30,7 @@ type PiContentPart = NonNullable<PiAgentMessage["content"]>[number];
 export interface CrestAssistantRuntimeBridge {
     runs: PiRun[];
     status: UsePiChatStatus;
-    submit: (text: string) => boolean | Promise<boolean | void> | void;
+    submit: (text: string, images?: string[]) => boolean | Promise<boolean | void> | void;
     abort: () => void;
 }
 
@@ -48,15 +51,22 @@ export function createCrestAssistantRuntimeAdapter(
     return {
         messages: piRunToAuiMessages(source.runs),
         isRunning: source.status === "streaming",
+        adapters: {
+            attachments: new CompositeAttachmentAdapter([
+                new SimpleImageAttachmentAdapter(),
+                new SimpleTextAttachmentAdapter(),
+            ]),
+        },
         onNew: async (message: AppendMessage): Promise<void> => {
             if (message.role !== "user") return;
             const text = textFromUserMessage(message);
-            if (!text) return;
+            const images = imagesFromUserMessage(message);
+            if (!text && images.length === 0) return;
             if ("send" in source) {
                 await source.send(text);
                 return;
             }
-            await source.submit(text);
+            await source.submit(text, images);
         },
         onCancel: async (): Promise<void> => {
             source.abort();
@@ -212,6 +222,16 @@ function textFromUserMessage(message: AppendMessage): string {
         .filter((part) => part.type === "text")
         .map((part) => part.text)
         .join("\n");
+}
+
+function imagesFromUserMessage(message: AppendMessage): string[] {
+    const images: string[] = [];
+    for (const part of message.content) {
+        if (part.type === "image" && typeof part.image === "string") {
+            images.push(part.image);
+        }
+    }
+    return images;
 }
 
 function dateFromPiMessage(message: PiAgentMessage | undefined): Date {

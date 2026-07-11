@@ -822,6 +822,7 @@ interface EditorProps {
     onCompletionCancel?: () => void;
     ghost?: string;
     onAcceptGhost?: () => boolean;
+    compact?: boolean;
 }
 
 const Editor = memo(
@@ -850,6 +851,7 @@ const Editor = memo(
         onCompletionCancel,
         ghost,
         onAcceptGhost,
+        compact,
     }: EditorProps) => {
         const ref = useRef<HTMLDivElement>(null);
 
@@ -1086,7 +1088,7 @@ const Editor = memo(
                     onInput={flush}
                     onBeforeInput={handleBeforeInput}
                     onKeyDown={handleKeyDown}
-                    style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`, minHeight: "80px" }}
+                    style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`, minHeight: compact ? `${lineHeight + 12}px` : "80px" }}
                     className={cn(
                         "relative max-h-[50vh] w-full overflow-y-auto whitespace-pre-wrap break-words",
                         "bg-transparent font-mono text-foreground outline-none",
@@ -1551,6 +1553,7 @@ export const CmdBlockInput = memo(
         // The popover handles empty / error states internally via the
         // userConfigStatus prop, so the chip can always open it.
         const hasModelPicker = !!onSelectionChange;
+        const isCompactTerminal = mode === "terminal" && !hasModelPicker;
         const [slashCommands, setSlashCommands] = useState<InlineCommand[]>(SlashCommands);
 
         useEffect(() => {
@@ -2103,7 +2106,19 @@ export const CmdBlockInput = memo(
                     )}
 
                     {/* 3. Editor. */}
-                    <div className="px-4 pt-3 pb-2">
+                    <div className={cn("flex items-start px-4", isCompactTerminal ? "pt-2 pb-1" : "pt-3 pb-2")}>
+                        {isCompactTerminal && (
+                            <span
+                                className="mr-2 mt-0.5 shrink-0 select-none font-mono font-bold text-[var(--color-term-success)]"
+                                style={{
+                                    fontSize: `${fontSize}px`,
+                                    lineHeight: `${Math.round(fontSize * 1.4)}px`,
+                                }}
+                            >
+                                {">"}
+                            </span>
+                        )}
+                        <div className="min-w-0 flex-1">
                         <Editor
                             value={text}
                             onChange={handleTextChange}
@@ -2129,7 +2144,9 @@ export const CmdBlockInput = memo(
                             onCompletionCancel={cancelCompletion}
                             ghost={ghost}
                             onAcceptGhost={acceptGhost}
+                            compact={isCompactTerminal}
                         />
+                        </div>
                     </div>
 
                     {/* 4. Bottom footer — chip row.  Visual + ordering reference:
@@ -2139,16 +2156,31 @@ export const CmdBlockInput = memo(
                     Right = agent-plan / context-window / model selector /
                     fast-forward / voice / file-attach.  Bottom & horizontal
                     padding match warp agent.rs:49,55 (16 px). */}
-                    <div className="flex flex-wrap items-center px-4 pb-4 pt-2" style={{ gap: `${UI_GAP_PX}px` }}>
+                    {(!isCompactTerminal ||
+                        sshHost ||
+                        branch ||
+                        (gitAdded != null && gitAdded > 0) ||
+                        (gitRemoved != null && gitRemoved > 0) ||
+                        prNumber != null ||
+                        kubernetesContext) && (
+                        <div
+                            className={cn(
+                                "flex flex-wrap items-center px-4",
+                                isCompactTerminal ? "pb-2 pt-0.5" : "pb-4 pt-2"
+                            )}
+                            style={{ gap: `${UI_GAP_PX}px` }}
+                        >
                         <SshChip user={sshUser} host={sshHost} />
                         <GitBranchChip branch={branch} />
                         <GitDiffStatsChip added={gitAdded} removed={gitRemoved} />
                         <GithubPrChip number={prNumber} title={prTitle} onClick={onPrClick} />
                         <KubernetesContextChip context={kubernetesContext} />
-                        <AutoToggle
-                            on={mode === "auto"}
-                            onToggle={() => onModeChange(mode === "auto" ? "agent" : "auto", text)}
-                        />
+                        {(mode !== "terminal" || hasModelPicker) && (
+                            <AutoToggle
+                                on={mode === "auto"}
+                                onToggle={() => onModeChange(mode === "auto" ? "agent" : "auto", text)}
+                            />
+                        )}
 
                         <div className="ml-auto flex shrink-0 items-center" style={{ gap: `${UI_GAP_PX}px` }}>
                             <AgentPlanChip
@@ -2169,15 +2201,16 @@ export const CmdBlockInput = memo(
                                     {promptAlert}
                                 </div>
                             )}
-                            <ModelChip
-                                label={chipLabel}
-                                buttonRef={modelChipRef}
-                                expanded={hasModelPicker && modelPickerOpen}
-                                onClick={() => {
-                                    if (!hasModelPicker) return;
-                                    setModelPickerOpen((v) => !v);
-                                }}
-                            />
+                            {hasModelPicker && (
+                                <ModelChip
+                                    label={chipLabel}
+                                    buttonRef={modelChipRef}
+                                    expanded={modelPickerOpen}
+                                    onClick={() => {
+                                        setModelPickerOpen((v) => !v);
+                                    }}
+                                />
+                            )}
                             {/* Floating popover variant — superseded by the
                             inline ModelPickerInline above the input card.
                             Left in place (and importable) so we can flip
@@ -2198,25 +2231,27 @@ export const CmdBlockInput = memo(
                                 />
                             )}
                             <VoiceInputBtn onVoiceInput={onVoiceInput} recording={voiceRecording} />
-                            <IconButton
-                                icon="plus"
-                                title="Attach file"
-                                onClick={() => fileInputRef.current?.click()}
-                                disabled={!onFilesDropped}
-                            />
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                multiple
-                                hidden
-                                onChange={(e) => {
-                                    const files = Array.from(e.target.files ?? []);
-                                    if (files.length === 0) return;
-                                    onFilesDropped?.(files);
-                                    // Reset so the same file can be picked again.
-                                    e.target.value = "";
-                                }}
-                            />
+                            {onFilesDropped && (
+                                <IconButton
+                                    icon="plus"
+                                    title="Attach file"
+                                    onClick={() => fileInputRef.current?.click()}
+                                />
+                            )}
+                            {onFilesDropped && (
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    multiple
+                                    hidden
+                                    onChange={(e) => {
+                                        const files = Array.from(e.target.files ?? []);
+                                        if (files.length === 0) return;
+                                        onFilesDropped(files);
+                                        e.target.value = "";
+                                    }}
+                                />
+                            )}
                             {submitting && (
                                 <UIcon
                                     name="clock-loader"
@@ -2226,6 +2261,7 @@ export const CmdBlockInput = memo(
                             )}
                         </div>
                     </div>
+                    )}
                 </div>
             </div>
         );

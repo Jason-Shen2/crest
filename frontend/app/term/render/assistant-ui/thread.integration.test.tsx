@@ -11,7 +11,7 @@ import type { FC, PropsWithChildren } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { CrestThread } from "./crest-thread";
+import { Thread } from "./registry-thread";
 
 const messages: ThreadMessageLike[] = [
     {
@@ -33,13 +33,6 @@ const messages: ThreadMessageLike[] = [
                 args: { path: "frontend/app.tsx" },
                 argsText: JSON.stringify({ path: "frontend/app.tsx" }),
             },
-            {
-                type: "tool-call",
-                toolCallId: "call-unknown",
-                toolName: "unknown_tool",
-                args: { value: 1 },
-                argsText: JSON.stringify({ value: 1 }),
-            },
         ],
         status: { type: "complete", reason: "stop" },
     },
@@ -58,22 +51,25 @@ const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
 function renderThread(): string {
     return renderToStaticMarkup(
         <RuntimeProvider>
-            <CrestThread />
+            <Thread />
         </RuntimeProvider>
     );
 }
 
-describe("CrestThread assistant-ui integration", () => {
+describe("Thread assistant-ui integration", () => {
     it("renders real Thread/Parts/Markdown/tool UI and image alt text without mocking assistant-ui packages", () => {
         const html = renderThread();
 
-        expect(html).toContain('data-testid="crest-user-message"');
-        expect(html).toContain('data-testid="crest-assistant-message"');
-        expect(html).toContain("<h2>Markdown Title</h2>");
-        expect(html).toContain("<strong>bold</strong>");
-        expect(html).toContain('data-assistant-tool-kind="file-read"');
-        expect(html).toContain('data-assistant-tool-fallback="call-unknown"');
-        expect(html).toContain('alt="user-upload.png"');
-        expect(html).toContain('alt="Assistant image attachment"');
+        expect(html).toContain("aui-root aui-thread-root");
+        expect(html).toContain('data-testid="crest-thread"');
+        expect(html).toContain('class="aui-md"');
+        expect(html).toContain(">Markdown Title</h2>");
+        expect(html).toContain("aui-md-strong");
+        expect(html).toContain(">bold</strong>");
+        expect(html).toContain("data-slot=\"tool-group-root\"");
+        expect(html).toContain("alt=\"user-upload.png\"");
+        expect(html).toContain("alt=\"Assistant image attachment\"");
+        expect(html).toContain("aui-composer-root");
+        expect(html).toContain('data-slot="aui_composer-shell"');
     });
 });
