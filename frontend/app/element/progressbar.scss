@@ -11,9 +11,9 @@
 
     .outer {
         position: relative;
-        border: 1px solid rgb(from var(--main-text-color) r g b / 15%);
+        border: 1px solid rgb(from var(--color-foreground) r g b / 15%);
         border-radius: var(--progress-bar-radius);
-        background-color: var(--main-bg-color);
+        background-color: var(--color-background);
         flex-grow: 1;
         height: 10px;
         .progress-bar-fill {
@@ -22,7 +22,7 @@
             left: 0;
             height: 100%;
             transition: width 0.3s ease-in-out;
-            background-color: var(--accent-color);
+            background-color: var(--color-accent);
             border-radius: var(--progress-bar-radius);
             width: 100%;
         }
@@ -32,7 +32,7 @@
         width: 40px;
         flex-shrink: 0;
         font-size: 0.9rem;
-        color: var(--main-text-color);
+        color: var(--color-foreground);
         font-size: 12px;
         font-style: normal;
         font-weight: 400;

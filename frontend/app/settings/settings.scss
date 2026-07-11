@@ -32,8 +32,8 @@ $sett-dur: 160ms;
     display: flex;
     flex-direction: column;
     border-radius: 12px;
-    border: 1px solid var(--modal-border-color, rgba(255, 255, 255, 0.10));
-    background: var(--modal-bg-color, #1a1a1a);
+    border: 1px solid var(--color-border, rgba(255, 255, 255, 0.10));
+    background: var(--color-modalbg, #1a1a1a);
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
     overflow: hidden;
     color: #f5f5f5;
@@ -46,7 +46,7 @@ $sett-dur: 160ms;
     align-items: center;
     justify-content: center;
     padding: 0 8px 0 8px;
-    border-bottom: 1px solid var(--modal-border-color, rgba(255, 255, 255, 0.10));
+    border-bottom: 1px solid var(--color-border, rgba(255, 255, 255, 0.10));
     background: rgba(255, 255, 255, 0.02);
     position: relative;
 }
@@ -159,7 +159,7 @@ $sett-dur: 160ms;
     gap: 16px;
     padding: 10px 12px;
     border-radius: 8px;
-    border: 1px solid var(--modal-border-color, rgba(255, 255, 255, 0.10));
+    border: 1px solid var(--color-border, rgba(255, 255, 255, 0.10));
     background: rgba(255, 255, 255, 0.02);
 }
 
@@ -214,7 +214,7 @@ $sett-dur: 160ms;
     }
 
     &.on {
-        background: var(--accent-color, #10b981);
+        background: var(--color-accent, #10b981);
 
         &::after {
             transform: translateX(14px);
@@ -227,7 +227,7 @@ $sett-dur: 160ms;
     height: 24px;
     padding: 0 8px;
     background: rgba(255, 255, 255, 0.06);
-    border: 1px solid var(--modal-border-color, rgba(255, 255, 255, 0.10));
+    border: 1px solid var(--color-border, rgba(255, 255, 255, 0.10));
     border-radius: 6px;
     color: #f5f5f5;
     font-size: 11px;
@@ -255,7 +255,7 @@ $sett-dur: 160ms;
     gap: 6px;
     padding: 8px;
     border-radius: 8px;
-    border: 1px solid var(--modal-border-color, rgba(255, 255, 255, 0.10));
+    border: 1px solid var(--color-border, rgba(255, 255, 255, 0.10));
     background: rgba(255, 255, 255, 0.02);
     cursor: pointer;
     transition: border-color $sett-dur $sett-ease, background-color $sett-dur $sett-ease;
@@ -267,8 +267,8 @@ $sett-dur: 160ms;
     }
 
     &.active {
-        border-color: var(--accent-color, #10b981);
-        box-shadow: 0 0 0 1px var(--accent-color, #10b981);
+        border-color: var(--color-accent, #10b981);
+        box-shadow: 0 0 0 1px var(--color-accent, #10b981);
     }
 }
 
@@ -347,7 +347,7 @@ $sett-dur: 160ms;
     justify-content: center;
     gap: 8px;
     padding: 64px 16px;
-    border: 1px dashed var(--modal-border-color, rgba(255, 255, 255, 0.10));
+    border: 1px dashed var(--color-border, rgba(255, 255, 255, 0.10));
     border-radius: 10px;
     text-align: center;
     color: rgba(255, 255, 255, 0.55);

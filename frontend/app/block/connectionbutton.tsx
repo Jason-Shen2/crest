@@ -61,7 +61,7 @@ export const ConnectionButton = React.memo(
                 let iconName = "arrow-turn-backward";
                 let iconSvg = null;
                 if (connStatus?.status == "connecting") {
-                    color = "var(--warning-color)";
+                    color = "var(--color-term-warning)";
                     titleText = "Connecting to " + connection;
                     shouldSpin = false;
                     iconSvg = (
@@ -70,18 +70,18 @@ export const ConnectionButton = React.memo(
                         </div>
                     );
                 } else if (connStatus?.status == "error") {
-                    color = "var(--error-color)";
+                    color = "var(--color-term-error)";
                     titleText = "Error connecting to " + connection;
                     if (connStatus?.error != null) {
                         titleText += " (" + connStatus.error + ")";
                     }
                     showDisconnectedSlash = true;
                 } else if (!connStatus?.connected) {
-                    color = "var(--grey-text-color)";
+                    color = "var(--color-muted)";
                     titleText = "Disconnected from " + connection;
                     showDisconnectedSlash = true;
                 } else if (connStatus?.connhealthstatus === "degraded" || connStatus?.connhealthstatus === "stalled") {
-                    color = "var(--warning-color)";
+                    color = "var(--color-term-warning)";
                     iconName = "wifi-off-01";
                     if (connStatus.connhealthstatus === "degraded") {
                         titleText = "Connection degraded: " + connection;

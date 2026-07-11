@@ -259,10 +259,10 @@ const TsunamiView = memo((props: ViewComponentProps<TsunamiViewModel>) => {
     if (errors.length > 0) {
         return (
             <div className="w-full h-full flex flex-col items-center justify-center gap-4">
-                <h1 className="text-4xl font-bold text-main-text-color">Tsunami</h1>
+                <h1 className="text-4xl font-bold text-foreground">Tsunami</h1>
                 <div className="flex flex-col gap-2">
                     {errors.map((error, index) => (
-                        <div key={index} className="text-sm" style={{ color: "var(--color-error)" }}>
+                        <div key={index} className="text-sm text-[var(--color-term-error)]">
                             {error}
                         </div>
                     ))}
@@ -291,17 +291,17 @@ const TsunamiView = memo((props: ViewComponentProps<TsunamiViewModel>) => {
 
     return (
         <div className="w-full h-full flex flex-col items-center justify-center gap-4">
-            <h1 className="text-4xl font-bold text-main-text-color">Tsunami</h1>
-            {(appPath || appId) && <div className="text-sm text-main-text-color opacity-70">{appPath || appId}</div>}
+            <h1 className="text-4xl font-bold text-foreground">Tsunami</h1>
+            {(appPath || appId) && <div className="text-sm text-foreground opacity-70">{appPath || appId}</div>}
             {isNotRunning && !isRestarting && (
                 <button
                     onClick={() => model.forceRestartController()}
-                    className="px-4 py-2 bg-accent-color text-primary-text-color rounded hover:bg-accent-color/80 transition-colors cursor-pointer"
+                    className="px-4 py-2 bg-accent text-[var(--color-on-accent)] rounded hover:bg-accenthover transition-colors cursor-pointer"
                 >
                     Start
                 </button>
             )}
-            {isRestarting && <div className="text-sm text-success-color">Starting...</div>}
+            {isRestarting && <div className="text-sm text-[var(--color-term-success)]">Starting...</div>}
         </div>
     );
 });

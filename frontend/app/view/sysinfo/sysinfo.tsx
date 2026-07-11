@@ -42,7 +42,7 @@ function defaultCpuMeta(name: string): TimeSeriesMeta {
         label: "%",
         miny: 0,
         maxy: 100,
-        color: "var(--sysinfo-cpu-color)",
+        color: "var(--color-term-success)",
         decimalPlaces: 0,
     };
 }
@@ -53,7 +53,7 @@ function defaultMemMeta(name: string, maxY: string): TimeSeriesMeta {
         label: "GB",
         miny: 0,
         maxy: maxY,
-        color: "var(--sysinfo-mem-color)",
+        color: "var(--ansi-blue)",
         decimalPlaces: 1,
     };
 }
@@ -455,7 +455,7 @@ function SingleLinePlot({
             Plot.text([yvalMeta?.name], {
                 frameAnchor: "top-left",
                 dx: 4,
-                fill: "var(--grey-text-color)",
+                fill: "var(--color-muted)",
             })
         );
     }
@@ -463,13 +463,13 @@ function SingleLinePlot({
     marks.push(
         Plot.ruleX(
             plotData,
-            Plot.pointerX({ x: "ts", py: yval, stroke: "var(--grey-text-color)", strokeWidth: 1, strokeDasharray: 2 })
+            Plot.pointerX({ x: "ts", py: yval, stroke: "var(--color-muted)", strokeWidth: 1, strokeDasharray: 2 })
         )
     );
     marks.push(
         Plot.ruleY(
             plotData,
-            Plot.pointerX({ px: "ts", y: yval, stroke: "var(--grey-text-color)", strokeWidth: 1, strokeDasharray: 2 })
+            Plot.pointerX({ px: "ts", y: yval, stroke: "var(--color-muted)", strokeWidth: 1, strokeDasharray: 2 })
         )
     );
     marks.push(
@@ -478,7 +478,7 @@ function SingleLinePlot({
             Plot.pointerX({
                 x: "ts",
                 y: yval,
-                fill: "var(--main-bg-color)",
+                fill: "var(--color-background)",
                 anchor: "middle",
                 dy: -30,
                 title: (d) =>
@@ -490,7 +490,7 @@ function SingleLinePlot({
     marks.push(
         Plot.dot(
             plotData,
-            Plot.pointerX({ x: "ts", y: yval, fill: color, r: 3, stroke: "var(--main-text-color)", strokeWidth: 1 })
+            Plot.pointerX({ x: "ts", y: yval, fill: color, r: 3, stroke: "var(--color-foreground)", strokeWidth: 1 })
         )
     );
     const maxY = resolveDomainBound(yvalMeta?.maxy, plotData[plotData.length - 1]) ?? 100;
@@ -558,7 +558,7 @@ const SysinfoViewInner = React.memo(({ model }: SysinfoViewProps) => {
                                 yval={yval}
                                 yvalMeta={plotMeta.get(yval)}
                                 blockId={model.blockId}
-                                defaultColor={"var(--accent-color)"}
+                                defaultColor={"var(--color-accent)"}
                                 title={title}
                                 targetLen={targetLen}
                             />

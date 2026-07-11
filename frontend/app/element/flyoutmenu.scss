@@ -24,7 +24,7 @@
     justify-content: space-between;
     padding: 4px 6px;
     cursor: pointer;
-    color: var(--main-text-color);
+    color: var(--color-foreground);
     font-size: 12px;
     font-style: normal;
     font-weight: 400;
@@ -43,11 +43,11 @@
 }
 
 .menu-item {
-    color: var(--main-text-color);
+    color: var(--color-foreground);
 
     &:hover {
-        background-color: var(--accent-color);
-        color: var(--button-text-color);
+        background-color: var(--color-accent);
+        color: var(--color-on-accent);
         border-radius: 2px;
     }
 }
