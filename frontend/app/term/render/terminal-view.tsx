@@ -646,10 +646,7 @@ export const TerminalView = memo(
                         <CmdBlockInput
                             cwd={liveCwd}
                             home={home}
-                            // Branch prefers the precmd value (instant) and falls back
-                            // to the chip-model fetch (covers shells with no precmd).
                             branch={liveBlock?.gitBranch || chipValues.gitBranch}
-                            // Diff stats: precmd if shell sent it, else chip-model.
                             gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
                             gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
                             prNumber={chipValues.prNumber}
@@ -666,6 +663,7 @@ export const TerminalView = memo(
                             focusRequest={focusRequest}
                             history={commandHistory}
                             onTextChange={onInputTextChange}
+                            hideHelpRow
                             placeholder={
                                 isRunning
                                     ? "Press Ctrl+C in the running block to interrupt, or type the next command"

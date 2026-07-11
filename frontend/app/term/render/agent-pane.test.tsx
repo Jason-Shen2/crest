@@ -49,7 +49,7 @@ vi.mock("./assistant-ui", () => ({
     AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => (
         <div data-testid="assistant-runtime-provider">{children}</div>
     ),
-    CrestThread: ({ modelLabel }: { modelLabel?: string }) => <div data-testid="crest-thread">{modelLabel}</div>,
+    Thread: ({ modelLabel }: { modelLabel?: string }) => <div data-testid="crest-thread">{modelLabel}</div>,
     useAui: () => ({ composer: () => ({ setText: vi.fn() }) }),
     useCrestAssistantRuntime: () => ({ runtime: true }),
 }));
