@@ -381,7 +381,7 @@ export function RightToolPanelMagnifiedOverlayView({
                 aria-label="Dismiss magnified right tool panel"
                 className="absolute inset-0 cursor-default"
                 style={{
-                    backgroundColor: "rgb(from var(--block-bg-color) r g b / var(--magnified-block-opacity))",
+                    backgroundColor: "rgb(from var(--color-panel) r g b / var(--magnified-block-opacity))",
                     backdropFilter: "blur(var(--magnified-block-blur))",
                 }}
                 onClick={onExit}

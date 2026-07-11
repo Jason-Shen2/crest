@@ -14,7 +14,7 @@
         flex-direction: column;
 
         &:not([data-scroll-height="0"]) .dir-table-head::after {
-            background: oklch(from var(--block-bg-color) calc(l + 0.5) c h);
+            background: oklch(from var(--color-panel) calc(l + 0.5) c h);
             backdrop-filter: blur(2px);
             content: "";
             z-index: -1;
@@ -31,7 +31,7 @@
             z-index: 10;
             width: 100%;
             min-width: fit-content;
-            border-bottom: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--color-border);
 
             .dir-table-head-row {
                 display: flex;
@@ -80,7 +80,7 @@
                             top: 10%;
                             height: 80%;
                             width: 1px;
-                            background-color: var(--border-color);
+                            background-color: var(--color-border);
                             pointer-events: none;
                         }
                         .dir-table-head-resize {
@@ -114,29 +114,29 @@
                     min-width: var(--min-row-width);
 
                     &.focused {
-                        background-color: rgb(from var(--accent-color) r g b / 0.5);
-                        color: var(--main-text-color);
+                        background-color: rgb(from var(--color-accent) r g b / 0.5);
+                        color: var(--color-foreground);
 
                         .dir-table-body-cell {
                             .dir-table-lastmod,
                             .dir-table-modestr,
                             .dir-table-size,
                             .dir-table-type {
-                                color: var(--main-text-color);
+                                color: var(--color-foreground);
                             }
                         }
                     }
 
                     &:focus {
-                        background-color: rgb(from var(--accent-color) r g b / 0.5);
-                        color: var(--main-text-color);
+                        background-color: rgb(from var(--color-accent) r g b / 0.5);
+                        color: var(--color-foreground);
 
                         .dir-table-body-cell {
                             .dir-table-lastmod,
                             .dir-table-modestr,
                             .dir-table-size,
                             .dir-table-type {
-                                color: var(--main-text-color);
+                                color: var(--color-foreground);
                             }
                         }
                     }
@@ -146,7 +146,7 @@
                     }
 
                     &:hover:not(:focus):not(.focused) {
-                        background-color: var(--highlight-bg-color);
+                        background-color: var(--color-highlightbg);
                     }
 
                     .dir-table-body-cell {
@@ -164,14 +164,14 @@
                         .dir-table-lastmod,
                         .dir-table-modestr,
                         .dir-table-type {
-                            color: var(--secondary-text-color);
+                            color: var(--color-muted-foreground);
                             margin-right: 12px;
                         }
 
                         .dir-table-modestr,
                         .dir-table-size,
                         .dir-table-lastmod {
-                            color: var(--secondary-text-color);
+                            color: var(--color-muted-foreground);
                             font-family: Hack;
                             font-size: 13px;
                         }

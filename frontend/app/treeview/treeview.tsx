@@ -496,7 +496,10 @@ export const TreeView = forwardRef<TreeViewRef, TreeViewProps>((props, ref) => {
                                             name={getNodeIcon(row.node, row.isExpanded)}
                                             size={14}
                                             style={{
-                                                color: row.node.notfound || row.node.staterror ? "var(--color-error)" : "inherit",
+                                                color:
+                                                    row.node.notfound || row.node.staterror
+                                                        ? "var(--color-term-error)"
+                                                        : "inherit",
                                             }}
                                         />
                                         <span

@@ -64,7 +64,7 @@ function createRemoteSuggestionItems(
             status: "connected",
             icon: "arrow-right-arrow-left",
             iconColor:
-                connStatus?.status == "connected" ? `var(--conn-icon-color-${connColorNum})` : "var(--grey-text-color)",
+                connStatus?.status == "connected" ? `var(--conn-icon-color-${connColorNum})` : "var(--color-muted)",
             value: connName,
             label: connName,
             current: connName == connection,
@@ -85,7 +85,7 @@ function createWslSuggestionItems(
             status: "connected",
             icon: "arrow-right-arrow-left",
             iconColor:
-                connStatus?.status == "connected" ? `var(--conn-icon-color-${connColorNum})` : "var(--grey-text-color)",
+                connStatus?.status == "connected" ? `var(--conn-icon-color-${connColorNum})` : "var(--color-muted)",
             value: "wsl://" + connName,
             label: "wsl://" + connName,
             current: "wsl://" + connName == connection,
@@ -103,7 +103,7 @@ function createFilteredLocalSuggestionItem(
         const localSuggestion: SuggestionConnectionItem = {
             status: "connected",
             icon: "laptop",
-            iconColor: "var(--grey-text-color)",
+            iconColor: "var(--color-muted)",
             value: "",
             label: localName,
             current: util.isBlank(connection),
@@ -125,7 +125,7 @@ function getReconnectItem(
     const reconnectSuggestionItem: SuggestionConnectionItem = {
         status: "connected",
         icon: "arrow-right-arrow-left",
-        iconColor: "var(--grey-text-color)",
+        iconColor: "var(--color-muted)",
         label: `Reconnect to ${connStatus.connection}`,
         value: "",
         onSelect: async (_: string) => {
@@ -160,7 +160,7 @@ function getLocalSuggestions(
         gitBashItems.push({
             status: "connected",
             icon: "laptop",
-            iconColor: "var(--grey-text-color)",
+            iconColor: "var(--color-muted)",
             value: "local:gitbash",
             label: "Git Bash",
             current: connection === "local:gitbash",
@@ -215,7 +215,7 @@ function getDisconnectItem(
     const disconnectSuggestionItem: SuggestionConnectionItem = {
         status: "connected",
         icon: "xmark",
-        iconColor: "var(--grey-text-color)",
+        iconColor: "var(--color-muted)",
         label: `Disconnect ${connStatus.connection}`,
         value: "",
         onSelect: async (_: string) => {
@@ -237,7 +237,7 @@ function getConnectionsEditItem(
     const connectionsEditItem: SuggestionConnectionItem = {
         status: "disconnected",
         icon: "gear",
-        iconColor: "var(--grey-text-color)",
+        iconColor: "var(--color-muted)",
         value: "Edit Connections",
         label: "Edit Connections",
         onSelect: () => {
@@ -273,7 +273,7 @@ function getNewConnectionSuggestionItem(
     const newConnectionSuggestion: SuggestionConnectionItem = {
         status: "connected",
         icon: "plus",
-        iconColor: "var(--grey-text-color)",
+        iconColor: "var(--color-muted)",
         label: `${connSelected} (New Connection)`,
         value: "",
         onSelect: (_: string) => {
@@ -423,8 +423,8 @@ const ChangeConnectionBlockModal = React.memo(
 
         // quick way to change icon color when highlighted
         selectionList = selectionList.map((item, index) => {
-            if (index == rowIndex && item.iconColor == "var(--grey-text-color)") {
-                item.iconColor = "var(--main-text-color)";
+            if (index == rowIndex && item.iconColor == "var(--color-muted)") {
+                item.iconColor = "var(--color-foreground)";
             }
             return item;
         });

@@ -27,14 +27,14 @@
 
 .expandable-menu-item-group-title {
     &:hover {
-        background-color: var(--button-grey-hover-bg);
+        background-color: var(--color-fg-overlay-2);
     }
 }
 
 .expandable-menu-item {
     &.with-hover-effect {
         &:hover {
-            background-color: var(--button-grey-hover-bg);
+            background-color: var(--color-fg-overlay-2);
         }
     }
 }

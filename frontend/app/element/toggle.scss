@@ -28,7 +28,7 @@
             bottom: 0;
             left: 0;
             right: 0;
-            background-color: var(--toggle-bg-color);
+            background-color: var(--color-border);
             transition: 0.5s;
             border-radius: 33px;
         }
@@ -40,13 +40,13 @@
             width: 16px;
             left: 3px;
             bottom: 2px;
-            background-color: var(--toggle-thumb-color);
+            background-color: var(--color-foreground);
             transition: 0.5s;
             border-radius: 50%;
         }
 
         input:checked + .slider {
-            background-color: var(--toggle-checked-bg-color);
+            background-color: var(--color-accent);
         }
 
         input:checked + .slider:before {
