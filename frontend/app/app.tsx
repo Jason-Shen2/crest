@@ -159,9 +159,9 @@ function AppSettingsUpdater() {
             document.body.style.removeProperty("--window-opacity");
         }
         if (baseBgColor != null) {
-            document.body.style.setProperty("--main-bg-color", baseBgColor);
+            document.body.style.setProperty("--window-bg-color", baseBgColor);
         } else {
-            document.body.style.removeProperty("--main-bg-color");
+            document.body.style.removeProperty("--window-bg-color");
         }
     }, [windowSettings]);
     return null;

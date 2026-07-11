@@ -13,7 +13,7 @@ body {
     flex-direction: row;
     width: 100vw;
     height: 100vh;
-    color: var(--main-text-color);
+    color: var(--color-foreground);
     font: var(--base-font);
     overflow: hidden;
     /* Theme background — ThemeModel writes a solid into --color-background
@@ -21,7 +21,7 @@ body {
        The user's window:bgcolor override still wins when set, via the
        outer rgb(from ...) call.  background-image rides on top so a
        gradient theme paints over the solid color underneath. */
-    background-color: rgb(from var(--main-bg-color, var(--color-background)) r g b / var(--window-opacity, 1));
+    background-color: rgb(from var(--window-bg-color, var(--color-background)) r g b / var(--window-opacity, 1));
     background-image: var(--bg-gradient, none);
     -webkit-font-smoothing: auto;
     backface-visibility: hidden;
@@ -62,11 +62,11 @@ body {
 
 .error-boundary {
     white-space: pre-wrap;
-    color: var(--error-color);
+    color: var(--color-term-error);
 }
 
 .error-color {
-    color: var(--error-color);
+    color: var(--color-term-error);
 }
 
 /* OverlayScrollbars styling */
@@ -92,7 +92,7 @@ body {
 }
 
 a {
-    color: var(--accent-color);
+    color: var(--color-accent);
 }
 
 .prefers-reduced-motion {

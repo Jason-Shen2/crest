@@ -72,7 +72,7 @@ type ResolvedTheme = {
 
 // Variable names we set on :root.  Kept here so the resetTheme() path
 // can clear precisely the keys we touch without disturbing other
-// runtime-set vars (--zoomfactor, --window-opacity, --main-bg-color).
+// runtime-set vars (--zoomfactor, --window-opacity, --window-bg-color).
 const MANAGED_VARS = [
     // Base surfaces
     "--color-background",

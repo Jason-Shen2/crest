@@ -10,7 +10,7 @@
     outline: inherit;
 
     &.bulb {
-        color: var(--bulb-color);
+        color: var(--color-term-yellow);
         opacity: 1;
 
         &:hover i::before {
@@ -38,11 +38,11 @@
         padding: 1px;
         &.active {
             opacity: 1;
-            border: 1px solid var(--accent-color);
+            border: 1px solid var(--color-accent);
             padding: 0;
         }
         &:hover {
-            background: var(--highlight-bg-color);
+            background: var(--color-highlightbg);
         }
     }
 }

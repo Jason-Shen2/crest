@@ -50,14 +50,14 @@
             .line {
                 height: 100%;
                 width: calc(50% + 1px);
-                border-right: 2px solid var(--accent-color);
+                border-right: 2px solid var(--color-accent);
             }
         }
         &.flex-column {
             cursor: ns-resize;
             .line {
                 height: calc(50% + 1px);
-                border-bottom: 2px solid var(--accent-color);
+                border-bottom: 2px solid var(--color-accent);
             }
         }
         &:hover .line {
@@ -80,7 +80,7 @@
         }
 
         &.resizing {
-            border: 1px solid var(--accent-color);
+            border: 1px solid var(--color-accent);
             backdrop-filter: blur(8px);
         }
 
@@ -142,7 +142,7 @@
     }
 
     .placeholder {
-        background-color: var(--accent-color);
+        background-color: var(--color-accent);
         opacity: 0.5;
         border-radius: calc(var(--block-border-radius) + 2px);
     }
