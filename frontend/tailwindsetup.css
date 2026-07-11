@@ -2,6 +2,8 @@
    SPDX-License-Identifier: Apache-2.0 */
 
 @import "tailwindcss";
+@import "tw-shimmer";
+@import "tw-animate-css";
 
 @source "../node_modules/streamdown/dist/index.js";
 
@@ -10,6 +12,7 @@
     --color-foreground: #f7f7f7;
     --color-white: #f7f7f7;
     --color-primary: #f7f7f7;
+    --color-primary-foreground: rgb(34, 34, 34);
     --color-muted-foreground: rgb(195, 200, 194);
     --color-secondary: rgb(195, 200, 194);
     --color-muted: rgb(140, 145, 140);

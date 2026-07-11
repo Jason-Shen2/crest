@@ -33,7 +33,7 @@ import {
     type AgentSelectorRequest,
 } from "./agent-chat-host";
 import { AgentCommandResultList } from "./agent-command-result";
-import { AssistantRuntimeProvider, CrestThread, useAui, useCrestAssistantRuntime } from "./assistant-ui";
+import { AssistantRuntimeProvider, Thread, useAui, useCrestAssistantRuntime } from "./assistant-ui";
 
 export interface AgentSlot {
     chatHost: React.ReactNode;
@@ -283,7 +283,7 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
                             anchorRef={agentSelectorAnchorRef}
                         />
                         <AgentComposerTextRestore request={agentRestoredTextRequest} />
-                        <CrestThread modelLabel={modelDisplayLabel} onOpenModelPicker={onOpenAgentModelPicker} />
+                        <Thread modelLabel={modelDisplayLabel} onOpenModelPicker={onOpenAgentModelPicker} />
                     </AssistantRuntimeProvider>
                 </div>
             )}

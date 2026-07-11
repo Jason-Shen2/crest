@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crest Agent assistant-ui Registry Preview</title>
+    <style>
+        :root {
+            --background: #fbfaf8;
+            --foreground: #24211d;
+            --muted: #f0eee9;
+            --muted-foreground: #777068;
+            --border: #dfd9cf;
+            --ring: #a69a8b;
+            --accent: #ece8df;
+            --accent-foreground: #2e2923;
+            --primary: #26211c;
+            --primary-foreground: #fbfaf8;
+            --destructive: #b33535;
+            --thread-max-width: 44rem;
+            --composer-bg: color-mix(in oklab, var(--muted) 30%, var(--background));
+            --composer-radius: 1.5rem;
+            --composer-padding: 8px;
+            color-scheme: light;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background:
+                radial-gradient(circle at 22% 8%, rgba(234, 227, 214, 0.95), transparent 28rem),
+                radial-gradient(circle at 86% 18%, rgba(217, 211, 201, 0.62), transparent 24rem),
+                linear-gradient(180deg, #fbfaf8 0%, #f6f3ee 100%);
+            color: var(--foreground);
+            font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+        }
+
+        button,
+        textarea {
+            font: inherit;
+        }
+
+        .shell {
+            display: grid;
+            grid-template-columns: 248px minmax(0, 1fr);
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            border-right: 1px solid rgba(223, 217, 207, 0.85);
+            background: rgba(246, 243, 238, 0.72);
+            backdrop-filter: blur(24px);
+            padding: 18px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 26px;
+            font-weight: 650;
+            letter-spacing: -0.02em;
+        }
+
+        .brand-mark {
+            display: grid;
+            width: 30px;
+            height: 30px;
+            place-items: center;
+            border-radius: 10px;
+            background: #25211d;
+            color: #fbfaf8;
+            font-size: 13px;
+            box-shadow: 0 12px 30px -18px rgba(0, 0, 0, 0.55);
+        }
+
+        .nav-section {
+            margin-top: 24px;
+        }
+
+        .nav-title {
+            margin: 0 0 8px;
+            color: var(--muted-foreground);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .session {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 7px;
+            border-radius: 12px;
+            padding: 9px 10px;
+            color: #4b443d;
+            font-size: 13px;
+        }
+
+        .session.active {
+            background: rgba(255, 255, 255, 0.7);
+            color: var(--foreground);
+            box-shadow: inset 0 0 0 1px rgba(223, 217, 207, 0.82);
+        }
+
+        .session small {
+            color: var(--muted-foreground);
+            font-size: 11px;
+        }
+
+        .main {
+            display: flex;
+            min-width: 0;
+            flex-direction: column;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 54px;
+            border-bottom: 1px solid rgba(223, 217, 207, 0.72);
+            background: rgba(251, 250, 248, 0.72);
+            padding: 0 20px;
+            backdrop-filter: blur(20px);
+        }
+
+        .topbar h1 {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 620;
+            letter-spacing: -0.01em;
+        }
+
+        .topbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            height: 30px;
+            border: 1px solid rgba(223, 217, 207, 0.9);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.58);
+            padding: 0 11px;
+            color: #514a42;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 999px;
+            background: #2da263;
+            box-shadow: 0 0 0 3px rgba(45, 162, 99, 0.12);
+        }
+
+        .aui-root.aui-thread-root {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+            background: transparent;
+        }
+
+        [data-slot="aui_thread-viewport"] {
+            position: relative;
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+            overflow-x: auto;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+
+        .thread-inner {
+            display: flex;
+            width: 100%;
+            max-width: var(--thread-max-width);
+            min-height: 100%;
+            flex: 1;
+            flex-direction: column;
+            margin: 0 auto;
+            padding: 22px 16px 0;
+        }
+
+        .aui-thread-welcome-root {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: auto 0 24px;
+            padding: 64px 16px 18px;
+            text-align: center;
+        }
+
+        .aui-thread-welcome-message-inner {
+            margin: 0;
+            font-size: 26px;
+            font-weight: 650;
+            letter-spacing: -0.035em;
+        }
+
+        .welcome-subtitle {
+            max-width: 460px;
+            margin: 10px auto 0;
+            color: var(--muted-foreground);
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .aui-thread-welcome-suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 22px;
+        }
+
+        .aui-thread-welcome-suggestion {
+            border: 1px solid rgba(223, 217, 207, 0.8);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.52);
+            padding: 8px 13px;
+            color: #464039;
+            font-size: 13px;
+        }
+
+        [data-slot="aui_message-group"] {
+            display: flex;
+            flex-direction: column;
+            gap: 26px;
+            margin-bottom: 56px;
+        }
+
+        [data-slot="aui_user-message-root"] {
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        [data-slot="aui_user-message-content"] {
+            max-width: min(78%, 34rem);
+            border-radius: 22px;
+            background: #26211d;
+            color: #fbfaf8;
+            padding: 11px 15px;
+            font-size: 14px;
+            line-height: 1.58;
+            box-shadow: 0 10px 26px -22px rgba(0, 0, 0, 0.75);
+        }
+
+        [data-slot="aui_assistant-message-root"] {
+            position: relative;
+            animation: rise 160ms ease-out both;
+        }
+
+        [data-slot="aui_assistant-message-content"] {
+            padding: 0 8px;
+            color: var(--foreground);
+            font-size: 14px;
+            line-height: 1.72;
+            overflow-wrap: anywhere;
+        }
+
+        .aui-md p {
+            margin: 0 0 12px;
+        }
+
+        .aui-md p:last-child {
+            margin-bottom: 0;
+        }
+
+        .aui-md code {
+            border-radius: 5px;
+            background: rgba(236, 232, 223, 0.76);
+            padding: 2px 5px;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 12px;
+        }
+
+        .aui-md pre {
+            overflow: hidden;
+            margin: 12px 0;
+            border: 1px solid rgba(223, 217, 207, 0.92);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.62);
+        }
+
+        .code-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(223, 217, 207, 0.75);
+            padding: 8px 11px;
+            color: var(--muted-foreground);
+            font-size: 12px;
+        }
+
+        .copy {
+            border: 0;
+            background: transparent;
+            color: inherit;
+            cursor: default;
+            font-size: 12px;
+        }
+
+        .aui-md pre code {
+            display: block;
+            background: transparent;
+            padding: 13px;
+            color: #37312b;
+            line-height: 1.6;
+        }
+
+        [data-slot="aui_chain-of-thought"] {
+            margin: 4px 0 12px;
+        }
+
+        .aui-reasoning-root {
+            border-left: 2px solid rgba(166, 154, 139, 0.38);
+            padding-left: 12px;
+        }
+
+        .aui-reasoning-trigger {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            border: 0;
+            background: transparent;
+            padding: 4px 0;
+            color: var(--muted-foreground);
+            font-size: 13px;
+        }
+
+        .chevron {
+            width: 14px;
+            height: 14px;
+            transition: transform 160ms ease;
+        }
+
+        .aui-reasoning-root[data-open="true"] .chevron {
+            transform: rotate(90deg);
+        }
+
+        .aui-reasoning-content {
+            margin-top: 4px;
+            padding: 2px 0 8px;
+            color: #786f66;
+            font-size: 13px;
+            line-height: 1.62;
+        }
+
+        .aui-tool-group-root {
+            margin: 10px 0 14px;
+            border: 1px solid rgba(223, 217, 207, 0.82);
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.48);
+            overflow: hidden;
+        }
+
+        .aui-tool-group-trigger {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            width: 100%;
+            border: 0;
+            background: transparent;
+            padding: 10px 12px;
+            color: #514a42;
+            font-size: 13px;
+        }
+
+        .tool-left {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .spinner {
+            width: 13px;
+            height: 13px;
+            border: 2px solid rgba(119, 112, 104, 0.24);
+            border-top-color: #5d554c;
+            border-radius: 50%;
+            animation: spin 900ms linear infinite;
+        }
+
+        .tool-count {
+            border-radius: 999px;
+            background: rgba(236, 232, 223, 0.9);
+            padding: 2px 7px;
+            color: var(--muted-foreground);
+            font-size: 12px;
+        }
+
+        .aui-tool-group-content {
+            border-top: 1px solid rgba(223, 217, 207, 0.72);
+            padding: 6px;
+        }
+
+        .aui-tool-fallback-root {
+            border-radius: 12px;
+            padding: 9px 10px;
+        }
+
+        .aui-tool-fallback-root + .aui-tool-fallback-root {
+            margin-top: 4px;
+        }
+
+        .aui-tool-fallback-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            color: #514a42;
+            font-size: 13px;
+        }
+
+        .aui-tool-fallback-name {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 12px;
+        }
+
+        .status {
+            border-radius: 999px;
+            padding: 2px 7px;
+            font-size: 11px;
+        }
+
+        .status.done {
+            background: rgba(45, 162, 99, 0.12);
+            color: #26794d;
+        }
+
+        .status.running {
+            background: rgba(166, 154, 139, 0.16);
+            color: #5d554c;
+        }
+
+        .aui-tool-fallback-body {
+            margin-top: 8px;
+            border-radius: 10px;
+            background: rgba(246, 243, 238, 0.72);
+            padding: 8px 10px;
+            color: #655c53;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.55;
+            white-space: pre-wrap;
+        }
+
+        .aui-message-action-bar {
+            display: flex;
+            gap: 5px;
+            min-height: 30px;
+            padding-top: 6px;
+            opacity: 0.54;
+        }
+
+        .icon-button {
+            display: inline-grid;
+            width: 28px;
+            height: 28px;
+            place-items: center;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            background: transparent;
+            color: #6b6259;
+            font-size: 14px;
+        }
+
+        .icon-button:hover {
+            border-color: rgba(223, 217, 207, 0.82);
+            background: rgba(255, 255, 255, 0.52);
+        }
+
+        .aui-thread-viewport-footer {
+            position: sticky;
+            bottom: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            margin-top: auto;
+            border-radius: var(--composer-radius) var(--composer-radius) 0 0;
+            background: linear-gradient(180deg, rgba(251, 250, 248, 0), rgba(251, 250, 248, 0.92) 24%, rgba(251, 250, 248, 0.98));
+            padding: 36px 0 22px;
+        }
+
+        .aui-thread-scroll-to-bottom {
+            position: absolute;
+            top: -12px;
+            align-self: center;
+            border: 1px solid rgba(223, 217, 207, 0.9);
+            background: rgba(255, 255, 255, 0.86);
+            box-shadow: 0 12px 26px -20px rgba(0, 0, 0, 0.5);
+        }
+
+        .aui-composer-root {
+            position: relative;
+            display: flex;
+            width: 100%;
+            flex-direction: column;
+        }
+
+        [data-slot="aui_composer-shell"] {
+            display: flex;
+            width: 100%;
+            flex-direction: column;
+            gap: 8px;
+            border: 1px solid rgba(223, 217, 207, 0.92);
+            border-radius: var(--composer-radius);
+            background: var(--composer-bg);
+            padding: var(--composer-padding);
+            box-shadow:
+                0 4px 16px -8px rgba(0, 0, 0, 0.08),
+                0 1px 2px rgba(0, 0, 0, 0.04);
+            transition: border-color 160ms ease, box-shadow 160ms ease;
+        }
+
+        [data-slot="aui_composer-shell"]:focus-within {
+            border-color: rgba(166, 154, 139, 0.75);
+            box-shadow:
+                0 6px 24px -8px rgba(0, 0, 0, 0.12),
+                0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        .aui-composer-input {
+            width: 100%;
+            min-height: 42px;
+            max-height: 128px;
+            resize: none;
+            border: 0;
+            outline: none;
+            background: transparent;
+            padding: 8px 10px 2px;
+            color: var(--foreground);
+            font-size: 15px;
+            line-height: 1.52;
+        }
+
+        .aui-composer-input::placeholder {
+            color: rgba(119, 112, 104, 0.8);
+        }
+
+        .aui-composer-action-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-height: 30px;
+        }
+
+        .composer-left,
+        .composer-right {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+
+        .model-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            max-width: 190px;
+            height: 29px;
+            border: 1px solid rgba(223, 217, 207, 0.8);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.48);
+            padding: 0 10px;
+            color: #5d554c;
+            font-size: 12px;
+        }
+
+        .aui-composer-send,
+        .aui-composer-cancel {
+            width: 30px;
+            height: 30px;
+            border: 0;
+            border-radius: 999px;
+            background: var(--primary);
+            color: var(--primary-foreground);
+            box-shadow: 0 10px 24px -18px rgba(0, 0, 0, 0.75);
+        }
+
+        .preview-tabs {
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            display: flex;
+            gap: 6px;
+            border: 1px solid rgba(223, 217, 207, 0.92);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.78);
+            padding: 5px;
+            backdrop-filter: blur(18px);
+            box-shadow: 0 14px 30px -26px rgba(0, 0, 0, 0.52);
+        }
+
+        .preview-tabs button {
+            border: 0;
+            border-radius: 999px;
+            background: transparent;
+            padding: 7px 10px;
+            color: #6b6259;
+            font-size: 12px;
+        }
+
+        .preview-tabs button.active {
+            background: #26211d;
+            color: #fbfaf8;
+        }
+
+        .view {
+            display: none;
+        }
+
+        .view.active {
+            display: contents;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @keyframes rise {
+            from {
+                opacity: 0;
+                transform: translateY(4px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @media (max-width: 880px) {
+            .shell {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                display: none;
+            }
+
+            .topbar {
+                padding: 0 14px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-mark">C</div>
+                <div>Crest Agent</div>
+            </div>
+            <div class="nav-section">
+                <p class="nav-title">Sessions</p>
+                <div class="session active">
+                    <span>assistant-ui 替换</span>
+                    <small>now</small>
+                </div>
+                <div class="session">
+                    <span>终端 block 调试</span>
+                    <small>12m</small>
+                </div>
+                <div class="session">
+                    <span>edgeFlow 集成</span>
+                    <small>1h</small>
+                </div>
+            </div>
+            <div class="nav-section">
+                <p class="nav-title">Activity</p>
+                <div class="session">
+                    <span>3 tool calls</span>
+                    <small>ok</small>
+                </div>
+                <div class="session">
+                    <span>1 file changed</span>
+                    <small>mock</small>
+                </div>
+            </div>
+        </aside>
+
+        <main class="main">
+            <header class="topbar">
+                <h1>Agent 内容区域 · assistant-ui registry style</h1>
+                <div class="topbar-actions">
+                    <span class="pill"><span class="dot"></span>ExternalStoreRuntime</span>
+                    <span class="pill">Claude Sonnet 4</span>
+                </div>
+            </header>
+
+            <section class="aui-root aui-thread-root">
+                <div data-slot="aui_thread-viewport">
+                    <div class="thread-inner">
+                        <div class="view active" data-view="chat">
+                            <div data-slot="aui_message-group">
+                                <div data-slot="aui_user-message-root">
+                                    <div data-slot="aui_user-message-content">
+                                        把 Agent 内容区和输入框换成 assistant-ui 官方 registry 的样式，不要再像自研 UI。
+                                    </div>
+                                </div>
+
+                                <article data-slot="aui_assistant-message-root" data-role="assistant">
+                                    <div data-slot="aui_assistant-message-content">
+                                        <div data-slot="aui_chain-of-thought">
+                                            <div class="aui-reasoning-root" data-open="false">
+                                                <button class="aui-reasoning-trigger">
+                                                    <span class="chevron">›</span>
+                                                    <span>Thought for 8 seconds</span>
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div class="aui-md">
+                                            <p>我会把视觉层切到 assistant-ui registry 的 Thread 结构，保留 Crest 的 runtime bridge 和 session 逻辑。最终你看到的会是官方风格的消息流、工具分组、reasoning 折叠区，以及底部 floating composer。</p>
+                                        </div>
+
+                                        <div class="aui-tool-group-root">
+                                            <button class="aui-tool-group-trigger">
+                                                <span class="tool-left">
+                                                    <span>⌘</span>
+                                                    <span>Used 3 tools</span>
+                                                </span>
+                                                <span class="tool-count">3</span>
+                                            </button>
+                                            <div class="aui-tool-group-content">
+                                                <div class="aui-tool-fallback-root">
+                                                    <div class="aui-tool-fallback-header">
+                                                        <span class="aui-tool-fallback-name">read_file</span>
+                                                        <span class="status done">done</span>
+                                                    </div>
+                                                    <div class="aui-tool-fallback-body">{ path: "crest-thread.tsx" }</div>
+                                                </div>
+                                                <div class="aui-tool-fallback-root">
+                                                    <div class="aui-tool-fallback-header">
+                                                        <span class="aui-tool-fallback-name">search_codebase</span>
+                                                        <span class="status done">done</span>
+                                                    </div>
+                                                    <div class="aui-tool-fallback-body">Found current custom Crest message/composer styling.</div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="aui-md">
+                                            <p>实现上不会再保留当前自研的 compact tool card。工具调用会进入官方 ToolGroup；Markdown 使用官方 MarkdownText；Reasoning 使用官方 Reasoning primitives。</p>
+                                            <pre><div class="code-header"><span>tsx</span><button class="copy">Copy</button></div><code>&lt;Thread components={{
+    ToolFallback,
+    ToolGroup,
+    ReasoningGroup
+}} /&gt;</code></pre>
+                                        </div>
+
+                                        <div class="aui-message-action-bar">
+                                            <button class="icon-button" title="Copy">⧉</button>
+                                            <button class="icon-button" title="Reload">↻</button>
+                                            <button class="icon-button" title="More">···</button>
+                                        </div>
+                                    </div>
+                                </article>
+
+                                <div data-slot="aui_user-message-root">
+                                    <div data-slot="aui_user-message-content">
+                                        Reasoning 运行中要展开，结束以后默认折叠。
+                                    </div>
+                                </div>
+
+                                <article data-slot="aui_assistant-message-root" data-role="assistant">
+                                    <div data-slot="aui_assistant-message-content">
+                                        <div data-slot="aui_chain-of-thought">
+                                            <div class="aui-reasoning-root" data-open="true">
+                                                <button class="aui-reasoning-trigger">
+                                                    <span class="chevron">›</span>
+                                                    <span>Thinking...</span>
+                                                </button>
+                                                <div class="aui-reasoning-content">
+                                                    正在检查当前消息 part 顺序，把 reasoning 和 tool-call 按 assistant-ui 的 GroupedParts 聚合展示。完成后该区域会自动折叠。
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="aui-tool-group-root">
+                                            <button class="aui-tool-group-trigger">
+                                                <span class="tool-left">
+                                                    <span class="spinner"></span>
+                                                    <span>Running 1 tool</span>
+                                                </span>
+                                                <span class="tool-count">1</span>
+                                            </button>
+                                            <div class="aui-tool-group-content">
+                                                <div class="aui-tool-fallback-root">
+                                                    <div class="aui-tool-fallback-header">
+                                                        <span class="aui-tool-fallback-name">apply_patch</span>
+                                                        <span class="status running">running</span>
+                                                    </div>
+                                                    <div class="aui-tool-fallback-body">Updating assistant-ui registry components...</div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="aui-md">
+                                            <p>对，这个状态会按官方 primitives 来做：运行中展开，运行结束折叠；用户可以点开查看完整 reasoning。</p>
+                                        </div>
+                                    </div>
+                                </article>
+                            </div>
+                        </div>
+
+                        <div class="view" data-view="empty">
+                            <div class="aui-thread-welcome-root">
+                                <h2 class="aui-thread-welcome-message-inner">How can I help you today?</h2>
+                                <p class="welcome-subtitle">这是空会话状态。Composer 会跟随官方 Thread footer 居中呈现，进入对话后再 sticky 到底部。</p>
+                                <div class="aui-thread-welcome-suggestions">
+                                    <button class="aui-thread-welcome-suggestion">Review current diff</button>
+                                    <button class="aui-thread-welcome-suggestion">Explain this file</button>
+                                    <button class="aui-thread-welcome-suggestion">Implement with TDD</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <footer class="aui-thread-viewport-footer">
+                            <button class="icon-button aui-thread-scroll-to-bottom">↓</button>
+                            <div class="aui-composer-root">
+                                <div data-slot="aui_composer-shell">
+                                    <textarea class="aui-composer-input" rows="1" placeholder="Send a message..."></textarea>
+                                    <div class="aui-composer-action-wrapper">
+                                        <div class="composer-left">
+                                            <button class="icon-button" title="Attach">＋</button>
+                                            <button class="model-chip" title="Change model">Claude Sonnet 4 ▾</button>
+                                        </div>
+                                        <div class="composer-right">
+                                            <button class="icon-button" title="Voice">◌</button>
+                                            <button class="aui-composer-send" title="Send">↑</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </footer>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div class="preview-tabs" aria-label="Preview state switcher">
+        <button class="active" data-target="chat">对话态</button>
+        <button data-target="empty">空会话</button>
+    </div>
+
+    <script>
+        const buttons = document.querySelectorAll(".preview-tabs button")
+        const views = document.querySelectorAll(".view")
+
+        buttons.forEach((button) => {
+            button.addEventListener("click", () => {
+                const target = button.dataset.target
+                buttons.forEach((item) => item.classList.toggle("active", item === button))
+                views.forEach((view) => view.classList.toggle("active", view.dataset.view === target))
+            })
+        })
+    </script>
+</body>
+</html>
