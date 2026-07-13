@@ -1,27 +1,19 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { Icon } from "@/app/icon/Icon";
 import { globalStore } from "@/app/store/jotaiStore";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { cn, fireAndForget } from "@/util/util";
-import { Icon } from "@/app/icon/Icon";
-import * as jotai from "jotai";
 import type { WebviewTag } from "electron";
-import {
-    memo,
-    useCallback,
-    useEffect,
-    useLayoutEffect,
-    useMemo,
-    useRef,
-    useState,
-    type KeyboardEvent,
-} from "react";
+import * as jotai from "jotai";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 const USER_AGENT_IPHONE =
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 const USER_AGENT_ANDROID =
     "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.43 Mobile Safari/537.36";
+const DefaultBrowserHomeUrl = "https://www.google.com";
 
 type BrowserUserAgentType = "default" | "mobile:iphone" | "mobile:android";
 
@@ -58,7 +50,7 @@ function getWebviewPreloadUrl(electron: { getWebviewPreload: () => string }): st
 }
 
 function ensureUrlScheme(url: string): string {
-    if (!url) return "about:blank";
+    if (!url) return DefaultBrowserHomeUrl;
     const trimmed = url.trim();
     if (/^(http|https|file|about):/.test(trimmed)) return trimmed;
     const isLocal = /^(localhost|(\d{1,3}\.){3}\d{1,3})(:\d+)?$/.test(trimmed.split("/")[0]);
@@ -80,12 +72,12 @@ function getUserAgentString(type: BrowserUserAgentType): string | undefined {
     }
 }
 
-function createNewTabState(initialUrl: string = "about:blank"): BrowserTabState {
+function createNewTabState(initialUrl: string = DefaultBrowserHomeUrl): BrowserTabState {
     return {
         id: genTabId(),
         url: initialUrl,
-        title: initialUrl === "about:blank" ? "New Tab" : initialUrl,
-        isLoading: initialUrl !== "about:blank",
+        title: initialUrl === DefaultBrowserHomeUrl ? "Google" : initialUrl === "about:blank" ? "New Tab" : initialUrl,
+        isLoading: false,
         canGoBack: false,
         canGoForward: false,
         mediaPlaying: false,
@@ -95,7 +87,7 @@ function createNewTabState(initialUrl: string = "about:blank"): BrowserTabState 
         zoomFactor: 1,
         errorText: "",
         urlInputValue: initialUrl,
-        partition: "right-browser",
+        partition: "persist:crest-browser",
     };
 }
 
@@ -146,11 +138,14 @@ export class RightBrowserModel {
         return ref;
     }
 
-    removeWebviewRef(tabId: string): void {
+    removeWebviewRef(tabId: string, ref?: React.RefObject<WebviewTag>): void {
+        if (ref != null && this.webviewRefs.get(tabId) !== ref) {
+            return;
+        }
         this.webviewRefs.delete(tabId);
     }
 
-    newTab(initialUrl: string = "about:blank", activate: boolean = true): string {
+    newTab(initialUrl: string = DefaultBrowserHomeUrl, activate: boolean = true): string {
         const tab = createNewTabState(initialUrl);
         const state = this.getStateNow();
         globalStore.set(this.stateAtom, {
@@ -187,9 +182,25 @@ export class RightBrowserModel {
 
     patchTab(tabId: string, patch: Partial<BrowserTabState>): void {
         const state = this.getStateNow();
+        let changed = false;
+        const tabs = state.tabs.map((t) => {
+            if (t.id !== tabId) {
+                return t;
+            }
+            for (const key of Object.keys(patch) as (keyof BrowserTabState)[]) {
+                if (t[key] !== patch[key]) {
+                    changed = true;
+                    return { ...t, ...patch };
+                }
+            }
+            return t;
+        });
+        if (!changed) {
+            return;
+        }
         globalStore.set(this.stateAtom, {
             ...state,
-            tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ...patch } : t)),
+            tabs,
         });
     }
 
@@ -210,26 +221,41 @@ export class RightBrowserModel {
     loadUrl(tabId: string, rawUrl: string): void {
         const ref = this.webviewRefs.get(tabId);
         const wv = ref?.current;
-        if (!wv) return;
         const url = ensureUrlScheme(rawUrl);
-        this.patchTab(tabId, { urlInputValue: url });
+        this.patchTab(tabId, {
+            url,
+            urlInputValue: url,
+            isLoading: true,
+            errorText: "",
+        });
+        if (!wv) return;
         try {
             if (wv.getURL?.() !== url) {
                 fireAndForget(() => wv.loadURL(url));
             }
-        } catch { /* ignore */ }
+        } catch {
+            /* ignore */
+        }
     }
 
     goBack(tabId: string): void {
         const wv = this.webviewRefs.get(tabId)?.current;
         if (!wv) return;
-        try { wv.goBack?.(); } catch { /* ignore */ }
+        try {
+            wv.goBack?.();
+        } catch {
+            /* ignore */
+        }
     }
 
     goForward(tabId: string): void {
         const wv = this.webviewRefs.get(tabId)?.current;
         if (!wv) return;
-        try { wv.goForward?.(); } catch { /* ignore */ }
+        try {
+            wv.goForward?.();
+        } catch {
+            /* ignore */
+        }
     }
 
     reload(tabId: string): void {
@@ -243,11 +269,22 @@ export class RightBrowserModel {
             } else {
                 wv.reload?.();
             }
-        } catch { /* ignore */ }
+        } catch {
+            /* ignore */
+        }
     }
 
     goHome(tabId: string): void {
-        this.loadUrl(tabId, "about:blank");
+        this.patchTab(tabId, {
+            url: DefaultBrowserHomeUrl,
+            title: "Google",
+            urlInputValue: DefaultBrowserHomeUrl,
+            isLoading: true,
+            errorText: "",
+            canGoBack: false,
+            canGoForward: false,
+            domReady: false,
+        });
     }
 
     toggleMute(tabId: string): void {
@@ -272,7 +309,9 @@ export class RightBrowserModel {
         const clamped = Math.max(0.25, Math.min(5, factor));
         try {
             wv.setZoomFactor?.(clamped);
-        } catch { /* ignore */ }
+        } catch {
+            /* ignore */
+        }
         this.patchTab(tabId, { zoomFactor: clamped });
     }
 
@@ -316,12 +355,13 @@ function ToolButton({
             onClick={onClick}
             disabled={disabled}
             title={title}
+            data-icon-name={icon}
             className={cn(
-                "flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-[#a1a1aa] transition-colors",
-                disabled ? "cursor-not-allowed opacity-40" : "hover:bg-[#2a2b2f] hover:text-[#f4f4f5]"
+                "flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors",
+                disabled ? "opacity-40" : "hover:bg-fg-overlay-2 hover:text-foreground"
             )}
         >
-            <i className={cn("text-[12px]", icon)} />
+            <Icon name={icon} size={14} className="text-[12px]" />
         </button>
     );
 }
@@ -331,9 +371,9 @@ function MenuItem({ onClick, label, icon }: { onClick: () => void; label: string
         <button
             type="button"
             onClick={onClick}
-            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-[#d4d4d8] hover:bg-[#2a2b2f] hover:text-[#f4f4f5]"
+            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-foreground/85 hover:bg-fg-overlay-2 hover:text-foreground"
         >
-            <i className={cn("w-3.5 text-center text-[11px]", icon)} />
+            <Icon name={icon} size={14} className="shrink-0 text-[11px]" />
             <span>{label}</span>
         </button>
     );
@@ -343,7 +383,7 @@ function WebViewFallback() {
     return (
         <div className="flex h-full w-full items-center justify-center bg-panel">
             <div className="mx-6 flex max-w-md flex-col gap-2 rounded-lg border border-dashed border-border bg-background px-6 py-5 text-center shadow-sm">
-                <div className="text-xs font-mono text-muted">webview unavailable (preview/test env)</div>
+                <div className="text-xs font-mono text-muted-foreground">webview unavailable (preview/test env)</div>
                 <div className="text-sm text-foreground">Browser placeholder</div>
             </div>
         </div>
@@ -380,9 +420,10 @@ const BrowserWebView = memo(function BrowserWebView({ model, tab, isActive, prel
             if (!mountedRef.current) return;
             const wvNow = webviewRef.current;
             if (!wvNow || !wvNow.isConnected) return;
-            wvNow.executeJavaScript(
-                `!!document.querySelector('meta[name="color-scheme"]') && document.querySelector('meta[name="color-scheme"]').content?.includes('dark') || false`
-            )
+            wvNow
+                .executeJavaScript(
+                    `!!document.querySelector('meta[name="color-scheme"]') && document.querySelector('meta[name="color-scheme"]').content?.includes('dark') || false`
+                )
                 .then((hasDarkMode: boolean) => {
                     if (!mountedRef.current) return;
                     const wvLatest = webviewRef.current;
@@ -417,10 +458,14 @@ const BrowserWebView = memo(function BrowserWebView({ model, tab, isActive, prel
             }
             const wv = webviewRef.current;
             if (wv) {
-                try { if (wv.isDevToolsOpened?.()) wv.closeDevTools(); } catch { /* ignore */ }
+                try {
+                    if (wv.isDevToolsOpened?.()) wv.closeDevTools();
+                } catch {
+                    /* ignore */
+                }
             }
             model.patchTab(tab.id, { domReady: false, isLoading: false });
-            model.removeWebviewRef(tab.id);
+            model.removeWebviewRef(tab.id, webviewRef);
         };
     }, [model, tab.id, webviewRef]);
 
@@ -490,7 +535,9 @@ const BrowserWebView = memo(function BrowserWebView({ model, tab, isActive, prel
             try {
                 const id = wv.getWebContentsId?.();
                 if (id) electron.setWebviewFocus(id);
-            } catch { /* ignore */ }
+            } catch {
+                /* ignore */
+            }
         };
         const onBlur = () => {
             if (!mountedRef.current) return;
@@ -538,7 +585,9 @@ const BrowserWebView = memo(function BrowserWebView({ model, tab, isActive, prel
         try {
             const ua = getUserAgentString(tab.userAgentType);
             wv.setUserAgent?.(ua ?? "");
-        } catch { /* ignore */ }
+        } catch {
+            /* ignore */
+        }
     }, [tab.userAgentType, tab.domReady, tab.id, webviewRef]);
 
     useEffect(() => {
@@ -548,7 +597,9 @@ const BrowserWebView = memo(function BrowserWebView({ model, tab, isActive, prel
             if (wv.getZoomFactor?.() !== tab.zoomFactor) {
                 wv.setZoomFactor?.(tab.zoomFactor);
             }
-        } catch { /* ignore */ }
+        } catch {
+            /* ignore */
+        }
     }, [tab.zoomFactor, tab.domReady, tab.id, webviewRef]);
 
     useEffect(() => {
@@ -568,7 +619,9 @@ const BrowserWebView = memo(function BrowserWebView({ model, tab, isActive, prel
                 if (currentUrl === "about:blank" || currentUrl === "" || currentUrl !== tab.url) {
                     void wvNow.loadURL?.(tab.url);
                 }
-            } catch { /* ignore */ }
+            } catch {
+                /* ignore */
+            }
         }, 50);
         return () => {
             if (loadUrlTimerRef.current != null) {
@@ -589,7 +642,11 @@ const BrowserWebView = memo(function BrowserWebView({ model, tab, isActive, prel
                 focusTimerRef.current = null;
                 if (!mountedRef.current) return;
                 const wvNow = webviewRef.current;
-                try { wvNow?.focus?.(); } catch { /* ignore */ }
+                try {
+                    wvNow?.focus?.();
+                } catch {
+                    /* ignore */
+                }
             }, 0);
         }
     }, [webviewRef]);
@@ -607,20 +664,23 @@ const BrowserWebView = memo(function BrowserWebView({ model, tab, isActive, prel
     return (
         <div
             style={{ display: isActive ? "flex" : "none" }}
-            className="relative h-full w-full flex-col bg-black"
+            className="relative h-full w-full flex-col bg-background"
             onMouseDown={isActive ? handleWebviewAreaMouseDown : undefined}
         >
             <webview
                 ref={webviewRef}
-                className="h-full w-full"
-                src="about:blank"
+                className="h-full w-full bg-background"
+                src={tab.url || "about:blank"}
                 preload={preloadUrl}
                 // @ts-expect-error Chromium webviewTag expects string; React types expect boolean
                 allowpopups="true"
                 partition={tab.partition}
                 useragent={userAgent}
                 data-webcontentsid={webContentsId ?? undefined}
-                style={{ pointerEvents: isActive ? "auto" : "none" }}
+                style={{
+                    pointerEvents: isActive ? "auto" : "none",
+                    backgroundColor: "var(--color-background)",
+                }}
             />
             {tab.errorText && isActive && (
                 <div className="absolute inset-x-0 top-0 bg-rose-500/15 px-3 py-1.5 text-[11px] text-rose-300">
@@ -641,7 +701,7 @@ type BrowserTabStripProps = {
 function BrowserTabStrip({ model, tabs, activeTabId, onChromeEnter }: BrowserTabStripProps) {
     return (
         <div
-            className="flex h-8 shrink-0 items-stretch gap-0 overflow-hidden border-b border-[#2a2b2f] bg-[#111113] text-[11px]"
+            className="flex h-8 shrink-0 items-stretch gap-0 overflow-hidden border-b border-border bg-panel text-[11px]"
             aria-label="Browser tabs"
             onMouseEnter={onChromeEnter}
         >
@@ -652,10 +712,10 @@ function BrowserTabStrip({ model, tabs, activeTabId, onChromeEnter }: BrowserTab
                     <div
                         key={tab.id}
                         className={cn(
-                            "group/btab relative flex h-8 min-w-0 max-w-[12rem] flex-1 items-center border-r border-[#2a2b2f]",
+                            "group/btab relative flex h-8 min-w-0 max-w-[12rem] flex-1 items-center border-r border-border",
                             active
-                                ? "bg-[#18181b] text-[#f4f4f5]"
-                                : "bg-[#141416] text-[#a1a1aa] hover:bg-[#1a1b1e] hover:text-[#f4f4f5]"
+                                ? "bg-fg-overlay-2 text-foreground"
+                                : "bg-fg-overlay-1/40 text-muted-foreground hover:bg-fg-overlay-2 hover:text-foreground"
                         )}
                         style={{ containerType: "inline-size" }}
                     >
@@ -665,16 +725,27 @@ function BrowserTabStrip({ model, tabs, activeTabId, onChromeEnter }: BrowserTab
                             title={tab.url}
                         >
                             {tab.isLoading ? (
-                                <Icon name="loading-03" size={14} className="shrink-0 text-[10px] text-[#a1a1aa]" spin />
+                                <Icon
+                                    name="loading-03"
+                                    size={14}
+                                    className="shrink-0 text-[10px] text-muted-foreground"
+                                    spin
+                                />
                             ) : tab.mediaPlaying ? (
                                 <i
                                     className={cn(
                                         "shrink-0 text-[10px]",
-                                        tab.mediaMuted ? "volume-mute-01 text-rose-400" : "volume-high text-[#a1a1aa]"
+                                        tab.mediaMuted
+                                            ? "volume-mute-01 text-rose-400"
+                                            : "volume-high text-muted-foreground"
                                     )}
                                 />
                             ) : (
-                                <Icon name="globe-02" size={14} className="shrink-0 text-[10px] text-[#71717a]" />
+                                <Icon
+                                    name="globe-02"
+                                    size={14}
+                                    className="shrink-0 text-[10px] text-muted-foreground/70"
+                                />
                             )}
                             <span className="min-w-0 truncate">{displayTitle}</span>
                         </button>
@@ -683,7 +754,7 @@ function BrowserTabStrip({ model, tabs, activeTabId, onChromeEnter }: BrowserTab
                                 type="button"
                                 aria-label="Close tab"
                                 className={cn(
-                                    "pointer-events-none absolute right-1 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:pointer-events-auto focus:opacity-100",
+                                    "pointer-events-none absolute right-1 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground/70 transition-opacity hover:bg-fg-overlay-3 hover:text-foreground focus:pointer-events-auto focus:opacity-100",
                                     "opacity-0 group-hover/btab:pointer-events-auto group-hover/btab:opacity-100"
                                 )}
                                 onClick={(e) => {
@@ -700,8 +771,8 @@ function BrowserTabStrip({ model, tabs, activeTabId, onChromeEnter }: BrowserTab
             <button
                 type="button"
                 aria-label="New tab"
-                className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center text-[#a1a1aa] transition-colors hover:bg-[#2a2b2f] hover:text-[#f4f4f5]"
-                onClick={() => model.newTab("about:blank", true)}
+                className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                onClick={() => model.newTab(DefaultBrowserHomeUrl, true)}
                 title="New Tab"
             >
                 <Icon name="plus-sign" size={14} className="text-[11px]" />
@@ -729,7 +800,11 @@ export const RightBrowser = memo(function RightBrowser() {
             if (!activeId) return;
             const wv = model.getWebviewRef(activeId).current;
             if (!wv || !wv.isConnected) return;
-            try { wv?.blur?.(); } catch { /* ignore */ }
+            try {
+                wv?.blur?.();
+            } catch {
+                /* ignore */
+            }
         };
         const onMove = (e: MouseEvent) => {
             const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
@@ -800,17 +875,24 @@ export const RightBrowser = memo(function RightBrowser() {
     const blurActiveWebview = useCallback(() => {
         if (state.activeTabId) {
             const wv = model.getWebviewRef(state.activeTabId).current;
-            try { wv?.blur?.(); } catch { /* ignore */ }
+            try {
+                wv?.blur?.();
+            } catch {
+                /* ignore */
+            }
         }
     }, [model, state.activeTabId]);
 
-    const tabTitle = activeTab ? getTabDisplayTitle(activeTab) : "Browser";
-
     return (
-        <div className="flex h-full min-h-0 flex-col bg-[#111113]">
-            <BrowserTabStrip model={model} tabs={state.tabs} activeTabId={state.activeTabId} onChromeEnter={blurActiveWebview} />
+        <div className="flex h-full min-h-0 flex-col bg-panel">
+            <BrowserTabStrip
+                model={model}
+                tabs={state.tabs}
+                activeTabId={state.activeTabId}
+                onChromeEnter={blurActiveWebview}
+            />
             <div
-                className="flex h-9 shrink-0 items-center gap-1.5 border-b border-[#2a2b2f] bg-[#18181b] px-2"
+                className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border bg-fg-overlay-1/40 px-2"
                 onMouseEnter={blurActiveWebview}
             >
                 <ToolButton
@@ -826,7 +908,7 @@ export const RightBrowser = memo(function RightBrowser() {
                     title="Go Forward"
                 />
                 <ToolButton
-                    icon={activeTab?.isLoading ? "cancel-01" : "rotate-right-01"}
+                    icon={activeTab?.isLoading ? "cancel-01" : "refresh-01"}
                     onClick={() => handleActiveTabAction((id) => model.reload(id))}
                     title={activeTab?.isLoading ? "Stop" : "Reload"}
                 />
@@ -848,11 +930,11 @@ export const RightBrowser = memo(function RightBrowser() {
                         onKeyDown={handleUrlKeyDown}
                         onFocus={(e) => e.target.select()}
                         placeholder="Enter URL or search..."
-                        className="h-7 w-full rounded border border-[#3f3f46] bg-[#202124] px-2.5 text-[12px] text-[#e4e4e7] placeholder:text-[#71717a] focus:border-[#52525b] focus:outline-none"
+                        className="h-7 w-full rounded border border-border bg-fg-overlay-1/60 px-2.5 text-[12px] text-foreground placeholder:text-muted-foreground/70 focus:border-accent/60 focus:outline-none"
                     />
                     {activeTab?.isLoading && (
                         <div className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">
-                            <Icon name="loading-03" size={14} className="text-[11px] text-[#a1a1aa]" spin />
+                            <Icon name="loading-03" size={14} className="text-[11px] text-muted-foreground" spin />
                         </div>
                     )}
                 </div>
@@ -863,16 +945,12 @@ export const RightBrowser = memo(function RightBrowser() {
                         title={activeTab.mediaMuted ? "Unmute" : "Mute"}
                     />
                 )}
-                <ToolButton
-                    icon="arrow-up-right-01"
-                    onClick={openActiveUrlExternal}
-                    title="Open in External Browser"
-                />
+                <ToolButton icon="arrow-up-right-01" onClick={openActiveUrlExternal} title="Open in External Browser" />
                 <div className="relative">
                     <button
                         type="button"
                         aria-label="Browser menu"
-                        className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-[#a1a1aa] hover:bg-[#2a2b2f] hover:text-[#f4f4f5]"
+                        className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground hover:bg-fg-overlay-2 hover:text-foreground"
                         onClick={() => setMenuOpen((v) => !v)}
                     >
                         <Icon name="more-horizontal" size={14} className="text-xs" />
@@ -885,11 +963,13 @@ export const RightBrowser = memo(function RightBrowser() {
                                 className="fixed inset-0 z-40 cursor-default border-0 bg-transparent p-0"
                                 onClick={() => setMenuOpen(false)}
                             />
-                            <div className="absolute right-0 top-8 z-50 w-44 rounded-md border border-[#3f3f46] bg-[#1f2023] p-1 text-[12px] shadow-xl">
+                            <div className="absolute right-0 top-8 z-50 w-44 rounded-md border border-border bg-panel p-1 text-[12px] shadow-xl">
                                 <MenuItem
                                     onClick={() => {
                                         setMenuOpen(false);
-                                        handleActiveTabAction((id) => model.setZoom(id, (activeTab?.zoomFactor ?? 1) + 0.1));
+                                        handleActiveTabAction((id) =>
+                                            model.setZoom(id, (activeTab?.zoomFactor ?? 1) + 0.1)
+                                        );
                                     }}
                                     label="Zoom In"
                                     icon="search-add"
@@ -897,7 +977,9 @@ export const RightBrowser = memo(function RightBrowser() {
                                 <MenuItem
                                     onClick={() => {
                                         setMenuOpen(false);
-                                        handleActiveTabAction((id) => model.setZoom(id, (activeTab?.zoomFactor ?? 1) - 0.1));
+                                        handleActiveTabAction((id) =>
+                                            model.setZoom(id, (activeTab?.zoomFactor ?? 1) - 0.1)
+                                        );
                                     }}
                                     label="Zoom Out"
                                     icon="search-minus"
@@ -910,7 +992,7 @@ export const RightBrowser = memo(function RightBrowser() {
                                     label={`Reset Zoom (${Math.round((activeTab?.zoomFactor ?? 1) * 100)}%)`}
                                     icon="expand"
                                 />
-                                <div className="my-1 h-px bg-[#2a2b2f]" />
+                                <div className="my-1 h-px bg-border" />
                                 <MenuItem
                                     onClick={() => {
                                         setMenuOpen(false);
@@ -925,13 +1007,17 @@ export const RightBrowser = memo(function RightBrowser() {
                                     }
                                     icon="smart-phone-01"
                                 />
-                                <div className="my-1 h-px bg-[#2a2b2f]" />
+                                <div className="my-1 h-px bg-border" />
                                 <MenuItem
                                     onClick={() => {
                                         setMenuOpen(false);
                                         if (state.activeTabId) {
                                             const wv = model.getWebviewRef(state.activeTabId).current;
-                                            try { wv?.openDevTools?.(); } catch { /* ignore */ }
+                                            try {
+                                                wv?.openDevTools?.();
+                                            } catch {
+                                                /* ignore */
+                                            }
                                         }
                                     }}
                                     label="Open DevTools"

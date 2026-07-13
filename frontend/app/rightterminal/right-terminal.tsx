@@ -1,58 +1,110 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { ObjectService } from "@/app/store/services";
-import { useWaveEnv } from "@/app/waveenv/waveenv";
-import { TerminalView } from "@/app/term/render/terminal-view";
-import { cn, fireAndForget } from "@/util/util";
-import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/app/icon/Icon";
+import { globalStore } from "@/app/store/jotaiStore";
+import { ObjectService } from "@/app/store/services";
+import { TerminalView } from "@/app/term/render/terminal-view";
+import { getSettingsKeyAtom } from "@/store/global";
+import { fireAndForget } from "@/util/util";
+import { useAtomValue } from "jotai";
+import * as jotai from "jotai";
+import { useEffect } from "react";
 
 type RightTerminalProps = {
     cwd?: string;
 };
 
+export class RightTerminalModel {
+    private static instance: RightTerminalModel = null;
+
+    readonly blockIdAtom = jotai.atom("");
+    readonly errorAtom = jotai.atom("");
+
+    private blockId = "";
+    private cwd = "";
+    private generation = 0;
+    private startPromise: Promise<void> = null;
+
+    private constructor() {}
+
+    static getInstance(): RightTerminalModel {
+        if (!RightTerminalModel.instance) {
+            RightTerminalModel.instance = new RightTerminalModel();
+        }
+        return RightTerminalModel.instance;
+    }
+
+    static resetInstance(): void {
+        RightTerminalModel.instance?.dispose();
+        RightTerminalModel.instance = null;
+    }
+
+    ensureStarted(cwd?: string): void {
+        const nextCwd = cwd ?? "";
+        if (this.blockId && this.cwd === nextCwd) return;
+        if (this.startPromise && this.cwd === nextCwd) return;
+        if (this.blockId || this.startPromise) {
+            this.dispose();
+        }
+        this.cwd = nextCwd;
+        globalStore.set(this.errorAtom, "");
+
+        const generation = this.generation;
+        const promise = this.createBlock(nextCwd, generation);
+        this.startPromise = promise;
+        void promise.finally(() => {
+            if (this.startPromise !== promise) return;
+            this.startPromise = null;
+        });
+    }
+
+    dispose(): void {
+        this.generation++;
+        const blockId = this.blockId;
+        this.blockId = "";
+        this.cwd = "";
+        this.startPromise = null;
+        globalStore.set(this.blockIdAtom, "");
+        globalStore.set(this.errorAtom, "");
+        if (!blockId) return;
+        fireAndForget(() => ObjectService.DeleteBlock(blockId));
+    }
+
+    private async createBlock(cwd: string, generation: number): Promise<void> {
+        try {
+            const blockDef: BlockDef = {
+                meta: {
+                    controller: "shell",
+                    view: "term",
+                    ...(cwd ? { "cmd:cwd": cwd } : {}),
+                },
+            };
+            const rtOpts: RuntimeOpts = { termsize: { rows: 24, cols: 80 } };
+            const blockId = await ObjectService.CreateBlock(blockDef, rtOpts);
+            if (generation !== this.generation) {
+                fireAndForget(() => ObjectService.DeleteBlock(blockId));
+                return;
+            }
+            this.blockId = blockId;
+            globalStore.set(this.blockIdAtom, blockId);
+        } catch (e: any) {
+            if (generation !== this.generation) return;
+            globalStore.set(this.errorAtom, e?.message ?? String(e));
+        }
+    }
+}
+
 export function RightTerminal({ cwd }: RightTerminalProps) {
-    const env = useWaveEnv();
-    const [blockId, setBlockId] = useState<string | null>(null);
-    const [error, setError] = useState<string>("");
-    const blockIdRef = useRef<string | null>(null);
+    const model = RightTerminalModel.getInstance();
+    const blockId = useAtomValue(model.blockIdAtom);
+    const error = useAtomValue(model.errorAtom);
+    const configuredFontSize = useAtomValue(getSettingsKeyAtom("term:fontsize"));
+    const fontSize = typeof configuredFontSize === "number" ? configuredFontSize : 16;
 
     useEffect(() => {
-        let cancelled = false;
-        const create = async () => {
-            try {
-                const blockDef: BlockDef = {
-                    meta: {
-                        controller: "shell",
-                        view: "term",
-                        ...(cwd ? { "cmd:cwd": cwd } : {}),
-                    },
-                };
-                const rtOpts: RuntimeOpts = { termsize: { rows: 24, cols: 80 } };
-                const id = await ObjectService.CreateBlock(blockDef, rtOpts);
-                if (cancelled) {
-                    fireAndForget(() => ObjectService.DeleteBlock(id));
-                    return;
-                }
-                blockIdRef.current = id;
-                setBlockId(id);
-            } catch (e: any) {
-                if (!cancelled) {
-                    setError(e?.message ?? String(e));
-                }
-            }
-        };
-        void create();
-        return () => {
-            cancelled = true;
-            const id = blockIdRef.current;
-            if (id) {
-                fireAndForget(() => ObjectService.DeleteBlock(id));
-                blockIdRef.current = null;
-            }
-        };
-    }, [cwd]);
+        model.ensureStarted(cwd);
+    }, [cwd, model]);
 
     if (error) {
         return (
@@ -77,7 +129,7 @@ export function RightTerminal({ cwd }: RightTerminalProps) {
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-panel">
-            <TerminalView outerBlockId={blockId} fontSize={13} />
+            <TerminalView outerBlockId={blockId} fontSize={fontSize} />
         </div>
     );
 }

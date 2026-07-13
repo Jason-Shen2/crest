@@ -13,7 +13,7 @@ export type RightToolPanelState = {
     magnified: boolean;
 };
 
-export const RightToolIds: RightToolId[] = ["editor", "browser", "terminal", "codeReview", "sourceControl"];
+export const RightToolIds: RightToolId[] = ["browser", "terminal", "codeReview", "sourceControl"];
 export const DefaultRightToolPanelWidth = 400;
 export const MinRightToolPanelWidth = 320;
 export const MaxRightToolPanelWidthRatio = 0.7;
@@ -89,6 +89,9 @@ export function normalizeRightToolPanelState(value: unknown, windowWidth: number
 }
 
 export function openRightTool(state: RightToolPanelState, tool: RightToolId): RightToolPanelState {
+    if (!isRightToolId(tool)) {
+        return state;
+    }
     const openedTools = state.openedTools.includes(tool) ? state.openedTools : [...state.openedTools, tool];
     return {
         ...state,

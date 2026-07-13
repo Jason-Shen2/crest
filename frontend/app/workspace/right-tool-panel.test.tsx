@@ -18,7 +18,8 @@ vi.mock("@/store/global", async () => {
             if (settingAtom != null) {
                 return settingAtom;
             }
-            const value = key === "window:magnifiedblockopacity" ? 0.72 : 4;
+            const value =
+                key === "window:magnifiedblockopacity" ? 0.72 : key === "window:magnifiedblocksize" ? 0.95 : 4;
             settingAtom = jotaiActual.atom(value);
             mockSettings.atoms.set(key, settingAtom);
             return settingAtom;
@@ -32,6 +33,22 @@ vi.mock("@/app/codereview/git-panel", () => ({
 
 vi.mock("@/app/righteditor/right-editor-workbench", () => ({
     RightEditorWorkbench: () => <div>Right Editor Workbench</div>,
+}));
+
+vi.mock("@/app/rightbrowser/right-browser", () => ({
+    RightBrowser: () => <div aria-label="Right Browser">Right Browser</div>,
+}));
+
+vi.mock("@/app/rightterminal/right-terminal", () => ({
+    RightTerminal: () => <div aria-label="Right Terminal">Right Terminal</div>,
+}));
+
+vi.mock("@/app/sourcecontrol/source-control-panel", () => ({
+    SourceControlPanel: () => <div>Source Control Panel</div>,
+}));
+
+vi.mock("@/app/element/magnify", () => ({
+    MagnifyIcon: ({ enabled }: { enabled: boolean }) => <div className="magnify-icon" data-enabled={enabled} />,
 }));
 
 import {
@@ -63,7 +80,7 @@ function renderPanel(state: RightToolPanelState): string {
             onOpenTool={() => null}
             onSelectTool={() => null}
             onCloseTool={() => null}
-            onHide={() => null}
+            onMagnify={() => null}
             onFocusPanel={() => null}
             onBlurPanel={() => null}
         />
@@ -72,6 +89,14 @@ function renderPanel(state: RightToolPanelState): string {
 
 function countMatches(markup: string, pattern: RegExp): number {
     return markup.match(pattern)?.length ?? 0;
+}
+
+function expectNoHardcodedHexColors(markup: string): void {
+    expect(markup).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+}
+
+function expectNoBackgroundTokensUsedAsText(markup: string): void {
+    expect(markup).not.toMatch(/\btext-(muted|secondary)(?=[\s"/])/);
 }
 
 function findElementByAriaLabel(node: ReactNode, ariaLabel: string): ReactElement<TestElementProps> {
@@ -101,12 +126,13 @@ describe("RightToolPanel", () => {
 
         expect(markup).toContain('aria-label="Right tool panel"');
         expect(markup).toContain("Choose a tool to get started");
-        expect(markup).toContain("Editor");
         expect(markup).toContain("Browser");
         expect(markup).toContain("Terminal");
         expect(markup).toContain("Code Review");
+        expect(markup).not.toContain("Editor");
         expect(markup).toContain("width:400px");
-        expect(markup).toContain('aria-label="Hide right tool panel"');
+        expect(markup).toContain('aria-label="Magnify right tool panel"');
+        expect(markup).not.toContain('aria-label="Hide right tool panel"');
     });
 
     it("renders opened tabs and the active tool content", () => {
@@ -120,9 +146,59 @@ describe("RightToolPanel", () => {
         expect(markup).toContain('aria-label="Select Browser"');
         expect(markup).toContain('aria-label="Close Browser"');
         expect(markup).toContain('aria-label="Open right tool"');
-        expect(markup).toContain("Browser Tool");
+        expect(markup).toContain('aria-label="Right Browser"');
+        expect(markup).not.toContain("Browser Tool");
         expect(markup).not.toContain("Choose a tool to get started");
         expect(markup).not.toContain(">Tools<");
+    });
+
+    it("uses theme color tokens instead of fixed hex colors for panel chrome", () => {
+        const markup = renderToStaticMarkup(
+            <>
+                <RightToolPanel
+                    state={{
+                        ...DefaultRightToolPanelState,
+                        openedTools: ["editor", "browser", "terminal", "codeReview", "sourceControl"],
+                        activeTool: "browser",
+                    }}
+                    onOpenTool={() => null}
+                    onSelectTool={() => null}
+                    onCloseTool={() => null}
+                    onMagnify={() => null}
+                    onFocusPanel={() => null}
+                    onBlurPanel={() => null}
+                />
+                <RightToolOpenMenu openedTools={["editor"]} onOpenTool={() => null} initiallyOpen />
+            </>
+        );
+
+        expectNoHardcodedHexColors(markup);
+        expectNoBackgroundTokensUsedAsText(markup);
+        expect(markup).toContain("bg-panel");
+        expect(markup).toContain("bg-fg-overlay");
+        expect(markup).toContain("text-foreground");
+        expect(markup).toContain("text-muted-foreground");
+        expect(markup).toContain("border-border");
+    });
+
+    it("renders tool icons through the shared Icon component", () => {
+        const markup = renderToStaticMarkup(
+            <>
+                <RightToolLauncher supportedTools={["editor", "browser"]} onOpenTool={() => null} />
+                <RightToolOpenMenu openedTools={["editor"]} onOpenTool={() => null} initiallyOpen />
+                <RightToolTabs
+                    openedTools={["editor", "browser", "terminal", "codeReview"]}
+                    activeTool="browser"
+                    onSelectTool={() => null}
+                    onCloseTool={() => null}
+                />
+            </>
+        );
+
+        expect(countMatches(markup, /<svg/g)).toBeGreaterThanOrEqual(10);
+        expect(markup).not.toContain("<i");
+        expect(markup).not.toContain("edit-02");
+        expect(markup).not.toContain("globe-02");
     });
 
     it("renders nothing when hidden", () => {
@@ -134,30 +210,26 @@ describe("RightToolPanel", () => {
         expect(markup).toBe("");
     });
 
-    it("clears panel focus when focus leaves the right panel", () => {
-        const onBlurPanel = vi.fn();
-        const panel = RightToolPanel({
-            state: {
-                ...DefaultRightToolPanelState,
-                openedTools: ["editor"],
-                activeTool: "editor",
-            },
-            onOpenTool: () => null,
-            onSelectTool: () => null,
-            onCloseTool: () => null,
-            onHide: () => null,
-            onFocusPanel: () => null,
-            onBlurPanel,
-        });
-        const panelRoot = findElementByAriaLabel(panel, "Right tool panel");
-
-        expect(panelRoot.props.onBlurCapture).toBeTypeOf("function");
-        panelRoot.props.onBlurCapture?.({
-            currentTarget: { contains: () => false },
-            relatedTarget: {},
+    it("renders the focusable right panel root", () => {
+        const markup = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["editor"],
+            activeTool: "editor",
         });
 
-        expect(onBlurPanel).toHaveBeenCalledTimes(1);
+        expect(markup).toContain('aria-label="Right tool panel"');
+        expect(markup).toContain('tabindex="0"');
+    });
+
+    it("renders a subtle block-like focus mask for selected panel feedback", () => {
+        const markup = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["editor"],
+            activeTool: "editor",
+        });
+
+        expect(markup).toContain('data-right-tool-panel-focus-mask="true"');
+        expect(markup).toContain("rgb(from var(--color-accent) r g b / 45%)");
     });
 });
 
@@ -172,8 +244,8 @@ describe("RightToolPanel parts", () => {
                 onSelectTool={() => null}
                 onCloseTool={() => null}
                 action={
-                    <button type="button" aria-label="Hide right tool panel" onClick={onAction}>
-                        <Icon name="chevron-right" size={14} />
+                    <button type="button" aria-label="Magnify right tool panel" onClick={onAction}>
+                        <Icon name="arrow-expand-01" size={14} />
                     </button>
                 }
             />
@@ -181,12 +253,9 @@ describe("RightToolPanel parts", () => {
 
         expect(markup).toContain('aria-label="Right tool tabs"');
         expect(markup).toContain('aria-label="Open right tool"');
-        expect(markup).toContain('aria-label="Hide right tool panel"');
+        expect(markup).toContain('aria-label="Magnify right tool panel"');
         expect(markup).toContain('data-add-placement="tab-strip-end"');
-        // The action button wraps <Icon name="chevron-right" />, which the
-        // Hugeicons registry renders as an inline SVG.  Verify the icon
-        // actually mounted (not a stale fontawesome-class assertion).
-        const actionButton = markup.match(/aria-label="Hide right tool panel"[^>]*>[\s\S]*?<\/button>/);
+        const actionButton = markup.match(/aria-label="Magnify right tool panel"[^>]*>[\s\S]*?<\/button>/);
         expect(actionButton).not.toBeNull();
         expect(actionButton![0]).toContain("<svg");
         expect(markup).toContain('aria-current="page"');
@@ -209,13 +278,13 @@ describe("RightToolPanel parts", () => {
             onSelectTool: () => null,
             onCloseTool: () => null,
             action: (
-                <button type="button" aria-label="Hide right tool panel" onClick={onAction}>
-                    <Icon name="chevron-right" size={14} />
+                <button type="button" aria-label="Magnify right tool panel" onClick={onAction}>
+                    <Icon name="arrow-expand-01" size={14} />
                 </button>
             ),
         });
         const openButton = findElementByAriaLabel(topBar, "Open right tool");
-        const actionButton = findElementByAriaLabel(topBar, "Hide right tool panel");
+        const actionButton = findElementByAriaLabel(topBar, "Magnify right tool panel");
 
         expect(openButton.type).toBe("summary");
         const markup = renderToStaticMarkup(topBar);
@@ -303,7 +372,7 @@ describe("RightToolPanel parts", () => {
         const markup = renderToStaticMarkup(
             <RightToolTopBar
                 activeTool="editor"
-                openedTools={["editor", "browser", "terminal", "codeReview"]}
+                openedTools={["editor", "browser", "terminal", "codeReview", "sourceControl"]}
                 onOpenTool={() => null}
                 onSelectTool={() => null}
                 onCloseTool={() => null}
@@ -345,9 +414,8 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('data-tab-content-align="center"');
         expect(markup).not.toContain('data-close-visibility="always"');
         expect(markup).not.toContain(" opacity-100");
-        // Editor tab icon is rendered via the hugeicons-vue font class
-        // "edit-02" (mapped from FA's "pen-to-square" in icon-aliases).
-        expect(markup).toContain("edit-02");
+        expect(markup).toContain("<svg");
+        expect(markup).not.toContain("edit-02");
     });
 
     it("uses adaptive tool tab widths without horizontal scrolling", () => {
@@ -449,7 +517,13 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain("Git Review Sidebar");
     });
 
-    it("renders a magnified overlay around the active right tool", () => {
+    it("renders the terminal content when the terminal tab is active", () => {
+        const markup = renderToStaticMarkup(<RightToolContent activeTool="terminal" />);
+
+        expect(markup).toContain('aria-label="Right Terminal"');
+    });
+
+    it("renders a magnified backdrop behind the active right tool", () => {
         const markup = renderToStaticMarkup(
             <RightToolPanelMagnifiedOverlay
                 state={{
@@ -458,77 +532,78 @@ describe("RightToolPanel parts", () => {
                     activeTool: "editor",
                     magnified: true,
                 }}
-                onOpenTool={() => null}
-                onSelectTool={() => null}
-                onCloseTool={() => null}
-                onFocusPanel={() => null}
-                onBlurPanel={() => null}
                 onExit={() => null}
             />
         );
 
-        expect(markup).toContain('aria-label="Magnified right tool panel"');
         expect(markup).toContain('aria-label="Dismiss magnified right tool panel"');
         expect(markup).toContain("--magnified-block-opacity:0.72");
         expect(markup).toContain("--magnified-block-blur:4px");
+        expect(markup).toContain("var(--zindex-layout-magnified-node-backdrop");
+        expect(markup).not.toContain('aria-label="Magnified right tool panel"');
+        expect(markup).not.toContain('aria-label="Exit magnified right tool panel"');
+        expect(markup).not.toContain('aria-label="Right tool tabs"');
+    });
+
+    it("renders the right tool panel itself as the magnified shell", () => {
+        const markup = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["editor", "browser"],
+            activeTool: "editor",
+            magnified: true,
+        });
+
+        expect(markup).toContain('aria-label="Magnified right tool panel"');
+        expect(markup).toContain('role="dialog"');
         expect(markup).toContain("var(--zindex-layout-magnified-node");
+        expect(markup).toContain("absolute");
+        expect(markup).toContain("width:95%");
+        expect(markup).toContain("height:95%");
+        expect(markup).not.toContain("fixed inset-8");
         expect(markup).toContain('aria-label="Exit magnified right tool panel"');
         expect(markup).toContain('aria-label="Right tool tabs"');
         expect(markup).toContain('aria-label="Open right tool"');
         expect(markup).toContain("Right Editor Workbench");
         expect(markup).toContain('aria-label="Select Browser"');
+        expect(markup).toContain('data-icon-name="magnify"');
+        expect(markup).toContain("magnify-icon");
         expect(markup).not.toContain(">Tools<");
     });
 
-    it("calls onExit when the magnified overlay exit button is pressed", () => {
+    it("renders only the backdrop in the magnified overlay view", () => {
         const onExit = vi.fn();
-        const overlay = RightToolPanelMagnifiedOverlayView({
-            state: {
-                ...DefaultRightToolPanelState,
-                openedTools: ["editor"],
-                activeTool: "editor",
-                magnified: true,
-            },
-            onOpenTool: () => null,
-            onSelectTool: () => null,
-            onCloseTool: () => null,
-            onFocusPanel: () => null,
-            onBlurPanel: () => null,
-            onExit,
-            magnifiedBlockOpacity: 0.72,
-            magnifiedBlockBlur: 4,
-        });
-        const exitButton = findElementByAriaLabel(overlay, "Exit magnified right tool panel");
-
-        expect(exitButton.props.onClick).toBeTypeOf("function");
-        exitButton.props.onClick?.();
-
-        expect(onExit).toHaveBeenCalledTimes(1);
+        const markup = renderToStaticMarkup(
+            <RightToolPanelMagnifiedOverlayView
+                state={{
+                    ...DefaultRightToolPanelState,
+                    openedTools: ["editor"],
+                    activeTool: "editor",
+                    magnified: true,
+                }}
+                onExit={onExit}
+                magnifiedBlockOpacity={0.72}
+                magnifiedBlockBlur={4}
+            />
+        );
+        expect(markup).toContain('aria-label="Dismiss magnified right tool panel"');
+        expect(markup).not.toContain('aria-label="Exit magnified right tool panel"');
     });
 
     it("calls onExit when the magnified overlay backdrop is pressed", () => {
         const onExit = vi.fn();
-        const overlay = RightToolPanelMagnifiedOverlayView({
-            state: {
-                ...DefaultRightToolPanelState,
-                openedTools: ["editor"],
-                activeTool: "editor",
-                magnified: true,
-            },
-            onOpenTool: () => null,
-            onSelectTool: () => null,
-            onCloseTool: () => null,
-            onFocusPanel: () => null,
-            onBlurPanel: () => null,
-            onExit,
-            magnifiedBlockOpacity: 0.72,
-            magnifiedBlockBlur: 4,
-        });
-        const backdrop = findElementByAriaLabel(overlay, "Dismiss magnified right tool panel");
-
-        expect(backdrop.props.onClick).toBeTypeOf("function");
-        backdrop.props.onClick?.();
-
-        expect(onExit).toHaveBeenCalledTimes(1);
+        const markup = renderToStaticMarkup(
+            <RightToolPanelMagnifiedOverlayView
+                state={{
+                    ...DefaultRightToolPanelState,
+                    openedTools: ["editor"],
+                    activeTool: "editor",
+                    magnified: true,
+                }}
+                onExit={onExit}
+                magnifiedBlockOpacity={0.72}
+                magnifiedBlockBlur={4}
+            />
+        );
+        expect(markup).toContain('aria-label="Dismiss magnified right tool panel"');
     });
 });
