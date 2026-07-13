@@ -59,7 +59,7 @@ function statusAccent(code: string): string {
         case "R":
             return "bg-sky-500/85";
         default:
-            return "bg-[#71717a]/40";
+            return "bg-muted-foreground/40";
     }
 }
 
@@ -91,7 +91,7 @@ const Tooltip = memo(({ label, children, side = "bottom", className }: { label: 
         <div className={cn("relative inline-flex", className)} onMouseEnter={showTooltip} onMouseLeave={hideTooltip}>
             {children}
             {show && (
-                <div className={cn("pointer-events-none absolute z-50 whitespace-nowrap rounded border border-[#34343a]/70 bg-[#09090b] px-2 py-1 text-[10.5px] text-[#f4f4f5] shadow-lg shadow-black/30", posClass)}>
+                <div className={cn("pointer-events-none absolute z-50 whitespace-nowrap rounded border border-border bg-panel px-2 py-1 text-[10.5px] text-foreground shadow-lg shadow-black/30", posClass)}>
                     {label}
                 </div>
             )}
@@ -101,7 +101,7 @@ const Tooltip = memo(({ label, children, side = "bottom", className }: { label: 
 Tooltip.displayName = "Tooltip";
 
 function Spinner({ size = 12 }: { size?: number }) {
-    return <Icon name="loading-03" size={size} spin className="text-[#a1a1aa]" />;
+    return <Icon name="loading-03" size={size} spin className="text-muted-foreground" />;
 }
 
 function IconActionButton({
@@ -125,8 +125,8 @@ function IconActionButton({
                 disabled={disabled}
                 onClick={onClick}
                 className={cn(
-                    "flex size-6 cursor-pointer items-center justify-center rounded-md p-0 text-[#a1a1aa] transition-colors hover:bg-[#27272a] hover:text-[#f4f4f5]",
-                    "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[#a1a1aa]"
+                    "flex size-6 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground",
+                    "disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                 )}
             >
                 {children}
@@ -148,9 +148,9 @@ function Checkbox({ checked, disabled, onChange }: { checked: boolean | "indeter
             className={cn(
                 "flex size-[14px] shrink-0 cursor-pointer items-center justify-center rounded-[3px] border transition-all duration-100",
                 isChecked || isIndeterminate
-                    ? "border-[#92724F] bg-[#92724F] text-[#1a1410]"
-                    : "border-[#52525b]/70 bg-transparent hover:border-[#a1a1aa]",
-                "disabled:cursor-not-allowed disabled:opacity-40"
+                    ? "border-accent bg-accent text-on-accent"
+                    : "border-border bg-transparent hover:border-muted-foreground",
+                "disabled:cursor-default disabled:opacity-40"
             )}
         >
             {isChecked ? (
@@ -235,15 +235,15 @@ function BranchDropdown({
                 type="button"
                 disabled={checkingOut || actionBusy}
                 onClick={() => setOpen(!open)}
-                className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md bg-[#f4f4f5]/[0.06] px-2 py-1 text-[11.5px] font-medium leading-none text-[#f4f4f5] transition-colors hover:bg-[#f4f4f5]/[0.10] disabled:cursor-default disabled:opacity-70"
+                className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md bg-fg-overlay-1/60 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-fg-overlay-2 disabled:cursor-default disabled:opacity-70"
             >
-                <Icon name="folder-git-two" size={12} strokeWidth={1.9} className="shrink-0 text-[#a1a1aa]" />
+                <Icon name="folder-git-two" size={12} strokeWidth={1.9} className="shrink-0 text-muted-foreground" />
                 <span className="max-w-[8rem] truncate">{repoLabel}</span>
             </button>
             {open && (
-                <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-[#34343a] bg-[#1f2023] p-1 shadow-2xl">
+                <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-border bg-panel p-1 shadow-2xl">
                     {loading ? (
-                        <div className="flex items-center gap-2 px-3 py-3 text-[11px] text-[#a1a1aa]">
+                        <div className="flex items-center gap-2 px-3 py-3 text-[11px] text-muted-foreground">
                             <Spinner size={12} />
                             Loading branches
                         </div>
@@ -251,7 +251,7 @@ function BranchDropdown({
                         <>
                             {localBranches.length > 0 && (
                                 <>
-                                    <div className="px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-[#a1a1aa]/85">
+                                    <div className="px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/85">
                                         Local Branches
                                     </div>
                                     {localBranches.map((b) => (
@@ -259,7 +259,7 @@ function BranchDropdown({
                                             key={b.name}
                                             type="button"
                                             onClick={() => void handleCheckout(b.name)}
-                                            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] text-[#f4f4f5] transition-colors hover:bg-[#27272a]"
+                                            className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-[12px] text-foreground transition-colors hover:bg-fg-overlay-2"
                                         >
                                             {b.ishead ? (
                                                 <Icon name="tick-02" size={14} strokeWidth={1.8} className="shrink-0" />
@@ -273,18 +273,18 @@ function BranchDropdown({
                             )}
                             {worktrees.length > 0 && (
                                 <>
-                                    {localBranches.length > 0 && <div className="my-1 h-px bg-[#34343a]" />}
-                                    <div className="px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-[#a1a1aa]/85">
+                                    {localBranches.length > 0 && <div className="my-1 h-px bg-border" />}
+                                    <div className="px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/85">
                                         Worktrees
                                     </div>
                                     {worktrees.map((b) => (
                                         <div
                                             key={b.worktreepath ?? b.name}
-                                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-[12px] text-[#a1a1aa]/70"
+                                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-[12px] text-muted-foreground/70"
                                         >
-                                            <Icon name="folder-01" size={14} strokeWidth={1.5} className="shrink-0 text-[#a1a1aa]" />
+                                            <Icon name="folder-01" size={14} strokeWidth={1.5} className="shrink-0 text-muted-foreground" />
                                             <div className="flex min-w-0 flex-col">
-                                                <span className="truncate text-[#f4f4f5]">{b.name}</span>
+                                                <span className="truncate text-foreground">{b.name}</span>
                                                 {b.worktreepath && (
                                                     <span className="truncate text-[10px]">{b.worktreepath}</span>
                                                 )}
@@ -294,7 +294,7 @@ function BranchDropdown({
                                 </>
                             )}
                             {branches.length === 0 && (
-                                <div className="px-3 py-3 text-[11px] text-[#a1a1aa]">No branches found.</div>
+                                <div className="px-3 py-3 text-[11px] text-muted-foreground">No branches found.</div>
                             )}
                         </>
                     )}
@@ -307,9 +307,9 @@ function BranchDropdown({
 function PanelCenter({ title, body, action }: { title: string; body?: string; action?: ReactNode }) {
     return (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-            <div className="text-sm font-medium text-[#f4f4f5]">{title}</div>
+            <div className="text-sm font-medium text-foreground">{title}</div>
             {body ? (
-                <div className="max-w-64 text-[11px] leading-relaxed text-[#a1a1aa]">{body}</div>
+                <div className="max-w-64 text-[11px] leading-relaxed text-muted-foreground">{body}</div>
             ) : null}
             {action}
         </div>
@@ -319,12 +319,12 @@ function PanelCenter({ title, body, action }: { title: string; body?: string; ac
 function CleanTreeHint({ repoLabel }: { repoLabel: string }) {
     return (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 px-4 text-center">
-            <div className="flex size-8 items-center justify-center rounded-full border border-[#3f3f46]/55 text-[#a1a1aa]">
+            <div className="flex size-8 items-center justify-center rounded-full border border-border text-muted-foreground">
                 <Icon name="checkmark-circle-01" size={16} strokeWidth={1.6} />
             </div>
-            <div className="text-[12px] font-medium text-[#f4f4f5]">Working tree clean</div>
-            <div className="text-[10.5px] leading-snug text-[#a1a1aa]">
-                on <span className="font-mono text-[#f4f4f5]/80">{repoLabel}</span>
+            <div className="text-[12px] font-medium text-foreground">Working tree clean</div>
+            <div className="text-[10.5px] leading-snug text-muted-foreground">
+                on <span className="font-mono text-foreground/80">{repoLabel}</span>
             </div>
         </div>
     );
@@ -332,10 +332,10 @@ function CleanTreeHint({ repoLabel }: { repoLabel: string }) {
 
 function DivergedBanner() {
     return (
-        <div className="mx-2 mt-1 flex h-7 items-center gap-1.5 rounded-md border border-[#3f3f46]/60 bg-[#f4f4f5]/[0.04] px-2 text-[10.5px] leading-none text-[#a1a1aa]">
+        <div className="mx-2 mt-1 flex h-7 items-center gap-1.5 rounded-md border border-border bg-fg-overlay-1/40 px-2 text-[10.5px] leading-none text-muted-foreground">
             <Icon name="alert-02" size={11} strokeWidth={1.9} className="shrink-0" />
             <span className="min-w-0 flex-1 truncate">
-                <span className="font-medium text-[#f4f4f5]/85">Diverged from upstream</span>
+                <span className="font-medium text-foreground/85">Diverged from upstream</span>
                 <span className="ml-1 opacity-75"> — resolve in terminal</span>
             </span>
         </div>
@@ -355,11 +355,11 @@ function ListHeader({
 }) {
     return (
         <div className="flex h-7 items-center gap-2 px-3">
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-[#a1a1aa]/85">Changes</span>
-            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-[#3f3f46]/60 px-1 text-[9.5px] font-semibold tabular-nums text-[#a1a1aa]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">Changes</span>
+            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-border px-1 text-[9.5px] font-semibold tabular-nums text-muted-foreground">
                 {count}
             </span>
-            <label className="ml-auto flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-[10.5px] font-medium text-[#a1a1aa] hover:text-[#f4f4f5]">
+            <label className="ml-auto flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-[10.5px] font-medium text-muted-foreground hover:text-foreground">
                 <span>All</span>
                 <Checkbox
                     aria-label="Stage all changes"
@@ -411,10 +411,10 @@ const EntryRow = memo(function EntryRow({
             className={cn(
                 "group relative flex h-[30px] items-center gap-2 rounded-md pl-2 pr-2 transition-colors duration-100",
                 focused
-                    ? "bg-[#f4f4f5]/[0.10]"
+                    ? "bg-fg-overlay-2"
                     : isSelected
-                      ? "bg-[#f4f4f5]/[0.08] text-[#f4f4f5]"
-                      : "hover:bg-[#f4f4f5]/[0.05]"
+                      ? "bg-fg-overlay-2/80 text-foreground"
+                      : "hover:bg-fg-overlay-1"
             )}
         >
             <span
@@ -439,15 +439,15 @@ const EntryRow = memo(function EntryRow({
                         className={cn(
                             "truncate text-[12px] leading-tight",
                             isSelected || focused
-                                ? "font-semibold text-[#f4f4f5]"
-                                : "font-medium text-[#f4f4f5]/95",
+                                ? "font-semibold text-foreground"
+                                : "font-medium text-foreground/95",
                             pathLabel ? "max-w-[58%] shrink-0" : "min-w-0 flex-1"
                         )}
                     >
                         {fileName}
                     </span>
                     {pathLabel ? (
-                        <span className="min-w-0 flex-1 truncate text-[10.5px] leading-tight text-[#a1a1aa]/75">
+                        <span className="min-w-0 flex-1 truncate text-[10.5px] leading-tight text-muted-foreground/75">
                             {pathLabel}
                         </span>
                     ) : null}
@@ -520,17 +520,17 @@ function CommitFeedback({ feedback }: { feedback: { tone: "error" | "success"; m
                 "pointer-events-none absolute inset-x-3 top-[calc(100%-0.25rem)] z-20 flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] leading-snug shadow-lg shadow-black/15 backdrop-blur transition-all duration-200",
                 isVisible ? "translate-y-0 opacity-100" : "-translate-y-1 opacity-0",
                 isError
-                    ? "border-rose-500/30 bg-[#1f2023]/95 text-rose-400"
-                    : "border-[#3f3f46]/70 bg-[#1f2023]/95 text-[#a1a1aa]"
+                    ? "border-rose-500/30 bg-panel/95 text-rose-400"
+                    : "border-border bg-panel/95 text-muted-foreground"
             )}
         >
             <span
                 className={cn(
                     "size-1.5 shrink-0 rounded-full",
-                    isError ? "bg-rose-500" : "bg-[#f4f4f5]/70"
+                    isError ? "bg-rose-500" : "bg-foreground/70"
                 )}
             />
-            <span className={cn("min-w-0 flex-1 truncate", isError ? "text-rose-400" : "text-[#a1a1aa]")}>
+            <span className={cn("min-w-0 flex-1 truncate", isError ? "text-rose-400" : "text-muted-foreground")}>
                 {visibleFeedback.message}
             </span>
         </div>
@@ -549,9 +549,9 @@ function DiscardDialog({
     if (!pending) return null;
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
-            <div className="w-[90%] max-w-[400px] rounded-lg border border-[#34343a] bg-[#1f2023] p-5 shadow-2xl">
-                <h3 className="text-[14px] font-semibold text-[#f4f4f5]">Discard changes?</h3>
-                <p className="mt-2 text-[12px] leading-relaxed text-[#a1a1aa]">
+            <div className="w-[90%] max-w-[400px] rounded-lg border border-border bg-panel p-5 shadow-2xl">
+                <h3 className="text-[14px] font-semibold text-foreground">Discard changes?</h3>
+                <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
                     {pending.scope === "all"
                         ? `This will discard ${pending.label} and cannot be undone.`
                         : `Discard changes in "${pending.label}"? This cannot be undone.`}
@@ -560,14 +560,14 @@ function DiscardDialog({
                     <button
                         type="button"
                         onClick={onCancel}
-                        className="cursor-pointer rounded px-3 py-1.5 text-[12px] text-[#a1a1aa] transition-colors hover:bg-[#27272a] hover:text-[#f4f4f5]"
+                        className="cursor-pointer rounded px-3 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
                     >
                         Cancel
                     </button>
                     <button
                         type="button"
                         onClick={onConfirm}
-                        className="cursor-pointer rounded bg-rose-600/90 px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-rose-600"
+                        className="cursor-pointer rounded bg-rose-600/90 px-3 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-rose-600"
                     >
                         Discard
                     </button>
@@ -822,26 +822,26 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
     const pullBusy = actionBusy === "pull";
 
     return (
-        <div className="flex h-full min-w-0 flex-col bg-[#1f2023]/80 backdrop-blur [contain:layout_style]">
+        <div className="flex h-full min-w-0 flex-col bg-transparent [contain:layout_style]">
             {graphOpen && repo ? (
                 <div className="flex h-full min-h-0 w-full min-w-0 flex-1">
 					<CommitGraphPanel repoRoot={repo.reporoot} remoteUrl={repo.remoteurl} onBack={() => setView("changes")} />
                 </div>
             ) : (
             <>
-            <header className="flex shrink-0 items-center justify-between gap-2 border-b border-[#3f3f46]/50 px-3 pb-2.5 pt-3">
+            <header className="flex shrink-0 items-center justify-between gap-2 px-3 pb-2.5 pt-3">
                 <div className="flex min-w-0 items-center gap-1.5">
                     <BranchDropdown repoLabel={repoLabel} onRefresh={handleRefresh} actionBusy={!!actionBusy} />
                     {status && (status.ahead > 0 || status.behind > 0) ? (
-                        <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-semibold tabular-nums leading-none text-[#a1a1aa]">
+                        <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-semibold tabular-nums leading-none text-muted-foreground">
                             {status.ahead > 0 ? (
-                                <span className="inline-flex items-center gap-0.5 rounded-md border border-[#3f3f46]/60 px-1 py-0.5">
+                                <span className="inline-flex items-center gap-0.5 rounded-md border border-border px-1 py-0.5">
                                     <Icon name="arrow-up-01" size={9} strokeWidth={2.2} />
                                     {status.ahead}
                                 </span>
                             ) : null}
                             {status.behind > 0 ? (
-                                <span className="inline-flex items-center gap-0.5 rounded-md border border-[#3f3f46]/60 px-1 py-0.5">
+                                <span className="inline-flex items-center gap-0.5 rounded-md border border-border px-1 py-0.5">
                                     <Icon name="arrow-down-01" size={9} strokeWidth={2.2} />
                                     {status.behind}
                                 </span>
@@ -849,7 +849,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                         </div>
                     ) : null}
                     {status?.isdetached ? (
-                        <span className="rounded bg-[#27272a]/55 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[#a1a1aa]">
+                        <span className="rounded bg-fg-overlay-1/55 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
                             detached
                         </span>
                     ) : null}
@@ -899,7 +899,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
             <button
                 type="button"
 				onClick={() => setView("graph")}
-                className="group flex shrink-0 cursor-pointer items-center gap-2 border-b border-[#3f3f46]/40 px-3 py-2 text-left text-[#a1a1aa] transition-colors hover:bg-[#f4f4f5]/[0.04] hover:text-[#f4f4f5]"
+                className="group flex shrink-0 cursor-pointer items-center gap-2 px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-fg-overlay-1 hover:text-foreground"
             >
                 <Icon name="git-branch-01" size={13} strokeWidth={1.85} className="shrink-0" />
                 <span className="flex-1 text-[12px] font-medium">Commit Graph</span>
@@ -920,7 +920,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                         <button
                             type="button"
                             onClick={() => void model.refresh()}
-                            className="mt-2 inline-flex h-7 cursor-pointer items-center justify-center rounded-full border border-transparent bg-[#92724F] px-3.5 text-[11px] font-semibold text-[#1a1410] transition-colors hover:bg-[#a0805c]"
+                            className="mt-2 inline-flex h-7 cursor-pointer items-center justify-center rounded-full border border-transparent bg-accent/80 px-3.5 text-[11px] font-semibold text-primary transition-colors hover:bg-accent"
                         >
                             Retry
                         </button>
@@ -930,12 +930,12 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
 
             {panelState === "ready" && status ? (
                 <>
-                    <div className="relative shrink-0 space-y-2 border-b border-[#3f3f46]/40 bg-gradient-to-b from-[#1f2023]/65 to-[#1f2023]/30 px-2.5 pb-2.5 pt-2.5">
+                    <div className="relative shrink-0 space-y-2 bg-gradient-to-b from-panel/65 to-transparent px-2.5 pb-2.5 pt-2.5">
                         <div
                             className={cn(
-                                "relative rounded-lg border bg-[#1f2023]/95 shadow-sm transition-colors",
-                                commitMessage.length > 0 ? "border-[#3f3f46]/70" : "border-[#3f3f46]/45",
-                                "focus-within:border-[#92724F]/45 focus-within:shadow-md focus-within:shadow-[#92724F]/5"
+                                "relative rounded-lg border bg-panel/95 shadow-sm transition-colors",
+                                commitMessage.length > 0 ? "border-border" : "border-border/70",
+                                "focus-within:border-accent/45 focus-within:shadow-md focus-within:shadow-accent/5"
                             )}
                         >
                             <textarea
@@ -945,10 +945,10 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                                 placeholder="Commit message"
                                 rows={3}
                                 className={cn(
-                                    "min-h-[72px] w-full resize-none rounded-lg border-0 bg-transparent px-3 pb-7 pt-2.5 text-[12.5px] leading-snug text-[#f4f4f5] shadow-none outline-none placeholder:text-[#a1a1aa]/65"
+                                    "min-h-[72px] w-full resize-none rounded-lg border-0 bg-transparent px-3 pb-7 pt-2.5 text-[12.5px] leading-snug text-foreground shadow-none outline-none placeholder:text-muted-foreground/65"
                                 )}
                             />
-                            <div className="pointer-events-none absolute inset-x-3 bottom-1.5 flex items-center justify-between gap-2 p-1 text-[10px] tabular-nums text-[#a1a1aa]/55">
+                            <div className="pointer-events-none absolute inset-x-3 bottom-1.5 flex items-center justify-between gap-2 p-1 text-[10px] tabular-nums text-muted-foreground/55">
                                 {commitMessage.length > 0 ? (
                                     <span>Ch: {commitMessage.length}</span>
                                 ) : (
@@ -963,9 +963,9 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                                         type="button"
                                         disabled={stagedCount === 0 || !!actionBusy}
                                         className={cn(
-                                            "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-[#a1a1aa]/65 transition-colors",
-                                            "hover:bg-[#f4f4f5]/[0.06] hover:text-[#f4f4f5]",
-                                            "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-[#a1a1aa]/65"
+                                            "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/65 transition-colors",
+                                            "hover:bg-fg-overlay-1 hover:text-foreground",
+                                            "disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/65"
                                         )}
                                     >
                                         <Icon name="ai-content-generator-02" size={14} strokeWidth={1.75} />
@@ -974,23 +974,23 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                             </div>
                         </div>
 
-                        <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-[#a1a1aa]">
+                        <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-muted-foreground">
                             <span
                                 className={cn(
                                     "size-1.5 shrink-0 rounded-full transition-colors",
                                     canCommit
-                                        ? "bg-[#f4f4f5]/80"
+                                        ? "bg-foreground/80"
                                         : stagedCount > 0
-                                          ? "bg-[#a1a1aa]/60"
-                                          : "bg-[#a1a1aa]/30"
+                                          ? "bg-muted-foreground/60"
+                                          : "bg-muted-foreground/30"
                                 )}
                             />
-                            <span className="truncate font-medium text-[#f4f4f5]/85">
+                            <span className="truncate font-medium text-foreground/85">
                                 {stagedCount === 0
                                     ? "Nothing staged"
                                     : `${stagedCount} ${stagedCount === 1 ? "file" : "files"} staged`}
                             </span>
-                            <span className="ml-auto shrink-0 truncate text-[#a1a1aa]/65">{pushStatusLabel}</span>
+                            <span className="ml-auto shrink-0 truncate text-muted-foreground/65">{pushStatusLabel}</span>
                         </div>
 
                         <div className="grid w-full grid-cols-2 gap-1.5">
@@ -999,7 +999,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                                     type="button"
                                     disabled={!canCommit}
                                     onClick={() => void model.commit(commitMessage)}
-                                    className="inline-flex h-7 w-full cursor-pointer items-center justify-center rounded-full border border-transparent bg-[#92724F] px-2.5 text-[11.5px] font-semibold tracking-tight text-[#1a1410] shadow-sm transition-colors hover:bg-[#a0805c] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
+                                    className="inline-flex h-7 w-full cursor-pointer items-center justify-center rounded-full border border-transparent bg-accent/80 px-2.5 text-[11.5px] font-semibold tracking-tight text-primary shadow-sm transition-colors hover:bg-accent disabled:pointer-events-none disabled:cursor-default disabled:opacity-50 disabled:shadow-none"
                                 >
                                     {actionBusy === "commit" ? "Committing..." : "Commit"}
                                 </button>
@@ -1009,7 +1009,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                                     type="button"
                                     disabled={!canPush || !!actionBusy}
                                     onClick={() => void model.push()}
-                                    className="inline-flex h-7 w-full cursor-pointer items-center justify-center rounded-full border border-transparent bg-[#2d2e31] px-2.5 text-[11.5px] font-medium text-[#f4f4f5] transition-colors hover:bg-[#38393d] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
+                                    className="inline-flex h-7 w-full cursor-pointer items-center justify-center rounded-full border border-transparent bg-fg-overlay-2 px-2.5 text-[11.5px] font-medium text-foreground transition-colors hover:bg-fg-overlay-3 disabled:pointer-events-none disabled:cursor-default disabled:opacity-50"
                                 >
                                     {actionBusy === "push" ? "Pushing..." : "Push"}
                                 </button>
@@ -1028,7 +1028,7 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
                             aria-label="Changed files"
                             aria-activedescendant={focusedRowKey ? `scm-row-${focusedRowKey}` : undefined}
                             onKeyDown={handlePanelKeyDown}
-                            className="relative min-h-0 flex-1 outline-none focus-visible:ring-1 focus-visible:ring-[#92724F]/30"
+                            className="relative min-h-0 flex-1 outline-none focus-visible:ring-1 focus-visible:ring-accent/30"
                         >
                             <div
                                 ref={scrollRef}
