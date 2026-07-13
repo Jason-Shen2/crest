@@ -73,6 +73,13 @@ describe("CommitDetail", () => {
         expect(source).not.toContain("fixed inset-0 z-40");
         expect(source).not.toContain('aria-label="Close commit detail"');
     });
+
+    it("uses a readable near-opaque background for the commit detail popover", () => {
+        const source = readFileSync(new URL("./commit-graph-panel.tsx", import.meta.url), "utf8");
+
+        expect(source).toContain("bg-background/95");
+        expect(source).not.toContain('backgroundColor: "var(--color-panel)"');
+    });
 });
 
 describe("CommitRow", () => {

@@ -1,10 +1,10 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { isValidElement, ReactElement } from "react";
+import * as jotai from "jotai";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
-import { CodeReviewPanelMagnifyButton, GitReviewSidebar } from "./git-panel";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { GitReviewSidebar } from "./git-panel";
 
 const mockGitPanel = vi.hoisted(() => {
     const state = {
@@ -18,9 +18,7 @@ vi.mock("react", async () => {
     const reactActual = await vi.importActual<typeof import("react")>("react");
     return {
         ...reactActual,
-        useEffect: (effect: () => void | (() => void)) => {
-            effect();
-        },
+        useEffect: () => undefined,
     };
 });
 
@@ -52,6 +50,12 @@ vi.mock("@/store/global", () => ({
 
 vi.mock("@/app/element/ui-icon", () => ({
     UIcon: ({ name }: { name: string }) => <span>{name}</span>,
+}));
+
+vi.mock("@/app/fileexplorer/file-icon", () => ({
+    getFileIcon:
+        () =>
+        ({ className }: { className?: string }) => <span className={className}>file-icon</span>,
 }));
 
 vi.mock("@/util/util", () => ({
@@ -121,22 +125,108 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
 });
 
 describe("GitReviewSidebar right panel integration", () => {
-    it("uses the right tool panel magnify state and action for its maximize button", () => {
+    beforeEach(() => {
+        const store = jotai.getDefaultStore();
+        store.set(mockGitPanel.model.filesAtom, []);
+        store.set(mockGitPanel.model.fileStatsAtom, new Map());
+        store.set(mockGitPanel.model.selectedFileAtom, null);
+        store.set(mockGitPanel.layoutModel.rightToolPanelAtom, {
+            visible: true,
+            width: 400,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+            toolState: {},
+            focused: true,
+            magnified: false,
+        });
+        vi.clearAllMocks();
+    });
+
+    it("does not render duplicate maximize or close buttons inside the code review header", () => {
         const markup = renderToStaticMarkup(<GitReviewSidebar />);
 
-        expect(markup).toContain('aria-label="Maximize panel"');
+        expect(markup).not.toContain('aria-label="Maximize panel"');
+        expect(markup).not.toContain('aria-label="Collapse panel"');
+        expect(markup).not.toContain('aria-label="Close"');
         expect(markup).not.toContain("codeReviewWideAtom");
     });
 
-    it("toggles right panel magnify from the code review maximize button", () => {
-        const onToggle = vi.fn();
-        const button = CodeReviewPanelMagnifyButton({ magnified: false, onToggle });
+    it("keeps the file sidebar hidden before the code review tab is magnified", () => {
+        const store = jotai.getDefaultStore();
+        store.set(mockGitPanel.model.filesAtom, [
+            { path: "frontend/app/codereview/git-panel.tsx", status: "M" },
+            { path: "frontend/app/codereview/git-model.ts", status: "M" },
+        ]);
+        store.set(
+            mockGitPanel.model.fileStatsAtom,
+            new Map([
+                ["frontend/app/codereview/git-panel.tsx", { add: 12, del: 4 }],
+                ["frontend/app/codereview/git-model.ts", { add: 3, del: 1 }],
+            ])
+        );
 
-        expect(isValidElement(button)).toBe(true);
-        expect((button as ReactElement<{ title: string; onClick: () => void }>).props.title).toBe("Maximize panel");
+        const markup = renderToStaticMarkup(<GitReviewSidebar />);
 
-        (button as ReactElement<{ onClick: () => void }>).props.onClick();
+        expect(markup).not.toContain('data-code-review-file-sidebar="true"');
+        expect(markup).not.toContain("Hide file list");
+        expect(markup).not.toContain("Show file list");
+    });
 
-        expect(onToggle).toHaveBeenCalledTimes(1);
+    it("keeps branch info left and secondary controls split across the header", () => {
+        const store = jotai.getDefaultStore();
+        store.set(mockGitPanel.model.filesAtom, [
+            { path: "frontend/app/codereview/git-panel.tsx", status: "M" },
+            { path: "frontend/app/codereview/git-model.ts", status: "M" },
+        ]);
+
+        const markup = renderToStaticMarkup(<GitReviewSidebar />);
+        const mainRowIndex = markup.indexOf('data-code-review-header-main-row="true"');
+        const branchIndex = markup.indexOf('data-code-review-branch="true"');
+        const metaIndex = markup.indexOf('data-code-review-branch-meta="true"');
+        const controlRowIndex = markup.indexOf('data-code-review-header-control-row="true"');
+        const fileListButtonIndex = markup.indexOf('data-code-review-file-list-button="true"');
+        const modeIndex = markup.indexOf("Uncommitted changes");
+        const actionsIndex = markup.indexOf('data-code-review-header-actions="true"');
+
+        expect(mainRowIndex).toBeGreaterThanOrEqual(0);
+        expect(branchIndex).toBeGreaterThan(mainRowIndex);
+        expect(metaIndex).toBeGreaterThan(branchIndex);
+        expect(controlRowIndex).toBeGreaterThan(metaIndex);
+        expect(fileListButtonIndex).toBeGreaterThan(controlRowIndex);
+        expect(modeIndex).toBeGreaterThan(fileListButtonIndex);
+        expect(actionsIndex).toBeGreaterThan(modeIndex);
+        expect(markup).toContain("Open file list");
+    });
+
+    it("shows a simplified file sidebar only when the code review tab is magnified", () => {
+        const store = jotai.getDefaultStore();
+        store.set(mockGitPanel.model.filesAtom, [
+            { path: "frontend/app/codereview/git-panel.tsx", status: "M" },
+            { path: "frontend/app/codereview/git-model.ts", status: "M" },
+        ]);
+        store.set(
+            mockGitPanel.model.fileStatsAtom,
+            new Map([
+                ["frontend/app/codereview/git-panel.tsx", { add: 12, del: 4 }],
+                ["frontend/app/codereview/git-model.ts", { add: 3, del: 1 }],
+            ])
+        );
+        store.set(mockGitPanel.layoutModel.rightToolPanelAtom, {
+            visible: true,
+            width: 400,
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
+            toolState: {},
+            focused: true,
+            magnified: true,
+        });
+
+        const markup = renderToStaticMarkup(<GitReviewSidebar />);
+
+        expect(markup).toContain('data-code-review-file-sidebar="true"');
+        expect(markup).toContain("Changed files");
+        expect(markup).toContain("git-panel.tsx");
+        expect(markup).toContain("git-model.ts");
+        expect(markup).toContain('data-code-review-file-row="true"');
     });
 });

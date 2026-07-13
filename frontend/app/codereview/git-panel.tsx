@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { UIcon } from "@/app/element/ui-icon";
+import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { ContextMenuModel } from "@/app/store/contextmenu";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
@@ -108,17 +109,6 @@ const HeaderIconButton = memo(
     )
 );
 HeaderIconButton.displayName = "HeaderIconButton";
-
-export function CodeReviewPanelMagnifyButton({ magnified, onToggle }: { magnified: boolean; onToggle: () => void }) {
-    return (
-        <HeaderIconButton
-            icon={magnified ? "minimize-01" : "maximize-01"}
-            title={magnified ? "Collapse panel" : "Maximize panel"}
-            active={magnified}
-            onClick={onToggle}
-        />
-    );
-}
 
 // ---- Status badge label (modified / added / deleted / renamed) ----
 function statusLabel(status: string): { label: string; color: string } | null {
@@ -449,7 +439,7 @@ const FileCard = memo(({ file, expanded, selected, loading, stats, diff, comment
         <div
             data-filepath={file.path}
             className={cn(
-                "shrink-0 overflow-hidden border-b border-fg-overlay-1 transition-colors",
+                "shrink-0 overflow-hidden transition-colors",
                 selected && "bg-surface-1"
             )}
         >
@@ -665,8 +655,20 @@ function FileSidebar({
     }, [dragging, onResize]);
 
     return (
-        <div className="relative flex shrink-0 flex-col border-r border-fg-overlay-2" style={{ width }}>
-            <div className="flex-1 overflow-y-auto py-1">
+        <div
+            className="relative flex shrink-0 flex-col border-r border-border bg-panel/60"
+            data-code-review-file-sidebar="true"
+            style={{ width }}
+        >
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                    Changed files
+                </span>
+                <span className="ml-auto rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                    {files.length}
+                </span>
+            </div>
+            <div className="flex-1 overflow-y-auto px-2 py-2">
                 {files.map((file) => {
                     const stats = fileStats.get(file.path);
                     const status = statusLabel(file.status);
@@ -674,37 +676,42 @@ function FileSidebar({
                     const name = parts.pop() ?? file.path;
                     const dir = parts.join("/");
                     const isSelected = selected === file.path;
+                    const FileIconComp = getFileIcon(name, false, false);
                     return (
                         <div
                             key={file.path}
+                            data-code-review-file-row="true"
                             onClick={() => onSelect(file.path)}
                             className={cn(
-                                "group mx-1 flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-[12px] transition-colors",
+                                "group mb-1 grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border px-2 py-1.5 text-[12px] transition-colors",
                                 isSelected
-                                    ? "bg-fg-overlay-2 text-foreground"
-                                    : "text-secondary hover:bg-fg-overlay-1 hover:text-foreground"
+                                    ? "border-border bg-fg-overlay-2 text-foreground"
+                                    : "border-transparent text-muted-foreground hover:border-border/70 hover:bg-fg-overlay-1 hover:text-foreground"
                             )}
                             title={file.path}
                         >
-                            <span className="flex min-w-0 flex-1 flex-col">
-                                <span className="truncate font-medium">{name}</span>
+                            <FileIconComp size={14} className="shrink-0" />
+                            <span className="flex min-w-0 flex-col gap-0.5">
+                                <span className="truncate font-medium leading-tight text-foreground">{name}</span>
                                 {dir && (
-                                    <span className="truncate text-[10px] text-secondary/70" dir="rtl">
-                                        <bdi>{dir}/</bdi>
+                                    <span className="truncate text-[10px] leading-tight text-muted-foreground" title={dir}>
+                                        {dir}/
                                     </span>
                                 )}
                             </span>
-                            <StatBadge add={stats?.add ?? 0} del={stats?.del ?? 0} muted={!isSelected} />
-                            {status && (
-                                <span
-                                    className={cn(
-                                        "shrink-0 text-[9px] font-medium uppercase tracking-wide",
-                                        status.color
-                                    )}
-                                >
-                                    {status.label[0]}
-                                </span>
-                            )}
+                            <span className="flex shrink-0 items-center gap-1">
+                                <StatBadge add={stats?.add ?? 0} del={stats?.del ?? 0} muted={!isSelected} />
+                                {status && (
+                                    <span
+                                        className={cn(
+                                            "shrink-0 rounded border border-border px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+                                            status.color
+                                        )}
+                                    >
+                                        {status.label[0]}
+                                    </span>
+                                )}
+                            </span>
                         </div>
                     );
                 })}
@@ -796,7 +803,6 @@ export const GitReviewSidebar = memo(() => {
     const error = useAtomValue(model.errorAtom);
     const diffMode = useAtomValue(model.diffModeAtom);
     const selectedFile = useAtomValue(model.selectedFileAtom);
-    const sidebarCollapsed = useAtomValue(model.fileSidebarCollapsedAtom);
     const comments = useAtomValue(model.commentsAtom);
 
     useEffect(() => {
@@ -808,6 +814,7 @@ export const GitReviewSidebar = memo(() => {
 
     const layoutModel = WorkspaceLayoutModel.getInstance();
     const rightToolPanelState = useAtomValue(layoutModel.rightToolPanelAtom);
+    const fileSidebarExpanded = rightToolPanelState.magnified;
 
     // File sidebar width — local to the panel (per-tab persistence is a polish item).
     const [sidebarWidth, setSidebarWidth] = useState(FileSidebar_DefaultWidth);
@@ -831,16 +838,25 @@ export const GitReviewSidebar = memo(() => {
     const fileCount = files.length;
 
     return (
-        <div ref={containerRef} className="flex h-full w-full flex-col bg-panel border-l border-fg-overlay-2">
+        <div ref={containerRef} className="flex h-full w-full flex-col bg-transparent">
             {/* ---- Header ---- */}
-            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-fg-overlay-2 px-3 py-2">
-                <div className="flex min-w-0 items-center gap-2">
+            <div className="flex shrink-0 flex-col gap-2 px-3 py-2">
+                <div
+                    className="flex min-w-0 items-center gap-2"
+                    data-code-review-header-main-row="true"
+                >
+                    <div className="flex min-w-0 items-center gap-2" data-code-review-branch="true">
+                        {isRepo && (
+                            <>
+                                <UIcon name="git-branch-02" size={14} className="shrink-0 text-muted-foreground" />
+                                <span className="truncate text-[14px] font-semibold text-foreground" title={branch}>
+                                    {branch || "—"}
+                                </span>
+                            </>
+                        )}
+                    </div>
                     {isRepo && (
-                        <>
-                            <UIcon name="git-branch-02" size={14} className="shrink-0 text-secondary" />
-                            <span className="truncate text-[14px] font-semibold text-foreground" title={branch}>
-                                {branch || "—"}
-                            </span>
+                        <div className="ml-auto flex shrink-0 items-center gap-2" data-code-review-branch-meta="true">
                             <StatBadge
                                 add={totalAdd}
                                 del={totalDel}
@@ -849,54 +865,58 @@ export const GitReviewSidebar = memo(() => {
                             <span className="shrink-0 text-[11px] tabular-nums text-secondary/70">
                                 {fileCount} file{fileCount === 1 ? "" : "s"}
                             </span>
-                        </>
+                        </div>
                     )}
                 </div>
-                <div className="ml-auto flex shrink-0 items-center gap-1">
+
+                <div
+                    className="flex min-w-0 items-center gap-2"
+                    data-code-review-header-control-row="true"
+                >
+                    {isRepo && fileCount > 0 && (
+                        <span data-code-review-file-list-button="true">
+                            <HeaderIconButton
+                                icon={fileSidebarExpanded ? "left-panel-close" : "left-panel-open"}
+                                title="Open file list"
+                                active={fileSidebarExpanded}
+                                onClick={() => {
+                                    if (!rightToolPanelState.magnified) {
+                                        layoutModel.setRightToolPanelMagnified(true);
+                                    }
+                                }}
+                            />
+                        </span>
+                    )}
                     {isRepo && <DiffModeSelector mode={diffMode} mainBranch={mainBranch} />}
-                    {isRepo && (
-                        <HeaderIconButton
-                            icon={sidebarCollapsed ? "left-panel-open" : "left-panel-close"}
-                            title={sidebarCollapsed ? "Show file list" : "Hide file list"}
-                            onClick={() => model.toggleFileSidebar()}
-                        />
-                    )}
-                    {isRepo && fileCount > 0 && (
-                        <HeaderIconButton
-                            icon="reverse-left"
-                            title="Discard all uncommitted changes"
-                            danger
-                            onClick={() => {
-                                const n = files.length;
-                                const ok = window.confirm(
-                                    `Discard all uncommitted changes across ${n} file${n === 1 ? "" : "s"}?\n\nThis cannot be undone.`
-                                );
-                                if (!ok) return;
-                                fireAndForget(() => model.discardFiles(files.map((f) => f.path)));
-                            }}
-                        />
-                    )}
-                    {isRepo && fileCount > 0 && (
-                        <HeaderIconButton
-                            icon="paperclip"
-                            title="Add all diffs as context"
-                            onClick={() => {
-                                const all = files
-                                    .map((f) => formatDiffForClipboard(f.path, diffs.get(f.path)))
-                                    .join("\n\n");
-                                navigator.clipboard.writeText(all);
-                            }}
-                        />
-                    )}
-                    <CodeReviewPanelMagnifyButton
-                        magnified={rightToolPanelState.magnified}
-                        onToggle={() => layoutModel.setRightToolPanelMagnified(!rightToolPanelState.magnified)}
-                    />
-                    <HeaderIconButton
-                        icon="x-close"
-                        title="Close"
-                        onClick={() => layoutModel.setCodeReviewVisible(false)}
-                    />
+                    <div className="ml-auto flex shrink-0 items-center gap-1" data-code-review-header-actions="true">
+                        {isRepo && fileCount > 0 && (
+                            <HeaderIconButton
+                                icon="reverse-left"
+                                title="Discard all uncommitted changes"
+                                danger
+                                onClick={() => {
+                                    const n = files.length;
+                                    const ok = window.confirm(
+                                        `Discard all uncommitted changes across ${n} file${n === 1 ? "" : "s"}?\n\nThis cannot be undone.`
+                                    );
+                                    if (!ok) return;
+                                    fireAndForget(() => model.discardFiles(files.map((f) => f.path)));
+                                }}
+                            />
+                        )}
+                        {isRepo && fileCount > 0 && (
+                            <HeaderIconButton
+                                icon="paperclip"
+                                title="Add all diffs as context"
+                                onClick={() => {
+                                    const all = files
+                                        .map((f) => formatDiffForClipboard(f.path, diffs.get(f.path)))
+                                        .join("\n\n");
+                                    navigator.clipboard.writeText(all);
+                                }}
+                            />
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -928,7 +948,7 @@ export const GitReviewSidebar = memo(() => {
                 </div>
             ) : (
                 <div className="flex min-h-0 flex-1">
-                    {!sidebarCollapsed && (
+                    {fileSidebarExpanded && (
                         <FileSidebar
                             files={files}
                             selected={selectedFile}
