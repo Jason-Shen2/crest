@@ -43,14 +43,7 @@ const CLIAgentNames = new Set<CLIAgent>(["claude", "codex", "gemini", "pi", "coc
 
 export function terminalCaptureActive(mode: TermMode | null | undefined): boolean {
     if (!mode) return false;
-    return (
-        mode.appCursor ||
-        mode.appKeypad ||
-        mode.focusReport ||
-        mode.alternateScroll ||
-        mouseReportingActive(mode) ||
-        mode.kittyKeyboardFlags !== 0
-    );
+    return mouseReportingActive(mode);
 }
 
 export function detectCLIAgent(command: string | null | undefined): CLIAgent | null {

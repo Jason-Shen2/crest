@@ -307,38 +307,21 @@ export type SessionId = string;
 
 // ---------- Agent blocks ----------
 
-// BlockKind partitions the block timeline into two kinds: shell blocks
-// (the existing PTY-driven flow) and agent blocks (LLM exchanges).
-// Mirrors warp's `Block::AgentResponse` enum variant.  Engine code paths
-// for shell vs agent are kept strictly separate — the ANSI parser never
-// writes into an agent block, and renderers dispatch on `kind`.
+// BlockKind partitions the block timeline into shell blocks and legacy agent
+// marker blocks. Current agent conversations render from SQLite-backed session
+// state in the agent pane; the engine keeps the marker kind only so older rows
+// are harmless when encountered.
 export type BlockKind = "shell" | "agent";
 
-// AgentBlockStatus tracks the lifecycle of a single agent exchange.
-// Mirrors warp's `AIAgentOutput.status`:
-//   streaming — useChat is actively producing tokens / tool calls
-//   done      — the turn finished normally
-//   error     — the request errored; the body carries the error message
+// AgentBlockStatus is retained for legacy marker blocks.
 export type AgentBlockStatus = "streaming" | "done" | "error";
 
-// AgentBlockRef — thin timeline ref that ties a Block (kind === "agent")
-// to a main-owned AgentRun. The actual message data (user prompt,
-// assistant content, tool calls / results, status, error) lives in
-// PaneAgentSession and is mirrored through usePiChat by runId.
-//
-// This replaces the old fat AgentPayload (which carried assistantText
-// / status / errorMessage etc. and was mutated via Block.appendAgentText
-// / setAgentStatus from the ai-sdk useChat bridge). After the pi
-// migration, all of that state lives in the agent session owner; the
-// engine just remembers WHICH run this timeline item represents and
-// WHEN it was appended.
-//
-// See docs/agent-runtime-architecture.md §5 — agent state on the
-// React side, not in the engine.
+// AgentBlockRef is retained for legacy marker blocks. The current agent pane
+// does not look up conversation state through this reference.
 export interface AgentBlockRef {
-    /** Stable id minted by Electron main for the owned AgentRun. */
+    /** Legacy marker id. */
     runId: string;
-    /** Persisted JSONL session path that owns the run's messages. */
+    /** Persisted session path associated with the legacy marker. */
     sessionPath?: string;
     /** ms since epoch — UI metadata only ("5s ago" etc.). */
     createdAt: number;

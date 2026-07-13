@@ -48,13 +48,16 @@ describe("terminal state types", () => {
 });
 
 describe("terminalCaptureActive", () => {
-    it("treats terminal ownership modes as capture signals", () => {
-        expect(terminalCaptureActive(mode({ appCursor: true }))).toBe(true);
-        expect(terminalCaptureActive(mode({ appKeypad: true }))).toBe(true);
-        expect(terminalCaptureActive(mode({ focusReport: true }))).toBe(true);
-        expect(terminalCaptureActive(mode({ alternateScroll: true }))).toBe(true);
+    it("does not treat keyboard encoding modes as full-screen capture signals", () => {
+        expect(terminalCaptureActive(mode({ appCursor: true }))).toBe(false);
+        expect(terminalCaptureActive(mode({ appKeypad: true }))).toBe(false);
+        expect(terminalCaptureActive(mode({ focusReport: true }))).toBe(false);
+        expect(terminalCaptureActive(mode({ alternateScroll: true }))).toBe(false);
+        expect(terminalCaptureActive(mode({ kittyKeyboardFlags: 1 }))).toBe(false);
+    });
+
+    it("treats mouse reporting modes as capture signals", () => {
         expect(terminalCaptureActive(mode({ mouseClick: true }))).toBe(true);
-        expect(terminalCaptureActive(mode({ kittyKeyboardFlags: 1 }))).toBe(true);
     });
 
     it("does not treat bracketed paste alone as terminal capture", () => {

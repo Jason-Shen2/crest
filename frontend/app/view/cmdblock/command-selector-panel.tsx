@@ -205,7 +205,11 @@ export const CommandSelectorSearchBar = memo(function CommandSelectorSearchBar({
 }: CommandSelectorSearchBarProps) {
     return (
         <div
-            className={cn("flex cursor-text items-center gap-2 border-b border-fg-overlay-2/80 px-3", py)}
+            data-command-selector-search="true"
+            className={cn(
+                "mx-3 my-2 flex cursor-text items-center gap-2 rounded-xl border border-white/[0.055] bg-black/[0.12] px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]",
+                py
+            )}
             onClick={() => {
                 if (document.activeElement !== inputRef?.current) {
                     inputRef?.current?.focus();
@@ -232,7 +236,7 @@ export const CommandSelectorSearchBar = memo(function CommandSelectorSearchBar({
             />
             {showShortcutHint && !value && (
                 <kbd
-                    className="inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1 font-sans text-secondary/60"
+                    className="inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-[3px] bg-white/[0.055] px-1 font-sans text-secondary/60"
                     style={{ fontSize: "10px" }}
                 >
                     {shortcutKey}
@@ -273,7 +277,7 @@ export const CommandSelectorHintFooter = memo(function CommandSelectorHintFooter
 }: CommandSelectorHintFooterProps) {
     return (
         <div
-            className="flex items-center gap-x-3 border-t border-fg-overlay-2 bg-fg-overlay-1/60 px-3 py-1.5 font-sans text-secondary/65"
+            className="flex items-center gap-x-3 border-t border-white/[0.06] px-3 py-2 font-sans text-secondary/65"
             style={{ fontSize: `${COMMAND_SELECTOR_FOOTER_FONT_PX}px` }}
         >
             {hints.map((hint, i) => (

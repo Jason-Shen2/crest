@@ -14,6 +14,7 @@ import {
     resolveSubmitMode,
     shouldClearInputAfterSubmit,
     shouldFocusCmdBlockEditor,
+    shouldOpenSlashCommandMenu,
     shouldShowAgentShellShortcutHint,
 } from "./cmdblock-input";
 
@@ -231,17 +232,37 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
     });
 });
 
+describe("shouldOpenSlashCommandMenu", () => {
+    it("does not open agent slash commands in terminal mode", () => {
+        expect(shouldOpenSlashCommandMenu("terminal", "/")).toBe(false);
+        expect(shouldOpenSlashCommandMenu("terminal", "/tree")).toBe(false);
+    });
+
+    it("opens slash commands in agent-capable modes", () => {
+        expect(shouldOpenSlashCommandMenu("agent", "/")).toBe(true);
+        expect(shouldOpenSlashCommandMenu("auto", "/model")).toBe(true);
+        expect(shouldOpenSlashCommandMenu("agent", "echo /tmp")).toBe(false);
+    });
+});
+
 describe("findSlashCommandAction", () => {
-    it("routes exact backend slash commands through the agent regardless of input mode", () => {
+    it("routes exact backend slash commands through the agent in agent mode", () => {
         expect(
             findSlashCommandAction(
                 [
                     { name: "/tree", action: "submitAgentCommand" },
                     { name: "/model", action: "openModelPicker" },
                 ],
-                "/tree "
+                "/tree ",
+                "agent"
             )
         ).toBe("submitAgentCommand");
+    });
+
+    it("does not route slash commands away from the shell in terminal mode", () => {
+        expect(
+            findSlashCommandAction([{ name: "/tree", action: "submitAgentCommand" }], "/tree ", "terminal")
+        ).toBeUndefined();
     });
 
     it("does not treat slash commands with arguments as exact immediate actions", () => {

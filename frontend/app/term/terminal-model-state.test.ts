@@ -75,10 +75,19 @@ describe("TerminalModel terminal state", () => {
         expect(model.getActiveSurfaceState(2_000)).toEqual({ kind: "alt-screen", blockId: "b1" });
     });
 
-    it("returns terminal-capture for running capture modes", () => {
+    it("does not use app cursor mode alone as a full-screen capture signal", () => {
         const model = loadedModel();
         addBlock(model, runningBlock("b1", 1_000));
         model.setModeForTest({ appCursor: true });
+
+        expect(model.getTerminalInputState(1_010)).toEqual({ kind: "input-editor" });
+        expect(model.getActiveSurfaceState(1_010)).toBe(null);
+    });
+
+    it("returns terminal-capture for running mouse capture modes", () => {
+        const model = loadedModel();
+        addBlock(model, runningBlock("b1", 1_000));
+        model.setModeForTest({ mouseClick: true });
 
         expect(model.getTerminalInputState(1_010)).toEqual({ kind: "terminal-capture", blockId: "b1" });
         expect(model.getActiveSurfaceState(1_010)).toEqual({ kind: "terminal-capture", blockId: "b1" });
@@ -93,10 +102,7 @@ describe("TerminalModel terminal state", () => {
             kind: "long-running-command",
             blockId: "b1",
         });
-        expect(model.getActiveSurfaceState(1_000 + LONG_RUNNING_COMMAND_DURATION_MS + 1)).toEqual({
-            kind: "long-running-pty",
-            blockId: "b1",
-        });
+        expect(model.getActiveSurfaceState(1_000 + LONG_RUNNING_COMMAND_DURATION_MS + 1)).toBe(null);
         expect(model.getCursorRenderState("b1", 1_000 + LONG_RUNNING_COMMAND_DURATION_MS + 1)).toEqual({
             kind: "terminal",
         });

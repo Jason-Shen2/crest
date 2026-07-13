@@ -15,11 +15,11 @@
 // pull current state via getter methods.  Cheaper than maintaining a
 // dozen fine-grained atoms while we iterate on shape.
 
-import { atoms } from "@/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { atoms } from "@/store/global";
 import { base64ToArray, stringToBase64 } from "@/util/util";
 import * as jotai from "jotai";
 
@@ -65,14 +65,15 @@ const DefaultCols = 120;
 const AutoCollapseRowThreshold = 200;
 
 type TimelineStorageRow = CmdBlock;
-type AgentTimelineStorageRow = CmdBlock & {
-    agentuserentryid?: string;
-    agentsessionpath?: string;
-};
 
 function createdAtNsToMs(createdAtNs?: number): number {
     if (createdAtNs == null) return Date.now();
     return Math.floor(createdAtNs / 1_000_000);
+}
+
+function isTransientResizeControllerError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    return message.includes("no shell input chan") || message.includes("no controller found for block");
 }
 
 // ScrollPosition — enumerates the three modes used for auto-scroll vs.
@@ -220,7 +221,6 @@ export class TerminalModel {
     // from the term file.  Prevents double-fetch when row events fire
     // multiple times during reconnect.
     private historicalOutputLoaded = new Set<BlockId>();
-
     // Subscriptions cleanup
     private unsubs: (() => void)[] = [];
     private disposed = false;
@@ -252,14 +252,16 @@ export class TerminalModel {
     // Window title last set via OSC 0 / 1 / 2.  Exposed so the tab strip
     // can show it on hover; unused by the block list itself.
     readonly titleAtom = jotai.atom("") as jotai.PrimitiveAtom<string>;
-    // Last notification text from OSC 9 / 777.  Renderers can pop a toast
-    // by subscribing; we keep one slot rather than a queue since the
-    // typical pattern is "tell me my command finished".
+    // Local user-facing messages from the agent pane. OSC notifications are
+    // routed through cmdblock:notify so terminal output does not create a
+    // second, block-local toast.
     readonly notificationAtom = jotai.atom("") as jotai.PrimitiveAtom<string>;
     // Dynamic palette overrides driven by OSC 4 / 10 / 11 / 12.  Apps that
     // theme their output at runtime (btop, custom prompt colors, terminal
     // games) write here; the renderer reads via PaletteContext.
-    readonly paletteOverridesAtom = jotai.atom<Record<number, string>>({}) as jotai.PrimitiveAtom<Record<number, string>>;
+    readonly paletteOverridesAtom = jotai.atom<Record<number, string>>({}) as jotai.PrimitiveAtom<
+        Record<number, string>
+    >;
     readonly defaultFgOverrideAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
     readonly defaultBgOverrideAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
     readonly cursorColorOverrideAtom = jotai.atom<string | null>(null) as jotai.PrimitiveAtom<string | null>;
@@ -299,11 +301,8 @@ export class TerminalModel {
 
     readonly agentVisibleAtom = jotai.atom(false) as jotai.PrimitiveAtom<boolean>;
     readonly agentPostureAtom = jotai.atom("default") as jotai.PrimitiveAtom<string>;
-    // Post-pi migration: per-exchange agent state (messages, status,
-    // error) lives on the React side in usePiChat. TerminalModel no
-    // longer owns assistantText / parts / status atoms — agent blocks
-    // are thin markers (Block.agentRef) that point at a pi runId; the
-    // renderer looks up message data via slicePiRuns.
+    // Agent conversations are rendered from the pane's SQLite-backed session
+    // state. TerminalModel only owns shell timeline state.
 
     constructor(outerBlockId: string, cols: number = DefaultCols) {
         this.outerBlockId = outerBlockId;
@@ -316,7 +315,6 @@ export class TerminalModel {
             getMode: () => this.mode,
             setMode: (patch) => this.applyModePatch(patch),
             setTitle: (title) => globalStore.set(this.titleAtom, title),
-            notify: (payload) => globalStore.set(this.notificationAtom, payload),
             writeClipboard: (text) => {
                 try {
                     void navigator.clipboard.writeText(text);
@@ -330,10 +328,7 @@ export class TerminalModel {
             setDefaultBg: (css) => this.setDefaultBg(css),
             setCursorColor: (css) => this.setCursorColor(css),
             bell: () => {
-                globalStore.set(
-                    this.bellTickAtom,
-                    globalStore.get(this.bellTickAtom) + 1
-                );
+                globalStore.set(this.bellTickAtom, globalStore.get(this.bellTickAtom) + 1);
             },
             clearPriorBlocks: () => this.clearPriorBlocks(),
             onInlineTui: () => this.activateInlineTuiViewport(),
@@ -523,10 +518,15 @@ export class TerminalModel {
         // Update local TUI grids so bounded viewport / scroll region
         // matches what the PTY-side app sees via SIGWINCH.
         this.updateTuiViewports(cols, rows);
-        await RpcApi.ControllerInputCommand(TabRpcClient, {
-            blockid: this.outerBlockId,
-            termsize: { rows, cols },
-        });
+        try {
+            await RpcApi.ControllerInputCommand(TabRpcClient, {
+                blockid: this.outerBlockId,
+                termsize: { rows, cols },
+            });
+        } catch (err) {
+            if (isTransientResizeControllerError(err)) return;
+            throw err;
+        }
     }
 
     // updateTuiViewports — propagate (cols, rows) to any active TUI grid
@@ -795,7 +795,7 @@ export class TerminalModel {
             case "terminal-capture":
                 return { kind: "terminal-capture", blockId: inputState.blockId };
             case "long-running-command":
-                return { kind: "long-running-pty", blockId: inputState.blockId };
+                return null;
             default:
                 return null;
         }
@@ -852,14 +852,6 @@ export class TerminalModel {
             throw new Error("setModeForTest is test-only");
         }
         this.applyModePatch(patch);
-    }
-
-    getFirstAgentSessionPath(): string | undefined {
-        for (const block of this.blocks.all()) {
-            const sessionPath = block.agentRef?.sessionPath;
-            if (sessionPath) return sessionPath;
-        }
-        return undefined;
     }
 
     getRevision(): number {
@@ -1005,7 +997,6 @@ export class TerminalModel {
     private applyTimelineRow(row: TimelineStorageRow): void {
         if (!row.oid) return;
         if ((row as { kind?: string }).kind === "agent") {
-            this.applyAgentTimelineRow(row as AgentTimelineStorageRow);
             return;
         }
         this.applyShellTimelineRow(row);
@@ -1024,47 +1015,7 @@ export class TerminalModel {
             this.historicalOutputLoaded.add(row.oid);
             void this.fetchOutputFor(row);
         }
-
         this.bumpRevision();
-    }
-
-    private applyAgentTimelineRow(row: AgentTimelineStorageRow): void {
-        const runId = row.agentuserentryid;
-        if (!runId) return;
-        const sessionPath = row.agentsessionpath;
-        if (this.blocks.findById(row.oid)) return;
-        for (const existing of this.blocks.all()) {
-            if (existing.kind === "agent" && existing.agentRef?.runId === runId) return;
-        }
-        this.blocks.appendAgentBlock(runId, 0, {
-            id: row.oid,
-            sessionPath,
-            createdAt: createdAtNsToMs(row.createdat),
-        });
-        this.bumpRevision();
-    }
-
-    syncAgentBlocks(activeRunIds: Set<string>): void {
-        let changed = false;
-        const blocksByRunId = new Map<string, Block>();
-        for (const block of this.blocks.all()) {
-            if (block.kind !== "agent" || !block.agentRef?.runId) continue;
-            const rid = block.agentRef.runId;
-            blocksByRunId.set(rid, block);
-            const shouldBeVisible = activeRunIds.has(rid);
-            if (block.hidden === shouldBeVisible) {
-                this.blocks.setHidden(block.id, !shouldBeVisible);
-                changed = true;
-            }
-        }
-        for (const runId of activeRunIds) {
-            if (blocksByRunId.has(runId)) continue;
-            this.blocks.appendAgentBlock(runId);
-            changed = true;
-        }
-        if (changed) {
-            this.bumpRevision();
-        }
     }
 
     private async fetchOutputFor(row: CmdBlock): Promise<void> {
@@ -1186,12 +1137,7 @@ export class TerminalModel {
 
     // ---------- internal helpers ----------
 
-    private ensureBlock(
-        oid: BlockId,
-        seq: number,
-        rawState: string | undefined,
-        row?: CmdBlock
-    ): Block {
+    private ensureBlock(oid: BlockId, seq: number, rawState: string | undefined, row?: CmdBlock): Block {
         const existing = this.blocks.findById(oid);
         if (existing) return existing;
         const block = new Block({

@@ -1080,7 +1080,7 @@ interface SearchBarProps {
 
 const SearchBar = memo(({ inputRef, value, onChange, onKeyDown, placeholder }: SearchBarProps) => (
     <div
-        className="flex cursor-text items-center gap-2 border-b border-fg-overlay-2 px-3 py-2"
+        className="mx-3 my-2 flex cursor-text items-center gap-2 rounded-xl bg-white/[0.045] px-3 py-2"
         onClick={() => {
             // Padding / icon clicks should still focus the input. onClick
             // (not onMouseDown) lets the native click reach the input
@@ -1110,7 +1110,7 @@ SearchBar.displayName = "SearchBar";
 
 const HintFooter = memo(({ showTabHint }: { showTabHint: boolean }) => (
     <div
-        className="flex items-center gap-x-3 border-t border-fg-overlay-2 bg-fg-overlay-1/60 px-3 py-1.5 font-sans text-secondary/65"
+        className="flex items-center gap-x-3 border-t border-white/[0.06] px-3 py-2 font-sans text-secondary/65"
         style={{ fontSize: `${HEADER_FONT_PX + 1}px` }}
     >
         <span className="inline-flex items-center gap-1.5">
@@ -1931,8 +1931,19 @@ export const ModelPickerInline = memo(
                 if (anchorRef?.current?.contains(t)) return;
                 onOpenChange(false);
             };
+            const keyHandler = (e: KeyboardEvent) => {
+                if (globalStore.get(atoms.modalOpen)) return;
+                if (e.key !== "Escape") return;
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenChange(false);
+            };
             document.addEventListener("mousedown", handler, true);
-            return () => document.removeEventListener("mousedown", handler, true);
+            window.addEventListener("keydown", keyHandler, true);
+            return () => {
+                document.removeEventListener("mousedown", handler, true);
+                window.removeEventListener("keydown", keyHandler, true);
+            };
         }, [open, onOpenChange, anchorRef]);
 
         const handleTabClick = useCallback(

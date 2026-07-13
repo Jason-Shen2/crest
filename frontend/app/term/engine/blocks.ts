@@ -102,20 +102,8 @@ export class Blocks {
         this.pinnedToBottomId = pinnedId;
     }
 
-    // appendAgentBlock — factory for agent timeline blocks. Mirrors warp's
-    // `BlockList::append_item_to_blocklist` (blocks.rs:1074): blocks are
-    // added in call order with no timestamp reordering. push() keeps the
-    // pinned prompt block last (see pinnedToBottomId), so the agent block
-    // correctly lands above the pending prompt with no special-casing here.
-    //
-    // The returned Block carries an outputGrid + headerGrid for shape
-    // uniformity with shell blocks, but neither grid is ever written
-    // into (BlockHandler no-ops for kind === "agent"). Conversation
-    // rendering lives in the assistant-ui pane.
-    //
-    // runId is minted by Electron main when it creates the agent run and
-    // corresponding timeline row. The block holds it as the only piece of
-    // agent state; all message data lives in PaneAgentSession/usePiChat.
+    // appendAgentBlock — factory retained for legacy marker rows. Current
+    // agent conversations render from the agent pane's session state.
     appendAgentBlock(
         runId: string,
         height: number = 0,

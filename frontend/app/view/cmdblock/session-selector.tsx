@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { AgentSelectorRequest } from "@/app/term/render/agent-chat-host";
 import { COMMAND_INLINE_FRAME_CLASSNAME, CommandInlineFrame } from "@/app/view/cmdblock/command-inline-frame";
 import {
     COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX,
@@ -21,7 +22,6 @@ import { cn } from "@/util/util";
 import { ChevronRight } from "lucide-react";
 import type { RefObject } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentSelectorRequest } from "@/app/term/render/agent-chat-host";
 
 type AgentSelectorRequestType = AgentSelectorRequest["type"];
 
@@ -141,7 +141,10 @@ function normalizeForkPoints(points: AgentForkPointView[]): AgentSelectorEntryVi
     }));
 }
 
-async function loadSelectorEntries(request: AgentSelectorRequest, scopeCwd?: string): Promise<AgentSelectorEntryView[]> {
+async function loadSelectorEntries(
+    request: AgentSelectorRequest,
+    scopeCwd?: string
+): Promise<AgentSelectorEntryView[]> {
     if (request.type === "tree") {
         const result = await request.listTree();
         // No pre-filtering here: the backend now sends every non-structural
@@ -207,6 +210,29 @@ export const FILTER_MODE_LABEL: Record<FilterMode, string> = {
     all: "all",
 };
 
+const SelectorControlRailClassName = "mx-3 mt-2 flex flex-wrap items-center gap-1.5 px-0.5 py-0.5 select-none";
+const SelectorControlChipBaseClassName = "rounded-lg px-1.5 py-0.5 font-mono transition-colors";
+const SelectorScopeControlChipBaseClassName =
+    "rounded-lg px-1.5 py-0.5 font-mono transition-colors inline-flex items-center gap-1.5";
+
+function selectorControlChipClassName(active: boolean): string {
+    return cn(
+        SelectorControlChipBaseClassName,
+        active
+            ? "bg-white/[0.07] text-cyan-300/90 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045)]"
+            : "text-secondary/45 hover:bg-white/[0.045] hover:text-secondary/80"
+    );
+}
+
+function selectorScopeControlChipClassName(active: boolean): string {
+    return cn(
+        SelectorScopeControlChipBaseClassName,
+        active
+            ? "bg-white/[0.07] text-cyan-300/90 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.045)]"
+            : "text-secondary/45 hover:bg-white/[0.045] hover:text-secondary/80"
+    );
+}
+
 // Settings/bookkeeping entry types hidden in the default view. `leaf`/`label`
 // are already stripped by the backend, so they never reach here.
 const SETTINGS_ENTRY_TYPES = new Set(["custom", "model_change", "thinking_level_change", "session_info"]);
@@ -229,8 +255,7 @@ export function isEntryVisibleForMode(
     // Always keep the current leaf so the active position stays visible.
     if (entry.role === "assistant" && !isCurrentLeaf) {
         const hasText = !!entry.preview && entry.preview.length > 0;
-        const isErrorOrAborted =
-            !!entry.stopReason && entry.stopReason !== "stop" && entry.stopReason !== "toolUse";
+        const isErrorOrAborted = !!entry.stopReason && entry.stopReason !== "stop" && entry.stopReason !== "toolUse";
         if (!hasText && !isErrorOrAborted) return false;
     }
 
@@ -321,7 +346,13 @@ function computeTreeLayout(
         if (!q) return true;
         let hay = (e.role + " " + (e.label ?? "") + " " + e.preview + " " + (e.type ?? "")).toLowerCase();
         if (e.role === "session" && e.sessionDetail) {
-            hay += " " + (e.sessionDetail.firstMessage || "") + " " + (e.sessionDetail.previewText || "") + " " + (e.sessionDetail.cwd || "");
+            hay +=
+                " " +
+                (e.sessionDetail.firstMessage || "") +
+                " " +
+                (e.sessionDetail.previewText || "") +
+                " " +
+                (e.sessionDetail.cwd || "");
         }
         return hay.includes(q);
     };
@@ -407,10 +438,13 @@ function computeTreeLayout(
         if (nodeId === null) return visibleIds.some((id) => byId.get(id)?.isCurrent);
         if (containsCurrentCache.has(nodeId)) return containsCurrentCache.get(nodeId)!;
         const entry = byId.get(nodeId);
-        let has = !!(entry?.isCurrent);
+        let has = !!entry?.isCurrent;
         const kids = visibleChildren.get(nodeId) ?? [];
         for (const cid of kids) {
-            if (containsCurrent(cid)) { has = true; break; }
+            if (containsCurrent(cid)) {
+                has = true;
+                break;
+            }
         }
         containsCurrentCache.set(nodeId, has);
         return has;
@@ -450,15 +484,7 @@ function computeTreeLayout(
 
     for (let i = rootIds.length - 1; i >= 0; i--) {
         const isLast = i === rootIds.length - 1;
-        stack.push([
-            rootIds[i],
-            multiRoots ? 1 : 0,
-            multiRoots,
-            multiRoots,
-            isLast,
-            [],
-            multiRoots,
-        ]);
+        stack.push([rootIds[i], multiRoots ? 1 : 0, multiRoots, multiRoots, isLast, [], multiRoots]);
     }
 
     while (stack.length > 0) {
@@ -468,7 +494,12 @@ function computeTreeLayout(
         const currentDisplayIndent = multiRoots ? Math.max(0, indent - 1) : indent;
 
         orderedIds.push(nodeId);
-        layoutOf.set(nodeId, { displayIndent: currentDisplayIndent, showConnector: connDisplayed, isLast, gutters: [...gutters] });
+        layoutOf.set(nodeId, {
+            displayIndent: currentDisplayIndent,
+            showConnector: connDisplayed,
+            isLast,
+            gutters: [...gutters],
+        });
 
         const kids = visibleChildren.get(nodeId) ?? [];
         const multipleChildren = kids.length > 1;
@@ -493,15 +524,7 @@ function computeTreeLayout(
 
         for (let i = kids.length - 1; i >= 0; i--) {
             const childIsLast = i === kids.length - 1;
-            stack.push([
-                kids[i],
-                childIndent,
-                multipleChildren,
-                multipleChildren,
-                childIsLast,
-                childGutters,
-                false,
-            ]);
+            stack.push([kids[i], childIndent, multipleChildren, multipleChildren, childIsLast, childGutters, false]);
         }
     }
 
@@ -523,7 +546,7 @@ function computeTreeLayout(
 // =========================================================================
 
 export const SessionSelector = memo(
-    ({ request, onClose, onUserMessage, onEditorText }: SessionSelectorProps) => {
+    ({ anchorRef, request, onClose, onUserMessage, onEditorText }: SessionSelectorProps) => {
         const [state, setState] = useState<AgentSelectorViewState>({ status: "idle", entries: [] });
         const [busyEntryId, setBusyEntryId] = useState<string | null>(null);
         const panelRef = useRef<HTMLDivElement>(null);
@@ -655,6 +678,8 @@ export const SessionSelector = memo(
         return (
             <CommandInlineFrame
                 commandName={`/${request.type}`}
+                dismissAnchorRef={anchorRef}
+                onDismiss={handleCancel}
                 onResizeStart={handleResizeStart}
             >
                 <AgentSelectorPanel
@@ -667,7 +692,11 @@ export const SessionSelector = memo(
                     onPick={handlePick}
                     onCancel={handleCancel}
                     resumeScope={request.type === "resume" ? resumeScope : undefined}
-                    onToggleResumeScope={request.type === "resume" ? () => setResumeScope((s) => (s === "cwd" ? "all" : "cwd")) : undefined}
+                    onToggleResumeScope={
+                        request.type === "resume"
+                            ? () => setResumeScope((s) => (s === "cwd" ? "all" : "cwd"))
+                            : undefined
+                    }
                 />
             </CommandInlineFrame>
         );
@@ -690,12 +719,7 @@ function buildSelectorHints(isTree: boolean, isResume: boolean, visibleCount: nu
     }
     hints.push({ keys: ["↵"], label: "select" });
     hints.push({ keys: ["esc"], label: "dismiss" });
-    return (
-        <CommandSelectorHintFooter
-            hints={hints}
-            countText={`(${visibleCount}/${totalCount})`}
-        />
-    );
+    return <CommandSelectorHintFooter hints={hints} countText={`(${visibleCount}/${totalCount})`} />;
 }
 
 export interface AgentSelectorPanelProps {
@@ -732,10 +756,7 @@ export const AgentSelectorPanel = memo(
 
         const isTree = requestType === "tree";
         const isResume = requestType === "resume";
-        const currentLeafId = useMemo(
-            () => state.entries.find((e) => e.isCurrent)?.id,
-            [state.entries]
-        );
+        const currentLeafId = useMemo(() => state.entries.find((e) => e.isCurrent)?.id, [state.entries]);
 
         const treeLayout = useMemo(() => {
             if (!isTree) return null;
@@ -750,14 +771,20 @@ export const AgentSelectorPanel = memo(
                 .filter((e) => {
                     let hay = (e.role + " " + (e.label ?? "") + " " + e.preview + " " + (e.type ?? "")).toLowerCase();
                     if (e.sessionDetail) {
-                        hay += " " + (e.sessionDetail.firstMessage || "") + " " + (e.sessionDetail.previewText || "") + " " + (e.sessionDetail.cwd || "");
+                        hay +=
+                            " " +
+                            (e.sessionDetail.firstMessage || "") +
+                            " " +
+                            (e.sessionDetail.previewText || "") +
+                            " " +
+                            (e.sessionDetail.cwd || "");
                     }
                     return hay.includes(q);
                 })
                 .map((e) => e.id);
         }, [isResume, state.entries, query]);
 
-        const visibleIds = treeLayout ? treeLayout.orderedIds : resumeVisibleIds ?? state.entries.map((e) => e.id);
+        const visibleIds = treeLayout ? treeLayout.orderedIds : (resumeVisibleIds ?? state.entries.map((e) => e.id));
         const totalCount = state.entries.length;
         const visibleCount = visibleIds.length;
         const empty = state.status === "ready" && visibleCount === 0;
@@ -797,12 +824,7 @@ export const AgentSelectorPanel = memo(
         }, [requestType, state.status, state.entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
         // Scroll active row into view
-        useScrollActiveRowIntoView(
-            listInnerRef,
-            activeIdx,
-            (i) => `[data-agent-row-idx="${i}"]`,
-            visibleCount > 0
-        );
+        useScrollActiveRowIntoView(listInnerRef, activeIdx, (i) => `[data-agent-row-idx="${i}"]`, visibleCount > 0);
 
         const toggleCollapsed = useCallback((id: string) => {
             setCollapsed((prev) => {
@@ -880,8 +902,8 @@ export const AgentSelectorPanel = memo(
                     }
                     const entryId = visibleIds[activeIdx];
                     const entry = entryId ? treeLayout.byId.get(entryId) : undefined;
-                    const hasKids = entry ? treeLayout.hasChildren.get(entry.id) ?? false : false;
-                    const isFoldableNode = entry ? treeLayout.isFoldable.get(entry.id) ?? false : false;
+                    const hasKids = entry ? (treeLayout.hasChildren.get(entry.id) ?? false) : false;
+                    const isFoldableNode = entry ? (treeLayout.isFoldable.get(entry.id) ?? false) : false;
                     if (e.key === "ArrowRight") {
                         e.preventDefault();
                         if (entry && hasKids && isFoldableNode) {
@@ -908,13 +930,31 @@ export const AgentSelectorPanel = memo(
                         return;
                     }
                 }
-                if (e.key === "/" && (isTree || isResume) && searchInputRef?.current && document.activeElement !== searchInputRef.current) {
+                if (
+                    e.key === "/" &&
+                    (isTree || isResume) &&
+                    searchInputRef?.current &&
+                    document.activeElement !== searchInputRef.current
+                ) {
                     e.preventDefault();
                     searchInputRef.current.focus();
                     searchInputRef.current.select();
                 }
             },
-            [handleNavKey, visibleIds, activeIdx, setActiveIdx, isTree, isResume, treeLayout, collapsed, searchInputRef, changeFilterMode, toggleFilterMode, cycleFilterMode]
+            [
+                handleNavKey,
+                visibleIds,
+                activeIdx,
+                setActiveIdx,
+                isTree,
+                isResume,
+                treeLayout,
+                collapsed,
+                searchInputRef,
+                changeFilterMode,
+                toggleFilterMode,
+                cycleFilterMode,
+            ]
         );
 
         const handleSearchKeyDown = useCallback(
@@ -983,7 +1023,18 @@ export const AgentSelectorPanel = memo(
                     searchInputRef.current.select();
                 }
             },
-            [activeIdx, busyEntryId, commitIndex, isResume, isTree, onCancel, panelRef, searchInputRef, setActiveIdx, visibleCount]
+            [
+                activeIdx,
+                busyEntryId,
+                commitIndex,
+                isResume,
+                isTree,
+                onCancel,
+                panelRef,
+                searchInputRef,
+                setActiveIdx,
+                visibleCount,
+            ]
         );
 
         useEffect(() => {
@@ -1016,42 +1067,53 @@ export const AgentSelectorPanel = memo(
                 onKeyDown={handleKeyDown}
             >
                 {state.status === "loading" && <CommandSelectorMessage>Loading…</CommandSelectorMessage>}
-                {state.status === "error" && <CommandSelectorMessage tone="error">{state.message}</CommandSelectorMessage>}
+                {state.status === "error" && (
+                    <CommandSelectorMessage tone="error">{state.message}</CommandSelectorMessage>
+                )}
                 {empty && state.status === "ready" && (
                     <CommandSelectorMessage>
                         {query
                             ? "No matches."
                             : isResume
-                                ? "No sessions found. Start a conversation to create one."
-                                : "No entries available for this session."}
+                              ? "No sessions found. Start a conversation to create one."
+                              : "No entries available for this session."}
                     </CommandSelectorMessage>
                 )}
 
                 {isResume && state.status !== "loading" && state.status !== "idle" && (
                     <div
-                        className="flex items-center gap-3 border-b border-fg-overlay-2/80 px-3 py-1 select-none"
+                        data-command-selector-filter-rail="true"
+                        className={SelectorControlRailClassName}
                         style={{ fontSize: `${COMMAND_SELECTOR_SEARCH_FONT_PX}px` }}
                     >
                         <button
                             type="button"
-                            className={cn(
-                                "flex items-center gap-1.5 font-mono transition-colors",
-                                resumeScope === "cwd" ? "text-cyan-300/90" : "text-secondary/50 hover:text-secondary/80"
-                            )}
+                            className={selectorScopeControlChipClassName(resumeScope === "cwd")}
                             onClick={() => onToggleResumeScope?.()}
                         >
-                            <span className={cn("inline-block w-2 h-2 rounded-full", resumeScope === "cwd" ? "bg-cyan-400 shadow-[0_0_4px_rgba(92,184,232,0.6)]" : "border border-secondary/40")} />
+                            <span
+                                className={cn(
+                                    "inline-block w-2 h-2 rounded-full",
+                                    resumeScope === "cwd"
+                                        ? "bg-cyan-400 shadow-[0_0_4px_rgba(92,184,232,0.6)]"
+                                        : "border border-secondary/40"
+                                )}
+                            />
                             Current Folder
                         </button>
                         <button
                             type="button"
-                            className={cn(
-                                "flex items-center gap-1.5 font-mono transition-colors",
-                                resumeScope === "all" ? "text-cyan-300/90" : "text-secondary/50 hover:text-secondary/80"
-                            )}
+                            className={selectorScopeControlChipClassName(resumeScope === "all")}
                             onClick={() => onToggleResumeScope?.()}
                         >
-                            <span className={cn("inline-block w-2 h-2 rounded-full", resumeScope === "all" ? "bg-cyan-400 shadow-[0_0_4px_rgba(92,184,232,0.6)]" : "border border-secondary/40")} />
+                            <span
+                                className={cn(
+                                    "inline-block w-2 h-2 rounded-full",
+                                    resumeScope === "all"
+                                        ? "bg-cyan-400 shadow-[0_0_4px_rgba(92,184,232,0.6)]"
+                                        : "border border-secondary/40"
+                                )}
+                            />
                             All
                         </button>
                     </div>
@@ -1059,17 +1121,15 @@ export const AgentSelectorPanel = memo(
 
                 {isTree && state.status !== "loading" && state.status !== "idle" && state.entries.length > 0 && (
                     <div
-                        className="flex items-center gap-2 border-b border-fg-overlay-2/80 px-3 py-1 select-none"
+                        data-command-selector-filter-rail="true"
+                        className={SelectorControlRailClassName}
                         style={{ fontSize: `${COMMAND_SELECTOR_SEARCH_FONT_PX}px` }}
                     >
                         {FILTER_MODES.map((mode) => (
                             <button
                                 key={mode}
                                 type="button"
-                                className={cn(
-                                    "font-mono transition-colors",
-                                    filterMode === mode ? "text-cyan-300/90" : "text-secondary/50 hover:text-secondary/80"
-                                )}
+                                className={selectorControlChipClassName(filterMode === mode)}
                                 onClick={() => changeFilterMode(mode)}
                             >
                                 {FILTER_MODE_LABEL[mode]}
@@ -1089,12 +1149,7 @@ export const AgentSelectorPanel = memo(
                 )}
 
                 {visibleCount > 0 && (
-                    <div
-                        ref={listRef}
-                        tabIndex={-1}
-                        className="outline-none"
-                        onKeyDown={handleKeyDown}
-                    >
+                    <div ref={listRef} tabIndex={-1} className="outline-none" onKeyDown={handleKeyDown}>
                         <TreeList
                             entries={state.entries}
                             requestType={requestType}
@@ -1157,67 +1212,69 @@ const TreeList = memo(function TreeList({
     const byId = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
 
     return (
-        <div
-            ref={listInnerRef}
-            className="tree-list-root overflow-y-auto"
-            style={{
-                maxHeight: `${listMaxHeight}px`,
-                padding: "4px 0",
-                lineHeight: `${TREE_ROW_LINE_HEIGHT_PX}px`,
-            }}
-        >
-            <style>{TreeListStyles}</style>
-            {visibleIds.map((entryId, idx) => {
-                const entry = byId.get(entryId);
-                if (!entry) return null;
-                const isActive = idx === activeIdx;
-                const isBusy = busyEntryId === entry.id;
-                const isCurrent = !!entry.isCurrent;
+        <div data-command-selector-list="true" className="mx-3 overflow-hidden rounded-xl">
+            <div
+                ref={listInnerRef}
+                className="tree-list-root overflow-y-auto"
+                style={{
+                    maxHeight: `${listMaxHeight}px`,
+                    padding: "4px 0",
+                    lineHeight: `${TREE_ROW_LINE_HEIGHT_PX}px`,
+                }}
+            >
+                <style>{TreeListStyles}</style>
+                {visibleIds.map((entryId, idx) => {
+                    const entry = byId.get(entryId);
+                    if (!entry) return null;
+                    const isActive = idx === activeIdx;
+                    const isBusy = busyEntryId === entry.id;
+                    const isCurrent = !!entry.isCurrent;
 
-                if (isTreeMode && treeLayout) {
+                    if (isTreeMode && treeLayout) {
+                        return (
+                            <TreeRow
+                                key={entry.id}
+                                entry={entry}
+                                idx={idx}
+                                layout={treeLayout}
+                                collapsed={collapsed}
+                                isActive={isActive}
+                                isBusy={isBusy}
+                                isCurrent={isCurrent}
+                                onHover={onHover}
+                                onRowClick={onRowClick}
+                                onChevronClick={onChevronClick}
+                            />
+                        );
+                    }
+
+                    if (isResumeMode) {
+                        return (
+                            <ResumeRow
+                                key={entry.id}
+                                entry={entry}
+                                idx={idx}
+                                isActive={isActive}
+                                isBusy={isBusy}
+                                onHover={onHover}
+                                onRowClick={onRowClick}
+                            />
+                        );
+                    }
+
                     return (
-                        <TreeRow
+                        <FlatRow
                             key={entry.id}
                             entry={entry}
                             idx={idx}
-                            layout={treeLayout}
-                            collapsed={collapsed}
-                            isActive={isActive}
-                            isBusy={isBusy}
-                            isCurrent={isCurrent}
-                            onHover={onHover}
-                            onRowClick={onRowClick}
-                            onChevronClick={onChevronClick}
-                        />
-                    );
-                }
-
-                if (isResumeMode) {
-                    return (
-                        <ResumeRow
-                            key={entry.id}
-                            entry={entry}
-                            idx={idx}
                             isActive={isActive}
                             isBusy={isBusy}
                             onHover={onHover}
                             onRowClick={onRowClick}
                         />
                     );
-                }
-
-                return (
-                    <FlatRow
-                        key={entry.id}
-                        entry={entry}
-                        idx={idx}
-                        isActive={isActive}
-                        isBusy={isBusy}
-                        onHover={onHover}
-                        onRowClick={onRowClick}
-                    />
-                );
-            })}
+                })}
+            </div>
         </div>
     );
 });
@@ -1321,7 +1378,9 @@ const TreeRow = memo(function TreeRow({
                             kind === "guide" && "tree-indent-guide",
                             kind === "branch" && "tree-indent-branch",
                             kind === "corner" && "tree-indent-corner",
-                            isOnPath && (kind === "guide" || kind === "branch" || kind === "corner") && "tree-indent-active"
+                            isOnPath &&
+                                (kind === "guide" || kind === "branch" || kind === "corner") &&
+                                "tree-indent-active"
                         )}
                     />
                 );
@@ -1380,7 +1439,13 @@ const TreeRow = memo(function TreeRow({
                         <span className="tree-msg">{truncate(entry.preview || entry.type || "", 80)}</span>
                     </>
                 )}
-                {isCurrent && <span className="tree-streaming"><span /><span /><span /></span>}
+                {isCurrent && (
+                    <span className="tree-streaming">
+                        <span />
+                        <span />
+                        <span />
+                    </span>
+                )}
                 {isBusy && <span className="tree-busy">…</span>}
             </div>
         </div>
@@ -1421,7 +1486,7 @@ const ResumeRow = memo(function ResumeRow({ entry, idx, isActive, isBusy, onHove
     const hasName = !!entry.label;
     const msgCount = detail?.messageCount ?? 0;
     const age = formatRelativeTime(entry.timestamp || new Date(0).toISOString());
-    const displayText = hasName ? entry.label! : (entry.preview || "");
+    const displayText = hasName ? entry.label! : entry.preview || "";
     const secondaryText = detail?.cwd || "";
 
     return (
@@ -1447,9 +1512,7 @@ const ResumeRow = memo(function ResumeRow({ entry, idx, isActive, isBusy, onHove
                 <span className={cn("resume-title", hasName ? "resume-named" : "resume-msg")}>
                     {truncate(displayText.replace(/[\x00-\x1f\x7f]/g, " ").trim(), 120)}
                 </span>
-                {secondaryText && (
-                    <span className="resume-sub">{truncate(secondaryText, 50)}</span>
-                )}
+                {secondaryText && <span className="resume-sub">{truncate(secondaryText, 50)}</span>}
             </div>
             <div className="resume-meta shrink-0 tabular-nums">
                 {msgCount > 0 && <span className="resume-count">{msgCount}</span>}
@@ -1488,7 +1551,7 @@ const FlatRow = memo(function FlatRow({ entry, idx, isActive, isBusy, onHover, o
         ? entry.label
         : entry.preview && entry.preview.length > 0
           ? entry.preview
-          : entry.type ?? "";
+          : (entry.type ?? "");
     return (
         <div
             data-agent-row-idx={idx}
@@ -1547,6 +1610,7 @@ const TreeListStyles = `
 .tree-row {
     height: ${TREE_ROW_LINE_HEIGHT_PX}px;
     position: relative;
+    border-radius: 8px;
     color: rgba(226, 232, 240, 0.75);
     transition: background-color 80ms ease;
 }
@@ -1829,6 +1893,7 @@ const TreeListStyles = `
 .resume-row {
     height: ${TREE_ROW_LINE_HEIGHT_PX}px;
     gap: 8px;
+    border-radius: 8px;
     color: rgba(226, 232, 240, 0.70);
     transition: background-color 80ms ease, color 80ms ease;
 }

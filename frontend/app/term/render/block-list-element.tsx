@@ -27,6 +27,10 @@ import { computeBlockSlice } from "./selection";
 
 const ScrollBottomThresholdPx = 32;
 
+function isFullScreenSurface(kind: string | undefined): boolean {
+    return kind === "alt-screen" || kind === "terminal-capture";
+}
+
 export interface BlockListElementProps {
     model: TerminalModel;
     fontSize?: number;
@@ -160,8 +164,8 @@ export const BlockListElement = memo(
         }, [model, scrollPos]);
 
         const activeSurfaceState = model.getActiveSurfaceState?.() ?? null;
-        const hasActiveTui = activeSurfaceState != null;
-        const activeTuiBlockId = activeSurfaceState?.blockId;
+        const hasActiveTui = isFullScreenSurface(activeSurfaceState?.kind);
+        const activeTuiBlockId = hasActiveTui ? activeSurfaceState?.blockId : undefined;
         return (
             <div className="relative min-h-0 flex-1">
                 <div

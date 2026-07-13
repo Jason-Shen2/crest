@@ -65,10 +65,8 @@ export class Block {
     // exchange). Agent blocks bypass the ANSI parser; the assistant-ui
     // pane owns conversation rendering.
     readonly kind: BlockKind;
-    // Populated only when kind === "agent". Thin reference to a pi run
-    // (see usePiChat + slicePiRuns). The actual message data lives on
-    // the React side; the engine just remembers which run this block
-    // belongs to and when it was appended (for timeline ordering).
+    // Populated only for legacy agent marker blocks. Current agent
+    // conversations render from the pane's session state instead.
     agentRef?: AgentBlockRef;
 
     readonly headerGrid: HeaderGrid;
