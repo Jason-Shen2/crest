@@ -1,76 +1,24 @@
-// Based on assistant-ui (MIT): https://r.assistant-ui.com/markdown-text.json
+// Based on assistant-ui (MIT): https://www.assistant-ui.com/docs/ui/streamdown
 "use client";
 
-import "@assistant-ui/react-markdown/styles/dot.css";
-
-import {
-    type CodeHeaderProps,
-    MarkdownTextPrimitive,
-    unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
-    type SyntaxHighlighterProps,
-    useIsMarkdownCodeBlock,
-} from "@assistant-ui/react-markdown";
-import { CheckIcon, CopyIcon } from "lucide-react";
-import { type FC, memo, useEffect, useState } from "react";
-import remarkGfm from "remark-gfm";
-import { bundledLanguages, codeToHtml } from "shiki/bundle/web";
+import { StreamdownTextPrimitive, type StreamdownTextComponents } from "@assistant-ui/react-streamdown";
+import { code } from "@streamdown/code";
+import { memo } from "react";
 
 import { cn } from "@/util/util";
-import { DiffViewer } from "./diff-viewer";
-import { TooltipIconButton } from "./tooltip-icon-button";
 
 const SHIKI_THEME = "github-dark-high-contrast";
 
-const SyntaxHighlighter: FC<SyntaxHighlighterProps> = ({ language, code, components: { Pre, Code } }) => {
-    const [html, setHtml] = useState<string | null>(null);
-
-    useEffect(() => {
-        let cancelled = false;
-        const lang = language && language in bundledLanguages ? language : "plaintext";
-        codeToHtml(code, {
-            lang,
-            theme: SHIKI_THEME,
-        })
-            .then((full) => {
-                if (cancelled) return;
-                const start = full.indexOf("<code");
-                const open = full.indexOf(">", start);
-                const end = full.lastIndexOf("</code>");
-                setHtml(start !== -1 && open !== -1 && end !== -1 ? full.slice(open + 1, end) : null);
-            })
-            .catch(() => {
-                if (!cancelled) setHtml(null);
-            });
-        return () => {
-            cancelled = true;
-        };
-    }, [code, language]);
-
-    if (html == null) {
-        return (
-            <Pre>
-                <Code>{code}</Code>
-            </Pre>
-        );
-    }
-
-    return (
-        <Pre>
-            <Code dangerouslySetInnerHTML={{ __html: html }} />
-        </Pre>
-    );
-};
-
 const MarkdownTextImpl = () => {
     return (
-        <MarkdownTextPrimitive
-            remarkPlugins={[remarkGfm]}
+        <StreamdownTextPrimitive
+            plugins={{ code }}
+            shikiTheme={[SHIKI_THEME, SHIKI_THEME]}
             className="aui-md"
-            components={defaultComponents}
-            componentsByLanguage={{
-                diff: {
-                    SyntaxHighlighter: DiffViewer,
-                },
+            components={streamdownComponents}
+            controls={{
+                code: true,
+                table: false,
             }}
             defer
         />
@@ -79,49 +27,7 @@ const MarkdownTextImpl = () => {
 
 export const MarkdownText = memo(MarkdownTextImpl);
 
-const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
-    const { isCopied, copyToClipboard } = useCopyToClipboard();
-    const onCopy = () => {
-        if (!code || isCopied) return;
-        copyToClipboard(code);
-    };
-
-    return (
-        <div className="aui-code-header-root border-border/50 bg-[#0d1325] mt-3 flex items-center justify-between rounded-t-xl border border-b-0 px-3.5 py-1.5 text-xs text-zinc-400">
-            <span className="aui-code-header-language font-medium lowercase">{language}</span>
-            <TooltipIconButton tooltip="Copy" onClick={onCopy}>
-                {!isCopied && <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />}
-                {isCopied && <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />}
-            </TooltipIconButton>
-        </div>
-    );
-};
-
-const useCopyToClipboard = ({
-    copiedDuration = 3000,
-}: {
-    copiedDuration?: number;
-} = {}) => {
-    const [isCopied, setIsCopied] = useState<boolean>(false);
-
-    const copyToClipboard = (value: string) => {
-        if (!value || typeof navigator === "undefined" || !navigator.clipboard) {
-            return;
-        }
-
-        navigator.clipboard.writeText(value).then(
-            () => {
-                setIsCopied(true);
-                setTimeout(() => setIsCopied(false), copiedDuration);
-            },
-            () => {}
-        );
-    };
-
-    return { isCopied, copyToClipboard };
-};
-
-const defaultComponents = memoizeMarkdownComponents({
+const streamdownComponents = {
     h1: ({ className, ...props }) => (
         <h1
             className={cn("aui-md-h1 mt-5 mb-2 scroll-m-20 text-xl font-semibold first:mt-0 last:mb-0", className)}
@@ -223,28 +129,10 @@ const defaultComponents = memoizeMarkdownComponents({
     sup: ({ className, ...props }) => (
         <sup className={cn("aui-md-sup [&>a]:text-xs [&>a]:no-underline", className)} {...props} />
     ),
-    pre: ({ className, ...props }) => (
-        <pre
-            className={cn(
-                "aui-md-pre border-border/50 bg-[#0a0f1d] overflow-auto max-h-[480px] rounded-t-none rounded-b-xl border border-t-0 p-0 text-[13px] leading-relaxed [&>code]:block [&>code]:p-3.5",
-                className
-            )}
+    inlineCode: ({ className, ...props }) => (
+        <code
+            className={cn("aui-md-inline-code bg-muted rounded-md px-1.5 py-0.5 font-mono text-[0.85em]", className)}
             {...props}
         />
     ),
-    code: function Code({ className, ...props }) {
-        const isCodeBlock = useIsMarkdownCodeBlock();
-        return (
-            <code
-                className={cn(
-                    !isCodeBlock && "aui-md-inline-code bg-muted rounded-md px-1.5 py-0.5 font-mono text-[0.85em]",
-                    isCodeBlock && "shiki shiki-themes font-mono",
-                    className
-                )}
-                {...props}
-            />
-        );
-    },
-    CodeHeader,
-    SyntaxHighlighter,
-});
+} satisfies StreamdownTextComponents;

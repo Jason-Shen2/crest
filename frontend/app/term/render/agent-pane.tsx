@@ -16,7 +16,7 @@ import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { globalStore } from "@/app/store/jotaiStore";
 import { modalsModel } from "@/app/store/modalmodel";
 import { ObjectService } from "@/app/store/services";
-import type { PiRun } from "@/app/store/use-pi-chat";
+import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
 import type { InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
@@ -24,7 +24,6 @@ import { useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { useAtomValue } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TerminalModel } from "../terminal-model";
-import { AgentActivityBar } from "./agent-activity-bar";
 import {
     AgentChatHost,
     type AgentChatHostApi,
@@ -34,11 +33,11 @@ import {
 } from "./agent-chat-host";
 import { AgentCommandResultList } from "./agent-command-result";
 import { AssistantRuntimeProvider, Thread, useAui, useCrestAssistantRuntime } from "./assistant-ui";
+import type { CrestContextUsage } from "./assistant-ui/context-display";
 
 export interface AgentSlot {
     chatHost: React.ReactNode;
     commandResults: React.ReactNode;
-    activityBar: React.ReactNode;
     inputBar: React.ReactNode;
     replacesBlockList: boolean;
 }
@@ -79,9 +78,136 @@ export interface AgentPaneDeps {
     inAltScreen: boolean;
 }
 
+export interface AgentAttachedPanelState {
+    commandResults: AgentInlineCommandResult[];
+    selectorRequest: AgentSelectorRequest | null;
+    modelPickerOpen: boolean;
+}
+
+export type AgentAttachedPanelAction =
+    | { type: "showCommandResult"; result: AgentInlineCommandResult }
+    | { type: "dismissCommandResult"; index: number }
+    | { type: "openSelector"; request: AgentSelectorRequest }
+    | { type: "closeSelector" }
+    | { type: "openModelPicker" }
+    | { type: "setModelPickerOpen"; open: boolean };
+
+export function makeEmptyAgentAttachedPanelState(): AgentAttachedPanelState {
+    return {
+        commandResults: [],
+        selectorRequest: null,
+        modelPickerOpen: false,
+    };
+}
+
+export function getNextAgentAttachedPanelState(
+    state: AgentAttachedPanelState,
+    action: AgentAttachedPanelAction
+): AgentAttachedPanelState {
+    if (action.type === "showCommandResult") {
+        return {
+            commandResults: [action.result],
+            selectorRequest: null,
+            modelPickerOpen: false,
+        };
+    }
+    if (action.type === "dismissCommandResult") {
+        return {
+            ...state,
+            commandResults: state.commandResults.filter((_, i) => i !== action.index),
+        };
+    }
+    if (action.type === "openSelector") {
+        return {
+            commandResults: [],
+            selectorRequest: action.request,
+            modelPickerOpen: false,
+        };
+    }
+    if (action.type === "closeSelector") {
+        return {
+            ...state,
+            selectorRequest: null,
+        };
+    }
+    if (action.type === "openModelPicker") {
+        return {
+            commandResults: [],
+            selectorRequest: null,
+            modelPickerOpen: true,
+        };
+    }
+    if (action.open) {
+        return getNextAgentAttachedPanelState(state, { type: "openModelPicker" });
+    }
+    return {
+        ...state,
+        modelPickerOpen: false,
+    };
+}
+
+export function hasActiveAgentAttachedPanel(state: AgentAttachedPanelState): boolean {
+    return state.commandResults.length > 0 || state.selectorRequest != null || state.modelPickerOpen;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function usageField(usage: Record<string, unknown>, ...keys: string[]): number | undefined {
+    for (const key of keys) {
+        const value = finiteNumber(usage[key]);
+        if (value != null) return value;
+    }
+    return undefined;
+}
+
+export function mapPiUsageToContextUsage(usage: unknown): CrestContextUsage | undefined {
+    if (!usage || typeof usage !== "object") return undefined;
+    const value = usage as Record<string, unknown>;
+    const inputTokens = usageField(value, "inputTokens", "input");
+    const outputTokens = usageField(value, "outputTokens", "output");
+    const cacheRead = usageField(value, "cachedInputTokens", "cacheRead") ?? 0;
+    const cacheWrite = usageField(value, "cacheWrite") ?? 0;
+    const cachedInputTokens = cacheRead + cacheWrite;
+    const reasoningTokens = usageField(value, "reasoningTokens");
+    const totalTokens =
+        usageField(value, "totalTokens") ??
+        (inputTokens ?? 0) + (outputTokens ?? 0) + cachedInputTokens + (reasoningTokens ?? 0);
+
+    if (!inputTokens && !outputTokens && !cachedInputTokens && !reasoningTokens && !totalTokens) return undefined;
+    return {
+        inputTokens: inputTokens ?? 0,
+        outputTokens: outputTokens ?? 0,
+        cachedInputTokens,
+        ...(reasoningTokens != null ? { reasoningTokens } : {}),
+        totalTokens,
+    };
+}
+
+export function getLatestAgentContextUsage(turns: PiTurn[]): CrestContextUsage | undefined {
+    for (let i = turns.length - 1; i >= 0; i--) {
+        const turn = turns[i];
+        for (let j = turn.responseMessages.length - 1; j >= 0; j--) {
+            const message = turn.responseMessages[j];
+            if (message.role !== "assistant") continue;
+            if (message.stopReason === "aborted" || message.stopReason === "error") continue;
+            const usage = mapPiUsageToContextUsage(message.usage);
+            if (usage) return usage;
+        }
+    }
+    return undefined;
+}
+
 export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: AgentPaneDeps): AgentSlot {
-    const revision = useAtomValue(model.revisionAtom);
-    const [agentCommandResults, setAgentCommandResults] = useState<AgentInlineCommandResult[]>([]);
+    const [attachedPanelState, setAttachedPanelState] = useState<AgentAttachedPanelState>(
+        makeEmptyAgentAttachedPanelState
+    );
+    const {
+        commandResults: agentCommandResults,
+        selectorRequest: agentSelectorRequest,
+        modelPickerOpen,
+    } = attachedPanelState;
 
     // ---- AI model picker / selection ----
     const userConfigState = useAtomValue(aiUserConfigAtom);
@@ -159,15 +285,19 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
     const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
         agentApiRef.current = api;
     }, []);
-    const [modelPickerOpen, setModelPickerOpen] = useState(false);
     const onOpenAgentModelPicker = useCallback(() => {
-        setModelPickerOpen(true);
+        setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "openModelPicker" }));
     }, []);
-    const [agentSelectorRequest, setAgentSelectorRequest] = useState<AgentSelectorRequest | null>(null);
     const onAgentSelectorRequest = useCallback((request: AgentSelectorRequest) => {
-        setAgentSelectorRequest(request);
+        setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "openSelector", request }));
     }, []);
-    const agentSelectorAnchorRef = useRef<HTMLDivElement>(null);
+    const onCloseAgentSelector = useCallback(() => {
+        setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "closeSelector" }));
+    }, []);
+    const onModelPickerOpenChange = useCallback((open: boolean) => {
+        setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "setModelPickerOpen", open }));
+    }, []);
+    const composerAnchorRef = useRef<HTMLDivElement>(null);
     const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
         { text: string; requestId: number } | undefined
     >(undefined);
@@ -179,24 +309,25 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
         agentApiRef.current?.abort();
     }, []);
     const persistedAgentSession = useOrefMetaKeyAtom(WOS.makeORef("block", outerBlockId), "agent:session");
-    const timelineAgentSessionPath = useMemo(() => model.getFirstAgentSessionPath(), [model, revision]);
     const agentSession = useMemo<AgentSessionMeta | undefined>(() => {
         if (persistedAgentSession?.path) return persistedAgentSession;
-        if (!timelineAgentSessionPath) return undefined;
-        return { id: "", createdAt: "", cwd: deps.workspaceDir, path: timelineAgentSessionPath };
-    }, [persistedAgentSession, timelineAgentSessionPath, deps.workspaceDir]);
+        return undefined;
+    }, [persistedAgentSession]);
     const onSessionMintedHandler = useCallback(
         (meta: AgentSessionMeta) => {
             void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), { "agent:session": meta });
         },
         [outerBlockId]
     );
-    const [agentRuns, setAgentRuns] = useState<PiRun[]>([]);
-    const onAgentRunsUpdate = useCallback((runs: PiRun[]) => {
-        setAgentRuns(runs);
+    const [agentTurns, setAgentTurns] = useState<PiTurn[]>([]);
+    const onAgentTurnsUpdate = useCallback((turns: PiTurn[]) => {
+        setAgentTurns(turns);
     }, []);
     const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
-        setAgentCommandResults((prev) => [...prev, result]);
+        setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "showCommandResult", result }));
+    }, []);
+    const onDismissCommandResult = useCallback((index: number) => {
+        setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "dismissCommandResult", index }));
     }, []);
 
     const onAgentSubmit = useCallback(
@@ -213,14 +344,15 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
     );
     const assistantRuntimeBridge = useMemo(
         () => ({
-            runs: agentRuns,
+            turns: agentTurns,
             status: agentState.status,
             submit: onAgentSubmit,
             abort: onAgentStop,
         }),
-        [agentRuns, agentState.status, onAgentSubmit, onAgentStop]
+        [agentTurns, agentState.status, onAgentSubmit, onAgentStop]
     );
     const assistantRuntime = useCrestAssistantRuntime(assistantRuntimeBridge);
+    const contextUsage = useMemo(() => getLatestAgentContextUsage(agentTurns), [agentTurns]);
 
     const chatHost = (
         <>
@@ -253,7 +385,7 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
                 }}
                 selectionError={aiConfigError}
                 onReady={onAgentHostReady}
-                onRunsChange={onAgentRunsUpdate}
+                onTurnsChange={onAgentTurnsUpdate}
                 onStateChange={setAgentState}
                 onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
                 onCommandResult={onAgentCommandResult}
@@ -261,44 +393,125 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
                 onSelectorRequest={onAgentSelectorRequest}
             />
             {!deps.inAltScreen && (
-                <div className="min-h-0 flex-1" ref={agentSelectorAnchorRef}>
+                <div className="min-h-0 flex-1">
                     <AssistantRuntimeProvider runtime={assistantRuntime}>
-                        <SessionSelector
-                            anchorRef={agentSelectorAnchorRef}
-                            request={agentSelectorRequest}
-                            onClose={() => setAgentSelectorRequest(null)}
-                            onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
-                            onEditorText={onAgentEditorText}
-                        />
-                        <ModelPickerInline
-                            open={modelPickerOpen}
-                            onOpenChange={setModelPickerOpen}
-                            selection={activeSelection}
-                            onSelectionChange={onSelectionChange}
-                            userConfig={userConfigState.config}
-                            userConfigStatus={userConfigState.status}
-                            userConfigError={userConfigState.error}
-                            catalog={CATALOG}
-                            onOpenConfigFile={onOpenAIConfigFile}
-                            anchorRef={agentSelectorAnchorRef}
-                        />
                         <AgentComposerTextRestore request={agentRestoredTextRequest} />
-                        <Thread modelLabel={modelDisplayLabel} onOpenModelPicker={onOpenAgentModelPicker} />
+                        <Thread
+                            modelLabel={modelDisplayLabel}
+                            onOpenModelPicker={onOpenAgentModelPicker}
+                            modelContextWindow={resolvedAIConfig?.contextwindow}
+                            contextUsage={contextUsage}
+                            composerAnchorRef={composerAnchorRef}
+                            hideScrollToBottom={
+                                hasActiveAgentAttachedPanel(attachedPanelState) || agentState.queuedMessages.length > 0
+                            }
+                            beforeComposer={
+                                <>
+                                    <AgentCommandResultList
+                                        results={agentCommandResults}
+                                        onDismiss={onDismissCommandResult}
+                                    />
+                                    <SessionSelector
+                                        anchorRef={composerAnchorRef}
+                                        request={agentSelectorRequest}
+                                        onClose={onCloseAgentSelector}
+                                        onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
+                                        onEditorText={onAgentEditorText}
+                                    />
+                                    <ModelPickerInline
+                                        open={modelPickerOpen}
+                                        onOpenChange={onModelPickerOpenChange}
+                                        selection={activeSelection}
+                                        onSelectionChange={onSelectionChange}
+                                        userConfig={userConfigState.config}
+                                        userConfigStatus={userConfigState.status}
+                                        userConfigError={userConfigState.error}
+                                        catalog={CATALOG}
+                                        onOpenConfigFile={onOpenAIConfigFile}
+                                        anchorRef={composerAnchorRef}
+                                    />
+                                    <AgentQueuedMessagesPanel messages={agentState.queuedMessages} />
+                                </>
+                            }
+                        />
                     </AssistantRuntimeProvider>
                 </div>
             )}
         </>
     );
 
-    const commandResults = <AgentCommandResultList results={agentCommandResults} />;
-
-    const activityBar = deps.inAltScreen ? null : (
-        <AgentActivityBar status={agentState.status} queuedMessages={agentState.queuedMessages} onStop={onAgentStop} />
-    );
+    const commandResults = null;
 
     const inputBar = null;
 
-    return { chatHost, commandResults, activityBar, inputBar, replacesBlockList: true };
+    return { chatHost, commandResults, inputBar, replacesBlockList: true };
+}
+
+export function getAgentQueuedMessageText(message: PiAgentMessage): string {
+    const textParts: string[] = [];
+    let imageCount = 0;
+    for (const content of message.content ?? []) {
+        if (content.type === "text" && typeof content.text === "string") {
+            const text = content.text.trim();
+            if (text) textParts.push(text);
+            continue;
+        }
+        if (content.type === "image") {
+            imageCount++;
+        }
+    }
+    const text = textParts.join(" ");
+    if (text) return text;
+    if (imageCount === 1) return "Image attachment";
+    if (imageCount > 1) return `${imageCount} image attachments`;
+    return "Queued message";
+}
+
+export function AgentQueuedMessagesPanel({ messages }: { messages: PiAgentMessage[] }) {
+    if (messages.length === 0) return null;
+
+    return (
+        <details
+            open
+            className="aui-agent-queue-panel group overflow-hidden rounded-2xl border border-white/[0.10] bg-[rgba(34,34,36,0.62)] shadow-[0_18px_54px_-34px_rgba(0,0,0,0.68)] backdrop-blur-2xl backdrop-saturate-150"
+        >
+            <summary className="flex min-h-9 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm select-none [&::-webkit-details-marker]:hidden">
+                <span className="flex min-w-0 items-center gap-2 font-medium text-foreground/80">
+                    <span className="grid size-4 place-items-center text-accent/85">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                            <path d="M4 7h16" />
+                            <path d="M4 12h10" />
+                            <path d="M4 17h7" />
+                        </svg>
+                    </span>
+                    <span>{messages.length} queued</span>
+                </span>
+                <span className="grid size-6 place-items-center rounded-full text-secondary/55 transition-[background-color,color,transform] duration-100 group-open:rotate-180 group-hover:bg-white/[0.06] group-hover:text-foreground/70">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                        <path d="m6 9 6 6 6-6" />
+                    </svg>
+                </span>
+            </summary>
+            <div className="grid gap-px border-t border-white/[0.065] p-1">
+                {messages.map((message, index) => {
+                    const text = getAgentQueuedMessageText(message);
+                    return (
+                        <div
+                            key={`${message.timestamp ?? index}-${text}`}
+                            className="grid min-h-9 grid-cols-[auto_minmax(0,1fr)] items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-sm text-foreground/80 hover:bg-white/[0.052]"
+                        >
+                            <span className="grid size-[22px] shrink-0 place-items-center rounded-lg border border-white/[0.085] bg-white/[0.045] font-mono text-[10px] text-secondary/55">
+                                {String(index + 1).padStart(2, "0")}
+                            </span>
+                            <span className="truncate" title={text}>
+                                {text}
+                            </span>
+                        </div>
+                    );
+                })}
+            </div>
+        </details>
+    );
 }
 
 function AgentComposerTextRestore({ request }: { request?: { text: string; requestId: number } }) {

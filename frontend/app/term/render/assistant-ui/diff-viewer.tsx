@@ -143,7 +143,7 @@ function pairLinesForSplit(lines: ParsedLine[]): SplitLinePair[] {
 const diffViewerVariants = cva("aui-diff-viewer overflow-hidden rounded-lg font-mono text-sm", {
     variants: {
         variant: {
-            default: "bg-[#0a0f1d] border border-border/50",
+            default: "bg-[var(--color-code-bg)] border border-border/50",
             ghost: "bg-transparent",
             muted: "border-muted-foreground/20 bg-muted border",
         },
@@ -162,8 +162,8 @@ const diffViewerVariants = cva("aui-diff-viewer overflow-hidden rounded-lg font-
 const diffLineVariants = cva("flex", {
     variants: {
         type: {
-            add: "bg-[rgba(46,160,67,0.12)]",
-            del: "bg-[rgba(248,81,73,0.12)]",
+            add: "bg-success/10",
+            del: "bg-destructive/10",
             normal: "",
             empty: "",
         },
@@ -176,8 +176,8 @@ const diffLineVariants = cva("flex", {
 const diffLineTextVariants = cva("", {
     variants: {
         type: {
-            add: "text-[#3fb950]",
-            del: "text-[#f85149]",
+            add: "text-success",
+            del: "text-destructive",
             normal: "",
             empty: "",
         },
@@ -210,8 +210,8 @@ function DiffViewerFileBadge({ filename }: { filename?: string | undefined }) {
 function DiffViewerStats({ additions, deletions }: { additions: number; deletions: number }) {
     return (
         <span data-slot="diff-viewer-stats" className="flex gap-2 text-xs">
-            <span className="text-green-500">+{additions}</span>
-            <span className="text-red-500">-{deletions}</span>
+            <span className="text-success">+{additions}</span>
+            <span className="text-destructive">-{deletions}</span>
         </span>
     );
 }
@@ -243,7 +243,7 @@ function DiffViewerHeader({
         <div
             data-slot="diff-viewer-header"
             className={cn(
-                "bg-[#0d1325] text-zinc-400 flex items-center gap-2 border-b border-border/50 px-3.5 py-1.5 text-xs",
+                "bg-[var(--color-code-header-bg)] text-muted-foreground flex items-center gap-2 border-b border-border/50 px-3.5 py-1.5 text-xs",
                 className
             )}
             {...props}
@@ -252,9 +252,9 @@ function DiffViewerHeader({
             <span className="flex-1 font-mono">
                 {oldName && newName && oldName !== newName ? (
                     <>
-                        <span className="text-red-400">{oldName}</span>
+                        <span className="text-destructive">{oldName}</span>
                         {" -> "}
-                        <span className="text-green-400">{newName}</span>
+                        <span className="text-success">{newName}</span>
                     </>
                 ) : (
                     displayName
@@ -285,7 +285,7 @@ function DiffViewerLine({ line, showLineNumbers = true, className, ...props }: D
             {showLineNumbers && (
                 <span
                     data-slot="diff-viewer-line-number"
-                    className="text-zinc-500 w-12 shrink-0 px-2 text-end select-none"
+                    className="text-muted-foreground/50 w-12 shrink-0 px-2 text-end select-none"
                 >
                     {line.type === "del"
                         ? line.oldLineNumber
@@ -329,7 +329,7 @@ function DiffViewerSplitLine({ pair, showLineNumbers = true, className, ...props
                 )}
             >
                 {showLineNumbers && (
-                    <span className="text-zinc-500 w-12 shrink-0 px-2 text-end select-none">
+                    <span className="text-muted-foreground/50 w-12 shrink-0 px-2 text-end select-none">
                         {left?.oldLineNumber ?? ""}
                     </span>
                 )}
@@ -356,7 +356,7 @@ function DiffViewerSplitLine({ pair, showLineNumbers = true, className, ...props
                 className={cn("flex w-1/2", diffLineVariants({ type: right?.type ?? "empty" }))}
             >
                 {showLineNumbers && (
-                    <span className="text-zinc-500 w-12 shrink-0 px-2 text-end select-none">
+                    <span className="text-muted-foreground/50 w-12 shrink-0 px-2 text-end select-none">
                         {right?.newLineNumber ?? ""}
                     </span>
                 )}
