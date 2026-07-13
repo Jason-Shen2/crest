@@ -1,8 +1,10 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { handleMagnifyToggle } from "./keymodel";
+import { getBlockComponentModel } from "@/app/store/global";
+import { checkKeyPressed } from "@/util/keyutil";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { appHandleKeyDown, handleMagnifyToggle, registerGlobalKeys } from "./keymodel";
 
 const mockKeyModel = vi.hoisted(() => ({
     focusedNodeAtom: { key: "focused-node" },
@@ -13,6 +15,12 @@ const mockKeyModel = vi.hoisted(() => ({
     },
     rightPanelModel: {
         toggleFocusedRightToolPanelMagnified: vi.fn(),
+    },
+    modalsModel: {
+        hasOpenModals: vi.fn(),
+        isModalOpen: vi.fn(),
+        popModal: vi.fn(),
+        pushModal: vi.fn(),
     },
 }));
 
@@ -84,11 +92,7 @@ vi.mock("@/util/util", () => ({
 }));
 
 vi.mock("./modalmodel", () => ({
-    modalsModel: {
-        isModalOpen: vi.fn(() => false),
-        popModal: vi.fn(),
-        pushModal: vi.fn(),
-    },
+    modalsModel: mockKeyModel.modalsModel,
 }));
 
 vi.mock("./windowtype", () => ({
@@ -101,6 +105,8 @@ describe("handleMagnifyToggle", () => {
         vi.clearAllMocks();
         mockKeyModel.layoutModel.focusedNode = mockKeyModel.focusedNodeAtom;
         mockKeyModel.focusedNode = { id: "node-a", data: { blockId: "block-a" } };
+        mockKeyModel.modalsModel.hasOpenModals.mockReturnValue(false);
+        mockKeyModel.modalsModel.isModalOpen.mockReturnValue(false);
     });
 
     it("toggles a focused right tool panel before falling back to block magnify", () => {
@@ -118,5 +124,28 @@ describe("handleMagnifyToggle", () => {
         expect(handleMagnifyToggle()).toBe(true);
 
         expect(mockKeyModel.layoutModel.magnifyNodeToggle).toHaveBeenCalledWith("node-a");
+    });
+});
+
+describe("appHandleKeyDown search shortcuts", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.stubGlobal("document", { activeElement: null });
+        mockKeyModel.layoutModel.focusedNode = mockKeyModel.focusedNodeAtom;
+        mockKeyModel.focusedNode = { id: "node-a", data: { blockId: "block-a" } };
+        mockKeyModel.modalsModel.hasOpenModals.mockReturnValue(false);
+        mockKeyModel.modalsModel.isModalOpen.mockReturnValue(false);
+        vi.mocked(checkKeyPressed).mockImplementation((_event, key) => key === "Escape");
+        vi.mocked(getBlockComponentModel).mockReturnValue(undefined);
+        registerGlobalKeys();
+    });
+
+    it("ignores Escape search deactivation when the focused block has no component model", () => {
+        expect(() => appHandleKeyDown({ key: "Escape" } as WaveKeyboardEvent)).not.toThrow();
+        expect(appHandleKeyDown({ key: "Escape" } as WaveKeyboardEvent)).toBe(false);
     });
 });

@@ -8,6 +8,7 @@ import { ModalsRenderer } from "@/app/modals/modalsrenderer";
 import { NotificationToastStacker } from "@/app/notifications/notification-toast";
 import { NotificationsModel } from "@/app/notifications/notifications-model";
 import { StatusBar } from "@/app/statusbar/status-bar";
+import { FocusManager } from "@/app/store/focusManager";
 import { TabContent } from "@/app/tab/tabcontent";
 import { VTabBar } from "@/app/tab/vtabbar";
 import { TopBar } from "@/app/topbar/topbar";
@@ -113,21 +114,28 @@ const WorkspaceElem = memo(() => {
         (px: number) => workspaceLayoutModel.setRightToolPanelWidth(px),
         [workspaceLayoutModel]
     );
-    const onRightToolPanelHide = useCallback(
-        () => workspaceLayoutModel.setRightToolPanelVisible(false),
-        [workspaceLayoutModel]
+    const onRightToolPanelMagnify = useCallback(
+        () => workspaceLayoutModel.setRightToolPanelMagnified(!rightToolPanelState.magnified),
+        [workspaceLayoutModel, rightToolPanelState.magnified]
     );
     const onRightToolPanelFocus = useCallback(
-        () => workspaceLayoutModel.setRightToolPanelFocused(true),
+        () => {
+            FocusManager.getInstance().requestRightToolPanelFocus();
+            workspaceLayoutModel.setRightToolPanelFocused(true);
+        },
         [workspaceLayoutModel]
     );
     const onMainWorkspaceFocus = useCallback(
-        () => workspaceLayoutModel.setRightToolPanelFocused(false),
+        () => {
+            FocusManager.getInstance().requestNodeFocus();
+            workspaceLayoutModel.setRightToolPanelFocused(false);
+        },
         [workspaceLayoutModel]
     );
     const onWorkspaceChromePointerDownCapture = useCallback(
         (event: PointerEvent<HTMLDivElement>) => {
             if (!shouldClearRightToolPanelFocusForTarget(event.target)) return;
+            FocusManager.getInstance().requestNodeFocus();
             workspaceLayoutModel.setRightToolPanelFocused(false);
         },
         [workspaceLayoutModel]
@@ -136,7 +144,7 @@ const WorkspaceElem = memo(() => {
         () => workspaceLayoutModel.setRightToolPanelMagnified(false),
         [workspaceLayoutModel]
     );
-    const showRightToolPanelLayout = rightToolPanelState.visible && !rightToolPanelState.magnified;
+    const showRightToolPanelLayout = rightToolPanelState.visible;
 
     return (
         <div
@@ -148,7 +156,7 @@ const WorkspaceElem = memo(() => {
                 showTabs={!showLeftTabBar}
                 onPointerDownCapture={onWorkspaceChromePointerDownCapture}
             />
-            <div className="flex flex-row flex-grow overflow-hidden min-h-0">
+            <div className="relative flex flex-row flex-grow overflow-hidden min-h-0">
                 {/* Left panel 1: vertical tab bar.  Absent from the
                         flex row when hidden — warp pattern (view.rs:19466
                         `if vertical_tabs_active { add child }`). */}
@@ -206,20 +214,22 @@ const WorkspaceElem = memo(() => {
                 </div>
                 {showRightToolPanelLayout ? (
                     <>
-                        <ResizeHandle
-                            width={rightToolPanelState.width}
-                            min={MinRightToolPanelWidth}
-                            maxFn={rightToolPanelMaxFn}
-                            onResize={onRightToolPanelResize}
-                            onResizeEnd={onRightToolPanelResizeEnd}
-                            side="left"
-                        />
+                        {!rightToolPanelState.magnified ? (
+                            <ResizeHandle
+                                width={rightToolPanelState.width}
+                                min={MinRightToolPanelWidth}
+                                maxFn={rightToolPanelMaxFn}
+                                onResize={onRightToolPanelResize}
+                                onResizeEnd={onRightToolPanelResizeEnd}
+                                side="left"
+                            />
+                        ) : null}
                         <RightToolPanel
                             state={rightToolPanelState}
                             onOpenTool={(tool) => workspaceLayoutModel.openRightTool(tool)}
                             onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
                             onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
-                            onHide={onRightToolPanelHide}
+                            onMagnify={onRightToolPanelMagnify}
                             onFocusPanel={onRightToolPanelFocus}
                             onBlurPanel={onMainWorkspaceFocus}
                         />
@@ -227,11 +237,6 @@ const WorkspaceElem = memo(() => {
                 ) : null}
                 <RightToolPanelMagnifiedOverlay
                     state={rightToolPanelState}
-                    onOpenTool={(tool) => workspaceLayoutModel.openRightTool(tool)}
-                    onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
-                    onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
-                    onFocusPanel={onRightToolPanelFocus}
-                    onBlurPanel={onMainWorkspaceFocus}
                     onExit={onRightToolPanelExitMagnified}
                 />
                 <ModalsRenderer />

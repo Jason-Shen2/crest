@@ -614,19 +614,23 @@ function registerGlobalKeys() {
     }
     function activateSearch(event: WaveKeyboardEvent): boolean {
         const bcm = getBlockComponentModel(getFocusedBlockInStaticTab());
-        // Ctrl+f is reserved in most shells
-        if (event.control && bcm.viewModel.viewType == "term") {
+        const viewModel = bcm?.viewModel;
+        if (!viewModel) {
             return false;
         }
-        if (bcm.viewModel.searchAtoms) {
-            if (globalStore.get(bcm.viewModel.searchAtoms.isOpen)) {
+        // Ctrl+f is reserved in most shells
+        if (event.control && viewModel.viewType == "term") {
+            return false;
+        }
+        if (viewModel.searchAtoms) {
+            if (globalStore.get(viewModel.searchAtoms.isOpen)) {
                 // Already open — increment the focusInput counter so this block's
                 // SearchComponent focuses its own input (avoids a global DOM query
                 // that could target the wrong block when multiple searches are open).
-                const cur = globalStore.get(bcm.viewModel.searchAtoms.focusInput) as number;
-                globalStore.set(bcm.viewModel.searchAtoms.focusInput, cur + 1);
+                const cur = globalStore.get(viewModel.searchAtoms.focusInput) as number;
+                globalStore.set(viewModel.searchAtoms.focusInput, cur + 1);
             } else {
-                globalStore.set(bcm.viewModel.searchAtoms.isOpen, true);
+                globalStore.set(viewModel.searchAtoms.isOpen, true);
             }
             return true;
         }
@@ -634,8 +638,9 @@ function registerGlobalKeys() {
     }
     function deactivateSearch(): boolean {
         const bcm = getBlockComponentModel(getFocusedBlockInStaticTab());
-        if (bcm.viewModel.searchAtoms && globalStore.get(bcm.viewModel.searchAtoms.isOpen)) {
-            globalStore.set(bcm.viewModel.searchAtoms.isOpen, false);
+        const viewModel = bcm?.viewModel;
+        if (viewModel?.searchAtoms && globalStore.get(viewModel.searchAtoms.isOpen)) {
+            globalStore.set(viewModel.searchAtoms.isOpen, false);
             return true;
         }
         return false;

@@ -37,9 +37,9 @@ describe("right tool panel state", () => {
             1200
         );
 
-        expect(state.openedTools).toEqual(["editor", "browser"]);
-        expect(state.activeTool).toBe("editor");
-        expect(state.toolState).toEqual({ editor: { path: "a.ts" } });
+        expect(state.openedTools).toEqual(["browser"]);
+        expect(state.activeTool).toBe("browser");
+        expect(state.toolState).toEqual({});
         expect(state.focused).toBe(false);
         expect(state.magnified).toBe(false);
         expect(state.width).toBeLessThanOrEqual(Math.floor(1200 * MaxRightToolPanelWidthRatio));
@@ -61,12 +61,18 @@ describe("right tool panel state", () => {
     });
 
     it("opens each outer tool at most once and activates it", () => {
-        const first = openRightTool(DefaultRightToolPanelState, "editor");
-        const second = openRightTool(first, "browser");
-        const third = openRightTool(second, "editor");
+        const first = openRightTool(DefaultRightToolPanelState, "browser");
+        const second = openRightTool(first, "sourceControl");
+        const third = openRightTool(second, "browser");
 
-        expect(third.openedTools).toEqual(["editor", "browser"]);
-        expect(third.activeTool).toBe("editor");
+        expect(third.openedTools).toEqual(["browser", "sourceControl"]);
+        expect(third.activeTool).toBe("browser");
+    });
+
+    it("ignores the temporarily unavailable editor tool", () => {
+        const state = openRightTool(DefaultRightToolPanelState, "editor");
+
+        expect(state).toBe(DefaultRightToolPanelState);
     });
 
     it("does not carry stale focus when a hidden panel is reopened by a non-panel entry", () => {
@@ -95,34 +101,34 @@ describe("right tool panel state", () => {
 
     it("closes active tools and falls back to a neighbor", () => {
         const state = openRightTool(
-            openRightTool(openRightTool(DefaultRightToolPanelState, "editor"), "browser"),
+            openRightTool(openRightTool(DefaultRightToolPanelState, "browser"), "sourceControl"),
             "terminal"
         );
 
         const afterTerminal = closeRightTool(state, "terminal");
-        expect(afterTerminal.openedTools).toEqual(["editor", "browser"]);
-        expect(afterTerminal.activeTool).toBe("browser");
+        expect(afterTerminal.openedTools).toEqual(["browser", "sourceControl"]);
+        expect(afterTerminal.activeTool).toBe("sourceControl");
 
-        const afterBrowser = closeRightTool(afterTerminal, "browser");
-        expect(afterBrowser.activeTool).toBe("editor");
+        const afterSourceControl = closeRightTool(afterTerminal, "sourceControl");
+        expect(afterSourceControl.activeTool).toBe("browser");
 
-        const afterEditor = closeRightTool(afterBrowser, "editor");
-        expect(afterEditor.openedTools).toEqual([]);
-        expect(afterEditor.activeTool).toBeUndefined();
+        const afterBrowser = closeRightTool(afterSourceControl, "browser");
+        expect(afterBrowser.openedTools).toEqual([]);
+        expect(afterBrowser.activeTool).toBeUndefined();
     });
 
     it("clears magnified when closing the last open tool so the launcher panel can render", () => {
         const state = {
-            ...openRightTool(DefaultRightToolPanelState, "editor"),
+            ...openRightTool(DefaultRightToolPanelState, "browser"),
             magnified: true,
         };
 
-        const afterEditor = closeRightTool(state, "editor");
+        const afterBrowser = closeRightTool(state, "browser");
 
-        expect(afterEditor.openedTools).toEqual([]);
-        expect(afterEditor.activeTool).toBeUndefined();
-        expect(afterEditor.visible).toBe(true);
-        expect(afterEditor.magnified).toBe(false);
+        expect(afterBrowser.openedTools).toEqual([]);
+        expect(afterBrowser.activeTool).toBeUndefined();
+        expect(afterBrowser.visible).toBe(true);
+        expect(afterBrowser.magnified).toBe(false);
     });
 
     it("clamps width to a usable right panel range", () => {

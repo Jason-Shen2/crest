@@ -7,6 +7,7 @@ import * as WOS from "@/app/store/wos";
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { atoms, getApi, refocusNode } from "@/store/global";
 import * as jotai from "jotai";
+import { routeAppNotification, shouldSuppressVisibleNotification } from "./notification-router";
 import { ToastModel } from "./toast-model";
 
 export type AgentNotificationSource = "crest-agent" | "agent-cli";
@@ -238,30 +239,10 @@ export class NotificationsModel {
                     const normalized = normalizeCmdBlockNotification(ev.title, ev.body);
                     if (normalized == null) return;
 
-                    // Skip when the user is already looking at this block's tab —
-                    // the agent output is visible inline; no need for an alert.
-                    const activeTabId = globalStore.get(atoms.staticTabId);
-                    const activeTabAtom = WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", activeTabId));
-                    const activeTab = globalStore.get(activeTabAtom);
-                    if (activeTab?.blockids?.includes(ev.blockid)) return;
-
-                    // Best-effort: find which tab owns this block so clicking the
-                    // notification can switch tabs.
-                    let tabId: string | undefined;
-                    const ws = globalStore.get(atoms.workspace);
-                    for (const tid of ws?.tabids ?? []) {
-                        const tabAtom = WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tid));
-                        const tab = globalStore.get(tabAtom);
-                        if (tab?.blockids?.includes(ev.blockid)) {
-                            tabId = tid;
-                            break;
-                        }
-                    }
-
                     this.pushNotification({
                         ...normalized,
                         blockId: ev.blockid,
-                        tabId,
+                        tabId: this.findTabIdForBlock(ev.blockid),
                     });
                 },
             });
@@ -296,11 +277,46 @@ export class NotificationsModel {
             read: false,
         };
 
+        const focused = globalStore.get(atoms.documentHasFocus);
+        const visible = this.isNotificationTargetVisible(note);
+        if (shouldSuppressVisibleNotification({ focused, visible })) {
+            return;
+        }
+
+        routeAppNotification(note, {
+            focused,
+            visible,
+            pushToast: (note) => ToastModel.getInstance().push(note),
+        });
+
         const current = globalStore.get(this.notificationsAtom);
         const next = [note, ...current].slice(0, MAX_NOTIFICATIONS);
         globalStore.set(this.notificationsAtom, next);
+    }
 
-        ToastModel.getInstance().push(note);
+    private findTabIdForBlock(blockId: string): string | undefined {
+        const ws = globalStore.get(atoms.workspace);
+        for (const tid of ws?.tabids ?? []) {
+            const tabAtom = WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tid));
+            const tab = globalStore.get(tabAtom);
+            if (tab?.blockids?.includes(blockId)) {
+                return tid;
+            }
+        }
+        return undefined;
+    }
+
+    private isNotificationTargetVisible(note: AppNotification): boolean {
+        const activeTabId = globalStore.get(atoms.staticTabId);
+        if (note.tabId && note.tabId === activeTabId) {
+            return true;
+        }
+        if (!note.blockId) {
+            return false;
+        }
+        const activeTabAtom = WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", activeTabId));
+        const activeTab = globalStore.get(activeTabAtom);
+        return activeTab?.blockids?.includes(note.blockId) === true;
     }
 
     markRead(id: string): void {

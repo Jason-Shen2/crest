@@ -140,9 +140,9 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(globalStore.get(model.rightToolPanelAtom)).toEqual({
             visible: false,
             width: 840,
-            openedTools: ["editor", "browser"],
+            openedTools: ["browser"],
             activeTool: "browser",
-            toolState: { editor: { path: "a.ts" } },
+            toolState: {},
             focused: false,
             magnified: false,
         });
@@ -152,7 +152,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         setWorkspace("ws-a");
         const model = WorkspaceLayoutModel.getInstance();
 
-        model.openRightTool("editor");
+        model.openRightTool("browser");
         model.setRightToolPanelWidth(99999);
         model.setRightToolPanelVisible(false);
         model.setRightToolPanelFocused(true);
@@ -161,16 +161,16 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
             visible: false,
             width: 620,
-            openedTools: ["editor"],
-            activeTool: "editor",
+            openedTools: ["browser"],
+            activeTool: "browser",
             focused: true,
             magnified: false,
         });
         expect(getPersistedRightToolPanelState()).toEqual({
             visible: false,
             width: 620,
-            openedTools: ["editor"],
-            activeTool: "editor",
+            openedTools: ["browser"],
+            activeTool: "browser",
             toolState: {},
         });
         expect(vi.mocked(RpcApi.SetMetaCommand).mock.calls.at(-1)?.[1]).toMatchObject({
@@ -219,12 +219,12 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         setWorkspace("ws-a", {
             [RightToolPanelMetaKey]: {
                 ...DefaultRightToolPanelState,
-                openedTools: ["editor"],
-                activeTool: "editor",
+                openedTools: ["sourceControl"],
+                activeTool: "sourceControl",
             },
         });
         const model = WorkspaceLayoutModel.getInstance();
-        expect(globalStore.get(model.rightToolPanelAtom).activeTool).toBe("editor");
+        expect(globalStore.get(model.rightToolPanelAtom).activeTool).toBe("sourceControl");
 
         setWorkspace("ws-b", {
             [RightToolPanelMetaKey]: {
@@ -243,12 +243,12 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         setWorkspace("ws-a", {
             [RightToolPanelMetaKey]: {
                 ...DefaultRightToolPanelState,
-                openedTools: ["editor"],
-                activeTool: "editor",
+                openedTools: ["sourceControl"],
+                activeTool: "sourceControl",
             },
         });
         const model = WorkspaceLayoutModel.getInstance();
-        expect(model.getRightToolPanelState().activeTool).toBe("editor");
+        expect(model.getRightToolPanelState().activeTool).toBe("sourceControl");
 
         setWorkspace("ws-b", {
             [RightToolPanelMetaKey]: {
@@ -359,11 +359,11 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
             [RightToolPanelMetaKey]: {
                 ...DefaultRightToolPanelState,
                 visible: true,
-                openedTools: ["editor"],
-                activeTool: "editor",
+                openedTools: ["browser"],
+                activeTool: "browser",
             },
         });
-        expect(model.getRightToolPanelState().activeTool).toBe("editor");
+        expect(model.getRightToolPanelState().activeTool).toBe("browser");
 
         expect(globalStore.get(model.codeReviewVisibleAtom)).toBe(false);
     });
@@ -394,7 +394,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
         expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(false);
 
-        model.openRightTool("editor");
+        model.openRightTool("browser");
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
 
         model.setRightToolPanelFocused(true);
@@ -441,7 +441,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(true);
     });
 
-    it("opens the right editor without focusing the right tool panel", () => {
+    it("does not open the temporarily disabled right editor tool", () => {
         setWorkspace("ws-a");
         const model = WorkspaceLayoutModel.getInstance();
         model.openRightTool("codeReview");
@@ -451,8 +451,8 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
 
         expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
             visible: true,
-            openedTools: ["codeReview", "editor"],
-            activeTool: "editor",
+            openedTools: ["codeReview"],
+            activeTool: "codeReview",
             focused: false,
         });
     });
