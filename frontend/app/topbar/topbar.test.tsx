@@ -162,6 +162,12 @@ describe("TopBar chrome layout", () => {
 
         // Right chrome: right-panel toggle + notifications + settings.
         expect(markup).toContain('title="Search"');
+        expect(markup).toContain("topbar-search-kbd-command");
+        expect(markup).toContain("topbar-search-kbd-key");
+        expect(markup).toContain("⌘");
+        expect(markup).toContain("P");
+        expect(markup).not.toContain("<kbd");
+        expect(markup).not.toContain("Cmd K");
         expect(markup).toContain('aria-label="Toggle Right Panel"');
         expect(markup).toContain('aria-label="Notifications"');
         expect(markup).toContain('aria-label="Settings"');

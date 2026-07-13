@@ -28,7 +28,7 @@
 import { Icon } from "@/app/icon/Icon";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { useAtomValue } from "jotai";
-import { memo, useEffect } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { getCachedHome, workspaceDirAtom } from "./file-explorer-atoms";
 import { FileExplorerModel } from "./file-explorer-model";
 import { FileExplorerTree } from "./file-explorer-tree";
@@ -53,11 +53,17 @@ export const FileExplorer = memo(() => {
     const model = FileExplorerModel.getInstance();
     const root = useAtomValue(model.rootAtom);
     const cwd = useAtomValue(workspaceDirAtom);
+    const [isTreeScrolling, setIsTreeScrolling] = useState(false);
+    const treeScrollIdleTimerRef = useRef<number>(0);
 
     useEffect(() => {
         if (!cwd) return;
         if (cwd !== model.getRootNow()) model.setRoot(cwd);
     }, [cwd]);
+
+    useEffect(() => {
+        return () => window.clearTimeout(treeScrollIdleTimerRef.current);
+    }, []);
 
     const onNewFile = () => model.startNewFile(root);
     const onNewFolder = () => model.startNewFolder(root);
@@ -66,28 +72,27 @@ export const FileExplorer = memo(() => {
         WorkspaceLayoutModel.getInstance().setFileExplorerVisible(false);
     };
 
+    const onTreeScroll = () => {
+        setIsTreeScrolling(true);
+        window.clearTimeout(treeScrollIdleTimerRef.current);
+        treeScrollIdleTimerRef.current = window.setTimeout(() => setIsTreeScrolling(false), 650);
+    };
+
     return (
-        <div className="flex flex-col h-full w-full bg-black/20 text-primary overflow-hidden">
-            <div className="flex h-8 shrink-0 items-center gap-1 border-b border-white/10 px-2">
-                {/* Left: folder glyph + dir name.  flex-1 + min-w-0 lets
-                    the name truncate when the panel narrows; the title
-                    attribute keeps the full path discoverable on hover. */}
+        <div className="flex flex-col h-full w-full bg-card text-primary overflow-hidden border-r border-border/60">
+            <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                    <Icon name="folder-01" size={14} className="shrink-0 text-white/45" />
+                    <Icon name="folder-01" size={14} className="shrink-0 text-muted-foreground" />
                     <span className="truncate text-xs font-medium text-foreground/80" title={root}>
                         {prettyRoot(root)}
                     </span>
                 </div>
-                {/* Right: 24px square buttons.  size-6 + rounded-md + muted
-                    → hover pair is the same vocabulary used in the
-                    WorkspaceSwitcher popover action rows, so they read
-                    as a single design system across the app. */}
                 <div className="flex shrink-0 items-center gap-0.5">
                     <button
                         type="button"
                         title="New File"
                         onClick={onNewFile}
-                        className="grid size-6 cursor-pointer place-items-center rounded-md text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white"
+                        className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-foreground"
                     >
                         <Icon name="file-plus" size={14} strokeWidth={1.75} />
                     </button>
@@ -95,7 +100,7 @@ export const FileExplorer = memo(() => {
                         type="button"
                         title="New Folder"
                         onClick={onNewFolder}
-                        className="grid size-6 cursor-pointer place-items-center rounded-md text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white"
+                        className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-foreground"
                     >
                         <Icon name="folder-01" size={14} strokeWidth={1.75} />
                     </button>
@@ -103,13 +108,17 @@ export const FileExplorer = memo(() => {
                         type="button"
                         title="Close"
                         onClick={onClose}
-                        className="grid size-6 cursor-pointer place-items-center rounded-md text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white"
+                        className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-foreground"
                     >
                         <Icon name="cancel-01" size={14} strokeWidth={1.75} />
                     </button>
                 </div>
             </div>
-            <div className="flex-grow overflow-auto">
+            <div
+                className="file-explorer-scroll flex-grow overflow-auto"
+                data-scrolling={isTreeScrolling ? "true" : "false"}
+                onScroll={onTreeScroll}
+            >
                 <FileExplorerTree />
             </div>
         </div>

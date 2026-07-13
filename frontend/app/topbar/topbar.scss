@@ -160,7 +160,7 @@
     align-items: center;
     gap: 6px;
     height: 28px;
-    width: 220px;
+    width: 128px;
     padding: 0 8px;
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.05);
@@ -176,13 +176,24 @@
 }
 
 .topbar-search-kbd {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
     margin-left: auto;
-    font-size: 10px;
-    color: rgba(195, 200, 194, 0.7);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 4px;
-    padding: 1px 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(195, 200, 194, 0.78);
     font-family: ui-monospace, "SF Mono", monospace;
+    line-height: 1;
+}
+
+.topbar-search-kbd-command {
+    font-size: 15px;
+    line-height: 0.8;
+}
+
+.topbar-search-kbd-key {
+    line-height: 1;
 }
 
 // ---- right chrome (bell + settings) ----

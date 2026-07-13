@@ -25,9 +25,10 @@ import { defaultDark } from "./default-dark";
 import { resolvePartialTermTheme, type PartialTermTheme } from "../types";
 
 describe("theme registry", () => {
-    test("returns the 3 bundled themes by default", () => {
+    test("returns the 4 bundled themes by default", () => {
         const themes = getBuiltinThemes();
         expect(Object.keys(themes).sort()).toEqual([
+            "claude",
             "cyber-wave",
             "default-dark",
             "solarized-light",
@@ -159,13 +160,20 @@ describe("getBuiltinThemeEntries", () => {
 
     test("entries can be re-applied with applyPartialTheme to produce the same merged result", () => {
         // Sanity-check the contract: getBuiltinThemeEntries() +
-        // resolvePartialTermTheme() should give the same merged theme
-        // as getBuiltinThemes() — they're two paths to the same data.
+        // resolvePartialTermTheme() should give the same color payload
+        // as getBuiltinThemes(). Metadata (id/display:name/display:order)
+        // is applied by resolveEntry on top of the color merge so
+        // downstream consumers see the correct labels.
         const entries = getBuiltinThemeEntries();
         const merged = getBuiltinThemes();
         for (const { key, entry, base } of entries) {
             if (base == null) continue; // terminal base, no merge to verify
             const fromEntries = resolvePartialTermTheme(entry.theme, base);
+            fromEntries.id = entry.theme.id;
+            fromEntries["display:name"] = entry.theme["display:name"];
+            if (entry.theme["display:order"] !== undefined) {
+                fromEntries["display:order"] = entry.theme["display:order"];
+            }
             const fromBuiltin = merged[key];
             expect(fromEntries).toEqual(fromBuiltin);
         }

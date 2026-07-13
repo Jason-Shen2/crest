@@ -29,6 +29,7 @@ import * as jotai from "jotai";
 import { globalStore } from "@/app/store/jotaiStore";
 import { atoms } from "@/app/store/global";
 import { blend, parseHex, pickBestForeground, RGBA, toRgbCss, withOpacity } from "./theme-color";
+import { getBuiltinThemes, getThemeUiOverrides } from "./registry/themes";
 
 const DEFAULT_THEME_KEY = "default-dark";
 
@@ -134,6 +135,37 @@ const MANAGED_VARS = [
     "--color-term-error",
     "--color-term-warning",
     "--color-term-yellow",
+    // shadcn/ui tokens
+    "--color-card",
+    "--color-card-foreground",
+    "--color-popover",
+    "--color-popover-foreground",
+    "--color-primary-foreground",
+    "--color-secondary-foreground",
+    "--color-accent-foreground",
+    "--color-destructive",
+    "--color-destructive-foreground",
+    "--color-ring",
+    "--color-input",
+    "--color-error",
+    "--color-warning",
+    "--color-success",
+    "--color-add",
+    "--color-add-strong",
+    "--color-remove",
+    "--color-remove-strong",
+    // Code / diff viewer backgrounds
+    "--color-code-bg",
+    "--color-code-header-bg",
+    // Sidebar tokens (file explorer, future icon rail)
+    "--color-sidebar",
+    "--color-sidebar-foreground",
+    "--color-sidebar-primary",
+    "--color-sidebar-primary-foreground",
+    "--color-sidebar-accent",
+    "--color-sidebar-accent-foreground",
+    "--color-sidebar-border",
+    "--color-sidebar-ring",
     // ANSI 16
     "--ansi-black",
     "--ansi-red",
@@ -158,6 +190,43 @@ function pickHex(...candidates: string[]): string | null {
         if (c && typeof c === "string" && c.trim()) return c;
     }
     return null;
+}
+
+// Parse an arbitrary color string (hex, rgb(), rgba()) into an RGBA.
+// Returns null if the value cannot be parsed.  Used for ui override
+// values that come from theme authors as raw CSS strings.
+function parseColorString(value: string): RGBA | null {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("#")) {
+        try {
+            return parseHex(trimmed);
+        } catch {
+            return null;
+        }
+    }
+    const rgbMatch = trimmed.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)$/i);
+    if (rgbMatch) {
+        const r = Math.min(255, Math.max(0, parseInt(rgbMatch[1], 10)));
+        const g = Math.min(255, Math.max(0, parseInt(rgbMatch[2], 10)));
+        const b = Math.min(255, Math.max(0, parseInt(rgbMatch[3], 10)));
+        let a = 255;
+        if (rgbMatch[4] !== undefined) {
+            const alphaFloat = parseFloat(rgbMatch[4]);
+            a = Math.round(Math.min(1, Math.max(0, alphaFloat)) * 255);
+        }
+        return { r, g, b, a };
+    }
+    return null;
+}
+
+// Convert a CSS color value (string) to a format suitable for CSS
+// custom property assignment.  Raw strings are returned as-is so
+// authors can use rgba()/oklch()/etc.; #-hex values are normalized
+// through toRgbCss() for consistency with computed vars.
+function toCssColorValue(value: string): string {
+    const parsed = parseColorString(value);
+    if (parsed) return toRgbCss(parsed);
+    return value;
 }
 
 function resolveTheme(key: string, theme: TermThemeType): ResolvedTheme {
@@ -260,12 +329,17 @@ function computeVars(t: ResolvedTheme): Record<string, string> {
     // Foreground / text strata.  warp's "darker" preset hands main
     // text @90, sub @60, hint @40 — we map crest's existing tokens to
     // the closest equivalents so already-shipped CSS keeps working.
+    // NOTE: --color-secondary stays a TEXT color (muted foreground)
+    // for backward compat with existing text-secondary usage; the
+    // shadcn secondary-background role is served by --color-muted
+    // (which is a bg tone) and components can use bg-muted/50 etc.
     vars["--color-foreground"] = toRgbCss(t.foreground);
     vars["--color-primary"] = toRgbCss(t.foreground);
     vars["--color-white"] = toRgbCss(t.foreground);
     vars["--color-secondary"] = toRgbCss(withOpacity(t.foreground, 60));
+    vars["--color-secondary-foreground"] = toRgbCss(t.foreground);
     vars["--color-muted-foreground"] = toRgbCss(withOpacity(t.foreground, 60));
-    vars["--color-muted"] = toRgbCss(withOpacity(t.foreground, 45));
+    vars["--color-muted"] = toRgbCss(blend(t.background, withOpacity(t.foreground, 8)));
     vars["--color-sub-text"] = toRgbCss(withOpacity(t.foreground, 62));
 
     // Accent + state variants.  Formulas straight from
@@ -377,6 +451,56 @@ function computeVars(t: ResolvedTheme): Record<string, string> {
     vars["--color-term-warning"] = toRgbCss(t.ansi.yellow);
     vars["--color-term-yellow"] = toRgbCss(t.ansi.yellow);
 
+    // shadcn/ui tokens — derived from the same palette so all
+    // shadcn components (button, dialog, card, input, etc.)
+    // automatically follow the active theme instead of staying
+    // locked to the static @theme defaults in tailwindsetup.css.
+    const cardSurface = blend(t.background, withOpacity(t.foreground, 8));
+    vars["--color-card"] = toRgbCss(cardSurface);
+    vars["--color-card-foreground"] = toRgbCss(t.foreground);
+    vars["--color-popover"] = toRgbCss(cardSurface);
+    vars["--color-popover-foreground"] = toRgbCss(t.foreground);
+    vars["--color-primary-foreground"] = toRgbCss(pickBestForeground(t.foreground, t.background, t.foreground));
+    vars["--color-secondary-foreground"] = toRgbCss(t.foreground);
+    vars["--color-accent-foreground"] = toRgbCss(t.foreground);
+    vars["--color-destructive"] = toRgbCss(t.ansi.red);
+    vars["--color-destructive-foreground"] = toRgbCss(pickBestForeground(t.ansi.red, t.foreground, t.background));
+    vars["--color-ring"] = toRgbCss(t.accent);
+    vars["--color-input"] = toRgbCss(withOpacity(t.foreground, 14));
+    vars["--color-error"] = toRgbCss(t.ansi.red);
+    vars["--color-warning"] = toRgbCss(t.ansi.yellow);
+    vars["--color-success"] = toRgbCss(t.ansi.green);
+    vars["--color-add"] = toRgbCss(withOpacity(t.ansi.green, 22));
+    vars["--color-add-strong"] = toRgbCss(t.ansi.green);
+    vars["--color-remove"] = toRgbCss(withOpacity(t.ansi.red, 24));
+    vars["--color-remove-strong"] = toRgbCss(t.ansi.red);
+
+    // Code block backgrounds — a surface step deeper than prose so
+    // fenced code / diff viewers have visual separation.  Uses the
+    // same bg⊕fg blend formula as --color-surface-* so it adapts to
+    // any theme (lighter on dark, darker on light).
+    vars["--color-code-bg"] = toRgbCss(blend(t.background, withOpacity(t.foreground, 8)));
+    vars["--color-code-header-bg"] = toRgbCss(blend(t.background, withOpacity(t.foreground, 14)));
+
+    // Sidebar tokens — defaults for themes that don't pin explicit
+    // values.  For dark themes the sidebar sits a step darker than
+    // card to create visual hierarchy; for light themes it stays
+    // close to card.  These are all overridable via a theme's `ui`
+    // field (see applyTheme).
+    const isDark = t.details === "darker";
+    const sidebarBg = isDark
+        ? blend(t.background, { r: 0, g: 0, b: 0, a: 38 }) // bg ⊕ black@15% — pushes darker
+        : blend(t.background, withOpacity(t.foreground, 5));
+    const sidebarAccent = blend(t.background, withOpacity(t.foreground, 9));
+    vars["--color-sidebar"] = toRgbCss(sidebarBg);
+    vars["--color-sidebar-foreground"] = toRgbCss(t.foreground);
+    vars["--color-sidebar-primary"] = toRgbCss(t.accent);
+    vars["--color-sidebar-primary-foreground"] = toRgbCss(pickBestForeground(t.accent, t.foreground, t.background));
+    vars["--color-sidebar-accent"] = toRgbCss(sidebarAccent);
+    vars["--color-sidebar-accent-foreground"] = toRgbCss(t.foreground);
+    vars["--color-sidebar-border"] = toRgbCss(withOpacity(t.foreground, 10));
+    vars["--color-sidebar-ring"] = toRgbCss(t.accent);
+
     // ANSI palette — feeds --ansi-* used by the renderer's
     // resolveColor() in frontend/app/term/render/color.ts.
     vars["--ansi-black"] = toRgbCss(t.ansi.black);
@@ -434,7 +558,7 @@ export class ThemeModel {
     private applyFromStore(): void {
         const fullConfig = globalStore.get(atoms.fullConfigAtom);
         if (!fullConfig) return;
-        const themes = fullConfig.termthemes ?? {};
+        const themes = getBuiltinThemes(fullConfig.termthemes ?? {});
         const settingsTheme = fullConfig.settings?.["term:theme"];
         const key =
             (settingsTheme && themes[settingsTheme] && settingsTheme) ||
@@ -447,6 +571,53 @@ export class ThemeModel {
     applyTheme(key: string, theme: TermThemeType): void {
         const resolved = resolveTheme(key, theme);
         const vars = computeVars(resolved);
+
+        // Apply registry-level UI token overrides (e.g. terax-ai Claude
+        // theme pins exact hexes for card/popover/sidebar instead of
+        // relying on blend-formula derivation).  These win over the
+        // computed defaults for any key the theme explicitly declares.
+        //
+        // NOTE: we deliberately do NOT map ui.secondary / ui.accent to
+        // --color-secondary / --color-accent here:
+        //   - crest --color-secondary is a TEXT color (muted fg) used
+        //     by `text-secondary` throughout the codebase; terax
+        //     `secondary` is a background tone.
+        //   - crest --color-accent is the brand/CTA color (buttons,
+        //     links, focus rings, cursor); terax `accent` is a subtle
+        //     hover/selection gray.  The sidebar-* accent tokens carry
+        //     that hover-gray role for panel regions like the file
+        //     explorer.
+        const uiOverrides = getThemeUiOverrides(key);
+        const uiVarMap: Record<string, keyof typeof uiOverrides> = {
+            "--color-card": "card",
+            "--color-card-foreground": "cardForeground",
+            "--color-popover": "popover",
+            "--color-popover-foreground": "popoverForeground",
+            "--color-primary-foreground": "primaryForeground",
+            "--color-muted": "muted",
+            "--color-muted-foreground": "mutedForeground",
+            "--color-accent-foreground": "accentForeground",
+            "--color-destructive": "destructive",
+            "--color-destructive-foreground": "destructiveForeground",
+            "--color-border": "border",
+            "--color-input": "input",
+            "--color-ring": "ring",
+            "--color-sidebar": "sidebar",
+            "--color-sidebar-foreground": "sidebarForeground",
+            "--color-sidebar-primary": "sidebarPrimary",
+            "--color-sidebar-primary-foreground": "sidebarPrimaryForeground",
+            "--color-sidebar-accent": "sidebarAccent",
+            "--color-sidebar-accent-foreground": "sidebarAccentForeground",
+            "--color-sidebar-border": "sidebarBorder",
+            "--color-sidebar-ring": "sidebarRing",
+        };
+        for (const [cssVar, uiKey] of Object.entries(uiVarMap)) {
+            const val = uiOverrides[uiKey];
+            if (val !== undefined && val !== null && val !== "") {
+                vars[cssVar] = toCssColorValue(val);
+            }
+        }
+
         const root = document.documentElement;
         // Iterate managed vars so any token absent from the new map
         // (e.g. --bg-gradient when switching from Cyber Wave to a solid
