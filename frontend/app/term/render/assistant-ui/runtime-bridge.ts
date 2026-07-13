@@ -8,8 +8,12 @@ import {
     useExternalStoreRuntime,
     type AppendMessage,
     type AssistantRuntime,
+    type Attachment,
+    type AttachmentAdapter,
+    type CompleteAttachment,
     type ExternalStoreAdapter,
     type MessageStatus,
+    type PendingAttachment,
     type ThreadAssistantMessagePart,
     type ThreadMessage,
     type ThreadUserMessagePart,
@@ -17,7 +21,8 @@ import {
 } from "@assistant-ui/react";
 import { useMemo } from "react";
 
-import { type PiAgentMessage, type PiRun, type UsePiChatReturn, type UsePiChatStatus } from "@/app/store/use-pi-chat";
+import { type PiAgentMessage, type PiTurn, type UsePiChatReturn, type UsePiChatStatus } from "@/app/store/use-pi-chat";
+import { arrayToBase64 } from "@/util/util";
 
 interface ToolResultPayload {
     content?: unknown;
@@ -28,7 +33,7 @@ interface ToolResultPayload {
 type PiContentPart = NonNullable<PiAgentMessage["content"]>[number];
 
 export interface CrestAssistantRuntimeBridge {
-    runs: PiRun[];
+    turns: PiTurn[];
     status: UsePiChatStatus;
     submit: (text: string, images?: string[]) => boolean | Promise<boolean | void> | void;
     abort: () => void;
@@ -36,11 +41,11 @@ export interface CrestAssistantRuntimeBridge {
 
 type CrestAssistantRuntimeSource = UsePiChatReturn | CrestAssistantRuntimeBridge;
 
-export function piRunToAuiMessages(runs: PiRun[]): ThreadMessage[] {
+export function piTurnsToAuiMessages(turns: PiTurn[]): ThreadMessage[] {
     const messages: ThreadMessage[] = [];
-    for (const run of runs) {
-        messages.push(createUserMessage(run));
-        messages.push(createAssistantMessage(run));
+    for (const turn of turns) {
+        messages.push(createUserMessage(turn));
+        messages.push(createAssistantMessage(turn));
     }
     return messages;
 }
@@ -49,24 +54,26 @@ export function createCrestAssistantRuntimeAdapter(
     source: CrestAssistantRuntimeSource
 ): ExternalStoreAdapter<ThreadMessage> {
     return {
-        messages: piRunToAuiMessages(source.runs),
+        messages: piTurnsToAuiMessages(source.turns),
         isRunning: source.status === "streaming",
         adapters: {
             attachments: new CompositeAttachmentAdapter([
                 new SimpleImageAttachmentAdapter(),
                 new SimpleTextAttachmentAdapter(),
+                new CrestFileAttachmentAdapter(),
             ]),
         },
         onNew: async (message: AppendMessage): Promise<void> => {
             if (message.role !== "user") return;
             const text = textFromUserMessage(message);
+            const textWithQuote = injectQuoteContext(text, quoteFromUserMessage(message));
             const images = imagesFromUserMessage(message);
-            if (!text && images.length === 0) return;
+            if (!textWithQuote && images.length === 0) return;
             if ("send" in source) {
-                await source.send(text);
+                await source.send(textWithQuote);
                 return;
             }
-            await source.submit(text, images);
+            await source.submit(textWithQuote, images);
         },
         onCancel: async (): Promise<void> => {
             source.abort();
@@ -74,31 +81,65 @@ export function createCrestAssistantRuntimeAdapter(
     };
 }
 
+export class CrestFileAttachmentAdapter implements AttachmentAdapter {
+    accept = "*";
+
+    async add({ file }: { file: File }): Promise<PendingAttachment> {
+        return {
+            id: file.name,
+            type: "file",
+            name: file.name,
+            contentType: file.type || "application/octet-stream",
+            file,
+            status: { type: "requires-action", reason: "composer-send" },
+        };
+    }
+
+    async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+        const mimeType = attachment.contentType || attachment.file.type || "application/octet-stream";
+        const bytes = new Uint8Array(await attachment.file.arrayBuffer());
+        return {
+            ...attachment,
+            status: { type: "complete" },
+            content: [
+                {
+                    type: "file",
+                    filename: attachment.name,
+                    mimeType,
+                    data: arrayToBase64(bytes),
+                },
+            ],
+        };
+    }
+
+    async remove(_attachment: Attachment): Promise<void> {}
+}
+
 export function useCrestAssistantRuntime(source: CrestAssistantRuntimeSource): AssistantRuntime {
     const adapter = useMemo(() => createCrestAssistantRuntimeAdapter(source), [source]);
     return useExternalStoreRuntime(adapter);
 }
 
-function createUserMessage(run: PiRun): ThreadMessage {
+function createUserMessage(turn: PiTurn): ThreadMessage {
     return {
-        id: `user-${run.runId}`,
+        id: `user-${turn.turnId}`,
         role: "user",
-        createdAt: dateFromPiMessage(run.userMessage),
-        content: userContentFromPiMessage(run.userMessage),
+        createdAt: dateFromPiMessage(turn.userMessage),
+        content: userContentFromPiMessage(turn.userMessage),
         attachments: [],
-        metadata: metadataForRun(run),
+        metadata: metadataForTurn(turn),
     };
 }
 
-function createAssistantMessage(run: PiRun): ThreadMessage {
+function createAssistantMessage(turn: PiTurn): ThreadMessage {
     return {
-        id: `assistant-${run.runId}`,
+        id: `assistant-${turn.turnId}`,
         role: "assistant",
-        createdAt: dateFromPiMessage(firstResponseMessage(run)),
-        content: assistantContentFromRun(run),
-        status: statusFromPiRun(run),
+        createdAt: dateFromPiMessage(firstResponseMessage(turn)),
+        content: assistantContentFromTurn(turn),
+        status: statusFromPiTurn(turn),
         metadata: {
-            ...metadataForRun(run),
+            ...metadataForTurn(turn),
             unstable_state: undefined,
             unstable_annotations: [],
             unstable_data: [],
@@ -122,10 +163,10 @@ function userContentFromPiMessage(message: PiAgentMessage | undefined): ThreadUs
     return parts;
 }
 
-function assistantContentFromRun(run: PiRun): ThreadAssistantMessagePart[] {
-    const resultsByCallId = indexToolResults(run.responseMessages);
+function assistantContentFromTurn(turn: PiTurn): ThreadAssistantMessagePart[] {
+    const resultsByCallId = indexToolResults(turn.responseMessages);
     const parts: ThreadAssistantMessagePart[] = [];
-    for (const message of run.responseMessages) {
+    for (const message of turn.responseMessages) {
         if (message.role !== "assistant" || !message.content) continue;
         for (const content of message.content) {
             const part = assistantPartFromPiContent(content, resultsByCallId);
@@ -206,22 +247,50 @@ function resultValue(result: ToolResultPayload): Record<string, unknown> {
     return value;
 }
 
-function statusFromPiRun(run: PiRun): MessageStatus {
-    if (run.status === "streaming") return { type: "running" };
-    if (run.status === "error") {
-        return { type: "incomplete", reason: "error", error: run.errorMessage ?? "agent error" };
+function statusFromPiTurn(turn: PiTurn): MessageStatus {
+    if (turn.status === "streaming") return { type: "running" };
+    if (turn.status === "error") {
+        return { type: "incomplete", reason: "error", error: turn.errorMessage ?? "agent error" };
     }
-    const stopReason = lastAssistantStopReason(run);
+    const stopReason = lastAssistantStopReason(turn);
     if (stopReason === "aborted") return { type: "incomplete", reason: "cancelled" };
     if (stopReason === "length") return { type: "incomplete", reason: "length" };
     return { type: "complete", reason: "stop" };
 }
 
 function textFromUserMessage(message: AppendMessage): string {
-    return message.content
-        .filter((part) => part.type === "text")
-        .map((part) => part.text)
+    const textParts: string[] = [];
+    for (const part of message.content) {
+        if (part.type === "text") {
+            textParts.push(part.text);
+        }
+    }
+    return textParts.join("\n");
+}
+
+function quoteFromUserMessage(message: AppendMessage): { text: string; messageId: string } | undefined {
+    const quote = message.metadata?.custom?.quote;
+    if (!quote || typeof quote !== "object") return undefined;
+
+    const text = stringValue((quote as { text?: unknown }).text).trim();
+    if (!text) return undefined;
+
+    return {
+        text,
+        messageId: stringValue((quote as { messageId?: unknown }).messageId),
+    };
+}
+
+function injectQuoteContext(text: string, quote: { text: string } | undefined): string {
+    if (!quote?.text.trim()) return text;
+
+    const quotedText = quote.text
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => `> ${line}`)
         .join("\n");
+    if (!text) return quotedText;
+    return `${quotedText}\n\n${text}`;
 }
 
 function imagesFromUserMessage(message: AppendMessage): string[] {
@@ -238,22 +307,23 @@ function dateFromPiMessage(message: PiAgentMessage | undefined): Date {
     return new Date(typeof message?.timestamp === "number" ? message.timestamp : Date.now());
 }
 
-function firstResponseMessage(run: PiRun): PiAgentMessage | undefined {
-    return run.responseMessages[0] ?? run.userMessage;
+function firstResponseMessage(turn: PiTurn): PiAgentMessage | undefined {
+    return turn.responseMessages[0] ?? turn.userMessage;
 }
 
-function lastAssistantStopReason(run: PiRun): string {
-    for (let i = run.responseMessages.length - 1; i >= 0; i--) {
-        const message = run.responseMessages[i];
+function lastAssistantStopReason(turn: PiTurn): string {
+    for (let i = turn.responseMessages.length - 1; i >= 0; i--) {
+        const message = turn.responseMessages[i];
         if (message.role === "assistant" && typeof message.stopReason === "string") return message.stopReason;
     }
     return "";
 }
 
-function metadataForRun(run: PiRun) {
+function metadataForTurn(turn: PiTurn) {
     return {
         custom: {
-            runId: run.runId,
+            turnId: turn.turnId,
+            changeOutline: turn.changeOutline,
         },
     };
 }

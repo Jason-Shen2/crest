@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import type { AgentInlineCommandResult } from "./agent-chat-host";
 import { AgentCommandResult, AgentCommandResultList } from "./agent-command-result";
 
+const noop = () => {};
+
 describe("AgentCommandResult", () => {
     it("renders ordinary command results as inline status lines", () => {
         const result: AgentInlineCommandResult = {
@@ -12,12 +14,12 @@ describe("AgentCommandResult", () => {
             message: "Copied last agent message to clipboard",
         };
 
-        const html = renderToStaticMarkup(<AgentCommandResult result={result} />);
+        const html = renderToStaticMarkup(<AgentCommandResult result={result} onDismiss={noop} />);
 
         expect(html).toContain("Copied last agent message to clipboard");
         expect(html).toContain("text-secondary");
+        expect(html).toContain('aria-label="Dismiss"');
         expect(html).not.toContain("fixed");
-        expect(html).not.toContain("absolute");
     });
 
     it("renders session output as a structured inline info block", () => {
@@ -43,13 +45,19 @@ describe("AgentCommandResult", () => {
             ].join("\n"),
         };
 
-        const html = renderToStaticMarkup(<AgentCommandResult result={result} />);
+        const html = renderToStaticMarkup(<AgentCommandResult result={result} onDismiss={noop} />);
 
         expect(html).toContain("Session Info");
         expect(html).toContain("Messages");
         expect(html).toContain("Tokens");
         expect(html).toContain("Cost");
         expect(html).toContain("/tmp/session.jsonl");
+        expect(html).toContain('aria-label="Dismiss"');
+        expect(html).toContain("rounded-2xl");
+        expect(html).toContain("border-white/[0.12]");
+        expect(html).toContain("bg-[rgba(34,34,36,0.62)]");
+        expect(html).toContain("backdrop-blur-2xl");
+        expect(html).not.toContain("rounded-t-xl");
     });
 
     it("renders compact success as an inline summary block", () => {
@@ -59,11 +67,11 @@ describe("AgentCommandResult", () => {
             message: "Compacted session context.",
         };
 
-        const html = renderToStaticMarkup(<AgentCommandResult result={result} />);
+        const html = renderToStaticMarkup(<AgentCommandResult result={result} onDismiss={noop} />);
 
         expect(html).toContain("Context compacted");
         expect(html).toContain("Compacted session context.");
-        expect(html).toContain("border-l");
+        expect(html).toContain("text-success");
     });
 
     it("renders noop results as inline warnings", () => {
@@ -73,7 +81,7 @@ describe("AgentCommandResult", () => {
             message: "No active agent session to compact.",
         };
 
-        const html = renderToStaticMarkup(<AgentCommandResult result={result} />);
+        const html = renderToStaticMarkup(<AgentCommandResult result={result} onDismiss={noop} />);
 
         expect(html).toContain("No active agent session to compact.");
         expect(html).toContain("text-warning");
@@ -89,8 +97,14 @@ describe("AgentCommandResult", () => {
             },
         ];
 
-        const html = renderToStaticMarkup(<AgentCommandResultList results={results} />);
+        const html = renderToStaticMarkup(<AgentCommandResultList results={results} onDismiss={noop} />);
 
         expect(html.indexOf("Copied last agent message")).toBeLessThan(html.indexOf("Reloaded keybindings"));
+    });
+
+    it("renders nothing when results list is empty", () => {
+        const html = renderToStaticMarkup(<AgentCommandResultList results={[]} onDismiss={noop} />);
+
+        expect(html).toBe("");
     });
 });
