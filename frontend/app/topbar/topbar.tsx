@@ -121,12 +121,19 @@ const PanelAnchor = memo(({ children, panel, isOpen, onOpenChange }: PanelAnchor
 });
 PanelAnchor.displayName = "PanelAnchor";
 
-// ---- Left chrome: explorer + search trigger ----
+// ---- Left chrome: sessions + explorer + search trigger ----
 const LeftChrome = memo(() => {
     const model = WorkspaceLayoutModel.getInstance();
     const explorerVisible = useAtomValue(model.fileExplorerVisibleAtom);
+    const sessionsVisible = useAtomValue(model.sessionsPanelVisibleAtom);
     return (
         <div className="topbar-left-chrome">
+            <ToolbarButton
+                icon="message-01"
+                label="Agent Sessions"
+                active={sessionsVisible}
+                onClick={() => model.setSessionsPanelVisible(!model.getSessionsPanelVisible())}
+            />
             <ToolbarButton
                 icon="list-tree"
                 label="Toggle File Explorer"
@@ -170,7 +177,10 @@ const SearchInline = memo(() => {
         >
             <Icon name="search-01" size={12} strokeWidth={1.75} />
             <span>Search</span>
-            <span className="topbar-search-kbd">Cmd K</span>
+            <span className="topbar-search-kbd" aria-label="Command P">
+                <span className="topbar-search-kbd-command">⌘</span>
+                <span className="topbar-search-kbd-key">P</span>
+            </span>
         </button>
     );
 });

@@ -34,6 +34,39 @@ export type PartialTermTheme = {
     "display:order"?: number;
 } & Partial<Omit<TermThemeType, "display:name">>;
 
+// UI token overrides — lets a theme specify exact shadcn/ui + sidebar
+// color values instead of relying on the blend-formula defaults in
+// ThemeModel.computeVars().  Mirrors terax-ai's ThemeColors shape so
+// ported themes can use the same hex values verbatim.  All fields are
+// optional; any unset token falls through to the formula-computed value.
+export type UiThemeOverrides = {
+    card?: string;
+    cardForeground?: string;
+    popover?: string;
+    popoverForeground?: string;
+    primary?: string;
+    primaryForeground?: string;
+    secondary?: string;
+    secondaryForeground?: string;
+    muted?: string;
+    mutedForeground?: string;
+    accent?: string;
+    accentForeground?: string;
+    destructive?: string;
+    destructiveForeground?: string;
+    border?: string;
+    input?: string;
+    ring?: string;
+    sidebar?: string;
+    sidebarForeground?: string;
+    sidebarPrimary?: string;
+    sidebarPrimaryForeground?: string;
+    sidebarAccent?: string;
+    sidebarAccentForeground?: string;
+    sidebarBorder?: string;
+    sidebarRing?: string;
+};
+
 // A registry entry as exported by an individual theme file.  Each
 // theme module exposes one of these so the index can collect them
 // without caring whether the underlying payload is full or partial.
@@ -44,6 +77,9 @@ export type RegistryEntry = {
      *  has for that key. */
     extends?: string;
     theme: PartialTermTheme;
+    /** Optional exact-value overrides for shadcn/ui + sidebar CSS vars.
+     *  When present these win over the blend-formula defaults. */
+    ui?: UiThemeOverrides;
 };
 
 // A resolved registry entry: the entry plus its computed base.  Returned

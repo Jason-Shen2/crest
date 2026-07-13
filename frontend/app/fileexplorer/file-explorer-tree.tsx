@@ -92,7 +92,7 @@ const InlineInput = memo(({ depth, placeholder, onCommit, onCancel }: {
                 ref={ref}
                 type="text"
                 placeholder={placeholder}
-                className="flex-1 bg-accent/10 border border-accent/40 rounded px-1.5 text-[15px] text-primary outline-none min-w-0"
+                className="flex-1 bg-accent/10 border border-accent/40 rounded px-1.5 text-[13px] text-foreground outline-none min-w-0"
                 style={{ height: 18 }}
                 onKeyDown={(e) => {
                     if (e.key === "Enter") onCommit(e.currentTarget.value);
@@ -248,15 +248,15 @@ const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
 
     return (
         <div
-            className={`flex items-center gap-1 h-[26px] pr-2 cursor-pointer select-none text-[15px] ${
-                selected ? "bg-accent/20" : "hover:bg-white/5"
+            className={`flex items-center gap-1 h-[26px] pr-2 cursor-pointer select-none text-[13px] transition-colors ${
+                selected ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-foreground/85 hover:bg-sidebar-accent/70"
             }`}
             style={{ paddingLeft: depth * 12 + 6 }}
             onClick={() => handleFileExplorerRowClick({ model, finfo, path, isDir })}
             onContextMenu={onContextMenu}
             title={path}
         >
-            <span className="w-3 shrink-0 text-secondary text-[11px] flex items-center justify-center">
+            <span className="w-3 shrink-0 text-muted-foreground/70 text-[11px] flex items-center justify-center">
                 {isDir ? (
                     <i
                         className="fa fa-solid fa-chevron-right"
@@ -264,7 +264,7 @@ const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
                     />
                 ) : null}
             </span>
-            <IconComp size={16} className={`shrink-0 ${isDir ? "text-secondary" : ""}`} />
+            <IconComp size={16} className={`shrink-0 ${isDir ? "text-muted-foreground/80" : ""}`} />
             <span className="truncate">{name}</span>
         </div>
     );
@@ -272,14 +272,14 @@ const Row = memo(({ item, editing, fullConfig, root }: RowProps) => {
 Row.displayName = "Row";
 
 const LoadingRow = memo(({ depth }: { depth: number }) => (
-    <div className="flex items-center h-[26px] text-[15px] text-secondary italic" style={{ paddingLeft: depth * 12 + 22 }}>
+    <div className="flex items-center h-[26px] text-[13px] text-muted-foreground italic" style={{ paddingLeft: depth * 12 + 22 }}>
         Loading…
     </div>
 ));
 LoadingRow.displayName = "LoadingRow";
 
 const ErrorRow = memo(({ depth, error }: { depth: number; error: string }) => (
-    <div className="flex items-center h-[26px] text-[15px] text-error truncate" style={{ paddingLeft: depth * 12 + 22 }} title={error}>
+    <div className="flex items-center h-[26px] text-[13px] text-destructive truncate" style={{ paddingLeft: depth * 12 + 22 }} title={error}>
         {error}
     </div>
 ));
@@ -347,10 +347,10 @@ export const FileExplorerTree = memo(() => {
     }, [rootChildren, expanded, loadingPaths, errorMap, selectedPath, version, editing]);
 
     if (rootLoading && !rootChildren) {
-        return <div className="px-3 py-2 text-[15px] text-secondary italic">Loading…</div>;
+        return <div className="px-3 py-2 text-[13px] text-muted-foreground italic">Loading…</div>;
     }
     if (rootErr && !rootChildren) {
-        return <div className="px-3 py-2 text-[15px] text-error" title={rootErr}>{rootErr}</div>;
+        return <div className="px-3 py-2 text-[13px] text-destructive" title={rootErr}>{rootErr}</div>;
     }
     if (!rootChildren) return null;
 
