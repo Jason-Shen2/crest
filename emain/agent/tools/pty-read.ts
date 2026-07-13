@@ -13,7 +13,11 @@ import { getCmdBlockTail } from "./_pty-rpc";
 import { getScreenSnapshot } from "./_pty-screen";
 
 const ptyReadSchema = Type.Object({
-    block_id: Type.String(),
+    block_id: Type.Optional(
+        Type.String({
+            description: "Deprecated compatibility field; omit it. This tool is already bound to one PTY block.",
+        }),
+    ),
     delay_ms: Type.Optional(Type.Number()),
     mode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("transcript"), Type.Literal("screen")])),
     max_lines: Type.Optional(Type.Number()),
@@ -56,7 +60,7 @@ export function createPtyReadTool(blockId: string): AgentTool<typeof ptyReadSche
         promptSnippet: "Read the running PTY command's output (transcript tail / TUI screen).",
         parameters: ptyReadSchema,
         async execute(_toolCallId, params) {
-            const id = params.block_id || blockId;
+            const id = blockId;
             const maxLines = params.max_lines ?? DEFAULT_MAX_LINES;
             if (params.delay_ms && params.delay_ms > 0) {
                 await new Promise((r) => setTimeout(r, params.delay_ms));

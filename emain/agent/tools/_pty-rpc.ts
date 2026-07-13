@@ -54,6 +54,7 @@ export async function startAgentCommandBlock(
     const info = await RpcApi.BlockInfoCommand(ElectronWshClient, parentBlockId);
     const oref = await RpcApi.CreateBlockCommand(ElectronWshClient, {
         tabid: info.tabid,
+        focused: true,
         blockdef: {
             meta: {
                 view: "term",
@@ -66,10 +67,24 @@ export async function startAgentCommandBlock(
         },
     });
     const sep = oref.indexOf(":");
-    return sep >= 0 ? oref.slice(sep + 1) : oref;
+    const blockId = sep >= 0 ? oref.slice(sep + 1) : oref;
+    try {
+        await RpcApi.ControllerResyncCommand(ElectronWshClient, {
+            tabid: info.tabid,
+            blockid: blockId,
+        });
+    } catch (err) {
+        await RpcApi.DeleteBlockCommand(ElectronWshClient, { blockid: blockId });
+        throw err;
+    }
+    return blockId;
 }
 
-/** Stop the block's running command (abort path): destroy its controller. */
+/** Stop and remove a failed/aborted delegated command block. */
 export async function stopBlock(blockId: string): Promise<void> {
-    await RpcApi.ControllerDestroyCommand(ElectronWshClient, blockId);
+    try {
+        await RpcApi.ControllerDestroyCommand(ElectronWshClient, blockId);
+    } finally {
+        await RpcApi.DeleteBlockCommand(ElectronWshClient, { blockid: blockId });
+    }
 }

@@ -70,12 +70,30 @@ export interface SpawnCliAgentDeps {
     ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
 }
 
+function buildStartedCliSubagentTask(params: SpawnCliAgentInput): string {
+    return [
+        "The interactive command has already been started by the parent agent.",
+        `Initial command already running: ${params.initial_command}`,
+        `Working directory: ${params.cwd}`,
+        "Do not type, paste, or submit the initial command again. " +
+            "Do not send a `cd ... && <initial command>` equivalent.",
+        "First inspect the current PTY state with pty_read. " +
+            "Only use pty_write for input requested by the already-running CLI.",
+        "",
+        "Delegated goal:",
+        params.task,
+    ].join("\n");
+}
+
 export function createSpawnCliAgentTool(deps: SpawnCliAgentDeps): AgentTool<typeof spawnSchema, SpawnCliAgentDetails> {
     return {
         name: "spawn_cli_agent",
         label: "spawn cli agent",
         description:
-            "Delegate a long-running or interactive shell command to a CLI subagent. Provide a natural-language task and the initial command; the subagent starts it, watches/interacts, and returns a natural-language summary. Use this instead of bash when the command will not exit on its own.",
+            "Delegate a long-running or interactive shell command to a CLI subagent. " +
+            "Provide a natural-language task and the initial command; the parent starts it in a terminal block, " +
+            "then the subagent watches/interacts and returns a natural-language summary. " +
+            "Use this instead of bash when the command will not exit on its own.",
         promptSnippet: "Delegate long-running / interactive commands to a CLI subagent.",
         parameters: spawnSchema,
         async execute(_toolCallId, params, signal) {
@@ -92,9 +110,10 @@ export function createSpawnCliAgentTool(deps: SpawnCliAgentDeps): AgentTool<type
                     model: deps.model,
                     blockId,
                     cwd: params.cwd,
+                    initialCommand: params.initial_command,
                     getApiKeyAndHeaders: deps.getApiKeyAndHeaders,
                 });
-                const summary = await runSubagentToCompletion(sub, params.task, { signal });
+                const summary = await runSubagentToCompletion(sub, buildStartedCliSubagentTask(params), { signal });
                 return { content: [{ type: "text", text: summary }], details: { blockId } };
             } catch (err) {
                 await stopBlock(blockId);
