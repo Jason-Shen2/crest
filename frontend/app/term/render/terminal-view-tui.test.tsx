@@ -5,7 +5,7 @@ import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { blurActiveEditableInRoot, TerminalView } from "./terminal-view";
+import { blurActiveEditableInRoot, computeTerminalGeometryForResize, TerminalView } from "./terminal-view";
 
 const testState = vi.hoisted(() => {
     const atomValue = <T,>(value: T) => ({ read: () => value });
@@ -20,6 +20,8 @@ const testState = vi.hoisted(() => {
         activeElement: null as HTMLElement | null,
         lastModel: null as ReturnType<typeof makeModel> | null,
         loading: false,
+        defaultFgOverride: null as string | null,
+        defaultBgOverride: null as string | null,
         blocks: null as Array<{
             id: string;
             state: string;
@@ -111,10 +113,6 @@ vi.mock("@/app/store/services", () => ({
     },
 }));
 
-vi.mock("@/app/store/use-pi-chat", () => ({
-    indexRunsById: () => new Map(),
-}));
-
 vi.mock("@/app/view/cmdblock/cmdblock-input", () => ({
     CmdBlockInput: ({ placeholder }: { placeholder?: string }) => (
         <div contentEditable role="textbox" data-testid="cmd-input" data-placeholder={placeholder ?? ""} />
@@ -158,10 +156,6 @@ vi.mock("../nld", () => ({
 
 vi.mock("../terminal-model", () => ({
     TerminalModel: vi.fn().mockImplementation(() => makeModel()),
-}));
-
-vi.mock("./agent-activity-bar", () => ({
-    AgentActivityBar: () => <div data-testid="agent-activity-bar" />,
 }));
 
 vi.mock("./agent-chat-host", () => ({
@@ -224,8 +218,8 @@ function makeModel() {
         errorAtom: testState.atomValue(""),
         notificationAtom: testState.atomValue(""),
         paletteOverridesAtom: testState.atomValue({}),
-        defaultFgOverrideAtom: testState.atomValue(null),
-        defaultBgOverrideAtom: testState.atomValue(null),
+        defaultFgOverrideAtom: { read: () => testState.defaultFgOverride },
+        defaultBgOverrideAtom: { read: () => testState.defaultBgOverride },
         cursorColorOverrideAtom: testState.atomValue(null),
         bellTickAtom: testState.atomValue(0),
         commandHistoryAtom: testState.atomValue([]),
@@ -243,7 +237,6 @@ function makeModel() {
             length: () => blocks.length,
             findById: (id?: string) => blocks.find((block) => block.id === id) ?? null,
         }),
-        getFirstAgentSessionPath: () => "",
         submitInput: vi.fn().mockResolvedValue(undefined),
         sendInterrupt: vi.fn(),
         clearSelection: vi.fn(),
@@ -328,6 +321,8 @@ describe("TerminalView TUI mode", () => {
         testState.effectCleanups.length = 0;
         testState.activeElement = null;
         testState.loading = false;
+        testState.defaultFgOverride = null;
+        testState.defaultBgOverride = null;
         testState.blocks = null;
         testState.modeOverride = null;
         testState.inputStateOverride = null;
@@ -352,11 +347,10 @@ describe("TerminalView TUI mode", () => {
         expect(html).not.toContain('data-testid="cmd-input"');
     });
 
-    it("does not render footer spacer or agent activity while alternate screen is active", () => {
+    it("does not render footer spacer while alternate screen is active", () => {
         const html = renderTerminalView();
 
         expect(html).not.toContain('class="mt-2.5"');
-        expect(html).not.toContain('data-testid="agent-activity-bar"');
     });
 
     it("still hides the command input when the active alt-screen block is not the newest block", () => {
@@ -438,6 +432,52 @@ describe("TerminalView TUI mode", () => {
         expect(loadedHtml).toContain('data-testid="cmd-input"');
     });
 
+    it("renders a themed welcome surface when a terminal has no blocks", () => {
+        testState.blocks = [];
+
+        const html = renderTerminalView();
+
+        expect(html).toContain('data-testid="terminal-welcome"');
+        expect(html).toContain("Run your first command");
+        expect(html).toContain('data-icon-name="computer-terminal-02"');
+        expect(html).toContain('width="28"');
+        expect(html).toContain("text-current");
+        expect(html).not.toContain("text-secondary");
+        expect(html).not.toContain("rounded-full");
+        expect(html).not.toContain("border-current/15");
+        expect(html).not.toContain("bg-current/5");
+        expect(html).not.toContain('data-testid="block-list"');
+    });
+
+    it("renders the welcome surface for an empty waiting-for-input block", () => {
+        testState.blocks = [
+            {
+                id: "empty-waiting-block",
+                state: "waiting-for-input",
+                altScreen: { active: false },
+                commandText: () => "",
+            },
+        ];
+
+        const html = renderTerminalView();
+
+        expect(html).toContain('data-testid="terminal-welcome"');
+        expect(html).not.toContain('data-testid="block-list"');
+    });
+
+    it("applies terminal palette overrides to empty terminal chrome", () => {
+        testState.blocks = [];
+        testState.defaultFgOverride = "rgb(1, 2, 3)";
+        testState.defaultBgOverride = "rgb(4, 5, 6)";
+
+        const html = renderTerminalView();
+
+        expect(html).toContain("color:rgb(1, 2, 3)");
+        expect(html).toContain("background-color:rgb(4, 5, 6)");
+        expect(html).toContain("text-current");
+        expect(html).not.toContain("text-secondary");
+    });
+
     it("keeps the command input for a newly running block before the long-running threshold", () => {
         testState.blocks = [
             {
@@ -470,6 +510,27 @@ describe("TerminalView TUI mode", () => {
         });
 
         expect(testState.sendBytes).toHaveBeenCalledWith("x");
+    });
+
+    it("forwards application-cursor arrows for long-running CLI blocks without full-screen capture", () => {
+        testState.blocks = [
+            {
+                id: "block-pi",
+                state: "running",
+                altScreen: { active: false },
+                durationMs: () => 51,
+                commandText: () => "pi",
+            },
+        ];
+        testState.modeOverride = { appCursor: true };
+        renderTerminalView();
+
+        dispatchDocumentKeydown({
+            key: "ArrowUp",
+            target: { tagName: "DIV", isContentEditable: false },
+        });
+
+        expect(testState.sendBytes).toHaveBeenCalledWith("\x1bOA");
     });
 
     it("stops same-document global shortcuts after forwarding a TUI key", () => {
@@ -517,6 +578,32 @@ describe("TerminalView TUI mode", () => {
     });
 });
 
+describe("computeTerminalGeometryForResize", () => {
+    it("subtracts normal block horizontal padding from scrollback cols", () => {
+        expect(
+            computeTerminalGeometryForResize({
+                paneWidth: 1000,
+                paneHeight: 500,
+                charWidth: 10,
+                lineHeight: 20,
+                terminalInputKind: "long-running-command",
+            })
+        ).toEqual({ cols: 97, rows: 25 });
+    });
+
+    it("keeps full pane width for full-screen terminal surfaces", () => {
+        expect(
+            computeTerminalGeometryForResize({
+                paneWidth: 1000,
+                paneHeight: 500,
+                charWidth: 10,
+                lineHeight: 20,
+                terminalInputKind: "alt-screen",
+            })
+        ).toEqual({ cols: 100, rows: 25 });
+    });
+});
+
 describe("TerminalView pure-terminal form", () => {
     beforeEach(() => {
         testState.effectCleanups.length = 0;
@@ -539,10 +626,9 @@ describe("TerminalView pure-terminal form", () => {
         vi.unstubAllGlobals();
     });
 
-    it("renders no agent chat host or activity bar without agentSlot", () => {
+    it("renders no agent chat host without agentSlot", () => {
         const html = renderTerminalView();
         expect(html).not.toContain('data-testid="agent-chat-host"');
-        expect(html).not.toContain('data-testid="agent-activity-bar"');
     });
 
     it("still renders the command input in terminal mode", () => {
@@ -557,7 +643,6 @@ describe("TerminalView pure-terminal form", () => {
                 children({
                     chatHost: <div data-testid="agent-chat-host" />,
                     commandResults: <div data-testid="agent-command-results" />,
-                    activityBar: <div data-testid="agent-activity-bar" />,
                     inputBar: null,
                     replacesBlockList: true,
                 }),

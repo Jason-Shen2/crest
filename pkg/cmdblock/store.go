@@ -55,6 +55,48 @@ func MakePromptStarted(ctx context.Context, blockID string, promptOffset int64, 
 	return cb, nil
 }
 
+func MakeDirectCommandStarted(ctx context.Context, blockID string, cmd string, cwd string, outputStartOffset int64, shellType string) (*CmdBlock, error) {
+	now := time.Now().UnixNano()
+	cb := &CmdBlock{
+		OID:               uuid.NewString(),
+		BlockID:           blockID,
+		Kind:              KindShell,
+		State:             StateRunning,
+		Cmd:               &cmd,
+		PromptOffset:      outputStartOffset,
+		OutputStartOffset: &outputStartOffset,
+		TsPromptNs:        now,
+		TsCmdNs:           &now,
+		CreatedAt:         now,
+	}
+	if cwd != "" {
+		cb.Cwd = &cwd
+	}
+	if shellType != "" {
+		cb.ShellType = &shellType
+	}
+	err := wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
+		cb.Seq = tx.GetInt64(`SELECT COALESCE(MAX(seq), 0) + 1 FROM db_cmdblock WHERE blockid = ?`, blockID)
+		tx.Exec(`INSERT INTO db_cmdblock
+                        (oid, blockid, seq, kind, state, cmd, cwd, shell_type, exit_code, duration_ms,
+                         prompt_offset, cmd_offset, output_start_offset, output_end_offset,
+                         ts_prompt_ns, ts_cmd_ns, ts_done_ns, agent_session_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cb.OID, cb.BlockID, cb.Seq, cb.Kind, cb.State,
+			nilableString(cb.Cmd), nilableString(cb.Cwd), nilableString(cb.ShellType),
+			nilableInt64(cb.ExitCode), nilableInt64(cb.DurationMs),
+			cb.PromptOffset, nilableInt64(cb.CmdOffset),
+			nilableInt64(cb.OutputStartOffset), nilableInt64(cb.OutputEndOffset),
+			cb.TsPromptNs, nilableInt64(cb.TsCmdNs), nilableInt64(cb.TsDoneNs),
+			nilableString(cb.AgentSessionID), cb.CreatedAt)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cb, nil
+}
+
 func AppendAgentRun(ctx context.Context, blockID string, sessionPath string, userEntryID string) (*CmdBlock, error) {
 	now := time.Now().UnixNano()
 	cb := &CmdBlock{

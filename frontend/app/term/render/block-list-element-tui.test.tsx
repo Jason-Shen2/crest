@@ -124,7 +124,7 @@ describe("BlockListElement TUI layout", () => {
         expect(html).toMatch(/data-block-oid="block-raw"[^>]*class="[^"]*min-h-0/);
     });
 
-    it("lets the active surface wrapper flex-fill the pane from TerminalSurfaceState", () => {
+    it("keeps long-running PTY output in the scrollable block list", () => {
         const html = renderToStaticMarkup(
             <BlockListElement
                 model={
@@ -148,7 +148,7 @@ describe("BlockListElement TUI layout", () => {
             />
         );
 
-        expect(html).toMatch(/data-block-oid="block-surface"[^>]*class="[^"]*flex-1/);
-        expect(html).toMatch(/data-block-oid="block-surface"[^>]*class="[^"]*min-h-0/);
+        expect(html).toContain("overflow-y-auto");
+        expect(html).not.toMatch(/data-block-oid="block-surface"[^>]*class="[^"]*flex-1/);
     });
 });

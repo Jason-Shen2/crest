@@ -74,6 +74,11 @@ describe("keyEventToBytes", () => {
         expect(keyEventToBytes(ev)).toBe("\x1b[D");
     });
 
+    test("application cursor mode sends SS3 arrow keys", () => {
+        const ev = makeKeyEvent("ArrowUp");
+        expect(keyEventToBytes(ev, { appCursor: true })).toBe("\x1bOA");
+    });
+
     test("Ctrl+U sends NAK (line kill)", () => {
         const ev = makeKeyEvent("u", { ctrlKey: true });
         expect(keyEventToBytes(ev)).toBe("\x15");

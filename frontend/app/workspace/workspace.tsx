@@ -4,6 +4,7 @@
 import { ErrorBoundary } from "@/app/element/errorboundary";
 import { CenteredDiv } from "@/app/element/quickelems";
 import { FileExplorer } from "@/app/fileexplorer/file-explorer";
+import { AgentSessionsPanel } from "@/app/term/render/assistant-ui/agent-sessions-panel";
 import { ModalsRenderer } from "@/app/modals/modalsrenderer";
 import { NotificationToastStacker } from "@/app/notifications/notification-toast";
 import { NotificationsModel } from "@/app/notifications/notifications-model";
@@ -57,6 +58,8 @@ const WorkspaceElem = memo(() => {
     const showLeftTabBar = tabBarPosition === "left";
     const vtabVisible = useAtomValue(workspaceLayoutModel.vtabVisibleAtom);
     const fileExplorerVisible = useAtomValue(workspaceLayoutModel.fileExplorerVisibleAtom);
+    const sessionsPanelVisible = useAtomValue(workspaceLayoutModel.sessionsPanelVisibleAtom);
+    const leftPanelVisible = fileExplorerVisible || sessionsPanelVisible;
     const vtabWidth = useAtomValue(workspaceLayoutModel.vtabWidthAtom);
     const fileExplorerWidth = useAtomValue(workspaceLayoutModel.fileExplorerWidthAtom);
     const hydratedRightToolPanelState = useAtomValue(workspaceLayoutModel.rightToolPanelAtom);
@@ -81,9 +84,11 @@ const WorkspaceElem = memo(() => {
     // resize mid-drag updates the bound (warp's `with_bounds_callback`).
     // Each closure also captures the *other* panel's visibility/width so
     // shrinking the FE doesn't let the VTab steal the budget.
+    // Sessions panel and FileExplorer share the same slot (mutually exclusive),
+    // so we treat them as one "left panel" for width calculations.
     const vtabMaxFn = useCallback(
-        () => workspaceLayoutModel.getVTabMaxWidth(window.innerWidth, fileExplorerVisible, fileExplorerWidth),
-        [workspaceLayoutModel, fileExplorerVisible, fileExplorerWidth]
+        () => workspaceLayoutModel.getVTabMaxWidth(window.innerWidth, leftPanelVisible, fileExplorerWidth),
+        [workspaceLayoutModel, leftPanelVisible, fileExplorerWidth]
     );
     const fileExplorerMaxFn = useCallback(
         () => workspaceLayoutModel.getFileExplorerMaxWidth(window.innerWidth, vtabVisible, vtabWidth),
@@ -101,10 +106,10 @@ const WorkspaceElem = memo(() => {
                 window.innerWidth,
                 vtabVisible,
                 vtabWidth,
-                fileExplorerVisible,
+                leftPanelVisible,
                 fileExplorerWidth
             ),
-        [workspaceLayoutModel, vtabVisible, vtabWidth, fileExplorerVisible, fileExplorerWidth]
+        [workspaceLayoutModel, vtabVisible, vtabWidth, leftPanelVisible, fileExplorerWidth]
     );
     const onRightToolPanelResize = useCallback(
         (px: number) => workspaceLayoutModel.previewRightToolPanelWidth(px),

@@ -559,6 +559,7 @@ func (bc *ShellController) manageRunningShellProcess(shellProc *shellexec.ShellP
 
 	go func() {
 		// handles regular output from the pty (goes to the blockfile and xterm)
+		var tracker *cmdblock.Tracker
 		defer func() {
 			panichandler.PanicHandler("blockcontroller:shellproc-pty-read-loop", recover())
 		}()
@@ -571,6 +572,11 @@ func (bc *ShellController) manageRunningShellProcess(shellProc *shellexec.ShellP
 			})
 			shellProc.Cmd.Wait()
 			exitCode := shellProc.Cmd.ExitCode()
+			if tracker != nil {
+				if err := tracker.FinishRunningCommand(context.Background(), int64(exitCode)); err != nil {
+					log.Printf("cmdblock: FinishRunningCommand blockid=%s: %v", bc.BlockId, err)
+				}
+			}
 			blockData := bc.getBlockData_noErr()
 			if blockData != nil && blockData.Meta.GetString(waveobj.MetaKey_Controller, "") == BlockController_Cmd {
 				termMsg := fmt.Sprintf("\r\nprocess finished with exit code = %d\r\n\r\n", exitCode)
@@ -581,7 +587,16 @@ func (bc *ShellController) manageRunningShellProcess(shellProc *shellexec.ShellP
 			close(shellInputCh) // don't use bc.ShellInputCh (it's nil)
 		}()
 		buf := make([]byte, 4096)
-		tracker := cmdblock.MakeTracker(bc.BlockId)
+		tracker = cmdblock.MakeTracker(bc.BlockId)
+		if bc.ControllerType == BlockController_Cmd {
+			cmd := blockMeta.GetString(waveobj.MetaKey_Cmd, "")
+			cwd := blockMeta.GetString(waveobj.MetaKey_CmdCwd, "")
+			if cmd != "" {
+				if _, err := tracker.StartDirectCommand(context.Background(), cmd, cwd, ""); err != nil {
+					log.Printf("cmdblock: StartDirectCommand blockid=%s: %v", bc.BlockId, err)
+				}
+			}
+		}
 		for {
 			nr, err := shellProc.Cmd.Read(buf)
 			if nr > 0 {

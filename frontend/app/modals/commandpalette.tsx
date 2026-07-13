@@ -16,6 +16,7 @@ import {
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { ThemeModel } from "@/app/theme/theme-model";
+import { getBuiltinThemes } from "@/app/theme/registry/themes";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { getLayoutModelForStaticTab, NavigateDirection } from "@/layout/index";
 import { cn, fireAndForget } from "@/util/util";
@@ -65,7 +66,7 @@ function themeKeyFromCmd(cmd: PaletteCommand): string {
 
 function buildThemeCommands(): PaletteCommand[] {
     const fullConfig = globalStore.get(atoms.fullConfigAtom);
-    const themes = fullConfig?.termthemes ?? {};
+    const themes = getBuiltinThemes(fullConfig?.termthemes ?? {});
     const activeKey = fullConfig?.settings?.["term:theme"];
 
     const entries = Object.entries(themes)
@@ -93,7 +94,7 @@ function buildThemeCommands(): PaletteCommand[] {
 // preview-on-arrow flow; the committing path (Enter / click) goes
 // through the command's action which both applies AND persists.
 function applyThemePreview(key: string): boolean {
-    const themes = globalStore.get(atoms.fullConfigAtom)?.termthemes ?? {};
+    const themes = getBuiltinThemes(globalStore.get(atoms.fullConfigAtom)?.termthemes ?? {});
     const theme = themes[key];
     if (!theme) return false;
     ThemeModel.getInstance().applyTheme(key, theme);

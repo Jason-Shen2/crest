@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/s-zx/crest/pkg/blocklogger"
+	"github.com/s-zx/crest/pkg/cmdblock"
 	"github.com/s-zx/crest/pkg/filestore"
 	"github.com/s-zx/crest/pkg/jobcontroller"
 	"github.com/s-zx/crest/pkg/remote"
@@ -275,13 +276,55 @@ func ResyncController(ctx context.Context, tabId string, blockId string, rtOpts 
 		}
 
 		// Start controller
+		waitForCmdRow := shouldWaitForInitialCmdBlockRow(controllerName, blockData.Meta, status, force)
 		err = controller.Start(ctx, blockData.Meta, rtOpts, force)
 		if err != nil {
 			return fmt.Errorf("error starting controller: %w", err)
 		}
+		if waitForCmdRow {
+			err = waitForInitialCmdBlockRow(ctx, blockId)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
+}
+
+func shouldWaitForInitialCmdBlockRow(controllerName string, blockMeta waveobj.MetaMapType, status *BlockControllerRuntimeStatus, force bool) bool {
+	if controllerName != BlockController_Cmd {
+		return false
+	}
+	if blockMeta.GetString(waveobj.MetaKey_Cmd, "") == "" {
+		return false
+	}
+	if force {
+		return true
+	}
+	if status == nil || status.ShellProcStatus != Status_Init {
+		return false
+	}
+	runOnce := getBoolFromMeta(blockMeta, waveobj.MetaKey_CmdRunOnce, false)
+	runOnStart := getBoolFromMeta(blockMeta, waveobj.MetaKey_CmdRunOnStart, true)
+	return runOnStart || runOnce
+}
+
+func waitForInitialCmdBlockRow(ctx context.Context, blockId string) error {
+	deadline := time.Now().Add(cmdBlockRowReadyTimeout)
+	for {
+		rows, err := cmdblock.GetByBlockID(ctx, blockId, 1)
+		if err != nil {
+			return fmt.Errorf("error waiting for cmdblock row: %w", err)
+		}
+		if len(rows) > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for cmdblock row for block %s", blockId)
+		}
+		time.Sleep(cmdBlockRowReadyPollInterval)
+	}
 }
 
 func GetBlockControllerRuntimeStatus(blockId string) *BlockControllerRuntimeStatus {
@@ -330,6 +373,8 @@ func sendConnMonitorInputNotification(controller Controller) {
 // ControllerResyncCommand that registers the controller.
 const controllerReadyTimeout = 1 * time.Second
 const controllerReadyPollInterval = 25 * time.Millisecond
+const cmdBlockRowReadyTimeout = 2 * time.Second
+const cmdBlockRowReadyPollInterval = 10 * time.Millisecond
 
 func SendInput(blockId string, inputUnion *BlockInputUnion) error {
 	// Wait briefly for the controller to be registered. The FE's term-view
