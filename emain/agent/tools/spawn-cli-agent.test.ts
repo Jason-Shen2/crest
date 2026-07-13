@@ -37,7 +37,8 @@ describe("createSpawnCliAgentTool", () => {
     it("spawn_cli_agent starts a block, runs the subagent, returns the summary", async () => {
         vi.spyOn(rpc, "startAgentCommandBlock").mockResolvedValue("blk-new");
         vi.spyOn(rpc, "stopBlock").mockResolvedValue();
-        vi.spyOn(factory, "buildCliSubagentHarness").mockReturnValue(fakeSub("listening on 3000"));
+        const sub = fakeSub("listening on 3000");
+        vi.spyOn(factory, "buildCliSubagentHarness").mockReturnValue(sub);
 
         const tool = createSpawnCliAgentTool({
             parentBlockId: "parent",
@@ -50,6 +51,15 @@ describe("createSpawnCliAgentTool", () => {
             cwd: "/tmp",
         });
         expect(rpc.startAgentCommandBlock).toHaveBeenCalledWith("parent", "/tmp", "npm run dev");
+        expect(factory.buildCliSubagentHarness).toHaveBeenCalledWith(
+            expect.objectContaining({
+                blockId: "blk-new",
+                cwd: "/tmp",
+                initialCommand: "npm run dev",
+            }),
+        );
+        expect(sub.harness.prompt).toHaveBeenCalledWith(expect.stringContaining("already been started"));
+        expect(sub.harness.prompt).toHaveBeenCalledWith(expect.stringContaining("Do not type"));
         expect(r.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("3000") });
         expect(r.details).toMatchObject({ blockId: "blk-new" });
         // On success the command block is left running for the user.

@@ -11,17 +11,47 @@ import type { AgentTool } from "../types";
 import { sendControllerInput } from "./_pty-rpc";
 
 const ptyWriteSchema = Type.Object({
-    block_id: Type.String({ description: "The running PTY command to write to" }),
+    block_id: Type.Optional(
+        Type.String({
+            description: "Deprecated compatibility field; omit it. This tool is already bound to one PTY block.",
+        }),
+    ),
     input: Type.String({ description: "Bytes / text to send" }),
     mode: Type.Union([Type.Literal("raw"), Type.Literal("line"), Type.Literal("block")]),
 });
 
 export type PtyWriteInput = Static<typeof ptyWriteSchema>;
 
+export interface PtyWriteGuardOptions {
+    initialCommand?: string;
+    cwd?: string;
+}
+
 // C0 / bracketed-paste constants, per Warp escape_sequences.
 const SOH = "\x01"; // ^A — "beginning of line" for readline/prompt-toolkit editors.
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
+
+function normalizeStartupInput(input: string): string {
+    return input
+        .replace(/^\x01+/, "")
+        .replace(/\r?\n$/, "")
+        .trim();
+}
+
+function shellQuoteSingle(value: string): string {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function isStartupCommandReplay(input: string, opts?: PtyWriteGuardOptions): boolean {
+    const initialCommand = opts?.initialCommand?.trim();
+    if (!initialCommand) return false;
+    const normalized = normalizeStartupInput(input);
+    if (normalized === initialCommand) return true;
+    const cwd = opts?.cwd?.trim();
+    if (!cwd) return false;
+    return normalized === `cd ${cwd} && ${initialCommand}` || normalized === `cd ${shellQuoteSingle(cwd)} && ${initialCommand}`;
+}
 
 function decorateBytes(input: string, mode: PtyWriteInput["mode"]): string {
     switch (mode) {
@@ -44,7 +74,10 @@ function decorateBytes(input: string, mode: PtyWriteInput["mode"]): string {
     }
 }
 
-export function createPtyWriteTool(blockId: string): AgentTool<typeof ptyWriteSchema, undefined> {
+export function createPtyWriteTool(
+    blockId: string,
+    guardOptions?: PtyWriteGuardOptions,
+): AgentTool<typeof ptyWriteSchema, undefined> {
     return {
         name: "pty_write",
         label: "pty write",
@@ -53,7 +86,18 @@ export function createPtyWriteTool(blockId: string): AgentTool<typeof ptyWriteSc
         promptSnippet: "Write input to the running PTY command (raw / line / block).",
         parameters: ptyWriteSchema,
         async execute(_toolCallId, params) {
-            await sendControllerInput(params.block_id || blockId, decorateBytes(params.input, params.mode));
+            if (isStartupCommandReplay(params.input, guardOptions)) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: "ignored duplicate startup command; the CLI is already running in this PTY",
+                        },
+                    ],
+                    details: undefined,
+                };
+            }
+            await sendControllerInput(blockId, decorateBytes(params.input, params.mode));
             return { content: [{ type: "text", text: `sent ${params.mode} input` }], details: undefined };
         },
     };

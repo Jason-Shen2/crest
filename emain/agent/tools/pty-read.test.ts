@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 let tailResp = { text: "recent output", isrunning: true, altscreen: false, exitcode: undefined as number | undefined };
+const readBlockIds: string[] = [];
 vi.mock("./_pty-rpc", () => ({
-    getCmdBlockTail: async () => tailResp,
+    getCmdBlockTail: async (blockId: string) => {
+        readBlockIds.push(blockId);
+        return tailResp;
+    },
 }));
 // Screen snapshot backend: by default it fails (renderer unavailable) so
 // pty_read falls back to transcript; individual tests can swap in a
@@ -17,7 +21,22 @@ vi.mock("./_pty-screen", () => ({
 import { createPtyReadTool } from "./pty-read";
 
 describe("pty_read", () => {
+    it("does not require the model to provide a block_id", () => {
+        const tool = createPtyReadTool("blk1");
+        expect((tool.parameters as { required?: string[] }).required ?? []).not.toContain("block_id");
+    });
+
+    it("always reads the bound block even if the model guesses a placeholder block_id", async () => {
+        readBlockIds.length = 0;
+        tailResp = { text: "recent output", isrunning: true, altscreen: false, exitcode: undefined };
+        const tool = createPtyReadTool("blk-real");
+        const r = await tool.execute("t1", { block_id: "default", mode: "auto" });
+        expect(readBlockIds).toEqual(["blk-real"]);
+        expect(r.details).toMatchObject({ block_id: "blk-real" });
+    });
+
     it("auto + altscreen=false returns transcript_tail", async () => {
+        readBlockIds.length = 0;
         tailResp = { text: "recent output", isrunning: true, altscreen: false, exitcode: undefined };
         const tool = createPtyReadTool("blk1");
         const r = await tool.execute("t1", { block_id: "blk1", mode: "auto" });
@@ -48,8 +67,8 @@ describe("pty_read", () => {
                 is_alt_screen_active: true,
                 is_running: true,
             });
-            expect(r.content[0].text).toContain("line one");
-            expect(r.content[0].text).toContain("<|cursor|>");
+            expect((r.content[0] as { text: string }).text).toContain("line one");
+            expect((r.content[0] as { text: string }).text).toContain("<|cursor|>");
         } finally {
             screenSnapshotImpl = async () => {
                 throw new Error("renderer unavailable");

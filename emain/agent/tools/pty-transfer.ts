@@ -10,7 +10,11 @@ import { type Static, Type } from "typebox";
 import type { AgentTool } from "../types";
 
 const ptyTransferSchema = Type.Object({
-    block_id: Type.String(),
+    block_id: Type.Optional(
+        Type.String({
+            description: "Deprecated compatibility field; omit it. This tool is already bound to one PTY block.",
+        }),
+    ),
     reason: Type.String({ description: "Why control is being handed back (e.g. needs a password)." }),
 });
 
@@ -33,7 +37,7 @@ export function createPtyTransferTool(blockId: string): AgentTool<typeof ptyTran
         async execute(_toolCallId, params) {
             return {
                 content: [{ type: "text", text: `Transferred control to user: ${params.reason}` }],
-                details: { transferred: true, block_id: params.block_id || blockId, reason: params.reason },
+                details: { transferred: true, block_id: blockId, reason: params.reason },
                 terminate: true,
             };
         },
