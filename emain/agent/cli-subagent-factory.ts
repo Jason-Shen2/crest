@@ -20,6 +20,7 @@ export const CLI_SUBAGENT_TOOL_NAMES = ["pty_write", "pty_read", "pty_transfer_t
 
 const CLI_SUBAGENT_SYSTEM_PROMPT = [
     "You are a CLI subagent driving a single long-running or interactive PTY command.",
+    "The parent agent has already started the command in the PTY block. Do not type or paste the startup command again.",
     "Your goal is the delegated task. When it is done, call pty_transfer_to_user only if you are stuck; otherwise stop and summarize.",
     "Rules:",
     "1. Goal-oriented: finish the task, then stop. Do not explore beyond it.",
@@ -34,6 +35,7 @@ export interface BuildCliSubagentOptions {
     model: Model<Api>;
     blockId: string;
     cwd: string;
+    initialCommand: string;
     getApiKeyAndHeaders?: (
         model: Model<Api>,
     ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
@@ -47,7 +49,7 @@ export interface CliSubagentHarness {
 
 export function buildCliSubagentHarness(opts: BuildCliSubagentOptions): CliSubagentHarness {
     const tools: AgentTool[] = [
-        createPtyWriteTool(opts.blockId),
+        createPtyWriteTool(opts.blockId, { initialCommand: opts.initialCommand, cwd: opts.cwd }),
         createPtyReadTool(opts.blockId),
         createPtyTransferTool(opts.blockId),
     ];

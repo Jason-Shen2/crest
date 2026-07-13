@@ -15,6 +15,7 @@ describe("buildCliSubagentHarness", () => {
             model: { id: "test-model" } as any,
             blockId: "blk1",
             cwd: "/tmp",
+            initialCommand: "pi",
         });
         const names = sub.tools.map((t) => t.name).sort();
         expect(names).toEqual([...CLI_SUBAGENT_TOOL_NAMES].sort());
@@ -27,6 +28,7 @@ describe("buildCliSubagentHarness", () => {
             model: { id: "test-model" } as any,
             blockId: "blk1",
             cwd: "/tmp",
+            initialCommand: "pi",
         });
         expect(typeof sub.harness.prompt).toBe("function");
         expect(typeof sub.harness.abort).toBe("function");
