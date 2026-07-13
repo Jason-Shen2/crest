@@ -79,6 +79,7 @@ const previewElectronApi: ElectronApi = {
         listSessionDetailsForCwd: () => Promise.resolve([]),
         listAllSessionDetails: () => Promise.resolve([]),
         listCommands: () => Promise.resolve([]),
+        getSessionState: () => Promise.resolve({ type: "session_state", messages: [], turns: [], status: "idle", steer: [], followUp: [] }),
         listTree: () => Promise.resolve({ entries: [], leafId: null }),
         listForkPoints: () => Promise.resolve([]),
         navigateTree: () => Promise.reject(new Error("agent not available in preview env")),

@@ -407,6 +407,40 @@ describe("agent-ipc command helpers", () => {
         });
     });
 
+    it("sends persisted session_state using the renderer subscription path", async () => {
+        const { metadata, session } = await createPaneSession("/tmp/agent-ipc-subscribe-alias");
+        await session.appendMessage(user("restore after refresh"));
+        const dir = path.dirname(metadata.path);
+        const aliasPath = `${dir}${path.sep}..${path.sep}${path.basename(dir)}${path.sep}${path.basename(metadata.path)}`;
+        expect(await fs.realpath(aliasPath)).toBe(await fs.realpath(metadata.path));
+        expect(aliasPath).not.toBe(metadata.path);
+        const sender = {
+            id: 2,
+            isDestroyed: vi.fn(() => false),
+            once: vi.fn(),
+            send: vi.fn(),
+        } as unknown as electron.WebContents;
+
+        await subscribeAgentSessionForIpc(sender, aliasPath);
+
+        expect(sender.send).toHaveBeenCalledWith(
+            "agent:event",
+            expect.objectContaining({
+                sessionPath: aliasPath,
+                event: expect.objectContaining({
+                    type: "session_state",
+                    messages: expect.arrayContaining([
+                        expect.objectContaining({
+                            role: "user",
+                            content: [expect.objectContaining({ text: "restore after refresh" })],
+                        }),
+                    ]),
+                    turns: expect.arrayContaining([expect.objectContaining({ turnId: expect.any(String) })]),
+                }),
+            })
+        );
+    });
+
     it("rejects forged paths for send existing sessions and subscription helpers", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-old-paths");
         const outside = path.join(tmpConfigHome, "outside-old-paths.jsonl");
@@ -464,7 +498,7 @@ describe("agent-ipc command helpers", () => {
         expect(sender.send).not.toHaveBeenCalled();
     });
 
-    it("agent:send prompts first, then anchors the timeline by the returned user entry id", async () => {
+    it("agent:send returns the committed turn id without writing a legacy marker", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-send");
         // Stub the harness build so ensurePaneSession constructs a real
         // PaneAgentSession without a live model/provider.
@@ -474,7 +508,7 @@ describe("agent-ipc command helpers", () => {
             session: { buildContext: async () => ({ messages: [] }), getBranch: async () => [] },
             update: () => {},
         } as never);
-        // send() resolves with the user entry id (the run identity).
+        // send() resolves with the user entry id (the turn identity).
         const sendSpy = vi.spyOn(PaneAgentSession.prototype, "send").mockResolvedValue("entry-xyz");
 
         registerAgentIpcHandlers();
@@ -497,14 +531,7 @@ describe("agent-ipc command helpers", () => {
 
         expect(sendSpy).toHaveBeenCalledWith("hello");
         expect(result.turnId).toBe("entry-xyz");
-        expect(vi.mocked(RpcApi.AppendAgentRunCommand)).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({
-                blockid: "block-1",
-                sessionpath: expect.any(String),
-                userentryid: "entry-xyz",
-            })
-        );
+        expect(vi.mocked(RpcApi.AppendAgentRunCommand)).not.toHaveBeenCalled();
         sendSpy.mockRestore();
     });
 });

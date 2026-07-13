@@ -55,7 +55,7 @@ export type PiAgentMessage = PiAgentMessageBase & {
     isError?: boolean;
 };
 
-export type PiRunStatus = "streaming" | "done" | "error";
+export type PiTurnStatus = "streaming" | "done" | "error";
 
 export interface PiChangeOutlineFile {
     path: string;
@@ -73,20 +73,11 @@ export interface PiChangeOutline {
     modules?: PiChangeOutlineModule[];
 }
 
-export interface PiRun {
-    runId: string;
-    userMessage?: PiAgentMessage;
-    responseMessages: PiAgentMessage[];
-    status: PiRunStatus;
-    errorMessage?: string;
-    changeOutline?: PiChangeOutline;
-}
-
-interface PiTurn {
+export interface PiTurn {
     turnId: string;
     userMessage?: PiAgentMessage;
     responseMessages: PiAgentMessage[];
-    status: PiRunStatus;
+    status: PiTurnStatus;
     errorMessage?: string;
     changeOutline?: PiChangeOutline;
 }
@@ -103,15 +94,13 @@ export interface PiAgentEvent {
     type: string;
     /** message_start / message_update / message_end / turn_end carry this. */
     message?: PiAgentMessage;
-    /** agent_end + snapshot carry this. */
+    /** agent_end + session_state carry this. */
     messages?: PiAgentMessage[];
-    /** Legacy snapshot field carrying main-owned runs keyed by stable run id. */
-    runs?: PiRun[];
-    /** Current snapshot field carrying main-owned turns keyed by the user entry id. */
+    /** session_state carries main-owned turns keyed by the user entry id. */
     turns?: PiTurn[];
-    /** snapshot carries the owner's run status (idle/streaming/error). */
+    /** session_state carries the owner's status (idle/streaming/error). */
     status?: string;
-    /** queue_update + snapshot carry the pending queues (user messages). */
+    /** queue_update + session_state carry the pending queues (user messages). */
     steer?: PiAgentMessage[];
     followUp?: PiAgentMessage[];
     /** turn_end carries this. */
@@ -167,7 +156,7 @@ export interface UsePiChatOptions {
     modelSelection: UsePiChatModel;
     /** Optional tool allowlist; when omitted, main defaults to allowAll. */
     allowedTools?: string[];
-    /** Parent terminal block ID for timeline marker persistence (Phase 1). */
+    /** Parent terminal block ID for tool/UI integrations that need pane identity. */
     blockId?: string;
 }
 
@@ -175,7 +164,7 @@ export type UsePiChatStatus = "idle" | "streaming" | "error";
 
 export interface UsePiChatReturn {
     messages: PiAgentMessage[];
-    runs: PiRun[];
+    turns: PiTurn[];
     status: UsePiChatStatus;
     errorMessage: string | undefined;
     sessionMetadata: AgentSessionMeta | undefined;
@@ -193,6 +182,7 @@ export interface UsePiChatReturn {
 interface AgentApiSurface {
     createSession: (cwd: string) => Promise<AgentSessionMeta>;
     listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
+    getSessionState: (sessionMetadata: AgentSessionMeta) => Promise<PiAgentEvent>;
     send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
     abort: (sessionPath: string) => void;
     subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
@@ -230,7 +220,7 @@ export function reducePiChatEvent(messages: PiAgentMessage[], event: PiAgentEven
         }
         case "message_update": {
             if (!event.message) return messages;
-            // Replace the tail message with the latest snapshot.
+            // Replace the tail message with the latest streaming state.
             if (messages.length === 0) return [event.message];
             const next = messages.slice();
             next[next.length - 1] = event.message;
@@ -245,7 +235,7 @@ export function reducePiChatEvent(messages: PiAgentMessage[], event: PiAgentEven
             next[next.length - 1] = event.message;
             return next;
         }
-        case "snapshot": {
+        case "session_state": {
             if (!event.messages) return messages;
             // The owner's FULL accumulated transcript, sent once on
             // (re)subscribe so a renderer that attached late still mirrors
@@ -254,34 +244,21 @@ export function reducePiChatEvent(messages: PiAgentMessage[], event: PiAgentEven
             return event.messages;
         }
         case "agent_end":
-            // agent_end.messages is RUN-SCOPED (only the latest prompt()'s
+            // agent_end.messages is turn-scoped (only the latest prompt()'s
             // messages, not the whole conversation — agent-loop.ts builds it
             // as `[...prompts]` + responses). Replacing here would wipe every
-            // prior run ("…loading agent run…"). The message_start/_end
-            // stream already appended this run's messages, so do nothing.
+            // prior turn. The message_start/_end stream already appended this
+            // turn's messages, so do nothing.
             return messages;
         default:
             return messages;
     }
 }
 
-export function reducePiRunsEvent(runs: PiRun[], event: PiAgentEvent): PiRun[] {
-    if (event.runs) return event.runs;
-    if (!event.turns) return runs;
-    return event.turns.map((turn) => ({
-        runId: turn.turnId,
-        userMessage: turn.userMessage,
-        responseMessages: turn.responseMessages,
-        status: turn.status,
-        errorMessage: turn.errorMessage,
-        changeOutline: turn.changeOutline,
-    }));
-}
-
-export function indexRunsById(runs: PiRun[]): Map<string, PiRun> {
-    const map = new Map<string, PiRun>();
-    for (const run of runs) map.set(run.runId, run);
-    return map;
+export function reducePiTurnsEvent(turns: PiTurn[], event: PiAgentEvent): PiTurn[] {
+    if (event.type === "snapshot") return turns;
+    if (!event.turns) return turns;
+    return event.turns;
 }
 
 export function adoptInitialSessionMetadata(
@@ -293,9 +270,28 @@ export function adoptInitialSessionMetadata(
     return incoming;
 }
 
+export function getOptimisticAbortStatus(status: UsePiChatStatus): UsePiChatStatus {
+    if (status !== "streaming") return status;
+    return "idle";
+}
+
+function applySessionState(
+    event: PiAgentEvent,
+    setStatus: (status: UsePiChatStatus) => void,
+    setErrorMessage: (message: string | undefined) => void,
+    setQueuedMessages: (messages: PiAgentMessage[]) => void
+): void {
+    const stateStatus = event.status as UsePiChatStatus | undefined;
+    if (stateStatus) {
+        setStatus(stateStatus);
+        setErrorMessage(stateStatus === "error" ? "agent error" : undefined);
+    }
+    setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
+}
+
 export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [messages, setMessages] = useState<PiAgentMessage[]>([]);
-    const [runs, setRuns] = useState<PiRun[]>([]);
+    const [turns, setTurns] = useState<PiTurn[]>([]);
     const [status, setStatus] = useState<UsePiChatStatus>("idle");
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
     const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
@@ -336,24 +332,28 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         if (!sessionPath) return;
         const api = getAgentApi();
         if (!api) return;
+        let cancelled = false;
+        void Promise.resolve()
+            .then(() => api.getSessionState(sessionMetadata))
+            .then((event) => {
+                if (cancelled) return;
+                setMessages((prev) => reducePiChatEvent(prev, event));
+                setTurns((prev) => reducePiTurnsEvent(prev, event));
+                applySessionState(event, setStatus, setErrorMessage, setQueuedMessages);
+            })
+            .catch((err) => {
+                if (cancelled) return;
+                console.warn("[agent] failed to pull session_state", err);
+            });
         const unsubscribe = api.subscribe(
             sessionPath,
             (raw) => {
                 const event = raw as PiAgentEvent;
                 setMessages((prev) => reducePiChatEvent(prev, event));
-                setRuns((prev) => reducePiRunsEvent(prev, event));
+                setTurns((prev) => reducePiTurnsEvent(prev, event));
                 switch (event.type) {
-                    case "snapshot": {
-                        // Replayed once on (re)subscribe: seed status from the
-                        // owner so a renderer that attaches mid-stream reflects
-                        // "streaming" instead of a stale "idle". reducePiChatEvent
-                        // already mirrored the messages above.
-                        const snapStatus = event.status as UsePiChatStatus | undefined;
-                        if (snapStatus) {
-                            setStatus(snapStatus);
-                            setErrorMessage(snapStatus === "error" ? "agent error" : undefined);
-                        }
-                        setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
+                    case "session_state": {
+                        applySessionState(event, setStatus, setErrorMessage, setQueuedMessages);
                         break;
                     }
                     case "queue_update":
@@ -377,7 +377,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                     }
                     case "agent_end":
                     case "abort":
-                        // Run finished or was stopped. abort() also clears the
+                        // Turn finished or was stopped. abort() also clears the
                         // queues and emits queue_update, so queuedMessages empties
                         // on its own; here we just settle the status.
                         setStatus("idle");
@@ -388,8 +388,11 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             },
             { blockId: blockIdRef.current }
         );
-        return unsubscribe;
-    }, [sessionPath]);
+        return () => {
+            cancelled = true;
+            unsubscribe();
+        };
+    }, [sessionMetadata, sessionPath]);
 
     const send = useCallback(
         async (text: string): Promise<void> => {
@@ -404,7 +407,9 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 let sendSessionMetadata = sessionMetadata;
                 if (!sendSessionMetadata) {
                     sendSessionMetadata = await api.createSession(paneContextRef.current.cwd);
+                    setSessionMetadata(sendSessionMetadata);
                     activeSessionPathRef.current = sendSessionMetadata.path;
+                    onSessionMintedRef.current?.(sendSessionMetadata);
                 } else {
                     activeSessionPathRef.current = sendSessionMetadata.path;
                 }
@@ -442,12 +447,14 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const abort = useCallback((): void => {
         const api = getAgentApi();
         const abortSessionPath = resolveAbortSessionPath(sessionMetadataRef.current, activeSessionPathRef.current);
+        setStatus((current) => getOptimisticAbortStatus(current));
+        setQueuedMessages([]);
         if (!api || !abortSessionPath) return;
         api.abort(abortSessionPath);
     }, []);
 
     return useMemo(
-        () => ({ messages, runs, status, errorMessage, sessionMetadata, queuedMessages, send, abort }),
-        [messages, runs, status, errorMessage, sessionMetadata, queuedMessages, send, abort]
+        () => ({ messages, turns, status, errorMessage, sessionMetadata, queuedMessages, send, abort }),
+        [messages, turns, status, errorMessage, sessionMetadata, queuedMessages, send, abort]
     );
 }

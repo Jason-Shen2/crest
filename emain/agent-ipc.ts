@@ -44,7 +44,7 @@ import * as electron from "electron";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
-import { RpcApi } from "../frontend/app/store/wshclientapi";
+import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent/agent-event-routing";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
 import { getBuiltInAgentCommands } from "./agent/commands/registry";
@@ -65,11 +65,15 @@ import type {
 } from "./agent/commands/types";
 import { buildPaneHarness } from "./agent/harness-factory";
 import { InMemorySessionRepo } from "./agent/harness/session/memory-repo";
-import type { JsonlSessionMetadata } from "./agent/harness/types";
-import { buildPersistedTurnsFromSessionEntries, PaneAgentSession, type AgentTurn } from "./agent/pane-agent-session";
+import type { JsonlSessionMetadata, SessionDetailInfo } from "./agent/harness/types";
+import {
+    buildPersistedTurnsFromSessionEntries,
+    PaneAgentSession,
+    type AgentTurn,
+    type PaneSessionStatus,
+} from "./agent/pane-agent-session";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { loadProjectContextFiles } from "./agent/resource-loader";
-import { loadAgentSkills } from "./agent/skills-loader";
 import {
     createPaneSession,
     defaultSessionsDir,
@@ -81,14 +85,13 @@ import {
     openPaneSession,
     openPaneSessionByPath,
 } from "./agent/sessions";
-import type { SessionDetailInfo } from "./agent/harness/types";
+import { loadAgentSkills } from "./agent/skills-loader";
 import { getDefaultTools } from "./agent/tools";
 import { createSpawnCliAgentTool } from "./agent/tools/spawn-cli-agent";
 import type { AgentMessage, ThinkingLevel } from "./agent/types";
-import type { Api, Model } from "./ai";
+import type { Api, Message, Model } from "./ai";
 import { getModel } from "./ai";
 import { getSecret } from "./aiconfig/secrets";
-import { ElectronWshClient } from "./emain-wsh";
 
 // Per-pane conversation OWNERS, keyed by session JSONL path (the natural
 // session identity — same path always reopens the same conversation). The
@@ -100,15 +103,18 @@ const sessionCache = new Map<string, PaneAgentSession>();
 // Per-(sender, sessionPath) subscriptions. The value is the unsubscribe
 // fn returned by PaneAgentSession.subscribe(). On sender destroy we
 // walk this map and release everything that sender held.
-type SubKey = string; // `${senderId}:${sessionPath}`
+type SubKey = string;
 const subscriptions = new Map<SubKey, () => void>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
-const pendingSubscriptions = new Map<SubKey, { sender: electron.WebContents; sessionPath: string }>();
+const pendingSubscriptions = new Map<
+    SubKey,
+    { sender: electron.WebContents; canonicalPath: string; rendererPath: string }
+>();
 
 interface SendOptions {
     /** Existing session, if any. null on first send → main mints a fresh one. */
     sessionMetadata?: JsonlSessionMetadata | null;
-    /** Parent terminal block ID for timeline marker persistence. */
+    /** Parent terminal block ID for pane-scoped tools and command context. */
     blockId: string;
     /** Pane's current cwd. Drives system prompt + tool execution dir. */
     cwd: string;
@@ -237,6 +243,10 @@ function getAssistantText(message: AgentMessage): string | undefined {
         .join("")
         .trim();
     return text || undefined;
+}
+
+function isToolResultModelMessage(message: AgentMessage): message is Message {
+    return (message as { role?: string }).role === "toolResult";
 }
 
 function assertInsideSessionsDir(sessionPath: string, sessionsRoot: string, fieldName: string): void {
@@ -475,7 +485,9 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
     const initialTurns = buildPersistedTurnsFromSessionEntries(await piSession.getBranch());
     let owner: PaneAgentSession;
     const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
-        const operations = extractChangeOperationsFromMessages(turn.responseMessages, { turnId: turn.turnId });
+        const operations = extractChangeOperationsFromMessages(turn.responseMessages.filter(isToolResultModelMessage), {
+            turnId: turn.turnId,
+        });
         if (operations.length === 0) return;
         const changeOutline = await generateChangeOutline({
             model,
@@ -527,72 +539,111 @@ function trackSenderKey(sender: electron.WebContents, key: SubKey): void {
     set.add(key);
 }
 
-async function sendPersistedSnapshot(
-	sender: electron.WebContents,
-	sessionPath: string
+async function sendPersistedSessionState(
+    sender: electron.WebContents,
+    sessionPath: string,
+    rendererSessionPath = sessionPath
 ): Promise<void> {
-	let canonicalPath = sessionPath;
-	try {
-		canonicalPath = await validateSessionPath(sessionPath);
-		const session = await openPaneSessionByPath(canonicalPath);
-		const context = await session.buildContext();
-		const turns = buildPersistedTurnsFromSessionEntries(await session.getBranch());
-		if (sender.isDestroyed()) return;
-		sender.send("agent:event", {
-			sessionPath: canonicalPath,
-			event: {
-				type: "snapshot",
-				messages: context.messages,
-				turns,
-				status: "idle",
-				steer: [],
-				followUp: [],
-			},
-		});
-	} catch (err) {
-		console.error(`[agent-ipc] persisted snapshot error for ${canonicalPath}:`, err);
-	}
+    let canonicalPath = sessionPath;
+    try {
+        canonicalPath = await validateSessionPath(sessionPath);
+        const session = await openPaneSessionByPath(canonicalPath);
+        const context = await session.buildContext();
+        const turns = buildPersistedTurnsFromSessionEntries(await session.getBranch());
+        if (sender.isDestroyed()) return;
+        sender.send(
+            "agent:event",
+            makeAgentEventPayload(canonicalPath, rendererSessionPath, {
+                type: "session_state",
+                messages: context.messages,
+                turns,
+                status: "idle",
+                steer: [],
+                followUp: [],
+            })
+        );
+    } catch (err) {
+        console.error(`[agent-ipc] persisted session_state error for ${canonicalPath}:`, err);
+    }
 }
 
-function subscribeToOwner(sender: electron.WebContents, sessionPath: string, session: PaneAgentSession): void {
-    const key: SubKey = `${sender.id}:${sessionPath}`;
+async function buildPersistedSessionState(sessionPath: string): Promise<{
+    type: "session_state";
+    messages: AgentMessage[];
+    turns: AgentTurn[];
+    status: PaneSessionStatus;
+    steer: AgentMessage[];
+    followUp: AgentMessage[];
+}> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    const owner = sessionCache.get(canonicalPath);
+    if (owner) {
+        const state = owner.getSessionState();
+        return {
+            type: "session_state",
+            messages: state.messages,
+            turns: state.turns,
+            status: state.status,
+            steer: state.steerQueue,
+            followUp: state.followUpQueue,
+        };
+    }
+    const session = await openPaneSessionByPath(canonicalPath);
+    const context = await session.buildContext();
+    return {
+        type: "session_state",
+        messages: context.messages,
+        turns: buildPersistedTurnsFromSessionEntries(await session.getBranch()),
+        status: "idle",
+        steer: [],
+        followUp: [],
+    };
+}
+
+function subscribeToOwner(
+    sender: electron.WebContents,
+    sessionPath: string,
+    session: PaneAgentSession,
+    rendererSessionPath = sessionPath
+): void {
+    const key: SubKey = makeAgentSubscriptionKey(sender.id, sessionPath, rendererSessionPath);
     pendingSubscriptions.delete(key);
     if (subscriptions.has(key)) return;
     const unsub = session.subscribe((agentEvent) => {
         if (sender.isDestroyed()) return;
-        sender.send("agent:event", {
-            sessionPath,
-            event: {
+        sender.send(
+            "agent:event",
+            makeAgentEventPayload(sessionPath, rendererSessionPath, {
                 ...agentEvent,
-                turns: session.getSnapshot().turns,
-            },
-        });
+                turns: session.getSessionState().turns,
+            })
+        );
     });
     subscriptions.set(key, unsub);
     trackSenderKey(sender, key);
-    const snapshot = session.getSnapshot();
+    const sessionState = session.getSessionState();
     if (sender.isDestroyed()) return;
-    sender.send("agent:event", {
-        sessionPath,
-        event: {
-            type: "snapshot",
-            messages: snapshot.messages,
-            turns: snapshot.turns,
-            status: snapshot.status,
-            steer: snapshot.steerQueue,
-            followUp: snapshot.followUpQueue,
-        },
-    });
+    sender.send(
+        "agent:event",
+        makeAgentEventPayload(sessionPath, rendererSessionPath, {
+            type: "session_state",
+            messages: sessionState.messages,
+            turns: sessionState.turns,
+            status: sessionState.status,
+            steer: sessionState.steerQueue,
+            followUp: sessionState.followUpQueue,
+        })
+    );
 }
 
 function attachPendingSubscribers(sessionPath: string, session: PaneAgentSession): void {
     for (const [key, sender] of pendingSubscriptions) {
-        if (sender.sessionPath !== sessionPath) continue;
+        if (sender.canonicalPath !== sessionPath) continue;
         if (sender.sender.isDestroyed()) {
             pendingSubscriptions.delete(key);
             continue;
         }
-        subscribeToOwner(sender.sender, sessionPath, session);
+        subscribeToOwner(sender.sender, sender.canonicalPath, session, sender.rendererPath);
     }
 }
 
@@ -629,6 +680,13 @@ export async function listAgentForkPointsForIpc(sessionMetadata: unknown): Promi
     return buildAgentForkPointViews(entries);
 }
 
+export async function getAgentSessionStateForIpc(
+    sessionMetadata: unknown
+): Promise<Awaited<ReturnType<typeof buildPersistedSessionState>>> {
+    const { metadata, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
+    return await buildPersistedSessionState(requestedPath || metadata.path);
+}
+
 export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavigateTreeResult> {
     const { metadata, session, targetId, requestedPath } = await validateNavigateInput(input);
     const owner = sessionCache.get(metadata.path) ?? sessionCache.get(requestedPath);
@@ -639,9 +697,9 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
     }
 
     // No live owner (typical case: rehydrated session, user hasn't sent a new
-    // prompt yet — only the one-shot subscribe snapshot exists). Replicate the
+    // prompt yet — only the one-shot subscribe session_state exists). Replicate the
     // harness's summarize:false navigate directly against the jsonl session,
-    // then push a fresh snapshot to every pending subscriber.
+    // then push a fresh session_state to every pending subscriber.
     const targetEntry = await session.getEntry(targetId);
     if (!targetEntry) {
         throw new Error(`agent IPC: targetId ${targetId} not found in session`);
@@ -657,7 +715,10 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
                 ? content
                 : Array.isArray(content)
                   ? content
-                        .filter((c): c is { type: "text"; text: string } => c && typeof c === "object" && "type" in c && c.type === "text")
+                        .filter(
+                            (c): c is { type: "text"; text: string } =>
+                                c && typeof c === "object" && "type" in c && c.type === "text"
+                        )
                         .map((c) => c.text)
                         .join("")
                   : undefined;
@@ -669,7 +730,10 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
                 ? content
                 : Array.isArray(content)
                   ? content
-                        .filter((c): c is { type: "text"; text: string } => c && typeof c === "object" && "type" in c && c.type === "text")
+                        .filter(
+                            (c): c is { type: "text"; text: string } =>
+                                c && typeof c === "object" && "type" in c && c.type === "text"
+                        )
                         .map((c) => c.text)
                         .join("")
                   : undefined;
@@ -683,13 +747,13 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
     const context = await session.buildContext();
     const turns = buildPersistedTurnsFromSessionEntries(branchEntries);
 
-    // Broadcast the post-navigate snapshot to every sender that has a
+    // Broadcast the post-navigate session_state to every sender that has a
     // subscription (pending or active) on this session. Active-subscription
     // owners can't exist here (we already took the owner branch above), so
     // walk pendingSubscriptions. Turns derive solely from the session branch,
-    // so every subscriber gets the same snapshot regardless of its block.
-    const snapshot = {
-        type: "snapshot" as const,
+    // so every subscriber gets the same session state regardless of its block.
+    const sessionState = {
+        type: "session_state" as const,
         messages: context.messages,
         turns,
         status: "idle" as const,
@@ -698,17 +762,14 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
         errorMessage: undefined as string | undefined,
     };
     for (const [, pending] of pendingSubscriptions) {
-        if (pending.sessionPath !== metadata.path) continue;
+        if (pending.canonicalPath !== metadata.path) continue;
         const { sender } = pending;
         if (sender.isDestroyed()) continue;
-        sender.send("agent:event", {
-            sessionPath: metadata.path,
-            event: snapshot,
-        });
+        sender.send("agent:event", makeAgentEventPayload(metadata.path, pending.rendererPath, sessionState));
     }
     // Also send to the IPC caller if it's not already covered. The caller
     // doesn't wait for the IPC event — the navigate return carries
-    // editorText, but the renderer relies on "agent:event" snapshot to
+    // editorText, but the renderer relies on "agent:event" session_state to
     // repopulate turns. The subscription effect in use-pi-chat registers
     // before navigate fires, so the sender is already in pendingSubscriptions
     // above; nothing else to do here.
@@ -910,33 +971,32 @@ export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<voi
     sessionCache.get(canonicalPath)?.abort();
 }
 
-export async function subscribeAgentSessionForIpc(
-	sender: electron.WebContents,
-	sessionPath: unknown
-): Promise<void> {
-	const canonicalPath = await validateSessionPath(sessionPath);
-	const session = sessionCache.get(canonicalPath);
-	if (!session) {
-		const key: SubKey = `${sender.id}:${canonicalPath}`;
-		if (!pendingSubscriptions.has(key)) {
-			pendingSubscriptions.set(key, { sender, sessionPath: canonicalPath });
-			trackSenderKey(sender, key);
-		}
-		await sendPersistedSnapshot(sender, canonicalPath);
-		return;
-	}
-	subscribeToOwner(sender, canonicalPath, session);
+export async function subscribeAgentSessionForIpc(sender: electron.WebContents, sessionPath: unknown): Promise<void> {
+    const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
+    const canonicalPath = await validateSessionPath(rendererPath);
+    const session = sessionCache.get(canonicalPath);
+    if (!session) {
+        const key: SubKey = makeAgentSubscriptionKey(sender.id, canonicalPath, rendererPath);
+        if (!pendingSubscriptions.has(key)) {
+            pendingSubscriptions.set(key, { sender, canonicalPath, rendererPath });
+            trackSenderKey(sender, key);
+        }
+        await sendPersistedSessionState(sender, canonicalPath, rendererPath);
+        return;
+    }
+    subscribeToOwner(sender, canonicalPath, session, rendererPath);
 }
 
 export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPath: unknown): Promise<void> {
-	const canonicalPath = await validateSessionPath(sessionPath);
-	const key: SubKey = `${senderId}:${canonicalPath}`;
-	releaseSubscription(key);
-	const set = subscriptionsBySender.get(senderId);
-	if (set) {
-		set.delete(key);
-		if (set.size === 0) subscriptionsBySender.delete(senderId);
-	}
+    const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
+    const canonicalPath = await validateSessionPath(rendererPath);
+    const key: SubKey = makeAgentSubscriptionKey(senderId, canonicalPath, rendererPath);
+    releaseSubscription(key);
+    const set = subscriptionsBySender.get(senderId);
+    if (set) {
+        set.delete(key);
+        if (set.size === 0) subscriptionsBySender.delete(senderId);
+    }
 }
 
 /**
@@ -980,6 +1040,10 @@ export function registerAgentIpcHandlers(): void {
             return await listAgentTreeForIpc(sessionMetadata);
         }
     );
+
+    electron.ipcMain.handle("agent:get-session-state", async (_event, sessionMetadata: JsonlSessionMetadata) => {
+        return await getAgentSessionStateForIpc(sessionMetadata);
+    });
 
     electron.ipcMain.handle(
         "agent:list-fork-points",
@@ -1029,21 +1093,9 @@ export function registerAgentIpcHandlers(): void {
             const session = await ensurePaneSession(metadata, opts);
 
             // Turn identity IS the session entry id of the user message that
-            // starts the turn. Prompt first so the session mints that entry
-            // (the single source of truth), get the userEntryId back, THEN
-            // persist the timeline anchor row keyed by it.
+            // starts the turn. Prompt first so the session mints that entry,
+            // the single source of truth.
             const userEntryId = await session.send(opts.text);
-            if (opts.blockId) {
-                try {
-                    await RpcApi.AppendAgentRunCommand(ElectronWshClient, {
-                        blockid: opts.blockId,
-                        sessionpath: metadata.path,
-                        userentryid: userEntryId,
-                    });
-                } catch (err) {
-                    console.error(`[agent-ipc] failed to persist timeline marker:`, err);
-                }
-            }
 
             return { sessionMetadata: metadata, turnId: userEntryId };
         }
