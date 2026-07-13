@@ -13,16 +13,17 @@
 // campbell, warmyellow, rosepine, gruvbox-dark) still load from the
 // JSON until we get to them.
 
-import { resolvePartialTermTheme, type PartialTermTheme, type RegistryEntry, type ResolvedRegistryEntry } from "../types";
+import { resolvePartialTermTheme, type PartialTermTheme, type RegistryEntry, type ResolvedRegistryEntry, type UiThemeOverrides } from "../types";
 import { defaultDarkEntry, defaultDark } from "./default-dark";
 import { cyberWaveEntry } from "./cyber-wave";
+import { claudeEntry } from "./claude";
 import { solarizedLightEntry } from "./solarized-light";
 
 // All registry entries, in display order.  Order matters for the
 // command palette's "active theme" labelling and for the build-time
 // JSON regen — but the final order at runtime is driven by each
 // entry's `display:order` field.
-const REGISTRY: RegistryEntry[] = [defaultDarkEntry, cyberWaveEntry, solarizedLightEntry];
+const REGISTRY: RegistryEntry[] = [defaultDarkEntry, claudeEntry, cyberWaveEntry, solarizedLightEntry];
 
 // Lookup by registry id — used internally for `extends:` resolution.
 const BY_ID = new Map<string, RegistryEntry>(REGISTRY.map((e) => [e.theme.id, e]));
@@ -62,7 +63,13 @@ function resolveEntry(entry: RegistryEntry): TermThemeType {
         current = next;
     }
 
-    return resolvePartialTermTheme(entry.theme, base);
+    const resolved = resolvePartialTermTheme(entry.theme, base);
+    resolved.id = entry.theme.id;
+    resolved["display:name"] = entry.theme["display:name"];
+    if (entry.theme["display:order"] !== undefined) {
+        resolved["display:order"] = entry.theme["display:order"];
+    }
+    return resolved;
 }
 
 // Walk an entry's `extends:` chain and return the fully-resolved base
@@ -106,6 +113,17 @@ export function getBuiltinThemeEntries(): ResolvedRegistryEntry[] {
         entry,
         base: resolveBaseForEntry(entry),
     }));
+}
+
+// Return the UI token overrides declared by a registry entry, or an
+// empty object if the theme has no entry or declares no overrides.
+// Used by ThemeModel.applyTheme() to let TS-bundled themes pin exact
+// shadcn/ui + sidebar hex values instead of relying on blend-formula
+// derivation (which is close but loses the deliberate subtlety of
+// hand-tuned palettes like terax-ai's Claude theme).
+export function getThemeUiOverrides(id: string): UiThemeOverrides {
+    const entry = BY_ID.get(id);
+    return entry?.ui ?? {};
 }
 
 // Re-export the partial + entry types so consumers can import them
