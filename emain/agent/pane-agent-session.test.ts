@@ -114,7 +114,7 @@ describe("PaneAgentSession — owned transcript", () => {
         fake.emit({ type: "message_start", message: assistant("par") });
         fake.emit({ type: "message_update", message: assistant("partial") });
         fake.emit({ type: "message_end", message: assistant("final", "stop") });
-        const { messages } = owner.getSnapshot();
+        const { messages } = owner.getSessionState();
         expect(messages).toHaveLength(2);
         expect(messages[0].role).toBe("user");
         expect((messages[1] as { content: { text: string }[] }).content[0].text).toBe("final");
@@ -124,7 +124,7 @@ describe("PaneAgentSession — owned transcript", () => {
         const fake = makeFakeHarness();
         const history = [user("old q"), assistant("old a", "stop")];
         const owner = new PaneAgentSession("/s", fake.pane, history);
-        expect(owner.getSnapshot().messages).toBe(history);
+        expect(owner.getSessionState().messages).toBe(history);
     });
 
     it("does NOT clobber the accumulated transcript on agent_end (turn-scoped)", () => {
@@ -139,7 +139,7 @@ describe("PaneAgentSession — owned transcript", () => {
         fake.emit({ type: "message_end", message: assistant("a1", "stop") });
         // agent_end for turn 1 carries only turn-1 messages — fine, matches.
         fake.emit({ type: "agent_end", messages: [user("q1"), assistant("a1", "stop")] });
-        expect(owner.getSnapshot().messages).toHaveLength(2);
+        expect(owner.getSessionState().messages).toHaveLength(2);
     });
 
     it("accumulates messages across multiple turns (turn-scoped agent_end ignored)", () => {
@@ -157,7 +157,7 @@ describe("PaneAgentSession — owned transcript", () => {
         fake.emit({ type: "message_start", message: assistant("a2") });
         fake.emit({ type: "message_end", message: assistant("a2", "stop") });
         fake.emit({ type: "agent_end", messages: [user("q2"), assistant("a2", "stop")] });
-        const { messages } = owner.getSnapshot();
+        const { messages } = owner.getSessionState();
         expect(messages).toHaveLength(4);
         expect((messages[0] as { content: { text: string }[] }).content[0].text).toBe("q1");
         expect((messages[2] as { content: { text: string }[] }).content[0].text).toBe("q2");
@@ -227,22 +227,22 @@ describe("PaneAgentSession — command operations", () => {
 
     it("passes custom entries through for renderer filter modes", async () => {
         const fake = makeFakeHarness();
-        const runEntry = {
+        const customEntry = {
             type: "custom" as const,
-            id: "run-1",
+            id: "custom-1",
             parentId: null,
             timestamp: "t0",
-            customType: "agent_run",
-            data: { runId: "stale" },
+            customType: "session_note",
+            data: { id: "stale" },
         };
-        const userMsg = { type: "message" as const, id: "m1", parentId: "run-1", timestamp: "t1", message: user("hi") };
-        fake.session.getEntries.mockResolvedValue([runEntry, userMsg]);
+        const userMsg = { type: "message" as const, id: "m1", parentId: "custom-1", timestamp: "t1", message: user("hi") };
+        fake.session.getEntries.mockResolvedValue([customEntry, userMsg]);
         fake.session.getLeafId.mockResolvedValue("m1");
 
         const owner = new PaneAgentSession("/s", fake.pane);
         const result = await owner.listTreeEntries();
 
-        expect(result.entries).toEqual([runEntry, userMsg]);
+        expect(result.entries).toEqual([customEntry, userMsg]);
     });
 
     it("navigates the session tree without branch summarization", async () => {
@@ -256,7 +256,7 @@ describe("PaneAgentSession — command operations", () => {
         expect(result).toEqual({ editorText: "edit this" });
     });
 
-    it("rebuilds owner snapshot from the selected branch after tree navigation", async () => {
+    it("rebuilds owner session state from the selected branch after tree navigation", async () => {
         const fake = makeFakeHarness();
         const oldMessages = [user("old question"), assistant("old answer", "stop")];
         const q = user("new question");
@@ -284,8 +284,8 @@ describe("PaneAgentSession — command operations", () => {
 
         await owner.navigateTree("m2");
 
-        expect(owner.getSnapshot().messages).toEqual([q, a]);
-        expect(owner.getSnapshot().turns).toEqual([
+        expect(owner.getSessionState().messages).toEqual([q, a]);
+        expect(owner.getSessionState().turns).toEqual([
             {
                 turnId: "m1",
                 userMessage: q,
@@ -295,7 +295,7 @@ describe("PaneAgentSession — command operations", () => {
         ]);
         expect(seen).toContainEqual(
             expect.objectContaining({
-                type: "snapshot",
+                type: "session_state",
                 messages: [q, a],
                 turns: [
                     {
@@ -331,9 +331,9 @@ describe("PaneAgentSession — command operations", () => {
         const result = await owner.navigateTree("m2");
 
         expect(result).toEqual({ editorText: "second question" });
-        const snap = owner.getSnapshot();
-        expect(snap.messages).toEqual([m1, a1]);
-        expect(snap.turns).toEqual([
+        const state = owner.getSessionState();
+        expect(state.messages).toEqual([m1, a1]);
+        expect(state.turns).toEqual([
             { turnId: "m1", userMessage: m1, responseMessages: [a1], status: "done" },
         ]);
     });
@@ -357,9 +357,9 @@ describe("PaneAgentSession — command operations", () => {
         const result = await owner.navigateTree("m1");
 
         expect(result).toEqual({ editorText: "first question" });
-        const snap = owner.getSnapshot();
-        expect(snap.messages).toEqual([m1]);
-        expect(snap.turns).toEqual([
+        const state = owner.getSessionState();
+        expect(state.messages).toEqual([m1]);
+        expect(state.turns).toEqual([
             { turnId: "m1", userMessage: m1, responseMessages: [], status: "done" },
         ]);
     });
@@ -396,7 +396,7 @@ describe("PaneAgentSession — owned turns", () => {
         fake.emit({ type: "message_end", message: final });
         fake.emit({ type: "agent_end", messages: [q, final] });
 
-        expect(owner.getSnapshot().turns).toEqual([
+        expect(owner.getSessionState().turns).toEqual([
             {
                 turnId: "e-a",
                 userMessage: q,
@@ -470,7 +470,7 @@ describe("PaneAgentSession — owned turns", () => {
         fake.emit({ type: "message_start", message: assistant("") });
         fake.emit({ type: "message_end", message: final });
 
-        expect(owner.getSnapshot().turns).toEqual([
+        expect(owner.getSessionState().turns).toEqual([
             {
                 turnId: "e-err",
                 userMessage: q,
@@ -519,7 +519,7 @@ describe("PaneAgentSession — owned turns", () => {
             modules: [{ id: "ui", title: "UI changes", files: [{ path: "src/app.ts" }] }],
         });
 
-        expect(owner.getSnapshot().turns[0].changeOutline).toEqual({
+        expect(owner.getSessionState().turns[0].changeOutline).toEqual({
             modules: [{ id: "ui", title: "UI changes", files: [{ path: "src/app.ts" }] }],
         });
         expect(seen).toContain("agent_turn_update");
@@ -577,13 +577,13 @@ describe("buildPersistedTurnsFromSessionEntries", () => {
         const entries: SessionTreeEntry[] = [
             {
                 type: "custom",
-                id: "legacy-run-1",
+                id: "custom-1",
                 parentId: null,
                 timestamp: "t0",
-                customType: "agent_run",
-                data: { runId: "stale" },
+                customType: "session_note",
+                data: { id: "stale" },
             },
-            { type: "message", id: "m1", parentId: "legacy-run-1", timestamp: "t1", message: q1 },
+            { type: "message", id: "m1", parentId: "custom-1", timestamp: "t1", message: q1 },
             { type: "message", id: "m2", parentId: "m1", timestamp: "t2", message: a1 },
         ];
 
@@ -616,11 +616,11 @@ describe("PaneAgentSession — status tracking", () => {
     it("goes streaming on agent_start and idle on agent_end", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
-        expect(owner.getSnapshot().status).toBe("idle");
+        expect(owner.getSessionState().status).toBe("idle");
         fake.emit({ type: "agent_start" });
-        expect(owner.getSnapshot().status).toBe("streaming");
+        expect(owner.getSessionState().status).toBe("streaming");
         fake.emit({ type: "agent_end", messages: [] });
-        expect(owner.getSnapshot().status).toBe("idle");
+        expect(owner.getSessionState().status).toBe("idle");
     });
 
     it("captures an errored assistant turn and keeps status=error through agent_end", () => {
@@ -629,13 +629,13 @@ describe("PaneAgentSession — status tracking", () => {
         fake.emit({ type: "agent_start" });
         fake.emit({ type: "message_start", message: assistant("") });
         fake.emit({ type: "message_end", message: assistant("", "error", "rate limited") });
-        let snap = owner.getSnapshot();
-        expect(snap.status).toBe("error");
-        expect(snap.errorMessage).toBe("rate limited");
+        let state = owner.getSessionState();
+        expect(state.status).toBe("error");
+        expect(state.errorMessage).toBe("rate limited");
         // agent_end must not paper over the error with idle.
         fake.emit({ type: "agent_end", messages: [assistant("", "error", "rate limited")] });
-        snap = owner.getSnapshot();
-        expect(snap.status).toBe("error");
+        state = owner.getSessionState();
+        expect(state.status).toBe("error");
     });
 });
 
@@ -644,9 +644,9 @@ describe("PaneAgentSession — queue mirror", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
         fake.emit({ type: "queue_update", steer: [user("s1")], followUp: [user("f1"), user("f2")] });
-        const snap = owner.getSnapshot();
-        expect(snap.steerQueue).toHaveLength(1);
-        expect(snap.followUpQueue).toHaveLength(2);
+        const state = owner.getSessionState();
+        expect(state.steerQueue).toHaveLength(1);
+        expect(state.followUpQueue).toHaveLength(2);
     });
 });
 
@@ -659,7 +659,7 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
         await flush();
         expect(fake.calls.prompt).toEqual(["a"]);
         expect(fake.calls.followUp).toEqual(["b"]);
-        expect(owner.getSnapshot().status).toBe("idle");
+        expect(owner.getSessionState().status).toBe("idle");
     });
 
     it("after the run ends (agent_end), the next send prompts again", async () => {
@@ -679,9 +679,9 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
         const owner = new PaneAgentSession("/s", fake.pane);
         owner.send("a").catch(() => {});
         await flush();
-        const snap = owner.getSnapshot();
-        expect(snap.status).toBe("error");
-        expect(snap.errorMessage).toBe("boom");
+        const state = owner.getSessionState();
+        expect(state.status).toBe("error");
+        expect(state.errorMessage).toBe("boom");
         // running was cleared → the next send prompts (doesn't deadlock on followUp).
         owner.send("b").catch(() => {});
         await flush();
@@ -702,12 +702,12 @@ describe("PaneAgentSession — subscriber fan-out", () => {
         expect(seen).toEqual(["agent_start", "message_start"]);
     });
 
-    it("a subscriber reading getSnapshot() inside its callback sees post-event state", () => {
+    it("a subscriber reading getSessionState() inside its callback sees post-event state", () => {
         const fake = makeFakeHarness();
         const owner = new PaneAgentSession("/s", fake.pane);
         let lenAtCallback = -1;
         owner.subscribe(() => {
-            lenAtCallback = owner.getSnapshot().messages.length;
+            lenAtCallback = owner.getSessionState().messages.length;
         });
         fake.emit({ type: "message_start", message: user("hi") });
         expect(lenAtCallback).toBe(1);

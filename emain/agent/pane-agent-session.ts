@@ -27,7 +27,7 @@
 //   - routes send() to prompt-vs-followUp from its own synchronously
 //     tracked run state — NOT by catching AgentHarnessError("busy"),
 //   - re-emits the harness event stream to its subscribers (the IPC layer
-//     registers one subscriber per renderer) and replays getSnapshot() so
+//     registers one subscriber per renderer) and replays getSessionState() so
 //     a late/re-subscribing renderer converges to the owned state.
 //
 // See docs/agent-rendering-architecture.md.
@@ -58,7 +58,7 @@ export interface AgentTurn {
  * subscriber so a renderer that attaches late (or re-attaches) mirrors the
  * authoritative state instead of reconstructing it from a partial stream.
  */
-export interface PaneSessionSnapshot {
+export interface PaneSessionState {
     messages: AgentMessage[];
     turns: AgentTurn[];
     steerQueue: AgentMessage[];
@@ -70,8 +70,8 @@ export interface PaneSessionSnapshot {
 export type PaneSessionListener = (event: AgentHarnessEvent) => void;
 export type PaneTurnFinishedHook = (turn: AgentTurn) => void | Promise<void>;
 
-interface PaneSnapshotEvent {
-    type: "snapshot";
+interface PaneSessionStateEvent {
+    type: "session_state";
     messages: AgentMessage[];
     turns: AgentTurn[];
     status: PaneSessionStatus;
@@ -170,7 +170,7 @@ export class PaneAgentSession {
     }
 
     private onHarnessEvent(event: AgentHarnessEvent): void {
-        // Update owned state FIRST so a subscriber that reads getSnapshot()
+        // Update owned state FIRST so a subscriber that reads getSessionState()
         // synchronously inside its callback sees the post-event state.
         this.applyToState(event);
         for (const listener of this.listeners) {
@@ -255,7 +255,7 @@ export class PaneAgentSession {
         }
     }
 
-    getSnapshot(): PaneSessionSnapshot {
+    getSessionState(): PaneSessionState {
         return {
             messages: this.messages,
             turns: this.turns,
@@ -324,14 +324,14 @@ export class PaneAgentSession {
             return {};
         }
         await this.rebuildFromCurrentBranch();
-        this.emitSnapshot();
+        this.emitSessionState();
         return { editorText: result.editorText };
     }
 
     async compact(customInstructions?: string): Promise<void> {
         await this.pane.harness.compact(customInstructions);
         await this.rebuildFromCurrentBranch();
-        this.emitSnapshot();
+        this.emitSessionState();
     }
 
     async getLeafId(): Promise<string | null> {
@@ -494,9 +494,9 @@ export class PaneAgentSession {
         this.running = false;
     }
 
-    private emitSnapshot(): void {
-        const event: PaneSnapshotEvent = {
-            type: "snapshot",
+    private emitSessionState(): void {
+        const event: PaneSessionStateEvent = {
+            type: "session_state",
             messages: this.messages,
             turns: this.turns,
             status: this.status,

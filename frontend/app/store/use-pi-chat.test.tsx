@@ -12,9 +12,10 @@ import { describe, expect, it } from "vitest";
 
 import {
     adoptInitialSessionMetadata,
+    getOptimisticAbortStatus,
     type PiAgentMessage,
     reducePiChatEvent,
-    reducePiRunsEvent,
+    reducePiTurnsEvent,
     resolveAbortSessionPath,
 } from "./use-pi-chat";
 
@@ -25,7 +26,7 @@ describe("reducePiChatEvent", () => {
         expect(out).toEqual([user]);
     });
 
-    it("replaces the tail on message_update (streaming snapshot)", () => {
+    it("replaces the tail on message_update (streaming message state)", () => {
         const user: PiAgentMessage = { role: "user", content: [{ type: "text", text: "hi" }] };
         const partial: PiAgentMessage = {
             role: "assistant",
@@ -57,11 +58,10 @@ describe("reducePiChatEvent", () => {
         expect(after2).toEqual([final]);
     });
 
-    it("agent_end does NOT replace the transcript (its messages are run-scoped)", () => {
-        // agent_end.messages carries only the latest run's messages, not the
-        // whole conversation — so replacing on agent_end would wipe prior
-        // runs ("…loading agent run…"). The message_start/_end stream already
-        // appended this run's messages, so the reducer leaves state untouched.
+    it("agent_end does NOT replace the transcript (its messages are turn-scoped)", () => {
+        // agent_end.messages carries only the latest turn's messages, not the
+        // whole conversation. The message_start/_end stream already appended
+        // this turn's messages, so the reducer leaves state untouched.
         const accumulated: PiAgentMessage[] = [
             { role: "user", content: [{ type: "text", text: "q1" }] },
             { role: "assistant", content: [{ type: "text", text: "a1" }] },
@@ -86,15 +86,15 @@ describe("reducePiChatEvent", () => {
         expect(out).toBe(existing);
     });
 
-    it("snapshot seeds the mirror with main's authoritative transcript", () => {
+    it("session_state seeds the mirror with main's authoritative transcript", () => {
         // Sent once on (re)subscribe. A renderer that missed the first
-        // turn's events (subscribed late) must back-fill from this so its
-        // blocks can find their runs. Replaces local state wholesale.
+        // turn's events (subscribed late) must back-fill from this. Replaces
+        // local state wholesale.
         const authoritative: PiAgentMessage[] = [
             { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1000 },
             { role: "assistant", content: [{ type: "text", text: "hello" }], stopReason: "stop" },
         ];
-        const out = reducePiChatEvent([], { type: "snapshot", messages: authoritative });
+        const out = reducePiChatEvent([], { type: "session_state", messages: authoritative });
         expect(out).toEqual(authoritative);
     });
 
@@ -119,51 +119,30 @@ describe("reducePiChatEvent", () => {
         expect(reducePiChatEvent(start, { type: "tool_execution_start" })).toBe(start);
         expect(reducePiChatEvent(start, { type: "something_we_dont_handle" })).toBe(start);
     });
+
+    it("ignores legacy snapshot events", () => {
+        const start: PiAgentMessage[] = [{ role: "user", content: [{ type: "text", text: "current" }] }];
+        const legacy: PiAgentMessage[] = [{ role: "user", content: [{ type: "text", text: "legacy" }] }];
+
+        expect(reducePiChatEvent(start, { type: "snapshot", messages: legacy })).toBe(start);
+    });
 });
 
-describe("reducePiRunsEvent", () => {
-    it("mirrors runs from main-owned snapshot state", () => {
-        const run = {
-            runId: "run-owned",
-            userMessage: { role: "user", content: [{ type: "text", text: "q" }] } as PiAgentMessage,
-            responseMessages: [
-                { role: "assistant", content: [{ type: "text", text: "a" }], stopReason: "stop" } as PiAgentMessage,
-            ],
-            status: "done" as const,
-        };
-
-        const out = reducePiRunsEvent([], { type: "snapshot", runs: [run] });
-
-        expect(out).toEqual([run]);
-    });
-
-    it("keeps the same run reference for non-snapshot events", () => {
-        const runs = [
+describe("reducePiTurnsEvent", () => {
+    it("keeps the same turn reference for events without main-owned turns", () => {
+        const turns = [
             {
-                runId: "run-owned",
+                turnId: "turn-owned",
                 userMessage: { role: "user", content: [] } as PiAgentMessage,
                 responseMessages: [],
                 status: "streaming" as const,
             },
         ];
 
-        expect(reducePiRunsEvent(runs, { type: "message_start", message: runs[0].userMessage })).toBe(runs);
+        expect(reducePiTurnsEvent(turns, { type: "message_start", message: turns[0].userMessage })).toBe(turns);
     });
 
-    it("mirrors runs from live events when main attaches owned run state", () => {
-        const run = {
-            runId: "run-live",
-            userMessage: { role: "user", content: [{ type: "text", text: "q" }] } as PiAgentMessage,
-            responseMessages: [],
-            status: "streaming" as const,
-        };
-
-        const out = reducePiRunsEvent([], { type: "message_start", message: run.userMessage, runs: [run] });
-
-        expect(out).toEqual([run]);
-    });
-
-    it("maps main-owned turns to renderer runs keyed by turnId", () => {
+    it("mirrors main-owned turns from session_state", () => {
         const userMessage = { role: "user", content: [{ type: "text", text: "q" }] } as PiAgentMessage;
         const assistantMessage = {
             role: "assistant",
@@ -171,8 +150,17 @@ describe("reducePiRunsEvent", () => {
             stopReason: "stop",
         } as PiAgentMessage;
 
-        const out = reducePiRunsEvent([], {
-            type: "snapshot",
+        const turns = [
+            {
+                turnId: "entry-xyz",
+                userMessage,
+                responseMessages: [assistantMessage],
+                status: "done" as const,
+            },
+        ];
+
+        const out = reducePiTurnsEvent([], {
+            type: "session_state",
             turns: [
                 {
                     turnId: "entry-xyz",
@@ -183,16 +171,21 @@ describe("reducePiRunsEvent", () => {
             ],
         });
 
-        expect(out).toEqual([
-            {
-                runId: "entry-xyz",
-                userMessage,
-                responseMessages: [assistantMessage],
-                status: "done",
-            },
-        ]);
+        expect(out).toEqual(turns);
     });
 
+    it("ignores legacy snapshot turn payloads", () => {
+        const turns = [
+            {
+                turnId: "current",
+                userMessage: { role: "user", content: [] } as PiAgentMessage,
+                responseMessages: [],
+                status: "streaming" as const,
+            },
+        ];
+
+        expect(reducePiTurnsEvent(turns, { type: "snapshot", turns: [] })).toBe(turns);
+    });
 });
 
 describe("resolveAbortSessionPath", () => {
@@ -201,9 +194,19 @@ describe("resolveAbortSessionPath", () => {
     });
 
     it("prefers committed session metadata over the in-flight path", () => {
-        expect(resolveAbortSessionPath({ path: "/tmp/committed.jsonl" } as AgentSessionMeta, "/tmp/inflight.jsonl")).toBe(
-            "/tmp/committed.jsonl",
-        );
+        expect(
+            resolveAbortSessionPath({ path: "/tmp/committed.jsonl" } as AgentSessionMeta, "/tmp/inflight.jsonl")
+        ).toBe("/tmp/committed.jsonl");
+    });
+});
+
+describe("getOptimisticAbortStatus", () => {
+    it("unblocks a locally streaming renderer while waiting for the owner abort event", () => {
+        expect(getOptimisticAbortStatus("streaming")).toBe("idle");
+    });
+
+    it("does not erase existing error state", () => {
+        expect(getOptimisticAbortStatus("error")).toBe("error");
     });
 });
 
