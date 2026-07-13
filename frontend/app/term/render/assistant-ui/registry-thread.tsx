@@ -17,11 +17,13 @@ import {
     ThreadPrimitive,
     unstable_useComposerInputHistory,
     unstable_useSlashCommandAdapter,
+    unstable_useTriggerPopoverScopeContext,
     useAui,
     useAuiState,
     type AssistantState,
     type ImageMessagePartProps,
     type ToolCallMessagePartComponent,
+    type Unstable_TriggerItem,
 } from "@assistant-ui/react";
 import {
     ArrowDownIcon,
@@ -45,18 +47,26 @@ import {
     Settings2Icon,
     SquareIcon,
     UploadIcon,
+    XIcon,
 } from "lucide-react";
 import {
     createContext,
     memo,
+    useCallback,
     useContext,
     useEffect,
+    useMemo,
+    useRef,
     useState,
     type ComponentType,
     type FC,
     type PropsWithChildren,
+    type DragEvent as ReactDragEvent,
+    type ReactNode,
+    type RefObject,
 } from "react";
 import { ComposerAddAttachment, ComposerAttachments, UserMessageAttachments } from "./attachment";
+import { ContextDisplayRing, type CrestContextUsage } from "./context-display";
 import { getCrestImageAlt } from "./crest-message";
 import { ThreadFollowupSuggestions } from "./follow-up-suggestions";
 import { MarkdownText } from "./markdown-text";
@@ -86,25 +96,46 @@ export type ThreadProps = {
     components?: ThreadComponents | undefined;
     modelLabel?: string | undefined;
     onOpenModelPicker?: (() => void) | undefined;
+    contextUsage?: CrestContextUsage | undefined;
+    modelContextWindow?: number | undefined;
+    beforeComposer?: ReactNode | undefined;
+    composerAnchorRef?: RefObject<HTMLDivElement | null> | undefined;
+    hideScrollToBottom?: boolean | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
 
-export const ComposerContext = createContext<Pick<ThreadProps, "modelLabel" | "onOpenModelPicker">>({});
+export const ComposerContext = createContext<
+    Pick<ThreadProps, "modelLabel" | "onOpenModelPicker" | "contextUsage" | "modelContextWindow">
+>({});
 const ThreadComponentsContext = createContext<ThreadComponents>(EMPTY_COMPONENTS);
+const ThreadExtrasContext = createContext<
+    Pick<ThreadProps, "beforeComposer" | "composerAnchorRef" | "hideScrollToBottom">
+>({});
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
 const isNewChatView = (s: AssistantState) =>
     s.thread.messages.length === 0 && (!s.thread.isLoading || s.threads.isLoading);
 
-export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS, modelLabel, onOpenModelPicker }) => {
+export const Thread: FC<ThreadProps> = ({
+    components = EMPTY_COMPONENTS,
+    modelLabel,
+    onOpenModelPicker,
+    contextUsage,
+    modelContextWindow,
+    beforeComposer,
+    composerAnchorRef,
+    hideScrollToBottom,
+}) => {
     const isEmpty = useAuiState(isNewChatView);
 
     return (
         <ThreadComponentsContext.Provider value={components}>
-            <ComposerContext.Provider value={{ modelLabel, onOpenModelPicker }}>
-                <ThreadRoot isEmpty={isEmpty} />
+            <ComposerContext.Provider value={{ modelLabel, onOpenModelPicker, contextUsage, modelContextWindow }}>
+                <ThreadExtrasContext.Provider value={{ beforeComposer, composerAnchorRef, hideScrollToBottom }}>
+                    <ThreadRoot isEmpty={isEmpty} />
+                </ThreadExtrasContext.Provider>
             </ComposerContext.Provider>
         </ThreadComponentsContext.Provider>
     );
@@ -112,6 +143,7 @@ export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS, modelLa
 
 const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
     const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
+    const { beforeComposer, composerAnchorRef, hideScrollToBottom } = useContext(ThreadExtrasContext);
 
     return (
         <ThreadPrimitive.Root
@@ -149,12 +181,17 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
                             !isEmpty && "sticky bottom-0 mt-auto rounded-t-(--composer-radius)"
                         )}
                     >
-                        <ThreadScrollToBottom />
-                        <ThreadFollowupSuggestions />
-                        <Composer />
-                        <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
-                            <ThreadSuggestions />
-                        </AuiIf>
+                        {!hideScrollToBottom && <ThreadScrollToBottom />}
+                        <div ref={composerAnchorRef} className="flex flex-col gap-4">
+                            <ThreadFollowupSuggestions />
+                            <div className="aui-composer-before-panel-stack flex flex-col gap-2">
+                                {beforeComposer}
+                                <Composer />
+                            </div>
+                            <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
+                                <ThreadSuggestions />
+                            </AuiIf>
+                        </div>
                     </ThreadPrimitive.ViewportFooter>
                 </div>
                 <MessageSelectionToolbar />
@@ -170,11 +207,12 @@ const MessageSelectionToolbar: FC = () => {
     }, []);
     if (!mounted) return null;
     return (
-        <SelectionToolbarPrimitive.Root className="aui-selection-toolbar bg-popover text-popover-foreground z-50 flex items-center gap-1 rounded-xl border p-1 shadow-lg">
+        <SelectionToolbarPrimitive.Root className={SelectionToolbarRootClassName}>
             <SelectionToolbarPrimitive.Quote asChild>
-                <TooltipIconButton tooltip="Quote" variant="ghost" size="icon" className="size-7 rounded-full">
-                    <QuoteIcon className="size-4" />
-                </TooltipIconButton>
+                <button type="button" className={SelectionToolbarQuoteClassName} aria-label="Quote selected text">
+                    <QuoteIcon className={SelectionToolbarQuoteIconClassName} />
+                    <span className="sr-only">Quote selected text</span>
+                </button>
             </SelectionToolbarPrimitive.Quote>
         </SelectionToolbarPrimitive.Root>
     );
@@ -238,7 +276,14 @@ const ThreadSuggestionItem: FC = () => {
     );
 };
 
-const SLASH_COMMANDS = [
+type SlashCommandDef = {
+    id: string;
+    label: string;
+    description: string;
+    icon: string;
+};
+
+const SLASH_COMMANDS: SlashCommandDef[] = [
     { id: "tree", label: "/tree", description: "Browse and navigate the session tree", icon: "FolderTree" },
     { id: "fork", label: "/fork", description: "Create a fork from a previous message", icon: "GitFork" },
     { id: "clone", label: "/clone", description: "Clone the current session", icon: "Copy" },
@@ -251,7 +296,7 @@ const SLASH_COMMANDS = [
     { id: "export", label: "/export", description: "Export the session as markdown", icon: "Download" },
     { id: "import", label: "/import", description: "Import a session from markdown", icon: "Upload" },
     { id: "reload", label: "/reload", description: "Reload the current session", icon: "RefreshCw" },
-] as const;
+];
 
 const SLASH_ICON_MAP = {
     FolderTree: FolderTreeIcon,
@@ -267,8 +312,142 @@ const SLASH_ICON_MAP = {
     RefreshCw: RefreshCwIcon,
 };
 
+const SlashCommandPopoverClassName =
+    "bg-[rgba(34,34,36,0.62)] text-popover-foreground absolute bottom-full left-0 z-50 mb-2 w-full overflow-hidden rounded-2xl border border-white/[0.12] p-1 shadow-[0_10px_32px_-24px_rgba(0,0,0,0.65)] backdrop-blur-2xl backdrop-saturate-150";
+const SlashCommandScrollAreaClassName =
+    "max-h-64 overflow-y-auto pr-1 [scrollbar-color:transparent_transparent] [scrollbar-width:none] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-transparent [&::-webkit-scrollbar-thumb:hover]:bg-transparent data-[scrolling=true]:[scrollbar-color:rgba(255,255,255,0.22)_transparent] data-[scrolling=true]:[scrollbar-width:thin] data-[scrolling=true]:[&::-webkit-scrollbar-thumb]:bg-white/20 data-[scrolling=true]:[&::-webkit-scrollbar-thumb:hover]:bg-white/30";
+const SlashCommandItemClassName =
+    "group flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm outline-none hover:bg-white/[0.06] data-[highlighted]:bg-white/[0.10] [&:focus-visible]:outline-none [&::-moz-focus-inner]:border-0";
+const SlashCommandIconClassName =
+    "text-secondary flex size-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] group-data-[highlighted]:bg-white/[0.12] group-data-[highlighted]:text-foreground group-hover:bg-white/[0.10] group-hover:text-foreground";
+const SelectionToolbarRootClassName =
+    "aui-selection-toolbar bg-[rgba(24,24,26,0.46)] text-popover-foreground z-50 flex items-center rounded-[0.95rem] border border-white/[0.07] p-[2px] shadow-[0_8px_18px_-16px_rgba(0,0,0,0.70)] backdrop-blur-xl backdrop-saturate-150";
+const SelectionToolbarQuoteClassName =
+    "aui-selection-toolbar-quote flex size-7 cursor-pointer items-center justify-center rounded-[0.8rem] text-secondary/80 outline-none transition-[background-color,color,transform,opacity] duration-100 hover:bg-white/[0.07] hover:text-foreground active:scale-95 disabled:pointer-events-none disabled:opacity-50";
+const SelectionToolbarQuoteIconClassName = "size-3.5 shrink-0 stroke-[1.75]";
+const AssistantActionBarMoreContentClassName =
+    "aui-action-bar-more-content bg-[rgba(34,34,36,0.82)] text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 z-50 min-w-[11rem] overflow-hidden rounded-xl border border-white/[0.08] p-1 shadow-[0_10px_32px_-24px_rgba(0,0,0,0.65)] backdrop-blur-xl";
+const AssistantActionBarMoreItemClassName =
+    "aui-action-bar-more-item flex h-8 cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2 text-sm text-secondary outline-none select-none hover:bg-fg-overlay-1 hover:text-foreground focus:bg-fg-overlay-1 focus:text-foreground data-[highlighted]:bg-fg-overlay-1 data-[highlighted]:text-foreground";
+const AssistantActionBarMoreIconClassName = "size-3.5 shrink-0";
+const ComposerDropzoneShellClassName =
+    "border-border/60 data-[dragging=true]:border-ring focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 flex w-full flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))] dark:shadow-none";
+
+type SlashCommandScrollBounds = {
+    currentScrollTop: number;
+    maxScrollTop: number;
+    itemTop: number;
+    itemBottom: number;
+    viewportTop: number;
+    viewportBottom: number;
+    margin: number;
+};
+
+const SlashCommandScrollMargin = 8;
+const SlashCommandKeyboardKeys = new Set(["ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+
+type ComposerDragAction = "enter" | "leave" | "drop" | "reset";
+
+function getNextComposerDragDepth(currentDepth: number, action: ComposerDragAction): number {
+    if (action === "enter") return currentDepth + 1;
+    if (action === "leave") return Math.max(0, currentDepth - 1);
+    return 0;
+}
+
+function getComposerDragFiles(dataTransfer: DataTransfer | null | undefined): File[] {
+    return Array.from(dataTransfer?.files ?? []);
+}
+
+function hasComposerDragFiles(dataTransfer: DataTransfer | null | undefined): boolean {
+    const types = Array.from(dataTransfer?.types ?? []);
+    return types.includes("Files") || getComposerDragFiles(dataTransfer).length > 0;
+}
+
+function getSlashCommandScrollTop(bounds: SlashCommandScrollBounds): number | null {
+    const topLimit = bounds.viewportTop + bounds.margin;
+    const bottomLimit = bounds.viewportBottom - bounds.margin;
+    let nextScrollTop: number | null = null;
+
+    if (bounds.itemTop < topLimit) {
+        nextScrollTop = bounds.currentScrollTop + bounds.itemTop - topLimit;
+    } else if (bounds.itemBottom > bottomLimit) {
+        nextScrollTop = bounds.currentScrollTop + bounds.itemBottom - bottomLimit;
+    }
+    if (nextScrollTop == null) return null;
+
+    const clampedScrollTop = Math.min(bounds.maxScrollTop, Math.max(0, nextScrollTop));
+    if (Math.abs(clampedScrollTop - bounds.currentScrollTop) < 1) return null;
+    return clampedScrollTop;
+}
+
+function scrollSlashCommandItemIntoView(itemEl: HTMLElement, containerEl: HTMLElement | null) {
+    if (!containerEl) return;
+
+    const itemRect = itemEl.getBoundingClientRect();
+    const containerRect = containerEl.getBoundingClientRect();
+    const currentScrollTop = containerEl.scrollTop;
+    const itemTop = currentScrollTop + itemRect.top - containerRect.top;
+    const itemBottom = currentScrollTop + itemRect.bottom - containerRect.top;
+    const nextScrollTop = getSlashCommandScrollTop({
+        currentScrollTop,
+        maxScrollTop: Math.max(0, containerEl.scrollHeight - containerEl.clientHeight),
+        itemTop,
+        itemBottom,
+        viewportTop: currentScrollTop,
+        viewportBottom: currentScrollTop + containerEl.clientHeight,
+        margin: SlashCommandScrollMargin,
+    });
+    if (nextScrollTop == null) return;
+    containerEl.scrollTop = nextScrollTop;
+}
+
+export const __testing = {
+    SlashCommandPopoverClassName,
+    SlashCommandScrollAreaClassName,
+    SlashCommandItemClassName,
+    SlashCommandIconClassName,
+    SelectionToolbarRootClassName,
+    SelectionToolbarQuoteClassName,
+    SelectionToolbarQuoteIconClassName,
+    AssistantActionBarMoreContentClassName,
+    AssistantActionBarMoreItemClassName,
+    AssistantActionBarMoreIconClassName,
+    ComposerDropzoneShellClassName,
+    getNextComposerDragDepth,
+    getSlashCommandScrollTop,
+};
+
+const SlashCommandPopoverDismiss: FC = () => {
+    const scope = unstable_useTriggerPopoverScopeContext();
+    const ref = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!scope.open) return;
+
+        const handlePointerDown = (e: MouseEvent) => {
+            const target = e.target as Node;
+            const el = ref.current;
+            if (!el) return;
+            const popoverEl = el.closest('[role="listbox"]');
+            if (popoverEl && popoverEl.contains(target)) return;
+            const composerRoot = el.closest("[data-testid='crest-composer']");
+            if (composerRoot && composerRoot.contains(target)) return;
+            scope.close();
+        };
+
+        document.addEventListener("mousedown", handlePointerDown, true);
+        return () => document.removeEventListener("mousedown", handlePointerDown, true);
+    }, [scope.open, scope.close]);
+
+    return <div ref={ref} className="contents" />;
+};
+
 const SlashCommandPopover: FC = () => {
     const aui = useAui();
+    const scrollAreaRef = useRef<HTMLDivElement>(null);
+    const scrollHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const highlightInputModeRef = useRef<"keyboard" | "pointer">("keyboard");
+    const [isScrolling, setIsScrolling] = useState(false);
 
     const slash = unstable_useSlashCommandAdapter({
         commands: SLASH_COMMANDS.map((cmd) => ({
@@ -285,44 +464,261 @@ const SlashCommandPopover: FC = () => {
         removeOnExecute: true,
     });
 
+    const adapter = useMemo(() => {
+        const orig = slash.adapter;
+        return {
+            ...orig,
+            search: (query: string) => {
+                const lower = query.toLowerCase().replace(/^\//, "");
+                if (!lower) return orig.search(query);
+                return SLASH_COMMANDS.filter((cmd) => cmd.id.toLowerCase().startsWith(lower)).map((cmd) => ({
+                    id: cmd.id,
+                    type: "command" as const,
+                    label: cmd.label,
+                    description: cmd.description,
+                    metadata: { icon: cmd.icon },
+                }));
+            },
+        };
+    }, [slash.adapter]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (SlashCommandKeyboardKeys.has(event.key)) {
+                highlightInputModeRef.current = "keyboard";
+            }
+        };
+        document.addEventListener("keydown", handleKeyDown, true);
+        return () => document.removeEventListener("keydown", handleKeyDown, true);
+    }, []);
+
+    const markPointerHighlight = useCallback(() => {
+        highlightInputModeRef.current = "pointer";
+    }, []);
+    const shouldAutoScrollHighlightedItem = useCallback(() => highlightInputModeRef.current === "keyboard", []);
+    const onSlashCommandScroll = useCallback(() => {
+        setIsScrolling(true);
+        if (scrollHideTimerRef.current) {
+            clearTimeout(scrollHideTimerRef.current);
+        }
+        scrollHideTimerRef.current = setTimeout(() => {
+            setIsScrolling(false);
+            scrollHideTimerRef.current = null;
+        }, 650);
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (scrollHideTimerRef.current) {
+                clearTimeout(scrollHideTimerRef.current);
+            }
+        };
+    }, []);
+
     return (
-        <ComposerPrimitive.Unstable_TriggerPopover
-            char="/"
-            adapter={slash.adapter}
-            className="bg-popover text-popover-foreground absolute bottom-full left-0 z-50 mb-1 w-full max-h-80 overflow-y-auto rounded-xl border p-1 shadow-lg"
-        >
+        <ComposerPrimitive.Unstable_TriggerPopover char="/" adapter={adapter} className={SlashCommandPopoverClassName}>
+            <SlashCommandPopoverDismiss />
             <ComposerPrimitive.Unstable_TriggerPopover.Action {...slash.action} />
             <ComposerPrimitive.Unstable_TriggerPopoverItems>
                 {(items) => (
-                    <div className="flex flex-col">
-                        {items.map((item) => (
-                            <ComposerPrimitive.Unstable_TriggerPopoverItem
-                                key={item.id}
-                                item={item}
-                                className="hover:bg-accent focus:bg-accent data-[highlighted]:bg-accent flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm outline-none"
-                            >
-                                {item.metadata?.icon &&
-                                    slash.iconMap?.[item.metadata.icon as keyof typeof SLASH_ICON_MAP] && (
-                                        <span className="text-muted-foreground flex size-6 shrink-0 items-center justify-center">
-                                            {(() => {
-                                                const Icon =
-                                                    slash.iconMap![item.metadata.icon as keyof typeof SLASH_ICON_MAP];
-                                                return <Icon className="size-4" />;
-                                            })()}
-                                        </span>
-                                    )}
-                                <span className="flex flex-col">
-                                    <span className="font-medium">{item.label}</span>
-                                    {item.description && (
-                                        <span className="text-muted-foreground text-xs">{item.description}</span>
-                                    )}
-                                </span>
-                            </ComposerPrimitive.Unstable_TriggerPopoverItem>
-                        ))}
+                    <div
+                        ref={scrollAreaRef}
+                        data-scrolling={isScrolling ? "true" : undefined}
+                        onScroll={onSlashCommandScroll}
+                        className={SlashCommandScrollAreaClassName}
+                    >
+                        <div className="flex flex-col">
+                            {items.map((item) => (
+                                <SlashCommandItem
+                                    key={item.id}
+                                    item={item}
+                                    iconMap={slash.iconMap}
+                                    scrollContainerRef={scrollAreaRef}
+                                    onPointerHighlight={markPointerHighlight}
+                                    shouldAutoScroll={shouldAutoScrollHighlightedItem}
+                                />
+                            ))}
+                        </div>
                     </div>
                 )}
             </ComposerPrimitive.Unstable_TriggerPopoverItems>
         </ComposerPrimitive.Unstable_TriggerPopover>
+    );
+};
+
+const SlashCommandItem = memo(
+    ({
+        item,
+        iconMap,
+        scrollContainerRef,
+        onPointerHighlight,
+        shouldAutoScroll,
+    }: {
+        item: Unstable_TriggerItem;
+        iconMap: Record<string, ComponentType<{ className?: string }>> | undefined;
+        scrollContainerRef: RefObject<HTMLDivElement | null>;
+        onPointerHighlight: () => void;
+        shouldAutoScroll: () => boolean;
+    }) => {
+        const ref = useRef<HTMLButtonElement>(null);
+
+        useEffect(() => {
+            const el = ref.current;
+            if (!el) return;
+            const maybeScroll = () => {
+                if (el.dataset.highlighted !== "") return;
+                if (!shouldAutoScroll()) return;
+                scrollSlashCommandItemIntoView(el, scrollContainerRef.current);
+            };
+            const obs = new MutationObserver(() => {
+                maybeScroll();
+            });
+            obs.observe(el, { attributes: true, attributeFilter: ["data-highlighted"] });
+            maybeScroll();
+            return () => obs.disconnect();
+        }, [scrollContainerRef, shouldAutoScroll]);
+
+        const Icon =
+            item.metadata?.icon && iconMap?.[item.metadata.icon as keyof typeof iconMap]
+                ? iconMap[item.metadata.icon as keyof typeof iconMap]
+                : null;
+
+        return (
+            <ComposerPrimitive.Unstable_TriggerPopoverItem
+                ref={ref}
+                item={item}
+                className={SlashCommandItemClassName}
+                onMouseMove={onPointerHighlight}
+            >
+                {Icon && (
+                    <span className={SlashCommandIconClassName}>
+                        <Icon className="size-4" />
+                    </span>
+                )}
+                <span className="flex min-w-0 flex-1 flex-col items-start">
+                    <span className="font-medium leading-tight">{item.label}</span>
+                    {item.description && (
+                        <span className="text-secondary/90 mt-0.5 text-xs leading-tight">{item.description}</span>
+                    )}
+                </span>
+            </ComposerPrimitive.Unstable_TriggerPopoverItem>
+        );
+    }
+);
+SlashCommandItem.displayName = "SlashCommandItem";
+
+const ComposerAttachmentDropzone: FC<PropsWithChildren> = ({ children }) => {
+    const aui = useAui();
+    const isEditing = useAuiState((s) => s.composer.isEditing);
+    const [isDragging, setIsDragging] = useState(false);
+    const dragDepthRef = useRef(0);
+
+    const resetDragging = useCallback(() => {
+        dragDepthRef.current = getNextComposerDragDepth(dragDepthRef.current, "reset");
+        setIsDragging(false);
+    }, []);
+
+    useEffect(() => {
+        if (!isDragging) return;
+
+        const reset = () => resetDragging();
+        window.addEventListener("dragend", reset, true);
+        window.addEventListener("drop", reset, true);
+        window.addEventListener("blur", reset, true);
+        return () => {
+            window.removeEventListener("dragend", reset, true);
+            window.removeEventListener("drop", reset, true);
+            window.removeEventListener("blur", reset, true);
+        };
+    }, [isDragging, resetDragging]);
+
+    const onDragEnterCapture = useCallback(
+        (event: ReactDragEvent<HTMLDivElement>) => {
+            if (!isEditing || !hasComposerDragFiles(event.dataTransfer)) return;
+            event.preventDefault();
+            dragDepthRef.current = getNextComposerDragDepth(dragDepthRef.current, "enter");
+            setIsDragging(true);
+        },
+        [isEditing]
+    );
+
+    const onDragOverCapture = useCallback(
+        (event: ReactDragEvent<HTMLDivElement>) => {
+            if (!isEditing || !hasComposerDragFiles(event.dataTransfer)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            if (!isDragging) {
+                setIsDragging(true);
+            }
+        },
+        [isDragging, isEditing]
+    );
+
+    const onDragLeaveCapture = useCallback(
+        (event: ReactDragEvent<HTMLDivElement>) => {
+            if (!isEditing || !hasComposerDragFiles(event.dataTransfer)) return;
+            event.preventDefault();
+            const nextTarget = event.relatedTarget as Node | null;
+            if (nextTarget && event.currentTarget.contains(nextTarget)) return;
+
+            dragDepthRef.current = getNextComposerDragDepth(dragDepthRef.current, "leave");
+            if (dragDepthRef.current === 0) {
+                setIsDragging(false);
+            }
+        },
+        [isEditing]
+    );
+
+    const onDropCapture = useCallback(
+        async (event: ReactDragEvent<HTMLDivElement>) => {
+            if (!isEditing || !hasComposerDragFiles(event.dataTransfer)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const files = getComposerDragFiles(event.dataTransfer);
+            resetDragging();
+            await Promise.all(
+                files.map(async (file) => {
+                    try {
+                        await aui.composer().addAttachment(file);
+                    } catch (error) {
+                        console.error("Failed to add attachment:", error);
+                    }
+                })
+            );
+        },
+        [aui, isEditing, resetDragging]
+    );
+
+    return (
+        <div
+            data-slot="aui_composer-shell"
+            data-dragging={isDragging ? "true" : undefined}
+            className={ComposerDropzoneShellClassName}
+            onDragEnterCapture={onDragEnterCapture}
+            onDragOverCapture={onDragOverCapture}
+            onDragLeaveCapture={onDragLeaveCapture}
+            onDropCapture={onDropCapture}
+        >
+            {children}
+        </div>
+    );
+};
+
+const ComposerQuotePreview: FC = () => {
+    return (
+        <ComposerPrimitive.Quote className="aui-composer-quote mx-1 flex items-start gap-2 rounded-2xl border border-white/[0.10] bg-[rgba(34,34,36,0.42)] px-3 py-2 text-sm shadow-[0_10px_28px_-24px_rgba(0,0,0,0.65)] backdrop-blur-xl">
+            <QuoteIcon className="mt-0.5 size-3.5 shrink-0 text-secondary/70" />
+            <ComposerPrimitive.QuoteText className="aui-composer-quote-text line-clamp-2 min-w-0 flex-1 text-secondary italic" />
+            <ComposerPrimitive.QuoteDismiss asChild>
+                <button
+                    type="button"
+                    aria-label="Dismiss quote"
+                    className="aui-composer-quote-dismiss shrink-0 cursor-pointer rounded-full p-0.5 text-secondary/70 transition-colors hover:bg-fg-overlay-1 hover:text-foreground active:scale-95"
+                >
+                    <XIcon className="size-3.5" />
+                </button>
+            </ComposerPrimitive.QuoteDismiss>
+        </ComposerPrimitive.Quote>
     );
 };
 
@@ -335,24 +731,20 @@ export const Composer: FC = () => {
                 className="aui-composer-root relative flex w-full flex-col"
                 data-testid="crest-composer"
             >
-                <ComposerPrimitive.AttachmentDropzone asChild>
-                    <div
-                        data-slot="aui_composer-shell"
-                        className="border-border/60 data-[dragging=true]:border-ring focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 flex w-full flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))] dark:shadow-none"
-                    >
-                        <ComposerAttachments />
-                        <ComposerPrimitive.Input
-                            placeholder="Send a message or type / for commands..."
-                            className="aui-composer-input caret-primary placeholder:text-muted-foreground/80 max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none"
-                            rows={1}
-                            autoFocus
-                            enterKeyHint="send"
-                            aria-label="Message input"
-                            {...inputHistory}
-                        />
-                        <ComposerAction />
-                    </div>
-                </ComposerPrimitive.AttachmentDropzone>
+                <ComposerAttachmentDropzone>
+                    <ComposerQuotePreview />
+                    <ComposerAttachments />
+                    <ComposerPrimitive.Input
+                        placeholder="Send a message or type / for commands..."
+                        className="aui-composer-input caret-primary placeholder:text-muted-foreground/80 max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none"
+                        rows={1}
+                        autoFocus
+                        enterKeyHint="send"
+                        aria-label="Message input"
+                        {...inputHistory}
+                    />
+                    <ComposerAction />
+                </ComposerAttachmentDropzone>
                 <SlashCommandPopover />
             </ComposerPrimitive.Root>
         </ComposerPrimitive.Unstable_TriggerPopoverRoot>
@@ -360,13 +752,16 @@ export const Composer: FC = () => {
 };
 
 const ComposerAction: FC = () => {
-    const { modelLabel, onOpenModelPicker } = useContext(ComposerContext);
+    const { modelLabel, onOpenModelPicker, contextUsage, modelContextWindow } = useContext(ComposerContext);
     const hasModelPicker = onOpenModelPicker != null;
+    const showContextRing = (contextUsage?.totalTokens ?? 0) > 0 && (modelContextWindow ?? 0) > 0;
 
     return (
         <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-            <div className="flex items-center gap-1">
+            <div className="aui-composer-left-actions flex items-center gap-1">
                 <ComposerAddAttachment />
+            </div>
+            <div className="aui-composer-right-actions flex items-center gap-1.5">
                 {modelLabel && (
                     <button
                         type="button"
@@ -385,8 +780,9 @@ const ComposerAction: FC = () => {
                         {modelLabel}
                     </button>
                 )}
-            </div>
-            <div className="flex items-center gap-1.5">
+                {showContextRing && (
+                    <ContextDisplayRing usage={contextUsage} modelContextWindow={modelContextWindow!} side="top" />
+                )}
                 <AuiIf condition={(s) => s.thread.capabilities.dictation}>
                     <AuiIf condition={(s) => s.composer.dictation == null}>
                         <ComposerPrimitive.Dictate asChild>
@@ -514,7 +910,7 @@ const AssistantMessage: FC = () => {
                                 }
                                 const running = part.status.type === "running";
                                 return (
-                                    <ReasoningRoot streaming={running}>
+                                    <ReasoningRoot variant="ghost" streaming={running}>
                                         <ReasoningTrigger active={running} />
                                         <ReasoningContent aria-busy={running}>
                                             <ReasoningText>{children}</ReasoningText>
@@ -575,14 +971,16 @@ const AssistantActionBar: FC = () => {
                     </AuiIf>
                 </TooltipIconButton>
             </ActionBarPrimitive.Copy>
-            <ActionBarPrimitive.Reload asChild>
-                <TooltipIconButton tooltip="Refresh">
-                    <RefreshCwIcon />
-                </TooltipIconButton>
-            </ActionBarPrimitive.Reload>
+            <AuiIf condition={(s) => s.thread.capabilities.reload}>
+                <ActionBarPrimitive.Reload asChild>
+                    <TooltipIconButton tooltip="Refresh">
+                        <RefreshCwIcon />
+                    </TooltipIconButton>
+                </ActionBarPrimitive.Reload>
+            </AuiIf>
             <ActionBarMorePrimitive.Root>
                 <ActionBarMorePrimitive.Trigger asChild>
-                    <TooltipIconButton tooltip="More" className="data-[state=open]:bg-accent">
+                    <TooltipIconButton tooltip="More" className="data-[state=open]:!bg-fg-overlay-2">
                         <MoreHorizontalIcon />
                     </TooltipIconButton>
                 </ActionBarMorePrimitive.Trigger>
@@ -590,17 +988,26 @@ const AssistantActionBar: FC = () => {
                     side="bottom"
                     align="start"
                     sideOffset={6}
-                    className="aui-action-bar-more-content bg-popover/95 text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5 shadow-lg backdrop-blur-sm"
+                    className={AssistantActionBarMoreContentClassName}
                 >
                     <ActionBarPrimitive.ExportMarkdown asChild>
-                        <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none">
-                            <DownloadIcon className="size-4" />
+                        <ActionBarMorePrimitive.Item className={AssistantActionBarMoreItemClassName}>
+                            <DownloadIcon className={AssistantActionBarMoreIconClassName} />
                             Export as Markdown
                         </ActionBarMorePrimitive.Item>
                     </ActionBarPrimitive.ExportMarkdown>
                 </ActionBarMorePrimitive.Content>
             </ActionBarMorePrimitive.Root>
         </ActionBarPrimitive.Root>
+    );
+};
+
+const UserQuoteBlock: FC<{ text: string }> = ({ text }) => {
+    return (
+        <div className="aui-user-quote-block mb-2 flex items-start gap-1.5 rounded-xl border border-white/[0.10] bg-white/[0.05] px-2.5 py-2 text-sm">
+            <QuoteIcon className="mt-0.5 size-3.5 shrink-0 text-secondary/70" />
+            <p className="aui-user-quote-text line-clamp-2 min-w-0 text-secondary italic">{text}</p>
+        </div>
     );
 };
 
@@ -616,6 +1023,7 @@ const UserMessage: FC = () => {
 
             <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0 justify-self-end">
                 <div className="aui-user-message-content bg-muted text-foreground rounded-xl px-4 py-2 wrap-break-word empty:hidden">
+                    <MessagePrimitive.Quote>{(quote) => <UserQuoteBlock text={quote.text} />}</MessagePrimitive.Quote>
                     <MessagePrimitive.Parts>
                         {({ part }) => {
                             if (part.type === "text") return <p className="whitespace-pre-wrap">{part.text}</p>;
@@ -670,11 +1078,13 @@ const UserActionBar: FC = () => {
                     <CopyButtonIcon />
                 </TooltipIconButton>
             </ActionBarPrimitive.Copy>
-            <ActionBarPrimitive.Edit asChild>
-                <TooltipIconButton tooltip="Edit" side="top" size="icon-xs" className="aui-user-action-edit">
-                    <PencilIcon />
-                </TooltipIconButton>
-            </ActionBarPrimitive.Edit>
+            <AuiIf condition={(s) => s.thread.capabilities.edit}>
+                <ActionBarPrimitive.Edit asChild>
+                    <TooltipIconButton tooltip="Edit" side="top" size="icon-xs" className="aui-user-action-edit">
+                        <PencilIcon />
+                    </TooltipIconButton>
+                </ActionBarPrimitive.Edit>
+            </AuiIf>
         </ActionBarPrimitive.Root>
     );
 };

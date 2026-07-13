@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // AgentChatHost — owns the React hook lifecycle for one pane's agent
-// session. It watches the message array, slices it into runs, and
-// persists marker rows so TerminalModel can rehydrate them like shell
-// cmdblocks.
+// session and mirrors the main-owned turns into AgentPane's assistant-ui
+// runtime.
 //
 // Replaces the pre-pi version which mounted @ai-sdk/react useChat and
 // translated UIMessage parts into ai-sdk's WaveUIDataToolUse shape
 // via TerminalModel.applyAgentParts. Post-pi: messages live in
-// usePiChat state, and AgentPane bridges those runs into assistant-ui.
+// usePiChat state, and AgentPane bridges those turns into assistant-ui.
 //
 // Returns null — purely a state-bridge component. UI lives in AgentPane.
 
@@ -19,7 +18,7 @@ import type { ResolveError } from "@/app/store/ai-types";
 import {
     usePiChat,
     type PiAgentMessage,
-    type PiRun,
+    type PiTurn,
     type UsePiChatModel,
     type UsePiChatPaneContext,
     type UsePiChatStatus,
@@ -44,8 +43,8 @@ export interface AgentChatHostProps {
     selectionError?: ResolveError | null;
     /** Wired once with a send fn the input bar can call. Mirrors the previous useChat host's pattern. */
     onReady?: (api: AgentChatHostApi) => void;
-    /** Called on every runs change so AgentPane can feed the assistant-ui runtime. */
-    onRunsChange?: (runs: PiRun[]) => void;
+    /** Called on every turns change so AgentPane can feed the assistant-ui runtime. */
+    onTurnsChange?: (turns: PiTurn[]) => void;
     /**
      * Called when the agent's live status or pending queue changes. Drives the
      * activity bar above the input (streaming indicator + Stop + queued chips).
@@ -88,8 +87,8 @@ export interface AgentChatHostApi {
     cloneSession: () => Promise<AgentCloneSessionResult>;
     /** Abort the in-flight run, if any. */
     abort: () => void;
-    /** Snapshot of runs for diagnostics / future selectors. */
-    getRuns: () => PiRun[];
+    /** Current turns for diagnostics / future selectors. */
+    getTurns: () => PiTurn[];
 }
 
 export type AgentSelectorRequest =
@@ -128,11 +127,11 @@ export interface AgentInlineCommandResult {
 interface AgentChatHostApiDeps {
     sendPrompt: (text: string) => boolean;
     abort: () => void;
-    getRuns: () => PiRun[];
+    getTurns: () => PiTurn[];
     getRuntimeApi: () => AgentRuntimeApi | undefined;
     getSessionMetadata: () => AgentSessionMeta | undefined;
     getPaneCwd: () => string;
-    /** Parent terminal block ID — threaded to navigateTree so the backend can fetch timeline rows. */
+    /** Parent terminal block ID, used by backend commands that need pane identity. */
     getBlockId: () => string;
     runCommand?: (command: AgentImmediateCommandName, argsText: string) => Promise<AgentCommandExecutionResult>;
     onSessionMinted?: (meta: AgentSessionMeta) => void;
@@ -266,7 +265,7 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         forkSession,
         cloneSession,
         abort: deps.abort,
-        getRuns: deps.getRuns,
+        getTurns: deps.getTurns,
     };
 }
 
@@ -278,7 +277,7 @@ export function AgentChatHost({
     paneContext,
     selectionError,
     onReady,
-    onRunsChange,
+    onTurnsChange,
     onStateChange,
     allowedTools,
     onUserError,
@@ -305,9 +304,9 @@ export function AgentChatHost({
         blockId: outerBlockId,
     });
 
-    const runs = chat.runs;
-    const onRunsChangeRef = useRef(onRunsChange);
-    onRunsChangeRef.current = onRunsChange;
+    const turns = chat.turns;
+    const onTurnsChangeRef = useRef(onTurnsChange);
+    onTurnsChangeRef.current = onTurnsChange;
     const onUserErrorRef = useRef(onUserError);
     onUserErrorRef.current = onUserError;
     const onCommandResultRef = useRef(onCommandResult);
@@ -319,15 +318,15 @@ export function AgentChatHost({
     const onSelectorRequestRef = useRef(onSelectorRequest);
     onSelectorRequestRef.current = onSelectorRequest;
     useEffect(() => {
-        onRunsChangeRef.current?.(runs);
-    }, [runs]);
+        onTurnsChangeRef.current?.(turns);
+    }, [turns]);
 
     // Expose the send/abort API to the parent via onReady. Refs keep
     // the callback closure stable across renders while still reading
     // the latest model state, selection error, and chat handle.
     const sendRef = useRef(chat.send);
     const abortRef = useRef(chat.abort);
-    const runsRef = useRef(runs);
+    const turnsRef = useRef(turns);
     const sessionMetadataRef = useRef(chat.sessionMetadata);
     const paneContextRef = useRef(paneContext);
     const selectionErrorRef = useRef(selectionError);
@@ -335,12 +334,12 @@ export function AgentChatHost({
     useEffect(() => {
         sendRef.current = chat.send;
         abortRef.current = chat.abort;
-        runsRef.current = runs;
+        turnsRef.current = turns;
         sessionMetadataRef.current = chat.sessionMetadata;
         paneContextRef.current = paneContext;
         selectionErrorRef.current = selectionError;
         modelSelectionRef.current = modelSelection;
-    }, [chat.send, chat.abort, runs, chat.sessionMetadata, paneContext, selectionError, modelSelection]);
+    }, [chat.send, chat.abort, turns, chat.sessionMetadata, paneContext, selectionError, modelSelection]);
 
     const onReadyRef = useRef(onReady);
     onReadyRef.current = onReady;
@@ -373,7 +372,7 @@ export function AgentChatHost({
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: () => abortRef.current(),
-            getRuns: () => runsRef.current,
+            getTurns: () => turnsRef.current,
             getRuntimeApi: getAgentRuntimeApi,
             getSessionMetadata: () => sessionMetadataRef.current,
             getPaneCwd: () => paneContextRef.current.cwd,

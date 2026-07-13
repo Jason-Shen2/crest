@@ -22,6 +22,6 @@ export {
     ToolGroupTrigger,
     toolGroupVariants,
 } from "./tool-group";
-export { createCrestAssistantRuntimeAdapter, piRunToAuiMessages, useCrestAssistantRuntime } from "./runtime-bridge";
+export { createCrestAssistantRuntimeAdapter, piTurnsToAuiMessages, useCrestAssistantRuntime } from "./runtime-bridge";
 export type { CrestAssistantRuntimeBridge } from "./runtime-bridge";
 export { getCrestImageAlt, getCrestToolRenderer } from "./crest-message";

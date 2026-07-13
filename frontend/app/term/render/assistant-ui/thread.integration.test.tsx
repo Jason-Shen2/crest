@@ -5,13 +5,14 @@ import {
     AssistantRuntimeProvider,
     useExternalStoreRuntime,
     type ExternalStoreAdapter,
+    type QuoteInfo,
     type ThreadMessageLike,
 } from "@assistant-ui/react";
 import type { FC, PropsWithChildren } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { Thread } from "./registry-thread";
+import { Thread, __testing as registryThreadTesting, type ThreadProps } from "./registry-thread";
 
 const messages: ThreadMessageLike[] = [
     {
@@ -24,6 +25,7 @@ const messages: ThreadMessageLike[] = [
     {
         role: "assistant",
         content: [
+            { type: "reasoning", text: "Inspect the UI state before answering." },
             { type: "text", text: "## Markdown Title\n\nThis is **bold** text." },
             { type: "image", image: "https://example.com/assistant.png" },
             {
@@ -38,20 +40,46 @@ const messages: ThreadMessageLike[] = [
     },
 ];
 
-const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
+const RuntimeProvider: FC<PropsWithChildren<{ messages?: ThreadMessageLike[]; composerQuote?: QuoteInfo }>> = ({
+    children,
+    composerQuote,
+    messages: runtimeMessages = messages,
+}) => {
     const runtime = useExternalStoreRuntime<ThreadMessageLike>({
-        messages,
+        messages: runtimeMessages,
         convertMessage: (message) => message,
         onNew: async () => {},
     } satisfies ExternalStoreAdapter<ThreadMessageLike>);
+    runtime.thread.composer.setQuote(composerQuote);
 
     return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
 };
 
-function renderThread(): string {
+function renderThread(props?: ThreadProps, runtimeMessages?: ThreadMessageLike[]): string {
     return renderToStaticMarkup(
-        <RuntimeProvider>
-            <Thread />
+        <RuntimeProvider messages={runtimeMessages}>
+            <Thread {...props} />
+        </RuntimeProvider>
+    );
+}
+
+function renderThreadWithComposerQuote(props?: ThreadProps): string {
+    return renderToStaticMarkup(
+        <RuntimeProvider
+            composerQuote={{
+                text: "The runtime system follows a layered architecture",
+                messageId: "assistant-quote-source",
+            }}
+        >
+            <Thread {...props} />
+        </RuntimeProvider>
+    );
+}
+
+function renderEmptyThread(props?: ThreadProps): string {
+    return renderToStaticMarkup(
+        <RuntimeProvider messages={[]}>
+            <Thread {...props} />
         </RuntimeProvider>
     );
 }
@@ -62,14 +90,220 @@ describe("Thread assistant-ui integration", () => {
 
         expect(html).toContain("aui-root aui-thread-root");
         expect(html).toContain('data-testid="crest-thread"');
-        expect(html).toContain('class="aui-md"');
+        expect(html).toContain("aui-md");
         expect(html).toContain(">Markdown Title</h2>");
         expect(html).toContain("aui-md-strong");
         expect(html).toContain(">bold</strong>");
-        expect(html).toContain("data-slot=\"tool-group-root\"");
-        expect(html).toContain("alt=\"user-upload.png\"");
-        expect(html).toContain("alt=\"Assistant image attachment\"");
+        expect(html).toContain('data-slot="reasoning-root"');
+        expect(html).toMatch(/data-slot="reasoning-root"[^>]*data-variant="ghost"/);
+        expect(html).toContain('data-slot="tool-group-root"');
+        expect(html).toContain('alt="user-upload.png"');
+        expect(html).toContain('alt="Assistant image attachment"');
         expect(html).toContain("aui-composer-root");
         expect(html).toContain('data-slot="aui_composer-shell"');
+    });
+
+    it("renders an active quote preview inside the composer", () => {
+        const html = renderThreadWithComposerQuote();
+
+        expect(html).toContain("aui-composer-quote");
+        expect(html).toContain("The runtime system follows a layered architecture");
+        expect(html.indexOf("aui-composer-quote")).toBeLessThan(html.indexOf("aui-composer-input"));
+        expect(html).toContain('aria-label="Dismiss quote"');
+    });
+
+    it("renders quote metadata above user message text", () => {
+        const html = renderThread(undefined, [
+            {
+                role: "user",
+                content: [{ type: "text", text: "Can you explain how the layers connect?" }],
+                metadata: {
+                    custom: {
+                        quote: {
+                            text: "The runtime system follows a layered architecture",
+                            messageId: "assistant-quote-source",
+                        },
+                    },
+                },
+            } as ThreadMessageLike,
+        ]);
+
+        expect(html).toContain("aui-user-quote-block");
+        expect(html).toContain("The runtime system follows a layered architecture");
+        expect(html.indexOf("aui-user-quote-block")).toBeLessThan(
+            html.indexOf("Can you explain how the layers connect?")
+        );
+    });
+
+    it("renders assistant code fences through Streamdown", () => {
+        const html = renderThread(undefined, [
+            {
+                role: "assistant",
+                content: [{ type: "text", text: "```typescript\nconst answer: number = 42\n```" }],
+                status: { type: "complete", reason: "stop" },
+            },
+        ]);
+
+        expect(html).toContain("aui-md");
+        expect(html).toContain("typescript");
+        expect(html).toContain("const answer");
+    });
+
+    it("renders beforeComposer content directly above the composer", () => {
+        const html = renderThread({ beforeComposer: <div data-testid="before-composer">Panel</div> });
+
+        expect(html).toContain('data-testid="before-composer"');
+        expect(html.indexOf('data-testid="before-composer"')).toBeLessThan(html.indexOf("aui-composer-root"));
+        expect(html).toContain("aui-composer-before-panel-stack");
+        expect(html).toContain("gap-2");
+        expect(html).not.toContain("aui-composer-before-panel-overlay");
+    });
+
+    it("keeps beforeComposer in normal flow in the welcome empty state", () => {
+        const html = renderEmptyThread({ beforeComposer: <div data-testid="before-composer">Panel</div> });
+
+        expect(html).toContain('data-testid="before-composer"');
+        expect(html.indexOf('data-testid="before-composer"')).toBeLessThan(html.indexOf("aui-composer-root"));
+        expect(html).toContain("aui-composer-before-panel-stack");
+        expect(html).not.toContain("aui-composer-before-panel-overlay");
+    });
+
+    it("hides scroll to bottom while a command attached panel is open", () => {
+        const html = renderThread({
+            beforeComposer: <div data-testid="before-composer">Panel</div>,
+            hideScrollToBottom: true,
+        } as ThreadProps & { hideScrollToBottom: boolean });
+
+        expect(html).toContain('data-testid="before-composer"');
+        expect(html).not.toContain("aui-thread-scroll-to-bottom");
+    });
+
+    it("renders local context usage ring in the composer action row", () => {
+        const html = renderThread({
+            modelLabel: "MiniMax-M3",
+            modelContextWindow: 128000,
+            contextUsage: {
+                inputTokens: 72000,
+                cachedInputTokens: 12000,
+                outputTokens: 6000,
+                totalTokens: 90000,
+            },
+        } as ThreadProps);
+
+        expect(html).toContain("aui-context-display-ring");
+        expect(html).toContain("70%");
+        expect(html).toContain("MiniMax-M3");
+        expect(html).toContain("aui-composer-left-actions");
+        expect(html).toContain("aui-composer-right-actions");
+        expect(html).toMatch(/aui-composer-right-actions[^"]*"[^>]*>[\s\S]*MiniMax-M3[\s\S]*aui-context-display-ring/);
+    });
+
+    it("keeps slash command popover compact and glassy", () => {
+        expect(registryThreadTesting.SlashCommandPopoverClassName).toContain("w-full");
+        expect(registryThreadTesting.SlashCommandPopoverClassName).not.toContain("w-[min");
+        expect(registryThreadTesting.SlashCommandPopoverClassName).toContain("bg-[rgba(34,34,36,0.62)]");
+        expect(registryThreadTesting.SlashCommandPopoverClassName).toContain("backdrop-blur-2xl");
+        expect(registryThreadTesting.SlashCommandPopoverClassName).not.toContain("linear-gradient");
+        expect(registryThreadTesting.SlashCommandPopoverClassName).not.toContain("0.9");
+        expect(registryThreadTesting.SlashCommandPopoverClassName).toContain("shadow-[0_10px_32px_-24px");
+        expect(registryThreadTesting.SlashCommandPopoverClassName).toContain("overflow-hidden");
+        expect(registryThreadTesting.SlashCommandPopoverClassName).not.toContain("overflow-y-auto");
+        expect(registryThreadTesting.SlashCommandScrollAreaClassName).toContain("overflow-y-auto");
+        expect(registryThreadTesting.SlashCommandScrollAreaClassName).toContain("[scrollbar-width:none]");
+        expect(registryThreadTesting.SlashCommandScrollAreaClassName).toContain("data-[scrolling=true]");
+        expect(registryThreadTesting.SlashCommandItemClassName).toContain("gap-2.5");
+        expect(registryThreadTesting.SlashCommandItemClassName).toContain("py-2");
+        expect(registryThreadTesting.SlashCommandItemClassName).toContain("text-sm");
+        expect(registryThreadTesting.SlashCommandIconClassName).toContain("size-7");
+        expect(registryThreadTesting.SlashCommandItemClassName).not.toContain("duration-100");
+        expect(registryThreadTesting.SlashCommandIconClassName).not.toContain("transition-colors");
+    });
+
+    it("keeps the selection quote toolbar as a subtle icon-only glass chip", () => {
+        expect(registryThreadTesting.SelectionToolbarRootClassName).toContain("rounded-[0.95rem]");
+        expect(registryThreadTesting.SelectionToolbarRootClassName).toContain("bg-[rgba(24,24,26,0.46)]");
+        expect(registryThreadTesting.SelectionToolbarRootClassName).toContain("backdrop-blur-xl");
+        expect(registryThreadTesting.SelectionToolbarRootClassName).not.toContain("bg-popover");
+        expect(registryThreadTesting.SelectionToolbarRootClassName).not.toContain("shadow-lg");
+
+        expect(registryThreadTesting.SelectionToolbarQuoteClassName).toContain("size-7");
+        expect(registryThreadTesting.SelectionToolbarQuoteClassName).toContain("cursor-pointer");
+        expect(registryThreadTesting.SelectionToolbarQuoteClassName).toContain("active:scale-95");
+        expect(registryThreadTesting.SelectionToolbarQuoteClassName).not.toContain("px-2.5");
+        expect(registryThreadTesting.SelectionToolbarQuoteIconClassName).toContain("size-3.5");
+    });
+
+    it("keeps slash command keyboard scrolling stable at list edges", () => {
+        const { getSlashCommandScrollTop } = registryThreadTesting;
+
+        expect(
+            getSlashCommandScrollTop({
+                currentScrollTop: 0,
+                maxScrollTop: 100,
+                itemTop: 0,
+                itemBottom: 32,
+                viewportTop: 0,
+                viewportBottom: 128,
+                margin: 8,
+            })
+        ).toBeNull();
+        expect(
+            getSlashCommandScrollTop({
+                currentScrollTop: 100,
+                maxScrollTop: 100,
+                itemTop: 196,
+                itemBottom: 228,
+                viewportTop: 100,
+                viewportBottom: 228,
+                margin: 8,
+            })
+        ).toBeNull();
+        expect(
+            getSlashCommandScrollTop({
+                currentScrollTop: 0,
+                maxScrollTop: 100,
+                itemTop: 118,
+                itemBottom: 150,
+                viewportTop: 0,
+                viewportBottom: 128,
+                margin: 8,
+            })
+        ).toBe(30);
+    });
+
+    it("keeps assistant more menu styled as a compact menu item", () => {
+        expect(registryThreadTesting.AssistantActionBarMoreContentClassName).toContain("min-w-[11rem]");
+        expect(registryThreadTesting.AssistantActionBarMoreContentClassName).toContain("rounded-xl");
+        expect(registryThreadTesting.AssistantActionBarMoreItemClassName).toContain("h-8");
+        expect(registryThreadTesting.AssistantActionBarMoreItemClassName).toContain("border-0");
+        expect(registryThreadTesting.AssistantActionBarMoreItemClassName).toContain("bg-transparent");
+        expect(registryThreadTesting.AssistantActionBarMoreItemClassName).toContain("hover:bg-fg-overlay-1");
+        expect(registryThreadTesting.AssistantActionBarMoreItemClassName).not.toContain("rounded-lg px-2.5 py-1.5");
+        expect(registryThreadTesting.AssistantActionBarMoreIconClassName).toContain("size-3.5");
+    });
+
+    it("does not render reload when the external-store runtime cannot reload messages", () => {
+        const html = renderThread();
+
+        expect(html).not.toContain(">Refresh</span>");
+    });
+
+    it("does not render edit when the external-store runtime cannot edit messages", () => {
+        const html = renderThread();
+
+        expect(html).not.toContain(">Edit</span>");
+    });
+
+    it("keeps composer drag-and-drop recoverable after drop or window leave", () => {
+        const { ComposerDropzoneShellClassName, getNextComposerDragDepth } = registryThreadTesting;
+
+        expect(ComposerDropzoneShellClassName).toContain("data-[dragging=true]:border-dashed");
+        expect(ComposerDropzoneShellClassName).toContain("data-[dragging=true]:bg-[color-mix");
+        expect(getNextComposerDragDepth(0, "enter")).toBe(1);
+        expect(getNextComposerDragDepth(1, "enter")).toBe(2);
+        expect(getNextComposerDragDepth(2, "leave")).toBe(1);
+        expect(getNextComposerDragDepth(1, "leave")).toBe(0);
+        expect(getNextComposerDragDepth(4, "drop")).toBe(0);
+        expect(getNextComposerDragDepth(4, "reset")).toBe(0);
     });
 });

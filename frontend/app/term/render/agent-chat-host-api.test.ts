@@ -16,7 +16,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
-            getRuns: () => [],
+            getTurns: () => [],
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,
             getPaneCwd: () => "/repo",
@@ -58,7 +58,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
-            getRuns: () => [],
+            getTurns: () => [],
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: makeSession,
             getPaneCwd: () => "/repo",
@@ -97,7 +97,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt: vi.fn(() => true),
             abort: vi.fn(),
-            getRuns: () => [],
+            getTurns: () => [],
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
             getPaneCwd: () => "/repo",
@@ -142,7 +142,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
-            getRuns: () => [],
+            getTurns: () => [],
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
             getPaneCwd: () => "/repo",
@@ -177,7 +177,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
-            getRuns: () => [],
+            getTurns: () => [],
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
             getPaneCwd: () => "/repo",
@@ -208,7 +208,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
-            getRuns: () => [],
+            getTurns: () => [],
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,
             getPaneCwd: () => "/repo",
@@ -241,7 +241,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt: vi.fn(() => true),
             abort: vi.fn(),
-            getRuns: () => [],
+            getTurns: () => [],
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,
             getPaneCwd: () => "/repo",
