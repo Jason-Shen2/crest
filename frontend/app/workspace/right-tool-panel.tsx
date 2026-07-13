@@ -2,15 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
+import { MagnifyIcon } from "@/app/element/magnify";
 import { Icon } from "@/app/icon/Icon";
+import { RightBrowser } from "@/app/rightbrowser/right-browser";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
 import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
 import { RightEditorWorkbench } from "@/app/righteditor/right-editor-workbench";
+import { RightTerminal } from "@/app/rightterminal/right-terminal";
 import { SourceControlPanel } from "@/app/sourcecontrol/source-control-panel";
 import { getSettingsKeyAtom } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
 import type { CSSProperties, FocusEvent, MouseEvent, ReactNode } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
 
 type RightToolMetadata = {
@@ -19,12 +23,14 @@ type RightToolMetadata = {
     description: string;
 };
 
+const RightToolPanelFocusRingColor = "rgb(from var(--color-accent) r g b / 45%)";
+
 export type RightToolPanelProps = {
     state: RightToolPanelState;
     onOpenTool: (tool: RightToolId) => void;
     onSelectTool: (tool: RightToolId) => void;
     onCloseTool: (tool: RightToolId) => void;
-    onHide: () => void;
+    onMagnify: () => void;
     onFocusPanel: () => void;
     onBlurPanel: () => void;
     className?: string;
@@ -105,12 +111,9 @@ function migrateRightEditorModelPath(oldPath: string, newPath: string): void {
         .catch(() => undefined);
 }
 
-export type RightToolPanelMagnifiedOverlayProps = Pick<
-    RightToolPanelProps,
-    "state" | "onOpenTool" | "onSelectTool" | "onCloseTool" | "onFocusPanel" | "onBlurPanel"
-> & {
+export type RightToolPanelMagnifiedOverlayProps = {
+    state: RightToolPanelState;
     onExit: () => void;
-    className?: string;
 };
 
 export type RightToolPanelMagnifiedOverlayViewProps = RightToolPanelMagnifiedOverlayProps & {
@@ -123,7 +126,7 @@ export function RightToolLauncher({ supportedTools = RightToolIds, onOpenTool }:
         <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
             <div>
                 <div className="text-sm font-medium text-primary">Choose a tool to get started</div>
-                <div className="mt-1 text-xs text-secondary">Open one tool per type and switch between tabs here.</div>
+                <div className="mt-1 text-xs text-muted-foreground">Open one tool per type and switch between tabs here.</div>
             </div>
             <div className="grid w-full grid-cols-2 gap-3">
                 {supportedTools.map((tool) => {
@@ -132,10 +135,10 @@ export function RightToolLauncher({ supportedTools = RightToolIds, onOpenTool }:
                         <button
                             key={tool}
                             type="button"
-                            className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-border bg-panelbg p-4 text-secondary transition-colors hover:bg-hoverbg hover:text-white"
+                            className="flex cursor-pointer flex-col items-center gap-2 rounded-lg border border-border bg-fg-overlay-1/40 p-4 text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
                             onClick={() => onOpenTool(tool)}
                         >
-                            <i className={cn("text-lg", metadata.icon)} />
+                            <Icon name={metadata.icon} size={18} />
                             <span className="text-xs font-medium">{metadata.label}</span>
                         </button>
                     );
@@ -155,7 +158,7 @@ export function RightToolTopBar({
 }: RightToolTopBarProps) {
     const hasAvailableTools = RightToolIds.some((tool) => !openedTools.includes(tool));
     return (
-        <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-[#111113] px-2">
+        <div className="flex h-10 shrink-0 items-center gap-2 bg-panel/95 px-2 rounded-t-xl backdrop-blur-sm">
             <div className="flex min-w-0 flex-1 items-center gap-1">
                 <RightToolTabs
                     activeTool={activeTool}
@@ -197,7 +200,7 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
         >
             <summary
                 aria-label="Open right tool"
-                className="flex h-full w-7 cursor-pointer list-none items-center justify-center rounded-md border border-transparent bg-[#202124] text-[#a1a1aa] transition-colors hover:border-[#3f3f46] hover:bg-[#2a2b2f] hover:text-[#f4f4f5] [&::-webkit-details-marker]:hidden"
+                className="flex h-full w-7 cursor-pointer list-none items-center justify-center rounded-md border border-transparent bg-fg-overlay-1/60 text-muted-foreground transition-colors hover:border-border hover:bg-fg-overlay-2 hover:text-foreground [&::-webkit-details-marker]:hidden"
             >
                 <Icon name="plus" size={14} className="text-xs" />
             </summary>
@@ -213,7 +216,7 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
             <div
                 aria-label="Open right tool menu"
                 data-menu-surface="trae"
-                className="absolute right-0 top-8 z-50 flex w-44 flex-col gap-1 rounded-lg border border-[#34343a] bg-[#1f2023] p-1 shadow-2xl"
+                className="absolute right-0 top-8 z-50 flex w-44 flex-col gap-1 rounded-lg border border-border bg-panel p-1 shadow-2xl"
             >
                 {availableTools.map((tool) => {
                     const metadata = RightToolMetadataById[tool];
@@ -222,10 +225,10 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
                             key={tool}
                             type="button"
                             aria-label={`Open ${metadata.label} right tool`}
-                            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-[#d4d4d8] transition-colors hover:bg-[#2a2b2f] hover:text-[#f4f4f5]"
+                            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-foreground/85 transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
                             onClick={(event) => handleOpenTool(event, tool)}
                         >
-                            <i className={cn("w-3.5 text-center text-xs", metadata.icon)} />
+                            <Icon name={metadata.icon} size={14} className="shrink-0" />
                             <span>{metadata.label}</span>
                         </button>
                     );
@@ -256,8 +259,8 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                         className={cn(
                             "group/tab relative flex h-7 min-w-7 max-w-[14rem] flex-1 items-center rounded-md border text-xs transition-colors",
                             active
-                                ? "border-[#4b5563] bg-[#2a2b2f] text-[#f4f4f5] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]"
-                                : "border-transparent bg-[#202124] text-[#a1a1aa] hover:border-[#3f3f46] hover:bg-[#27282c] hover:text-[#f4f4f5]"
+                                ? "border-border bg-fg-overlay-2 text-foreground ring-1 ring-border/40"
+                                : "border-transparent bg-fg-overlay-1/60 text-muted-foreground hover:border-border hover:bg-fg-overlay-2 hover:text-foreground"
                         )}
                         style={{ containerType: "inline-size" }}
                     >
@@ -270,7 +273,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                             className="flex h-full min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 px-2"
                             onClick={() => onSelectTool(tool)}
                         >
-                            <i className={cn("shrink-0 text-[13px]", metadata.icon)} />
+                            <Icon name={metadata.icon} size={14} className="shrink-0 text-[13px]" />
                             <span className="min-w-0 truncate font-medium [@container(max-width:7.5rem)]:hidden">
                                 {metadata.label}
                             </span>
@@ -280,7 +283,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
                             aria-label={`Close ${metadata.label}`}
                             data-close-visibility="hover"
                             className={cn(
-                                "pointer-events-none absolute right-1.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:pointer-events-auto focus:opacity-100",
+                                "pointer-events-none absolute right-1.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground/70 transition-opacity hover:bg-fg-overlay-3 hover:text-foreground focus:pointer-events-auto focus:opacity-100",
                                 "opacity-0 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100"
                             )}
                             onClick={() => onCloseTool(tool)}
@@ -308,33 +311,39 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
             />
         );
     }
+    if (activeTool === "browser") {
+        return <RightBrowser />;
+    }
+    if (activeTool === "terminal") {
+        return <RightTerminal />;
+    }
     if (activeTool === "codeReview") {
         return <GitReviewSidebar />;
     }
     if (activeTool === "sourceControl") {
         return <SourceControlPanel />;
     }
-    const metadata = RightToolMetadataById[activeTool];
-    return (
-        <div className="flex h-full flex-col gap-2 p-4">
-            <div className="flex items-center gap-2 text-primary">
-                <i className={cn("text-base", metadata.icon)} />
-                <div className="text-sm font-medium">{metadata.label} Tool</div>
+    return null;
+}
+
+function RightToolPanelContent({ state, onOpenTool }: { state: RightToolPanelState; onOpenTool: (tool: RightToolId) => void }) {
+    if (state.openedTools.length === 0) {
+        return (
+            <div className="min-h-0 flex-1 overflow-hidden rounded-b-xl">
+                <RightToolLauncher onOpenTool={onOpenTool} />
             </div>
-            <div className="text-xs text-secondary">{metadata.description}</div>
+        );
+    }
+    return (
+        <div className="min-h-0 flex-1 overflow-hidden rounded-b-xl">
+            <RightToolContent activeTool={state.activeTool} />
         </div>
     );
 }
 
 export function RightToolPanelMagnifiedOverlay({
     state,
-    onOpenTool,
-    onSelectTool,
-    onCloseTool,
-    onFocusPanel,
-    onBlurPanel,
     onExit,
-    className,
 }: RightToolPanelMagnifiedOverlayProps) {
     const magnifiedBlockOpacity = useAtomValue(getSettingsKeyAtom("window:magnifiedblockopacity")) ?? 0.6;
     const magnifiedBlockBlur = useAtomValue(getSettingsKeyAtom("window:magnifiedblockblurprimarypx")) ?? 10;
@@ -342,13 +351,7 @@ export function RightToolPanelMagnifiedOverlay({
     return (
         <RightToolPanelMagnifiedOverlayView
             state={state}
-            onOpenTool={onOpenTool}
-            onSelectTool={onSelectTool}
-            onCloseTool={onCloseTool}
-            onFocusPanel={onFocusPanel}
-            onBlurPanel={onBlurPanel}
             onExit={onExit}
-            className={className}
             magnifiedBlockOpacity={magnifiedBlockOpacity}
             magnifiedBlockBlur={magnifiedBlockBlur}
         />
@@ -357,13 +360,7 @@ export function RightToolPanelMagnifiedOverlay({
 
 export function RightToolPanelMagnifiedOverlayView({
     state,
-    onOpenTool,
-    onSelectTool,
-    onCloseTool,
-    onFocusPanel,
-    onBlurPanel,
     onExit,
-    className,
     magnifiedBlockOpacity,
     magnifiedBlockBlur,
 }: RightToolPanelMagnifiedOverlayViewProps) {
@@ -375,53 +372,20 @@ export function RightToolPanelMagnifiedOverlayView({
         "--magnified-block-blur": `${magnifiedBlockBlur}px`,
     } as CSSProperties;
     return (
-        <div className="fixed inset-0 z-[var(--zindex-layout-magnified-node-backdrop)]" style={overlayStyle}>
+        <div
+            className="absolute inset-0 z-[var(--zindex-layout-magnified-node-backdrop)]"
+            style={overlayStyle}
+        >
             <button
                 type="button"
                 aria-label="Dismiss magnified right tool panel"
-                className="absolute inset-0 cursor-default"
+                className="absolute inset-0 cursor-default transition-opacity duration-200 ease-linear"
                 style={{
                     backgroundColor: "rgb(from var(--color-panel) r g b / var(--magnified-block-opacity))",
                     backdropFilter: "blur(var(--magnified-block-blur))",
                 }}
                 onClick={onExit}
             />
-            <div
-                aria-label="Magnified right tool panel"
-                role="dialog"
-                className={cn(
-                    "fixed inset-8 z-[var(--zindex-layout-magnified-node)] flex flex-col rounded-lg border border-border bg-panelbg shadow-2xl",
-                    className
-                )}
-                data-right-tool-panel-root="true"
-                tabIndex={0}
-                onFocus={onFocusPanel}
-                onBlurCapture={(event) => {
-                    if (!didFocusLeaveCurrentTarget(event)) return;
-                    onBlurPanel();
-                }}
-            >
-                <RightToolTopBar
-                    activeTool={state.activeTool}
-                    openedTools={state.openedTools}
-                    onOpenTool={onOpenTool}
-                    onSelectTool={onSelectTool}
-                    onCloseTool={onCloseTool}
-                    action={
-                        <button
-                            type="button"
-                            aria-label="Exit magnified right tool panel"
-                            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
-                            onClick={onExit}
-                        >
-                            <Icon name="minimize-01" size={14} />
-                        </button>
-                    }
-                />
-                <div className="min-h-0 flex-1 overflow-hidden">
-                    <RightToolContent activeTool={state.activeTool} />
-                </div>
-            </div>
         </div>
     );
 }
@@ -431,21 +395,89 @@ export function RightToolPanel({
     onOpenTool,
     onSelectTool,
     onCloseTool,
-    onHide,
+    onMagnify,
     onFocusPanel,
     onBlurPanel,
     className,
 }: RightToolPanelProps) {
+    const panelRef = useRef<HTMLElement | null>(null);
+    const previousRectRef = useRef<DOMRect | null>(null);
+    const magnifiedBlockSize = useAtomValue(getSettingsKeyAtom("window:magnifiedblocksize")) ?? 0.95;
+    const isMagnified = state.magnified && state.openedTools.length > 0;
+    const boundedMagnifiedBlockSize = Math.min(Math.max(magnifiedBlockSize, 0.1), 1);
+    const magnifiedBlockMarginPct = ((1 - boundedMagnifiedBlockSize) / 2) * 100;
+    const magnifiedBlockSizePct = boundedMagnifiedBlockSize * 100;
+    const focusRingStyle = {
+        "--right-tool-panel-focus-ring-color": RightToolPanelFocusRingColor,
+    } as CSSProperties;
+    const panelStyle = isMagnified
+        ? ({
+              ...focusRingStyle,
+              top: `${magnifiedBlockMarginPct}%`,
+              left: `${magnifiedBlockMarginPct}%`,
+              width: `${magnifiedBlockSizePct}%`,
+              height: `${magnifiedBlockSizePct}%`,
+          } as CSSProperties)
+        : { ...focusRingStyle, width: state.width };
+
+    useLayoutEffect(() => {
+        const panel = panelRef.current;
+        if (!panel) return;
+
+        const rect = panel.getBoundingClientRect();
+        const previousRect = previousRectRef.current;
+        previousRectRef.current = rect;
+
+        if (!previousRect) return;
+
+        const dx = previousRect.left - rect.left;
+        const dy = previousRect.top - rect.top;
+        const sx = previousRect.width / rect.width;
+        const sy = previousRect.height / rect.height;
+
+        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) {
+            return;
+        }
+
+        panel.style.transformOrigin = "top left";
+        panel.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+        panel.style.transition = "none";
+
+        const raf = requestAnimationFrame(() => {
+            panel.style.transition = "transform 200ms linear";
+            panel.style.transform = "";
+        });
+
+        const cleanup = () => {
+            panel.style.transition = "";
+            panel.style.transformOrigin = "";
+        };
+        panel.addEventListener("transitionend", cleanup, { once: true });
+
+        return () => {
+            cancelAnimationFrame(raf);
+            panel.removeEventListener("transitionend", cleanup);
+        };
+    }, [isMagnified, magnifiedBlockSize, state.width]);
+
     if (!state.visible) {
         return null;
     }
-    const hasOpenedTools = state.openedTools.length > 0;
+
     return (
         <aside
-            aria-label="Right tool panel"
-            className={cn("flex h-full shrink-0 flex-col border-l border-border bg-panelbg", className)}
+            ref={panelRef}
+            aria-label={isMagnified ? "Magnified right tool panel" : "Right tool panel"}
+            role={isMagnified ? "dialog" : undefined}
+            className={cn(
+                "group/right-panel relative m-1 flex h-[calc(100%-0.5rem)] shrink-0 flex-col overflow-hidden rounded-[var(--block-border-radius)] border border-border/60 bg-panel p-px shadow-sm shadow-black/10 backdrop-blur-sm will-change-transform",
+                !isMagnified && "transition-shadow hover:shadow-md hover:shadow-black/15",
+                isMagnified &&
+                    "absolute z-[var(--zindex-layout-magnified-node)] m-0 border-border/80 shadow-2xl shadow-black/20 backdrop-blur-md",
+                className
+            )}
             data-right-tool-panel-root="true"
-            style={{ width: state.width }}
+            style={panelStyle}
             tabIndex={0}
             onFocus={onFocusPanel}
             onBlurCapture={(event) => {
@@ -453,6 +485,11 @@ export function RightToolPanel({
                 onBlurPanel();
             }}
         >
+            <div
+                aria-hidden="true"
+                data-right-tool-panel-focus-mask="true"
+                className="pointer-events-none absolute inset-0 z-[var(--zindex-block-mask-inner)] rounded-[var(--block-border-radius)] border-2 border-transparent group-focus-within/right-panel:border-[var(--right-tool-panel-focus-ring-color)]"
+            />
             <RightToolTopBar
                 activeTool={state.activeTool}
                 openedTools={state.openedTools}
@@ -462,21 +499,16 @@ export function RightToolPanel({
                 action={
                     <button
                         type="button"
-                        aria-label="Hide right tool panel"
-                        className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-hoverbg hover:text-white"
-                        onClick={onHide}
+                        aria-label={isMagnified ? "Exit magnified right tool panel" : "Magnify right tool panel"}
+                        data-icon-name="magnify"
+                        className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-hoverbg hover:text-foreground"
+                        onClick={onMagnify}
                     >
-                        <Icon name="chevron-right" size={14} />
+                        <MagnifyIcon enabled={isMagnified} />
                     </button>
                 }
             />
-            <div className="min-h-0 flex-1 overflow-hidden">
-                {hasOpenedTools ? (
-                    <RightToolContent activeTool={state.activeTool} />
-                ) : (
-                    <RightToolLauncher onOpenTool={onOpenTool} />
-                )}
-            </div>
+            <RightToolPanelContent state={state} onOpenTool={onOpenTool} />
         </aside>
     );
 }

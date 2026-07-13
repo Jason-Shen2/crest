@@ -74,9 +74,9 @@ const TabContent = React.memo(({ tabId, noTopPadding, onFocusCapture }: TabConte
 
     return (
         <div
-            className={`flex flex-row flex-grow min-h-0 w-full items-center justify-center overflow-hidden relative ${
-                noTopPadding ? "" : "pt-[3px]"
-            } pr-[3px]`}
+            className={`flex flex-row flex-grow min-h-0 w-full items-center justify-center overflow-hidden relative p-1 ${
+                noTopPadding ? "!pt-0" : ""
+            }`}
             onFocusCapture={onFocusCapture}
         >
             {innerContent}

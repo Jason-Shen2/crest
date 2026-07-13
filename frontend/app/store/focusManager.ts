@@ -7,7 +7,7 @@ import { getLayoutModelForStaticTab } from "@/layout/index";
 import { focusedBlockId } from "@/util/focusutil";
 import { Atom, atom, type PrimitiveAtom } from "jotai";
 
-export type FocusStrType = "node";
+export type FocusStrType = "node" | "righttool";
 
 export class FocusManager {
     private static instance: FocusManager | null = null;
@@ -45,6 +45,10 @@ export class FocusManager {
 
     requestNodeFocus(): void {
         globalStore.set(this.focusType, "node");
+    }
+
+    requestRightToolPanelFocus(): void {
+        globalStore.set(this.focusType, "righttool");
     }
 
     getFocusType(): FocusStrType {

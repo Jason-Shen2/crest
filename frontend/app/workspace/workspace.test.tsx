@@ -29,6 +29,11 @@ const mockLayout = vi.hoisted(() => {
     return state;
 });
 
+const mockFocusManager = vi.hoisted(() => ({
+    requestNodeFocus: vi.fn(),
+    requestRightToolPanelFocus: vi.fn(),
+}));
+
 const defaultRightToolPanelState = vi.hoisted(() => ({
     visible: true,
     width: 400,
@@ -114,6 +119,12 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
         },
     };
 });
+
+vi.mock("@/app/store/focusManager", () => ({
+    FocusManager: {
+        getInstance: () => mockFocusManager,
+    },
+}));
 
 vi.mock("@/app/element/errorboundary", () => ({
     ErrorBoundary: ({ children }: { children: React.ReactNode }) => (
@@ -262,7 +273,7 @@ describe("Workspace right tool panel integration", () => {
 
         expect(mockLayout.model.hydrateRightToolPanelFromWorkspace).not.toHaveBeenCalled();
         expect(markup).toContain('aria-label="Right tool panel"');
-        expect(markup).toContain('style="width:420px"');
+        expect(markup).toContain("width:420px");
         expect(markup).toContain('aria-label="Select Code Review"');
         expect(markup).toContain("Git Review Sidebar");
         expect(markup).toContain('aria-label="Resize left"');
@@ -483,6 +494,7 @@ describe("Workspace right tool panel integration", () => {
         tabContentProps.onFocusCapture();
 
         expect(mockLayout.model.setRightToolPanelFocused).toHaveBeenCalledWith(false);
+        expect(mockFocusManager.requestNodeFocus).toHaveBeenCalledTimes(1);
     });
 
     it("clears stale right tool focus when TopBar chrome is clicked before Cmd+M fallback", () => {
@@ -497,6 +509,7 @@ describe("Workspace right tool panel integration", () => {
         });
 
         expect(mockLayout.model.setRightToolPanelFocused).toHaveBeenCalledWith(false);
+        expect(mockFocusManager.requestNodeFocus).toHaveBeenCalledTimes(1);
     });
 
     it("previews right tool width during drag and persists only when resize ends", () => {
