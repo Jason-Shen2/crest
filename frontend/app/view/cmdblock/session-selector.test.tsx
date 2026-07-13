@@ -120,10 +120,41 @@ describe("agent selector popover", () => {
     });
 
     it("uses the same inline-above-input contract as the model picker", () => {
-        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("border-t");
-        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("border-fg-overlay-2");
-        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("bg-fg-overlay-1/40");
+        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("rounded-2xl");
+        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("border-white/[0.12]");
+        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("bg-[rgba(34,34,36,0.62)]");
+        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("backdrop-blur-2xl");
+        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).toContain("shadow-[0_10px_32px_-24px");
+        expect(COMMAND_SELECTOR_INLINE_CLASSNAME).not.toContain("border-t");
         expect(COMMAND_SELECTOR_INLINE_CLASSNAME).not.toContain("shadow-xl");
+    });
+
+    it("uses lightweight controls instead of stacked filled bars", () => {
+        const state: AgentSelectorViewState = {
+            status: "ready",
+            entries: [{ id: "e1", role: "user", preview: "hello", isCurrent: true }],
+        };
+
+        const html = renderToStaticMarkup(
+            <AgentSelectorPanel
+                requestType="tree"
+                state={state}
+                busyEntryId={null}
+                onPick={() => undefined}
+                onCancel={() => undefined}
+            />
+        );
+
+        expect(html).toContain("data-command-selector-filter-rail");
+        expect(html).toContain("data-command-selector-search");
+        expect(html).toContain("data-command-selector-list");
+        expect(html).toContain("mx-3 overflow-hidden rounded-xl");
+        expect(html).toContain("border-white/[0.055]");
+        expect(html).not.toContain("mx-3 mt-2 flex items-center gap-2 rounded-xl bg-white/[0.045] px-2 py-1 select-none");
+        expect(html).not.toContain("mx-3 my-2 flex cursor-text items-center gap-2 rounded-xl bg-white/[0.045]");
+        expect(html).toContain("border-t border-white/[0.06]");
+        expect(html).not.toContain("border-b border-fg-overlay-2/80");
+        expect(html).not.toContain("bg-fg-overlay-1/60");
     });
 
     it("renders tree selectors inside the shared command inline frame", () => {
@@ -256,6 +287,9 @@ describe("agent selector popover", () => {
         );
         expect(cwdScoped).toContain("Current Folder");
         expect(cwdScoped).toContain("All");
+        expect(cwdScoped).toContain(
+            "rounded-lg px-1.5 py-0.5 font-mono transition-colors inline-flex items-center gap-1.5"
+        );
 
         const allScoped = renderToStaticMarkup(
             <AgentSelectorPanel

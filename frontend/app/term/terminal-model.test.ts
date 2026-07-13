@@ -8,8 +8,8 @@
 // is side-effect-free in tests; agent methods can then be exercised
 // directly against the resulting instance.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as jotai from "jotai";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/store/global", () => ({
     atoms: {
@@ -38,6 +38,7 @@ vi.mock("@/app/store/wshclientapi", () => ({
 
 import { globalStore } from "@/app/store/jotaiStore";
 import { RpcApi } from "@/app/store/wshclientapi";
+import { stringToBase64 } from "@/util/util";
 
 import { TerminalModel } from "./terminal-model";
 
@@ -54,7 +55,7 @@ describe("TerminalModel agent surface", () => {
         model.dispose();
     });
 
-    it("rehydrates persisted agent rows from GetCmdBlocksCommand", async () => {
+    it("ignores persisted agent rows from the old timeline marker flow", async () => {
         model.dispose();
         vi.mocked(RpcApi.GetCmdBlocksCommand).mockResolvedValueOnce([
             {
@@ -75,26 +76,24 @@ describe("TerminalModel agent surface", () => {
         await flush();
 
         const block = model.getBlocks().findById("agent-row-1");
-        expect(block).toBeDefined();
-        expect(block!.kind).toBe("agent");
-        expect(block!.agentRef?.runId).toBe("run-123");
-        expect(block!.agentRef?.sessionPath).toBe("/tmp/session.jsonl");
-        expect(model.getFirstAgentSessionPath()).toBe("/tmp/session.jsonl");
+        expect(block).toBeUndefined();
     });
 
-    it("keys agent block on agentuserentryid", async () => {
+    it("rehydrates running shell rows from GetCmdBlocksCommand", async () => {
         model.dispose();
         vi.mocked(RpcApi.GetCmdBlocksCommand).mockResolvedValueOnce([
             {
-                oid: "agent-row-2",
+                oid: "shell-row-1",
                 blockid: "outer-1",
                 seq: 1,
-                kind: "agent",
-                state: "static",
-                agentuserentryid: "entry-2",
-                agentsessionpath: "/tmp/session.jsonl",
+                kind: "shell",
+                state: "running",
+                cmd: "pi",
+                cwd: "/repo",
                 promptoffset: 0,
+                outputstartoffset: 0,
                 tspromptns: 1,
+                tscmdns: 1,
                 createdat: 1,
             } as unknown as CmdBlock,
         ]);
@@ -102,9 +101,12 @@ describe("TerminalModel agent surface", () => {
         model = new TerminalModel("outer-1", 80);
         await flush();
 
-        const block = model.getBlocks().findById("agent-row-2");
+        const block = model.getBlocks().findById("shell-row-1");
         expect(block).toBeDefined();
-        expect(block!.agentRef?.runId).toBe("entry-2");
+        expect(block!.kind).toBe("shell");
+        expect(block!.state).toBe("running");
+        expect(block!.commandText()).toBe("pi");
+        expect(block!.pwd).toBe("/repo");
     });
 
     it("getRecentCommands returns the last N entries from commandHistoryAtom", () => {
@@ -112,5 +114,24 @@ describe("TerminalModel agent surface", () => {
         expect(model.getRecentCommands(3)).toEqual(["c", "d", "e"]);
         expect(model.getRecentCommands(10)).toEqual(["a", "b", "c", "d", "e"]);
         expect(model.getRecentCommands(0)).toEqual([]);
+    });
+
+    it("does not surface OSC notifications through the terminal-local toast atom", () => {
+        (model as any).applyChunk({
+            blockid: "outer-1",
+            oid: "cmd-row-osc",
+            offset: 0,
+            data64: stringToBase64("\x1b]9;task finished\x07"),
+        } as CmdBlockChunkEvent);
+
+        expect(globalStore.get(model.notificationAtom)).toBe("");
+    });
+
+    it("ignores transient not-ready errors from resize RPCs", async () => {
+        vi.mocked(RpcApi.ControllerInputCommand).mockRejectedValueOnce(
+            new Error('no shell input chan (block "outer-1" not ready)')
+        );
+
+        await expect(model.sendResize(24, 80)).resolves.toBeUndefined();
     });
 });

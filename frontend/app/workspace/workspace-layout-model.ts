@@ -83,6 +83,7 @@ class WorkspaceLayoutModel {
     // Visibility booleans — toggle flips them, view skips render when false.
     vtabVisibleAtom: jotai.PrimitiveAtom<boolean>;
     fileExplorerVisibleAtom: jotai.PrimitiveAtom<boolean>;
+    sessionsPanelVisibleAtom: jotai.PrimitiveAtom<boolean>;
     // Widths in px.  Workspace.tsx reads these via useAtomValue.
     vtabWidthAtom: jotai.PrimitiveAtom<number>;
     fileExplorerWidthAtom: jotai.PrimitiveAtom<number>;
@@ -101,6 +102,7 @@ class WorkspaceLayoutModel {
     private constructor() {
         this.vtabVisibleAtom = jotai.atom(false);
         this.fileExplorerVisibleAtom = jotai.atom(true);
+        this.sessionsPanelVisibleAtom = jotai.atom(false);
         this.vtabWidthAtom = jotai.atom(VTabBar_DefaultWidth);
         this.fileExplorerWidthAtom = jotai.atom(FileExplorer_DefaultWidth);
         this.codeReviewVisibleAtom = jotai.atom(false);
@@ -168,6 +170,10 @@ class WorkspaceLayoutModel {
         return getOrefMetaKeyAtom(WOS.makeORef("workspace", this.getWorkspaceId()), "layout:fileexplorerwidth");
     }
 
+    private getSessionsPanelVisibleAtom(): jotai.Atom<boolean> {
+        return getOrefMetaKeyAtom(WOS.makeORef("workspace", this.getWorkspaceId()), "layout:sessionpanelvisible");
+    }
+
     private getRightToolPanelMetaAtomForWorkspace(workspaceId: string): jotai.Atom<Partial<RightToolPanelState>> {
         return getOrefMetaKeyAtom(
             WOS.makeORef("workspace", workspaceId),
@@ -195,6 +201,13 @@ class WorkspaceLayoutModel {
                 // depends on the live window width, which the view
                 // re-clamps on drag.
                 globalStore.set(this.fileExplorerWidthAtom, Math.max(FileExplorer_MinWidth, savedFileExplorerWidth));
+            }
+            const savedSessionsVisible = globalStore.get(this.getSessionsPanelVisibleAtom());
+            if (savedSessionsVisible != null) {
+                globalStore.set(this.sessionsPanelVisibleAtom, savedSessionsVisible);
+                if (savedSessionsVisible) {
+                    globalStore.set(this.fileExplorerVisibleAtom, false);
+                }
             }
             const tabBarPosition = globalStore.get(getSettingsKeyAtom("app:tabbar")) ?? "top";
             const showLeftTabBar = tabBarPosition === "left" && !isBuilderWindow();
@@ -320,6 +333,9 @@ class WorkspaceLayoutModel {
     setFileExplorerVisible(visible: boolean): void {
         if (globalStore.get(this.fileExplorerVisibleAtom) === visible) return;
         globalStore.set(this.fileExplorerVisibleAtom, visible);
+        if (visible) {
+            globalStore.set(this.sessionsPanelVisibleAtom, false);
+        }
         // Persist visibility immediately — width is debounced but the
         // bool is a single byte and the user expects the next session
         // to come up in the same state.
@@ -330,6 +346,26 @@ class WorkspaceLayoutModel {
             });
         } catch (e) {
             console.warn("Failed to persist file explorer visibility:", e);
+        }
+    }
+
+    getSessionsPanelVisible(): boolean {
+        return globalStore.get(this.sessionsPanelVisibleAtom);
+    }
+
+    setSessionsPanelVisible(visible: boolean): void {
+        if (globalStore.get(this.sessionsPanelVisibleAtom) === visible) return;
+        globalStore.set(this.sessionsPanelVisibleAtom, visible);
+        if (visible) {
+            globalStore.set(this.fileExplorerVisibleAtom, false);
+        }
+        try {
+            RpcApi.SetMetaCommand(TabRpcClient, {
+                oref: WOS.makeORef("workspace", this.getWorkspaceId()),
+                meta: { "layout:sessionpanelvisible": visible },
+            });
+        } catch (e) {
+            console.warn("Failed to persist sessions panel visibility:", e);
         }
     }
 

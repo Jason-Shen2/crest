@@ -54,6 +54,10 @@ type MouseLikeEvent = Pick<
     "clientX" | "clientY" | "shiftKey" | "altKey" | "ctrlKey" | "preventDefault" | "stopPropagation"
 >;
 
+function isFullScreenSurfaceKind(kind: string | undefined): boolean {
+    return kind === "alt-screen" || kind === "terminal-capture";
+}
+
 export interface BlockElementProps {
     block: Block;
     revision: number;
@@ -124,14 +128,18 @@ export const BlockElement = memo(
 
         const activeSurfaceState = model?.getActiveSurfaceState?.() ?? null;
         const modelSurfaceActive = activeSurfaceState?.blockId === block.id;
-        const activeTuiSurface = modelSurfaceActive || (!model && block.altScreen.active);
+        const modelFullScreenSurfaceActive = modelSurfaceActive && isFullScreenSurfaceKind(activeSurfaceState.kind);
+        const activeTuiSurface = modelFullScreenSurfaceActive || (!model && block.altScreen.active);
         const surfaceKind = modelSurfaceActive
-            ? activeSurfaceState.kind
+            ? modelFullScreenSurfaceActive
+                ? activeSurfaceState.kind
+                : "normal-output"
             : !model && block.altScreen.active
               ? "alt-screen"
               : "normal-output";
         const inAltScreen = surfaceKind === "alt-screen";
         const cmd = block.commandText() || undefined;
+        const showHeader = !activeTuiSurface || !!cmd;
         // Frozen alt-screen — after a TUI exits we keep its last frame
         // visible if no post-exit output has landed, so vim/htop/less
         // sessions don't visually vanish from the block list.
@@ -158,7 +166,7 @@ export const BlockElement = memo(
         // Render the cursor for blocks that are actually receiving input.
         //
         // Cursor visibility rules:
-        //   1. Active TUI surfaces (alt-screen, long-running-pty, terminal-capture):
+        //   1. Active TUI surfaces (alt-screen, terminal-capture):
         //      Show the overlay only when the app keeps the host cursor visible
         //      (DECTCEM ?25 h, cursorState.visible=true).  Apps that hide the
         //      cursor (?25 l) draw their own software cursor via reverse-video
@@ -170,7 +178,6 @@ export const BlockElement = memo(
         // Done blocks never carry a live cursor.
         const isTuiSurface =
             surfaceKind === "alt-screen" ||
-            surfaceKind === "long-running-pty" ||
             surfaceKind === "terminal-capture" ||
             frozenAltScreen;
         const showCursor = isTuiSurface
@@ -476,11 +483,6 @@ export const BlockElement = memo(
                     // left stripe looked bad); failure is shown via the red
                     // background tint + the exit code in the header.
                     "group relative border-b border-fg-overlay-2 transition-colors",
-                    // Selection: subtle 10% accent fill, no border — per
-                    // user feedback, warp's full 25% + 2px outline reads
-                    // too aggressive in crest's layout.  Keeps the
-                    // selection discoverable via the tint alone.
-                    selected && "bg-[var(--color-term-accent-10)]",
                     // Failed (non-selected): 10% red overlay (warp
                     // block_list_element.rs:2404-2410, bg = failed × 10%).
                     isFailed && !selected && "bg-[var(--ansi-red)]/10",
@@ -502,7 +504,7 @@ export const BlockElement = memo(
                         onDismiss={model ? () => model.setSnackbarVisible(false) : undefined}
                     />
                 )}
-                {!activeTuiSurface && (
+                {showHeader && (
                     <div ref={headerAnchorRef}>
                         <CmdBlockHeader
                             state={visualState}

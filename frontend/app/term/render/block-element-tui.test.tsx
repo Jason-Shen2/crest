@@ -7,7 +7,7 @@ import { DefaultTermMode } from "../engine/types";
 import { BlockElement } from "./block-element";
 
 vi.mock("@/app/view/cmdblock/cmdblock-header", () => ({
-    CmdBlockHeader: () => <div data-testid="cmd-header" />,
+    CmdBlockHeader: ({ cmd }: { cmd?: string }) => <div data-testid="cmd-header">{cmd}</div>,
 }));
 
 vi.mock("@/app/view/cmdblock/cmdblock-snackbar", () => ({
@@ -15,9 +15,7 @@ vi.mock("@/app/view/cmdblock/cmdblock-snackbar", () => ({
 }));
 
 vi.mock("./grid-element", () => ({
-    GridElement: ({ className }: { className?: string }) => (
-        <div data-testid="grid" className={className} />
-    ),
+    GridElement: ({ className }: { className?: string }) => <div data-testid="grid" className={className} />,
 }));
 
 vi.mock("./cursor-overlay", () => ({
@@ -67,21 +65,30 @@ function makeSurfaceModel(block: { id: string }) {
 }
 
 describe("BlockElement TUI layout", () => {
-    it("renders active alternate screen as full-height and hides chrome without a model", () => {
+    it("does not paint a selected background when a block is clicked", () => {
+        const block = makeBlock(false) as any;
+        const html = renderToStaticMarkup(<BlockElement block={block} revision={1} selected />);
+
+        expect(html).not.toContain("bg-[var(--color-term-accent-10)]");
+    });
+
+    it("renders active alternate screen as full-height while keeping the command header without a model", () => {
         const block = makeBlock(true) as any;
         const html = renderToStaticMarkup(<BlockElement block={block} revision={1} />);
 
-        expect(html).not.toContain('data-testid="cmd-header"');
+        expect(html).toContain('data-testid="cmd-header"');
+        expect(html).toContain("claude");
         expect(html).not.toContain('data-testid="cmd-snackbar"');
         expect(html).toMatch(/data-testid="grid"[^>]*class="[^"]*min-h-full/);
     });
 
-    it("hides block command chrome while active alternate screen is displayed", () => {
+    it("keeps command header visible while active alternate screen is displayed", () => {
         const block = makeBlock(true) as any;
         const html = renderToStaticMarkup(
             <BlockElement block={block} revision={1} model={makeSurfaceModel(block) as any} />
         );
-        expect(html).not.toContain('data-testid="cmd-header"');
+        expect(html).toContain('data-testid="cmd-header"');
+        expect(html).toContain("claude");
         expect(html).not.toContain('data-testid="cmd-snackbar"');
     });
 
@@ -99,63 +106,62 @@ describe("BlockElement TUI layout", () => {
         const block = makeBlock(true) as any;
         block.altScreen.grid.getRow = () => sparseRow;
         expect(() =>
-            renderToStaticMarkup(
-                <BlockElement block={block} revision={1} model={makeSurfaceModel(block) as any} />
-            )
+            renderToStaticMarkup(<BlockElement block={block} revision={1} model={makeSurfaceModel(block) as any} />)
         ).not.toThrow();
     });
 
     it("renders a running raw-capture TUI block as a full-height terminal surface", () => {
         const block = makeBlock(false) as any;
+        block.outputGrid.cursorState.visible = true;
         const html = renderToStaticMarkup(
             <BlockElement
                 block={block}
                 revision={1}
-                model={{
-                    getMode: () => ({
-                        appCursor: true,
-                        focusReport: false,
-                        mouseX10: false,
-                        mouseClick: true,
-                        mouseButton: false,
-                        mouseMotion: false,
-                        mouseSgr: false,
-                        mouseUtf8: false,
-                        mouseUrxvt: false,
-                        alternateScroll: false,
-                    }),
-                    getActiveSurfaceState: () => ({ kind: "terminal-capture", blockId: block.id }),
-                    getCursorRenderState: () => ({ kind: "terminal" }),
-                } as any}
+                model={
+                    {
+                        getMode: () => ({
+                            appCursor: true,
+                            focusReport: false,
+                            mouseX10: false,
+                            mouseClick: true,
+                            mouseButton: false,
+                            mouseMotion: false,
+                            mouseSgr: false,
+                            mouseUtf8: false,
+                            mouseUrxvt: false,
+                            alternateScroll: false,
+                        }),
+                        getActiveSurfaceState: () => ({ kind: "terminal-capture", blockId: block.id }),
+                        getCursorRenderState: () => ({ kind: "terminal" }),
+                    } as any
+                }
             />
         );
-        expect(html).not.toContain('data-testid="cmd-header"');
+        expect(html).toContain('data-testid="cmd-header"');
         expect(html).not.toContain('data-testid="cmd-snackbar"');
         expect(html).toMatch(/data-testid="grid"[^>]*class="[^"]*min-h-full/);
         expect(html).toContain('data-testid="cursor"');
     });
 
-    it("always renders a cursor for active TUI surfaces regardless of cursor suppression", () => {
-        // TUI surfaces (alt-screen, long-running-pty, terminal-capture) always
-        // show the host cursor — TUIs conventionally send CSI ?25 l to hide
-        // the host cursor and draw their own via reverse-video, but in a
-        // Warp-style renderer we are the host and always show the overlay.
+    it("renders long-running PTY output as normal scrollback when the app has no terminal capture mode", () => {
         const block = makeBlock(false) as any;
         block.outputGrid.cursorState.visible = false;
         const html = renderToStaticMarkup(
             <BlockElement
                 block={block}
                 revision={1}
-                model={{
-                    getMode: () => DefaultTermMode,
-                    getActiveSurfaceState: () => ({ kind: "long-running-pty", blockId: block.id }),
-                    getCursorRenderState: () => ({ kind: "suppressed", reason: "rich-input-open" }),
-                } as any}
+                model={
+                    {
+                        getMode: () => DefaultTermMode,
+                        getActiveSurfaceState: () => ({ kind: "long-running-pty", blockId: block.id }),
+                        getCursorRenderState: () => ({ kind: "suppressed", reason: "rich-input-open" }),
+                    } as any
+                }
             />
         );
 
-        expect(html).toContain('data-testid="cursor"');
-        expect(html).toContain('h-full min-h-full');
+        expect(html).not.toContain('data-testid="cursor"');
+        expect(html).not.toContain("h-full min-h-full");
     });
 
     it("does not render a cursor for non-TUI running blocks when cursor is suppressed", () => {
@@ -168,11 +174,13 @@ describe("BlockElement TUI layout", () => {
             <BlockElement
                 block={block}
                 revision={1}
-                model={{
-                    getMode: () => DefaultTermMode,
-                    getActiveSurfaceState: () => null,
-                    getCursorRenderState: () => ({ kind: "suppressed", reason: "rich-input-open" }),
-                } as any}
+                model={
+                    {
+                        getMode: () => DefaultTermMode,
+                        getActiveSurfaceState: () => null,
+                        getCursorRenderState: () => ({ kind: "suppressed", reason: "rich-input-open" }),
+                    } as any
+                }
             />
         );
 

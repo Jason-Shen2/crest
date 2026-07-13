@@ -52,7 +52,8 @@ describe("Block interaction state", () => {
         block.enterAltScreen();
         expect(block.interactionMode(DefaultTermMode, 2_000)).toBe("alt-screen");
         block.exitAltScreen();
-        expect(block.interactionMode({ ...DefaultTermMode, appCursor: true }, 2_000)).toBe("terminal-capture");
+        expect(block.interactionMode({ ...DefaultTermMode, appCursor: true }, 2_000)).toBe("long-running-command");
+        expect(block.interactionMode({ ...DefaultTermMode, mouseClick: true }, 2_000)).toBe("terminal-capture");
         expect(block.interactionMode(DefaultTermMode, 2_000)).toBe("long-running-command");
     });
 });

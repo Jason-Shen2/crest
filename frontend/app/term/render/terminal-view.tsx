@@ -6,6 +6,7 @@
 // bar.  Replaces the old `TermBlocksView` from view/termblocks/termblocks.tsx.
 
 import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
+import { Icon } from "@/app/icon/Icon";
 import { globalStore } from "@/app/store/jotaiStore";
 import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import { getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
@@ -46,6 +47,62 @@ export interface AgentSlotComponentProps {
     outerBlockId: string;
     deps: AgentPaneDeps;
     children: (agentSlot: AgentSlot) => React.ReactNode;
+}
+
+const BlockOutputHorizontalPaddingPx = 24;
+
+const TerminalWelcome = memo(() => (
+    <div data-testid="terminal-welcome" className="flex flex-1 flex-col items-center justify-center px-4 text-center text-current">
+        <div
+            data-icon-name="computer-terminal-02"
+            className="mb-3 text-current"
+        >
+            <Icon name="computer-terminal-02" size={28} strokeWidth={1.75} className="opacity-70" />
+        </div>
+        <h1 className="text-lg font-semibold text-current">Run your first command</h1>
+        <p className="mt-1 text-sm text-current/60">Type below to start a terminal session.</p>
+    </div>
+));
+TerminalWelcome.displayName = "TerminalWelcome";
+
+type TerminalBlockLike = {
+    id: string;
+    hidden?: boolean;
+    kind?: string;
+    state?: string;
+    commandText?: () => string;
+    isBackground?: boolean;
+    isStatic?: boolean;
+};
+
+function isRenderableTerminalBlock(block: TerminalBlockLike): boolean {
+    if (block.hidden) return false;
+    if (block.id === "__sentinel__") return false;
+    if (block.kind === "agent") return false;
+    if (block.state !== "waiting-for-input") return true;
+    if (block.commandText?.()) return true;
+    return !!block.isBackground || !!block.isStatic;
+}
+
+export function computeTerminalGeometryForResize({
+    paneWidth,
+    paneHeight,
+    charWidth,
+    lineHeight,
+    terminalInputKind,
+}: {
+    paneWidth: number;
+    paneHeight: number;
+    charWidth: number;
+    lineHeight: number;
+    terminalInputKind: string;
+}): { cols: number; rows: number } {
+    const fullScreenSurface = terminalInputKind === "alt-screen" || terminalInputKind === "terminal-capture";
+    const outputWidth = Math.max(0, paneWidth - (fullScreenSurface ? 0 : BlockOutputHorizontalPaddingPx));
+    return {
+        cols: Math.max(20, Math.floor(outputWidth / charWidth)),
+        rows: Math.max(10, Math.floor(paneHeight / lineHeight)),
+    };
 }
 
 export function blurActiveEditableInRoot(root: HTMLElement | null): void {
@@ -121,6 +178,13 @@ export const TerminalView = memo(
                 cursorColor: cursorColor ?? undefined,
             }),
             [paletteMap, defaultFg, defaultBg, cursorColor]
+        );
+        const terminalChromeStyle = useMemo(
+            () => ({
+                color: defaultFg ?? "var(--color-foreground)",
+                backgroundColor: defaultBg ?? "var(--color-background)",
+            }),
+            [defaultFg, defaultBg]
         );
 
         const bellTick = useAtomValue(model.bellTickAtom);
@@ -432,14 +496,17 @@ export const TerminalView = memo(
                 el.removeChild(probe);
                 if (cw > 0) setCharWidth((prev) => (Math.abs(prev - cw) > 0.05 ? cw : prev));
                 const rect = el.getBoundingClientRect();
-                const paneWidth = rect.width;
-                const cols = Math.max(20, Math.floor(paneWidth / (cw > 0 ? cw : 7.2)));
                 // Compute rows from actual pane height — TUIs that span the
                 // whole pane (vim, htop, lazygit) get the geometry their
                 // protocol asks for, instead of a hardcoded 24.
                 const lineHeightForResize = Math.round(fontSize * 1.4);
-                const paneHeight = rect.height;
-                const rows = Math.max(10, Math.floor(paneHeight / lineHeightForResize));
+                const { cols, rows } = computeTerminalGeometryForResize({
+                    paneWidth: rect.width,
+                    paneHeight: rect.height,
+                    charWidth: cw > 0 ? cw : 7.2,
+                    lineHeight: lineHeightForResize,
+                    terminalInputKind: terminalInputState.kind,
+                });
                 if (cols !== model.cols) {
                     model.setCols(cols);
                 }
@@ -567,7 +634,7 @@ export const TerminalView = memo(
         if (replaceContent != null) {
             return (
                 <PaletteContext.Provider value={paletteValue}>
-                    <div ref={rootRef} className="flex h-full w-full flex-col bg-panel">
+                    <div ref={rootRef} className="flex h-full w-full flex-col bg-panel" style={terminalChromeStyle}>
                         {replaceContent}
                     </div>
                 </PaletteContext.Provider>
@@ -600,6 +667,9 @@ export const TerminalView = memo(
             isRunning,
             inAltScreen,
         };
+        const blocks = model.getBlocks().all();
+        const blockCount = blocks.length;
+        const hasRenderableTerminalBlocks = blocks.some(isRenderableTerminalBlock);
 
         const renderTerminalBody = (agentSlot: AgentSlot | null) => (
             <>
@@ -613,10 +683,12 @@ export const TerminalView = memo(
                 )}
                 {agentSlot?.replacesBlockList ? (
                     agentSlot.commandResults
-                ) : loading && model.getBlocks().length() === 0 ? (
+                ) : loading && blockCount === 0 ? (
                     <div className="flex flex-1 items-center justify-center text-[12px] text-secondary/70">
                         Loading terminal…
                     </div>
+                ) : !agentSlot && !hasRenderableTerminalBlocks ? (
+                    <TerminalWelcome />
                 ) : (
                     <>
                         <BlockListElement
@@ -635,10 +707,6 @@ export const TerminalView = memo(
                 top of the input editor.  Without this the input's border-t
                 hugs the last command's stdout. */}
                 {!inAltScreen && <div className="mt-2.5" />}
-                {/* Agent footer (warp's bottom orchestration bar): working status +
-                Stop on the right, queued messages on the left. Between the
-                conversation and the input editor; hidden when idle + empty. */}
-                {!inAltScreen && agentSlot?.activityBar}
                 {!inAltScreen &&
                     (agentSlot ? (
                         agentSlot.inputBar
@@ -685,15 +753,13 @@ export const TerminalView = memo(
                 <div
                     ref={rootRef}
                     className={cn(
-                        // bg-panel (translucent, matches vtabbar/treeview on the left)
-                        // instead of bg-background (opaque) so gradient themes like
-                        // Cyber Wave paint through to the body's --bg-gradient.  For
-                        // solid themes the visual delta is negligible — bg-panel
-                        // resolves to a faint foreground tint at 50% alpha over the
-                        // same body color.
+                        // bg-panel remains a fallback; terminalChromeStyle
+                        // applies the terminal palette's default fg/bg so
+                        // empty panes and prompt chrome match rendered cells.
                         "relative flex h-full w-full flex-col bg-panel transition-shadow",
                         bellFlash && "ring-2 ring-inset ring-amber-400/50"
                     )}
+                    style={terminalChromeStyle}
                 >
                     {AgentSlotComponent ? (
                         <AgentSlotComponent outerBlockId={outerBlockId} deps={agentSlotDeps}>

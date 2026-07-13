@@ -84,6 +84,55 @@ func (t *Tracker) AltScreen() bool {
 	return t.altScreen
 }
 
+func (t *Tracker) StartDirectCommand(ctx context.Context, cmd string, cwd string, shellType string) (*CmdBlock, error) {
+	t.mu.Lock()
+	outputStart := t.parser.Offset()
+	t.mu.Unlock()
+
+	cb, err := MakeDirectCommandStarted(ctx, t.blockID, cmd, cwd, outputStart, shellType)
+	if err != nil {
+		return nil, err
+	}
+
+	t.mu.Lock()
+	t.currentOID = cb.OID
+	t.state = StateRunning
+	if shellType != "" {
+		t.shellType = shellType
+	}
+	t.mu.Unlock()
+	t.publishRow(cb)
+	return cb, nil
+}
+
+func (t *Tracker) FinishRunningCommand(ctx context.Context, exitCode int64) error {
+	t.mu.Lock()
+	oid := t.currentOID
+	outputEnd := t.parser.Offset()
+	t.mu.Unlock()
+	if oid == "" {
+		return nil
+	}
+	if err := MarkCommandDone(ctx, oid, exitCode, outputEnd); err != nil {
+		return err
+	}
+	row, err := getByOID(ctx, oid)
+	if err != nil {
+		return err
+	}
+	if row != nil {
+		t.captureOutput(ctx, row)
+		t.publishRow(row)
+	}
+	t.mu.Lock()
+	if t.currentOID == oid {
+		t.currentOID = ""
+		t.state = ""
+	}
+	t.mu.Unlock()
+	return nil
+}
+
 // OnBytes must be called with every PTY chunk in the order it lands in the
 // parent blockfile, AFTER the chunk has been appended. The parser maintains
 // absolute offsets relative to the first byte fed; those offsets are recorded
