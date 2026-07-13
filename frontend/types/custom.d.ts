@@ -171,6 +171,7 @@ declare global {
             listSessionDetailsForCwd: (cwd: string, limit?: number) => Promise<AgentSessionDetail[]>;
             listAllSessionDetails: (limit?: number) => Promise<AgentSessionDetail[]>;
             listCommands: () => Promise<AgentCommandInfo[]>; // agent:list-commands
+            getSessionState: (sessionMetadata: AgentSessionMeta) => Promise<unknown>; // agent:get-session-state
             listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>; // agent:list-tree
             listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>; // agent:list-fork-points
             navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>; // agent:navigate-tree
