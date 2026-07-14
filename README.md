@@ -1,117 +1,123 @@
-<p align="center">
-  <a href="https://www.waveterm.dev">
-	<picture>
-		<source media="(prefers-color-scheme: dark)" srcset="./assets/wave-dark.png">
-		<source media="(prefers-color-scheme: light)" srcset="./assets/wave-light.png">
-		<img alt="Wave Terminal Logo" src="./assets/wave-light.png" width="240">
-	</picture>
-  </a>
-  <br/>
-</p>
+# Crest
 
-# Wave Terminal
+Crest is an AI-native development workspace for vibe coding.
 
-<div align="center">
+It brings the terminal, files, editor, browser previews, agent sessions, tool execution, and human review into one project-scoped workspace. The goal is not to add another chat sidebar to a traditional IDE. Crest treats the AI agent as a first-class development actor while keeping the human developer in control of direction, risk, and review.
 
-[English](README.md) | [한국어](README.ko.md) | [繁體中文](README.zh-TW.md)
+> Status: Crest is an unreleased POC / MVP. The codebase is actively changing, and some internal names still carry Wave / WaveTerm legacy naming.
 
-</div>
+## Why Crest
 
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fwavetermdev%2Fwaveterm.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fwavetermdev%2Fwaveterm?ref=badge_shield)
+Modern coding workflows are changing. Agents now write, edit, run, and validate a meaningful portion of software work. The developer's role is shifting toward problem framing, context design, decision making, risk control, and code review.
 
-Wave is an open-source, AI-integrated terminal for macOS, Linux, and Windows. It works with any AI model. Bring your own API keys for OpenAI, Claude, or Gemini, or run local models via Ollama and LM Studio. No accounts required.
+Most tools still sit at one of two extremes:
 
-Wave also supports durable SSH sessions that survive network interruptions and restarts, with automatic reconnection. Edit remote files with a built-in graphical editor and preview files inline without leaving the terminal.
+- Traditional IDEs keep the editor at the center and place the agent in a side panel. The user still has to copy context around, switch between terminal, browser, files, and chat, then manually verify the result.
+- Agent-only tools let the agent drive the task, but often remove the IDE-like sense of control: reading code, inspecting diffs, watching terminal output, opening previews, and intervening locally.
 
-![WaveTerm Screenshot](./assets/wave-screenshot.webp)
+Crest explores the middle ground: an agent-first development workspace that still feels inspectable, interruptible, and reviewable.
 
-## Key Features
+## Core Ideas
 
-- Wave AI - Context-aware terminal assistant that reads your terminal output, analyzes widgets, and performs file operations
-- Durable SSH Sessions - Remote terminal sessions survive connection interruptions, network changes, and Wave restarts with automatic reconnection
-- Flexible drag & drop interface to organize terminal blocks, editors, web browsers, and AI assistants
-- Built-in editor for editing remote files with syntax highlighting and modern editor features
-- Rich file preview system for remote files (markdown, images, video, PDFs, CSVs, directories)
-- Quick full-screen toggle for any block - expand terminals, editors, and previews for better visibility, then instantly return to multi-block view
-- AI chat widget with support for multiple models (OpenAI, Claude, Azure, Perplexity, Ollama)
-- Command Blocks for isolating and monitoring individual commands
-- One-click remote connections with full terminal and file system access
-- Secure secret storage using native system backends - store API keys and credentials locally, access them across SSH sessions
-- Rich customization including tab themes, terminal styles, and background images
-- Powerful `wsh` command system for managing your workspace from the CLI and sharing data between terminal sessions
-- Connected file management with `wsh file` - seamlessly copy and sync files between local and remote SSH hosts
+- **Project-scoped spaces** - A Space maps to one working directory. Files, terminals, browser previews, git state, and agent conversations stay isolated per project.
+- **Agent-first workflow** - The agent can understand project context, inspect files, run commands, edit code, and summarize progress inside the same workspace.
+- **Human-in-the-loop control** - High-impact actions go through permission checks, command review, and diff preview before they are accepted.
+- **Unified development surface** - Terminal blocks, editors, web views, previews, and agent conversations live in a drag-and-drop workspace instead of separate windows.
+- **Review-centered development** - Crest is designed around the loop of discussion, execution, validation, and review rather than only around manual code editing.
 
-## Wave AI
+## Current Capabilities
 
-Wave AI is your context-aware terminal assistant with access to your workspace:
+- Agent sessions with persisted timelines, tool calls, streaming state, and resumable history.
+- Terminal blocks backed by the existing Wave/WaveTerm terminal engine and `wshrpc` backend.
+- File explorer, editor, web/preview blocks, and source-control surfaces inside the same workspace layout.
+- Tool execution for reading files, editing files, observing terminal state, running shell commands, and asking the user for decisions.
+- Permission and review flows for sensitive operations, including command approval and diff review.
+- Space = Project direction, where each workspace is anchored to one working directory and agent sessions are grouped by project.
 
-- **Terminal Context**: Reads terminal output and scrollback for debugging and analysis
-- **File Operations**: Read, write, and edit files with automatic backups and user approval
-- **CLI Integration**: Use `wsh ai` to pipe output or attach files directly from the command line
-- **BYOK Support**: Bring your own API keys for OpenAI, Claude, Gemini, Azure, and other providers
-- **Local Models**: Run local models with Ollama, LM Studio, and other OpenAI-compatible providers
-- **Free Beta**: Included AI credits while we refine the experience
-- **Coming Soon**: Command execution (with approval)
+## Getting Started
 
-Learn more in our [Wave AI documentation](https://docs.waveterm.dev/waveai) and [Wave AI Modes documentation](https://docs.waveterm.dev/waveai-modes).
+Clone the repository:
 
-## Installation
+```bash
+git clone https://github.com/Jason-Shen2/crest.git
+cd crest
+```
 
-Wave Terminal works on macOS, Linux, and Windows.
+Install dependencies:
 
-Platform-specific installation instructions can be found [here](https://docs.waveterm.dev/gettingstarted).
+```bash
+npm install
+```
 
-You can also install Wave Terminal directly from: [www.waveterm.dev/download](https://www.waveterm.dev/download).
+Run the Electron development app:
 
-### Minimum requirements
+```bash
+npm run dev
+```
 
-Wave Terminal runs on the following platforms:
+Build the app:
 
-- macOS 11 or later (arm64, x64)
-- Windows 10 1809 or later (x64)
-- Linux based on glibc-2.28 or later (Debian 10, RHEL 8, Ubuntu 20.04, etc.) (arm64, x64)
+```bash
+npm run build:prod
+```
 
-The WSH helper runs on the following platforms:
+Useful scripts:
 
-- macOS 11 or later (arm64, x64)
-- Windows 10 or later (x64)
-- Linux Kernel 2.6.32 or later (x64), Linux Kernel 3.1 or later (arm64)
+- `npm run dev` - start the Electron/Vite development app.
+- `npm run start` - preview the built Electron app.
+- `npm run build:dev` - build in development mode.
+- `npm run build:prod` - build in production mode.
+- `npm run test` - run Vitest tests.
 
-## Roadmap
+## Project Structure
 
-Wave is constantly improving! Our roadmap will be continuously updated with our goals for each release. You can find it [here](./ROADMAP.md).
+| Path | Purpose |
+| --- | --- |
+| `frontend/` | Electron renderer UI built with React, TypeScript, Jotai, Tailwind, assistant-ui, and Monaco. |
+| `emain/` | Electron main process, preload APIs, IPC, window management, AI providers, and agent runtime. |
+| `pkg/` | Go backend libraries for storage, RPC, terminal control, events, connections, jobs, config, and web services. |
+| `cmd/wsh/` | The `wsh` CLI entry point and command implementations. |
+| `cmd/server/` | The local backend server entry point, still named `wavesrv` in legacy code. |
+| `db/` | SQLite migrations embedded into the backend. |
+| `docs/` | Architecture notes, agent runtime docs, implementation plans, and design records. |
+| `schema/` | Configuration JSON schemas copied into the app bundle during builds. |
+| `tsunami/` | Internal UI/scaffolding subsystem inherited from the Wave codebase. |
 
-Want to provide input to our future releases? Connect with us on [Discord](https://discord.gg/XfvZ334gwU) or open a [Feature Request](https://github.com/wavetermdev/waveterm/issues/new/choose)!
+## Architecture
 
-## Links
+Crest is a hybrid Electron + Go desktop app:
 
-- Homepage &mdash; https://www.waveterm.dev
-- Download Page &mdash; https://www.waveterm.dev/download
-- Documentation &mdash; https://docs.waveterm.dev
-- X &mdash; https://x.com/wavetermdev
-- Discord Community &mdash; https://discord.gg/XfvZ334gwU
+```text
+React renderer
+  -> Electron preload API
+  -> Electron main process
+  -> Agent runtime and AI providers
+  -> Go backend process
+  -> wshrpc / WPS / SQLite / terminal controllers
+```
 
-## Building from Source
+The renderer owns the workspace UI. The Electron main process owns local desktop integration and the agent runtime. The Go backend owns the terminal engine, persisted workspace objects, RPC surface, filesystem-backed block data, and remote/session infrastructure.
 
-See [Building Wave Terminal](BUILD.md).
+## Agent Runtime
 
-## Contributing
+The native agent runtime lives under `emain/agent/`. It manages:
 
-Wave uses GitHub Issues for issue tracking.
+- sessions and timeline persistence;
+- model/provider access;
+- streaming responses;
+- tool calls;
+- user approvals;
+- command and file-operation review;
+- communication with renderer UI through preload IPC.
 
-Find more information in our [Contributions Guide](CONTRIBUTING.md), which includes:
+The UI is being moved toward assistant-ui primitives while keeping Crest's project-scoped session model and local runtime behavior.
 
-- [Ways to contribute](CONTRIBUTING.md#contributing-to-wave-terminal)
-- [Contribution guidelines](CONTRIBUTING.md#before-you-start)
+## Origin
 
-### Sponsoring Wave ❤️
+Crest began as a fork of Wave Terminal and still uses parts of the Wave/WaveTerm architecture, naming, terminal engine, `wsh` CLI, and Go backend structure. The product direction has shifted toward an AI-native development workspace centered on agent execution, project isolation, and human review.
 
-If Wave Terminal is useful to you or your company, consider sponsoring development.
-
-Sponsorship helps support the time spent building and maintaining the project.
-
-- https://github.com/sponsors/wavetermdev
+Several agent-related modules also reference behavior and UX patterns from Warp Terminal. See [NOTICES.md](./NOTICES.md) for third-party notices and attribution details.
 
 ## License
 
-Wave Terminal is licensed under the Apache-2.0 License. For more information on our dependencies, see [here](./ACKNOWLEDGEMENTS.md).
+Crest is licensed under the Apache-2.0 License. Dependency acknowledgements are listed in [ACKNOWLEDGEMENTS.md](./ACKNOWLEDGEMENTS.md), and additional third-party notices are listed in [NOTICES.md](./NOTICES.md).
