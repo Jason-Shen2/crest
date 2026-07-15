@@ -13,7 +13,7 @@
   <img alt="Platform: Desktop" src="https://img.shields.io/badge/platform-desktop-6e7681.svg">
 </p>
 
-![Crest Agent workspace](./docs/images/readme/agent-session-panel.png)
+![Crest workspace overview](./docs/images/readme/hero-overview.png)
 
 > [!IMPORTANT]
 > Crest is an unreleased POC/MVP. APIs, product behavior, and internal names are still evolving, and some Wave/WaveTerm legacy naming remains.
@@ -29,7 +29,7 @@ Crest explores the middle ground: an agent-first development workspace where exe
 1. **One Space = One Project.** Each Space is anchored to one working directory, keeping files, terminals, previews, Git state, and Agent Sessions scoped to the project that owns them.
 2. **Agent-first workflow.** The Agent can gather context, edit files, run commands, use tools, and report results without forcing the developer to assemble the workflow across separate applications.
 3. **Human-in-the-loop control.** Crest keeps tool activity, command output, and diffs visible so developers can redirect work, inspect risk, and decide what to accept.
-4. **Focused workspace.** File Tree and Session History provide navigation in the left panel, while Editor, Browser, Terminal, Code Review, and Source Control share the tabbed Right Panel. The Browser keeps local previews beside the workspace, and the full toolset stays available while only one active tool surface competes for attention.
+4. **Focused workspace.** File Tree and Session History provide navigation in the left panel, while Editor, Browser, Terminal, Code Review, and Source Control share the tabbed Right Panel. The Browser supports web research and can also open a local app URL, while the full toolset stays available with only one active tool surface competing for attention.
 5. **Review-centered development.** The core loop is discuss, execute, validate, and review, rather than treating generated code as the end of the task.
 
 ## Product Tour
@@ -68,7 +68,7 @@ Review changes as a focused diff before deciding what belongs in the project.
 
 ![Crest built-in Browser](./docs/images/readme/embedded-browser.png)
 
-Open a local preview beside the workspace for fast visual checks and browser-assisted workflows.
+Browse the web and consult documentation without leaving the workspace. The Browser can also open a local app URL when you need to inspect a running project.
 
 ## What Works Today
 
