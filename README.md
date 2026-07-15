@@ -78,7 +78,7 @@ Available now:
 - Persisted, resumable Agent Sessions and timelines.
 - Terminal, File Tree, editor, Browser, Source Control, Preview, and Code Review surfaces.
 - Model selection and slash commands.
-- File, shell, workspace, web, browser, and MCP tool integration.
+- Registered Agent tools for reading, writing, and editing files, listing directories, running shell commands, finding files, searching text, and fetching web content (`read`, `write`, `edit`, `ls`, `bash`, `find`, `grep`, and `web_fetch`).
 - Diff viewing and command review surfaces.
 
 > [!WARNING]
@@ -106,7 +106,7 @@ task dev
 
 ## Configure an AI Provider
 
-Crest uses a bring-your-own-key model and reads provider credentials plus the default model selection from `~/.config/crest/ai.json`. A valid configuration is required before the Agent can send a message.
+Crest uses a bring-your-own-key model. When started with `task dev`, it reads provider credentials and the default model selection from `~/.config/crest-dev/ai.json`; a packaged release reads `~/.config/crest/ai.json`. Set `WAVETERM_CONFIG_HOME` to override the config home in either environment, in which case Crest reads `$WAVETERM_CONFIG_HOME/ai.json`. A valid configuration is required before the Agent can send a message.
 
 ```json
 {
@@ -174,6 +174,8 @@ Current directions, not release promises:
 - Complete command, diff, and Review workflows.
 - Richer project-context organization.
 - Remote development workflows.
+- Browser automation for Agent workflows.
+- MCP-based Agent tool execution.
 - Clearer boundaries between automation, approval, and review.
 
 ## Origin and Acknowledgements

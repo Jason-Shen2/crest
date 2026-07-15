@@ -78,7 +78,7 @@ Crest 探索的是中间路径：一个以 Agent 为先的开发 Workspace，同
 - 可持久化、可恢复的 Agent Session 与时间线。
 - Terminal、File Tree、Editor、Browser、Source Control、Preview 和 Code Review 界面。
 - 模型选择与斜杠命令。
-- 文件、shell、Workspace、网页、Browser 和 MCP 工具集成。
+- 已注册用于读取、写入和编辑文件、列出目录、运行 shell 命令、查找文件、搜索文本与抓取网页内容的 Agent 工具（`read`、`write`、`edit`、`ls`、`bash`、`find`、`grep` 和 `web_fetch`）。
 - diff 查看与命令审阅界面。
 
 > [!WARNING]
@@ -106,7 +106,7 @@ task dev
 
 ## 配置 AI Provider
 
-Crest 采用自带密钥模式，从 `~/.config/crest/ai.json` 读取 Provider 凭据与默认模型配置。Agent 必须获得有效配置后才能发送消息。
+Crest 采用自带密钥模式。通过 `task dev` 启动时，Crest 默认从 `~/.config/crest-dev/ai.json` 读取 Provider 凭据与默认模型配置；发行版默认读取 `~/.config/crest/ai.json`。两种环境均可通过 `WAVETERM_CONFIG_HOME` 覆盖 config home，此时 Crest 会读取 `$WAVETERM_CONFIG_HOME/ai.json`。Agent 必须获得有效配置后才能发送消息。
 
 ```json
 {
@@ -174,6 +174,8 @@ Crest 是尚未发布的 POC/MVP，并非稳定发行版。API 和产品行为�
 - 完善命令、diff 和 Review 工作流。
 - 提供更丰富的项目上下文组织能力。
 - 支持远程开发工作流。
+- 探索用于 Agent 工作流的 Browser automation。
+- 探索基于 MCP 的 Agent tool execution。
 - 更清晰地区分自动化、审批与审阅的边界。
 
 ## 起源与致谢
