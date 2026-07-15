@@ -129,15 +129,15 @@ Crest 采用自带密钥模式，从 `~/.config/crest/ai.json` 读取 Provider �
 Crest 是一款桌面应用，由 React 渲染进程、Electron 控制层和 Go 后端组成：
 
 ```text
-React 渲染进程
-  |-> Electron preload API（预加载接口）
-  |     -> Electron 主进程
-  |          -> Agent Runtime 与 AI Provider
-  |          -> 启动并连接 Go 后端
+React renderer
+  |-> Electron preload API
+  |     -> Electron main process
+  |          -> Agent runtime and AI providers
+  |          -> launches and connects to the Go backend
   |
-  |-> 基于 WebSocket 的 wshrpc -------\
-  `-> HTTP /wave/service -------------+-> Go 后端（wavesrv）
-                                           -> WPS / SQLite / 终端控制器
+  |-> wshrpc over WebSocket ---------\
+  `-> HTTP /wave/service -------------+-> Go backend (wavesrv)
+                                           -> WPS / SQLite / terminal controllers
 ```
 
 React 渲染进程负责 Workspace 界面。它通过 Electron preload API（预加载接口）调用桌面能力和 Agent Runtime，同时通过两条通道直连 Go 后端：基于 WebSocket 的 `wshrpc`，以及基于 HTTP 的 `/wave/service`。Electron 主进程负责桌面集成并启动 Go 后端；Go 进程负责终端控制、Workspace 数据持久化、RPC、事件和远程 Session 基础设施。深入了解请参阅[项目代码 Wiki](./docs/code-wiki/README.md)、[Agent 架构](./docs/agent-architecture.md)和 [Agent Runtime 架构](./docs/agent-runtime-architecture.md)。
