@@ -29,7 +29,7 @@ Crest explores the middle ground: an agent-first development workspace where exe
 1. **One Space = One Project.** Each Space is anchored to one working directory, keeping files, terminals, previews, Git state, and Agent Sessions scoped to the project that owns them.
 2. **Agent-first workflow.** The Agent can gather context, edit files, run commands, use tools, and report results without forcing the developer to assemble the workflow across separate applications.
 3. **Human-in-the-loop control.** Crest keeps tool activity, command output, and diffs visible so developers can redirect work, inspect risk, and decide what to accept.
-4. **Focused workspace.** File Tree and Session History provide navigation in the left panel, while Browser, Terminal, Code Review, Source Control, and Preview share the tabbed Right Panel. The full toolset stays available, but only one active tool surface competes for attention.
+4. **Focused workspace.** File Tree and Session History provide navigation in the left panel, while Editor, Browser, Terminal, Code Review, and Source Control share the tabbed Right Panel. The Browser keeps local previews beside the workspace, and the full toolset stays available while only one active tool surface competes for attention.
 5. **Review-centered development.** The core loop is discuss, execute, validate, and review, rather than treating generated code as the end of the task.
 
 ## Product Tour
@@ -68,7 +68,7 @@ Review changes as a focused diff before deciding what belongs in the project.
 
 ![Crest built-in Browser](./docs/images/readme/embedded-browser.png)
 
-Open the running product beside the workspace for fast visual checks and browser-assisted workflows.
+Open a local preview beside the workspace for fast visual checks and browser-assisted workflows.
 
 ## What Works Today
 
@@ -112,7 +112,6 @@ Crest uses a bring-your-own-key model and reads provider credentials plus the de
 {
     "providers": {
         "openai": {
-            "type": "openai",
             "token": "YOUR_API_KEY"
         }
     },
@@ -131,14 +130,17 @@ Crest is a desktop application with a React renderer, an Electron control plane,
 
 ```text
 React renderer
-  -> Electron preload API
-  -> Electron main process
-      -> Agent runtime and AI providers
-      -> Go backend process
-          -> wshrpc / WPS / SQLite / terminal controllers
+  |-> Electron preload API
+  |     -> Electron main process
+  |          -> Agent runtime and AI providers
+  |          -> launches and connects to the Go backend
+  |
+  |-> wshrpc over WebSocket ---------\
+  `-> HTTP /wave/service -------------+-> Go backend (wavesrv)
+                                           -> WPS / SQLite / terminal controllers
 ```
 
-The renderer owns the workspace UI. Electron provides desktop integration and hosts the Agent runtime, while the Go process owns terminal control, persisted workspace data, RPC, events, and remote-session infrastructure. For deeper reading, see the [project code wiki](./docs/code-wiki/README.md), [Agent architecture](./docs/agent-architecture.md), and [Agent runtime architecture](./docs/agent-runtime-architecture.md).
+The renderer owns the workspace UI. It uses the preload API for Electron capabilities and the Agent runtime, while connecting directly to the Go backend through `wshrpc` over WebSocket and `/wave/service` over HTTP. Electron provides desktop integration and launches the backend; the Go process owns terminal control, persisted workspace data, RPC, events, and remote-session infrastructure. For deeper reading, see the [project code wiki](./docs/code-wiki/README.md), [Agent architecture](./docs/agent-architecture.md), and [Agent runtime architecture](./docs/agent-runtime-architecture.md).
 
 | Path | Responsibility |
 | --- | --- |
