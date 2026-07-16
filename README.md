@@ -122,7 +122,7 @@ Browse the web and preview local dev servers without leaving the workspace.
 ### Run from Source
 
 ```bash
-git clone https://github.com/crynta/crest.git
+git clone https://github.com/Jason-Shen2/crest.git
 cd crest
 npm install
 task dev
