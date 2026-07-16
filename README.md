@@ -122,7 +122,7 @@ Crest uses a bring-your-own-key model. When started with `task dev`, it reads pr
 }
 ```
 
-The shipped provider catalog covers OpenAI, Anthropic, Google Gemini, and OpenRouter. The inline `token` form above is convenient for a first run but stores the key as plaintext; see the [Agent User Guide](./docs/agent-user-guide.md) for keychain-backed `tokensecretname` credentials, profiles, custom models, and custom endpoints.
+The shipped provider catalog covers OpenAI, Anthropic, Google Gemini, minimax, minimax-cn, and OpenRouter. The inline `token` form above is convenient for a first run but stores the key as plaintext; see the [Agent User Guide](./docs/agent-user-guide.md) for keychain-backed `tokensecretname` credentials, profiles, custom models, and custom endpoints.
 
 ## Agent Harness Architecture
 

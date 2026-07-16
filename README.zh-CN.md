@@ -122,7 +122,7 @@ Crest 采用自带密钥模式。通过 `task dev` 启动时，Crest 默认从 `
 }
 ```
 
-随应用发布的 Provider catalog 覆盖 OpenAI、Anthropic、Google Gemini 和 OpenRouter。上面的内联 `token` 形式便于首次运行，但会以明文存储密钥；如需了解基于系统钥匙串的 `tokensecretname` 凭据、Profile、自定义模型和自定义端点，请参阅 [Agent 用户指南](./docs/agent-user-guide.md)。
+随应用发布的 Provider catalog 覆盖 OpenAI、Anthropic、Google Gemini、minimax、minimax-cn 和 OpenRouter。上面的内联 `token` 形式便于首次运行，但会以明文存储密钥；如需了解基于系统钥匙串的 `tokensecretname` 凭据、Profile、自定义模型和自定义端点，请参阅 [Agent 用户指南](./docs/agent-user-guide.md)。
 
 ## Agent Harness 架构
 

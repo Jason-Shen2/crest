@@ -34,7 +34,7 @@ Two ways to provide an API key:
 
 ### Built-in providers
 
-The shipped catalog (`frontend/app/store/ai-catalog.ts`) covers OpenAI, Anthropic, Google Gemini, and OpenRouter. Each entry knows its endpoint, API protocol, default token secret name, and the popular models for that provider with their context window + capabilities. You don't write any of this in `ai.json` — only credentials and the default selection.
+The shipped catalog (`frontend/app/store/ai-catalog.ts`) covers OpenAI, Anthropic, Google Gemini, minimax, minimax-cn, and OpenRouter. Each entry knows its endpoint, API protocol, default token secret name, and the popular models for that provider with their context window + capabilities. You don't write any of this in `ai.json` — only credentials and the default selection.
 
 ### Profiles (optional)
 
@@ -118,6 +118,8 @@ Open the picker by clicking the model chip at the right end of the input bar. Se
 OpenAI                   (catalog models — dimmed when no key)
 Anthropic
 Google Gemini
+minimax
+minimax (China)
 OpenRouter
 Custom Endpoints         (your custom_endpoints entries)
 ```
@@ -159,18 +161,17 @@ The mode badge in the input area shows the current **effective** mode — the on
 
 ## Tools
 
-The agent's tool surface is grouped by approval policy. **Auto** tools run without prompting; **Approval** tools pause for confirmation in a card before each invocation.
+The current v1 tool surface is enabled by the Electron main process when it builds a pane's `AgentHarness`. There is no interactive approval card yet: unless a caller passes an explicit `allowedTools` list, the runtime defaults to `allowAll`. Treat tool execution as trusted local automation and review edits/commands carefully.
 
-| Category | Tools | Approval |
-|----------|-------|----------|
-| File reading | `read_text_file`, `read_dir` | Auto |
-| Shell | `shell_exec` | **Approval** + dangerous-command detection |
-| Shell history | `cmd_history`, `get_scrollback` | Auto |
-| File mutation | `write_text_file`, `edit_text_file` | **Approval** (with diff preview — see below) |
-| Workspace | `create_block`, `focus_block` | Approval (`focus_block` is Auto) |
-| Web | `web_fetch` | Auto |
-| Browser | `browser.navigate`, `browser.read_text`, `browser.click`, `browser.screenshot` | **Approval** |
-| MCP | any `mcp__<server>__<tool>` | **Always Approval** |
+| Category | Tools | Notes |
+|----------|-------|-------|
+| File reading | `read`, `ls`, `find`, `grep` | Bound to the pane's cwd; search tools avoid downloading runtime binaries. |
+| File mutation | `write`, `edit` | Changes are emitted as tool events; review diffs in the normal workspace surfaces. |
+| Shell | `bash` | Runs in the pane's cwd with optional timeout, process-tree kill on abort/timeout, and truncated output with a full-output temp file. |
+| Web | `web_fetch` | Fetches web content through Crest's built-in tool. |
+| Subagent | `spawn_cli_agent` | Main pane only; delegates long-running or interactive command work to an ephemeral CLI subagent session. |
+
+Browser automation and MCP-backed Agent tools are roadmap items, not currently enabled tools in the default Agent runtime.
 
 ---
 
@@ -203,41 +204,27 @@ Use the **model chip** at the right end of the input bar (see "AI Provider Confi
 
 ---
 
-## Diff Preview
+## Reviewing File Changes
 
-When the agent writes or edits a file, the approval card includes a diff preview:
-
-- Changed lines are shown with **3 lines of surrounding context** for orientation.
-- **New files** display a green "New file" indicator.
-- If a write produces no changes, a **"No changes"** label appears instead.
+When the agent writes or edits a file, review the resulting changes through the normal editor and source-control surfaces. Fine-grained interactive approval cards and dedicated per-tool diff approval are still being completed.
 
 ---
 
-## Background Shell Execution
+## Shell Execution
 
-Run long-lived processes without blocking the agent:
-
-```
-shell_exec with background: true
-```
-
-- Returns immediately with the block ID.
-- Useful for dev servers, file watchers, and long builds.
-- Monitor output with `get_scrollback` using the returned block ID.
+The `bash` tool runs commands in the pane's cwd and streams output back to the Agent. Provide a `timeout` when the command may hang or run for a long time. For long-running or interactive command work, the main pane Agent can use `spawn_cli_agent`, which runs an ephemeral CLI subagent and returns a summarized tool result.
 
 ---
 
-## Dangerous Command Detection
+## Permissions Status
 
-`shell_exec` is always an Approval tool (see the Tools table above), but the frontend also flags high-risk commands with a `destructive` risk level (`frontend/app/term/render/agent-progress.ts`) so the approval card can warn the user before the command runs. Patterns flagged as destructive include `rm -rf`, `git push --force`, `git reset --hard`, `curl | sh`, `wget | sh`, `dd`, `mkfs`, `chmod 777`, and similar disk/git/permission operations.
-
-The exact pattern list lives in the approval pipeline and may grow; this doc captures the intent rather than a frozen list.
+Current v1 behavior is intentionally simple: bench mode always allows tools, and normal panes default to `allowAll` when the renderer has not passed an `allowedTools` list. If an `allowedTools` list is provided, the permissions hook blocks tools outside that list. A richer approval UI, dangerous-command review, and per-tool confirmation flow are still being completed.
 
 ---
 
 ## MCP Server Integration
 
-Extend the agent with external tools via the Model Context Protocol.
+MCP-backed Agent tools are a planned extension point, not part of the default enabled tool surface yet.
 
 ### Configuration
 
@@ -263,7 +250,7 @@ Add MCP servers in your `settings.json` under the `ai:mcpservers` key:
 
 ### Using MCP Tools
 
-MCP tools appear with the naming convention `mcp__<server>__<tool>` and **always require approval**, regardless of mode.
+The intended naming convention is `mcp__<server>__<tool>`, with explicit approval before execution. That approval path is not enabled in the current Agent runtime.
 
 ---
 
