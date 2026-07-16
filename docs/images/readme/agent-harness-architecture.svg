@@ -1,6 +1,6 @@
 <svg xmlns="&#104;ttp://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
   <title id="title">Crest Pi Agent Harness architecture</title>
-  <desc id="desc">Editorial technical blueprint showing Crest-owned workspace and session layers around the in-tree Pi AgentHarness, alongside a five-stage agent turn with a tool-result return path.</desc>
+  <desc id="desc">Editorial technical blueprint showing Crest-owned workspace and SQLite session layers around the in-tree Pi AgentHarness, alongside a continuous turn event loop where model and tool messages append on message_end.</desc>
   <defs>
     <pattern id="minor-grid" width="20" height="20" patternUnits="userSpaceOnUse">
       <path d="M20 0H0V20" class="grid-minor" fill="none"/>
@@ -92,7 +92,7 @@
         letter-spacing: 0.12em;
         text-transform: uppercase;
       }
-      .eyebrow { font-size: 16px; font-weight: 700; fill: var(--indigo-ink); }
+      .eyebrow { font-size: 18px; font-weight: 700; fill: var(--indigo-ink); }
       .title {
         font-family: Georgia, "Times New Roman", serif;
         font-size: 54px;
@@ -101,57 +101,51 @@
       }
       .subtitle {
         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: 18px;
+        font-size: 20px;
         fill: var(--muted);
       }
-      .section-label { font-size: 15px; font-weight: 700; fill: var(--muted); }
+      .section-label { font-size: 17px; font-weight: 700; fill: var(--muted); }
       .card-title {
         font-family: Georgia, "Times New Roman", serif;
-        font-size: 27px;
+        font-size: 29px;
         font-weight: 600;
       }
       .card-body {
         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: 17px;
+        font-size: 20px;
         fill: var(--muted);
       }
-      .owner-label { font-size: 13px; font-weight: 700; fill: var(--indigo-ink); }
-      .focus-title { fill: #f7f4ea; font-size: 31px; }
-      .focus-body { fill: #c3cbd4; font-size: 17px; }
-      .focus-owner { fill: #c3cbd4; }
+      .owner-label { font-size: 20px; font-weight: 700; fill: var(--indigo-ink); }
+      .focus-title { fill: var(--focus-ink); font-size: 32px; }
+      .focus-body { fill: var(--focus-muted); font-size: 20px; }
+      .focus-owner { fill: var(--focus-muted); }
       .foundation-title {
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 17px;
+        font-size: 20px;
         font-weight: 700;
       }
       .foundation-body {
         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: 15px;
+        font-size: 19px;
         fill: var(--muted);
       }
-      .stage-number { font-size: 14px; font-weight: 700; fill: var(--indigo-ink); }
+      .stage-number { font-size: 19px; font-weight: 700; fill: var(--indigo-ink); }
       .stage-title {
         font-family: Georgia, "Times New Roman", serif;
-        font-size: 24px;
+        font-size: 28px;
         font-weight: 600;
       }
       .stage-body {
         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: 16px;
+        font-size: 20px;
         fill: var(--muted);
       }
-      .flow-label { font-size: 13px; font-weight: 700; fill: var(--indigo-ink); }
-      .legend-label { font-size: 14px; font-weight: 700; fill: var(--muted); }
+      .flow-label { font-size: 19px; font-weight: 700; fill: var(--indigo-ink); }
+      .legend-label { font-size: 19px; font-weight: 700; fill: var(--muted); }
       .legend-text {
         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        font-size: 16px;
+        font-size: 20px;
         fill: var(--ink);
-      }
-
-      @media (prefers-color-scheme: dark) {
-        .focus-title { fill: #17202a; }
-        .focus-body,
-        .focus-owner { fill: #4f5962; }
       }
     </style>
   </defs>
@@ -162,7 +156,7 @@
   <g aria-label="Diagram heading">
     <text x="80" y="67" class="eyebrow">Crest systems note / 01</text>
     <text x="80" y="128" class="title">Inside the Pi Agent Harness</text>
-    <text x="80" y="169" class="subtitle">Crest owns the workspace and durable session; Pi drives the stateful turn.</text>
+    <text x="80" y="169" class="subtitle">Crest owns the workspace and SQLite session; Pi drives the stateful event loop.</text>
     <path d="M80 194H1520" class="rule-strong"/>
   </g>
 
@@ -172,9 +166,9 @@
     <g aria-label="Agent Workspace UI">
       <rect x="80" y="252" width="650" height="112" rx="2" class="paper-card"/>
       <rect x="80" y="252" width="7" height="112" class="accent-rail"/>
-      <text x="108" y="281" class="owner-label">Crest / Renderer</text>
+      <text x="108" y="281" class="owner-label">Crest / UI</text>
       <text x="108" y="319" class="card-title">Agent Workspace UI</text>
-      <text x="108" y="346" class="card-body">assistant-ui · usePiChat · inspectable live tool state</text>
+      <text x="108" y="346" class="card-body">assistant-ui · usePiChat · live tool state</text>
     </g>
 
     <path d="M405 364V389" class="neutral-line" marker-end="url(#arrow-neutral)"/>
@@ -183,10 +177,9 @@
     <g aria-label="Crest Session Owner and IPC">
       <rect x="80" y="398" width="650" height="138" rx="2" class="paper-card"/>
       <rect x="80" y="398" width="7" height="138" class="accent-rail"/>
-      <text x="108" y="427" class="owner-label">Crest / Electron main</text>
+      <text x="108" y="427" class="owner-label">Crest / Main</text>
       <text x="108" y="465" class="card-title">Session Owner + IPC</text>
-      <text x="108" y="493" class="card-body">PaneAgentSession · structured preload API · agent:event</text>
-      <text x="108" y="518" class="card-body">Authoritative turns, queues, messages, and status</text>
+      <text x="108" y="499" class="card-body">PaneAgentSession · agent:event · authoritative state</text>
     </g>
 
     <path d="M405 536V561" class="event-line" marker-end="url(#arrow-indigo)"/>
@@ -194,10 +187,9 @@
 
     <g aria-label="Pi AgentHarness">
       <rect x="80" y="570" width="650" height="154" rx="2" class="focus-card"/>
-      <text x="108" y="600" class="owner-label focus-owner">Pi / adapted in-tree</text>
+      <text x="108" y="600" class="owner-label focus-owner">Pi / In-tree</text>
       <text x="108" y="644" class="card-title focus-title">Pi AgentHarness</text>
-      <text x="108" y="677" class="card-body focus-body">Stateful loop · hooks · steering and follow-up queues</text>
-      <text x="108" y="703" class="card-body focus-body">Typed events · compaction · branching primitives</text>
+      <text x="108" y="681" class="card-body focus-body">Stateful loop · typed events · queues · compaction</text>
       <path d="M690 595V699" stroke="var(--focus-rule)" stroke-width="1.5"/>
       <circle cx="690" cy="582" r="4" fill="var(--indigo)"/>
       <circle cx="690" cy="712" r="4" fill="var(--indigo)"/>
@@ -208,78 +200,78 @@
 
     <g aria-label="Runtime foundations">
       <rect x="80" y="758" width="198" height="96" rx="2" class="paper-card"/>
-      <text x="98" y="786" class="owner-label">Pi / Provider</text>
+      <text x="98" y="786" class="owner-label">Pi / AI</text>
       <text x="98" y="815" class="foundation-title">AI streaming</text>
-      <text x="98" y="838" class="foundation-body">Model abstractions</text>
+      <text x="98" y="841" class="foundation-body">Provider stream</text>
 
       <rect x="296" y="758" width="198" height="96" rx="2" class="paper-card"/>
       <rect x="296" y="758" width="5" height="96" class="accent-rail"/>
       <text x="314" y="786" class="owner-label">Crest / Tools</text>
       <text x="314" y="815" class="foundation-title">AI Tools</text>
-      <text x="314" y="838" class="foundation-body">Project actions</text>
+      <text x="314" y="841" class="foundation-body">Project actions</text>
 
       <rect x="512" y="758" width="218" height="96" rx="2" class="paper-card"/>
       <rect x="512" y="758" width="5" height="96" class="accent-rail"/>
-      <text x="530" y="786" class="owner-label">Crest / Durable state</text>
+      <text x="530" y="786" class="owner-label">Crest / SQLite</text>
       <text x="530" y="815" class="foundation-title">SQLite Sessions</text>
-      <text x="530" y="838" class="foundation-body">Append-only tree</text>
+      <text x="530" y="841" class="foundation-body">Append-only tree</text>
     </g>
   </g>
 
   <path d="M770 216V866" class="rule"/>
 
-  <g aria-label="One agent turn">
-    <text x="810" y="229" class="section-label">B / One agent turn</text>
+  <g aria-label="Continuous turn event loop">
+    <text x="810" y="229" class="section-label">B / Continuous turn event loop</text>
 
-    <text x="1164" y="244" class="flow-label">tool result → context</text>
-
-    <g aria-label="Stage 1 Assemble context">
-      <rect x="850" y="276" width="590" height="94" rx="2" class="paper-card"/>
-      <rect x="850" y="276" width="7" height="94" class="accent-rail"/>
-      <text x="879" y="305" class="stage-number">01</text>
-      <text x="930" y="309" class="stage-title">Assemble context</text>
-      <text x="930" y="340" class="stage-body">cwd · project instructions · skills · history · active tools</text>
+    <g aria-label="Context snapshot">
+      <rect x="850" y="262" width="590" height="96" rx="2" class="paper-card"/>
+      <rect x="850" y="262" width="7" height="96" class="accent-rail"/>
+      <text x="879" y="294" class="stage-number">CONTEXT</text>
+      <text x="1010" y="299" class="stage-title">Assemble a live snapshot</text>
+      <text x="879" y="334" class="stage-body">cwd · instructions · history · active tools</text>
     </g>
 
-    <path d="M1145 370V391" class="event-line" marker-end="url(#arrow-indigo)"/>
+    <path d="M1145 358V389" class="event-line" marker-end="url(#arrow-indigo)"/>
 
-    <g aria-label="Stage 2 Stream the model">
-      <rect x="850" y="400" width="590" height="94" rx="2" class="paper-card"/>
-      <rect x="850" y="400" width="7" height="94" class="accent-rail"/>
-      <text x="879" y="429" class="stage-number">02</text>
-      <text x="930" y="433" class="stage-title">Stream the model</text>
-      <text x="930" y="464" class="stage-body">Thinking · text · structured tool-call deltas</text>
+    <g aria-label="Model and tool cycle">
+      <rect x="820" y="400" width="660" height="238" rx="2" class="paper-card"/>
+      <text x="850" y="432" class="flow-label">repeat while the model requests tools</text>
+
+      <rect x="850" y="458" width="250" height="132" rx="2" class="paper-card"/>
+      <rect x="850" y="458" width="7" height="132" class="accent-rail"/>
+      <text x="879" y="492" class="stage-number">MODEL</text>
+      <text x="879" y="530" class="stage-title">Stream response</text>
+      <text x="879" y="562" class="stage-body">text · tool calls</text>
+
+      <rect x="1200" y="458" width="250" height="132" rx="2" class="paper-card"/>
+      <rect x="1200" y="458" width="7" height="132" class="accent-rail"/>
+      <text x="1229" y="492" class="stage-number">TOOLS</text>
+      <text x="1229" y="530" class="stage-title">Execute calls</text>
+      <text x="1229" y="562" class="stage-body">hooks · typed results</text>
+
+      <path d="M1100 500H1191" class="event-line" marker-end="url(#arrow-indigo)"/>
+      <text x="1145" y="486" class="flow-label" text-anchor="middle">call</text>
+      <path d="M1260 590V620H975V599" class="event-line" marker-end="url(#arrow-indigo)"/>
+      <rect x="990" y="592" width="260" height="25" fill="var(--paper-raised)"/>
+      <text x="1120" y="612" class="flow-label" text-anchor="middle">result → next model step</text>
     </g>
 
-    <path d="M1145 494V515" class="event-line" marker-end="url(#arrow-indigo)"/>
-
-    <g aria-label="Stage 3 Execute tools">
-      <rect x="850" y="524" width="590" height="94" rx="2" class="paper-card"/>
-      <rect x="850" y="524" width="7" height="94" class="accent-rail"/>
-      <text x="879" y="553" class="stage-number">03</text>
-      <text x="930" y="557" class="stage-title">Execute tools</text>
-      <text x="930" y="588" class="stage-body">Validate · apply hooks · run · return typed results</text>
-      <path d="M1440 571H1480V250H820V323H841" class="event-line" marker-end="url(#arrow-indigo)"/>
+    <g aria-label="Continuous message persistence">
+      <rect x="850" y="670" width="590" height="82" rx="2" class="paper-card"/>
+      <rect x="850" y="670" width="7" height="82" class="accent-rail"/>
+      <text x="879" y="702" class="stage-number">MESSAGE_END</text>
+      <text x="1055" y="706" class="stage-title">Append to SQLite</text>
+      <text x="879" y="735" class="stage-body">Each completed user, assistant, and tool-result message</text>
+      <path d="M900 590V661" class="event-line" marker-end="url(#arrow-indigo)"/>
+      <path d="M1375 590V661" class="event-line" marker-end="url(#arrow-indigo)"/>
     </g>
 
-    <path d="M1145 618V639" class="event-line" marker-end="url(#arrow-indigo)"/>
-
-    <g aria-label="Stage 4 Persist events">
-      <rect x="850" y="648" width="590" height="94" rx="2" class="paper-card"/>
-      <rect x="850" y="648" width="7" height="94" class="accent-rail"/>
-      <text x="879" y="677" class="stage-number">04</text>
-      <text x="930" y="681" class="stage-title">Persist events</text>
-      <text x="930" y="712" class="stage-body">Append messages to SQLite · user entry ID becomes turnId</text>
-    </g>
-
-    <path d="M1145 742V763" class="event-line" marker-end="url(#arrow-indigo)"/>
-
-    <g aria-label="Stage 5 Reflect and resume">
-      <rect x="850" y="772" width="590" height="94" rx="2" class="paper-card"/>
-      <rect x="850" y="772" width="7" height="94" class="accent-rail"/>
-      <text x="879" y="801" class="stage-number">05</text>
-      <text x="930" y="805" class="stage-title">Reflect and resume</text>
-      <text x="930" y="836" class="stage-body">Mirror live events now · rebuild the same timeline later</text>
+    <g aria-label="Live reflection and resume">
+      <rect x="850" y="784" width="590" height="82" rx="2" class="paper-card"/>
+      <text x="879" y="817" class="stage-number">EVENTS</text>
+      <text x="1000" y="821" class="stage-title">Mirror now · resume later</text>
+      <text x="879" y="850" class="stage-body">UI receives live events; SQLite rebuilds the timeline</text>
+      <path d="M1145 752V775" class="event-line" marker-end="url(#arrow-indigo)"/>
     </g>
   </g>
 
