@@ -122,7 +122,7 @@ Crest uses a bring-your-own-key model. When started with `task dev`, it reads pr
 }
 ```
 
-Built-in provider entries currently include OpenAI, Anthropic, Google Gemini, minimax, minimax-cn, and OpenRouter. The inline `token` form above is convenient for a first run but stores the key as plaintext; see the [Agent User Guide](./docs/agent-user-guide.md) for keychain-backed credentials, profiles, custom models, and custom endpoints.
+The shipped provider catalog covers OpenAI, Anthropic, Google Gemini, and OpenRouter. The inline `token` form above is convenient for a first run but stores the key as plaintext; see the [Agent User Guide](./docs/agent-user-guide.md) for keychain-backed `tokensecretname` credentials, profiles, custom models, and custom endpoints.
 
 ## Agent Harness Architecture
 
@@ -147,7 +147,7 @@ This design keeps Agent work inspectable, project-scoped, resumable after restar
 
 ## Architecture
 
-Crest is a desktop application split across the renderer, Electron main, and a local Go backend. The renderer owns the workspace UI, Electron main owns desktop integration and Agent Runtime orchestration, and the Go process owns terminal control, workspace persistence, RPC, events, and remote-session infrastructure. For deeper reading, see the [project code wiki](./docs/code-wiki/README.md), [Agent architecture](./docs/agent-architecture.md), and [Agent runtime architecture](./docs/agent-runtime-architecture.md).
+Crest is a desktop application split across the renderer, Electron main, and a local Go backend. The renderer owns the workspace UI, Electron main owns desktop integration and Agent Runtime orchestration, and the Go process owns terminal control, workspace persistence, RPC, events, and remote-session infrastructure. For deeper implementation details, see the [project code wiki](./docs/code-wiki/README.md), [Agent architecture](./docs/agent-architecture.md), and [Agent runtime architecture](./docs/agent-runtime-architecture.md).
 
 | Path | Direction | Purpose |
 | --- | --- | --- |
