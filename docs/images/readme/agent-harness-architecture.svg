@@ -1,0 +1,304 @@
+<svg xmlns="&#104;ttp://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Crest Pi Agent Harness architecture</title>
+  <desc id="desc">Editorial technical blueprint showing Crest-owned workspace and session layers around the in-tree Pi AgentHarness, alongside a five-stage agent turn with a tool-result return path.</desc>
+  <defs>
+    <pattern id="minor-grid" width="20" height="20" patternUnits="userSpaceOnUse">
+      <path d="M20 0H0V20" class="grid-minor" fill="none"/>
+    </pattern>
+    <pattern id="major-grid" width="100" height="100" patternUnits="userSpaceOnUse">
+      <rect width="100" height="100" fill="url(#minor-grid)"/>
+      <path d="M100 0H0V100" class="grid-major" fill="none"/>
+    </pattern>
+    <marker id="arrow-indigo" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1 1L9 5L1 9Z" class="arrow-indigo"/>
+    </marker>
+    <marker id="arrow-neutral" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1 1L9 5L1 9Z" class="arrow-neutral"/>
+    </marker>
+    <style>
+      :root {
+        --paper: #f4f1e9;
+        --paper-raised: #fbf9f3;
+        --ink: #17202a;
+        --muted: #66707a;
+        --rule: #aeb4b6;
+        --rule-strong: #737c82;
+        --grid-minor: #17202a0a;
+        --grid-major: #17202a12;
+        --indigo: #4658a8;
+        --indigo-soft: #e5e8f5;
+        --indigo-ink: #30418d;
+        --focus: #1d2631;
+        --focus-rule: #526071;
+        --focus-ink: #f7f4ea;
+        --focus-muted: #c3cbd4;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #12171d;
+          --paper-raised: #181e25;
+          --ink: #edf0eb;
+          --muted: #a3adb5;
+          --rule: #47515b;
+          --rule-strong: #73808a;
+          --grid-minor: #edf0eb08;
+          --grid-major: #edf0eb10;
+          --indigo: #94a4f0;
+          --indigo-soft: #242d4a;
+          --indigo-ink: #bdc7ff;
+          --focus: #e7e8e2;
+          --focus-rule: #b7bcc0;
+          --focus-ink: #17202a;
+          --focus-muted: #4f5962;
+        }
+      }
+
+      text {
+        fill: var(--ink);
+        text-rendering: geometricPrecision;
+      }
+
+      .canvas { fill: var(--paper); }
+      .grid-minor { fill: none; stroke: var(--grid-minor); stroke-width: 1; }
+      .grid-major { fill: none; stroke: var(--grid-major); stroke-width: 1; }
+      .paper-card { fill: var(--paper-raised); stroke: var(--rule); stroke-width: 1.5; }
+      .focus-card { fill: var(--focus); stroke: var(--focus-rule); stroke-width: 1.5; }
+      .accent-rail { fill: var(--indigo); }
+      .rule { stroke: var(--rule); stroke-width: 1.5; }
+      .rule-strong { stroke: var(--rule-strong); stroke-width: 1.5; }
+      .event-line {
+        fill: none;
+        stroke: var(--indigo);
+        stroke-width: 3;
+        stroke-linecap: square;
+        stroke-linejoin: miter;
+      }
+      .neutral-line {
+        fill: none;
+        stroke: var(--rule-strong);
+        stroke-width: 1.75;
+        stroke-linecap: square;
+      }
+      .arrow-indigo { fill: var(--indigo); }
+      .arrow-neutral { fill: var(--rule-strong); }
+      .eyebrow,
+      .section-label,
+      .stage-number,
+      .owner-label,
+      .flow-label,
+      .legend-label {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .eyebrow { font-size: 16px; font-weight: 700; fill: var(--indigo-ink); }
+      .title {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 54px;
+        font-weight: 600;
+        letter-spacing: -0.025em;
+      }
+      .subtitle {
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 18px;
+        fill: var(--muted);
+      }
+      .section-label { font-size: 15px; font-weight: 700; fill: var(--muted); }
+      .card-title {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 27px;
+        font-weight: 600;
+      }
+      .card-body {
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 17px;
+        fill: var(--muted);
+      }
+      .owner-label { font-size: 13px; font-weight: 700; fill: var(--indigo-ink); }
+      .focus-title { fill: #f7f4ea; font-size: 31px; }
+      .focus-body { fill: #c3cbd4; font-size: 17px; }
+      .focus-owner { fill: #c3cbd4; }
+      .foundation-title {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 17px;
+        font-weight: 700;
+      }
+      .foundation-body {
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 15px;
+        fill: var(--muted);
+      }
+      .stage-number { font-size: 14px; font-weight: 700; fill: var(--indigo-ink); }
+      .stage-title {
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 24px;
+        font-weight: 600;
+      }
+      .stage-body {
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 16px;
+        fill: var(--muted);
+      }
+      .flow-label { font-size: 13px; font-weight: 700; fill: var(--indigo-ink); }
+      .legend-label { font-size: 14px; font-weight: 700; fill: var(--muted); }
+      .legend-text {
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 16px;
+        fill: var(--ink);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .focus-title { fill: #17202a; }
+        .focus-body,
+        .focus-owner { fill: #4f5962; }
+      }
+    </style>
+  </defs>
+
+  <rect class="canvas" width="1600" height="1000"/>
+  <rect width="1600" height="1000" fill="url(#major-grid)"/>
+
+  <g aria-label="Diagram heading">
+    <text x="80" y="67" class="eyebrow">Crest systems note / 01</text>
+    <text x="80" y="128" class="title">Inside the Pi Agent Harness</text>
+    <text x="80" y="169" class="subtitle">Crest owns the workspace and durable session; Pi drives the stateful turn.</text>
+    <path d="M80 194H1520" class="rule-strong"/>
+  </g>
+
+  <g aria-label="System layers">
+    <text x="80" y="229" class="section-label">A / System layers &amp; ownership</text>
+
+    <g aria-label="Agent Workspace UI">
+      <rect x="80" y="252" width="650" height="112" rx="2" class="paper-card"/>
+      <rect x="80" y="252" width="7" height="112" class="accent-rail"/>
+      <text x="108" y="281" class="owner-label">Crest / Renderer</text>
+      <text x="108" y="319" class="card-title">Agent Workspace UI</text>
+      <text x="108" y="346" class="card-body">assistant-ui · usePiChat · inspectable live tool state</text>
+    </g>
+
+    <path d="M405 364V389" class="neutral-line" marker-end="url(#arrow-neutral)"/>
+    <text x="425" y="382" class="flow-label">preload / IPC</text>
+
+    <g aria-label="Crest Session Owner and IPC">
+      <rect x="80" y="398" width="650" height="138" rx="2" class="paper-card"/>
+      <rect x="80" y="398" width="7" height="138" class="accent-rail"/>
+      <text x="108" y="427" class="owner-label">Crest / Electron main</text>
+      <text x="108" y="465" class="card-title">Session Owner + IPC</text>
+      <text x="108" y="493" class="card-body">PaneAgentSession · structured preload API · agent:event</text>
+      <text x="108" y="518" class="card-body">Authoritative turns, queues, messages, and status</text>
+    </g>
+
+    <path d="M405 536V561" class="event-line" marker-end="url(#arrow-indigo)"/>
+    <text x="425" y="555" class="flow-label">typed events</text>
+
+    <g aria-label="Pi AgentHarness">
+      <rect x="80" y="570" width="650" height="154" rx="2" class="focus-card"/>
+      <text x="108" y="600" class="owner-label focus-owner">Pi / adapted in-tree</text>
+      <text x="108" y="644" class="card-title focus-title">Pi AgentHarness</text>
+      <text x="108" y="677" class="card-body focus-body">Stateful loop · hooks · steering and follow-up queues</text>
+      <text x="108" y="703" class="card-body focus-body">Typed events · compaction · branching primitives</text>
+      <path d="M690 595V699" stroke="var(--focus-rule)" stroke-width="1.5"/>
+      <circle cx="690" cy="582" r="4" fill="var(--indigo)"/>
+      <circle cx="690" cy="712" r="4" fill="var(--indigo)"/>
+    </g>
+
+    <path d="M405 724V749" class="neutral-line" marker-end="url(#arrow-neutral)"/>
+    <text x="425" y="743" class="flow-label">runtime calls</text>
+
+    <g aria-label="Runtime foundations">
+      <rect x="80" y="758" width="198" height="96" rx="2" class="paper-card"/>
+      <text x="98" y="786" class="owner-label">Pi / Provider</text>
+      <text x="98" y="815" class="foundation-title">AI streaming</text>
+      <text x="98" y="838" class="foundation-body">Model abstractions</text>
+
+      <rect x="296" y="758" width="198" height="96" rx="2" class="paper-card"/>
+      <rect x="296" y="758" width="5" height="96" class="accent-rail"/>
+      <text x="314" y="786" class="owner-label">Crest / Tools</text>
+      <text x="314" y="815" class="foundation-title">AI Tools</text>
+      <text x="314" y="838" class="foundation-body">Project actions</text>
+
+      <rect x="512" y="758" width="218" height="96" rx="2" class="paper-card"/>
+      <rect x="512" y="758" width="5" height="96" class="accent-rail"/>
+      <text x="530" y="786" class="owner-label">Crest / Durable state</text>
+      <text x="530" y="815" class="foundation-title">SQLite Sessions</text>
+      <text x="530" y="838" class="foundation-body">Append-only tree</text>
+    </g>
+  </g>
+
+  <path d="M770 216V866" class="rule"/>
+
+  <g aria-label="One agent turn">
+    <text x="810" y="229" class="section-label">B / One agent turn</text>
+
+    <path d="M1090 276H1480V250H850V269" class="event-line" marker-end="url(#arrow-indigo)"/>
+    <rect x="1150" y="235" width="212" height="25" fill="var(--paper)"/>
+    <text x="1164" y="253" class="flow-label">tool result → context</text>
+
+    <g aria-label="Stage 1 Assemble context">
+      <rect x="850" y="276" width="590" height="94" rx="2" class="paper-card"/>
+      <rect x="850" y="276" width="7" height="94" class="accent-rail"/>
+      <text x="879" y="305" class="stage-number">01</text>
+      <text x="930" y="309" class="stage-title">Assemble context</text>
+      <text x="930" y="340" class="stage-body">cwd · project instructions · skills · history · active tools</text>
+    </g>
+
+    <path d="M1145 370V391" class="event-line" marker-end="url(#arrow-indigo)"/>
+
+    <g aria-label="Stage 2 Stream the model">
+      <rect x="850" y="400" width="590" height="94" rx="2" class="paper-card"/>
+      <rect x="850" y="400" width="7" height="94" class="accent-rail"/>
+      <text x="879" y="429" class="stage-number">02</text>
+      <text x="930" y="433" class="stage-title">Stream the model</text>
+      <text x="930" y="464" class="stage-body">Thinking · text · structured tool-call deltas</text>
+    </g>
+
+    <path d="M1145 494V515" class="event-line" marker-end="url(#arrow-indigo)"/>
+
+    <g aria-label="Stage 3 Execute tools">
+      <rect x="850" y="524" width="590" height="94" rx="2" class="paper-card"/>
+      <rect x="850" y="524" width="7" height="94" class="accent-rail"/>
+      <text x="879" y="553" class="stage-number">03</text>
+      <text x="930" y="557" class="stage-title">Execute tools</text>
+      <text x="930" y="588" class="stage-body">Validate · apply hooks · run · return typed results</text>
+      <path d="M1440 571H1480V276" class="event-line" marker-end="url(#arrow-indigo)"/>
+    </g>
+
+    <path d="M1145 618V639" class="event-line" marker-end="url(#arrow-indigo)"/>
+
+    <g aria-label="Stage 4 Persist events">
+      <rect x="850" y="648" width="590" height="94" rx="2" class="paper-card"/>
+      <rect x="850" y="648" width="7" height="94" class="accent-rail"/>
+      <text x="879" y="677" class="stage-number">04</text>
+      <text x="930" y="681" class="stage-title">Persist events</text>
+      <text x="930" y="712" class="stage-body">Append messages to SQLite · user entry ID becomes turnId</text>
+    </g>
+
+    <path d="M1145 742V763" class="event-line" marker-end="url(#arrow-indigo)"/>
+
+    <g aria-label="Stage 5 Reflect and resume">
+      <rect x="850" y="772" width="590" height="94" rx="2" class="paper-card"/>
+      <rect x="850" y="772" width="7" height="94" class="accent-rail"/>
+      <text x="879" y="801" class="stage-number">05</text>
+      <text x="930" y="805" class="stage-title">Reflect and resume</text>
+      <text x="930" y="836" class="stage-body">Mirror live events now · rebuild the same timeline later</text>
+    </g>
+  </g>
+
+  <g aria-label="Legend">
+    <path d="M80 894H1520" class="rule-strong"/>
+    <text x="80" y="930" class="legend-label">Legend</text>
+
+    <rect x="198" y="909" width="42" height="28" rx="1" class="paper-card"/>
+    <rect x="198" y="909" width="5" height="28" class="accent-rail"/>
+    <text x="254" y="930" class="legend-text">Crest-owned integration</text>
+
+    <rect x="548" y="909" width="42" height="28" rx="1" class="focus-card"/>
+    <text x="604" y="930" class="legend-text">Pi adapted in-tree</text>
+
+    <path d="M843 923H897" class="event-line" marker-end="url(#arrow-indigo)"/>
+    <text x="917" y="930" class="legend-text">Stateful event path</text>
+
+    <text x="1520" y="930" class="legend-label" text-anchor="end">1600 × 1000 / Theme aware</text>
+  </g>
+</svg>
