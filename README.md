@@ -124,23 +124,39 @@ Crest uses a bring-your-own-key model. When started with `task dev`, it reads pr
 
 Built-in provider entries currently include OpenAI, Anthropic, Google Gemini, minimax, minimax-cn, and OpenRouter. The inline `token` form above is convenient for a first run but stores the key as plaintext; see the [Agent User Guide](./docs/agent-user-guide.md) for keychain-backed credentials, profiles, custom models, and custom endpoints.
 
+## Agent Harness Architecture
+
+Crest moved the Agent loop into Electron main so local provider credentials, tool execution, session ownership, and desktop integration stay outside the renderer while the UI remains a live, inspectable mirror. The runtime is built on Pi adapted in-tree from `earendil-works/pi v0.75.5`; Crest does not consume Pi as published npm packages or reuse the Pi CLI/TUI wholesale.
+
+![Crest Agent Harness architecture](./docs/images/readme/agent-harness-architecture.svg)
+
+Pi supplies the stateful `AgentHarness`, AI provider abstractions, typed event stream, steering and follow-up queues, hooks, tool-loop mechanics, compaction, and session primitives. Crest supplies the desktop integration around it: the assistant-ui bridge, `usePiChat`, structured preload/IPC APIs, `PaneAgentSession`, project-context assembly, Crest-specific tools, and SQLite-backed session persistence.
+
+The boundary is intentional:
+
+| Layer | Owned by | Responsibility |
+| --- | --- | --- |
+| Agent Workspace UI | Crest | Renders the thread, composer, tool state, diffs, and project surfaces without becoming the source of truth. |
+| Session owner + IPC | Crest | Routes one `agent:event` stream per session path and owns authoritative messages, turns, queues, and status through `PaneAgentSession`. |
+| Agent Harness | Pi adapted in-tree | Runs the stateful turn loop, streams typed events, gates hooks, manages queues, invokes tools, and compacts context. |
+| Runtime foundations | Crest + Pi | Pi streams through provider abstractions; Crest binds project tools and persists sessions as SQLite-backed `.db` files. |
+
+One Agent Turn follows five stages: Crest assembles cwd, project instructions, skills, history, and active tools into context; Pi streams model thinking, text, and structured Tool Calls; Crest validates and executes the requested tools through the permission boundary; the session appends durable events to the SQLite `.db` carrier; then the UI reflects the live event stream and can later rebuild the same timeline from persistence. Tool results re-enter context until the Harness settles the turn. JSONL remains available for session import/export, but it is an interchange format rather than the on-disk carrier.
+
+This design keeps Agent work inspectable, project-scoped, resumable after restart, and compatible with Human-in-the-loop control: the renderer shows what happened, Electron main owns what is happening, and persisted session state carries what can be resumed.
+
 ## Architecture
 
-Crest is a desktop application with a React renderer, an Electron control plane, and a Go backend:
+Crest is a desktop application split across the renderer, Electron main, and a local Go backend. The renderer owns the workspace UI, Electron main owns desktop integration and Agent Runtime orchestration, and the Go process owns terminal control, workspace persistence, RPC, events, and remote-session infrastructure. For deeper reading, see the [project code wiki](./docs/code-wiki/README.md), [Agent architecture](./docs/agent-architecture.md), and [Agent runtime architecture](./docs/agent-runtime-architecture.md).
 
-```text
-React renderer
-  |-> Electron preload API
-  |     -> Electron main process
-  |          -> Agent runtime and AI providers
-  |          -> launches and connects to the Go backend
-  |
-  |-> wshrpc over WebSocket ---------\
-  `-> HTTP /wave/service -------------+-> Go backend (wavesrv)
-                                           -> WPS / SQLite / terminal controllers
-```
-
-The renderer owns the workspace UI. It uses the preload API for Electron capabilities and the Agent runtime, while connecting directly to the Go backend through `wshrpc` over WebSocket and `/wave/service` over HTTP. Electron provides desktop integration and launches the backend; the Go process owns terminal control, persisted workspace data, RPC, events, and remote-session infrastructure. For deeper reading, see the [project code wiki](./docs/code-wiki/README.md), [Agent architecture](./docs/agent-architecture.md), and [Agent runtime architecture](./docs/agent-runtime-architecture.md).
+| Path | Direction | Purpose |
+| --- | --- | --- |
+| React renderer | UI surface | File Tree, Editor, Browser, Terminal, Source Control, Code Review, Agent thread, and review surfaces. |
+| Electron preload/IPC | Renderer to Electron main | Desktop APIs, Agent Session operations, live `agent:event` streaming, model/provider access, and tool orchestration. |
+| Electron main | Control plane | Runs the Agent Runtime, protects provider credentials from the renderer, launches the Go backend, and coordinates desktop capabilities. |
+| `wshrpc` WebSocket | Renderer to Go backend | Structured RPC for workspace, block, terminal, connection, and service operations. |
+| `/wave/service` HTTP | Renderer to Go backend | HTTP service path for legacy Wave/WaveTerm backend operations. |
+| Go backend (`wavesrv`) | Local backend | Terminal controllers, WPS events, SQLite-backed workspace data, remote sessions, config, and services. |
 
 | Path | Responsibility |
 | --- | --- |
@@ -185,7 +201,7 @@ Crest began as a fork of [Wave Terminal](https://github.com/wavetermdev/waveterm
 - **TRAE** for product exploration and an AI-assisted engineering workflow.
 - **Warp** for AI-native terminal interaction, blocks, and inspectable tool execution.
 - **Terax** for Agent-first interface patterns and Source Control and review workflows.
-- **Pi** for coding-agent and Agent runtime foundations.
+- **Pi** for the in-tree adapted Agent runtime, AI provider abstractions, and selected coding-agent behavior.
 
 See [NOTICES.md](./NOTICES.md) for third-party attributions and license notices.
 
