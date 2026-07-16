@@ -6,7 +6,7 @@ Crest includes a built-in coding agent that runs directly in your terminal. The 
 
 ## AI Provider Configuration
 
-Crest is BYO-API-key. You configure providers + credentials in **`~/.config/crest/ai.json`**. The file is required — the agent refuses to send a message until at least one provider with credentials and a `default` selection are set.
+Crest is BYO-API-key. In a packaged release, configure providers + credentials in **`~/.config/crest/ai.json`**; when running the development app via `task dev`, use **`~/.config/crest-dev/ai.json`**. Set `WAVETERM_CONFIG_HOME` to override the config home in either environment. The file is required — the agent refuses to send a message until at least one provider with credentials and a `default` selection are set.
 
 ### Minimal example
 
@@ -34,7 +34,7 @@ Two ways to provide an API key:
 
 ### Built-in providers
 
-The shipped catalog (`frontend/app/store/ai-catalog.ts`) covers OpenAI, Anthropic, Google Gemini, minimax, minimax-cn, and OpenRouter. Each entry knows its endpoint, API protocol, default token secret name, and the popular models for that provider with their context window + capabilities. You don't write any of this in `ai.json` — only credentials and the default selection.
+The shipped catalog (`frontend/app/store/ai-catalog.ts`) covers OpenAI, Anthropic, Google Gemini, minimax, minimax-cn, and OpenRouter. Each entry knows its endpoint, API protocol, and default token secret name. Most providers also ship curated popular models with context window + capabilities; OpenRouter is an aggregator and loads its model list from the live `/models` endpoint. You don't write any of this in `ai.json` — only credentials and the default selection.
 
 ### Profiles (optional)
 
