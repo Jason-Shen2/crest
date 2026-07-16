@@ -36,21 +36,21 @@
 
       @media (prefers-color-scheme: dark) {
         :root {
-          --paper: #12171d;
-          --paper-raised: #181e25;
+          --paper: #0f1419;
+          --paper-raised: #181f27;
           --ink: #edf0eb;
           --muted: #a3adb5;
-          --rule: #47515b;
-          --rule-strong: #73808a;
+          --rule: #39434d;
+          --rule-strong: #6b7680;
           --grid-minor: #edf0eb08;
           --grid-major: #edf0eb10;
-          --indigo: #94a4f0;
+          --indigo: #8b9cf7;
           --indigo-soft: #242d4a;
-          --indigo-ink: #bdc7ff;
-          --focus: #e7e8e2;
-          --focus-rule: #b7bcc0;
-          --focus-ink: #17202a;
-          --focus-muted: #4f5962;
+          --indigo-ink: #b8c5ff;
+          --focus: #242d4a;
+          --focus-rule: #5a6aa8;
+          --focus-ink: #eef1ff;
+          --focus-muted: #a9b4e0;
         }
       }
 
@@ -96,7 +96,7 @@
       .title {
         font-family: Georgia, "Times New Roman", serif;
         font-size: 54px;
-        font-weight: 600;
+        font-weight: 700;
         letter-spacing: -0.025em;
       }
       .subtitle {
@@ -234,26 +234,25 @@
     <path d="M1145 358V389" class="event-line" marker-end="url(#arrow-indigo)"/>
 
     <g aria-label="Model and tool cycle">
-      <rect x="820" y="400" width="660" height="238" rx="2" class="paper-card"/>
+      <rect x="820" y="400" width="660" height="260" rx="2" class="paper-card"/>
       <text x="850" y="432" class="flow-label">repeat while tools are requested</text>
 
-      <rect x="850" y="458" width="250" height="132" rx="2" class="paper-card"/>
-      <rect x="850" y="458" width="7" height="132" class="accent-rail"/>
-      <text x="879" y="492" class="stage-number">MODEL</text>
-      <text x="879" y="530" class="stage-title">Stream response</text>
-      <text x="879" y="562" class="stage-body">text · tool calls</text>
+      <rect x="850" y="468" width="250" height="132" rx="2" class="paper-card"/>
+      <rect x="850" y="468" width="7" height="132" class="accent-rail"/>
+      <text x="879" y="502" class="stage-number">MODEL</text>
+      <text x="879" y="540" class="stage-title">Stream response</text>
+      <text x="879" y="572" class="stage-body">text · tool calls</text>
 
-      <rect x="1200" y="458" width="250" height="132" rx="2" class="paper-card"/>
-      <rect x="1200" y="458" width="7" height="132" class="accent-rail"/>
-      <text x="1229" y="492" class="stage-number">TOOLS</text>
-      <text x="1229" y="530" class="stage-title">Execute calls</text>
-      <text x="1229" y="562" class="stage-body">hooks · typed results</text>
+      <rect x="1200" y="468" width="250" height="132" rx="2" class="paper-card"/>
+      <rect x="1200" y="468" width="7" height="132" class="accent-rail"/>
+      <text x="1229" y="502" class="stage-number">TOOLS</text>
+      <text x="1229" y="540" class="stage-title">Execute calls</text>
+      <text x="1229" y="572" class="stage-body">hooks · typed results</text>
 
-      <path d="M1100 500H1191" class="event-line" marker-end="url(#arrow-indigo)"/>
-      <text x="1145" y="486" class="flow-label" text-anchor="middle">call</text>
-      <path d="M1260 590V620H975V599" class="event-line" marker-end="url(#arrow-indigo)"/>
-      <rect x="990" y="591" width="288" height="30" fill="var(--paper-raised)"/>
-      <text x="1120" y="612" class="flow-label" text-anchor="middle">result → next model step</text>
+      <path d="M1100 510H1191" class="event-line" marker-end="url(#arrow-indigo)"/>
+      <text x="1145" y="496" class="flow-label" text-anchor="middle">call</text>
+      <path d="M1325 600V645H975V600" class="event-line" marker-end="url(#arrow-indigo)"/>
+      <text x="1150" y="637" class="flow-label" text-anchor="middle">result → next model step</text>
     </g>
 
     <g aria-label="Continuous message persistence">
@@ -262,8 +261,8 @@
       <text x="879" y="702" class="stage-number">MESSAGE_END</text>
       <text x="1090" y="706" class="stage-title">Append session entry</text>
       <text x="879" y="735" class="stage-body">Completed message and tool-result entries</text>
-      <path d="M900 590V661" class="event-line" marker-end="url(#arrow-indigo)"/>
-      <path d="M1375 590V661" class="event-line" marker-end="url(#arrow-indigo)"/>
+      <path d="M900 600V661" class="event-line" marker-end="url(#arrow-indigo)"/>
+      <path d="M1375 600V661" class="event-line" marker-end="url(#arrow-indigo)"/>
     </g>
 
     <g aria-label="Live reflection and resume">
