@@ -124,23 +124,39 @@ Crest 采用自带密钥模式。通过 `task dev` 启动时，Crest 默认从 `
 
 目前内置的 Provider 包括 OpenAI、Anthropic、Google Gemini、minimax、minimax-cn 和 OpenRouter。上面的内联 `token` 形式便于首次运行，但会以明文存储密钥；如需了解基于钥匙串的凭据、Profile、自定义模型和自定义端点，请参阅 [Agent 用户指南](./docs/agent-user-guide.md)。
 
+## Agent Harness 架构
+
+Crest 将 Agent loop 移入 Electron main，是为了让本地 Provider 凭据、Tool 执行、Session 所有权和桌面集成留在渲染进程之外，同时让 UI 只作为实时、可检查的镜像。Runtime 基于 `earendil-works/pi v0.75.5` 改造并内置于仓库中；Crest 不是通过已发布的 Pi npm package 使用它，也不是完整复用 Pi CLI/TUI。
+
+![Crest Agent Harness architecture](./docs/images/readme/agent-harness-architecture.svg)
+
+Pi 提供有状态的 `AgentHarness`、AI Provider 抽象、类型化事件流、steering 与 follow-up 队列、hooks、Tool loop 机制、compaction 和 Session primitives。Crest 则提供外围桌面集成：assistant-ui bridge、`usePiChat`、结构化 preload/IPC API、`PaneAgentSession`、项目 Context 组装、Crest 专属 tools，以及基于 SQLite 的 Session 持久化。
+
+职责边界如下：
+
+| 层级 | 归属 | 职责 |
+| --- | --- | --- |
+| Agent Workspace UI | Crest | 渲染 thread、composer、tool 状态、diff 和项目界面，但不作为状态真相源。 |
+| Session owner + IPC | Crest | 按 session path 路由一条 `agent:event` stream，并通过 `PaneAgentSession` 持有 authoritative messages、turns、queues 和 status。 |
+| Agent Harness | Pi adapted in-tree | 运行有状态 turn loop、流式输出 typed events、执行 hooks、管理队列、调用 tools 并压缩 Context。 |
+| Runtime foundations | Crest + Pi | Pi 通过 Provider 抽象进行 streaming；Crest 绑定项目 tools，并把 Session 持久化为 SQLite-backed `.db` 文件。 |
+
+一次 Agent Turn 包含五个阶段：Crest 将当前 cwd、项目指令、skills、history 和 active tools 组装为 Context；Pi 流式输出 thinking、文本和结构化 Tool Call；Crest 在权限边界内校验并执行所需 tools；Session 将持久事件追加到 SQLite `.db` carrier；随后 UI 反映实时事件流，并能在之后从持久化状态重建同一条 timeline。Tool results 会重新进入 Context，直到 Harness 完成该 turn。JSONL 仍可用于 Session import/export，但它是交换格式，不是磁盘上的 Session carrier。
+
+这个设计让 Agent 工作保持可检查、项目级隔离、重启后可恢复，并适配 Human-in-the-loop 控制：渲染进程展示已经发生的事，Electron main 持有正在发生的事，持久化 Session 状态承载可以恢复的事。
+
 ## 架构
 
-Crest 是一款桌面应用，由 React 渲染进程、Electron 控制层和 Go 后端组成：
+Crest 是一款桌面应用，分为渲染进程、Electron main 和本地 Go 后端。渲染进程负责 Workspace UI，Electron main 负责桌面集成与 Agent Runtime 编排，Go 进程负责终端控制、Workspace 持久化、RPC、事件和远程 Session 基础设施。深入了解请参阅[项目代码 Wiki](./docs/code-wiki/README.md)、[Agent 架构](./docs/agent-architecture.md)和 [Agent Runtime 架构](./docs/agent-runtime-architecture.md)。
 
-```text
-React renderer
-  |-> Electron preload API
-  |     -> Electron main process
-  |          -> Agent runtime and AI providers
-  |          -> launches and connects to the Go backend
-  |
-  |-> wshrpc over WebSocket ---------\
-  `-> HTTP /wave/service -------------+-> Go backend (wavesrv)
-                                           -> WPS / SQLite / terminal controllers
-```
-
-React 渲染进程负责 Workspace 界面。它通过 Electron preload API（预加载接口）调用桌面能力和 Agent Runtime，同时通过两条通道直连 Go 后端：基于 WebSocket 的 `wshrpc`，以及基于 HTTP 的 `/wave/service`。Electron 主进程负责桌面集成并启动 Go 后端；Go 进程负责终端控制、Workspace 数据持久化、RPC、事件和远程 Session 基础设施。深入了解请参阅[项目代码 Wiki](./docs/code-wiki/README.md)、[Agent 架构](./docs/agent-architecture.md)和 [Agent Runtime 架构](./docs/agent-runtime-architecture.md)。
+| 路径 | 方向 | 用途 |
+| --- | --- | --- |
+| React renderer | UI surface | File Tree、Editor、Browser、Terminal、Source Control、Code Review、Agent thread 和审阅界面。 |
+| Electron preload/IPC | Renderer to Electron main | 桌面 API、Agent Session 操作、实时 `agent:event` streaming、模型/Provider 访问和 Tool 编排。 |
+| Electron main | Control plane | 运行 Agent Runtime，避免 Provider 凭据进入渲染进程，启动 Go 后端，并协调桌面能力。 |
+| `wshrpc` WebSocket | Renderer to Go backend | Workspace、block、terminal、connection 和 service 操作的结构化 RPC。 |
+| `/wave/service` HTTP | Renderer to Go backend | 面向历史 Wave/WaveTerm 后端能力的 HTTP service path。 |
+| Go backend (`wavesrv`) | Local backend | Terminal controllers、WPS events、SQLite-backed Workspace 数据、remote sessions、config 和 services。 |
 
 | 路径 | 职责 |
 | --- | --- |
@@ -185,7 +201,7 @@ Crest 最初基于 [Wave Terminal](https://github.com/wavetermdev/waveterm) 分�
 - **TRAE**：产品探索与 AI 辅助工程工作流。
 - **Warp**：AI 原生终端交互、block 与可检查的工具执行。
 - **Terax**：Agent-first 界面模式，以及 Source Control 和审阅工作流。
-- **Pi**：Coding Agent 与 Agent Runtime 基础。
+- **Pi**：仓库内改造的 Agent runtime、AI Provider 抽象和部分 Coding Agent 行为。
 
 第三方归属与许可证声明请参阅 [NOTICES.md](./NOTICES.md)。
 
