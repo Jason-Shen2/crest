@@ -17,8 +17,6 @@
   <img alt="平台：macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg">
 </p>
 
-![Crest Workspace 概览](./docs/images/readme/hero-overview.png)
-
 Crest 是一个 Agent 原生的开发 Workspace，将代码编辑器、终端、浏览器、Source Control 和 AI Agent 整合到同一个桌面应用中。Agent 可以在你的项目中读取、编辑和运行代码，而你对所有变更保持完全的可见性和控制权。
 
 - **本地优先 & 隐私保护** — 自带 API Key，无需账号，无云端同步，无遥测。会话和凭据全部保存在本地。
@@ -28,6 +26,47 @@ Crest 是一个 Agent 原生的开发 Workspace，将代码编辑器、终端、
 
 > [!IMPORTANT]
 > Crest 是尚未发布的 POC/MVP，API 和产品行为仍在演进中。
+
+## 截图展示
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="./docs/images/readme/code-editor-file-tree.png" alt="代码编辑器和文件树" />
+      <br />
+      <sub>代码编辑器和文件树</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/images/readme/code-review-diff.png" alt="AI Code Review 与 diff" />
+      <br />
+      <sub>AI Code Review 与 diff</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="./docs/images/readme/embedded-browser.png" alt="内置浏览器预览" />
+      <br />
+      <sub>内置浏览器预览</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/images/readme/source-control-graph.png" alt="Git 图谱与 Source Control" />
+      <br />
+      <sub>Git 图谱与 Source Control</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="./docs/images/readme/agent-session-panel.png" alt="Agent Session 与 AI 对话" />
+      <br />
+      <sub>Agent Session 与 AI 对话</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/images/readme/resume-session-picker.png" alt="恢复此前的 Agent Session" />
+      <br />
+      <sub>恢复此前的 Agent Session</sub>
+    </td>
+  </tr>
+</table>
 
 ## 功能特性
 
@@ -71,44 +110,6 @@ Crest 是一个 Agent 原生的开发 Workspace，将代码编辑器、终端、
 - 用于网页搜索和查阅文档的内置浏览器
 - 无需离开 Workspace 即可预览本地开发服务器
 - 多标签页浏览，支持标准导航操作
-
-## 截图展示
-
-### Agent Session & AI 对话
-
-![Agent Session 面板](./docs/images/readme/agent-session-panel.png)
-
-在持久化 Session 中集中保留 Agent 工作、工具调用、进度和项目上下文。
-
-### 代码编辑器 & 文件树
-
-![代码编辑器和文件树](./docs/images/readme/code-editor-file-tree.png)
-
-无需离开当前 Workspace，即可浏览仓库并编辑代码。
-
-### 恢复 Session
-
-![恢复 Session 选择器](./docs/images/readme/resume-session-picker.png)
-
-恢复此前的 Agent Session，保留完整对话历史继续工作。
-
-### Code Review
-
-![Code Review diff](./docs/images/readme/code-review-diff.png)
-
-通过聚焦的 diff 审阅变更，再决定哪些内容应进入项目。
-
-### Source Control
-
-![Source Control 图谱](./docs/images/readme/source-control-graph.png)
-
-在 Workspace 中检查分支、提交和仓库状态。
-
-### 内置浏览器
-
-![内置浏览器](./docs/images/readme/embedded-browser.png)
-
-无需离开 Workspace 即可浏览网页和预览本地开发服务器。
 
 ## 快速开始
 

@@ -17,8 +17,6 @@
   <img alt="Platform: Desktop" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg">
 </p>
 
-![Crest workspace overview](./docs/images/readme/hero-overview.png)
-
 Crest is an agent-native development workspace that combines a code editor, terminal, browser, source control, and AI agent into a single desktop application. The agent can read, edit, and run code across your project while you maintain full visibility and control over what changes.
 
 - **Local-first & private** — Bring your own API key. No accounts, no cloud sync, no telemetry. Sessions and credentials stay on your machine.
@@ -28,6 +26,47 @@ Crest is an agent-native development workspace that combines a code editor, term
 
 > [!IMPORTANT]
 > Crest is an unreleased POC/MVP. APIs and product behavior are still evolving.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="./docs/images/readme/code-editor-file-tree.png" alt="File explorer and code editor" />
+      <br />
+      <sub>File explorer and code editor</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/images/readme/code-review-diff.png" alt="AI code review and diffs" />
+      <br />
+      <sub>AI code review and diffs</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="./docs/images/readme/embedded-browser.png" alt="Embedded browser preview" />
+      <br />
+      <sub>Embedded browser preview</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/images/readme/source-control-graph.png" alt="Git graph and source control" />
+      <br />
+      <sub>Git graph and source control</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="./docs/images/readme/agent-session-panel.png" alt="Agent sessions and AI chat" />
+      <br />
+      <sub>Agent sessions and AI chat</sub>
+    </td>
+    <td align="center">
+      <img src="./docs/images/readme/resume-session-picker.png" alt="Resume previous agent sessions" />
+      <br />
+      <sub>Resume previous agent sessions</sub>
+    </td>
+  </tr>
+</table>
 
 ## Features
 
@@ -71,44 +110,6 @@ Crest is an agent-native development workspace that combines a code editor, term
 - Built-in browser for web research and documentation
 - Preview local dev servers without leaving the workspace
 - Multi-tab browsing with standard navigation controls
-
-## Screenshots
-
-### Agent Sessions & AI Chat
-
-![Agent sessions panel](./docs/images/readme/agent-session-panel.png)
-
-Keep agent work, tool calls, progress, and project context together in a persistent session.
-
-### Code Editor & File Explorer
-
-![Code editor and file tree](./docs/images/readme/code-editor-file-tree.png)
-
-Navigate the repository and inspect or edit code without leaving the active workspace.
-
-### Resume Sessions
-
-![Resume session picker](./docs/images/readme/resume-session-picker.png)
-
-Return to earlier agent sessions and continue with their conversation history intact.
-
-### Code Review
-
-![Code review diff](./docs/images/readme/code-review-diff.png)
-
-Review changes as a focused diff before deciding what belongs in the project.
-
-### Source Control
-
-![Source control graph](./docs/images/readme/source-control-graph.png)
-
-Inspect branches, commits, and repository state from the workspace.
-
-### Embedded Browser
-
-![Embedded browser](./docs/images/readme/embedded-browser.png)
-
-Browse the web and preview local dev servers without leaving the workspace.
 
 ## Quick Start
 
