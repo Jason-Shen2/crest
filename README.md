@@ -4,7 +4,7 @@
 
 <h1 align="center">Crest</h1>
 
-<p align="center"><strong>Agent-native development, without losing control.</strong></p>
+<p align="center"><strong>Agent-native development workspace, without losing control.</strong></p>
 
 <p align="center">
   <a href="./README.md">English</a> ·
@@ -14,79 +14,101 @@
 <p align="center">
   <a href="./LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Status: POC / MVP" src="https://img.shields.io/badge/status-POC%20%2F%20MVP-orange.svg">
-  <img alt="Platform: Desktop" src="https://img.shields.io/badge/platform-desktop-6e7681.svg">
+  <img alt="Platform: Desktop" src="https://img.shields.io/badge/platform-macOS-lightgrey.svg">
 </p>
 
 ![Crest workspace overview](./docs/images/readme/hero-overview.png)
 
+Crest is an agent-native development workspace that combines a code editor, terminal, browser, source control, and AI agent into a single desktop application. The agent can read, edit, and run code across your project while you maintain full visibility and control over what changes.
+
+- **Local-first & private** — Bring your own API key. No accounts, no cloud sync, no telemetry. Sessions and credentials stay on your machine.
+- **Project-scoped** — Each workspace is anchored to a directory. Files, terminals, git state, and agent sessions are all scoped to that project.
+- **Persistent sessions** — Agent conversations survive restarts. Resume any session and pick up exactly where you left off.
+- **In-tree agent runtime** — Built on Pi adapted in-tree (`earendil-works/pi v0.75.5`), providing stateful turn loops, tool execution, queues, and compaction.
+
 > [!IMPORTANT]
-> Crest is an unreleased POC/MVP. APIs, product behavior, and internal names are still evolving, and some Wave/WaveTerm legacy naming remains.
+> Crest is an unreleased POC/MVP. APIs and product behavior are still evolving.
 
-## Why Crest
+## Features
 
-Coding agents can now inspect, edit, run, and validate meaningful parts of a software project, but the surrounding tools still tend toward one of two extremes. Editor-first IDEs confine the agent to a sidebar and leave developers to shuttle context between files, terminals, browsers, and chat. Agent-only tools move faster, but often make it harder to inspect local state, intervene precisely, or review what changed.
+### Agent Sessions
 
-Crest explores the middle ground: an agent-first development workspace where execution remains visible, interruptible, and reviewable. The Agent can work across the project while the developer keeps control of context, risk, and final decisions.
+- Persistent, resumable agent conversations scoped to each project
+- Built-in tools: `read`, `write`, `edit`, `ls`, `bash`, `find`, `grep`, `web_fetch`
+- Slash commands for session management (`/new`, `/fork`, `/clone`, `/tree`, `/model`)
+- Model selection supporting OpenAI, Anthropic, Google Gemini, MiniMax, and OpenRouter
+- Live streaming of agent thoughts, text output, and tool calls
 
-## Product Principles
+### Code Editor & File Explorer
 
-1. **One Space = One Project.** Each Space is anchored to one working directory, keeping files, terminals, previews, Git state, and Agent Sessions scoped to the project that owns them.
-2. **Agent-first workflow.** The Agent can gather context, edit files, run commands, use tools, and report results without forcing the developer to assemble the workflow across separate applications.
-3. **Human-in-the-loop control.** Crest keeps tool activity, command output, and diffs visible so developers can redirect work, inspect risk, and decide what to accept.
-4. **Focused workspace.** File Tree and Session History provide navigation in the left panel, while Editor, Browser, Terminal, Code Review, and Source Control share the tabbed Right Panel. The Browser supports web research and can also open a local app URL, while the full toolset stays available with only one active tool surface competing for attention.
-5. **Review-centered development.** The core loop is discuss, execute, validate, and review, rather than treating generated code as the end of the task.
+- Project file tree with directory navigation
+- Syntax-highlighted code editor
+- Multi-tab interface for switching between files
+- File operations (create, rename, delete) integrated with the workspace
 
-## Product Tour
+### Terminal
 
-### Project-scoped Agent Sessions
+- Built-in terminal emulator with PTY support
+- Multi-tab terminal sessions
+- Command output visible and inspectable at all times
+- Shell integration for working directory tracking
 
-![Project-scoped Agent Sessions](./docs/images/readme/agent-session-panel.png)
+### AI Code Review
 
-Keep Agent work, tool calls, progress, and project context together in a persistent session.
-
-### File Tree and Code Editor
-
-![Crest File Tree and code editor](./docs/images/readme/code-editor-file-tree.png)
-
-Navigate the repository and inspect or edit code without leaving the active workspace.
-
-### Resume Sessions in Context
-
-![Resume an Agent Session](./docs/images/readme/resume-session-picker.png)
-
-Return to earlier Agent Sessions from the current project and continue with their conversation history intact.
+- Side-by-side diff view of agent-proposed changes
+- Changed files list with add/delete line counts
+- Review changes before accepting them into your project
 
 ### Source Control
 
-![Crest Source Control graph](./docs/images/readme/source-control-graph.png)
+- Commit graph visualization
+- Branch and commit history
+- Uncommitted changes panel
+- Author, date, and change stats per commit
 
-Inspect branches, commits, and repository state from the shared Right Panel.
+### Embedded Browser
+
+- Built-in browser for web research and documentation
+- Preview local dev servers without leaving the workspace
+- Multi-tab browsing with standard navigation controls
+
+## Screenshots
+
+### Agent Sessions & AI Chat
+
+![Agent sessions panel](./docs/images/readme/agent-session-panel.png)
+
+Keep agent work, tool calls, progress, and project context together in a persistent session.
+
+### Code Editor & File Explorer
+
+![Code editor and file tree](./docs/images/readme/code-editor-file-tree.png)
+
+Navigate the repository and inspect or edit code without leaving the active workspace.
+
+### Resume Sessions
+
+![Resume session picker](./docs/images/readme/resume-session-picker.png)
+
+Return to earlier agent sessions and continue with their conversation history intact.
 
 ### Code Review
 
-![Crest Code Review diff](./docs/images/readme/code-review-diff.png)
+![Code review diff](./docs/images/readme/code-review-diff.png)
 
 Review changes as a focused diff before deciding what belongs in the project.
 
-### Built-in Browser
+### Source Control
 
-![Crest built-in Browser](./docs/images/readme/embedded-browser.png)
+![Source control graph](./docs/images/readme/source-control-graph.png)
 
-Browse the web and consult documentation without leaving the workspace. The Browser can also open a local app URL when you need to inspect a running project.
+Inspect branches, commits, and repository state from the workspace.
 
-## What Works Today
+### Embedded Browser
 
-Available now:
+![Embedded browser](./docs/images/readme/embedded-browser.png)
 
-- Project-scoped Spaces.
-- Persisted, resumable Agent Sessions and timelines.
-- Terminal, File Tree, editor, Browser, Source Control, Preview, and Code Review surfaces.
-- Model selection and slash commands.
-- Registered Agent tools for reading, writing, and editing files, listing directories, running shell commands, finding files, searching text, and fetching web content (`read`, `write`, `edit`, `ls`, `bash`, `find`, `grep`, and `web_fetch`).
-- Diff viewing and command review surfaces.
-
-> [!WARNING]
-> Fine-grained interactive tool approval is still incomplete. In the current v1 flow, tools may be allowed when no explicit allowlist is supplied. Run Crest only in environments where you understand and accept that risk.
+Browse the web and preview local dev servers without leaving the workspace.
 
 ## Quick Start
 
@@ -100,17 +122,17 @@ Available now:
 ### Run from Source
 
 ```bash
-git clone https://github.com/Jason-Shen2/crest.git
+git clone https://github.com/crynta/crest.git
 cd crest
 npm install
 task dev
 ```
 
-`task dev` is the preferred full-app entry point because it prepares the Go backend and required scaffold before starting Electron/Vite. Use `npm run dev` only when those dependencies are already prepared and you need the Electron/Vite development process by itself.
+`task dev` is the preferred entry point — it builds the Go backend and scaffolds before starting Electron/Vite.
 
-## Configure an AI Provider
+### Configure an AI Provider
 
-Crest uses a bring-your-own-key model. When started with `task dev`, it reads provider credentials and the default model selection from `~/.config/crest-dev/ai.json`; a packaged release reads `~/.config/crest/ai.json`. Set `WAVETERM_CONFIG_HOME` to override the config home in either environment, in which case Crest reads `$WAVETERM_CONFIG_HOME/ai.json`. A valid configuration is required before the Agent can send a message.
+Crest uses a bring-your-own-key model. On first run, create `~/.config/crest-dev/ai.json` (packaged release uses `~/.config/crest/ai.json`):
 
 ```json
 {
@@ -126,89 +148,58 @@ Crest uses a bring-your-own-key model. When started with `task dev`, it reads pr
 }
 ```
 
-The shipped provider catalog covers OpenAI, Anthropic, Google Gemini, minimax, minimax-cn, and OpenRouter. The inline `token` form above is convenient for a first run but stores the key as plaintext; see the [Agent User Guide](./docs/agent-user-guide.md) for keychain-backed `tokensecretname` credentials, profiles, custom models, and custom endpoints.
+Supported providers: OpenAI, Anthropic, Google Gemini, MiniMax, MiniMax-CN, OpenRouter.
 
 ## Agent Harness Architecture
 
-Crest moved the Agent loop into Electron main so local provider credentials, tool execution, session ownership, and desktop integration stay outside the renderer while the UI remains a live, inspectable mirror. The runtime is built on Pi adapted in-tree from `earendil-works/pi v0.75.5`; Crest does not consume Pi as published npm packages or reuse the Pi CLI/TUI wholesale.
+Crest runs the agent loop in Electron main so credentials, tool execution, and session ownership stay outside the renderer while the UI remains a live, inspectable mirror.
 
-![Crest Agent Harness architecture](./docs/images/readme/agent-harness-architecture.svg)
+![Agent Harness architecture](./docs/images/readme/agent-harness-architecture.svg)
 
-Pi supplies the stateful `AgentHarness`, AI provider abstractions, typed event stream, steering and follow-up queues, hooks, tool-loop mechanics, compaction, and session primitives. Crest supplies the desktop integration around it: the assistant-ui bridge, `usePiChat`, structured preload/IPC APIs, `PaneAgentSession`, project-context assembly, Crest-specific tools, and SQLite-backed session persistence.
+Pi supplies the stateful `AgentHarness`: AI provider abstractions, typed event streams, steering queues, hooks, tool-loop mechanics, compaction, and session primitives. Crest supplies the desktop integration: assistant-ui bridge, structured preload/IPC APIs, project context assembly, Crest-specific tools, and SQLite-backed session persistence.
 
-The boundary is intentional:
+For deeper details see the [Agent User Guide](./docs/agent-user-guide.md) and [Agent architecture docs](./docs/agent-architecture.md).
 
-| Layer | Owned by | Responsibility |
-| --- | --- | --- |
-| Agent Workspace UI | Crest | Renders the thread, composer, tool state, diffs, and project surfaces without becoming the source of truth. |
-| Session owner + IPC | Crest | Routes one `agent:event` stream per session path and owns authoritative messages, turns, queues, and status through `PaneAgentSession`. |
-| Agent Harness | Pi adapted in-tree | Runs the stateful turn loop, streams typed events, gates hooks, manages queues, invokes tools, and compacts context. |
-| Runtime foundations | Crest + Pi | Pi streams through provider abstractions; Crest binds project tools and persists sessions as SQLite-backed `.db` files. |
+## Tech Stack
 
-One Agent Turn follows five stages: Crest assembles cwd, project instructions, skills, history, and active tools into context; Pi streams model thinking, text, and structured Tool Calls; Crest validates and executes the requested tools through the permission boundary; the session appends durable events to the SQLite `.db` carrier; then the UI reflects the live event stream and can later rebuild the same timeline from persistence. Tool results re-enter context until the Harness settles the turn. JSONL remains available for session import/export, but it is an interchange format rather than the on-disk carrier.
-
-This design keeps Agent work inspectable, project-scoped, resumable after restart, and compatible with Human-in-the-loop control: the renderer shows what happened, Electron main owns what is happening, and persisted session state carries what can be resumed.
-
-## Architecture
-
-Crest is a desktop application split across the renderer, Electron main, and a local Go backend. The renderer owns the workspace UI, Electron main owns desktop integration and Agent Runtime orchestration, and the Go process owns terminal control, workspace persistence, RPC, events, and remote-session infrastructure. For deeper implementation details, see the [project code wiki](./docs/code-wiki/README.md), [Agent architecture](./docs/agent-architecture.md), and [Agent runtime architecture](./docs/agent-runtime-architecture.md).
-
-| Path | Direction | Purpose |
-| --- | --- | --- |
-| React renderer | UI surface | File Tree, Editor, Browser, Terminal, Source Control, Code Review, Agent thread, and review surfaces. |
-| Electron preload/IPC | Renderer to Electron main | Desktop APIs, Agent Session operations, live `agent:event` streaming, model/provider access, and tool orchestration. |
-| Electron main | Control plane | Runs the Agent Runtime, protects provider credentials from the renderer, launches the Go backend, and coordinates desktop capabilities. |
-| `wshrpc` WebSocket | Renderer to Go backend | Structured RPC for workspace, block, terminal, connection, and service operations. |
-| `/wave/service` HTTP | Renderer to Go backend | HTTP service path for legacy Wave/WaveTerm backend operations. |
-| Go backend (`wavesrv`) | Local backend | Terminal controllers, WPS events, SQLite-backed workspace data, remote sessions, config, and services. |
-
-| Path | Responsibility |
+| Layer | Technology |
 | --- | --- |
-| `frontend/` | React and TypeScript renderer, workspace UI, state, and product surfaces. |
-| `emain/` | Electron main process, preload APIs, IPC, AI providers, and Agent runtime. |
-| `pkg/` | Go libraries for storage, RPC, terminal control, events, connections, config, and services. |
-| `cmd/wsh/` | `wsh` CLI entry point and command implementations. |
-| `cmd/server/` | Local Go backend entry point, still named `wavesrv` in legacy code. |
-| `db/` | Embedded SQLite migrations. |
-| `docs/` | Architecture, product, runtime, and implementation documentation. |
-| `schema/` | Configuration schemas copied into application builds. |
+| Frontend | React, TypeScript, Tailwind CSS, assistant-ui, Jotai |
+| Desktop | Electron (main process + renderer) |
+| Backend | Go (wavesrv), SQLite, WPS events, wsh RPC |
+| Agent Runtime | Pi v0.75.5 (adapted in-tree) |
+| Build | Vite, Task, esbuild |
 
 ## Development
 
 | Command | Purpose |
 | --- | --- |
-| `task dev` | Run the full development workflow: install dependencies, build the Go backend and scaffold, then start Electron/Vite. |
-| `npm run dev` | Start Electron/Vite only. |
-| `npm run start` | Preview an already built application. |
-| `npm run build:dev` | Build the Electron application in development mode. |
-| `npm run build:prod` | Build the Electron application in production mode. |
-| `npm run test` | Run the Vitest test suite. |
+| `task dev` | Full development workflow: Go build + Electron/Vite |
+| `npm run dev` | Start Electron/Vite only (backend must already be built) |
+| `npm run build:dev` | Build Electron app in development mode |
+| `npm run build:prod` | Build Electron app in production mode |
+| `npm run test` | Run Vitest test suite |
 
-## Status and Roadmap
+## Roadmap
 
-Crest is an unreleased POC/MVP, not a stable distribution. APIs and product behavior may change, some Wave/WaveTerm names still remain, AI features require a valid local provider configuration, and fine-grained interactive approval is still being completed.
+- [ ] MCP (Model Context Protocol) tool support
+- [ ] Browser automation for agent workflows
+- [ ] Interactive per-tool approval UI
+- [ ] Remote development via `wsh`
+- [ ] Richer agent session organization and search
+- [ ] Keychain-backed credential storage
 
-Current directions, not release promises:
+## Origin & Acknowledgements
 
-- Stronger Agent Session creation, organization, and recovery.
-- Complete command, diff, and Review workflows.
-- Richer project-context organization.
-- Remote development workflows.
-- Browser automation for Agent workflows.
-- MCP-based Agent tool execution.
-- Clearer boundaries between automation, approval, and review.
+Crest began as a fork of [Wave Terminal](https://github.com/wavetermdev/waveterm) and draws inspiration from:
 
-## Origin and Acknowledgements
+- **TRAE** — AI-assisted engineering workflow exploration
+- **Warp** — AI-native terminal interaction and inspectable tool execution
+- **Terax** — Agent-first interface patterns and review workflows
+- **Pi** — In-tree adapted agent runtime
 
-Crest began as a fork of [Wave Terminal](https://github.com/wavetermdev/waveterm) and retains parts of its terminal engine, Go backend, `wsh` tooling, and workspace architecture. Its Agent-native direction also draws on:
-
-- **TRAE** for product exploration and an AI-assisted engineering workflow.
-- **Warp** for AI-native terminal interaction, blocks, and inspectable tool execution.
-- **Terax** for Agent-first interface patterns and Source Control and review workflows.
-- **Pi** for the in-tree adapted Agent runtime, AI provider abstractions, and selected coding-agent behavior.
-
-See [NOTICES.md](./NOTICES.md) for third-party attributions and license notices.
+See [NOTICES.md](./NOTICES.md) for third-party attributions.
 
 ## License
 
-Crest is licensed under the [Apache License 2.0](./LICENSE).
+[Apache License 2.0](./LICENSE)
