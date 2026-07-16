@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/images/readme/logo.png" width="120" height="120" alt="Crest logo">
+</p>
+
 <h1 align="center">Crest</h1>
 
 <p align="center"><strong>Agent-native development, without losing control.</strong></p>
