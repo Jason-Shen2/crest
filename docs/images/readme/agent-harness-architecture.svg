@@ -231,9 +231,7 @@
   <g aria-label="One agent turn">
     <text x="810" y="229" class="section-label">B / One agent turn</text>
 
-    <path d="M1090 276H1480V250H850V269" class="event-line" marker-end="url(#arrow-indigo)"/>
-    <rect x="1150" y="235" width="212" height="25" fill="var(--paper)"/>
-    <text x="1164" y="253" class="flow-label">tool result → context</text>
+    <text x="1164" y="244" class="flow-label">tool result → context</text>
 
     <g aria-label="Stage 1 Assemble context">
       <rect x="850" y="276" width="590" height="94" rx="2" class="paper-card"/>
@@ -261,7 +259,7 @@
       <text x="879" y="553" class="stage-number">03</text>
       <text x="930" y="557" class="stage-title">Execute tools</text>
       <text x="930" y="588" class="stage-body">Validate · apply hooks · run · return typed results</text>
-      <path d="M1440 571H1480V276" class="event-line" marker-end="url(#arrow-indigo)"/>
+      <path d="M1440 571H1480V250H820V323H841" class="event-line" marker-end="url(#arrow-indigo)"/>
     </g>
 
     <path d="M1145 618V639" class="event-line" marker-end="url(#arrow-indigo)"/>
