@@ -3,11 +3,11 @@
 //
 // agent-ipc.ts — Electron main IPC surface for the integrated agent
 // runtime. Holds the per-session owner cache (Map<sessionPath,
-// PaneAgentSession>), registers ipcMain handlers, and fans each owner's
+// AgentSessionRuntime>), registers ipcMain handlers, and fans each owner's
 // event stream out to per-sender subscribers via a single "agent:event"
 // channel. The owner — not this layer — holds the authoritative
 // conversation state and decides send routing; this layer is the thin
-// IPC ↔ owner adapter. See emain/agent/pane-agent-session.ts.
+// IPC ↔ owner adapter. See emain/agent/agent-session-runtime.ts.
 //
 // See docs/agent-runtime-architecture.md §2 for the topology and
 // §6 for the per-pane lifecycle this layer implements.
@@ -68,10 +68,10 @@ import { InMemorySessionRepo } from "./agent/harness/session/memory-repo";
 import type { JsonlSessionMetadata, SessionDetailInfo } from "./agent/harness/types";
 import {
     buildPersistedTurnsFromSessionEntries,
-    PaneAgentSession,
+    AgentSessionRuntime,
     type AgentTurn,
-    type PaneSessionStatus,
-} from "./agent/pane-agent-session";
+    type AgentSessionRuntimeStatus,
+} from "./agent/agent-session-runtime";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { loadProjectContextFiles } from "./agent/resource-loader";
 import {
@@ -95,13 +95,13 @@ import { getSecret } from "./aiconfig/secrets";
 
 // Per-pane conversation OWNERS, keyed by session JSONL path (the natural
 // session identity — same path always reopens the same conversation). The
-// PaneAgentSession owns the authoritative transcript + queue state and is
+// AgentSessionRuntime owns the authoritative transcript + queue state and is
 // the single thing this IPC layer forwards to renderers; see
 // docs/agent-rendering-architecture.md.
-const sessionCache = new Map<string, PaneAgentSession>();
+const sessionCache = new Map<string, AgentSessionRuntime>();
 
 // Per-(sender, sessionPath) subscriptions. The value is the unsubscribe
-// fn returned by PaneAgentSession.subscribe(). On sender destroy we
+// fn returned by AgentSessionRuntime.subscribe(). On sender destroy we
 // walk this map and release everything that sender held.
 type SubKey = string;
 const subscriptions = new Map<SubKey, () => void>();
@@ -408,7 +408,7 @@ async function resolveApiKey(opts: SendOptions): Promise<string | undefined> {
     return undefined;
 }
 
-async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptions): Promise<PaneAgentSession> {
+async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptions): Promise<AgentSessionRuntime> {
     const existing = sessionCache.get(metadata.path);
     if (existing) {
         existing.update(buildPromptInputs(opts));
@@ -483,7 +483,7 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
     // history (a fresh session's buildContext is empty).
     const seed = await piSession.buildContext();
     const initialTurns = buildPersistedTurnsFromSessionEntries(await piSession.getBranch());
-    let owner: PaneAgentSession;
+    let owner: AgentSessionRuntime;
     const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
         const operations = extractChangeOperationsFromMessages(turn.responseMessages.filter(isToolResultModelMessage), {
             turnId: turn.turnId,
@@ -499,7 +499,7 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
             owner.setTurnChangeOutline(turn.turnId, changeOutline);
         }
     };
-    owner = new PaneAgentSession(metadata.path, pane, seed.messages ?? [], initialTurns, { onTurnFinished });
+    owner = new AgentSessionRuntime(metadata.path, pane, seed.messages ?? [], initialTurns, { onTurnFinished });
     sessionCache.set(metadata.path, owner);
     attachPendingSubscribers(metadata.path, owner);
     return owner;
@@ -571,7 +571,7 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
     type: "session_state";
     messages: AgentMessage[];
     turns: AgentTurn[];
-    status: PaneSessionStatus;
+    status: AgentSessionRuntimeStatus;
     steer: AgentMessage[];
     followUp: AgentMessage[];
 }> {
@@ -603,7 +603,7 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
 function subscribeToOwner(
     sender: electron.WebContents,
     sessionPath: string,
-    session: PaneAgentSession,
+    session: AgentSessionRuntime,
     rendererSessionPath = sessionPath
 ): void {
     const key: SubKey = makeAgentSubscriptionKey(sender.id, sessionPath, rendererSessionPath);
@@ -636,7 +636,7 @@ function subscribeToOwner(
     );
 }
 
-function attachPendingSubscribers(sessionPath: string, session: PaneAgentSession): void {
+function attachPendingSubscribers(sessionPath: string, session: AgentSessionRuntime): void {
     for (const [key, sender] of pendingSubscriptions) {
         if (sender.canonicalPath !== sessionPath) continue;
         if (sender.sender.isDestroyed()) {
@@ -648,7 +648,7 @@ function attachPendingSubscribers(sessionPath: string, session: PaneAgentSession
 }
 
 async function getSessionTreeData(sessionMetadataInput: unknown): Promise<{
-    entries: Awaited<ReturnType<PaneAgentSession["listTreeEntries"]>>["entries"];
+    entries: Awaited<ReturnType<AgentSessionRuntime["listTreeEntries"]>>["entries"];
     leafId: string | null;
     labels: Map<string, string | undefined>;
 }> {

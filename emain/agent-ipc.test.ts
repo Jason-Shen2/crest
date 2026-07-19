@@ -60,7 +60,7 @@ import {
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
 import { SqliteSessionRepo } from "./agent/harness/session/sqlite-repo";
-import { PaneAgentSession } from "./agent/pane-agent-session";
+import { AgentSessionRuntime } from "./agent/agent-session-runtime";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "./agent/sessions";
 import type { AgentMessage } from "./agent/types";
 import { getModel } from "./ai";
@@ -501,7 +501,7 @@ describe("agent-ipc command helpers", () => {
     it("agent:send returns the committed turn id without writing a legacy marker", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-send");
         // Stub the harness build so ensurePaneSession constructs a real
-        // PaneAgentSession without a live model/provider.
+        // AgentSessionRuntime without a live model/provider.
         vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
         vi.mocked(buildAgentHarnessHost).mockReturnValue({
             harness: { subscribe: () => () => {} },
@@ -509,7 +509,7 @@ describe("agent-ipc command helpers", () => {
             update: () => {},
         } as never);
         // send() resolves with the user entry id (the turn identity).
-        const sendSpy = vi.spyOn(PaneAgentSession.prototype, "send").mockResolvedValue("entry-xyz");
+        const sendSpy = vi.spyOn(AgentSessionRuntime.prototype, "send").mockResolvedValue("entry-xyz");
 
         registerAgentIpcHandlers();
         const handlers = new Map<string, (...args: unknown[]) => unknown>();
