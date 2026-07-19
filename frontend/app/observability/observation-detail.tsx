@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { cn } from "@/util/util";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface ObservationDetailProps {
     observation: AgentObservabilityObservation;
@@ -74,6 +74,11 @@ export function ObservationDetail({ observation, traceTimestamp }: ObservationDe
     const hasUsage = usageEntries.length > 0 || costEntries.length > 0 || timingEntries.length > 0;
     const hasMetadata = hasEntries(observation.metadata);
     const rawJson = JSON.stringify(observation, null, 2);
+
+    useEffect(() => {
+        setCopyStatus("idle");
+    }, [observation.id]);
+
     const copyRawJson = async () => {
         try {
             if (typeof navigator === "undefined" || navigator.clipboard?.writeText == null) {

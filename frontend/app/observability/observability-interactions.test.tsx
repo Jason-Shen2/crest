@@ -5,6 +5,7 @@ import { createRef, type ComponentType } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
+import { ObservationDetail } from "./observation-detail";
 import { presentObservation } from "./observation-presentation";
 import { ObservationRow } from "./observation-row";
 import { buildTimelineRows, ObservationTimeline } from "./observation-timeline";
@@ -47,6 +48,7 @@ vi.mock("@tanstack/react-virtual", () => {
 afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
 });
 
 function makeObservation(
@@ -143,6 +145,24 @@ function renderTimeline(graph: AgentObservabilityTraceGraph, overrides: Record<s
     };
     return { ...render(<Timeline {...props} />), props };
 }
+
+describe("ObservationDetail real rerender", () => {
+    it("clears copied feedback when switching observations", async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        vi.stubGlobal("navigator", { clipboard: { writeText } });
+        const observationA = makeObservation("observation-a");
+        const observationB = makeObservation("observation-b");
+        const view = render(<ObservationDetail observation={observationA} traceTimestamp="2026-07-19T00:00:00.000Z" />);
+
+        fireEvent.click(view.getByRole("button", { name: "Copy observation JSON" }));
+        await waitFor(() => expect(view.getByRole("status").textContent).toBe("Copied"));
+
+        view.rerender(<ObservationDetail observation={observationB} traceTimestamp="2026-07-19T00:00:00.000Z" />);
+
+        expect(view.getByRole("button", { name: "Copy observation JSON" }).textContent).toBe("Copy");
+        expect(view.queryByRole("status")).toBeNull();
+    });
+});
 
 describe("ObservationTimeline real events", () => {
     it("reuses the stable row prefix when only the active generation tail streams", () => {
