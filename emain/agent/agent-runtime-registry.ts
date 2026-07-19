@@ -25,7 +25,7 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
 
     constructor(options: AgentRuntimeRegistryOptions) {
         this.idleTtlMs = options.idleTtlMs;
-        this.now = options.now ?? Date.now;
+        this.now = options.now ?? (() => Date.now());
     }
 
     get(path: string): TRuntime | undefined {

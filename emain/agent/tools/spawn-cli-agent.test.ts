@@ -34,6 +34,35 @@ describe("runSubagentToCompletion", () => {
 });
 
 describe("createSpawnCliAgentTool", () => {
+    it("uses the current model and auth resolver when execution starts", async () => {
+        vi.spyOn(rpc, "startAgentCommandBlock").mockResolvedValue("blk-new");
+        const sub = fakeSub("done");
+        vi.spyOn(factory, "buildCliSubagentHarness").mockReturnValue(sub);
+        let model = { id: "first" } as any;
+        const getModel = vi.fn(() => model);
+        const getApiKeyAndHeaders = vi.fn(async () => ({ apiKey: "current" }));
+        const tool = createSpawnCliAgentTool({
+            parentBlockId: "parent",
+            getModel,
+            createSession: async () => ({ getMetadata: async () => ({}) }) as any,
+            getApiKeyAndHeaders,
+        });
+        model = { id: "second" } as any;
+
+        await tool.execute("t1", {
+            task: "run current config",
+            initial_command: "npm run dev",
+            cwd: "/tmp",
+        });
+
+        expect(factory.buildCliSubagentHarness).toHaveBeenCalledWith(
+            expect.objectContaining({
+                model: expect.objectContaining({ id: "second" }),
+                getApiKeyAndHeaders,
+            })
+        );
+    });
+
     it("spawn_cli_agent starts a block, runs the subagent, returns the summary", async () => {
         vi.spyOn(rpc, "startAgentCommandBlock").mockResolvedValue("blk-new");
         vi.spyOn(rpc, "stopBlock").mockResolvedValue();
@@ -42,7 +71,7 @@ describe("createSpawnCliAgentTool", () => {
 
         const tool = createSpawnCliAgentTool({
             parentBlockId: "parent",
-            model: { id: "small" } as any,
+            getModel: () => ({ id: "small" }) as any,
             createSession: async () => ({ getMetadata: async () => ({}) }) as any,
         });
         const r = await tool.execute("t1", {
@@ -77,7 +106,7 @@ describe("createSpawnCliAgentTool", () => {
 
         const tool = createSpawnCliAgentTool({
             parentBlockId: "parent",
-            model: { id: "small" } as any,
+            getModel: () => ({ id: "small" }) as any,
             createSession: async () => ({ getMetadata: async () => ({}) }) as any,
         });
         await expect(

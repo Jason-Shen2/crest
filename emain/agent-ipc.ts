@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // agent-ipc.ts — Electron main IPC surface for the integrated agent
-// runtime. Holds the per-session owner cache (Map<sessionPath,
-// AgentSessionRuntime>), registers ipcMain handlers, and fans each owner's
-// event stream out to per-sender subscribers via a single "agent:event"
+// runtime. Holds the process-level AgentRuntimeRegistry, registers ipcMain
+// handlers, and fans each runtime's event stream out to per-sender
+// subscribers via a single "agent:event"
 // channel. The owner — not this layer — holds the authoritative
 // conversation state and decides send routing; this layer is the thin
 // IPC ↔ owner adapter. See emain/agent/agent-session-runtime.ts.
 //
 // See docs/agent-runtime-architecture.md §2 for the topology and
-// §6 for the per-pane lifecycle this layer implements.
+// §6 for the per-session lifecycle this layer implements.
 //
 // IPC contract (mirrored in preload.ts + ElectronApi.agent typings):
 //
@@ -69,9 +69,11 @@ import type { JsonlSessionMetadata, SessionDetailInfo } from "./agent/harness/ty
 import {
     buildPersistedTurnsFromSessionEntries,
     AgentSessionRuntime,
+    type AgentExecutionConfig,
     type AgentTurn,
     type AgentSessionRuntimeStatus,
 } from "./agent/agent-session-runtime";
+import { AgentRuntimeRegistry } from "./agent/agent-runtime-registry";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { loadProjectContextFiles } from "./agent/resource-loader";
 import {
@@ -93,18 +95,20 @@ import type { Api, Message, Model } from "./ai";
 import { getModel } from "./ai";
 import { getSecret } from "./aiconfig/secrets";
 
-// Per-pane conversation OWNERS, keyed by session JSONL path (the natural
-// session identity — same path always reopens the same conversation). The
-// AgentSessionRuntime owns the authoritative transcript + queue state and is
-// the single thing this IPC layer forwards to renderers; see
-// docs/agent-rendering-architecture.md.
-const sessionCache = new Map<string, AgentSessionRuntime>();
+const AgentRuntimeIdleTtlMs = 5 * 60 * 1000;
+const AgentRuntimeSweepIntervalMs = 60 * 1000;
+const runtimeRegistry = new AgentRuntimeRegistry<AgentSessionRuntime>({
+    idleTtlMs: AgentRuntimeIdleTtlMs,
+});
+let runtimeSweepTimer: NodeJS.Timeout | undefined;
 
-// Per-(sender, sessionPath) subscriptions. The value is the unsubscribe
-// fn returned by AgentSessionRuntime.subscribe(). On sender destroy we
-// walk this map and release everything that sender held.
 type SubKey = string;
-const subscriptions = new Map<SubKey, () => void>();
+interface AgentSubscriptionRecord {
+    unsubscribe: () => void;
+    sessionPath: string;
+}
+
+const subscriptions = new Map<SubKey, AgentSubscriptionRecord>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
 const pendingSubscriptions = new Map<
     SubKey,
@@ -408,52 +412,35 @@ async function resolveApiKey(opts: SendOptions): Promise<string | undefined> {
     return undefined;
 }
 
-async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptions): Promise<AgentSessionRuntime> {
-    const existing = sessionCache.get(metadata.path);
-    if (existing) {
-        existing.update(buildPromptInputs(opts));
-        return existing;
-    }
+async function createAgentRuntime(
+    metadata: JsonlSessionMetadata,
+    opts: SendOptions,
+    config: AgentExecutionConfig
+): Promise<AgentSessionRuntime> {
     const piSession = await openPaneSession(metadata);
-    // Resolve the provider API key once for this session's harness: a
-    // literal token wins, else look up the secret in safeStorage. pi-ai
-    // would otherwise fall back to provider env vars (which crest doesn't
-    // set), failing with "No API key for provider: <provider>".
-    const apiKey = await resolveApiKey(opts);
-    const model = resolveModelOrThrow(opts.provider, opts.model);
     // Discover skills from <configHome>/skills and <cwd>/.crest/skills.
     // Loaded once per harness construction (session open); the skills
     // section is only injected into the system prompt when the read
     // tool is active (build-system-prompt.ts).
     const skills = await loadAgentSkills({ cwd: opts.cwd });
-    // Diagnostic: the agent's LLM request goes out from the MAIN process
-    // (Node fetch in pi-ai), so it never shows in the renderer's Network
-    // tab. Log the resolved model config (never the key itself) so the
-    // provider/model/baseUrl/key wiring is verifiable from the main
-    // console (the `task electron:quickdev` terminal).
-    console.log(
-        `[agent-ipc] send → provider=${model.provider} model=${model.id} api=${model.api} ` +
-            `baseUrl=${(model as { baseUrl?: string }).baseUrl ?? "(provider default)"} ` +
-            `reasoning=${opts.reasoning ?? "off"} apiKey=${apiKey ? "present" : "MISSING"} ` +
-            `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
-    );
+    let getRuntimeCwd = () => config.promptInputs.cwd;
     const host = buildAgentHarnessHost({
         session: piSession,
-        model,
-        thinkingLevel: opts.reasoning,
-        promptInputs: buildPromptInputs(opts),
+        model: config.model,
+        thinkingLevel: config.thinkingLevel,
+        promptInputs: config.promptInputs,
         tools: [
-            ...getDefaultTools(opts.cwd),
+            ...getDefaultTools(() => getRuntimeCwd()),
             // spawn_cli_agent delegates long-running / interactive commands to a
-            // CLI subagent. Only the main pane agent gets it (never in
+            // CLI subagent. Only the main agent runtime gets it (never in
             // getDefaultTools, which the subagent factory also draws from). The
             // subagent runs in an ephemeral in-memory session and shares this
-            // pane's resolved model + API key.
+            // runtime's initial resolved model + API key.
             createSpawnCliAgentTool({
                 parentBlockId: opts.blockId,
-                model,
+                getModel: () => host.harness.getModel(),
                 createSession: () => new InMemorySessionRepo().create(),
-                getApiKeyAndHeaders: apiKey == null ? undefined : async () => ({ apiKey }),
+                getApiKeyAndHeaders: (model) => host.resolveAuth(model),
             }),
         ],
         // Load AGENTS.md / CLAUDE.md from cwd up to the filesystem root so
@@ -461,20 +448,10 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
         // per harness construction (session open); cheap sync reads.
         contextFiles: loadProjectContextFiles({ cwd: opts.cwd }),
         skills,
-        getApiKeyAndHeaders: apiKey == null ? undefined : async () => ({ apiKey }),
-        // Bench mode (eval harness sets CREST_AGENT_BENCH=1) bypasses
-        // the allowlist entirely. Otherwise: v1 defaults to allowAll
-        // when the renderer didn't pass an allowedTools list (no
-        // approval UI yet); future task wires this to a per-pane
-        // setting written from the renderer.
-        toolCallHook: buildPermissionsHook(
-            isBenchMode()
-                ? { allowAll: true }
-                : opts.allowedTools
-                  ? { allowAll: false, allowedTools: opts.allowedTools }
-                  : { allowAll: true }
-        ),
+        getApiKeyAndHeaders: config.authResolver,
+        toolCallHook: config.toolCallHook,
     });
+    getRuntimeCwd = () => host.getCwd();
     // Wrap the harness in the per-session owner. Its constructor attaches
     // the harness subscription NOW (before any prompt() runs), so it owns
     // the authoritative transcript + queue state from the first event on —
@@ -488,30 +465,63 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
             turnId: turn.turnId,
         });
         if (operations.length === 0) return;
+        const model = host.harness.getModel();
+        const auth = await host.resolveAuth(model);
         const changeOutline = await generateChangeOutline({
             model,
             operations,
             turnId: turn.turnId,
-            apiKey,
+            apiKey: auth?.apiKey,
         });
         if (changeOutline) {
             owner.setTurnChangeOutline(turn.turnId, changeOutline);
         }
     };
     const owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, { onTurnFinished });
-    sessionCache.set(metadata.path, owner);
-    attachPendingSubscribers(metadata.path, owner);
     return owner;
 }
 
+async function ensureAgentRuntime(
+    metadata: JsonlSessionMetadata,
+    opts: SendOptions
+): Promise<{ runtime: AgentSessionRuntime; config: AgentExecutionConfig }> {
+    const apiKey = await resolveApiKey(opts);
+    const model = resolveModelOrThrow(opts.provider, opts.model);
+    const config: AgentExecutionConfig = {
+        promptInputs: buildPromptInputs(opts),
+        model,
+        thinkingLevel: opts.reasoning ?? "off",
+        authResolver: apiKey == null ? undefined : async () => ({ apiKey }),
+        toolCallHook: buildPermissionsHook(
+            isBenchMode()
+                ? { allowAll: true }
+                : opts.allowedTools
+                  ? { allowAll: false, allowedTools: opts.allowedTools }
+                  : { allowAll: true }
+        ),
+    };
+    console.log(
+        `[agent-ipc] send → provider=${model.provider} model=${model.id} api=${model.api} ` +
+            `baseUrl=${model.baseUrl ?? "(provider default)"} ` +
+            `reasoning=${config.thinkingLevel} apiKey=${apiKey ? "present" : "MISSING"} ` +
+            `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
+    );
+    const runtime = await runtimeRegistry.getOrCreate(metadata.path, () =>
+        createAgentRuntime(metadata, opts, config)
+    );
+    attachPendingSubscribers(metadata.path, runtime);
+    return { runtime, config };
+}
+
 function releaseSubscription(key: SubKey): void {
-    const unsub = subscriptions.get(key);
-    if (unsub) {
+    const record = subscriptions.get(key);
+    if (record) {
         try {
-            unsub();
+            record.unsubscribe();
         } catch (err) {
             console.error("[agent-ipc] unsubscribe error:", err);
         }
+        runtimeRegistry.release(record.sessionPath, key);
         subscriptions.delete(key);
     }
     pendingSubscriptions.delete(key);
@@ -575,7 +585,7 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
     followUp: AgentMessage[];
 }> {
     const canonicalPath = await validateSessionPath(sessionPath);
-    const owner = sessionCache.get(canonicalPath);
+    const owner = runtimeRegistry.get(canonicalPath);
     if (owner) {
         const state = owner.getSessionState();
         return {
@@ -618,7 +628,8 @@ function subscribeToOwner(
             })
         );
     });
-    subscriptions.set(key, unsub);
+    subscriptions.set(key, { unsubscribe: unsub, sessionPath });
+    runtimeRegistry.acquire(sessionPath, key);
     trackSenderKey(sender, key);
     const sessionState = session.getSessionState();
     if (sender.isDestroyed()) return;
@@ -652,7 +663,7 @@ async function getSessionTreeData(sessionMetadataInput: unknown): Promise<{
     labels: Map<string, string | undefined>;
 }> {
     const { metadata: sessionMetadata, session, requestedPath } = await validateTreeInput(sessionMetadataInput);
-    const owner = sessionCache.get(sessionMetadata.path) ?? sessionCache.get(requestedPath);
+    const owner = runtimeRegistry.get(sessionMetadata.path) ?? runtimeRegistry.get(requestedPath);
     if (owner) return owner.listTreeEntries();
 
     const allEntries = await session.getEntries();
@@ -688,7 +699,7 @@ export async function getAgentSessionStateForIpc(
 
 export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavigateTreeResult> {
     const { metadata, session, targetId, requestedPath } = await validateNavigateInput(input);
-    const owner = sessionCache.get(metadata.path) ?? sessionCache.get(requestedPath);
+    const owner = runtimeRegistry.get(metadata.path) ?? runtimeRegistry.get(requestedPath);
 
     if (owner) {
         const result = await owner.navigateTree(targetId);
@@ -839,7 +850,7 @@ async function runCompactSessionCommand(
 ): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session to compact.");
     const { metadata, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
-    const owner = sessionCache.get(metadata.path) ?? sessionCache.get(requestedPath);
+    const owner = runtimeRegistry.get(metadata.path) ?? runtimeRegistry.get(requestedPath);
     if (!owner) return commandNoop("No active agent session to compact.");
     const customInstructions = argsText.trim() || undefined;
     await owner.compact(customInstructions);
@@ -967,13 +978,13 @@ async function runImportSessionCommand(cwd: string, argsText: string): Promise<A
 
 export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<void> {
     const canonicalPath = await validateSessionPath(sessionPath);
-    sessionCache.get(canonicalPath)?.abort();
+    runtimeRegistry.get(canonicalPath)?.abort();
 }
 
 export async function subscribeAgentSessionForIpc(sender: electron.WebContents, sessionPath: unknown): Promise<void> {
     const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
     const canonicalPath = await validateSessionPath(rendererPath);
-    const session = sessionCache.get(canonicalPath);
+    const session = runtimeRegistry.get(canonicalPath);
     if (!session) {
         const key: SubKey = makeAgentSubscriptionKey(sender.id, canonicalPath, rendererPath);
         if (!pendingSubscriptions.has(key)) {
@@ -1003,6 +1014,11 @@ export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPat
  * emain-ipc.ts initIpcHandlers().
  */
 export function registerAgentIpcHandlers(): void {
+    if (!runtimeSweepTimer) {
+        runtimeSweepTimer = setInterval(() => runtimeRegistry.evictIdle(), AgentRuntimeSweepIntervalMs);
+        runtimeSweepTimer.unref();
+    }
+
     electron.ipcMain.handle("agent:create-session", async (_event, cwd: string): Promise<JsonlSessionMetadata> => {
         const { metadata } = await createPaneSession(cwd);
         return metadata;
@@ -1089,12 +1105,12 @@ export function registerAgentIpcHandlers(): void {
                     `textLen=${opts.text?.length ?? 0}`
             );
             const { metadata } = await ensureSession(opts);
-            const session = await ensurePaneSession(metadata, opts);
+            const { runtime, config } = await ensureAgentRuntime(metadata, opts);
 
             // Turn identity IS the session entry id of the user message that
             // starts the turn. Prompt first so the session mints that entry,
             // the single source of truth.
-            const userEntryId = await session.send(opts.text);
+            const userEntryId = await runtime.sendWithExecutionConfig(opts.text, config);
 
             return { sessionMetadata: metadata, turnId: userEntryId };
         }
@@ -1119,23 +1135,21 @@ export function registerAgentIpcHandlers(): void {
     });
 }
 
-/** Test-only escape hatch: clear the harness cache + subscriptions. */
+/** Test-only escape hatch: clear the runtime registry + subscriptions. */
 export function _resetAgentIpcForTests(): void {
-    for (const unsub of subscriptions.values()) {
+    for (const record of subscriptions.values()) {
         try {
-            unsub();
+            record.unsubscribe();
         } catch {
             // ignore
         }
     }
     subscriptions.clear();
     subscriptionsBySender.clear();
-    for (const session of sessionCache.values()) {
-        try {
-            session.dispose();
-        } catch {
-            // ignore
-        }
+    pendingSubscriptions.clear();
+    if (runtimeSweepTimer) {
+        clearInterval(runtimeSweepTimer);
+        runtimeSweepTimer = undefined;
     }
-    sessionCache.clear();
+    runtimeRegistry.disposeAll();
 }

@@ -11,8 +11,9 @@
 // implements them in pure Node instead (glob + ignore, see ./_search) so
 // the Electron app never downloads binaries at runtime.
 //
-// pi's tools are cwd-bound: getDefaultTools(cwd) constructs them against
-// the pane's cwd so the LLM can use relative paths.
+// pi's tools are cwd-bound. getDefaultTools also accepts a cwd reader so a
+// long-lived session runtime can resolve relative paths against its current
+// execution context without rebuilding the Harness.
 
 import type { AgentTool } from "../types";
 import { createBashTool } from "./bash";
@@ -34,19 +35,36 @@ export { createSpawnCliAgentTool } from "./spawn-cli-agent";
 export { webFetchTool } from "./web-fetch";
 export { createWriteTool } from "./write";
 
+type CwdInput = string | (() => string);
+type CwdToolFactory = (cwd: string) => AgentTool;
+
+function makeCwdReader(cwd: CwdInput): () => string {
+    return typeof cwd === "function" ? cwd : () => cwd;
+}
+
+function createDynamicCwdTool(factory: CwdToolFactory, getCwd: () => string): AgentTool {
+    const tool = factory(getCwd());
+    return {
+        ...tool,
+        execute: (toolCallId, params, signal, onUpdate) =>
+            factory(getCwd()).execute(toolCallId, params, signal, onUpdate),
+    };
+}
+
 /**
  * Default tools enabled for every pane, bound to the pane's cwd. The IPC
  * layer passes this (or a filtered subset) to buildAgentHarnessHost.
  */
-export function getDefaultTools(cwd: string): AgentTool[] {
+export function getDefaultTools(cwd: CwdInput): AgentTool[] {
+    const getCwd = makeCwdReader(cwd);
     return [
-        createReadTool(cwd),
-        createWriteTool(cwd),
-        createEditTool(cwd),
-        createLsTool(cwd),
-        createBashTool(cwd),
-        createFindTool(cwd),
-        createGrepTool(cwd),
+        createDynamicCwdTool(createReadTool, getCwd),
+        createDynamicCwdTool(createWriteTool, getCwd),
+        createDynamicCwdTool(createEditTool, getCwd),
+        createDynamicCwdTool(createLsTool, getCwd),
+        createDynamicCwdTool(createBashTool, getCwd),
+        createDynamicCwdTool(createFindTool, getCwd),
+        createDynamicCwdTool(createGrepTool, getCwd),
         webFetchTool,
     ];
 }

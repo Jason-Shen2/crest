@@ -62,7 +62,7 @@ export interface SpawnCliAgentDetails {
 export interface SpawnCliAgentDeps {
     /** The main agent's own terminal pane block id — used to resolve the tab the new run block is created on. */
     parentBlockId: string;
-    model: Model<Api>;
+    getModel: () => Model<Api>;
     /** Mint an ephemeral in-memory session for the subagent. */
     createSession: () => Promise<Session>;
     getApiKeyAndHeaders?: (
@@ -107,7 +107,7 @@ export function createSpawnCliAgentTool(deps: SpawnCliAgentDeps): AgentTool<type
                 const session = await deps.createSession();
                 const sub = buildCliSubagentHarness({
                     session,
-                    model: deps.model,
+                    model: deps.getModel(),
                     blockId,
                     cwd: params.cwd,
                     initialCommand: params.initial_command,

@@ -240,7 +240,7 @@ This is the only "wrapper" we add around AgentHarness, and it exists strictly to
 
 ---
 
-## 6. Pane / session lifecycle
+## 6. Workspace surface / session lifecycle
 
 ### 6.1 New pane opens
 
@@ -260,17 +260,18 @@ See §5.2.
 ### 6.3 Subsequent sends (cwd may have changed)
 
 1. Renderer IPC: `agent:send({sessionMetadata, text, currentContext: {cwd, gitBranch, recentCmds}})`
-2. Main process: `runtime = sessionCache.get(sessionMetadata.path) ?? makeRuntime(buildAgentHarnessHost(...))`
-3. Main: `runtime.update(currentContext)` — refreshes env.cwd + system prompt inputs
-4. Main: `runtime.send(text)` — routes prompt vs follow-up and runs the turn
-5. Events stream back via the `agent:event:${sessionPath}` IPC channel
+2. Main resolves the current model, reasoning level, auth resolver, tool permissions, and prompt inputs
+3. `AgentRuntimeRegistry.getOrCreate(sessionMetadata.path, createRuntime)` reuses or constructs the session runtime
+4. `runtime.sendWithExecutionConfig(text, config)` serializes config application with send dispatch, then routes prompt vs follow-up
+5. Events stream back via the single `agent:event` IPC channel with `sessionPath` in the payload
 
 ### 6.4 Surface unsubscribes
 
 - Renderer removes its session event subscription.
-- The current implementation retains the cached `AgentSessionRuntime` until app shutdown.
+- IPC releases the renderer's subscriber key from `AgentRuntimeRegistry`.
+- Running runtimes remain protected even without subscribers.
+- Idle unreferenced runtimes are evicted after five minutes by a one-minute sweep.
 - Session storage stays on disk and block meta retains `agent:session`.
-- The planned `AgentRuntimeRegistry` will evict unsubscribed idle runtimes after a TTL while protecting running runtimes.
 
 ### 6.5 App restart
 
