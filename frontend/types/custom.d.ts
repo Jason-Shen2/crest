@@ -217,12 +217,22 @@ declare global {
     type AgentObservabilityObservation = {
         id: string;
         traceId: string;
-        type: string;
+        type:
+            | "SPAN"
+            | "EVENT"
+            | "GENERATION"
+            | "AGENT"
+            | "TOOL"
+            | "CHAIN"
+            | "RETRIEVER"
+            | "EVALUATOR"
+            | "EMBEDDING"
+            | "GUARDRAIL";
         name: string | null;
         startTime: string;
         endTime: string | null;
         parentObservationId: string | null;
-        level: string;
+        level: "DEBUG" | "DEFAULT" | "WARNING" | "ERROR";
         statusMessage: string | null;
         version: string | null;
         model: string | null;
