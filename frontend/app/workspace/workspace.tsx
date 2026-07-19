@@ -21,7 +21,7 @@ import { atoms, getSettingsKeyAtom } from "@/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { useAtomValue } from "jotai";
 import type { PointerEvent } from "react";
-import { memo, useCallback, useEffect } from "react";
+import { memo, useCallback, useEffect, useRef } from "react";
 
 const RightToolPanelRootSelector = '[data-right-tool-panel-root="true"]';
 
@@ -59,6 +59,7 @@ const WorkspaceElem = memo(() => {
     const vtabVisible = useAtomValue(workspaceLayoutModel.vtabVisibleAtom);
     const fileExplorerVisible = useAtomValue(workspaceLayoutModel.fileExplorerVisibleAtom);
     const sessionsPanelVisible = useAtomValue(workspaceLayoutModel.sessionsPanelVisibleAtom);
+    const agentTabId = useAtomValue(workspaceLayoutModel.agentTabIdAtom);
     const leftPanelVisible = fileExplorerVisible || sessionsPanelVisible;
     const vtabWidth = useAtomValue(workspaceLayoutModel.vtabWidthAtom);
     const fileExplorerWidth = useAtomValue(workspaceLayoutModel.fileExplorerWidthAtom);
@@ -79,6 +80,19 @@ const WorkspaceElem = memo(() => {
     useEffect(() => {
         workspaceLayoutModel.hydrateRightToolPanelFromWorkspace();
     }, [workspaceLayoutModel, ws.oid]);
+
+    const lastObservedActiveTabIdRef = useRef("");
+    useEffect(() => {
+        const activeTabId = ws.activetabid ?? "";
+        if (!activeTabId || lastObservedActiveTabIdRef.current === activeTabId) return;
+        lastObservedActiveTabIdRef.current = activeTabId;
+        if (activeTabId !== tabId) return;
+        if (activeTabId === agentTabId) {
+            workspaceLayoutModel.setSessionsPanelVisible(true);
+            return;
+        }
+        workspaceLayoutModel.setFileExplorerVisible(true);
+    }, [ws.activetabid, tabId, agentTabId, workspaceLayoutModel]);
 
     // ResizeHandle reads `maxFn()` on every pointermove so a window
     // resize mid-drag updates the bound (warp's `with_bounds_callback`).
@@ -180,11 +194,11 @@ const WorkspaceElem = memo(() => {
                     </>
                 )}
 
-                {/* Left panel 2: file explorer.  Same pattern. */}
-                {fileExplorerVisible && (
+                {/* Left panel 2: sessions or file explorer (mutually exclusive, shared width). */}
+                {leftPanelVisible && (
                     <>
                         <div className="shrink-0 h-full overflow-hidden" style={{ width: `${fileExplorerWidth}px` }}>
-                            {tabId !== "" && <FileExplorer />}
+                            {tabId !== "" && (sessionsPanelVisible ? <AgentSessionsPanel /> : <FileExplorer />)}
                         </div>
                         <ResizeHandle
                             width={fileExplorerWidth}

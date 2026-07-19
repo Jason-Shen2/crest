@@ -11,9 +11,7 @@
 // Crest differences from terax:
 //   - "left chrome" carries the file-explorer toggle (terax has
 //     sidebar + command palette).  We render the explorer toggle
-//     plus a "search-files" trigger that opens the CommandPalette
-//     modal — gives a similar two-button feel without copying the
-//     terax icons verbatim.
+//     plus the agent sessions toggle.
 //   - Workspace switcher is a "Spaces · Default ▸" text pill.  The
 //     click handler is driven by floating-ui directly (we bypass
 //     <PopoverButton> which renders a crest <Button> that injects
@@ -121,7 +119,7 @@ const PanelAnchor = memo(({ children, panel, isOpen, onOpenChange }: PanelAnchor
 });
 PanelAnchor.displayName = "PanelAnchor";
 
-// ---- Left chrome: sessions + explorer + search trigger ----
+// ---- Left chrome: explorer + sessions ----
 const LeftChrome = memo(() => {
     const model = WorkspaceLayoutModel.getInstance();
     const explorerVisible = useAtomValue(model.fileExplorerVisibleAtom);
@@ -129,29 +127,17 @@ const LeftChrome = memo(() => {
     return (
         <div className="topbar-left-chrome">
             <ToolbarButton
-                icon="message-01"
-                label="Agent Sessions"
-                active={sessionsVisible}
-                onClick={() => model.setSessionsPanelVisible(!model.getSessionsPanelVisible())}
-            />
-            <ToolbarButton
                 icon="list-tree"
                 label="Toggle File Explorer"
                 active={explorerVisible}
                 onClick={() => model.setFileExplorerVisible(!model.getFileExplorerVisible())}
             />
-            <button
-                type="button"
-                title="Search files, commands"
-                className="topbar-command-palette"
-                onClick={() =>
-                    modalsModel.isModalOpen("CommandPaletteModal")
-                        ? modalsModel.popModal()
-                        : modalsModel.pushModal("CommandPaletteModal")
-                }
-            >
-                <Icon name="command" size={14} strokeWidth={1.75} />
-            </button>
+            <ToolbarButton
+                icon="message-01"
+                label="Agent Sessions"
+                active={sessionsVisible}
+                onClick={() => model.setSessionsPanelVisible(!model.getSessionsPanelVisible())}
+            />
         </div>
     );
 });
@@ -248,7 +234,7 @@ export const TopBar = memo(({ workspace, showTabs = true, onPointerDownCapture }
             {/* ① mac traffic lights spacer (h-10) */}
             <div className="topbar-traffic-spacer" />
 
-            {/* ② left chrome: file explorer + command palette */}
+            {/* ② left chrome: file explorer + agent sessions */}
             <LeftChrome />
             <span className="topbar-vsep" />
 
