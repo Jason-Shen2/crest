@@ -13,12 +13,18 @@ import {
 import { presentObservation, type ObservationCategory, type ObservationPresentation } from "./observation-presentation";
 import { ObservationRow } from "./observation-row";
 
-interface TimelineRow {
+export interface TimelineRow {
     observation: AgentObservabilityObservation;
     presentation: ObservationPresentation;
     category: ObservationCategory;
     searchableText: string;
     relativeTime: string;
+}
+
+export interface TimelineRowsCache {
+    traceId: string;
+    sourceObservationIds: string[];
+    rows: TimelineRow[];
 }
 
 interface ObservationTimelineProps {
@@ -45,25 +51,54 @@ function formatRelativeTime(startTime: string, traceTimestamp: string): string {
     return `+${Math.max(0, offsetMs / 1000).toFixed(1)}s`;
 }
 
-function makeTimelineRows(graph: AgentObservabilityTraceGraph): TimelineRow[] {
-    return graph.observations
+function makeTimelineRow(observation: AgentObservabilityObservation, traceTimestamp: string): TimelineRow {
+    const presentation = presentObservation(observation);
+    return {
+        observation,
+        presentation,
+        category: presentation.category,
+        searchableText: presentation.searchableText,
+        relativeTime: formatRelativeTime(observation.startTime, traceTimestamp),
+    };
+}
+
+export function buildTimelineRows(
+    graph: AgentObservabilityTraceGraph,
+    previous?: TimelineRowsCache
+): TimelineRowsCache {
+    const observations = graph.observations.filter((observation) => observation.type !== "AGENT");
+    const tailObservation = observations[observations.length - 1];
+    const canReuseStreamingPrefix =
+        previous?.traceId === graph.trace.id &&
+        observations.length > 0 &&
+        observations.length === previous.sourceObservationIds.length &&
+        tailObservation.type === "GENERATION" &&
+        tailObservation.endTime == null &&
+        previous.rows[previous.rows.length - 1]?.observation.id === tailObservation.id &&
+        previous.rows.slice(0, -1).every((row) => row.observation.endTime != null) &&
+        observations.every((observation, index) => observation.id === previous.sourceObservationIds[index]);
+
+    if (canReuseStreamingPrefix) {
+        return {
+            traceId: graph.trace.id,
+            sourceObservationIds: previous.sourceObservationIds,
+            rows: [...previous.rows.slice(0, -1), makeTimelineRow(tailObservation, graph.trace.timestamp)],
+        };
+    }
+
+    const rows = observations
         .map((observation, index) => ({ observation, index }))
-        .filter(({ observation }) => observation.type !== "AGENT")
         .sort(
             (left, right) =>
                 new Date(left.observation.startTime).getTime() - new Date(right.observation.startTime).getTime() ||
                 left.index - right.index
         )
-        .map(({ observation }) => {
-            const presentation = presentObservation(observation);
-            return {
-                observation,
-                presentation,
-                category: presentation.category,
-                searchableText: presentation.searchableText,
-                relativeTime: formatRelativeTime(observation.startTime, graph.trace.timestamp),
-            };
-        });
+        .map(({ observation }) => makeTimelineRow(observation, graph.trace.timestamp));
+    return {
+        traceId: graph.trace.id,
+        sourceObservationIds: observations.map((observation) => observation.id),
+        rows,
+    };
 }
 
 export function ObservationTimeline({
@@ -83,10 +118,10 @@ export function ObservationTimeline({
 }: ObservationTimelineProps) {
     const scrollRef = useRef<HTMLDivElement>(null);
     const autoScrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-    const rows = useMemo(
-        () => filterTimelineRows(makeTimelineRows(graph), query, categories),
-        [graph, query, categories]
-    );
+    const rowsCacheRef = useRef<TimelineRowsCache>(undefined);
+    const rowsCache = useMemo(() => buildTimelineRows(graph, rowsCacheRef.current), [graph]);
+    rowsCacheRef.current = rowsCache;
+    const rows = useMemo(() => filterTimelineRows(rowsCache.rows, query, categories), [rowsCache, query, categories]);
     const rowVirtualizer = useVirtualizer({
         count: rows.length,
         getScrollElement: () => scrollRef.current,
@@ -98,7 +133,11 @@ export function ObservationTimeline({
         initialOffset: scrollOffset,
     });
     const tailRow = rows[rows.length - 1];
-    const tailContentVersion = tailRow ? JSON.stringify([tailRow.searchableText, tailRow.presentation.badges]) : "";
+    const tailContentVersion = tailRow
+        ? [tailRow.searchableText, ...tailRow.presentation.badges.flatMap((badge) => [badge.label, badge.tone])].join(
+              "\u0000"
+          )
+        : "";
 
     useEffect(() => {
         rowVirtualizer.measure();

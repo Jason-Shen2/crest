@@ -44,7 +44,9 @@ function isAssistantMessage(message: unknown): message is {
     return asRecord(message).role === "assistant";
 }
 
-function isUserMessage(message: unknown): message is { role: "user"; content?: Array<{ type: string; text?: string }> } {
+function isUserMessage(
+    message: unknown
+): message is { role: "user"; content?: Array<{ type: string; text?: string }> } {
     return asRecord(message).role === "user";
 }
 
@@ -125,6 +127,8 @@ export class LangfuseTraceBuilder {
                 return this.startTrace(input.sessionPath, input.event);
             case "message_start":
                 return this.handleMessageStart(input.sessionPath, input.event.message);
+            case "message_update":
+                return this.updateGenerationFromMessage(input.sessionPath, input.event.message);
             case "after_provider_response":
                 return this.updateGenerationResponse(input.sessionPath, input.event);
             case "message_end":
@@ -222,6 +226,16 @@ export class LangfuseTraceBuilder {
         return cloneGraph(state.graph);
     }
 
+    private updateGenerationFromMessage(sessionPath: string, message: unknown): TraceGraph | undefined {
+        const state = this.requireState(sessionPath);
+        const observation = state ? this.findObservation(state, state.activeGenerationId) : undefined;
+        if (!state || !observation || !isAssistantMessage(message)) {
+            return state ? cloneGraph(state.graph) : undefined;
+        }
+        observation.output = assistantText(message);
+        return cloneGraph(state.graph);
+    }
+
     private endGenerationFromMessage(sessionPath: string, message: unknown): TraceGraph | undefined {
         const state = this.requireState(sessionPath);
         const observation = state ? this.findObservation(state, state.activeGenerationId) : undefined;
@@ -247,7 +261,10 @@ export class LangfuseTraceBuilder {
         return this.endGenerationFromMessage(sessionPath, event.message);
     }
 
-    private updateTraceInputFromUserMessage(sessionPath: string, event: Record<string, unknown>): TraceGraph | undefined {
+    private updateTraceInputFromUserMessage(
+        sessionPath: string,
+        event: Record<string, unknown>
+    ): TraceGraph | undefined {
         const state = this.requireState(sessionPath);
         if (!state || !isUserMessage(event.message)) return state ? cloneGraph(state.graph) : undefined;
         const text = messageText(event.message);
@@ -288,9 +305,12 @@ export class LangfuseTraceBuilder {
         const state = this.requireState(sessionPath);
         if (!state) return undefined;
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
-        const observation = this.findObservation(state, toolCallId ? state.activeToolObservationIds.get(toolCallId) : undefined);
+        const observation = this.findObservation(
+            state,
+            toolCallId ? state.activeToolObservationIds.get(toolCallId) : undefined
+        );
         if (!observation) return cloneGraph(state.graph);
-        const toolName = typeof event.toolName === "string" ? event.toolName : observation.name ?? "tool";
+        const toolName = typeof event.toolName === "string" ? event.toolName : (observation.name ?? "tool");
         const isError = event.isError === true;
         observation.endTime = this.now();
         observation.output = {
@@ -320,7 +340,11 @@ export class LangfuseTraceBuilder {
         return cloneGraph(state.graph);
     }
 
-    private finishTrace(sessionPath: string, status: TraceStatus, event: Record<string, unknown>): TraceGraph | undefined {
+    private finishTrace(
+        sessionPath: string,
+        status: TraceStatus,
+        event: Record<string, unknown>
+    ): TraceGraph | undefined {
         const state = this.requireState(sessionPath);
         if (!state) return undefined;
         const endedAt = this.now();
@@ -333,7 +357,9 @@ export class LangfuseTraceBuilder {
         return cloneGraph(state.graph);
     }
 
-    private makeObservation(input: Partial<LangfuseObservation> & { traceId: string; type: LangfuseObservation["type"] }): LangfuseObservation {
+    private makeObservation(
+        input: Partial<LangfuseObservation> & { traceId: string; type: LangfuseObservation["type"] }
+    ): LangfuseObservation {
         return {
             id: input.id ?? this.createId("observation"),
             traceId: input.traceId,

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
 import { presentObservation } from "./observation-presentation";
 import { ObservationRow } from "./observation-row";
-import { ObservationTimeline } from "./observation-timeline";
+import { buildTimelineRows, ObservationTimeline } from "./observation-timeline";
 
 const VirtualizerHarness = vi.hoisted(() => ({
     scrollToIndex: vi.fn(),
@@ -145,6 +145,72 @@ function renderTimeline(graph: AgentObservabilityTraceGraph, overrides: Record<s
 }
 
 describe("ObservationTimeline real events", () => {
+    it("reuses the stable row prefix when only the active generation tail streams", () => {
+        const graph = makeGraphWithObservations("trace-cache", "Cached run", [
+            makeObservation("first", {
+                type: "EVENT",
+                name: "model_change",
+                endTime: "2026-07-19T00:00:01.000Z",
+            }),
+            makeObservation("second", {
+                type: "TOOL",
+                name: "read_file",
+                endTime: "2026-07-19T00:00:02.000Z",
+            }),
+            makeObservation("generation", {
+                output: "first token",
+                endTime: null,
+                startTime: "2026-07-19T00:00:03.000Z",
+            }),
+        ]);
+        const first = buildTimelineRows(graph);
+        const updated = buildTimelineRows(
+            {
+                ...graph,
+                observations: graph.observations.map((observation) => ({
+                    ...observation,
+                    output: observation.id === "generation" ? "first token second token" : observation.output,
+                })),
+            },
+            first
+        );
+
+        expect(updated.rows[0]).toBe(first.rows[0]);
+        expect(updated.rows[1]).toBe(first.rows[1]);
+        expect(updated.rows[2]).not.toBe(first.rows[2]);
+    });
+
+    it("rebuilds the prefix when an earlier observation is still active", () => {
+        const graph = makeGraphWithObservations("trace-active-prefix", "Active prefix run", [
+            makeObservation("tool", {
+                type: "TOOL",
+                name: "read_file",
+                output: null,
+                endTime: null,
+            }),
+            makeObservation("generation", {
+                output: "first token",
+                endTime: null,
+                startTime: "2026-07-19T00:00:03.000Z",
+            }),
+        ]);
+        const first = buildTimelineRows(graph);
+        const updated = buildTimelineRows(
+            {
+                ...graph,
+                observations: graph.observations.map((observation) => ({
+                    ...observation,
+                    endTime: observation.id === "tool" ? "2026-07-19T00:00:04.000Z" : observation.endTime,
+                    output: observation.id === "tool" ? "file contents" : "first token second token",
+                })),
+            },
+            first
+        );
+
+        expect(updated.rows[0]).not.toBe(first.rows[0]);
+        expect(updated.rows[0].presentation.summary).toBe("file contents");
+    });
+
     it("sticks to the live tail when the last observation content grows without adding a row", () => {
         VirtualizerHarness.scrollToIndex.mockClear();
         const observation = makeObservation("generation");

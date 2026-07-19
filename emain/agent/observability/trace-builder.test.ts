@@ -77,6 +77,25 @@ describe("LangfuseTraceBuilder", () => {
             builder.applyEvent({
                 sessionPath,
                 event: {
+                    type: "message_update",
+                    message: {
+                        role: "assistant",
+                        content: [{ type: "text", text: "Observed" }],
+                    },
+                    assistantMessageEvent: { type: "text_delta", delta: "Observed" },
+                } as any,
+            })
+        );
+
+        expect(graph.observations[1]).toMatchObject({
+            endTime: null,
+            output: "Observed",
+        });
+
+        graph = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
                     type: "message_end",
                     message: {
                         role: "assistant",
