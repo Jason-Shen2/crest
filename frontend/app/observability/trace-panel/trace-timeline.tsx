@@ -30,9 +30,9 @@ export function TraceTimeline() {
                 if (traceStartTime == null || !Number.isFinite(startTime)) {
                     return { ...item, startOffset: null, width: null, duration: null };
                 }
-                const duration = item.node.endTime
-                    ? Math.max(0, (item.node.endTime.getTime() - item.node.startTime.getTime()) / 1000)
-                    : 0;
+                const endTime = item.node.endTime?.getTime();
+                const duration =
+                    endTime != null && Number.isFinite(endTime) ? Math.max(0, (endTime - startTime) / 1000) : 0;
                 const startOffset = ((startTime - traceStartTime.getTime()) / 1000 / traceDuration) * ScaleWidth;
                 return {
                     ...item,

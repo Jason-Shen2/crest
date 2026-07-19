@@ -83,6 +83,24 @@ function makeDetailWithAllInvalidTimes(): TraceDetail {
     };
 }
 
+function makeRunningDetailWithInvalidEndTime(): TraceDetail {
+    const detail = makeDetail([]);
+    return {
+        ...detail,
+        trace: {
+            ...detail.trace,
+            status: "running",
+            endedAt: undefined,
+        },
+        observations: [
+            makeObservation("generation-running", {
+                startTime: "2026-07-20T08:00:01.000Z",
+                endTime: "not-a-date",
+            }),
+        ],
+    };
+}
+
 function ContextProbe({ detail }: { detail: TraceDetail }) {
     return (
         <TraceDataProvider detail={detail}>
@@ -160,6 +178,23 @@ describe("trace context", () => {
         const timelineRows = screen.getAllByLabelText(/timeline bar$/);
         expect(timelineRows).toHaveLength(2);
         expect(timelineRows.every((row) => row.childElementCount === 0)).toBe(true);
+    });
+
+    it("renders an invalid end time as a running zero-duration row without NaN", () => {
+        const { container } = render(
+            <ViewHarness detail={makeRunningDetailWithInvalidEndTime()}>
+                <TraceTimeline />
+            </ViewHarness>
+        );
+        const runningRow = screen.getByRole("button", { name: "assistant response timeline bar" });
+        const geometry = runningRow.querySelector<HTMLElement>("span[style]");
+        expect(runningRow.textContent).toBe("0ms");
+        expect(geometry?.style.width).toBe("3px");
+        expect(container.textContent).not.toContain("NaN");
+        const inlineStyles = Array.from(container.querySelectorAll<HTMLElement>("[style]"))
+            .map((element) => element.style.cssText)
+            .join(" ");
+        expect(inlineStyles).not.toContain("NaN");
     });
 
     it("shows the synthetic trace root as selected in the tree", () => {
