@@ -4,12 +4,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
+import type { Model } from "../ai";
 import type { AgentHarnessHost } from "./harness-factory";
 import {
     buildPersistedTurnsFromSessionEntries,
     AgentSessionRuntime,
 } from "./agent-session-runtime";
-import type { AgentMessage } from "./types";
+import type { AgentMessage, ThinkingLevel } from "./types";
 import type { SessionTreeEntry } from "./harness/types";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
@@ -32,6 +33,20 @@ function makeFakeHarness() {
         getLeafId: vi.fn().mockResolvedValue(null),
         getLabel: vi.fn().mockResolvedValue(undefined),
     };
+    const model = {
+        id: "model-1",
+        name: "Model 1",
+        api: "openai-completions",
+        provider: "openai",
+        baseUrl: "http://localhost",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1000,
+        maxTokens: 1000,
+    } as Model<any>;
+    let currentModel = model;
+    let thinkingLevel: ThinkingLevel = "off";
     const harness = {
         subscribe(listener: (event: unknown) => void) {
             listeners.add(listener);
@@ -64,9 +79,18 @@ function makeFakeHarness() {
             return navigateTreeResult();
         },
         isIdle: vi.fn(() => true),
+        getModel: vi.fn(() => currentModel),
+        setModel: vi.fn(async (next: Model<any>) => {
+            currentModel = next;
+        }),
+        getThinkingLevel: vi.fn(() => thinkingLevel),
+        setThinkingLevel: vi.fn(async (next: ThinkingLevel) => {
+            thinkingLevel = next;
+        }),
     };
     return {
         calls,
+        model,
         session,
         emit(event: unknown) {
             for (const l of listeners) l(event);
@@ -84,6 +108,10 @@ function makeFakeHarness() {
             appendCustomEntry: harness.appendCustomEntry,
             promptWithCustomEntry: harness.promptWithCustomEntry,
             update: vi.fn(),
+            setAuthResolver: vi.fn(),
+            setToolCallHook: vi.fn(),
+            resolveAuth: vi.fn(),
+            runToolCallHook: vi.fn(),
         } as unknown as AgentHarnessHost,
     };
 }
@@ -664,6 +692,56 @@ describe("AgentSessionRuntime — status tracking", () => {
         fake.emit({ type: "agent_end", messages: [assistant("", "error", "rate limited")] });
         state = owner.getSessionState();
         expect(state.status).toBe("error");
+    });
+});
+
+describe("AgentSessionRuntime — execution config", () => {
+    it("applies changed execution config before sending", async () => {
+        const fake = makeFakeHarness();
+        const runtime = new AgentSessionRuntime("/s", fake.pane);
+        const nextModel = { ...fake.model, id: "next-model" };
+        const authResolver = vi.fn();
+        const toolCallHook = vi.fn();
+        const send = vi.spyOn(runtime, "send").mockResolvedValue("entry-1");
+
+        await runtime.sendWithExecutionConfig("hello", {
+            promptInputs: { cwd: "/next" },
+            model: nextModel,
+            thinkingLevel: "high",
+            authResolver,
+            toolCallHook,
+        });
+
+        expect(fake.pane.update).toHaveBeenCalledWith({ cwd: "/next" });
+        expect(fake.pane.setAuthResolver).toHaveBeenCalledWith(authResolver);
+        expect(fake.pane.setToolCallHook).toHaveBeenCalledWith(toolCallHook);
+        expect(fake.pane.harness.setModel).toHaveBeenCalledWith(nextModel);
+        expect(fake.pane.harness.setThinkingLevel).toHaveBeenCalledWith("high");
+        expect(send).toHaveBeenCalledWith("hello");
+    });
+
+    it("serializes config application with each send", async () => {
+        const fake = makeFakeHarness();
+        const runtime = new AgentSessionRuntime("/s", fake.pane);
+        const seenModels: string[] = [];
+        vi.spyOn(runtime, "send").mockImplementation(async (text) => {
+            seenModels.push(fake.pane.harness.getModel().id);
+            return text;
+        });
+
+        const first = runtime.sendWithExecutionConfig("entry-1", {
+            promptInputs: { cwd: "/one" },
+            model: { ...fake.model, id: "model-2" },
+            thinkingLevel: "low",
+        });
+        const second = runtime.sendWithExecutionConfig("entry-2", {
+            promptInputs: { cwd: "/two" },
+            model: { ...fake.model, id: "model-3" },
+            thinkingLevel: "high",
+        });
+
+        await expect(Promise.all([first, second])).resolves.toEqual(["entry-1", "entry-2"]);
+        expect(seenModels).toEqual(["model-2", "model-3"]);
     });
 });
 

@@ -13,12 +13,16 @@
 
 import type { Api, Model } from "../ai";
 import { AgentHarness } from "./harness/agent-harness";
-import type { Session, Skill } from "./harness/types";
+import type { Session, Skill, ToolCallEvent, ToolCallResult } from "./harness/types";
 import { NodeExecutionEnv } from "./node";
 import type { ToolCallHook } from "./permissions";
 import type { ProjectContextFile } from "./resource-loader";
 import type { AgentTool, ThinkingLevel } from "./types";
 import { buildSystemPrompt, type SystemPromptInputs } from "./build-system-prompt";
+
+export type AgentAuthResolver = (
+    model: Model<Api>
+) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
 
 export interface BuildAgentHarnessHostOptions {
     /** Session this pane is bound to. Mint via createPaneSession() first. */
@@ -59,9 +63,7 @@ export interface BuildAgentHarnessHostOptions {
      * layer resolves the key (literal token or secretstore lookup) and
      * passes it here.
      */
-    getApiKeyAndHeaders?: (
-        model: Model<Api>,
-    ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
+    getApiKeyAndHeaders?: AgentAuthResolver;
 }
 
 export interface AgentHarnessHost {
@@ -70,6 +72,10 @@ export interface AgentHarnessHost {
     readonly session: Session;
     appendCustomEntry(customType: string, data?: unknown): Promise<void>;
     promptWithCustomEntry(customType: string, data: unknown, text: string): Promise<unknown>;
+    setAuthResolver(resolver?: AgentAuthResolver): void;
+    setToolCallHook(hook?: ToolCallHook): void;
+    resolveAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
+    runToolCallHook(event: ToolCallEvent): Promise<ToolCallResult | undefined>;
     /**
      * Refresh pane state. Mutates the harness's env.cwd (so tool
      * execution targets the latest dir) and the system-prompt input
@@ -82,6 +88,8 @@ export interface AgentHarnessHost {
 
 export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): AgentHarnessHost {
     let inputs: SystemPromptInputs = opts.promptInputs;
+    let authResolver = opts.getApiKeyAndHeaders;
+    let toolCallHook = opts.toolCallHook;
     // env.cwd is publicly mutable on NodeExecutionEnv (harness/env/nodejs.ts:218);
     // we keep one env for the harness's lifetime and mutate it in place.
     const env = new NodeExecutionEnv({ cwd: inputs.cwd });
@@ -113,20 +121,27 @@ export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): Agent
                 skills: opts.skills,
             });
         },
-        getApiKeyAndHeaders: opts.getApiKeyAndHeaders,
+        getApiKeyAndHeaders: async (model) => authResolver?.(model),
     });
-    if (opts.toolCallHook) {
-        // AgentHarness gates tool execution via the typed "tool_call"
-        // event hook; .on() returns an unsubscribe we ignore because
-        // the harness lifetime IS the hook lifetime.
-        harness.on("tool_call", opts.toolCallHook);
-    }
+    harness.on("tool_call", async (event) => toolCallHook?.(event));
     return {
         harness,
         session: opts.session,
         appendCustomEntry: (customType: string, data?: unknown) => harness.appendCustomEntry(customType, data),
         promptWithCustomEntry: (customType: string, data: unknown, text: string) =>
             harness.promptWithCustomEntry(customType, data, text),
+        setAuthResolver(next): void {
+            authResolver = next;
+        },
+        setToolCallHook(next): void {
+            toolCallHook = next;
+        },
+        async resolveAuth(model): Promise<{ apiKey: string; headers?: Record<string, string> } | undefined> {
+            return authResolver?.(model);
+        },
+        async runToolCallHook(event): Promise<ToolCallResult | undefined> {
+            return toolCallHook?.(event);
+        },
         update(next: SystemPromptInputs): void {
             inputs = next;
             env.cwd = next.cwd;
