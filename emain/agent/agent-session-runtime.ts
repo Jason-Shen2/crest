@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// pane-agent-session.ts — the per-session conversation OWNER.
+// agent-session-runtime.ts — the per-session conversation OWNER.
 //
 // This is pi's `AgentSession` aggregator pattern, applied at the
 // AgentHarness layer and adapted for crest's process split. pi's own
@@ -39,7 +39,7 @@ import type { AgentHarnessHost } from "./harness-factory";
 import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
 import type { AgentMessage } from "./types";
 
-export type PaneSessionStatus = "idle" | "streaming" | "error";
+export type AgentSessionRuntimeStatus = "idle" | "streaming" | "error";
 export type AgentTurnStatus = "streaming" | "done" | "error";
 
 export interface AgentTurn {
@@ -58,29 +58,29 @@ export interface AgentTurn {
  * subscriber so a renderer that attaches late (or re-attaches) mirrors the
  * authoritative state instead of reconstructing it from a partial stream.
  */
-export interface PaneSessionState {
+export interface AgentSessionRuntimeState {
     messages: AgentMessage[];
     turns: AgentTurn[];
     steerQueue: AgentMessage[];
     followUpQueue: AgentMessage[];
-    status: PaneSessionStatus;
+    status: AgentSessionRuntimeStatus;
     errorMessage?: string;
 }
 
-export type PaneSessionListener = (event: AgentHarnessEvent) => void;
-export type PaneTurnFinishedHook = (turn: AgentTurn) => void | Promise<void>;
+export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
+export type AgentTurnFinishedHook = (turn: AgentTurn) => void | Promise<void>;
 
-interface PaneSessionStateEvent {
+interface AgentSessionRuntimeStateEvent {
     type: "session_state";
     messages: AgentMessage[];
     turns: AgentTurn[];
-    status: PaneSessionStatus;
+    status: AgentSessionRuntimeStatus;
     steer: AgentMessage[];
     followUp: AgentMessage[];
 }
 
-export interface PaneAgentSessionOptions {
-    onTurnFinished?: PaneTurnFinishedHook;
+export interface AgentSessionRuntimeOptions {
+    onTurnFinished?: AgentTurnFinishedHook;
 }
 
 function isErroredAssistant(message: AgentMessage): boolean {
@@ -118,7 +118,7 @@ export function buildPersistedTurnsFromSessionEntries(entries: SessionTreeEntry[
     return turns;
 }
 
-export class PaneAgentSession {
+export class AgentSessionRuntime {
     readonly path: string;
     pane: AgentHarnessHost;
 
@@ -126,7 +126,7 @@ export class PaneAgentSession {
     turns: AgentTurn[] = [];
     steerQueue: AgentMessage[] = [];
     followUpQueue: AgentMessage[] = [];
-    status: PaneSessionStatus = "idle";
+    status: AgentSessionRuntimeStatus = "idle";
     errorMessage: string | undefined;
     activeTurnId: string | undefined;
     // Resolvers for in-flight send() promises, awaiting the userEntryId that
@@ -139,16 +139,16 @@ export class PaneAgentSession {
     // the run, the rest queue via followUp. Cleared when the run settles.
     running = false;
 
-    listeners = new Set<PaneSessionListener>();
+    listeners = new Set<AgentSessionRuntimeListener>();
     unsubscribeHarness: () => void;
-    onTurnFinished: PaneTurnFinishedHook | undefined;
+    onTurnFinished: AgentTurnFinishedHook | undefined;
 
     constructor(
         path: string,
         pane: AgentHarnessHost,
         initialMessages: AgentMessage[] = [],
         initialTurns: AgentTurn[] = [],
-        options: PaneAgentSessionOptions = {}
+        options: AgentSessionRuntimeOptions = {}
     ) {
         this.path = path;
         this.pane = pane;
@@ -255,7 +255,7 @@ export class PaneAgentSession {
         }
     }
 
-    getSessionState(): PaneSessionState {
+    getSessionState(): AgentSessionRuntimeState {
         return {
             messages: this.messages,
             turns: this.turns,
@@ -266,7 +266,7 @@ export class PaneAgentSession {
         };
     }
 
-    subscribe(listener: PaneSessionListener): () => void {
+    subscribe(listener: AgentSessionRuntimeListener): () => void {
         this.listeners.add(listener);
         return () => {
             this.listeners.delete(listener);
@@ -495,7 +495,7 @@ export class PaneAgentSession {
     }
 
     private emitSessionState(): void {
-        const event: PaneSessionStateEvent = {
+        const event: AgentSessionRuntimeStateEvent = {
             type: "session_state",
             messages: this.messages,
             turns: this.turns,

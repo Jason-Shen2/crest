@@ -7,14 +7,14 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentHarnessHost } from "./harness-factory";
 import {
     buildPersistedTurnsFromSessionEntries,
-    PaneAgentSession,
-} from "./pane-agent-session";
+    AgentSessionRuntime,
+} from "./agent-session-runtime";
 import type { AgentMessage } from "./types";
 import type { SessionTreeEntry } from "./harness/types";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
 // test drive the event stream via emit(). Mirrors the only surface
-// PaneAgentSession touches.
+// AgentSessionRuntime touches.
 function makeFakeHarness() {
     const listeners = new Set<(event: unknown) => void>();
     const calls = {
@@ -109,16 +109,24 @@ describe("AgentHarnessHost naming", () => {
     });
 });
 
-describe("PaneAgentSession — owned transcript", () => {
+describe("AgentSessionRuntime naming", () => {
+    it("exports the session owner without pane terminology", () => {
+        const source = readFileSync(new URL("./agent-session-runtime.ts", import.meta.url), "utf8");
+        expect(source).toContain("export class AgentSessionRuntime");
+        expect(source).not.toContain("export class PaneAgentSession");
+    });
+});
+
+describe("AgentSessionRuntime — owned transcript", () => {
     it("subscribes to the harness once at construction", () => {
         const fake = makeFakeHarness();
-        new PaneAgentSession("/s", fake.pane);
+        new AgentSessionRuntime("/s", fake.pane);
         expect(fake.listenerCount()).toBe(1);
     });
 
     it("appends on message_start and replaces the tail on update/end", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         fake.emit({ type: "message_start", message: user("hi") });
         fake.emit({ type: "message_start", message: assistant("par") });
         fake.emit({ type: "message_update", message: assistant("partial") });
@@ -132,7 +140,7 @@ describe("PaneAgentSession — owned transcript", () => {
     it("seeds the transcript from persisted history (reopened session)", () => {
         const fake = makeFakeHarness();
         const history = [user("old q"), assistant("old a", "stop")];
-        const owner = new PaneAgentSession("/s", fake.pane, history);
+        const owner = new AgentSessionRuntime("/s", fake.pane, history);
         expect(owner.getSessionState().messages).toBe(history);
     });
 
@@ -142,7 +150,7 @@ describe("PaneAgentSession — owned transcript", () => {
         // prior turns → their blocks went "…loading agent turn…". The owner
         // must keep the incrementally-built array.
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         fake.emit({ type: "message_start", message: user("q1") });
         fake.emit({ type: "message_start", message: assistant("a1") });
         fake.emit({ type: "message_end", message: assistant("a1", "stop") });
@@ -153,7 +161,7 @@ describe("PaneAgentSession — owned transcript", () => {
 
     it("accumulates messages across multiple turns (turn-scoped agent_end ignored)", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         // Turn 1
         fake.emit({ type: "message_start", message: user("q1") });
         fake.emit({ type: "message_end", message: user("q1") });
@@ -173,7 +181,7 @@ describe("PaneAgentSession — owned transcript", () => {
     });
 });
 
-describe("PaneAgentSession — command operations", () => {
+describe("AgentSessionRuntime — command operations", () => {
     it("lists session tree entries through the pane harness session", async () => {
         const fake = makeFakeHarness();
         const entry = { type: "message", id: "1", parentId: null, timestamp: "t", message: user("hello") };
@@ -181,7 +189,7 @@ describe("PaneAgentSession — command operations", () => {
         fake.session.getLeafId.mockResolvedValue("1");
         fake.session.getLabel.mockResolvedValue("Intro");
 
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const result = await owner.listTreeEntries();
 
         expect(result.entries).toEqual([entry]);
@@ -196,7 +204,7 @@ describe("PaneAgentSession — command operations", () => {
         fake.session.getEntries.mockResolvedValue([message, leaf]);
         fake.session.getLeafId.mockResolvedValue("1");
 
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const result = await owner.listTreeEntries();
 
         expect(result.entries).toEqual([message]);
@@ -226,7 +234,7 @@ describe("PaneAgentSession — command operations", () => {
         fake.session.getEntries.mockResolvedValue([leafEntry, labelEntry, userMsg, asstMsg]);
         fake.session.getLeafId.mockResolvedValue("m2");
 
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const result = await owner.listTreeEntries();
 
         expect(result.entries).toHaveLength(2);
@@ -248,7 +256,7 @@ describe("PaneAgentSession — command operations", () => {
         fake.session.getEntries.mockResolvedValue([customEntry, userMsg]);
         fake.session.getLeafId.mockResolvedValue("m1");
 
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const result = await owner.listTreeEntries();
 
         expect(result.entries).toEqual([customEntry, userMsg]);
@@ -257,7 +265,7 @@ describe("PaneAgentSession — command operations", () => {
     it("navigates the session tree without branch summarization", async () => {
         const fake = makeFakeHarness();
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "edit this" }));
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
 
         const result = await owner.navigateTree("entry-1");
 
@@ -287,7 +295,7 @@ describe("PaneAgentSession — command operations", () => {
             },
         ];
         fake.session.getBranch.mockResolvedValue(branchEntries);
-        const owner = new PaneAgentSession("/s", fake.pane, oldMessages);
+        const owner = new AgentSessionRuntime("/s", fake.pane, oldMessages);
         const seen: unknown[] = [];
         owner.subscribe((event) => seen.push(event));
 
@@ -331,7 +339,7 @@ describe("PaneAgentSession — command operations", () => {
             { type: "message", id: "a1", parentId: "m1", timestamp: "2026-01-01T00:00:02.000Z", message: a1 },
         ];
         fake.session.getBranch.mockResolvedValue(branchAfterNavigate);
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         owner.subscribe(() => {});
 
         // navigateTree targetId=m2 (a user message); harness returns editorText and
@@ -359,7 +367,7 @@ describe("PaneAgentSession — command operations", () => {
             { type: "message", id: "m1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: m1 },
         ];
         fake.session.getBranch.mockResolvedValue(branchAfterNavigate);
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         owner.subscribe(() => {});
 
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "first question" }));
@@ -376,7 +384,7 @@ describe("PaneAgentSession — command operations", () => {
     it("returns an empty navigation result when tree navigation is cancelled", async () => {
         const fake = makeFakeHarness();
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: true }));
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
 
         await expect(owner.navigateTree("entry-1")).resolves.toEqual({});
     });
@@ -384,16 +392,16 @@ describe("PaneAgentSession — command operations", () => {
     it("reads the active leaf id from the pane harness session", async () => {
         const fake = makeFakeHarness();
         fake.session.getLeafId.mockResolvedValue("leaf-1");
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
 
         await expect(owner.getLeafId()).resolves.toBe("leaf-1");
     });
 });
 
-describe("PaneAgentSession — owned turns", () => {
+describe("AgentSessionRuntime — owned turns", () => {
     it("builds a completed turn keyed by the user entry id", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const q = user("hello");
         const partial = assistant("hel");
         const final = assistant("hello back", "stop");
@@ -417,7 +425,7 @@ describe("PaneAgentSession — owned turns", () => {
 
     it("resolves send() with the user entry id from the message_end event", async () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const q = user("hello");
 
         const sendPromise = owner.send("hello");
@@ -429,7 +437,7 @@ describe("PaneAgentSession — owned turns", () => {
 
     it("rejects a pending send() promise on abort (queued followUp never commits)", async () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
 
         const sendPromise = owner.send("hello");
         // No user message_end arrives; the user aborts. abort() clears the
@@ -448,7 +456,7 @@ describe("PaneAgentSession — owned turns", () => {
 
     it("rejects a pending send() promise on dispose()", async () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
 
         const sendPromise = owner.send("hello");
         owner.dispose();
@@ -458,7 +466,7 @@ describe("PaneAgentSession — owned turns", () => {
 
     it("calls harness.prompt directly without inserting a turn-boundary custom entry", async () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
 
         void owner.send("hello");
         await flush();
@@ -469,7 +477,7 @@ describe("PaneAgentSession — owned turns", () => {
 
     it("marks the active turn errored from an errored assistant message", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const q = user("hello");
         const final = assistant("", "error", "rate limited");
 
@@ -493,7 +501,7 @@ describe("PaneAgentSession — owned turns", () => {
     it("calls onTurnFinished with the completed turn after agent_end", () => {
         const fake = makeFakeHarness();
         const onTurnFinished = vi.fn();
-        const owner = new PaneAgentSession("/s", fake.pane, [], [], { onTurnFinished });
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { onTurnFinished });
         const q = user("hello");
         const final = assistant("hello back", "stop");
 
@@ -514,7 +522,7 @@ describe("PaneAgentSession — owned turns", () => {
 
     it("updates a completed turn change outline and notifies subscribers", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const seen: string[] = [];
         owner.subscribe((event) => seen.push(event.type));
 
@@ -621,10 +629,10 @@ describe("buildPersistedTurnsFromSessionEntries", () => {
     });
 });
 
-describe("PaneAgentSession — status tracking", () => {
+describe("AgentSessionRuntime — status tracking", () => {
     it("goes streaming on agent_start and idle on agent_end", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         expect(owner.getSessionState().status).toBe("idle");
         fake.emit({ type: "agent_start" });
         expect(owner.getSessionState().status).toBe("streaming");
@@ -634,7 +642,7 @@ describe("PaneAgentSession — status tracking", () => {
 
     it("captures an errored assistant turn and keeps status=error through agent_end", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         fake.emit({ type: "agent_start" });
         fake.emit({ type: "message_start", message: assistant("") });
         fake.emit({ type: "message_end", message: assistant("", "error", "rate limited") });
@@ -648,10 +656,10 @@ describe("PaneAgentSession — status tracking", () => {
     });
 });
 
-describe("PaneAgentSession — queue mirror", () => {
+describe("AgentSessionRuntime — queue mirror", () => {
     it("mirrors the steer/followUp queues from queue_update", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         fake.emit({ type: "queue_update", steer: [user("s1")], followUp: [user("f1"), user("f2")] });
         const state = owner.getSessionState();
         expect(state.steerQueue).toHaveLength(1);
@@ -659,10 +667,10 @@ describe("PaneAgentSession — queue mirror", () => {
     });
 });
 
-describe("PaneAgentSession — send routing (no catch-busy)", () => {
+describe("AgentSessionRuntime — send routing (no catch-busy)", () => {
     it("first send prompts; a concurrent send queues via followUp", async () => {
         const fake = makeFakeHarness(); // prompt() stays pending → running stays true
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         void owner.send("a");
         void owner.send("b");
         await flush();
@@ -673,7 +681,7 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
 
     it("after the run ends (agent_end), the next send prompts again", async () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         void owner.send("a");
         fake.emit({ type: "agent_end", messages: [] }); // clears running
         void owner.send("c");
@@ -685,7 +693,7 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
     it("a prompt rejection clears running and surfaces status=error", async () => {
         const fake = makeFakeHarness();
         fake.setPromptResult(() => Promise.reject(new Error("boom")));
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         owner.send("a").catch(() => {});
         await flush();
         const state = owner.getSessionState();
@@ -698,10 +706,10 @@ describe("PaneAgentSession — send routing (no catch-busy)", () => {
     });
 });
 
-describe("PaneAgentSession — subscriber fan-out", () => {
+describe("AgentSessionRuntime — subscriber fan-out", () => {
     it("forwards harness events to subscribers and stops after unsubscribe", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         const seen: string[] = [];
         const unsub = owner.subscribe((e) => seen.push(e.type));
         fake.emit({ type: "agent_start" });
@@ -713,7 +721,7 @@ describe("PaneAgentSession — subscriber fan-out", () => {
 
     it("a subscriber reading getSessionState() inside its callback sees post-event state", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         let lenAtCallback = -1;
         owner.subscribe(() => {
             lenAtCallback = owner.getSessionState().messages.length;
@@ -724,7 +732,7 @@ describe("PaneAgentSession — subscriber fan-out", () => {
 
     it("dispose() detaches the harness subscription and aborts", () => {
         const fake = makeFakeHarness();
-        const owner = new PaneAgentSession("/s", fake.pane);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
         owner.dispose();
         expect(fake.listenerCount()).toBe(0);
         expect(fake.calls.abort).toBe(1);
