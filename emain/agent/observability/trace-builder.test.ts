@@ -21,6 +21,93 @@ function lastGraph(graph: TraceGraph | undefined): TraceGraph {
 }
 
 describe("LangfuseTraceBuilder", () => {
+    it("maps subscriber-visible generation model metadata", () => {
+        const builder = makeBuilder();
+        const sessionPath = "/tmp/crest/sessions/project/model.db";
+
+        builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
+        const graph = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_start",
+                    message: {
+                        role: "assistant",
+                        content: [],
+                        model: "openrouter/auto",
+                        provider: "openrouter",
+                    },
+                },
+            })
+        );
+        expect(graph.observations[1].model).toBe("openrouter/auto");
+
+        const completedGraph = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_end",
+                    message: {
+                        role: "assistant",
+                        content: [],
+                        model: "openrouter/auto",
+                        responseModel: "anthropic/claude-sonnet-4",
+                        provider: "openrouter",
+                        usage: {},
+                        stopReason: "stop",
+                    },
+                },
+            })
+        );
+
+        expect(completedGraph.observations[1]).toMatchObject({
+            model: "anthropic/claude-sonnet-4",
+            metadata: {
+                provider: "openrouter",
+                requestedModel: "openrouter/auto",
+            },
+        });
+    });
+
+    it("measures generation latency and time to first token from canonical message events", () => {
+        const builder = makeBuilder();
+        const sessionPath = "/tmp/crest/sessions/project/timing.db";
+
+        builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
+        builder.applyEvent({
+            sessionPath,
+            event: { type: "message_start", message: { role: "assistant", content: [] } },
+        });
+        let graph = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_update",
+                    message: { role: "assistant", content: [{ type: "text", text: "First" }] },
+                    assistantMessageEvent: { type: "text_delta", delta: "First" },
+                },
+            })
+        );
+        expect(graph.observations[1].timeToFirstToken).toBe(1);
+
+        graph = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_end",
+                    message: {
+                        role: "assistant",
+                        content: [{ type: "text", text: "Finished" }],
+                        usage: {},
+                        stopReason: "stop",
+                    },
+                },
+            })
+        );
+        expect(graph.observations[1].latency).toBe(2);
+        expect(graph.observations[1].timeToFirstToken).toBe(1);
+    });
+
     it("maps the AgentHarness raw agent event stream into a visible trace", () => {
         const builder = makeBuilder();
         const sessionPath = "/tmp/crest/sessions/project/raw.db";

@@ -40,6 +40,9 @@ function isAssistantMessage(message: unknown): message is {
     };
     stopReason?: string;
     errorMessage?: string;
+    model?: string;
+    responseModel?: string;
+    provider?: string;
 } {
     return asRecord(message).role === "assistant";
 }
@@ -78,6 +81,11 @@ function costDetails(usage: ReturnType<typeof asRecord>): Record<string, number>
         if (typeof value === "number") details[key] = value;
     }
     return details;
+}
+
+function elapsedSeconds(startTime: string, endTime: string): number | null {
+    const elapsedMs = Date.parse(endTime) - Date.parse(startTime);
+    return Number.isFinite(elapsedMs) && elapsedMs >= 0 ? elapsedMs / 1000 : null;
 }
 
 function cloneGraph(graph: TraceGraph): TraceGraph {
@@ -128,7 +136,7 @@ export class LangfuseTraceBuilder {
             case "message_start":
                 return this.handleMessageStart(input.sessionPath, input.event.message);
             case "message_update":
-                return this.updateGenerationFromMessage(input.sessionPath, input.event.message);
+                return this.updateGenerationFromMessage(input.sessionPath, input.event);
             case "after_provider_response":
                 return this.updateGenerationResponse(input.sessionPath, input.event);
             case "message_end":
@@ -209,6 +217,7 @@ export class LangfuseTraceBuilder {
             parentObservationId: state.rootObservationId,
             input: null,
         });
+        this.updateGenerationModel(observation, message);
         state.activeGenerationId = observation.id;
         state.graph.observations.push(observation);
         return cloneGraph(state.graph);
@@ -226,13 +235,25 @@ export class LangfuseTraceBuilder {
         return cloneGraph(state.graph);
     }
 
-    private updateGenerationFromMessage(sessionPath: string, message: unknown): TraceGraph | undefined {
+    private updateGenerationFromMessage(
+        sessionPath: string,
+        event: Record<string, unknown>
+    ): TraceGraph | undefined {
         const state = this.requireState(sessionPath);
         const observation = state ? this.findObservation(state, state.activeGenerationId) : undefined;
+        const message = event.message;
         if (!state || !observation || !isAssistantMessage(message)) {
             return state ? cloneGraph(state.graph) : undefined;
         }
         observation.output = assistantText(message);
+        this.updateGenerationModel(observation, message);
+        const updateType = asRecord(event.assistantMessageEvent).type;
+        if (
+            observation.timeToFirstToken == null &&
+            (updateType === "text_delta" || updateType === "thinking_delta" || updateType === "toolcall_delta")
+        ) {
+            observation.timeToFirstToken = elapsedSeconds(observation.startTime, this.now());
+        }
         return cloneGraph(state.graph);
     }
 
@@ -242,6 +263,8 @@ export class LangfuseTraceBuilder {
         if (!state || !observation || !isAssistantMessage(message)) return state ? cloneGraph(state.graph) : undefined;
         const usage = asRecord(message.usage);
         observation.endTime = this.now();
+        observation.latency = elapsedSeconds(observation.startTime, observation.endTime);
+        this.updateGenerationModel(observation, message);
         observation.output = assistantText(message);
         observation.usageDetails = usageDetails(usage);
         observation.costDetails = costDetails(usage);
@@ -252,6 +275,20 @@ export class LangfuseTraceBuilder {
         }
         state.activeGenerationId = undefined;
         return cloneGraph(state.graph);
+    }
+
+    private updateGenerationModel(
+        observation: LangfuseObservation,
+        message: {
+            model?: string;
+            responseModel?: string;
+            provider?: string;
+        }
+    ): void {
+        const model = message.responseModel ?? message.model;
+        if (model != null) observation.model = model;
+        if (message.provider != null) observation.metadata.provider = message.provider;
+        if (message.model != null) observation.metadata.requestedModel = message.model;
     }
 
     private handleMessageEnd(sessionPath: string, event: Record<string, unknown>): TraceGraph | undefined {
