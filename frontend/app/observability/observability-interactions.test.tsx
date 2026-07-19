@@ -97,6 +97,21 @@ function makeGraph(observation: AgentObservabilityObservation): AgentObservabili
     };
 }
 
+function makeGraphWithObservations(
+    traceId: string,
+    name: string,
+    observations: AgentObservabilityObservation[]
+): AgentObservabilityTraceGraph {
+    const graph = makeGraph(observations[0]);
+    graph.trace = {
+        ...graph.trace,
+        id: traceId,
+        name,
+    };
+    graph.observations = observations.map((observation) => ({ ...observation, traceId }));
+    return graph;
+}
+
 function makeTraceGraph(traceId: string, name: string, observationId: string): AgentObservabilityTraceGraph {
     const graph = makeGraph(makeObservation(observationId, { id: observationId, traceId }));
     graph.trace = {
@@ -150,6 +165,25 @@ describe("ObservationTimeline real events", () => {
         });
     });
 
+    for (const [badgeName, overrides] of [
+        ["duration", { endTime: "2026-07-19T00:00:03.000Z" }],
+        ["model", { model: "claude-opus" }],
+        ["tokens", { usageDetails: { totalTokens: 42 } }],
+        ["cost", { costDetails: { total: 0.125 } }],
+        ["status", { statusMessage: "stream failed" }],
+    ] satisfies Array<[string, Partial<AgentObservabilityObservation>]>) {
+        it(`sticks to the live tail when the visible ${badgeName} badge changes`, () => {
+            const observation = makeObservation("generation");
+            const view = renderTimeline(makeGraph(observation));
+            const callsAfterFirstRender = VirtualizerHarness.scrollToIndex.mock.calls.length;
+
+            view.rerender(<Timeline {...view.props} graph={makeGraph({ ...observation, ...overrides })} />);
+
+            expect(VirtualizerHarness.scrollToIndex.mock.calls.length).toBeGreaterThan(callsAfterFirstRender);
+            view.unmount();
+        });
+    }
+
     it("dispatches keyboard and scroll behavior through DOM events", () => {
         const onSelectObservation = vi.fn();
         const onPauseFollowLive = vi.fn();
@@ -177,6 +211,79 @@ describe("ObservationTimeline real events", () => {
 });
 
 describe("ObservabilityPanel trace state", () => {
+    it("handles the complete timeline keyboard contract through DOM events", async () => {
+        const graph = makeGraphWithObservations("trace-keys", "Keyboard run", [
+            makeObservation("first", { name: "first step", startTime: "2026-07-19T00:00:01.000Z" }),
+            makeObservation("second", { name: "second step", startTime: "2026-07-19T00:00:02.000Z" }),
+            makeObservation("third", { name: "third step", startTime: "2026-07-19T00:00:03.000Z" }),
+        ]);
+        const api: AgentObservabilityApi = {
+            listTraces: vi.fn().mockResolvedValue([graph.trace]),
+            getTrace: vi.fn().mockResolvedValue(graph),
+            subscribe: vi.fn(() => vi.fn()),
+        };
+        const view = render(<ObservabilityPanel api={api} />);
+        await waitFor(() => expect(view.getByRole("listbox")).toBeTruthy());
+        const timeline = view.getByRole("listbox");
+        const first = view.getByRole("button", { name: /First Step/ });
+        const second = view.getByRole("button", { name: /Second Step/ });
+        const third = view.getByRole("button", { name: /Third Step/ });
+
+        fireEvent.keyDown(timeline, { key: "j" });
+        expect(first.className).toContain("border-accent");
+        fireEvent.keyDown(timeline, { key: "G" });
+        expect(third.className).toContain("border-accent");
+        fireEvent.keyDown(timeline, { key: "k" });
+        expect(second.className).toContain("border-accent");
+
+        fireEvent.keyDown(timeline, { key: "Enter" });
+        expect(second.getAttribute("aria-expanded")).toBe("true");
+        fireEvent.keyDown(timeline, { key: " " });
+        expect(second.getAttribute("aria-expanded")).toBe("false");
+        fireEvent.keyDown(timeline, { key: "Enter" });
+        fireEvent.keyDown(timeline, { key: "Escape" });
+        expect(second.getAttribute("aria-expanded")).toBe("false");
+
+        fireEvent.keyDown(timeline, { key: "g" });
+        expect(first.className).toContain("border-accent");
+        fireEvent.keyDown(timeline, { key: "/" });
+        expect(document.activeElement).toBe(view.getByLabelText("Search timeline"));
+    });
+
+    it("scrolls to the last row when Back to live is clicked", async () => {
+        const graph = makeGraphWithObservations("trace-live", "Live run", [
+            makeObservation("first", { name: "first step", startTime: "2026-07-19T00:00:01.000Z" }),
+            makeObservation("second", { name: "second step", startTime: "2026-07-19T00:00:02.000Z" }),
+            makeObservation("third", { name: "third step", startTime: "2026-07-19T00:00:03.000Z" }),
+        ]);
+        const api: AgentObservabilityApi = {
+            listTraces: vi.fn().mockResolvedValue([graph.trace]),
+            getTrace: vi.fn().mockResolvedValue(graph),
+            subscribe: vi.fn(() => vi.fn()),
+        };
+        const view = render(<ObservabilityPanel api={api} />);
+        await waitFor(() => expect(view.getByRole("listbox")).toBeTruthy());
+        const timeline = view.getByRole("listbox");
+        Object.defineProperties(timeline, {
+            scrollHeight: { configurable: true, value: 1000 },
+            clientHeight: { configurable: true, value: 300 },
+            scrollTop: { configurable: true, writable: true, value: 120 },
+        });
+        fireEvent.wheel(timeline);
+        fireEvent.scroll(timeline);
+        const backToLive = await view.findByRole("button", { name: "Back to live" });
+        VirtualizerHarness.scrollToIndex.mockClear();
+
+        fireEvent.click(backToLive);
+
+        await waitFor(() =>
+            expect(VirtualizerHarness.scrollToIndex).toHaveBeenCalledWith(2, {
+                align: "end",
+                behavior: "smooth",
+            })
+        );
+    });
+
     it("restores selection, expansion, follow-live, and scroll offset through real events", async () => {
         VirtualizerHarness.initialOffsets = [];
         const first = makeTraceGraph("trace-1", "First run", "first-observation");

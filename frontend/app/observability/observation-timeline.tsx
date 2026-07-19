@@ -97,7 +97,8 @@ export function ObservationTimeline({
         initialRect: { width: 320, height: 480 },
         initialOffset: scrollOffset,
     });
-    const tailContentVersion = rows.length === 0 ? "" : rows[rows.length - 1].searchableText;
+    const tailRow = rows[rows.length - 1];
+    const tailContentVersion = tailRow ? JSON.stringify([tailRow.searchableText, tailRow.presentation.badges]) : "";
 
     useEffect(() => {
         rowVirtualizer.measure();
