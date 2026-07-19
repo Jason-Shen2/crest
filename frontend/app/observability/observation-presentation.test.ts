@@ -175,4 +175,34 @@ describe("presentObservation", () => {
             expect(presentation.searchableText).toContain(`input-${index}.txt`);
         }
     });
+
+    it("stops traversing 1,000 large payloads when the serialization budget is exhausted", () => {
+        let valueReads = 0;
+        const makeLargePayload = (prefix: string) => {
+            const payload: Record<string, string> = {};
+            for (let index = 0; index < 100; index++) {
+                Object.defineProperty(payload, `${prefix}_${index}`, {
+                    enumerable: true,
+                    get: () => {
+                        valueReads += 1;
+                        return `${prefix}-${index}-${"x".repeat(256)}`;
+                    },
+                });
+            }
+            return payload;
+        };
+
+        for (let index = 0; index < 1_000; index++) {
+            presentObservation(
+                makeObservation({
+                    id: `budget-${index}`,
+                    input: makeLargePayload("input"),
+                    output: makeLargePayload("output"),
+                    metadata: makeLargePayload("metadata"),
+                })
+            );
+        }
+
+        expect(valueReads).toBeLessThan(20_000);
+    });
 });

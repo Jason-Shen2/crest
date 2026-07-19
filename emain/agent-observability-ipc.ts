@@ -87,8 +87,15 @@ function getTraceStore(): TraceStore {
     return traceStore;
 }
 
-function makeSubscriptionKey(senderId: number, sessionId?: string): SubKey {
-    return `${senderId}:${sessionId ?? "*"}`;
+function requireSessionScope(sessionId: unknown): string {
+    if (typeof sessionId !== "string" || sessionId.trim() === "") {
+        throw new Error("agent-observability IPC: sessionId must be a non-empty string");
+    }
+    return sessionId;
+}
+
+function makeSubscriptionKey(senderId: number, sessionId: string): SubKey {
+    return `${senderId}:${sessionId}`;
 }
 
 function trackSenderKey(sender: electron.WebContents, key: SubKey): void {
@@ -159,28 +166,39 @@ export function attachAgentObservability(sessionPath: string, harness: AgentHarn
 }
 
 export function registerAgentObservabilityIpcHandlers(): void {
-    electron.ipcMain.handle("agent-observability:list-traces", (_event, sessionId?: string) => {
-        return getTraceStore().listTraces(typeof sessionId === "string" && sessionId ? sessionId : undefined);
+    electron.ipcMain.handle("agent-observability:list-traces", (_event, sessionId: unknown) => {
+        return getTraceStore().listTraces(requireSessionScope(sessionId));
     });
 
-    electron.ipcMain.handle("agent-observability:get-trace", (_event, traceId: string, sessionId?: string) => {
+    electron.ipcMain.handle("agent-observability:get-trace", (_event, traceId: string, sessionId: unknown) => {
         if (typeof traceId !== "string" || traceId.trim() === "") {
             throw new Error("agent-observability IPC: traceId must be a non-empty string");
         }
-        const normalizedSessionId = typeof sessionId === "string" && sessionId ? sessionId : undefined;
-        return getTraceStore().getTraceGraph(traceId, normalizedSessionId);
+        return getTraceStore().getTraceGraph(traceId, requireSessionScope(sessionId));
     });
 
-    electron.ipcMain.on("agent-observability:subscribe", (event, sessionId?: string) => {
-        const normalizedSessionId = typeof sessionId === "string" && sessionId ? sessionId : undefined;
-        const key = makeSubscriptionKey(event.sender.id, normalizedSessionId);
-        subscriptions.set(key, { sender: event.sender, sessionId: normalizedSessionId });
+    electron.ipcMain.on("agent-observability:subscribe", (event, sessionId: unknown) => {
+        let requiredSessionId: string;
+        try {
+            requiredSessionId = requireSessionScope(sessionId);
+        } catch (error) {
+            console.error("[agent-observability] subscribe validation error:", error);
+            return;
+        }
+        const key = makeSubscriptionKey(event.sender.id, requiredSessionId);
+        subscriptions.set(key, { sender: event.sender, sessionId: requiredSessionId });
         trackSenderKey(event.sender, key);
     });
 
-    electron.ipcMain.on("agent-observability:unsubscribe", (event, sessionId?: string) => {
-        const normalizedSessionId = typeof sessionId === "string" && sessionId ? sessionId : undefined;
-        const key = makeSubscriptionKey(event.sender.id, normalizedSessionId);
+    electron.ipcMain.on("agent-observability:unsubscribe", (event, sessionId: unknown) => {
+        let requiredSessionId: string;
+        try {
+            requiredSessionId = requireSessionScope(sessionId);
+        } catch (error) {
+            console.error("[agent-observability] unsubscribe validation error:", error);
+            return;
+        }
+        const key = makeSubscriptionKey(event.sender.id, requiredSessionId);
         subscriptions.delete(key);
         const keys = subscriptionsBySender.get(event.sender.id);
         keys?.delete(key);

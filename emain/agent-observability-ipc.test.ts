@@ -149,6 +149,11 @@ describe("AgentObservabilityEventCoalescer", () => {
 });
 
 describe("agent observability IPC scope", () => {
+    afterEach(() => {
+        _resetAgentObservabilityForTests();
+        vi.clearAllMocks();
+    });
+
     it("forwards the same session scope to list and get", async () => {
         registerAgentObservabilityIpcHandlers();
         const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -161,5 +166,49 @@ describe("agent observability IPC scope", () => {
 
         expect(TraceStoreMock.listTraces).toHaveBeenCalledWith("session-a");
         expect(TraceStoreMock.getTraceGraph).toHaveBeenCalledWith("trace-1", "session-a");
+    });
+
+    it("rejects missing or blank session scope for list and get", async () => {
+        registerAgentObservabilityIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+
+        await expect(Promise.resolve().then(() => handlers.get("agent-observability:list-traces")?.({}))).rejects.toThrow(
+            /sessionId must be a non-empty string/
+        );
+        await expect(
+            Promise.resolve().then(() => handlers.get("agent-observability:list-traces")?.({}, "   "))
+        ).rejects.toThrow(/sessionId must be a non-empty string/);
+        await expect(
+            Promise.resolve().then(() => handlers.get("agent-observability:get-trace")?.({}, "trace-1"))
+        ).rejects.toThrow(/sessionId must be a non-empty string/);
+        expect(TraceStoreMock.listTraces).not.toHaveBeenCalled();
+        expect(TraceStoreMock.getTraceGraph).not.toHaveBeenCalled();
+    });
+
+    it("rejects subscription without a non-empty session scope", () => {
+        registerAgentObservabilityIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.on).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+        const sender = {
+            id: 7,
+            once: vi.fn(),
+        };
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        handlers.get("agent-observability:subscribe")?.({ sender });
+        handlers.get("agent-observability:subscribe")?.({ sender }, " ");
+
+        expect(sender.once).not.toHaveBeenCalled();
+        expect(errorSpy).toHaveBeenCalledTimes(2);
+        expect(errorSpy).toHaveBeenCalledWith(
+            "[agent-observability] subscribe validation error:",
+            expect.objectContaining({ message: expect.stringMatching(/sessionId must be a non-empty string/) })
+        );
+        errorSpy.mockRestore();
     });
 });

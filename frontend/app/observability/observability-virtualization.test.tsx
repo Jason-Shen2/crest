@@ -361,7 +361,7 @@ describe("ObservabilityPanel real layout boundary", () => {
             getTrace: vi.fn().mockResolvedValue(graph),
             subscribe: vi.fn(() => vi.fn()),
         };
-        const view = render(<ObservabilityPanel api={api} />);
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
         await waitFor(() => expect(view.container.querySelector("[data-index] button")).toBeTruthy());
         const visibleRow = view.container.querySelector<HTMLButtonElement>("[data-index] button")!;
 
@@ -370,7 +370,7 @@ describe("ObservabilityPanel real layout boundary", () => {
         expect(within(normalRowContainer as HTMLElement).getByLabelText("Observation detail")).toBeTruthy();
         expect(view.queryByLabelText("Observation detail pane")).toBeNull();
 
-        view.rerender(<ObservabilityPanel api={api} magnified />);
+        view.rerender(<ObservabilityPanel api={api} sessionId="session-a" magnified />);
         const detailPane = await view.findByLabelText("Observation detail pane");
         const magnifiedRow = view.container.querySelector<HTMLButtonElement>(
             '[data-index] button[aria-expanded="true"]'
@@ -393,7 +393,7 @@ describe("ObservabilityPanel real layout boundary", () => {
                 return vi.fn();
             }),
         };
-        const view = render(<ObservabilityPanel api={api} />);
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
         const timeline = await view.findByRole("listbox");
         await waitFor(() => expect(mountedIndexes(view.container)).toContain(39));
 

@@ -44,38 +44,130 @@ function clampSummary(value: string): string {
     return `${compact.slice(0, SummaryLimit - 3).trimEnd()}...`;
 }
 
-function serialize(value: unknown): string {
+class BudgetWriter {
+    private readonly parts: string[] = [];
+    private remaining: number;
+    exhausted = false;
+
+    constructor(limit: number) {
+        this.remaining = limit;
+    }
+
+    write(value: string): void {
+        if (this.exhausted || value.length === 0) return;
+        if (value.length <= this.remaining) {
+            this.parts.push(value);
+            this.remaining -= value.length;
+            return;
+        }
+        const contentLength = Math.max(0, this.remaining - 3);
+        if (contentLength > 0) this.parts.push(value.slice(0, contentLength));
+        this.parts.push(".".repeat(Math.min(3, this.remaining)));
+        this.remaining = 0;
+        this.exhausted = true;
+    }
+
+    toString(): string {
+        return this.parts.join("");
+    }
+}
+
+function writeQuotedString(writer: BudgetWriter, value: string): void {
+    writer.write('"');
+    for (let index = 0; index < value.length && !writer.exhausted; index++) {
+        const char = value[index];
+        const code = value.charCodeAt(index);
+        if (char === '"' || char === "\\") {
+            writer.write(`\\${char}`);
+        } else if (char === "\n") {
+            writer.write("\\n");
+        } else if (char === "\r") {
+            writer.write("\\r");
+        } else if (char === "\t") {
+            writer.write("\\t");
+        } else if (code < 0x20) {
+            writer.write(`\\u${code.toString(16).padStart(4, "0")}`);
+        } else {
+            writer.write(char);
+        }
+    }
+    writer.write('"');
+}
+
+function writeValue(writer: BudgetWriter, value: unknown, ancestors: WeakSet<object>): void {
+    if (writer.exhausted) return;
     if (value == null) {
-        return "";
+        writer.write("null");
+        return;
     }
     if (typeof value === "string") {
-        return value;
+        writeQuotedString(writer, value);
+        return;
     }
     if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-        return String(value);
+        writer.write(String(value));
+        return;
     }
-    try {
-        return JSON.stringify(value);
-    } catch {
-        return String(value);
+    if (typeof value !== "object") {
+        writeQuotedString(writer, String(value));
+        return;
     }
+    if (ancestors.has(value)) {
+        writer.write('"[Circular]"');
+        return;
+    }
+
+    ancestors.add(value);
+    const array = Array.isArray(value);
+    writer.write(array ? "[" : "{");
+    let first = true;
+    for (const key in value) {
+        if (writer.exhausted || !Object.prototype.hasOwnProperty.call(value, key)) break;
+        writer.write(first ? "" : ",");
+        if (!array) {
+            writeQuotedString(writer, key);
+            writer.write(":");
+        }
+        let item: unknown;
+        try {
+            item = (value as Record<string, unknown>)[key];
+        } catch {
+            item = "[Unreadable]";
+        }
+        writeValue(writer, item, ancestors);
+        first = false;
+    }
+    writer.write(array ? "]" : "}");
+    ancestors.delete(value);
 }
 
-function clampText(value: string, limit: number): string {
-    if (value.length <= limit) return value;
-    return `${value.slice(0, limit - 3).trimEnd()}...`;
-}
-
-function serializeSearchPayload(value: unknown): string {
-    return clampText(serialize(value), SearchPayloadLimit);
+function boundedSerialize(value: unknown, limit: number): string {
+    if (value == null) return "";
+    const writer = new BudgetWriter(limit);
+    writeValue(writer, value, new WeakSet());
+    return writer.toString();
 }
 
 function compactPayload(value: unknown): string {
     if (value == null || typeof value !== "object" || Array.isArray(value)) {
-        return clampSummary(serialize(value));
+        return clampSummary(typeof value === "string" ? value : boundedSerialize(value, SummaryLimit));
     }
-    const entries = Object.entries(value);
-    return clampSummary(entries.map(([key, item]) => `${humanize(key)}: ${serialize(item)}`).join(", "));
+    const writer = new BudgetWriter(SummaryLimit);
+    let first = true;
+    for (const key in value) {
+        if (writer.exhausted || !Object.prototype.hasOwnProperty.call(value, key)) break;
+        writer.write(first ? "" : ", ");
+        writer.write(`${humanize(key.slice(0, SummaryLimit))}: `);
+        let item: unknown;
+        try {
+            item = (value as Record<string, unknown>)[key];
+        } catch {
+            item = "[Unreadable]";
+        }
+        writeValue(writer, item, new WeakSet());
+        first = false;
+    }
+    return writer.toString();
 }
 
 function categoryFor(observation: AgentObservabilityObservation): ObservationCategory {
@@ -125,13 +217,18 @@ function summaryFor(observation: AgentObservabilityObservation, category: Observ
         return clampSummary(observation.statusMessage);
     }
     if (observation.type === "TOOL") {
-        return compactPayload(observation.input) || clampSummary(serialize(observation.output));
+        return compactPayload(observation.input) || compactPayload(observation.output);
     }
     if (observation.type === "GENERATION") {
-        const output = typeof observation.output === "string" ? observation.output : serialize(observation.output);
-        return clampSummary(output || serialize(observation.input));
+        const output =
+            typeof observation.output === "string"
+                ? observation.output
+                : boundedSerialize(observation.output, SummaryLimit);
+        const input =
+            typeof observation.input === "string" ? observation.input : boundedSerialize(observation.input, SummaryLimit);
+        return clampSummary(output || input);
     }
-    return compactPayload(observation.input) || clampSummary(serialize(observation.output));
+    return compactPayload(observation.input) || compactPayload(observation.output);
 }
 
 function formatDuration(observation: AgentObservabilityObservation): string | null {
@@ -192,20 +289,18 @@ export function presentObservation(observation: AgentObservabilityObservation): 
     const category = categoryFor(observation);
     const label = labelFor(observation, category);
     const summary = summaryFor(observation, category);
-    const searchableText = clampText(
-        [
-            label,
-            summary,
-            observation.name,
-            observation.statusMessage,
-            serializeSearchPayload(observation.input),
-            serializeSearchPayload(observation.output),
-            serializeSearchPayload(observation.metadata),
-        ]
-            .filter(Boolean)
-            .join(" "),
-        SearchIndexLimit
-    );
+    const searchableText = [
+        label,
+        summary,
+        observation.name,
+        observation.statusMessage,
+        boundedSerialize(observation.input, SearchPayloadLimit),
+        boundedSerialize(observation.output, SearchPayloadLimit),
+        boundedSerialize(observation.metadata, SearchPayloadLimit),
+    ]
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, SearchIndexLimit);
 
     return {
         category,

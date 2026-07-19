@@ -35,16 +35,14 @@ ipcRenderer.on("agent:event", (_event, payload: { sessionPath: string; event: un
 
 const agentObservabilityCallbacks = new Map<string, Set<(event: unknown) => void>>();
 ipcRenderer.on("agent-observability:event", (_event, payload: { sessionId?: string; traceId: string; graph: unknown }) => {
-    const keys = [payload.sessionId ?? "", "*"];
-    for (const key of keys) {
-        const cbs = agentObservabilityCallbacks.get(key);
-        if (!cbs) continue;
-        for (const cb of cbs) {
-            try {
-                cb(payload);
-            } catch (e) {
-                console.error("agent-observability:event callback error", e);
-            }
+    if (!payload.sessionId) return;
+    const cbs = agentObservabilityCallbacks.get(payload.sessionId);
+    if (!cbs) return;
+    for (const cb of cbs) {
+        try {
+            cb(payload);
+        } catch (e) {
+            console.error("agent-observability:event callback error", e);
         }
     }
 });
@@ -203,27 +201,26 @@ contextBridge.exposeInMainWorld("api", {
         },
     },
     agentObservability: {
-        listTraces: (sessionId?: string) => ipcRenderer.invoke("agent-observability:list-traces", sessionId),
-        getTrace: (traceId: string, sessionId?: string) =>
+        listTraces: (sessionId: string) => ipcRenderer.invoke("agent-observability:list-traces", sessionId),
+        getTrace: (traceId: string, sessionId: string) =>
             ipcRenderer.invoke("agent-observability:get-trace", traceId, sessionId),
-        subscribe: (sessionId: string | undefined, callback: (event: unknown) => void): (() => void) => {
-            const key = sessionId ?? "*";
-            let entry = agentObservabilityCallbacks.get(key);
+        subscribe: (sessionId: string, callback: (event: unknown) => void): (() => void) => {
+            let entry = agentObservabilityCallbacks.get(sessionId);
             const isNew = !entry;
             if (!entry) {
                 entry = new Set();
-                agentObservabilityCallbacks.set(key, entry);
+                agentObservabilityCallbacks.set(sessionId, entry);
             }
             entry.add(callback);
             if (isNew) {
                 ipcRenderer.send("agent-observability:subscribe", sessionId);
             }
             return () => {
-                const cur = agentObservabilityCallbacks.get(key);
+                const cur = agentObservabilityCallbacks.get(sessionId);
                 if (!cur) return;
                 cur.delete(callback);
                 if (cur.size === 0) {
-                    agentObservabilityCallbacks.delete(key);
+                    agentObservabilityCallbacks.delete(sessionId);
                     ipcRenderer.send("agent-observability:unsubscribe", sessionId);
                 }
             };

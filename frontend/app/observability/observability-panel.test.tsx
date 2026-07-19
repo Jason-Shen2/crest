@@ -167,7 +167,7 @@ function makeApi(
     };
 }
 
-function renderPanel(api?: AgentObservabilityApi, magnified = false, sessionId?: string): ReactElement {
+function renderPanel(api?: AgentObservabilityApi, magnified = false, sessionId = "session-1"): ReactElement {
     HookHarness.cursor = 0;
     return ObservabilityPanel({ api, magnified, sessionId } as Parameters<typeof ObservabilityPanel>[0] & {
         sessionId?: string;
@@ -416,6 +416,19 @@ describe("ObservationDetail", () => {
 });
 
 describe("ObservabilityPanel", () => {
+    it("does not call observability APIs without a session scope", async () => {
+        const { api } = makeApi([], async () => undefined);
+        HookHarness.cursor = 0;
+
+        const markup = renderToStaticMarkup(ObservabilityPanel({ api }));
+        await flushPromises();
+
+        expect(markup).toContain("Observability is unavailable");
+        expect(api.subscribe).not.toHaveBeenCalled();
+        expect(api.listTraces).not.toHaveBeenCalled();
+        expect(api.getTrace).not.toHaveBeenCalled();
+    });
+
     it("uses the same session scope for list, subscribe, and get", async () => {
         const graph = makeGraph(makeTrace("trace-2", "Latest run"));
         const { api } = makeApi([graph.trace], async () => graph);

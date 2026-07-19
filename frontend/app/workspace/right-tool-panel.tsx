@@ -28,6 +28,7 @@ const RightToolPanelFocusRingColor = "rgb(from var(--color-accent) r g b / 45%)"
 
 export type RightToolPanelProps = {
     state: RightToolPanelState;
+    sessionId: string | undefined;
     onOpenTool: (tool: RightToolId) => void;
     onSelectTool: (tool: RightToolId) => void;
     onCloseTool: (tool: RightToolId) => void;
@@ -100,6 +101,7 @@ export type RightToolTopBarProps = {
 export type RightToolContentProps = {
     activeTool?: RightToolId;
     magnified?: boolean;
+    sessionId?: string;
 };
 
 function disposeRightEditorModelPath(path: string): void {
@@ -304,7 +306,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
     );
 }
 
-export function RightToolContent({ activeTool, magnified }: RightToolContentProps) {
+export function RightToolContent({ activeTool, magnified, sessionId }: RightToolContentProps) {
     if (activeTool == null) {
         return <RightToolLauncher onOpenTool={() => null} />;
     }
@@ -331,12 +333,20 @@ export function RightToolContent({ activeTool, magnified }: RightToolContentProp
         return <SourceControlPanel />;
     }
     if (activeTool === "observability") {
-        return <ObservabilityPanel magnified={magnified} />;
+        return <ObservabilityPanel magnified={magnified} sessionId={sessionId} />;
     }
     return null;
 }
 
-function RightToolPanelContent({ state, onOpenTool }: { state: RightToolPanelState; onOpenTool: (tool: RightToolId) => void }) {
+function RightToolPanelContent({
+    state,
+    sessionId,
+    onOpenTool,
+}: {
+    state: RightToolPanelState;
+    sessionId?: string;
+    onOpenTool: (tool: RightToolId) => void;
+}) {
     if (state.openedTools.length === 0) {
         return (
             <div className="min-h-0 flex-1 overflow-hidden rounded-b-xl">
@@ -346,7 +356,7 @@ function RightToolPanelContent({ state, onOpenTool }: { state: RightToolPanelSta
     }
     return (
         <div className="min-h-0 flex-1 overflow-hidden rounded-b-xl">
-            <RightToolContent activeTool={state.activeTool} magnified={state.magnified} />
+            <RightToolContent activeTool={state.activeTool} magnified={state.magnified} sessionId={sessionId} />
         </div>
     );
 }
@@ -402,6 +412,7 @@ export function RightToolPanelMagnifiedOverlayView({
 
 export function RightToolPanel({
     state,
+    sessionId,
     onOpenTool,
     onSelectTool,
     onCloseTool,
@@ -518,7 +529,7 @@ export function RightToolPanel({
                     </button>
                 }
             />
-            <RightToolPanelContent state={state} onOpenTool={onOpenTool} />
+            <RightToolPanelContent state={state} sessionId={sessionId} onOpenTool={onOpenTool} />
         </aside>
     );
 }

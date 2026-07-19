@@ -85,6 +85,7 @@ function renderPanel(state: RightToolPanelState): string {
     return renderToStaticMarkup(
         <RightToolPanel
             state={state}
+            sessionId={undefined}
             onOpenTool={() => null}
             onSelectTool={() => null}
             onCloseTool={() => null}
@@ -197,6 +198,7 @@ describe("RightToolPanel", () => {
                         openedTools: ["editor", "browser", "terminal", "codeReview", "sourceControl", "observability"],
                         activeTool: "browser",
                     }}
+                    sessionId={undefined}
                     onOpenTool={() => null}
                     onSelectTool={() => null}
                     onCloseTool={() => null}

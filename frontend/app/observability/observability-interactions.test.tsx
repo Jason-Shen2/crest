@@ -340,7 +340,7 @@ describe("ObservabilityPanel trace state", () => {
             getTrace: vi.fn().mockResolvedValue(graph),
             subscribe: vi.fn(() => vi.fn()),
         };
-        const view = render(<ObservabilityPanel api={api} />);
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
         await waitFor(() => expect(view.getByRole("listbox")).toBeTruthy());
         const timeline = view.getByRole("listbox");
         const first = view.getByRole("button", { name: /First Step/ });
@@ -379,7 +379,7 @@ describe("ObservabilityPanel trace state", () => {
             getTrace: vi.fn().mockResolvedValue(graph),
             subscribe: vi.fn(() => vi.fn()),
         };
-        const view = render(<ObservabilityPanel api={api} />);
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
         await waitFor(() => expect(view.getByRole("listbox")).toBeTruthy());
         const timeline = view.getByRole("listbox");
         Object.defineProperties(timeline, {
@@ -411,7 +411,7 @@ describe("ObservabilityPanel trace state", () => {
             getTrace: vi.fn(async (traceId) => (traceId === first.trace.id ? first : second)),
             subscribe: vi.fn(() => vi.fn()),
         };
-        const view = render(<ObservabilityPanel api={api} />);
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
         await waitFor(() => expect(view.getAllByText("First run").length).toBeGreaterThan(0));
 
         fireEvent.click(view.getByRole("button", { name: /Assistant Response/ }));

@@ -28,7 +28,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
     const api = injectedApi ?? (typeof window === "undefined" ? undefined : window.api?.agentObservability);
     const [traces, setTraces] = useState<AgentObservabilityTrace[]>([]);
     const [selectedGraph, setSelectedGraph] = useState<AgentObservabilityTraceGraph | undefined>();
-    const [loadState, setLoadState] = useState<LoadState>(api ? "loading" : "unavailable");
+    const [loadState, setLoadState] = useState<LoadState>(api && sessionId ? "loading" : "unavailable");
     const [viewState, setViewState] = useState(makeObservabilityViewState);
     const selectedTraceIdRef = useRef<string | undefined>(undefined);
     const requestIdRef = useRef(0);
@@ -38,7 +38,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
     };
 
     const loadTrace = async (traceId: string) => {
-        if (!api) {
+        if (!api || !sessionId) {
             return;
         }
         const requestId = ++requestIdRef.current;
@@ -65,7 +65,8 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
     };
 
     useEffect(() => {
-        if (!api) {
+        if (!api || !sessionId) {
+            setLoadState("unavailable");
             return;
         }
         let disposed = false;
