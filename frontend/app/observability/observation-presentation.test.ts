@@ -155,4 +155,24 @@ describe("presentObservation", () => {
             expect(result.searchableText).toContain(value);
         }
     });
+
+    it("bounds the search index for 1,000 observations with large payloads", () => {
+        const presentations = Array.from({ length: 1_000 }, (_, index) =>
+            presentObservation(
+                makeObservation({
+                    id: `obs-${index}`,
+                    name: `large_payload_${index}`,
+                    input: { path: `input-${index}.txt`, payload: "i".repeat(10_000) },
+                    output: { result: `output-${index}`, payload: "o".repeat(10_000) },
+                    metadata: { provider: `provider-${index}`, payload: "m".repeat(10_000) },
+                })
+            )
+        );
+
+        for (const [index, presentation] of presentations.entries()) {
+            expect(presentation.searchableText.length).toBeLessThanOrEqual(4_096);
+            expect(presentation.searchableText).toContain(`Large Payload ${index}`);
+            expect(presentation.searchableText).toContain(`input-${index}.txt`);
+        }
+    });
 });

@@ -3,7 +3,12 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AgentObservabilityEventCoalescer } from "./agent-observability-ipc";
+import * as electron from "electron";
+import {
+    _resetAgentObservabilityForTests,
+    AgentObservabilityEventCoalescer,
+    registerAgentObservabilityIpcHandlers,
+} from "./agent-observability-ipc";
 import { LangfuseTraceBuilder } from "./agent/observability/trace-builder";
 import type { TraceGraph } from "./agent/observability/types";
 
@@ -14,8 +19,16 @@ vi.mock("electron", () => ({
     },
 }));
 
+const TraceStoreMock = vi.hoisted(() => ({
+    getTraceGraph: vi.fn(),
+    listTraces: vi.fn(() => []),
+}));
+
 vi.mock("./agent/observability/sqlite-trace-store", () => ({
-    SqliteTraceStore: class {},
+    SqliteTraceStore: class {
+        getTraceGraph = TraceStoreMock.getTraceGraph;
+        listTraces = TraceStoreMock.listTraces;
+    },
 }));
 
 interface Coalescer {
@@ -55,6 +68,8 @@ function generationOutput(graph: TraceGraph): unknown {
 describe("AgentObservabilityEventCoalescer", () => {
     afterEach(() => {
         vi.useRealTimers();
+        _resetAgentObservabilityForTests();
+        vi.clearAllMocks();
     });
 
     it("coalesces message updates independently per session and only publishes the latest graph", () => {
@@ -130,5 +145,21 @@ describe("AgentObservabilityEventCoalescer", () => {
 
         expect(order).toEqual(["publish:partial", "save", "publish:partial"]);
         coalescer.dispose();
+    });
+});
+
+describe("agent observability IPC scope", () => {
+    it("forwards the same session scope to list and get", async () => {
+        registerAgentObservabilityIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+
+        await handlers.get("agent-observability:list-traces")?.({}, "session-a");
+        await handlers.get("agent-observability:get-trace")?.({}, "trace-1", "session-a");
+
+        expect(TraceStoreMock.listTraces).toHaveBeenCalledWith("session-a");
+        expect(TraceStoreMock.getTraceGraph).toHaveBeenCalledWith("trace-1", "session-a");
     });
 });

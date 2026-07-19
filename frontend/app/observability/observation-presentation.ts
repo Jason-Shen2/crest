@@ -19,6 +19,8 @@ export interface ObservationPresentation {
 }
 
 const SummaryLimit = 160;
+const SearchPayloadLimit = 1_024;
+export const SearchIndexLimit = 4_096;
 
 const EventLabels: Record<string, string> = {
     model_change: "Model change",
@@ -57,6 +59,15 @@ function serialize(value: unknown): string {
     } catch {
         return String(value);
     }
+}
+
+function clampText(value: string, limit: number): string {
+    if (value.length <= limit) return value;
+    return `${value.slice(0, limit - 3).trimEnd()}...`;
+}
+
+function serializeSearchPayload(value: unknown): string {
+    return clampText(serialize(value), SearchPayloadLimit);
 }
 
 function compactPayload(value: unknown): string {
@@ -181,17 +192,20 @@ export function presentObservation(observation: AgentObservabilityObservation): 
     const category = categoryFor(observation);
     const label = labelFor(observation, category);
     const summary = summaryFor(observation, category);
-    const searchableText = [
-        label,
-        summary,
-        observation.name,
-        observation.statusMessage,
-        serialize(observation.input),
-        serialize(observation.output),
-        serialize(observation.metadata),
-    ]
-        .filter(Boolean)
-        .join(" ");
+    const searchableText = clampText(
+        [
+            label,
+            summary,
+            observation.name,
+            observation.statusMessage,
+            serializeSearchPayload(observation.input),
+            serializeSearchPayload(observation.output),
+            serializeSearchPayload(observation.metadata),
+        ]
+            .filter(Boolean)
+            .join(" "),
+        SearchIndexLimit
+    );
 
     return {
         category,

@@ -190,7 +190,7 @@ declare global {
         };
         agentObservability: {
             listTraces: (sessionId?: string) => Promise<AgentObservabilityTrace[]>;
-            getTrace: (traceId: string) => Promise<AgentObservabilityTraceGraph | undefined>;
+            getTrace: (traceId: string, sessionId?: string) => Promise<AgentObservabilityTraceGraph | undefined>;
             subscribe: (
                 sessionId: string | undefined,
                 callback: (event: AgentObservabilityEvent) => void

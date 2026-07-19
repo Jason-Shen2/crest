@@ -322,6 +322,38 @@ describe("ObservationTimeline real virtualization", () => {
 });
 
 describe("ObservabilityPanel real layout boundary", () => {
+    it("replaces traces when the session scope changes", async () => {
+        const firstGraph = makeGraph(1);
+        firstGraph.trace = {
+            ...firstGraph.trace,
+            id: "trace-a",
+            input: "First session run",
+            sessionId: "session-a",
+        };
+        const secondGraph = makeGraph(1);
+        secondGraph.trace = {
+            ...secondGraph.trace,
+            id: "trace-b",
+            input: "Second session run",
+            sessionId: "session-b",
+        };
+        const api: AgentObservabilityApi = {
+            listTraces: vi.fn(async (sessionId) => [
+                sessionId === "session-a" ? firstGraph.trace : secondGraph.trace,
+            ]),
+            getTrace: vi.fn(async (traceId) => (traceId === "trace-a" ? firstGraph : secondGraph)),
+            subscribe: vi.fn(() => vi.fn()),
+        };
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
+        await view.findByRole("option", { name: /First session run/ });
+
+        view.rerender(<ObservabilityPanel api={api} sessionId="session-b" />);
+
+        await view.findByRole("option", { name: /Second session run/ });
+        expect(view.queryByRole("option", { name: /First session run/ })).toBeNull();
+        expect(api.getTrace).toHaveBeenCalledWith("trace-b", "session-b");
+    });
+
     it("moves selected detail from inline normal mode to a sibling pane when magnified", async () => {
         const graph = makeGraph(20);
         const api: AgentObservabilityApi = {

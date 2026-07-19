@@ -163,11 +163,12 @@ export function registerAgentObservabilityIpcHandlers(): void {
         return getTraceStore().listTraces(typeof sessionId === "string" && sessionId ? sessionId : undefined);
     });
 
-    electron.ipcMain.handle("agent-observability:get-trace", (_event, traceId: string) => {
+    electron.ipcMain.handle("agent-observability:get-trace", (_event, traceId: string, sessionId?: string) => {
         if (typeof traceId !== "string" || traceId.trim() === "") {
             throw new Error("agent-observability IPC: traceId must be a non-empty string");
         }
-        return getTraceStore().getTraceGraph(traceId);
+        const normalizedSessionId = typeof sessionId === "string" && sessionId ? sessionId : undefined;
+        return getTraceStore().getTraceGraph(traceId, normalizedSessionId);
     });
 
     electron.ipcMain.on("agent-observability:subscribe", (event, sessionId?: string) => {

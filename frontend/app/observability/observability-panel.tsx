@@ -19,11 +19,12 @@ export type AgentObservabilityApi = Window["api"]["agentObservability"];
 interface ObservabilityPanelProps {
     api?: AgentObservabilityApi;
     magnified?: boolean;
+    sessionId?: string;
 }
 
 type LoadState = "unavailable" | "loading" | "ready" | "empty" | "error";
 
-export function ObservabilityPanel({ api: injectedApi, magnified = false }: ObservabilityPanelProps = {}) {
+export function ObservabilityPanel({ api: injectedApi, magnified = false, sessionId }: ObservabilityPanelProps = {}) {
     const api = injectedApi ?? (typeof window === "undefined" ? undefined : window.api?.agentObservability);
     const [traces, setTraces] = useState<AgentObservabilityTrace[]>([]);
     const [selectedGraph, setSelectedGraph] = useState<AgentObservabilityTraceGraph | undefined>();
@@ -46,7 +47,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false }: Obse
         setSelectedGraph(undefined);
         setLoadState("loading");
         try {
-            const graph = await api.getTrace(traceId);
+            const graph = await api.getTrace(traceId, sessionId);
             if (requestId !== requestIdRef.current || selectedTraceIdRef.current !== traceId) {
                 return;
             }
@@ -68,7 +69,12 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false }: Obse
             return;
         }
         let disposed = false;
-        const unsubscribe = api.subscribe(undefined, (event) => {
+        selectedTraceIdRef.current = undefined;
+        requestIdRef.current += 1;
+        setTraces([]);
+        setSelectedGraph(undefined);
+        setLoadState("loading");
+        const unsubscribe = api.subscribe(sessionId, (event) => {
             setTraces((current) => {
                 const withoutUpdated = current.filter((trace) => trace.id !== event.graph.trace.id);
                 return [event.graph.trace, ...withoutUpdated];
@@ -83,7 +89,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false }: Obse
             setLoadState("ready");
         });
         void api
-            .listTraces()
+            .listTraces(sessionId)
             .then((items) => {
                 if (disposed) {
                     return;
@@ -114,7 +120,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false }: Obse
             requestIdRef.current += 1;
             unsubscribe();
         };
-    }, []);
+    }, [api, sessionId]);
 
     const collapseObservation = (observationId: string) => {
         if (!viewState.expandedObservationIds.has(observationId)) {

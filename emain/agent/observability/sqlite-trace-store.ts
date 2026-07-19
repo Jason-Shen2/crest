@@ -21,7 +21,7 @@ import type { TraceGraph } from "./types";
 export interface TraceStore {
     saveGraph(graph: TraceGraph): void;
     listTraces(sessionId?: string): TraceGraph["trace"][];
-    getTraceGraph(traceId: string): TraceGraph | undefined;
+    getTraceGraph(traceId: string, sessionId?: string): TraceGraph | undefined;
 }
 
 export function defaultTraceStorePath(): string {
@@ -113,8 +113,11 @@ export class SqliteTraceStore implements TraceStore {
         return rows.map(traceFromRow);
     }
 
-    getTraceGraph(traceId: string): TraceGraph | undefined {
-        const traceRow = this.db.get<TraceRow>("SELECT * FROM traces WHERE id = ?", traceId);
+    getTraceGraph(traceId: string, sessionId?: string): TraceGraph | undefined {
+        const traceRow =
+            sessionId == null
+                ? this.db.get<TraceRow>("SELECT * FROM traces WHERE id = ?", traceId)
+                : this.db.get<TraceRow>("SELECT * FROM traces WHERE id = ? AND session_id = ?", traceId, sessionId);
         if (!traceRow) return undefined;
         const observationRows = this.db.all<ObservationRow>(
             "SELECT * FROM observations WHERE trace_id = ? ORDER BY start_time ASC",

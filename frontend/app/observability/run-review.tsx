@@ -12,6 +12,13 @@ interface MetricProps {
     value: string | number;
 }
 
+const FinalOutputSummaryLimit = 600;
+
+function summarizeFinalOutput(value: string): string {
+    if (value.length <= FinalOutputSummaryLimit) return value;
+    return `${value.slice(0, FinalOutputSummaryLimit - 3).trimEnd()}...`;
+}
+
 function Metric({ label, value }: MetricProps) {
     return (
         <div>
@@ -23,6 +30,7 @@ function Metric({ label, value }: MetricProps) {
 
 export function RunReview({ graph }: RunReviewProps) {
     const metrics = computeTraceMetrics(graph);
+    const finalOutputSummary = summarizeFinalOutput(metrics.finalOutput);
 
     return (
         <div className="rounded-lg border border-border bg-fg-overlay-1/40 p-3">
@@ -47,10 +55,10 @@ export function RunReview({ graph }: RunReviewProps) {
                 <Metric label="Total tokens" value={metrics.usage.totalTokens} />
                 <Metric label="Cost" value={`$${metrics.totalCost.toFixed(4)}`} />
             </div>
-            {metrics.finalOutput ? (
+            {finalOutputSummary ? (
                 <div className="mt-3 border-t border-border pt-3">
                     <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Final output</div>
-                    <div className="mt-1 whitespace-pre-wrap text-xs text-foreground">{metrics.finalOutput}</div>
+                    <div className="mt-1 whitespace-pre-wrap text-xs text-foreground">{finalOutputSummary}</div>
                 </div>
             ) : null}
         </div>

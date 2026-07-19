@@ -2,6 +2,7 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from "rea
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { LangfuseTraceBuilder } from "../../../emain/agent/observability/trace-builder";
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
 import { ObservationDetail } from "./observation-detail";
 import { ObservationTimeline } from "./observation-timeline";
@@ -62,6 +63,27 @@ function makeTrace(id: string, name: string): AgentObservabilityTrace {
         sessionId: "session-1",
         status: "success",
     };
+}
+
+function makeBuiltTrace(prompt: string, timestamp: string): AgentObservabilityTrace {
+    let nextId = 0;
+    const idScope = prompt.replaceAll(/\W+/g, "-").toLowerCase();
+    const builder = new LangfuseTraceBuilder({
+        createId: (prefix) => `${prefix}-${idScope}-${++nextId}`,
+        now: () => timestamp,
+    });
+    const sessionPath = `/tmp/${idScope}.db`;
+    builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
+    builder.applyEvent({
+        sessionPath,
+        event: {
+            type: "message_end",
+            message: { role: "user", content: [{ type: "text", text: prompt }] },
+        },
+    });
+    const graph = builder.applyEvent({ sessionPath, event: { type: "agent_end" } });
+    expect(graph).toBeDefined();
+    return graph!.trace;
 }
 
 function makeObservation(
@@ -145,9 +167,11 @@ function makeApi(
     };
 }
 
-function renderPanel(api?: AgentObservabilityApi, magnified = false): ReactElement {
+function renderPanel(api?: AgentObservabilityApi, magnified = false, sessionId?: string): ReactElement {
     HookHarness.cursor = 0;
-    return ObservabilityPanel({ api, magnified });
+    return ObservabilityPanel({ api, magnified, sessionId } as Parameters<typeof ObservabilityPanel>[0] & {
+        sessionId?: string;
+    });
 }
 
 function findElement<P>(node: ReactNode, type: unknown): ReactElement<P> | undefined {
@@ -221,6 +245,20 @@ describe("TraceSelector", () => {
         element.props.onChange({ currentTarget: { value: "trace-1" } });
         expect(onSelectTrace).toHaveBeenCalledWith("trace-1");
     });
+
+    it("distinguishes recent runs built from real agent events", () => {
+        const first = makeBuiltTrace("Review authentication flow", "2026-07-19T08:15:00.000Z");
+        const second = makeBuiltTrace("Fix search indexing", "2026-07-19T09:30:00.000Z");
+
+        const markup = renderToStaticMarkup(
+            <TraceSelector traces={[second, first]} selectedTraceId={second.id} onSelectTrace={vi.fn()} />
+        );
+
+        expect(markup).toContain("Review authentication flow");
+        expect(markup).toContain("2026-07-19 08:15");
+        expect(markup).toContain("Fix search indexing");
+        expect(markup).toContain("2026-07-19 09:30");
+    });
 });
 
 describe("RunReview", () => {
@@ -246,6 +284,17 @@ describe("RunReview", () => {
         expect(markup).toContain(">34<");
         expect(markup).toContain("$0.0125");
         expect(markup).toContain("Review complete");
+    });
+
+    it("truncates a long final output to a bounded summary", () => {
+        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
+        graph.trace.output = `Summary start ${"x".repeat(2_000)} hidden-tail-sentinel`;
+
+        const markup = renderToStaticMarkup(<RunReview graph={graph} />);
+
+        expect(markup).toContain("Summary start");
+        expect(markup).toContain("...");
+        expect(markup).not.toContain("hidden-tail-sentinel");
     });
 });
 
@@ -367,6 +416,18 @@ describe("ObservationDetail", () => {
 });
 
 describe("ObservabilityPanel", () => {
+    it("uses the same session scope for list, subscribe, and get", async () => {
+        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([graph.trace], async () => graph);
+
+        renderPanel(api, false, "session-1");
+        await flushPromises();
+
+        expect(api.subscribe).toHaveBeenCalledWith("session-1", expect.any(Function));
+        expect(api.listTraces).toHaveBeenCalledWith("session-1");
+        expect(api.getTrace).toHaveBeenCalledWith("trace-2", "session-1");
+    });
+
     it("selects the latest trace initially and can select an older trace", async () => {
         const latest = makeGraph(makeTrace("trace-2", "Latest run"));
         const older = makeGraph(makeTrace("trace-1", "Older run"));

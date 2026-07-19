@@ -204,7 +204,8 @@ contextBridge.exposeInMainWorld("api", {
     },
     agentObservability: {
         listTraces: (sessionId?: string) => ipcRenderer.invoke("agent-observability:list-traces", sessionId),
-        getTrace: (traceId: string) => ipcRenderer.invoke("agent-observability:get-trace", traceId),
+        getTrace: (traceId: string, sessionId?: string) =>
+            ipcRenderer.invoke("agent-observability:get-trace", traceId, sessionId),
         subscribe: (sessionId: string | undefined, callback: (event: unknown) => void): (() => void) => {
             const key = sessionId ?? "*";
             let entry = agentObservabilityCallbacks.get(key);
