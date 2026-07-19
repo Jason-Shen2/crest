@@ -80,6 +80,7 @@ declare global {
 
     interface Window {
         waveRuntime?: WaveRuntime;
+        api?: ElectronApi;
     }
 
     type ElectronApi = {
@@ -187,6 +188,65 @@ declare global {
                 opts?: { blockId?: string }
             ) => () => void;
         };
+        agentObservability: {
+            listTraces: (sessionId?: string) => Promise<AgentObservabilityTrace[]>;
+            getTrace: (traceId: string) => Promise<AgentObservabilityTraceGraph | undefined>;
+            subscribe: (
+                sessionId: string | undefined,
+                callback: (event: AgentObservabilityEvent) => void
+            ) => () => void;
+        };
+    };
+
+    type AgentObservabilityTraceStatus = "running" | "success" | "error" | "aborted";
+
+    type AgentObservabilityTrace = {
+        id: string;
+        name: string | null;
+        timestamp: string;
+        endedAt?: string;
+        environment: string;
+        tags: string[];
+        input: unknown;
+        output: unknown;
+        metadata: Record<string, unknown>;
+        sessionId: string | null;
+        status: AgentObservabilityTraceStatus;
+    };
+
+    type AgentObservabilityObservation = {
+        id: string;
+        traceId: string;
+        type: string;
+        name: string | null;
+        startTime: string;
+        endTime: string | null;
+        parentObservationId: string | null;
+        level: string;
+        statusMessage: string | null;
+        version: string | null;
+        model: string | null;
+        input: unknown;
+        output: unknown;
+        metadata: Record<string, unknown>;
+        latency: number | null;
+        timeToFirstToken: number | null;
+        usageDetails: Record<string, number>;
+        costDetails: Record<string, number>;
+        toolCalls: string[] | null;
+        toolCallNames: string[] | null;
+    };
+
+    type AgentObservabilityTraceGraph = {
+        trace: AgentObservabilityTrace;
+        observations: AgentObservabilityObservation[];
+        scores: unknown[];
+    };
+
+    type AgentObservabilityEvent = {
+        traceId: string;
+        sessionId?: string;
+        graph: AgentObservabilityTraceGraph;
     };
 
     type AIUserConfigReadResult = {
