@@ -154,6 +154,37 @@ type ObservationPresentation = {
 
 第一步先审计现有真实 TraceGraph，不预先扩展事件。
 
+### Task 8 匿名真实数据审计
+
+2026-07-19 对本机开发环境已有 `traces.db` 做只读审计。以下仅保留聚合计数和字段完整度，不记录数据库路径、Trace/Session ID、用户输入、工具参数、工具输出或模型输出。
+
+| 对象 | 样本量 | 关键证据 |
+|---|---:|---|
+| Trace | 2 | 2 个 success，0 个 error，0 个 aborted |
+| AGENT Observation | 2 | 2/2 有 input；均有完整起止时间 |
+| GENERATION Observation | 8 | 8/8 有 output、usage、cost；0/8 有 model、latency、TTFT |
+| TOOL Observation | 17 | 17/17 有 input、output、tool call ID/name 和完整起止时间 |
+| Error Observation | 0 | 真实样本未覆盖失败工具或受控错误 |
+| Score | 0 | Phase 1 仅建表，不写入，符合既定范围 |
+
+数据库完整性检查返回 `ok`。现有数据足以支撑 Run Review、工具详情、token/cache/cost 聚合和成功轨迹回放；Generation 诊断字段存在明确缺口，错误路径仍需后续真实样本验证。
+
+### Gap 表
+
+| 期望字段 | 现有 canonical 来源 | Langfuse 落点 | 是否必需 | 处理结论 |
+|---|---|---|---|---|
+| Tool args | `tool_execution_start.args` | `Observation.input` | 是 | 已完整，无需补强 |
+| Tool result | `tool_execution_end.result` | `Observation.output` | 是 | 已完整，无需补强 |
+| Tool status/duration | tool start/end 事件 | `level`、`statusMessage`、`startTime/endTime` | 是 | 已映射；真实错误样本待补 |
+| Generation output | assistant `message_update/end` | `Observation.output` | 是 | 已完整，无需补强 |
+| Usage/cost | assistant `message_end.usage` | `usageDetails/costDetails` | 是 | 已完整，无需补强 |
+| Model/provider | assistant message 的 `model`、`responseModel`、`provider` | `model`、`metadata` | 是 | Builder 消费现有 canonical 字段，不新增事件 |
+| Generation start | assistant message 的毫秒级 `timestamp` | `startTime` | 是 | 使用请求发起时间，覆盖 provider 请求等待 |
+| TTFT | 首个 text/thinking/tool-call delta 相对 canonical `startTime` | `timeToFirstToken` | 是 | Builder 计算并持久化 |
+| Generation latency | `message_end` 相对 canonical `startTime` | `latency` | 是 | Builder 计算并持久化 |
+
+`AssistantMessage.timestamp` 由 provider 在异步请求开始前创建，早于收到 stream `start` 后广播的 `message_start`。因此 Generation 的 `startTime` 必须使用该 canonical 时间戳；若使用 Builder 收到 `message_start` 的墙钟时间，会系统性漏掉 provider 请求等待，并同时低估 TTFT 和总 latency。
+
 前端类型需要补齐当前 main model 已有字段：
 
 - `version`

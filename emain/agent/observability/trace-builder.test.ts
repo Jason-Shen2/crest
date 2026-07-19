@@ -69,15 +69,28 @@ describe("LangfuseTraceBuilder", () => {
         });
     });
 
-    it("measures generation latency and time to first token from canonical message events", () => {
-        const builder = makeBuilder();
+    it("measures generation timing from the canonical request timestamp", () => {
+        let now = "2026-07-18T08:00:00.000Z";
+        const builder = new LangfuseTraceBuilder({
+            createId: (() => {
+                let nextId = 0;
+                return (prefix) => `${prefix}-${++nextId}`;
+            })(),
+            now: () => now,
+        });
         const sessionPath = "/tmp/crest/sessions/project/timing.db";
+        const requestTimestamp = Date.parse("2026-07-18T08:00:10.000Z");
 
         builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
+        now = "2026-07-18T08:00:14.000Z";
         builder.applyEvent({
             sessionPath,
-            event: { type: "message_start", message: { role: "assistant", content: [] } },
+            event: {
+                type: "message_start",
+                message: { role: "assistant", content: [], timestamp: requestTimestamp },
+            },
         });
+        now = "2026-07-18T08:00:16.000Z";
         let graph = lastGraph(
             builder.applyEvent({
                 sessionPath,
@@ -88,8 +101,10 @@ describe("LangfuseTraceBuilder", () => {
                 },
             })
         );
-        expect(graph.observations[1].timeToFirstToken).toBe(1);
+        expect(graph.observations[1].startTime).toBe("2026-07-18T08:00:10.000Z");
+        expect(graph.observations[1].timeToFirstToken).toBe(6);
 
+        now = "2026-07-18T08:00:20.000Z";
         graph = lastGraph(
             builder.applyEvent({
                 sessionPath,
@@ -104,8 +119,8 @@ describe("LangfuseTraceBuilder", () => {
                 },
             })
         );
-        expect(graph.observations[1].latency).toBe(2);
-        expect(graph.observations[1].timeToFirstToken).toBe(1);
+        expect(graph.observations[1].latency).toBe(10);
+        expect(graph.observations[1].timeToFirstToken).toBe(6);
     });
 
     it("maps the AgentHarness raw agent event stream into a visible trace", () => {

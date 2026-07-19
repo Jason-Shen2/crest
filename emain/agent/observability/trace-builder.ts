@@ -43,6 +43,7 @@ function isAssistantMessage(message: unknown): message is {
     model?: string;
     responseModel?: string;
     provider?: string;
+    timestamp?: number;
 } {
     return asRecord(message).role === "assistant";
 }
@@ -215,6 +216,7 @@ export class LangfuseTraceBuilder {
             type: "GENERATION",
             name: "assistant_response",
             parentObservationId: state.rootObservationId,
+            startTime: Number.isFinite(message.timestamp) ? new Date(message.timestamp).toISOString() : undefined,
             input: null,
         });
         this.updateGenerationModel(observation, message);
