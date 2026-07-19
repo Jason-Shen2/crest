@@ -59,6 +59,19 @@ describe("presentObservation", () => {
         expect(result.searchableText).toContain("command failed");
     });
 
+    it("maps a status message to error category and tone", () => {
+        const result = presentObservation(
+            makeObservation({
+                type: "TOOL",
+                level: "DEFAULT",
+                statusMessage: "command failed",
+            })
+        );
+
+        expect(result.category).toBe("error");
+        expect(result.tone).toBe("error");
+    });
+
     it("summarizes tool arguments without dumping the entire payload", () => {
         const result = presentObservation(
             makeObservation({

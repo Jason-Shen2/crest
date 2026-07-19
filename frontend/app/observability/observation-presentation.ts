@@ -68,7 +68,7 @@ function compactPayload(value: unknown): string {
 }
 
 function categoryFor(observation: AgentObservabilityObservation): ObservationCategory {
-    if (observation.level === "ERROR") {
+    if (observation.level === "ERROR" || observation.statusMessage != null) {
         return "error";
     }
     if (observation.type === "GENERATION") {
