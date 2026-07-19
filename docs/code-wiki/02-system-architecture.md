@@ -209,7 +209,7 @@ Shell/PTY output
 Renderer agent UI
   -> window.api.agent.send
   -> emain/agent-ipc.ts
-  -> PaneAgentSession
+  -> AgentSessionRuntime
   -> AgentHarness
   -> agentLoop
   -> AI provider stream
@@ -221,7 +221,7 @@ Renderer agent UI
 关键文件：
 
 - `emain/agent-ipc.ts`
-- `emain/agent/pane-agent-session.ts`
+- `emain/agent/agent-session-runtime.ts`
 - `emain/agent/harness/agent-harness.ts`
 - `emain/agent/agent-loop.ts`
 - `emain/agent/tools/`

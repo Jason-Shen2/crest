@@ -55,9 +55,9 @@ This doc takes those decisions as given and specifies the per-pane runtime that 
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                    │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │ Harness cache (per-session-path)                             │  │
-│  │   Map<sessionPath, PaneHarness>                              │  │
-│  │   Each PaneHarness wraps:                                    │  │
+│  │ Runtime cache (per-session-path)                             │  │
+│  │   Map<sessionPath, AgentSessionRuntime>                     │  │
+│  │   Each runtime owns one AgentHarnessHost containing:        │  │
 │  │     - pi AgentHarness (the actual stateful agent)            │  │
 │  │     - NodeExecutionEnv (cwd, shell config — mutable)         │  │
 │  │     - prompt-input state (cwd, gitBranch, recentCmds)        │  │
@@ -177,7 +177,7 @@ This shape is **structurally compatible** with pi's `JsonlSessionMetadata` (subs
 
 **Naming exception:** `createdAt` is camelCase, not crest's standard lowercase-no-underscore. Rationale in §7.2 below.
 
-The renderer-side picker / banner UI reads `agent:session` to know whether the pane is bound to a session. Main process keeps `Map<sessionPath, PaneHarness>` as a cache; the cache is a memory optimization, not the source of truth.
+The renderer-side picker / banner UI reads `agent:session` to know whether the Agent surface is bound to a session. Main process keeps `Map<sessionPath, AgentSessionRuntime>` as a cache; the cache is a memory optimization, not the source of truth.
 
 This differs from **warp**, which stores the binding in a global `ActiveAgentViewsModel.agent_view_handles: HashMap<terminal_view_id, controller>` (`app/src/ai/active_agent_views_model.rs:88`) rather than in pane state. crest's block.meta is already a persistent per-pane store — using it is more direct.
 
@@ -190,8 +190,8 @@ On first send:
 2. Main process: `repo.create({cwd: paneCurrentCwd})` mints a fresh Session
 3. Main returns the new `AgentSessionMeta` to renderer
 4. Renderer writes `block.meta["agent:session"] = meta`
-5. Main caches the PaneHarness in `Map<path, PaneHarness>`
-6. Subsequent sends in this pane reuse the same session + harness
+5. Main caches the `AgentSessionRuntime` in `Map<path, AgentSessionRuntime>`
+6. Subsequent sends reuse the same session runtime + harness host
 
 **Warp does the same lazy pattern** (`app/src/pane_group/mod.rs:6831–6864`) — pane open does NOT create a conversation; the first user input does.
 
@@ -222,10 +222,10 @@ We do **NOT** record per-message cwd metadata in v1. pi's `AgentMessage` shape d
 
 ### 5.4 Per-send cwd update mechanism
 
-Pi's `NodeExecutionEnv.cwd: string` is a public mutable field (`emain/agent/harness/env/nodejs.ts:218`). The PaneHarness wrapper exposes a single `update()` method:
+Pi's `NodeExecutionEnv.cwd: string` is a public mutable field (`emain/agent/harness/env/nodejs.ts:218`). The AgentHarnessHost wrapper exposes a single `update()` method:
 
 ```ts
-interface PaneHarness {
+interface AgentHarnessHost {
     readonly harness: AgentHarness;
     /** Update mutable pane state. Call before each send if anything changed. */
     update(inputs: SystemPromptInputs): void;
@@ -259,19 +259,18 @@ See §5.2.
 
 ### 6.3 Subsequent sends (cwd may have changed)
 
-1. Renderer IPC: `agent:send({sessionMetadata, text, paneCurrentState: {cwd, gitBranch, recentCmds}})`
-2. Main process: `harness = harnessCache.get(sessionMetadata.path) ?? buildPaneHarness(repo.open(sessionMetadata), ...)`
-3. Main: `harness.update(paneCurrentState)` — refreshes env.cwd + system prompt inputs
-4. Main: `harness.harness.prompt(text)` — runs the turn
+1. Renderer IPC: `agent:send({sessionMetadata, text, currentContext: {cwd, gitBranch, recentCmds}})`
+2. Main process: `runtime = sessionCache.get(sessionMetadata.path) ?? makeRuntime(buildAgentHarnessHost(...))`
+3. Main: `runtime.update(currentContext)` — refreshes env.cwd + system prompt inputs
+4. Main: `runtime.send(text)` — routes prompt vs follow-up and runs the turn
 5. Events stream back via the `agent:event:${sessionPath}` IPC channel
 
-### 6.4 Pane closes
+### 6.4 Surface unsubscribes
 
-- Main: drop the cached `PaneHarness` (frees in-memory state)
-- Session JSONL file **stays on disk** (orphaned — eligible to resurface in the §6.1 banner for future panes in the same cwd)
-- block.meta retains `agent:session` (in case the pane is restored from layout)
-
-Matches warp's "orphan on close" (`active_agent_views_model.rs:197-210`).
+- Renderer removes its session event subscription.
+- The current implementation retains the cached `AgentSessionRuntime` until app shutdown.
+- Session storage stays on disk and block meta retains `agent:session`.
+- The planned `AgentRuntimeRegistry` will evict unsubscribed idle runtimes after a TTL while protecting running runtimes.
 
 ### 6.5 App restart
 
@@ -314,7 +313,7 @@ Discussed in §4.3. The earlier "we'll write a tiny SessionStore" instinct was w
 
 An earlier task #8 iteration wrote a 250-LOC `AgentRuntime` class that re-implemented ~80% of pi's `AgentHarness` (subscribe, prompt, abort, message storage, lazy lifecycle) — but worse, keyed by chatId instead of Session, with flat untyped subscriber sets instead of typed handlers, and zero compaction / skill / prompt-template support.
 
-**The wrong code was deleted. PaneHarness is a 30-LOC adapter** that exposes the env mutation seam (§5.4) and nothing more. All other behavior is direct AgentHarness usage.
+**The wrong code was deleted. AgentHarnessHost is a 30-LOC adapter** that exposes the env mutation seam (§5.4) and nothing more. All other behavior is direct AgentHarness usage.
 
 ### 7.5 Session = locked-to-creation-cwd; per-send cwd via system-prompt rebuild
 
@@ -387,7 +386,7 @@ Tasks (cross-ref with the task list):
 
 - [x] **#6** — Integrate pi source into `emain/agent` + `emain/ai` (`2a4945ba`)
 - [x] **#7** — Spike: prove Agent.prompt() works end-to-end (`2a4945ba`)
-- [x] **#8** — Session bridge + system-prompt builder + PaneHarness factory (`6494b288`)
+- [x] **#8** — Session bridge + system-prompt builder + AgentHarnessHost factory (`6494b288`)
 - [x] **#9** — IPC bridge renderer ↔ main (`ce6c9735`)
 - [x] **#10** — First-pass tool baseline: 6 hand-written pure-Node tools (`18c9a001`). Superseded by **#16**, which replaced them with pi's own tools.
 - [x] **#11** — Simple permissions hook, allowlist + bench bypass (`aa5a8e54`)

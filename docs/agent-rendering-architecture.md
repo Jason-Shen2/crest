@@ -172,7 +172,7 @@ Harness events were scattered into a loose `Map` (updated only on
 `agent_end`, so stale mid-turn) and concurrent sends were handled by
 *catching* `AgentHarnessError("busy")`. So crest applies the
 `AgentSession` *pattern* at the harness layer: a single per-session owner,
-`PaneAgentSession` (`emain/agent/pane-agent-session.ts`), that subscribes
+`AgentSessionRuntime` (`emain/agent/agent-session-runtime.ts`), that subscribes
 to the harness once, owns the transcript + queue + status, and decides
 send routing from its own tracked state.
 
@@ -180,8 +180,8 @@ send routing from its own tracked state.
 
 ## 4. Implementation map
 
-- `emain/agent/pane-agent-session.ts` — **the owner.** One
-  `PaneAgentSession` per session JSONL path. Subscribes to the harness
+- `emain/agent/agent-session-runtime.ts` — **the owner.** One
+  `AgentSessionRuntime` per session JSONL path. Subscribes to the harness
   once at construction (before any `prompt()`), so it never misses events.
   - Owns `messages`: seeded from the persisted session at construction
     (so reopened conversations show history), then appends on
@@ -207,7 +207,7 @@ send routing from its own tracked state.
   - Re-emits the harness event stream to its own subscribers and clears
     `running` on `agent_end` / `abort` / prompt-settle.
 - `emain/agent-ipc.ts` — thin IPC ↔ owner adapter.
-  - `sessionCache: Map<path, PaneAgentSession>` (was a harness cache + a
+  - `sessionCache: Map<path, AgentSessionRuntime>` (was a harness cache + a
     separate transcript `Map`).
   - `agent:send` → `session.send(text)`.
   - `agent:subscribe` → `session.subscribe(cb)`, then replays
@@ -252,10 +252,10 @@ send routing from its own tracked state.
 
 - [x] Principles documented with evidence (this doc).
 - [x] Runs keyed by stable message timestamp (`slice-pi-runs.ts`).
-- [x] **Owner introduced** — `PaneAgentSession` owns the transcript +
+- [x] **Owner introduced** — `AgentSessionRuntime` owns the transcript +
       queue + status; `agent-ipc` is a thin IPC↔owner adapter. The loose
       transcript `Map` and the catch-`busy` control flow are gone.
-      Unit-tested (`pane-agent-session.test.ts`, 12 cases).
+      Unit-tested (`agent-session-runtime.test.ts`).
 - [x] Snapshot-on-subscribe replays the owned state (messages + status +
       queues), valid mid-stream — not just on completed turns.
 - [x] Concurrent send routed from the owner's tracked run state (queue via
