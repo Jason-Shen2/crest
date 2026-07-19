@@ -43,9 +43,10 @@ export function TimelineBar({
 }) {
     const { node } = row;
     const ttft = observation?.timeToFirstToken;
+    const barWidth = Math.max(MinimumBarWidth, row.width);
     const ttftWidth =
         ttft != null && Number.isFinite(ttft) && ttft > 0 && row.duration > 0
-            ? Math.min(row.width, (ttft / row.duration) * row.width)
+            ? Math.min(barWidth, (ttft / row.duration) * barWidth)
             : 0;
     const tokens = totalTokens(observation, row);
     const cost = totalCost(observation, row);
@@ -68,10 +69,14 @@ export function TimelineBar({
                     isSelected && "ring-2 ring-accent",
                     isHovered && !isSelected && "ring-1 ring-muted-foreground"
                 )}
-                style={{ width: Math.max(MinimumBarWidth, row.width) }}
+                style={{ width: barWidth }}
             >
                 {ttftWidth > 0 ? (
-                    <span className="absolute inset-y-0 left-0 bg-accent/35" style={{ width: ttftWidth }} />
+                    <span
+                        data-testid="timeline-ttft-segment"
+                        className="absolute inset-y-0 left-0 bg-accent/35"
+                        style={{ width: ttftWidth }}
+                    />
                 ) : null}
             </div>
             <div className="flex items-center gap-2 text-[10px] whitespace-nowrap text-muted-foreground">

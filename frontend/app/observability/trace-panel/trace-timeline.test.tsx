@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 import type { VirtualItem } from "@tanstack/react-virtual";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { TimelineBar } from "./timeline-bar";
 import { TimelineRows } from "./timeline-rows";
 import { TimelineScale } from "./timeline-scale";
 import type { TimelineTraceNode } from "./timeline-types";
@@ -82,7 +83,7 @@ function makeVirtualItem(index: number): VirtualItem {
     };
 }
 
-function TimelineRowsHarness() {
+function TimelineRowsHarness({ onSelect = vi.fn() }: { onSelect?: (nodeId: string) => void } = {}) {
     const generation = makeNode(
         "assistant-response",
         "GENERATION",
@@ -129,7 +130,7 @@ function TimelineRowsHarness() {
             selectedNodeId={generation.id}
             hoveredNodeId={null}
             collapsedNodes={new Set()}
-            onSelect={vi.fn()}
+            onSelect={onSelect}
             onHover={vi.fn()}
             onToggleCollapse={vi.fn()}
         />
@@ -147,6 +148,39 @@ describe("timeline rows", () => {
         expect(screen.queryByText(/comment/i)).toBeNull();
         expect(screen.queryByText(/score/i)).toBeNull();
         expect(screen.queryByText(/playhead/i)).toBeNull();
+    });
+
+    it("exposes a focusable tree with keyboard-selectable treeitems", () => {
+        const onSelect = vi.fn();
+        render(<TimelineRowsHarness onSelect={onSelect} />);
+
+        const tree = screen.getByRole("tree", { name: "Trace timeline rows" });
+        const treeItems = screen.getAllByRole("treeitem");
+        const selectedItem = treeItems[2];
+        expect(tree.contains(selectedItem)).toBe(true);
+        expect(selectedItem.getAttribute("aria-selected")).toBe("true");
+        expect(selectedItem.tabIndex).toBe(0);
+
+        selectedItem.focus();
+        expect(document.activeElement).toBe(selectedItem);
+        fireEvent.keyDown(selectedItem, { key: "Enter" });
+        fireEvent.keyDown(selectedItem, { key: " " });
+        expect(onSelect).toHaveBeenNthCalledWith(1, "assistant-response");
+        expect(onSelect).toHaveBeenNthCalledWith(2, "assistant-response");
+    });
+});
+
+describe("timeline bar", () => {
+    it("calculates TTFT against the final minimum bar width", () => {
+        const node = makeNode("short-generation", "GENERATION", "2026-07-20T08:00:01.000Z", "2026-07-20T08:00:03.000Z");
+        const row = makeRow(node, 0, 0, 0);
+        const observation = makeObservation(node.id, { timeToFirstToken: 0.5 });
+
+        render(<TimelineBar row={row} observation={observation} isSelected={false} isHovered={false} />);
+
+        const bar = screen.getByTestId("timeline-bar");
+        expect(bar.style.width).toBe("4px");
+        expect(screen.getByTestId("timeline-ttft-segment").getAttribute("style")).toContain("width: 1px");
     });
 });
 

@@ -124,7 +124,13 @@ export function TimelineRows({
 }: TimelineRowsProps) {
     return (
         <>
-            <div data-testid="timeline-gutter-rows" className="relative w-full" style={{ height: totalSize }}>
+            <div
+                data-testid="timeline-gutter-rows"
+                role="tree"
+                aria-label="Trace timeline rows"
+                className="relative w-full"
+                style={{ height: totalSize }}
+            >
                 {virtualItems.map((virtualItem) => {
                     const row = rows[virtualItem.index];
                     if (row == null) {
