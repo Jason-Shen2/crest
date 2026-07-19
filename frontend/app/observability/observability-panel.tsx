@@ -55,6 +55,20 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
             return;
         }
         let disposed = false;
+        const unsubscribe = api.subscribe(undefined, (event) => {
+            setTraces((current) => {
+                const withoutUpdated = current.filter((trace) => trace.id !== event.graph.trace.id);
+                return [event.graph.trace, ...withoutUpdated];
+            });
+            if (selectedTraceIdRef.current && selectedTraceIdRef.current !== event.graph.trace.id) {
+                return;
+            }
+            selectedTraceIdRef.current = event.graph.trace.id;
+            setSelectedTraceId(event.graph.trace.id);
+            requestIdRef.current += 1;
+            setSelectedGraph(event.graph);
+            setLoadState("ready");
+        });
         void api
             .listTraces()
             .then((items) => {
@@ -82,20 +96,6 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
                     setLoadState("error");
                 }
             });
-        const unsubscribe = api.subscribe(undefined, (event) => {
-            setTraces((current) => {
-                const withoutUpdated = current.filter((trace) => trace.id !== event.graph.trace.id);
-                return [event.graph.trace, ...withoutUpdated];
-            });
-            if (selectedTraceIdRef.current && selectedTraceIdRef.current !== event.graph.trace.id) {
-                return;
-            }
-            selectedTraceIdRef.current = event.graph.trace.id;
-            setSelectedTraceId(event.graph.trace.id);
-            requestIdRef.current += 1;
-            setSelectedGraph(event.graph);
-            setLoadState("ready");
-        });
         return () => {
             disposed = true;
             requestIdRef.current += 1;

@@ -336,6 +336,39 @@ describe("ObservabilityPanel", () => {
         );
     });
 
+    it("subscribes before listing and keeps a live graph over its stale snapshot", async () => {
+        const calls: string[] = [];
+        const snapshot = makeGraph(makeTrace("trace-3", "Snapshot run"));
+        const live = makeGraph({
+            ...makeTrace("trace-3", "Live run"),
+            status: "running",
+            endedAt: undefined,
+        });
+        const api: AgentObservabilityApi = {
+            subscribe: vi.fn((_sessionId, callback) => {
+                calls.push("subscribe");
+                callback({ traceId: live.trace.id, sessionId: "session-1", graph: live });
+                return vi.fn();
+            }),
+            listTraces: vi.fn(async () => {
+                calls.push("list");
+                return [snapshot.trace];
+            }),
+            getTrace: vi.fn(async () => snapshot),
+        };
+
+        renderPanel(api);
+        await flushPromises();
+        const tree = renderPanel(api);
+
+        expect(calls).toEqual(["subscribe", "list"]);
+        expect(api.getTrace).not.toHaveBeenCalled();
+        expect(findElement<{ traces: AgentObservabilityTrace[] }>(tree, TraceSelector)?.props.traces).toEqual([
+            live.trace,
+        ]);
+        expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)?.props.graph).toBe(live);
+    });
+
     it("ignores an in-flight trace response after unmount", async () => {
         const latest = makeGraph(makeTrace("trace-2", "Latest run"));
         const response = deferred<AgentObservabilityTraceGraph | undefined>();
