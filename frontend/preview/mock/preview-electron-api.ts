@@ -90,6 +90,11 @@ const previewElectronApi: ElectronApi = {
         abort: () => {},
         subscribe: () => () => {},
     },
+    agentObservability: {
+        listTraces: () => Promise.resolve([]),
+        getTrace: () => Promise.resolve(undefined),
+        subscribe: () => () => {},
+    },
 };
 
 function installPreviewElectronApi() {

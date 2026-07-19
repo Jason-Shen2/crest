@@ -26,6 +26,7 @@ import { handleCtrlShiftState } from "./emain-util";
 import { getWaveVersion } from "./emain-wavesrv";
 import { createNewWaveWindow, getWaveWindowByWebContentsId } from "./emain-window";
 import { ElectronWshClient } from "./emain-wsh";
+import { registerAgentObservabilityIpcHandlers } from "./agent-observability-ipc";
 import { registerAgentIpcHandlers } from "./agent-ipc";
 import { registerAiConfigIpcHandlers } from "./aiconfig-ipc";
 
@@ -198,6 +199,7 @@ export function initIpcHandlers() {
     // Agent runtime IPC (renderer ↔ Electron-main agent loop).
     // See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
     registerAgentIpcHandlers();
+    registerAgentObservabilityIpcHandlers();
 
     // AI config / provider /models listing IPC (replaces the Go-side
     // ListProviderModelsCommand wshrpc).

@@ -4,6 +4,7 @@
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
 import { MagnifyIcon } from "@/app/element/magnify";
 import { Icon } from "@/app/icon/Icon";
+import { ObservabilityPanel } from "@/app/observability/observability-panel";
 import { RightBrowser } from "@/app/rightbrowser/right-browser";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
 import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
@@ -61,6 +62,11 @@ const RightToolMetadataById: Record<RightToolId, RightToolMetadata> = {
         label: "Source Control",
         icon: "git-branch-01",
         description: "Manage Git changes, commits, and branches.",
+    },
+    observability: {
+        label: "Observability",
+        icon: "chart-line",
+        description: "Review Langfuse-compatible agent traces.",
     },
 };
 
@@ -322,6 +328,9 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
     }
     if (activeTool === "sourceControl") {
         return <SourceControlPanel />;
+    }
+    if (activeTool === "observability") {
+        return <ObservabilityPanel />;
     }
     return null;
 }
