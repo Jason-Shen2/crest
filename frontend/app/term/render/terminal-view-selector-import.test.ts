@@ -7,9 +7,9 @@ import { describe, expect, it } from "vitest";
 
 describe("terminal view selector implementation", () => {
     it("uses the shared cmdblock SessionSelector instead of the legacy term popover", () => {
-        // The agent surface (SessionSelector + agent input bar) now lives in
-        // agent-pane.tsx; the pure-terminal TerminalView no longer imports it.
-        const source = readFileSync(join(process.cwd(), "frontend/app/term/render/agent-pane.tsx"), "utf8");
+        // The workspace Agent surface owns SessionSelector; the pure-terminal
+        // TerminalView no longer imports it.
+        const source = readFileSync(join(process.cwd(), "frontend/app/term/render/agent-surface.tsx"), "utf8");
         const terminalViewSource = readFileSync(join(process.cwd(), "frontend/app/term/render/terminal-view.tsx"), "utf8");
 
         expect(source).toContain('import { SessionSelector } from "@/app/view/cmdblock/session-selector";');

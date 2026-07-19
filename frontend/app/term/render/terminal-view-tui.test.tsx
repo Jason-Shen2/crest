@@ -626,7 +626,7 @@ describe("TerminalView pure-terminal form", () => {
         vi.unstubAllGlobals();
     });
 
-    it("renders no agent chat host without agentSlot", () => {
+    it("renders no agent chat host without an Agent surface", () => {
         const html = renderTerminalView();
         expect(html).not.toContain('data-testid="agent-chat-host"');
     });
@@ -636,16 +636,15 @@ describe("TerminalView pure-terminal form", () => {
         expect(html).toContain('data-testid="cmd-input"');
     });
 
-    it("lets an agent slot replace the legacy block list content area", () => {
+    it("lets the Agent surface replace the terminal content area", () => {
         testState.modeOverride = {};
         const html = renderTerminalView({
-            agentSlotComponent: ({ children }) =>
-                children({
-                    chatHost: <div data-testid="agent-chat-host" />,
-                    commandResults: <div data-testid="agent-command-results" />,
-                    inputBar: null,
-                    replacesBlockList: true,
-                }),
+            agentSurfaceComponent: () => (
+                <>
+                    <div data-testid="agent-chat-host" />
+                    <div data-testid="agent-command-results" />
+                </>
+            ),
         });
 
         expect(html).toContain('data-testid="agent-chat-host"');

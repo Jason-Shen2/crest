@@ -1,12 +1,9 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// AgentPane — all the agent-conversation wiring that used to live inline in
-// TerminalView.  A pure-terminal block (view: "term") never imports this
-// file; the agent block (view: "agent") mounts it via useAgentPane() and
-// hands the resulting AgentSlot to TerminalView.  Sharing the underlying
-// TerminalModel keeps the engine (blocks / alt-screen / selection) common
-// to both forms; only this agent surface differs.
+// WorkspaceAgentSurface owns the renderer-side Agent conversation UI.
+// TerminalView remains the shared chrome/TerminalModel host; this component
+// receives only the workspace and live execution context the Agent consumes.
 
 import { CATALOG } from "@/app/store/ai-catalog";
 import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
@@ -17,7 +14,6 @@ import { globalStore } from "@/app/store/jotaiStore";
 import { modalsModel } from "@/app/store/modalmodel";
 import { ObjectService } from "@/app/store/services";
 import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
-import type { InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import { useOrefMetaKeyAtom, WOS } from "@/store/global";
@@ -35,46 +31,17 @@ import { AgentCommandResultList } from "./agent-command-result";
 import { AssistantRuntimeProvider, Thread, useAui, useCrestAssistantRuntime } from "./assistant-ui";
 import type { CrestContextUsage } from "./assistant-ui/context-display";
 
-export interface AgentSlot {
-    chatHost: React.ReactNode;
-    commandResults: React.ReactNode;
-    inputBar: React.ReactNode;
-    replacesBlockList: boolean;
-}
-
-export interface AgentPaneProps {
+export interface WorkspaceAgentSurfaceProps {
     outerBlockId: string;
     model: TerminalModel;
-    deps: AgentPaneDeps;
-    children: (slot: AgentSlot) => React.ReactNode;
+    context: AgentSurfaceContext;
 }
 
-// 输入栏渲染需要的、来自 TerminalView 的实时上下文。这些值 TerminalView
-// 已经算好（cwd/branch/ssh/history 等），通过 deps 传入避免重复计算。
-export interface AgentPaneDeps {
-    model: TerminalModel;
-    fontSize: number;
-    focusRequest: number;
-    liveCwd: string;
-    home: string;
-    branch?: string;
-    gitAdded?: number;
-    gitRemoved?: number;
-    prNumber?: number;
-    prTitle?: string;
-    kubernetesContext?: string;
-    sshHost?: string;
-    sshUser?: string;
+export interface AgentSurfaceContext {
     workspaceDir: string;
     liveGitBranch?: string;
     recentCmds: string[];
     liveConnection: string;
-    commandHistory: string[];
-    inputMode: InputMode;
-    effectiveMode: "terminal" | "agent";
-    onModeChange: (next: InputMode, currentText?: string) => void;
-    onInputTextChange: (next: string) => void;
-    isRunning: boolean;
     inAltScreen: boolean;
 }
 
@@ -199,7 +166,7 @@ export function getLatestAgentContextUsage(turns: PiTurn[]): CrestContextUsage |
     return undefined;
 }
 
-export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: AgentPaneDeps): AgentSlot {
+export function WorkspaceAgentSurface({ outerBlockId, model, context }: WorkspaceAgentSurfaceProps) {
     const [attachedPanelState, setAttachedPanelState] = useState<AgentAttachedPanelState>(
         makeEmptyAgentAttachedPanelState
     );
@@ -378,10 +345,10 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
                           : undefined
                 }
                 paneContext={{
-                    cwd: deps.workspaceDir,
-                    gitBranch: deps.liveGitBranch,
-                    recentCmds: deps.recentCmds,
-                    connection: deps.liveConnection,
+                    cwd: context.workspaceDir,
+                    gitBranch: context.liveGitBranch,
+                    recentCmds: context.recentCmds,
+                    connection: context.liveConnection,
                 }}
                 selectionError={aiConfigError}
                 onReady={onAgentHostReady}
@@ -392,7 +359,7 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
                 onOpenModelPicker={onOpenAgentModelPicker}
                 onSelectorRequest={onAgentSelectorRequest}
             />
-            {!deps.inAltScreen && (
+            {!context.inAltScreen && (
                 <div className="min-h-0 flex-1">
                     <AssistantRuntimeProvider runtime={assistantRuntime}>
                         <AgentComposerTextRestore request={agentRestoredTextRequest} />
@@ -440,12 +407,9 @@ export function useAgentPane(outerBlockId: string, model: TerminalModel, deps: A
         </>
     );
 
-    const commandResults = null;
-
-    const inputBar = null;
-
-    return { chatHost, commandResults, inputBar, replacesBlockList: true };
+    return chatHost;
 }
+WorkspaceAgentSurface.displayName = "WorkspaceAgentSurface";
 
 export function getAgentQueuedMessageText(message: PiAgentMessage): string {
     const textParts: string[] = [];
@@ -522,12 +486,6 @@ function AgentComposerTextRestore({ request }: { request?: { text: string; reque
     }, [aui, request]);
     return null;
 }
-
-export function AgentPane({ outerBlockId, model, deps, children }: AgentPaneProps) {
-    const slot = useAgentPane(outerBlockId, model, deps);
-    return <>{children(slot)}</>;
-}
-AgentPane.displayName = "AgentPane";
 
 // stripVendorPrefix — OpenRouter / Together style model ids carry the
 // upstream vendor as a slash-prefixed namespace ("anthropic/claude-…").
