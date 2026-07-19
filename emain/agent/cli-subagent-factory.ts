@@ -5,7 +5,7 @@
 // CLI subagent runs in. Ephemeral in-memory session (decision 4), the
 // three PTY tools bound to one already-started blockId, an independent
 // system prompt (§8), and its own (smaller) model. Mirrors
-// buildPaneHarness but never touches the SQLite session repo. See spec §2, §9.
+// buildAgentHarnessHost but never touches the SQLite session repo. See spec §2, §9.
 
 import type { Api, Model } from "../ai";
 import { AgentHarness } from "./harness/agent-harness";

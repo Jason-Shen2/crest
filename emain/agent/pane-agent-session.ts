@@ -35,7 +35,7 @@
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import { filterTreeForDisplay } from "./commands/session-views";
-import type { PaneHarness } from "./harness-factory";
+import type { AgentHarnessHost } from "./harness-factory";
 import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
 import type { AgentMessage } from "./types";
 
@@ -120,7 +120,7 @@ export function buildPersistedTurnsFromSessionEntries(entries: SessionTreeEntry[
 
 export class PaneAgentSession {
     readonly path: string;
-    pane: PaneHarness;
+    pane: AgentHarnessHost;
 
     messages: AgentMessage[] = [];
     turns: AgentTurn[] = [];
@@ -145,7 +145,7 @@ export class PaneAgentSession {
 
     constructor(
         path: string,
-        pane: PaneHarness,
+        pane: AgentHarnessHost,
         initialMessages: AgentMessage[] = [],
         initialTurns: AgentTurn[] = [],
         options: PaneAgentSessionOptions = {}

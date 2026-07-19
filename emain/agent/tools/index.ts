@@ -36,7 +36,7 @@ export { createWriteTool } from "./write";
 
 /**
  * Default tools enabled for every pane, bound to the pane's cwd. The IPC
- * layer passes this (or a filtered subset) to buildPaneHarness.
+ * layer passes this (or a filtered subset) to buildAgentHarnessHost.
  */
 export function getDefaultTools(cwd: string): AgentTool[] {
     return [
