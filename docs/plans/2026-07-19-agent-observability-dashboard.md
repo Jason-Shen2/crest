@@ -691,7 +691,9 @@ For every missing UI field, record:
 
 If no required field is missing, do not modify harness or storage.
 
-- [x] **Step 4: If required, write a failing builder test for one field**
+- [x] **Step 4: N/A — no required canonical field was missing**
+
+The audit found only optional per-generation input context missing. The current UI conditionally hides that section, while Trace/AGENT input, Generation output, model, timing, usage, and cost cover the required review flow. No failing builder test was needed.
 
 The new event must be broadcast through `emitOwn`, for example:
 
@@ -707,7 +709,7 @@ expect(builder.applyEvent({
 
 Do not subscribe to `before_provider_request`, `tool_call`, or other hook-only events.
 
-- [x] **Step 5: Implement the smallest canonical field addition**
+- [x] **Step 5: N/A — no canonical field addition was implemented**
 
 Add one explicit `AgentHarnessOwnEvent`, emit it from the harness, map it in the builder, persist it, and expose it through the renderer type. Do not introduce an Adapter or `ObsEvent`.
 

@@ -166,7 +166,9 @@ type ObservationPresentation = {
 | TOOL | 2 | 2/2 | 1/2 | 2/2 | 2/2 | 2/2 | 0/2 |
 | Error | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 0/1 |
 
-其中 `status` 表示非空 `statusMessage`，只在失败 TOOL 上出现；Tool/Error 的 model 不适用。3/3 GENERATION 还具有 latency、TTFT、usage 和 cost。现有 canonical 数据足以支撑 Run Review、Generation 诊断、工具详情、错误详情和成功轨迹回放，无需新增 harness own event 或持久化字段。
+其中 `status` 表示非空 `statusMessage`，只在失败 TOOL 上出现；Tool/Error 的 model 不适用。3/3 GENERATION 还具有 latency、TTFT、usage 和 cost。
+
+GENERATION input 为 0/3 会使 Detail 隐藏逐次 Generation 的 Input 区，并使 Timeline 搜索无法匹配该轮请求上下文；它不影响当前主路径，因为 Timeline 摘要优先使用 3/3 完整的 Generation output，Run Review 的用户输入来自 Trace/AGENT input，model、timing、usage 和 cost 也均完整。逐 Generation prompt/context 检查属于后续增强，不应通过 UI 推断或复制 Trace input 补齐。现有 canonical 数据足以支撑 Run Review、Generation 输出与性能诊断、工具详情、错误详情和成功轨迹回放，无需新增 harness own event 或持久化字段。
 
 ### Gap 表
 
@@ -174,7 +176,8 @@ type ObservationPresentation = {
 |---|---|---|---|---|
 | Tool args | `tool_execution_start.args` | `Observation.input` | 是 | 已完整，无需补强 |
 | Tool result | `tool_execution_end.result` | `Observation.output` | 是 | 已完整，无需补强 |
-| Tool status/duration | tool start/end 事件 | `level`、`statusMessage`、`startTime/endTime` | 是 | 已映射；真实错误样本待补 |
+| Tool status/duration | tool start/end 事件 | `level`、`statusMessage`、`startTime/endTime` | 是 | 已映射；代表样本已验证 1 个失败 TOOL 的 level、status、input、output 和 timing |
+| Generation input | subscriber-visible assistant 事件未携带请求上下文 | `Observation.input` | 否 | 当前 UI 条件隐藏 Input，不影响摘要、Run Review 或 usage 诊断；后续需要真实 canonical 来源时再补强 |
 | Generation output | assistant `message_update/end` | `Observation.output` | 是 | 已完整，无需补强 |
 | Usage/cost | assistant `message_end.usage` | `usageDetails/costDetails` | 是 | 已完整，无需补强 |
 | Model/provider | assistant message 的 `model`、`responseModel`、`provider` | `model`、`metadata` | 是 | Builder 消费现有 canonical 字段，不新增事件 |
