@@ -41,8 +41,10 @@ function calculateTraceTimeRange(detail: TraceDetail): { traceStartTime: Date; t
         finiteTimestamp(detail.trace.timestamp),
         ...detail.observations.map((observation) => finiteTimestamp(observation.startTime)),
     ].filter((value): value is number => value != null);
-    const fallbackStart = finiteTimestamp(detail.trace.timestamp) ?? 0;
-    const start = starts.length > 0 ? Math.min(...starts) : fallbackStart;
+    if (starts.length === 0) {
+        return { traceStartTime: new Date(Number.NaN), traceDuration: 0.001 };
+    }
+    const start = Math.min(...starts);
     const ends = [
         finiteTimestamp(detail.trace.endedAt),
         ...detail.observations.map(

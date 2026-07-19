@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { TraceDataProvider, TraceSelectionProvider, useTraceData, useTraceSelection } from "./trace-context";
+import { TraceTree } from "./trace-tree";
 
 afterEach(cleanup);
 
@@ -69,6 +70,17 @@ function makeDetailWithInvalidObservationTime(): TraceDetail {
     };
 }
 
+function makeDetailWithAllInvalidTimes(): TraceDetail {
+    return {
+        ...makeDetailWithInvalidObservationTime(),
+        trace: {
+            ...makeDetail([]).trace,
+            timestamp: "not-a-date",
+            endedAt: "also-not-a-date",
+        },
+    };
+}
+
 function ContextProbe({ detail }: { detail: TraceDetail }) {
     return (
         <TraceDataProvider detail={detail}>
@@ -82,15 +94,26 @@ function ContextProbe({ detail }: { detail: TraceDetail }) {
 function Probe() {
     const { selectedNodeId, setSelectedNodeId } = useTraceSelection();
     const { traceStartTime, traceDuration } = useTraceData();
+    const traceStart = Number.isFinite(traceStartTime.getTime()) ? traceStartTime.toISOString() : "invalid";
     return (
         <>
             <button type="button" onClick={() => setSelectedNodeId("generation-1")}>
                 select generation-1
             </button>
             <span data-testid="selection">{selectedNodeId ?? "trace"}</span>
-            <span data-testid="trace-start">{traceStartTime.toISOString()}</span>
+            <span data-testid="trace-start">{traceStart}</span>
             <span data-testid="trace-duration">{traceDuration}</span>
         </>
+    );
+}
+
+function TraceTreeHarness({ detail }: { detail: TraceDetail }) {
+    return (
+        <TraceDataProvider detail={detail}>
+            <TraceSelectionProvider traceId={detail.trace.id}>
+                <TraceTree />
+            </TraceSelectionProvider>
+        </TraceDataProvider>
     );
 }
 
@@ -108,5 +131,16 @@ describe("trace context", () => {
         render(<ContextProbe detail={makeDetailWithInvalidObservationTime()} />);
         expect(screen.getByTestId("trace-start").textContent).toBe("2026-07-20T08:00:00.000Z");
         expect(screen.getByTestId("trace-duration").textContent).toBe("4");
+    });
+
+    it("does not fabricate the Unix epoch when every time boundary is invalid", () => {
+        render(<ContextProbe detail={makeDetailWithAllInvalidTimes()} />);
+        expect(screen.getByTestId("trace-start").textContent).toBe("invalid");
+        expect(screen.getByTestId("trace-duration").textContent).toBe("0.001");
+    });
+
+    it("shows the synthetic trace root as selected when trace selection is null", () => {
+        render(<TraceTreeHarness detail={makeDetail([])} />);
+        expect(screen.getByRole("treeitem", { name: /^Trace/ }).getAttribute("aria-selected")).toBe("true");
     });
 });

@@ -61,6 +61,7 @@ TraceTreeRow.displayName = "TraceTreeRow";
 export function TraceTree() {
     const { roots, nodeMap } = useTraceData();
     const { selectedNodeId, setSelectedNodeId, collapsedNodes, toggleCollapsed } = useTraceSelection();
+    const displayedSelectedNodeId = selectedNodeId ?? roots.find((root) => root.type === "TRACE")?.id ?? null;
     const rootTotalCost = roots.reduce<number | undefined>((accumulator, root) => {
         if (!root.totalCost) {
             return accumulator;
@@ -84,7 +85,7 @@ export function TraceTree() {
         <VirtualizedTree
             roots={roots}
             collapsedNodes={collapsedNodes}
-            selectedNodeId={selectedNodeId}
+            selectedNodeId={displayedSelectedNodeId}
             onToggleCollapse={toggleCollapsed}
             onSelectNode={(id) => setSelectedNodeId(id != null && nodeMap.get(id)?.type !== "TRACE" ? id : null)}
             renderNode={({ node, treeMetadata, isSelected, isCollapsed, onToggleCollapse, onSelect }) => (
