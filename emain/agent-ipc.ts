@@ -63,7 +63,7 @@ import type {
     AgentRunCommandInput,
     AgentTreeEntryView,
 } from "./agent/commands/types";
-import { buildPaneHarness } from "./agent/harness-factory";
+import { buildAgentHarnessHost } from "./agent/harness-factory";
 import { InMemorySessionRepo } from "./agent/harness/session/memory-repo";
 import type { JsonlSessionMetadata, SessionDetailInfo } from "./agent/harness/types";
 import {
@@ -437,7 +437,7 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
             `reasoning=${opts.reasoning ?? "off"} apiKey=${apiKey ? "present" : "MISSING"} ` +
             `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
     );
-    const pane = buildPaneHarness({
+    const pane = buildAgentHarnessHost({
         session: piSession,
         model,
         thinkingLevel: opts.reasoning,

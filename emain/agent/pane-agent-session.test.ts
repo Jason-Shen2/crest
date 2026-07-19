@@ -1,9 +1,10 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
-import type { PaneHarness } from "./harness-factory";
+import type { AgentHarnessHost } from "./harness-factory";
 import {
     buildPersistedTurnsFromSessionEntries,
     PaneAgentSession,
@@ -82,7 +83,7 @@ function makeFakeHarness() {
             appendCustomEntry: harness.appendCustomEntry,
             promptWithCustomEntry: harness.promptWithCustomEntry,
             update: vi.fn(),
-        } as unknown as PaneHarness,
+        } as unknown as AgentHarnessHost,
     };
 }
 
@@ -99,6 +100,14 @@ function assistant(text: string, stopReason?: string, errorMessage?: string): Ag
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+describe("AgentHarnessHost naming", () => {
+    it("exports the session-scoped harness adapter without pane terminology", () => {
+        const source = readFileSync(new URL("./harness-factory.ts", import.meta.url), "utf8");
+        expect(source).toContain("export interface AgentHarnessHost");
+        expect(source).not.toContain("export interface PaneHarness");
+    });
+});
 
 describe("PaneAgentSession — owned transcript", () => {
     it("subscribes to the harness once at construction", () => {

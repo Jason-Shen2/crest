@@ -7,7 +7,7 @@
 // AgentHarness → pi-ai → upstream LLM. Confirms:
 //   - emain/agent + emain/ai compile and load at runtime
 //   - JsonlSessionRepo mints a JSONL file under the configured root
-//   - buildPaneHarness wires env / model / system prompt correctly
+//   - buildAgentHarnessHost wires env / model / system prompt correctly
 //   - AgentHarness.prompt drives a real turn and emits event stream
 //   - Session JSONL contains the appended messages afterwards
 //
@@ -29,7 +29,7 @@ import * as path from "node:path";
 import { getModel } from "../ai";
 import { JsonlSessionRepo } from "./harness/session/jsonl-repo";
 import { NodeExecutionEnv } from "./node";
-import { buildPaneHarness } from "./harness-factory";
+import { buildAgentHarnessHost } from "./harness-factory";
 import { _setSessionsRepoForTests, createPaneSession } from "./sessions";
 
 interface ProviderChoice {
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     );
     if (!model) throw new Error(`getModel returned no entry for ${pick.provider}/${pick.model}`);
 
-    const pane = buildPaneHarness({
+    const pane = buildAgentHarnessHost({
         session,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         model: model as any,

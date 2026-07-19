@@ -30,7 +30,7 @@ vi.mock("./agent/change-review/change-outline", () => ({
     extractChangeOperationsFromMessages: vi.fn(() => []),
     generateChangeOutline: vi.fn(),
 }));
-vi.mock("./agent/harness-factory", () => ({ buildPaneHarness: vi.fn() }));
+vi.mock("./agent/harness-factory", () => ({ buildAgentHarnessHost: vi.fn() }));
 vi.mock("./agent/index", () => ({}));
 vi.mock("./agent/permissions", () => ({
     buildPermissionsHook: vi.fn(),
@@ -64,7 +64,7 @@ import { PaneAgentSession } from "./agent/pane-agent-session";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "./agent/sessions";
 import type { AgentMessage } from "./agent/types";
 import { getModel } from "./ai";
-import { buildPaneHarness } from "./agent/harness-factory";
+import { buildAgentHarnessHost } from "./agent/harness-factory";
 import { RpcApi } from "../frontend/app/store/wshclientapi";
 
 function user(text: string): AgentMessage {
@@ -503,7 +503,7 @@ describe("agent-ipc command helpers", () => {
         // Stub the harness build so ensurePaneSession constructs a real
         // PaneAgentSession without a live model/provider.
         vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
-        vi.mocked(buildPaneHarness).mockReturnValue({
+        vi.mocked(buildAgentHarnessHost).mockReturnValue({
             harness: { subscribe: () => () => {} },
             session: { buildContext: async () => ({ messages: [] }), getBranch: async () => [] },
             update: () => {},

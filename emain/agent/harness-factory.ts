@@ -1,14 +1,14 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// harness-factory.ts — assembles a PaneHarness for one pane's agent
-// session. PaneHarness is a minimal adapter (intentionally not a
+// harness-factory.ts — assembles an AgentHarnessHost for one agent
+// session. AgentHarnessHost is a minimal adapter (intentionally not a
 // "runtime wrapper") that exposes the env mutation seam pi otherwise
 // leaves implicit. See docs/agent-runtime-architecture.md §5.4 / §7.4.
 //
 // All non-env behavior — subscribe, prompt, abort, message storage,
 // model swap, queue management — is direct AgentHarness usage. The
-// IPC layer (task #9) holds a Map<sessionPath, PaneHarness> and uses
+// IPC layer (task #9) holds a Map<sessionPath, AgentHarnessHost> and uses
 // it directly without wrapping further.
 
 import type { Api, Model } from "../ai";
@@ -20,7 +20,7 @@ import type { ProjectContextFile } from "./resource-loader";
 import type { AgentTool, ThinkingLevel } from "./types";
 import { buildSystemPrompt, type SystemPromptInputs } from "./build-system-prompt";
 
-export interface BuildPaneHarnessOptions {
+export interface BuildAgentHarnessHostOptions {
     /** Session this pane is bound to. Mint via createPaneSession() first. */
     session: Session;
     /** Resolved model from the frontend ai-resolver, threaded through IPC. */
@@ -64,7 +64,7 @@ export interface BuildPaneHarnessOptions {
     ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
 }
 
-export interface PaneHarness {
+export interface AgentHarnessHost {
     /** The underlying pi AgentHarness. Use directly for subscribe/prompt/abort. */
     readonly harness: AgentHarness;
     readonly session: Session;
@@ -80,7 +80,7 @@ export interface PaneHarness {
     update(inputs: SystemPromptInputs): void;
 }
 
-export function buildPaneHarness(opts: BuildPaneHarnessOptions): PaneHarness {
+export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): AgentHarnessHost {
     let inputs: SystemPromptInputs = opts.promptInputs;
     // env.cwd is publicly mutable on NodeExecutionEnv (harness/env/nodejs.ts:218);
     // we keep one env for the harness's lifetime and mutate it in place.
