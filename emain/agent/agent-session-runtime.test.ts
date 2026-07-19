@@ -63,6 +63,7 @@ function makeFakeHarness() {
             calls.navigateTree.push({ targetId, options });
             return navigateTreeResult();
         },
+        isIdle: vi.fn(() => true),
     };
     return {
         calls,
@@ -632,6 +633,14 @@ describe("buildPersistedTurnsFromSessionEntries", () => {
 });
 
 describe("AgentSessionRuntime — status tracking", () => {
+    it("reports running from the Harness lifecycle", () => {
+        const fake = makeFakeHarness();
+        vi.mocked(fake.pane.harness.isIdle).mockReturnValue(false);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+
+        expect(owner.isRunning()).toBe(true);
+    });
+
     it("goes streaming on agent_start and idle on agent_end", () => {
         const fake = makeFakeHarness();
         const owner = new AgentSessionRuntime("/s", fake.pane);
