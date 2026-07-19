@@ -22,6 +22,7 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
     pendingCreates = new Map<string, Promise<TRuntime>>();
     idleTtlMs: number;
     now: () => number;
+    generation = 0;
 
     constructor(options: AgentRuntimeRegistryOptions) {
         this.idleTtlMs = options.idleTtlMs;
@@ -40,18 +41,26 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         if (existing) return existing;
         const pending = this.pendingCreates.get(path);
         if (pending) return pending;
-        const creation = create()
-            .then((runtime) => {
-                this.entries.set(path, {
-                    runtime,
-                    subscriberKeys: new Set(),
-                    lastUsedAt: this.now(),
-                });
-                return runtime;
-            })
-            .finally(() => this.pendingCreates.delete(path));
-        this.pendingCreates.set(path, creation);
-        return creation;
+        const generation = this.generation;
+        const creation = create().then((runtime) => {
+            if (generation !== this.generation) {
+                runtime.dispose();
+                throw new Error("Agent runtime registry disposed during creation");
+            }
+            this.entries.set(path, {
+                runtime,
+                subscriberKeys: new Set(),
+                lastUsedAt: this.now(),
+            });
+            return runtime;
+        });
+        const trackedCreation = creation.finally(() => {
+            if (this.pendingCreates.get(path) === trackedCreation) {
+                this.pendingCreates.delete(path);
+            }
+        });
+        this.pendingCreates.set(path, trackedCreation);
+        return trackedCreation;
     }
 
     acquire(path: string, subscriberKey: string): void {
@@ -82,6 +91,7 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
     }
 
     disposeAll(): void {
+        this.generation++;
         for (const entry of this.entries.values()) {
             entry.runtime.dispose();
         }

@@ -100,4 +100,29 @@ describe("AgentRuntimeRegistry", () => {
         expect(second.dispose).toHaveBeenCalledOnce();
         expect(registry.get("/a.db")).toBeUndefined();
     });
+
+    it("disposes a runtime that finishes creating after shutdown without replacing a new pending create", async () => {
+        let resolveFirst!: (runtime: ReturnType<typeof makeRuntime>) => void;
+        let resolveSecond!: (runtime: ReturnType<typeof makeRuntime>) => void;
+        const firstRuntime = makeRuntime();
+        const secondRuntime = makeRuntime();
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        const first = registry.getOrCreate(
+            "/a.db",
+            () => new Promise<ReturnType<typeof makeRuntime>>((resolve) => (resolveFirst = resolve))
+        );
+
+        registry.disposeAll();
+        const second = registry.getOrCreate(
+            "/a.db",
+            () => new Promise<ReturnType<typeof makeRuntime>>((resolve) => (resolveSecond = resolve))
+        );
+        resolveFirst(firstRuntime);
+        await expect(first).rejects.toThrow(/disposed during creation/);
+        resolveSecond(secondRuntime);
+
+        await expect(second).resolves.toBe(secondRuntime);
+        expect(firstRuntime.dispose).toHaveBeenCalledOnce();
+        expect(registry.get("/a.db")).toBe(secondRuntime);
+    });
 });
