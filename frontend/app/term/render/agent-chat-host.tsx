@@ -1,16 +1,16 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// AgentChatHost — owns the React hook lifecycle for one pane's agent
-// session and mirrors the main-owned turns into AgentPane's assistant-ui
+// AgentChatHost owns the React hook lifecycle for the active Agent
+// session and mirrors the main-owned turns into WorkspaceAgentSurface's assistant-ui
 // runtime.
 //
 // Replaces the pre-pi version which mounted @ai-sdk/react useChat and
 // translated UIMessage parts into ai-sdk's WaveUIDataToolUse shape
 // via TerminalModel.applyAgentParts. Post-pi: messages live in
-// usePiChat state, and AgentPane bridges those turns into assistant-ui.
+// usePiChat state, and WorkspaceAgentSurface bridges those turns into assistant-ui.
 //
-// Returns null — purely a state-bridge component. UI lives in AgentPane.
+// Returns null — purely a state-bridge component. UI lives in WorkspaceAgentSurface.
 
 import { useEffect, useRef } from "react";
 
@@ -43,7 +43,7 @@ export interface AgentChatHostProps {
     selectionError?: ResolveError | null;
     /** Wired once with a send fn the input bar can call. Mirrors the previous useChat host's pattern. */
     onReady?: (api: AgentChatHostApi) => void;
-    /** Called on every turns change so AgentPane can feed the assistant-ui runtime. */
+    /** Called on every turns change so WorkspaceAgentSurface can feed assistant-ui. */
     onTurnsChange?: (turns: PiTurn[]) => void;
     /**
      * Called when the agent's live status or pending queue changes. Drives the

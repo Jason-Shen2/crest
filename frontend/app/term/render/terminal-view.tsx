@@ -8,7 +8,7 @@
 import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { Icon } from "@/app/icon/Icon";
 import { globalStore } from "@/app/store/jotaiStore";
-import { CmdBlockInput, InputMode } from "@/app/view/cmdblock/cmdblock-input";
+import { CmdBlockInput } from "@/app/view/cmdblock/cmdblock-input";
 import { getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
@@ -16,7 +16,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type Component
 import { ContextChipModel } from "../contextchip/chip-model";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
-import type { AgentPaneDeps, AgentSlot } from "./agent-pane";
+import type { AgentSurfaceContext } from "./agent-surface";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
@@ -38,15 +38,14 @@ export interface TerminalViewProps {
     // for `term:mode = "vdom"` where the whole pane becomes a single
     // VDom subblock instead of a shell.
     replaceContent?: React.ReactNode;
-    // Agent 会话形态传入真实 React 组件，组件在顶层调用 useAgentPane。
-    // 纯终端形态不传此 prop，agentSlot 保持 null。
-    agentSlotComponent?: ComponentType<AgentSlotComponentProps>;
+    // Agent view passes its workspace-scoped surface. Pure terminal views omit it.
+    agentSurfaceComponent?: ComponentType<AgentSurfaceComponentProps>;
 }
 
-export interface AgentSlotComponentProps {
+export interface AgentSurfaceComponentProps {
     outerBlockId: string;
-    deps: AgentPaneDeps;
-    children: (agentSlot: AgentSlot) => React.ReactNode;
+    model: TerminalModel;
+    context: AgentSurfaceContext;
 }
 
 const BlockOutputHorizontalPaddingPx = 24;
@@ -155,7 +154,7 @@ export const TerminalView = memo(
         topSlot,
         overlaySlot,
         replaceContent,
-        agentSlotComponent: AgentSlotComponent,
+        agentSurfaceComponent: AgentSurfaceComponent,
     }: TerminalViewProps) => {
         const model = useTerminalModel(outerBlockId);
         const loading = useAtomValue(model.loadingAtom);
@@ -258,10 +257,8 @@ export const TerminalView = memo(
         }, [model, revision, longRunningTick, loading]);
 
         const nld = useNLDModel(outerBlockId);
-        const inputMode = useAtomValue(nld.modeAtom);
         const chipModel = useContextChipModel(outerBlockId);
         const chipValues = useAtomValue(chipModel.valuesAtom);
-        const effectiveMode = useAtomValue(nld.effectiveModeAtom);
 
         // Feed the chip model with the current cwd / branch + finished-block
         // events.  Each input is a fingerprint dimension (warp's
@@ -292,21 +289,6 @@ export const TerminalView = memo(
                 if (cmd) chipModel.onCommandCompleted(cmd);
             }
         }, [revision, chipModel]);
-        const setInputMode = useCallback(
-            (next: InputMode, currentText?: string) => {
-                nld.setMode(next);
-                // When toggling Auto *on* with existing buffer content, fire a
-                // one-shot classifier run so the effective mode reflects the
-                // current text immediately — without this the stale value
-                // persists until the next keystroke.
-                if (next === "auto" && currentText && currentText.trim().length > 0) {
-                    // isAgentFollowUp is wired to false until crest's block
-                    // engine surfaces a "last block was AI" signal.
-                    nld.triggerDetectionImmediate(currentText, commandHistory, false);
-                }
-            },
-            [nld, commandHistory]
-        );
         const onInputTextChange = useCallback(
             (next: string) => {
                 // For now we don't have a "last block was AI" signal in
@@ -641,104 +623,90 @@ export const TerminalView = memo(
             );
         }
 
-        const agentSlotDeps: AgentPaneDeps = {
-            model,
-            fontSize,
-            focusRequest,
-            liveCwd,
-            home,
-            branch: liveBlock?.gitBranch || chipValues.gitBranch,
-            gitAdded: liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded,
-            gitRemoved: liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved,
-            prNumber: chipValues.prNumber,
-            prTitle: chipValues.prTitle,
-            kubernetesContext: chipValues.kubernetesContext,
-            sshHost,
-            sshUser,
+        const agentSurfaceContext: AgentSurfaceContext = {
             workspaceDir,
             liveGitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
             recentCmds,
             liveConnection,
-            commandHistory,
-            inputMode,
-            effectiveMode,
-            onModeChange: setInputMode,
-            onInputTextChange,
-            isRunning,
             inAltScreen,
         };
         const blocks = model.getBlocks().all();
         const blockCount = blocks.length;
         const hasRenderableTerminalBlocks = blocks.some(isRenderableTerminalBlock);
 
-        const renderTerminalBody = (agentSlot: AgentSlot | null) => (
+        const renderTerminalContent = () => (
             <>
-                {topSlot}
-                <FindBar model={model} />
-                {agentSlot?.chatHost}
-                {error && (
-                    <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
-                        {error}
-                    </div>
-                )}
-                {agentSlot?.replacesBlockList ? (
-                    agentSlot.commandResults
-                ) : loading && blockCount === 0 ? (
+                {loading && blockCount === 0 ? (
                     <div className="flex flex-1 items-center justify-center text-[12px] text-secondary/70">
                         Loading terminal…
                     </div>
-                ) : !agentSlot && !hasRenderableTerminalBlocks ? (
+                ) : !hasRenderableTerminalBlocks ? (
                     <TerminalWelcome />
                 ) : (
-                    <>
-                        <BlockListElement
-                            model={model}
-                            fontSize={fontSize}
-                            home={home}
-                            onCopyBlock={onCopyBlock}
-                            onLinkClick={onLinkClick}
-                            charWidth={charWidth}
-                        />
-                        {agentSlot?.commandResults}
-                    </>
+                    <BlockListElement
+                        model={model}
+                        fontSize={fontSize}
+                        home={home}
+                        onCopyBlock={onCopyBlock}
+                        onLinkClick={onLinkClick}
+                        charWidth={charWidth}
+                    />
                 )}
                 {/* prompt_to_editor_padding — warp settings/mod.rs:551 keeps a
                 10px breathing room between the last block's output and the
                 top of the input editor.  Without this the input's border-t
                 hugs the last command's stdout. */}
                 {!inAltScreen && <div className="mt-2.5" />}
-                {!inAltScreen &&
-                    (agentSlot ? (
-                        agentSlot.inputBar
-                    ) : (
-                        <CmdBlockInput
-                            cwd={liveCwd}
-                            home={home}
-                            branch={liveBlock?.gitBranch || chipValues.gitBranch}
-                            gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
-                            gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
-                            prNumber={chipValues.prNumber}
-                            prTitle={chipValues.prTitle}
-                            kubernetesContext={chipValues.kubernetesContext}
-                            sshHost={sshHost}
-                            sshUser={sshUser}
-                            mode="terminal"
-                            onModeChange={() => {}}
-                            onSubmit={onSubmit}
-                            submitting={submitting}
-                            disabled={false}
-                            fontSize={fontSize}
-                            focusRequest={focusRequest}
-                            history={commandHistory}
-                            onTextChange={onInputTextChange}
-                            hideHelpRow
-                            placeholder={
-                                isRunning
-                                    ? "Press Ctrl+C in the running block to interrupt, or type the next command"
-                                    : undefined
-                            }
-                        />
-                    ))}
+                {!inAltScreen && (
+                    <CmdBlockInput
+                        cwd={liveCwd}
+                        home={home}
+                        branch={liveBlock?.gitBranch || chipValues.gitBranch}
+                        gitAdded={liveBlock?.gitDiffAdded ?? chipValues.gitDiffAdded}
+                        gitRemoved={liveBlock?.gitDiffRemoved ?? chipValues.gitDiffRemoved}
+                        prNumber={chipValues.prNumber}
+                        prTitle={chipValues.prTitle}
+                        kubernetesContext={chipValues.kubernetesContext}
+                        sshHost={sshHost}
+                        sshUser={sshUser}
+                        mode="terminal"
+                        onModeChange={() => {}}
+                        onSubmit={onSubmit}
+                        submitting={submitting}
+                        disabled={false}
+                        fontSize={fontSize}
+                        focusRequest={focusRequest}
+                        history={commandHistory}
+                        onTextChange={onInputTextChange}
+                        hideHelpRow
+                        placeholder={
+                            isRunning
+                                ? "Press Ctrl+C in the running block to interrupt, or type the next command"
+                                : undefined
+                        }
+                    />
+                )}
+            </>
+        );
+
+        const renderTerminalBody = () => (
+            <>
+                {topSlot}
+                <FindBar model={model} />
+                {error && (
+                    <div className="shrink-0 border-b border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[12px] text-rose-300">
+                        {error}
+                    </div>
+                )}
+                {AgentSurfaceComponent ? (
+                    <AgentSurfaceComponent
+                        outerBlockId={outerBlockId}
+                        model={model}
+                        context={agentSurfaceContext}
+                    />
+                ) : (
+                    renderTerminalContent()
+                )}
                 {overlaySlot}
                 {notification && (
                     <div className="pointer-events-none absolute right-3 top-3 max-w-[60%] rounded border border-fg-overlay-2 bg-background/95 px-3 py-2 text-[12px] text-foreground shadow-lg">
@@ -761,13 +729,7 @@ export const TerminalView = memo(
                     )}
                     style={terminalChromeStyle}
                 >
-                    {AgentSlotComponent ? (
-                        <AgentSlotComponent outerBlockId={outerBlockId} deps={agentSlotDeps}>
-                            {renderTerminalBody}
-                        </AgentSlotComponent>
-                    ) : (
-                        renderTerminalBody(null)
-                    )}
+                    {renderTerminalBody()}
                 </div>
             </PaletteContext.Provider>
         );

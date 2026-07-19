@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { readFileSync } from "node:fs";
 import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
 import { atom } from "jotai";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -78,22 +79,40 @@ vi.mock("@/store/global", () => ({
 
 import {
     AgentQueuedMessagesPanel,
+    WorkspaceAgentSurface,
     getAgentQueuedMessageText,
     getLatestAgentContextUsage,
     getNextAgentAttachedPanelState,
     hasActiveAgentAttachedPanel,
     makeEmptyAgentAttachedPanelState,
     mapPiUsageToContextUsage,
-    useAgentPane,
-    type AgentPaneDeps,
-} from "./agent-pane";
+    type AgentSurfaceContext,
+} from "./agent-surface";
 
-type AgentPaneModel = Pick<
+describe("Agent surface context", () => {
+    it("uses a direct workspace surface with only consumed context", () => {
+        const source = readFileSync(new URL("./agent-surface.tsx", import.meta.url), "utf8");
+        const context = source.match(/export interface AgentSurfaceContext \{([\s\S]*?)\n\}/)?.[1] ?? "";
+        expect(source).toContain("export function WorkspaceAgentSurface");
+        expect(source).not.toContain("export interface AgentSlot");
+        expect(source).not.toContain("children: (slot:");
+        expect(context).toContain("workspaceDir: string");
+        expect(context).toContain("liveGitBranch?: string");
+        expect(context).toContain("recentCmds: string[]");
+        expect(context).toContain("liveConnection: string");
+        expect(context).toContain("inAltScreen: boolean");
+        expect(context).not.toContain("fontSize:");
+        expect(context).not.toContain("commandHistory:");
+        expect(context).not.toContain("onModeChange:");
+    });
+});
+
+type AgentSurfaceModel = Pick<
     TerminalModel,
     "revisionAtom" | "notificationAtom" | "submitInput"
 >;
 
-function fakeModel(): AgentPaneModel {
+function fakeModel(): AgentSurfaceModel {
     return {
         revisionAtom: atom(1),
         notificationAtom: atom(""),
@@ -103,25 +122,14 @@ function fakeModel(): AgentPaneModel {
 
 const model = fakeModel() as TerminalModel;
 
-const deps: AgentPaneDeps = {
-    model,
-    fontSize: 16,
-    focusRequest: 0,
-    liveCwd: "/x",
-    home: "/home",
+const context: AgentSurfaceContext = {
     workspaceDir: "/x",
     recentCmds: [],
     liveConnection: "",
-    commandHistory: [],
-    inputMode: "agent",
-    effectiveMode: "agent",
-    onModeChange: () => {},
-    onInputTextChange: () => {},
-    isRunning: false,
     inAltScreen: false,
 };
 
-describe("useAgentPane", () => {
+describe("WorkspaceAgentSurface", () => {
     it("keeps command attached panels mutually exclusive", () => {
         const commandResult = {
             command: "session",
@@ -223,22 +231,11 @@ describe("useAgentPane", () => {
         });
     });
 
-    it("produces a full assistant-ui agent slot without the legacy activity bar", () => {
-        let captured: ReturnType<typeof useAgentPane> | null = null;
+    it("renders the full assistant-ui surface without the legacy activity bar", () => {
         const model = fakeModel() as TerminalModel;
-        const probeDeps = { ...deps, model };
-        function LocalProbe({ onSlot }: { onSlot: (slot: ReturnType<typeof useAgentPane>) => void }) {
-            const slot = useAgentPane("outer", model, probeDeps);
-            onSlot(slot);
-            return (
-                <>
-                    {slot.chatHost}
-                    {slot.inputBar}
-                    {slot.commandResults}
-                </>
-            );
-        }
-        const html = renderToStaticMarkup(<LocalProbe onSlot={(s) => (captured = s)} />);
+        const html = renderToStaticMarkup(
+            <WorkspaceAgentSurface outerBlockId="outer" model={model} context={context} />
+        );
         expect(html).toContain('data-testid="agent-chat-host"');
         expect(html).toContain('data-testid="assistant-runtime-provider"');
         expect(html).toContain('data-testid="crest-thread"');
@@ -247,22 +244,16 @@ describe("useAgentPane", () => {
         expect(html).toContain('data-testid="session-selector"');
         expect(html).toContain('data-testid="agent-cmd-results"');
         expect(html).toContain('data-testid="model-picker-inline"');
-        expect(captured!.replacesBlockList).toBe(true);
     });
 
-    it("omits activity bar and input bar in alt-screen", () => {
-        const altDeps = { ...deps, inAltScreen: true };
-        function AltProbe() {
-            const slot = useAgentPane("outer", altDeps.model, altDeps);
-            return (
-                <>
-                    {slot.chatHost}
-                    {slot.commandResults}
-                    {slot.inputBar}
-                </>
-            );
-        }
-        const html = renderToStaticMarkup(<AltProbe />);
+    it("omits the thread in alt-screen", () => {
+        const html = renderToStaticMarkup(
+            <WorkspaceAgentSurface
+                outerBlockId="outer"
+                model={model}
+                context={{ ...context, inAltScreen: true }}
+            />
+        );
         expect(html).toContain('data-testid="agent-chat-host"');
         expect(html).not.toContain('data-testid="agent-cmd-results"');
         expect(html).not.toContain('data-testid="cmd-input"');

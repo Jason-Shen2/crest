@@ -3,17 +3,16 @@
 //
 // AgentViewModel — the "agent" block form.  Same TerminalModel engine as the
 // pure-terminal "term"/"termblocks" forms, but mounts the agent surface
-// (chat host / activity bar / session selector / agent input mode) via
-// useAgentPane.  Created explicitly by the launcher's Agent widget and as the
+// (chat host / session selector / composer) via WorkspaceAgentSurface.
+// Created explicitly by the launcher's Agent widget and as the
 // default block in new tabs.  See docs/superpowers/specs/2026-07-07-block-dual-form-split-design.md.
 
 import { globalStore } from "@/app/store/jotaiStore";
-import { useAgentPane } from "@/app/term/render/agent-pane";
-import { TerminalView, type AgentSlotComponentProps } from "@/app/term/render/terminal-view";
+import { WorkspaceAgentSurface } from "@/app/term/render/agent-surface";
+import { TerminalView } from "@/app/term/render/terminal-view";
 import { getBlockMetaKeyAtom, getSettingsKeyAtom } from "@/store/global";
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
-import * as React from "react";
 
 export class AgentViewModel implements ViewModel {
     readonly viewType = "agent";
@@ -64,14 +63,8 @@ const AgentSurfaceHost: React.FC<{ blockId: string; fontSize: number; focusReque
             outerBlockId={blockId}
             fontSize={fontSize}
             focusRequest={focusRequest}
-            agentSlotComponent={AgentPaneSlot}
+            agentSurfaceComponent={WorkspaceAgentSurface}
         />
     );
 };
 AgentSurfaceHost.displayName = "AgentSurfaceHost";
-
-const AgentPaneSlot: React.FC<AgentSlotComponentProps> = ({ outerBlockId, deps, children }) => {
-    const agentSlot = useAgentPane(outerBlockId, deps.model, deps);
-    return <>{children(agentSlot)}</>;
-};
-AgentPaneSlot.displayName = "AgentPaneSlot";
