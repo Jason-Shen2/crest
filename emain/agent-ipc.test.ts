@@ -75,6 +75,30 @@ function assistant(text: string): AgentMessage {
     return { role: "assistant", content: [{ type: "text", text }] } as unknown as AgentMessage;
 }
 
+function makeHarnessHostMock() {
+    const model = { provider: "p", id: "m", api: "openai" };
+    return {
+        harness: {
+            subscribe: vi.fn(() => () => {}),
+            isIdle: vi.fn(() => true),
+            abort: vi.fn(async () => {}),
+            getModel: vi.fn(() => model),
+            setModel: vi.fn(async () => {}),
+            getThinkingLevel: vi.fn(() => "off"),
+            setThinkingLevel: vi.fn(async () => {}),
+        },
+        session: {
+            buildContext: vi.fn(async () => ({ messages: [] })),
+            getBranch: vi.fn(async () => []),
+        },
+        update: vi.fn(),
+        setAuthResolver: vi.fn(),
+        setToolCallHook: vi.fn(),
+        resolveAuth: vi.fn(),
+        runToolCallHook: vi.fn(),
+    };
+}
+
 describe("agent-ipc command helpers", () => {
     let tmpConfigHome: string;
     let previousConfigHome: string | undefined;
@@ -500,16 +524,13 @@ describe("agent-ipc command helpers", () => {
 
     it("agent:send returns the committed turn id without writing a legacy marker", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-send");
-        // Stub the harness build so ensurePaneSession constructs a real
+        // Stub the harness build so ensureAgentRuntime constructs a real
         // AgentSessionRuntime without a live model/provider.
         vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
-        vi.mocked(buildAgentHarnessHost).mockReturnValue({
-            harness: { subscribe: () => () => {} },
-            session: { buildContext: async () => ({ messages: [] }), getBranch: async () => [] },
-            update: () => {},
-        } as never);
-        // send() resolves with the user entry id (the turn identity).
-        const sendSpy = vi.spyOn(AgentSessionRuntime.prototype, "send").mockResolvedValue("entry-xyz");
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValue("entry-xyz");
 
         registerAgentIpcHandlers();
         const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -529,9 +550,183 @@ describe("agent-ipc command helpers", () => {
             }
         )) as { sessionMetadata: unknown; turnId: string };
 
-        expect(sendSpy).toHaveBeenCalledWith("hello");
+        expect(sendConfiguredSpy).toHaveBeenCalledWith(
+            "hello",
+            expect.objectContaining({
+                model: expect.objectContaining({ id: "m" }),
+                thinkingLevel: "off",
+            })
+        );
         expect(result.turnId).toBe("entry-xyz");
         expect(vi.mocked(RpcApi.AppendAgentRunCommand)).not.toHaveBeenCalled();
-        sendSpy.mockRestore();
+        sendConfiguredSpy.mockRestore();
+    });
+
+    it("reuses one runtime and applies current execution config", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-config");
+        vi.mocked(buildAgentHarnessHost).mockClear();
+        vi.mocked(getModel)
+            .mockReturnValueOnce({
+                provider: "p",
+                id: "m1",
+                api: "openai",
+                baseUrl: "http://one",
+            } as never)
+            .mockReturnValueOnce({
+                provider: "p",
+                id: "m2",
+                api: "openai",
+                baseUrl: "http://two",
+            } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValueOnce("entry-1")
+            .mockResolvedValueOnce("entry-2");
+
+        registerAgentIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+        const sendHandler = handlers.get("agent:send");
+        const base = {
+            sessionMetadata: metadata,
+            blockId: "block-1",
+            cwd: "/tmp/agent-ipc-config",
+            provider: "p",
+        };
+
+        try {
+            await sendHandler?.({}, { ...base, text: "first", model: "m1", reasoning: "low" });
+            await sendHandler?.({}, { ...base, text: "second", model: "m2", reasoning: "high" });
+
+            expect(buildAgentHarnessHost).toHaveBeenCalledTimes(1);
+            expect(sendConfiguredSpy).toHaveBeenNthCalledWith(
+                2,
+                "second",
+                expect.objectContaining({
+                    model: expect.objectContaining({ id: "m2" }),
+                    thinkingLevel: "high",
+                    promptInputs: expect.objectContaining({ cwd: "/tmp/agent-ipc-config" }),
+                })
+            );
+        } finally {
+            sendConfiguredSpy.mockRestore();
+        }
+    });
+
+    it("keeps a subscribed runtime alive until release and the idle TTL expires", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-subscribed-runtime");
+        vi.useFakeTimers();
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValue("entry-1");
+        const disposeSpy = vi.spyOn(AgentSessionRuntime.prototype, "dispose");
+        const sender = {
+            id: 11,
+            isDestroyed: vi.fn(() => false),
+            once: vi.fn(),
+            send: vi.fn(),
+        } as unknown as electron.WebContents;
+
+        try {
+            registerAgentIpcHandlers();
+            const handlers = new Map<string, (...args: unknown[]) => unknown>();
+            for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+                handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+            }
+            await handlers.get("agent:send")?.(
+                {},
+                {
+                    sessionMetadata: metadata,
+                    blockId: "block-1",
+                    cwd: metadata.cwd,
+                    text: "first",
+                    provider: "p",
+                    model: "m",
+                }
+            );
+            await subscribeAgentSessionForIpc(sender, metadata.path);
+
+            await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+            expect(disposeSpy).not.toHaveBeenCalled();
+
+            await unsubscribeAgentSessionForIpc(sender.id, metadata.path);
+            await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+            expect(disposeSpy).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(60 * 1000);
+            expect(disposeSpy).toHaveBeenCalledOnce();
+        } finally {
+            _resetAgentIpcForTests();
+            vi.useRealTimers();
+            sendConfiguredSpy.mockRestore();
+            disposeSpy.mockRestore();
+        }
+    });
+
+    it("releases a runtime subscription when its sender is destroyed", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-destroyed-sender");
+        vi.useFakeTimers();
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValue("entry-1");
+        const disposeSpy = vi.spyOn(AgentSessionRuntime.prototype, "dispose");
+        let onDestroyed: (() => void) | undefined;
+        const sender = {
+            id: 12,
+            isDestroyed: vi.fn(() => false),
+            once: vi.fn((_eventName: string, listener: () => void) => {
+                onDestroyed = listener;
+            }),
+            send: vi.fn(),
+        } as unknown as electron.WebContents;
+
+        try {
+            registerAgentIpcHandlers();
+            const handlers = new Map<string, (...args: unknown[]) => unknown>();
+            for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+                handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+            }
+            await handlers.get("agent:send")?.(
+                {},
+                {
+                    sessionMetadata: metadata,
+                    blockId: "block-1",
+                    cwd: metadata.cwd,
+                    text: "first",
+                    provider: "p",
+                    model: "m",
+                }
+            );
+            await subscribeAgentSessionForIpc(sender, metadata.path);
+
+            onDestroyed?.();
+            await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+            expect(disposeSpy).toHaveBeenCalledOnce();
+        } finally {
+            _resetAgentIpcForTests();
+            vi.useRealTimers();
+            sendConfiguredSpy.mockRestore();
+            disposeSpy.mockRestore();
+        }
+    });
+
+    it("starts only one runtime sweep timer", () => {
+        vi.useFakeTimers();
+        try {
+            registerAgentIpcHandlers();
+            registerAgentIpcHandlers();
+
+            expect(vi.getTimerCount()).toBe(1);
+        } finally {
+            _resetAgentIpcForTests();
+            vi.useRealTimers();
+        }
     });
 });

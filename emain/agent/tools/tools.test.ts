@@ -592,6 +592,21 @@ describe("web_fetch", () => {
 });
 
 describe("tools registry", () => {
+    it("resolves cwd when a default tool executes", async () => {
+        const first = path.join(tmpDir, "first");
+        const second = path.join(tmpDir, "second");
+        await fs.mkdir(first);
+        await fs.mkdir(second);
+        await fs.writeFile(path.join(first, "value.txt"), "first");
+        await fs.writeFile(path.join(second, "value.txt"), "second");
+        let cwd = first;
+        const read = getDefaultTools(() => cwd).find((tool) => tool.name === "read");
+
+        expect(text(await read!.execute("tc-1", { path: "value.txt" }))).toContain("first");
+        cwd = second;
+        expect(text(await read!.execute("tc-2", { path: "value.txt" }))).toContain("second");
+    });
+
     it("getDefaultTools(cwd) returns the full tool baseline", () => {
         const tools = getDefaultTools(tmpDir);
         expect(tools.map((t) => t.name).sort()).toEqual(

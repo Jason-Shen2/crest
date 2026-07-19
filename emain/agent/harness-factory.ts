@@ -76,6 +76,7 @@ export interface AgentHarnessHost {
     setToolCallHook(hook?: ToolCallHook): void;
     resolveAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
     runToolCallHook(event: ToolCallEvent): Promise<ToolCallResult | undefined>;
+    getCwd(): string;
     /**
      * Refresh pane state. Mutates the harness's env.cwd (so tool
      * execution targets the latest dir) and the system-prompt input
@@ -141,6 +142,9 @@ export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): Agent
         },
         async runToolCallHook(event): Promise<ToolCallResult | undefined> {
             return toolCallHook?.(event);
+        },
+        getCwd(): string {
+            return inputs.cwd;
         },
         update(next: SystemPromptInputs): void {
             inputs = next;

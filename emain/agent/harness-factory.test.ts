@@ -25,6 +25,19 @@ function fakeModel(): Model<any> {
 }
 
 describe("AgentHarnessHost", () => {
+    it("exposes the current cwd after an execution-context update", async () => {
+        const session = await new InMemorySessionRepo().create({});
+        const host = buildAgentHarnessHost({
+            session,
+            model: fakeModel(),
+            promptInputs: { cwd: "/first" },
+        });
+
+        expect(host.getCwd()).toBe("/first");
+        host.update({ cwd: "/second" });
+        expect(host.getCwd()).toBe("/second");
+    });
+
     it("updates auth and tool hooks without rebuilding the Harness", async () => {
         const session = await new InMemorySessionRepo().create({});
         const model = fakeModel();

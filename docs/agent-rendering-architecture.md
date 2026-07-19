@@ -207,16 +207,21 @@ send routing from its own tracked state.
   - Re-emits the harness event stream to its own subscribers and clears
     `running` on `agent_end` / `abort` / prompt-settle.
 - `emain/agent-ipc.ts` — thin IPC ↔ owner adapter.
-  - `sessionCache: Map<path, AgentSessionRuntime>` (was a harness cache + a
-    separate transcript `Map`).
-  - `agent:send` → `session.send(text)`.
-  - `agent:subscribe` → `session.subscribe(cb)`, then replays
-    `session.getSnapshot()` as a `snapshot` event (messages + status +
-    queues) so a late/re-subscribing renderer mirrors the owned state —
-    including a turn that is *mid-stream*, not just completed.
-  - `agent:abort` → `session.abort()`.
+  - `AgentRuntimeRegistry<AgentSessionRuntime>` deduplicates runtime creation
+    by canonical session path, protects running/subscribed runtimes, and
+    evicts idle unreferenced runtimes after five minutes.
+  - `agent:send` resolves the current model, reasoning, auth, permissions,
+    and prompt inputs, then calls
+    `runtime.sendWithExecutionConfig(text, config)`.
+  - `agent:subscribe` acquires a Registry subscriber reference, attaches
+    `runtime.subscribe(cb)`, then replays `runtime.getSessionState()` as a
+    `session_state` event so a late/re-subscribing renderer mirrors the
+    owned state, including a turn that is *mid-stream*.
+  - `agent:unsubscribe` and renderer destruction release the Registry
+    subscriber reference.
+  - `agent:abort` → `runtime.abort()`.
 - `frontend/app/store/use-pi-chat.ts`
-  - `reducePiChatEvent` replaces `messages` only on `snapshot` (the owner's
+  - `reducePiChatEvent` replaces `messages` only on `session_state` (the owner's
     full accumulated array); `agent_end` is a no-op for messages (same
     run-scoped reasoning as the owner). The subscribe callback also seeds
     `status` from the snapshot so a mid-stream re-subscribe reflects
