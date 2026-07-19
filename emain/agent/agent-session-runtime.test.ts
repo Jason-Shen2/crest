@@ -114,6 +114,8 @@ describe("AgentSessionRuntime naming", () => {
         const source = readFileSync(new URL("./agent-session-runtime.ts", import.meta.url), "utf8");
         expect(source).toContain("export class AgentSessionRuntime");
         expect(source).not.toContain("export class PaneAgentSession");
+        expect(source).not.toContain("pane: AgentHarnessHost");
+        expect(source).not.toContain("this.pane");
     });
 });
 
