@@ -171,7 +171,9 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false }: Obse
                                         }
                                     }
                                 }}
-                                onToggleCategory={(category) => dispatchViewState({ type: "toggle-category", category })}
+                                onToggleCategory={(category) =>
+                                    dispatchViewState({ type: "toggle-category", category })
+                                }
                                 onExpandAll={() =>
                                     dispatchViewState({ type: "expand-all", observationIds: timelineObservationIds })
                                 }
@@ -207,7 +209,10 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false }: Obse
                                 aria-label="Observation detail pane"
                                 className="min-h-0 w-[min(42%,32rem)] shrink-0 overflow-auto rounded-lg border border-border bg-fg-overlay-1/30 p-3"
                             >
-                                <ObservationDetail observation={selectedObservation} />
+                                <ObservationDetail
+                                    observation={selectedObservation}
+                                    traceTimestamp={selectedGraph.trace.timestamp}
+                                />
                             </aside>
                         ) : null}
                     </div>

@@ -407,6 +407,7 @@ describe("ObservationRow theme tokens", () => {
                     observation={observation}
                     presentation={presentObservation(observation)}
                     relativeTime="+1.0s"
+                    traceTimestamp="2026-07-19T00:00:00.000Z"
                     expanded={false}
                     selected={false}
                     onToggle={vi.fn()}

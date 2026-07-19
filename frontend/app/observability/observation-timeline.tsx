@@ -255,6 +255,7 @@ export function ObservationTimeline({
                                     observation={row.observation}
                                     presentation={row.presentation}
                                     relativeTime={row.relativeTime}
+                                    traceTimestamp={graph.trace.timestamp}
                                     expanded={expandedObservationIds.has(row.observation.id)}
                                     selected={selectedObservationId === row.observation.id}
                                     renderInlineDetail={renderInlineDetails}

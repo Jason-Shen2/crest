@@ -18,6 +18,7 @@ interface ObservationRowProps {
     observation: AgentObservabilityObservation;
     presentation: ObservationPresentation;
     relativeTime: string;
+    traceTimestamp: string;
     expanded: boolean;
     selected: boolean;
     renderInlineDetail?: boolean;
@@ -28,6 +29,7 @@ export function ObservationRow({
     observation,
     presentation,
     relativeTime,
+    traceTimestamp,
     expanded,
     selected,
     renderInlineDetail = true,
@@ -66,7 +68,7 @@ export function ObservationRow({
             </button>
             {renderInlineDetail && expanded ? (
                 <div className="mt-2 border-t border-border/70 pt-3">
-                    <ObservationDetail observation={observation} />
+                    <ObservationDetail observation={observation} traceTimestamp={traceTimestamp} />
                 </div>
             ) : null}
         </div>

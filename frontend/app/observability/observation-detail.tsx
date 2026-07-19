@@ -6,6 +6,7 @@ import { useState } from "react";
 
 interface ObservationDetailProps {
     observation: AgentObservabilityObservation;
+    traceTimestamp: string;
 }
 
 function stringifyValue(value: unknown): string {
@@ -19,11 +20,25 @@ function hasEntries(value: Record<string, unknown>): boolean {
     return Object.keys(value).length > 0;
 }
 
-function formatTiming(observation: AgentObservabilityObservation): string {
-    if (observation.endTime == null) {
-        return `${observation.startTime} - running`;
+function formatSeconds(seconds: number): string {
+    const milliseconds = seconds * 1000;
+    if (milliseconds < 1000) {
+        return `${Math.round(milliseconds)} ms`;
     }
-    return `${observation.startTime} - ${observation.endTime}`;
+    return `${Number(seconds.toFixed(2))} s`;
+}
+
+function formatRelativeTime(startTime: string, traceTimestamp: string): string {
+    const seconds = (new Date(startTime).getTime() - new Date(traceTimestamp).getTime()) / 1000;
+    return Number.isFinite(seconds) ? `+${Math.max(0, seconds).toFixed(1)}s` : "+0.0s";
+}
+
+function formatDuration(observation: AgentObservabilityObservation): string {
+    if (observation.endTime == null) {
+        return "running";
+    }
+    const seconds = (new Date(observation.endTime).getTime() - new Date(observation.startTime).getTime()) / 1000;
+    return Number.isFinite(seconds) && seconds >= 0 ? formatSeconds(seconds) : "unknown";
 }
 
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
@@ -43,11 +58,19 @@ function JsonValue({ value }: { value: unknown }) {
     );
 }
 
-export function ObservationDetail({ observation }: ObservationDetailProps) {
+export function ObservationDetail({ observation, traceTimestamp }: ObservationDetailProps) {
     const [wrapRaw, setWrapRaw] = useState(false);
     const usageEntries = Object.entries(observation.usageDetails).filter(([, value]) => typeof value === "number");
     const costEntries = Object.entries(observation.costDetails).filter(([, value]) => typeof value === "number");
-    const hasUsage = usageEntries.length > 0 || costEntries.length > 0;
+    const timingEntries = [
+        observation.latency == null
+            ? null
+            : { id: "latency", label: "Latency", value: formatSeconds(observation.latency) },
+        observation.timeToFirstToken == null
+            ? null
+            : { id: "ttft", label: "TTFT", value: formatSeconds(observation.timeToFirstToken) },
+    ].filter((entry) => entry != null);
+    const hasUsage = usageEntries.length > 0 || costEntries.length > 0 || timingEntries.length > 0;
     const hasMetadata = hasEntries(observation.metadata);
     const rawJson = JSON.stringify(observation, null, 2);
 
@@ -67,8 +90,12 @@ export function ObservationDetail({ observation }: ObservationDetailProps) {
                             <dd className="break-words">{observation.model}</dd>
                         </>
                     ) : null}
-                    <dt className="text-muted-foreground">Timing</dt>
-                    <dd className="break-words font-mono text-[11px]">{formatTiming(observation)}</dd>
+                    <dt className="text-muted-foreground">Relative time</dt>
+                    <dd className="font-mono text-[11px]">
+                        {formatRelativeTime(observation.startTime, traceTimestamp)}
+                    </dd>
+                    <dt className="text-muted-foreground">Duration</dt>
+                    <dd className="font-mono text-[11px]">{formatDuration(observation)}</dd>
                     {observation.statusMessage ? (
                         <>
                             <dt className="text-muted-foreground">Message</dt>
@@ -91,6 +118,7 @@ export function ObservationDetail({ observation }: ObservationDetailProps) {
                 <DetailSection title="Usage">
                     <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1">
                         {[
+                            ...timingEntries,
                             ...usageEntries.map(([key, value]) => ({ id: `usage-${key}`, label: key, value })),
                             ...costEntries.map(([key, value]) => ({ id: `cost-${key}`, label: `cost.${key}`, value })),
                         ].map(({ id, label, value }) => (

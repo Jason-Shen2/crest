@@ -2,8 +2,8 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from "rea
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ObservationDetail } from "./observation-detail";
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
+import { ObservationDetail } from "./observation-detail";
 import { ObservationTimeline } from "./observation-timeline";
 import { RunReview } from "./run-review";
 import { TimelineToolbar } from "./timeline-toolbar";
@@ -260,10 +260,14 @@ describe("ObservationDetail", () => {
             costDetails: { total: 0.0125 },
             statusMessage: "complete",
         });
-        const markup = renderToStaticMarkup(<ObservationDetail observation={observation} />);
+        const markup = renderToStaticMarkup(
+            <ObservationDetail observation={observation} traceTimestamp="2026-07-19T00:00:00.000Z" />
+        );
 
         expect(markup).toContain('aria-label="Observation detail"');
         expect(markup).toContain("Overview");
+        expect(markup).toContain("+1.0s");
+        expect(markup).toContain("1 s");
         expect(markup).toContain("Input");
         expect(markup).toContain("Output");
         expect(markup).toContain("Usage");
@@ -272,12 +276,33 @@ describe("ObservationDetail", () => {
 
         HookHarness.cursor = 0;
         const sparseMarkup = renderToStaticMarkup(
-            <ObservationDetail observation={makeObservation("event", "EVENT")} />
+            <ObservationDetail
+                observation={makeObservation("event", "EVENT")}
+                traceTimestamp="2026-07-19T00:00:00.000Z"
+            />
         );
         expect(sparseMarkup).not.toContain(">Input<");
         expect(sparseMarkup).not.toContain(">Output<");
         expect(sparseMarkup).not.toContain(">Usage<");
         expect(sparseMarkup).not.toContain(">Metadata<");
+    });
+
+    it.each([
+        ["Latency", { latency: 0.042 }, "42 ms"],
+        ["TTFT", { timeToFirstToken: 0.125 }, "125 ms"],
+    ] as const)("renders %s as usage without usage or cost entries", (label, timing, expectedValue) => {
+        const observation = makeObservation("generation", "GENERATION", {
+            ...timing,
+            usageDetails: {},
+            costDetails: {},
+        });
+        const markup = renderToStaticMarkup(
+            <ObservationDetail observation={observation} traceTimestamp="2026-07-19T00:00:00.000Z" />
+        );
+
+        expect(markup).toContain(">Usage<");
+        expect(markup).toContain(label);
+        expect(markup).toContain(expectedValue);
     });
 
     it("copies complete observation JSON", async () => {
@@ -287,7 +312,7 @@ describe("ObservationDetail", () => {
         });
         const writeText = vi.fn().mockResolvedValue(undefined);
         vi.stubGlobal("navigator", { clipboard: { writeText } });
-        const detail = ObservationDetail({ observation });
+        const detail = ObservationDetail({ observation, traceTimestamp: "2026-07-19T00:00:00.000Z" });
         const copyButton = findElementByAriaLabel<{ onClick: () => void }>(detail, "Copy observation JSON");
 
         copyButton?.props.onClick();
@@ -300,13 +325,13 @@ describe("ObservationDetail", () => {
     it("toggles raw JSON wrapping without creating dashboard state", () => {
         const observation = makeObservation("tool", "TOOL", { input: { path: "README.md" } });
         HookHarness.cursor = 0;
-        let detail = ObservationDetail({ observation });
+        let detail = ObservationDetail({ observation, traceTimestamp: "2026-07-19T00:00:00.000Z" });
         expect(renderToStaticMarkup(detail)).toContain("whitespace-pre");
         const wrapButton = findElementByAriaLabel<{ onClick: () => void }>(detail, "Wrap raw JSON");
 
         wrapButton?.props.onClick();
         HookHarness.cursor = 0;
-        detail = ObservationDetail({ observation });
+        detail = ObservationDetail({ observation, traceTimestamp: "2026-07-19T00:00:00.000Z" });
 
         expect(renderToStaticMarkup(detail)).toContain("whitespace-pre-wrap");
     });
