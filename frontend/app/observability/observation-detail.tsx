@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { cn } from "@/util/util";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface ObservationDetailProps {
     observation: AgentObservabilityObservation;
@@ -61,6 +61,7 @@ function JsonValue({ value }: { value: unknown }) {
 export function ObservationDetail({ observation, traceTimestamp }: ObservationDetailProps) {
     const [wrapRaw, setWrapRaw] = useState(false);
     const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
+    const copyRequestToken = useRef(0);
     const usageEntries = Object.entries(observation.usageDetails).filter(([, value]) => typeof value === "number");
     const costEntries = Object.entries(observation.costDetails).filter(([, value]) => typeof value === "number");
     const timingEntries = [
@@ -76,18 +77,27 @@ export function ObservationDetail({ observation, traceTimestamp }: ObservationDe
     const rawJson = JSON.stringify(observation, null, 2);
 
     useEffect(() => {
+        copyRequestToken.current += 1;
         setCopyStatus("idle");
+        return () => {
+            copyRequestToken.current += 1;
+        };
     }, [observation.id]);
 
     const copyRawJson = async () => {
+        const requestToken = ++copyRequestToken.current;
         try {
             if (typeof navigator === "undefined" || navigator.clipboard?.writeText == null) {
                 throw new Error("Clipboard API unavailable");
             }
             await navigator.clipboard.writeText(rawJson);
-            setCopyStatus("success");
+            if (requestToken === copyRequestToken.current) {
+                setCopyStatus("success");
+            }
         } catch {
-            setCopyStatus("error");
+            if (requestToken === copyRequestToken.current) {
+                setCopyStatus("error");
+            }
         }
     };
 

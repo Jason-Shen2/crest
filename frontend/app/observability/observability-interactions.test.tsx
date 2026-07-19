@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef, type ComponentType } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -146,6 +146,16 @@ function renderTimeline(graph: AgentObservabilityTraceGraph, overrides: Record<s
     return { ...render(<Timeline {...props} />), props };
 }
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
 describe("ObservationDetail real rerender", () => {
     it("clears copied feedback when switching observations", async () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
@@ -158,6 +168,28 @@ describe("ObservationDetail real rerender", () => {
         await waitFor(() => expect(view.getByRole("status").textContent).toBe("Copied"));
 
         view.rerender(<ObservationDetail observation={observationB} traceTimestamp="2026-07-19T00:00:00.000Z" />);
+
+        expect(view.getByRole("button", { name: "Copy observation JSON" }).textContent).toBe("Copy");
+        expect(view.queryByRole("status")).toBeNull();
+    });
+
+    it.each([
+        ["resolves", (pending: ReturnType<typeof deferred<void>>) => pending.resolve()],
+        ["rejects", (pending: ReturnType<typeof deferred<void>>) => pending.reject(new Error("denied"))],
+    ])("ignores an old observation copy that %s after switching", async (_name, settle) => {
+        const pending = deferred<void>();
+        const writeText = vi.fn().mockReturnValue(pending.promise);
+        vi.stubGlobal("navigator", { clipboard: { writeText } });
+        const observationA = makeObservation("observation-a");
+        const observationB = makeObservation("observation-b");
+        const view = render(<ObservationDetail observation={observationA} traceTimestamp="2026-07-19T00:00:00.000Z" />);
+
+        fireEvent.click(view.getByRole("button", { name: "Copy observation JSON" }));
+        view.rerender(<ObservationDetail observation={observationB} traceTimestamp="2026-07-19T00:00:00.000Z" />);
+        await act(async () => {
+            settle(pending);
+            await pending.promise.catch(() => undefined);
+        });
 
         expect(view.getByRole("button", { name: "Copy observation JSON" }).textContent).toBe("Copy");
         expect(view.queryByRole("status")).toBeNull();
