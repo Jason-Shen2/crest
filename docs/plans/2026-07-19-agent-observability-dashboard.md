@@ -50,7 +50,7 @@
 - Modify: `frontend/types/custom.d.ts`
 - Test: `frontend/app/observability/observation-presentation.test.ts`
 
-- [ ] **Step 1: Add a compile-time fixture that uses the missing fields**
+- [x] **Step 1: Add a compile-time fixture that uses the missing fields**
 
 Create `observation-presentation.test.ts` with a shared fixture:
 
@@ -94,7 +94,7 @@ describe("AgentObservabilityObservation renderer contract", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused type/test command and confirm failure**
+- [x] **Step 2: Run the focused type/test command and confirm failure**
 
 Run:
 
@@ -104,7 +104,7 @@ npx vitest run frontend/app/observability/observation-presentation.test.ts
 
 Expected: TypeScript transform fails because `version`, `latency`, `timeToFirstToken`, `toolCalls`, and `toolCallNames` are absent.
 
-- [ ] **Step 3: Align the ambient renderer type**
+- [x] **Step 3: Align the ambient renderer type**
 
 Add to `AgentObservabilityObservation`:
 
@@ -116,7 +116,7 @@ toolCalls: string[] | null;
 toolCallNames: string[] | null;
 ```
 
-- [ ] **Step 4: Run the focused test**
+- [x] **Step 4: Run the focused test**
 
 Run:
 
@@ -126,7 +126,7 @@ npx vitest run frontend/app/observability/observation-presentation.test.ts
 
 Expected: 1 test passes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/types/custom.d.ts frontend/app/observability/observation-presentation.test.ts
@@ -139,7 +139,7 @@ git commit -m "chore: align observability renderer types"
 - Create: `frontend/app/observability/observation-presentation.ts`
 - Modify: `frontend/app/observability/observation-presentation.test.ts`
 
-- [ ] **Step 1: Add failing semantic mapping tests**
+- [x] **Step 1: Add failing semantic mapping tests**
 
 Cover:
 
@@ -172,7 +172,7 @@ it("summarizes tool arguments without dumping the entire payload", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests and confirm missing implementation**
+- [x] **Step 2: Run tests and confirm missing implementation**
 
 Run:
 
@@ -182,7 +182,7 @@ npx vitest run frontend/app/observability/observation-presentation.test.ts
 
 Expected: FAIL because `presentObservation` is not defined.
 
-- [ ] **Step 3: Implement the pure presentation contract**
+- [x] **Step 3: Implement the pure presentation contract**
 
 Export:
 
@@ -219,7 +219,7 @@ Implementation requirements:
 - `searchableText` is computed once from label, summary, name, status, input, output, and metadata.
 - String summaries are clamped to 160 characters.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -229,7 +229,7 @@ npx vitest run frontend/app/observability/observation-presentation.test.ts
 
 Expected: all presentation tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/app/observability/observation-presentation.ts frontend/app/observability/observation-presentation.test.ts
@@ -242,7 +242,7 @@ git commit -m "feat: add observation presentation model"
 - Create: `frontend/app/observability/trace-metrics.ts`
 - Create: `frontend/app/observability/trace-metrics.test.ts`
 
-- [ ] **Step 1: Write failing aggregation tests**
+- [x] **Step 1: Write failing aggregation tests**
 
 Use a graph with two generations, two tools, one error, and mixed usage:
 
@@ -270,7 +270,7 @@ Also test:
 - Final output falls back from `trace.output` to the last generation output.
 - AGENT root is excluded from event counts.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run:
 
@@ -280,7 +280,7 @@ npx vitest run frontend/app/observability/trace-metrics.test.ts
 
 Expected: FAIL because `computeTraceMetrics` is missing.
 
-- [ ] **Step 3: Implement metrics**
+- [x] **Step 3: Implement metrics**
 
 Export:
 
@@ -301,7 +301,7 @@ export function computeTraceMetrics(graph: AgentObservabilityTraceGraph): TraceM
 
 Sum numeric values only. For cost, sum every numeric entry in each observation's `costDetails`; do not invent exchange rates or provider-specific normalization.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -311,7 +311,7 @@ npx vitest run frontend/app/observability/trace-metrics.test.ts
 
 Expected: all metric tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/app/observability/trace-metrics.ts frontend/app/observability/trace-metrics.test.ts
@@ -324,7 +324,7 @@ git commit -m "feat: add trace review metrics"
 - Create: `frontend/app/observability/observability-view-state.ts`
 - Create: `frontend/app/observability/observability-view-state.test.ts`
 
-- [ ] **Step 1: Write failing reducer and filtering tests**
+- [x] **Step 1: Write failing reducer and filtering tests**
 
 Test these transitions:
 
@@ -342,7 +342,7 @@ expect(state.followLive).toBe(false);
 
 Test `filterTimelineRows()` with search plus category filters using AND semantics.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run:
 
@@ -352,7 +352,7 @@ npx vitest run frontend/app/observability/observability-view-state.test.ts
 
 Expected: FAIL because reducer/filter functions are missing.
 
-- [ ] **Step 3: Implement immutable state**
+- [x] **Step 3: Implement immutable state**
 
 Define:
 
@@ -381,7 +381,7 @@ Actions:
 
 Keep this reducer independent of React and IPC.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -391,7 +391,7 @@ npx vitest run frontend/app/observability/observability-view-state.test.ts
 
 Expected: reducer and filter tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/app/observability/observability-view-state.ts frontend/app/observability/observability-view-state.test.ts
@@ -406,7 +406,7 @@ git commit -m "feat: add observability dashboard state"
 - Modify: `frontend/app/observability/observability-panel.tsx`
 - Create: `frontend/app/observability/observability-panel.test.tsx`
 
-- [ ] **Step 1: Write failing component tests**
+- [x] **Step 1: Write failing component tests**
 
 Render with injected API data and assert:
 
@@ -424,7 +424,7 @@ const second = deferred<AgentObservabilityTraceGraph>();
 api.getTrace.mockImplementation((id) => id === "trace-1" ? first.promise : second.promise);
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run:
 
@@ -434,7 +434,7 @@ npx vitest run frontend/app/observability/observability-panel.test.tsx
 
 Expected: FAIL because selector/review UI and guarded selection do not exist.
 
-- [ ] **Step 3: Implement focused components**
+- [x] **Step 3: Implement focused components**
 
 `TraceSelector` props:
 
@@ -462,7 +462,7 @@ Refactor `ObservabilityPanel` so:
 - Live events always update the Recent Runs collection.
 - API unavailability, loading, empty, and rejected Promise states have distinct UI.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -472,7 +472,7 @@ npx vitest run frontend/app/observability/observability-panel.test.tsx
 
 Expected: all history/live/Run Review tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/app/observability/trace-selector.tsx frontend/app/observability/run-review.tsx frontend/app/observability/observability-panel.tsx frontend/app/observability/observability-panel.test.tsx
@@ -488,7 +488,7 @@ git commit -m "feat: add observability run review"
 - Modify: `frontend/app/observability/observability-panel.tsx`
 - Modify: `frontend/app/observability/observability-panel.test.tsx`
 
-- [ ] **Step 1: Add failing timeline tests**
+- [x] **Step 1: Add failing timeline tests**
 
 Assert:
 
@@ -500,7 +500,7 @@ Assert:
 - `j/k`, Enter, Escape, `g/G`, and `/` affect focus/expansion/search.
 - User scroll away pauses follow-live; “Back to live” resumes and scrolls to the last row.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run:
 
@@ -510,7 +510,7 @@ npx vitest run frontend/app/observability/observability-panel.test.tsx
 
 Expected: timeline assertions fail.
 
-- [ ] **Step 3: Implement toolbar and virtualized timeline**
+- [x] **Step 3: Implement toolbar and virtualized timeline**
 
 Use `useVirtualizer`:
 
@@ -534,7 +534,7 @@ Requirements:
 - Respect `prefers-reduced-motion` for live insertion.
 - Keep buttons `cursor-pointer` and use theme tokens only.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -544,7 +544,7 @@ npx vitest run frontend/app/observability/observability-panel.test.tsx frontend/
 
 Expected: all focused tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/app/observability/timeline-toolbar.tsx frontend/app/observability/observation-timeline.tsx frontend/app/observability/observation-row.tsx frontend/app/observability/observability-panel.tsx frontend/app/observability/observability-panel.test.tsx
@@ -562,7 +562,7 @@ git commit -m "feat: add observability timeline"
 - Modify: `frontend/app/workspace/right-tool-panel.test.tsx`
 - Modify: `frontend/app/observability/observability-panel.test.tsx`
 
-- [ ] **Step 1: Add failing responsive detail tests**
+- [x] **Step 1: Add failing responsive detail tests**
 
 Assert:
 
@@ -573,7 +573,7 @@ Assert:
 - Raw wrap toggle changes `whitespace-pre` to `whitespace-pre-wrap`.
 - RightToolPanel passes `magnified={state.magnified}` only to Observability.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run:
 
@@ -583,7 +583,7 @@ npx vitest run frontend/app/observability/observability-panel.test.tsx frontend/
 
 Expected: responsive detail assertions fail.
 
-- [ ] **Step 3: Pass magnified state through the right-panel boundary**
+- [x] **Step 3: Pass magnified state through the right-panel boundary**
 
 Change:
 
@@ -604,7 +604,7 @@ if (activeTool === "observability") {
 
 Pass `state.magnified` from `RightToolPanelContent`.
 
-- [ ] **Step 4: Implement structured detail**
+- [x] **Step 4: Implement structured detail**
 
 `ObservationDetail` props:
 
@@ -623,7 +623,7 @@ Requirements:
 - Copy uses `navigator.clipboard.writeText`.
 - Inline and split layouts reuse the same component.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -633,7 +633,7 @@ npx vitest run frontend/app/observability/observability-panel.test.tsx frontend/
 
 Expected: all responsive detail tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add frontend/app/observability/observation-detail.tsx frontend/app/observability/observation-row.tsx frontend/app/observability/observation-timeline.tsx frontend/app/observability/observability-panel.tsx frontend/app/workspace/right-tool-panel.tsx frontend/app/workspace/right-tool-panel.test.tsx frontend/app/observability/observability-panel.test.tsx
@@ -749,7 +749,7 @@ npx vitest run \
 
 Expected: zero failures.
 
-Result (Node `v22.23.1`): `11/11` test files and `136/136` tests passed.
+Result (Node `v22.23.1`): `12/12` test files and `137/137` tests passed.
 
 - [x] **Step 2: Run filtered type verification**
 
@@ -803,7 +803,7 @@ Render a generated graph in the panel test and assert:
 - Search returns the expected matching row.
 - Expanding a row re-measures without overlap.
 
-Result: `observability-interactions.test.tsx` generated 1,000 observations, mounted 20 DOM rows, found the unique matching row, and verified expansion remeasurement plus non-overlapping 44px row starts. The focused file passed `17/17` tests.
+Result: `observability-virtualization.test.tsx` uses the real `@tanstack/react-virtual` implementation with a 1,000-observation graph. It mounted a bounded window of fewer than 100 rows, searched the complete graph to find observation 997, and used a ResizeObserver notification to verify that expanding row 0 from 44px to 180px shifted row 1 to 180px without overlap. The focused file passed `2/2` tests.
 
 - [x] **Step 5: Update progress in design and plan**
 

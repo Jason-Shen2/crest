@@ -242,10 +242,10 @@ GENERATION input 为 0/3 会使 Detail 隐藏逐次 Generation 的 Input 区，�
 
 2026-07-19 使用 Node `v22.23.1` 完成最终验证：
 
-- Targeted Vitest：`11/11` 个测试文件、`136/136` 个测试通过。
+- Targeted Vitest：`12/12` 个测试文件、`137/137` 个测试通过。
 - Observability 类型契约：`1/1` 个 typecheck 文件通过，`0` 个 type error。
 - Filtered `tsc`：`frontend/app/observability`、`frontend/app/workspace/right-tool-panel`、`emain/agent/observability`、`emain/agent-ipc` 无匹配错误；全仓仍有 75 条与本功能路径无关的存量 TypeScript 错误。
-- 1,000 Observation fixture：DOM 同时挂载 20 行，搜索唯一命中目标行，展开后触发 virtualizer 重测量且行起始位置保持不重叠；focused 文件 `17/17` 个测试通过。
+- 1,000 Observation fixture：使用真实 `@tanstack/react-virtual`，DOM 挂载窗口保持少于 100 行，搜索完整数据后唯一命中第 998 条 Observation；ResizeObserver 将首行从 44px 重测为 180px 后，第二行实际移动到 180px 且不重叠。Focused 文件 `2/2` 个测试通过。
 - 桌面 UI：在隔离配置和匿名合成 SQLite 数据下验证 Recent Runs 切换、Run Review 数值、搜索、类别过滤、普通模式内联 Detail、magnified 模式 Timeline + 固定 Detail 双栏，以及 live-tail 暂停和 “Back to live” 恢复。
 - 完成态：targeted builder 测试验证 `agent_start` 的 `running` 状态在 `agent_end` 后变为 `success` 并写入 `endedAt`；桌面验收未调用真实模型。
 
