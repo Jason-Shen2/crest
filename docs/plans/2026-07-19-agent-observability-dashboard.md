@@ -749,7 +749,7 @@ npx vitest run \
 
 Expected: zero failures.
 
-Result (Node `v22.23.1`): `12/12` test files and `137/137` tests passed.
+Result (Node `v22.23.1`): `12/12` test files and `141/141` tests passed.
 
 - [x] **Step 2: Run filtered type verification**
 
@@ -791,7 +791,7 @@ Result: started on Node `v22.23.1` with isolated config/data and an external Ele
 - Recent Runs switched between a running and successful trace.
 - The successful Run Review matched SQLite: `5.0s`, 1 Generation, 2 Tools, 1 Error, token counts `120/30/10/5/165`, `$0.0125`, and `Review complete`.
 - Search `README` returned only Read File; category toggles isolated the controlled Error.
-- Normal mode expanded Detail inline; magnified mode rendered Timeline and fixed Detail as sibling panes.
+- A real React DOM `ObservabilityPanel` render expanded Detail inside the selected normal-mode row, then moved the same selected Detail into `aria-label="Observation detail pane"` after rerendering with `magnified`.
 - A 31-row running fixture showed paused live-tail with `Back to live`; clicking it removed the action and restored the tail.
 - The targeted builder transition test covered `running -> success` plus `endedAt` on `agent_end`; manual UI validation did not invoke a real model.
 
@@ -803,7 +803,7 @@ Render a generated graph in the panel test and assert:
 - Search returns the expected matching row.
 - Expanding a row re-measures without overlap.
 
-Result: `observability-virtualization.test.tsx` uses the real `@tanstack/react-virtual` implementation with a 1,000-observation graph. It mounted a bounded window of fewer than 100 rows, searched the complete graph to find observation 997, and used a ResizeObserver notification to verify that expanding row 0 from 44px to 180px shifted row 1 to 180px without overlap. The focused file passed `2/2` tests.
+Result: `observability-virtualization.test.tsx` uses the real `@tanstack/react-virtual` implementation with a 1,000-observation graph. The top, middle, and late ranges each kept fewer than 100 rows mounted; scrolling reached indexes above 400 and 900 without growing the DOM. Search found observation 997 from the complete graph. A ResizeObserver notification remeasured row 0 from 44px to 180px and shifted row 1 to 180px without overlap. With follow-live paused, appending observation 40 preserved `scrollTop=440` and did not mount the new tail; resuming follow-live mounted the tail and advanced the scroll offset. A real `ObservabilityPanel` subscription exercised the same pause/append/Back to live flow. The focused file passed `6/6` tests.
 
 - [x] **Step 5: Update progress in design and plan**
 
