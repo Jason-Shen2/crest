@@ -10,6 +10,15 @@ export interface ObservabilityViewState {
     categories: Set<ObservationCategory>;
     expandedObservationIds: Set<string>;
     followLive: boolean;
+    scrollOffset: number;
+    traceStates: Record<string, TraceObservabilityViewState>;
+}
+
+export interface TraceObservabilityViewState {
+    selectedObservationId?: string;
+    expandedObservationIds: Set<string>;
+    followLive: boolean;
+    scrollOffset: number;
 }
 
 export type ObservabilityViewStateAction =
@@ -21,11 +30,59 @@ export type ObservabilityViewStateAction =
     | { type: "expand-all"; observationIds: string[] }
     | { type: "collapse-all" }
     | { type: "pause-follow-live" }
-    | { type: "resume-follow-live" };
+    | { type: "resume-follow-live" }
+    | { type: "set-scroll-offset"; scrollOffset: number };
 
 export interface FilterableTimelineRow {
     category: ObservationCategory;
     searchableText: string;
+}
+
+export function makeTraceObservabilityViewState(): TraceObservabilityViewState {
+    return {
+        selectedObservationId: undefined,
+        expandedObservationIds: new Set(),
+        followLive: true,
+        scrollOffset: 0,
+    };
+}
+
+export function makeObservabilityViewState(): ObservabilityViewState {
+    const traceState = makeTraceObservabilityViewState();
+    return {
+        selectedTraceId: undefined,
+        ...traceState,
+        query: "",
+        categories: new Set<ObservationCategory>(["generation", "tool", "lifecycle", "error"]),
+        traceStates: {},
+    };
+}
+
+function currentTraceState(state: ObservabilityViewState): TraceObservabilityViewState {
+    return {
+        selectedObservationId: state.selectedObservationId,
+        expandedObservationIds: state.expandedObservationIds,
+        followLive: state.followLive,
+        scrollOffset: state.scrollOffset ?? 0,
+    };
+}
+
+function updateCurrentTraceState(
+    state: ObservabilityViewState,
+    update: (traceState: TraceObservabilityViewState) => TraceObservabilityViewState
+): ObservabilityViewState {
+    const traceState = update(currentTraceState(state));
+    if (!state.selectedTraceId) {
+        return { ...state, ...traceState };
+    }
+    return {
+        ...state,
+        ...traceState,
+        traceStates: {
+            ...state.traceStates,
+            [state.selectedTraceId]: traceState,
+        },
+    };
 }
 
 export type TimelineKeyboardIntent = "next" | "previous" | "first" | "last" | "toggle" | "collapse" | "search";
@@ -77,14 +134,27 @@ export function reduceObservabilityViewState(
     action: ObservabilityViewStateAction
 ): ObservabilityViewState {
     switch (action.type) {
-        case "select-trace":
+        case "select-trace": {
+            const traceStates = { ...(state.traceStates ?? {}) };
+            if (state.selectedTraceId) {
+                traceStates[state.selectedTraceId] = currentTraceState(state);
+            }
+            const traceState = traceStates[action.traceId] ?? makeTraceObservabilityViewState();
             return {
                 ...state,
                 selectedTraceId: action.traceId,
-                selectedObservationId: undefined,
+                ...traceState,
+                traceStates: {
+                    ...traceStates,
+                    [action.traceId]: traceState,
+                },
             };
+        }
         case "select-observation":
-            return { ...state, selectedObservationId: action.observationId };
+            return updateCurrentTraceState(state, (traceState) => ({
+                ...traceState,
+                selectedObservationId: action.observationId,
+            }));
         case "set-query":
             return { ...state, query: action.query };
         case "toggle-category": {
@@ -97,22 +167,35 @@ export function reduceObservabilityViewState(
             return { ...state, categories };
         }
         case "toggle-expanded": {
-            const expandedObservationIds = new Set(state.expandedObservationIds);
-            if (expandedObservationIds.has(action.observationId)) {
-                expandedObservationIds.delete(action.observationId);
-            } else {
-                expandedObservationIds.add(action.observationId);
-            }
-            return { ...state, expandedObservationIds };
+            return updateCurrentTraceState(state, (traceState) => {
+                const expandedObservationIds = new Set(traceState.expandedObservationIds);
+                if (expandedObservationIds.has(action.observationId)) {
+                    expandedObservationIds.delete(action.observationId);
+                } else {
+                    expandedObservationIds.add(action.observationId);
+                }
+                return { ...traceState, expandedObservationIds };
+            });
         }
         case "expand-all":
-            return { ...state, expandedObservationIds: new Set(action.observationIds) };
+            return updateCurrentTraceState(state, (traceState) => ({
+                ...traceState,
+                expandedObservationIds: new Set(action.observationIds),
+            }));
         case "collapse-all":
-            return { ...state, expandedObservationIds: new Set() };
+            return updateCurrentTraceState(state, (traceState) => ({
+                ...traceState,
+                expandedObservationIds: new Set(),
+            }));
         case "pause-follow-live":
-            return { ...state, followLive: false };
+            return updateCurrentTraceState(state, (traceState) => ({ ...traceState, followLive: false }));
         case "resume-follow-live":
-            return { ...state, followLive: true };
+            return updateCurrentTraceState(state, (traceState) => ({ ...traceState, followLive: true }));
+        case "set-scroll-offset":
+            return updateCurrentTraceState(state, (traceState) => ({
+                ...traceState,
+                scrollOffset: action.scrollOffset,
+            }));
         default: {
             const exhaustiveAction: never = action;
             return exhaustiveAction;

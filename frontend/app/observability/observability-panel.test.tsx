@@ -33,10 +33,10 @@ vi.mock("react", async (importOriginal) => {
             }
             return HookHarness.slots[index] as { current: T };
         },
-        useState: <T,>(initial: T) => {
+        useState: <T,>(initial: T | (() => T)) => {
             const index = HookHarness.cursor++;
             if (!(index in HookHarness.slots)) {
-                HookHarness.slots[index] = initial;
+                HookHarness.slots[index] = typeof initial === "function" ? (initial as () => T)() : initial;
             }
             const setValue = (next: T | ((current: T) => T)) => {
                 HookHarness.slots[index] =

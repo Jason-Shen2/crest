@@ -3,7 +3,11 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { ObservationCategory } from "./observation-presentation";
+import {
+    makeObservabilityViewState,
+    reduceObservabilityViewState,
+    type ObservabilityViewStateAction,
+} from "./observability-view-state";
 import { ObservationTimeline } from "./observation-timeline";
 import { RunReview } from "./run-review";
 import { TimelineToolbar } from "./timeline-toolbar";
@@ -21,18 +25,14 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
     const api = injectedApi ?? (typeof window === "undefined" ? undefined : window.api?.agentObservability);
     const [traces, setTraces] = useState<AgentObservabilityTrace[]>([]);
     const [selectedGraph, setSelectedGraph] = useState<AgentObservabilityTraceGraph | undefined>();
-    const [selectedTraceId, setSelectedTraceId] = useState<string | undefined>();
     const [loadState, setLoadState] = useState<LoadState>(api ? "loading" : "unavailable");
-    const [query, setQuery] = useState("");
-    const [categories, setCategories] = useState(
-        new Set<ObservationCategory>(["generation", "tool", "lifecycle", "error"])
-    );
-    const [expandedObservationIds, setExpandedObservationIds] = useState(new Set<string>());
-    const [selectedObservationId, setSelectedObservationId] = useState<string | undefined>();
-    const [followLive, setFollowLive] = useState(true);
+    const [viewState, setViewState] = useState(makeObservabilityViewState);
     const selectedTraceIdRef = useRef<string | undefined>(undefined);
     const requestIdRef = useRef(0);
     const searchInputRef = useRef<HTMLInputElement>(null);
+    const dispatchViewState = (action: ObservabilityViewStateAction) => {
+        setViewState((current) => reduceObservabilityViewState(current, action));
+    };
 
     const loadTrace = async (traceId: string) => {
         if (!api) {
@@ -40,7 +40,7 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
         }
         const requestId = ++requestIdRef.current;
         selectedTraceIdRef.current = traceId;
-        setSelectedTraceId(traceId);
+        dispatchViewState({ type: "select-trace", traceId });
         setSelectedGraph(undefined);
         setLoadState("loading");
         try {
@@ -75,7 +75,7 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
                 return;
             }
             selectedTraceIdRef.current = event.graph.trace.id;
-            setSelectedTraceId(event.graph.trace.id);
+            dispatchViewState({ type: "select-trace", traceId: event.graph.trace.id });
             requestIdRef.current += 1;
             setSelectedGraph(event.graph);
             setLoadState("ready");
@@ -114,39 +114,11 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
         };
     }, []);
 
-    const toggleCategory = (category: ObservationCategory) => {
-        setCategories((current) => {
-            const next = new Set(current);
-            if (next.has(category)) {
-                next.delete(category);
-            } else {
-                next.add(category);
-            }
-            return next;
-        });
-    };
-
-    const toggleExpanded = (observationId: string) => {
-        setExpandedObservationIds((current) => {
-            const next = new Set(current);
-            if (next.has(observationId)) {
-                next.delete(observationId);
-            } else {
-                next.add(observationId);
-            }
-            return next;
-        });
-    };
-
     const collapseObservation = (observationId: string) => {
-        setExpandedObservationIds((current) => {
-            if (!current.has(observationId)) {
-                return current;
-            }
-            const next = new Set(current);
-            next.delete(observationId);
-            return next;
-        });
+        if (!viewState.expandedObservationIds.has(observationId)) {
+            return;
+        }
+        dispatchViewState({ type: "toggle-expanded", observationId });
     };
 
     const timelineObservationIds =
@@ -164,7 +136,11 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
                 {traces.length > 0 ? (
-                    <TraceSelector traces={traces} selectedTraceId={selectedTraceId} onSelectTrace={loadTrace} />
+                    <TraceSelector
+                        traces={traces}
+                        selectedTraceId={viewState.selectedTraceId}
+                        onSelectTrace={loadTrace}
+                    />
                 ) : null}
                 {loadState === "unavailable" ? <div className="text-sm">Observability is unavailable.</div> : null}
                 {loadState === "loading" ? <div className="text-sm">Loading recent runs...</div> : null}
@@ -177,33 +153,46 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
                             Timeline
                         </div>
                         <TimelineToolbar
-                            query={query}
-                            categories={categories}
+                            query={viewState.query}
+                            categories={viewState.categories}
                             searchInputRef={searchInputRef}
-                            showBackToLive={!followLive}
-                            onQueryChange={setQuery}
-                            onShowAll={() =>
-                                setCategories(
-                                    new Set<ObservationCategory>(["generation", "tool", "lifecycle", "error"])
-                                )
+                            showBackToLive={!viewState.followLive}
+                            onQueryChange={(query) => dispatchViewState({ type: "set-query", query })}
+                            onShowAll={() => {
+                                for (const category of ["generation", "tool", "lifecycle", "error"] as const) {
+                                    if (!viewState.categories.has(category)) {
+                                        dispatchViewState({ type: "toggle-category", category });
+                                    }
+                                }
+                            }}
+                            onToggleCategory={(category) => dispatchViewState({ type: "toggle-category", category })}
+                            onExpandAll={() =>
+                                dispatchViewState({ type: "expand-all", observationIds: timelineObservationIds })
                             }
-                            onToggleCategory={toggleCategory}
-                            onExpandAll={() => setExpandedObservationIds(new Set(timelineObservationIds))}
-                            onCollapseAll={() => setExpandedObservationIds(new Set())}
-                            onBackToLive={() => setFollowLive(true)}
+                            onCollapseAll={() => dispatchViewState({ type: "collapse-all" })}
+                            onBackToLive={() => dispatchViewState({ type: "resume-follow-live" })}
                         />
                         <ObservationTimeline
+                            key={selectedGraph.trace.id}
                             graph={selectedGraph}
-                            query={query}
-                            categories={categories}
-                            expandedObservationIds={expandedObservationIds}
-                            selectedObservationId={selectedObservationId}
-                            followLive={followLive}
+                            query={viewState.query}
+                            categories={viewState.categories}
+                            expandedObservationIds={viewState.expandedObservationIds}
+                            selectedObservationId={viewState.selectedObservationId}
+                            followLive={viewState.followLive}
+                            scrollOffset={viewState.scrollOffset}
                             searchInputRef={searchInputRef}
-                            onSelectObservation={setSelectedObservationId}
-                            onToggleExpanded={toggleExpanded}
+                            onSelectObservation={(observationId) =>
+                                dispatchViewState({ type: "select-observation", observationId })
+                            }
+                            onToggleExpanded={(observationId) =>
+                                dispatchViewState({ type: "toggle-expanded", observationId })
+                            }
                             onCollapseObservation={collapseObservation}
-                            onPauseFollowLive={() => setFollowLive(false)}
+                            onPauseFollowLive={() => dispatchViewState({ type: "pause-follow-live" })}
+                            onScrollOffsetChange={(scrollOffset) =>
+                                dispatchViewState({ type: "set-scroll-offset", scrollOffset })
+                            }
                         />
                     </div>
                 ) : null}

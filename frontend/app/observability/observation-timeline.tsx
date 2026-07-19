@@ -28,11 +28,13 @@ interface ObservationTimelineProps {
     expandedObservationIds: Set<string>;
     selectedObservationId?: string;
     followLive: boolean;
+    scrollOffset: number;
     searchInputRef: RefObject<HTMLInputElement>;
     onSelectObservation: (observationId?: string) => void;
     onToggleExpanded: (observationId: string) => void;
     onCollapseObservation: (observationId: string) => void;
     onPauseFollowLive: () => void;
+    onScrollOffsetChange: (scrollOffset: number) => void;
 }
 
 function formatRelativeTime(startTime: string, traceTimestamp: string): string {
@@ -71,11 +73,13 @@ export function ObservationTimeline({
     expandedObservationIds,
     selectedObservationId,
     followLive,
+    scrollOffset,
     searchInputRef,
     onSelectObservation,
     onToggleExpanded,
     onCollapseObservation,
     onPauseFollowLive,
+    onScrollOffsetChange,
 }: ObservationTimelineProps) {
     const scrollRef = useRef<HTMLDivElement>(null);
     const autoScrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -91,7 +95,9 @@ export function ObservationTimeline({
         measureElement: (element) => element.getBoundingClientRect().height,
         overscan: 8,
         initialRect: { width: 320, height: 480 },
+        initialOffset: scrollOffset,
     });
+    const tailContentVersion = rows.length === 0 ? "" : rows[rows.length - 1].searchableText;
 
     useEffect(() => {
         rowVirtualizer.measure();
@@ -101,6 +107,7 @@ export function ObservationTimeline({
         if (!followLive || rows.length === 0) {
             return;
         }
+        rowVirtualizer.measure();
         const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
         clearTimeout(autoScrollTimeoutRef.current);
         autoScrollTimeoutRef.current = setTimeout(
@@ -114,7 +121,7 @@ export function ObservationTimeline({
             behavior: reducedMotion ? "auto" : "smooth",
         });
         return () => clearTimeout(autoScrollTimeoutRef.current);
-    }, [followLive, rows.length, rowVirtualizer]);
+    }, [followLive, rows.length, rowVirtualizer, tailContentVersion]);
 
     const selectIndex = (index: number) => {
         if (rows.length === 0) {
@@ -162,12 +169,18 @@ export function ObservationTimeline({
     };
 
     const handleScroll = (event: UIEvent<HTMLDivElement>) => {
+        onScrollOffsetChange(event.currentTarget.scrollTop);
         if (!followLive || autoScrollTimeoutRef.current != null) {
             return;
         }
         if (!isTimelineAtBottom(event.currentTarget)) {
             onPauseFollowLive();
         }
+    };
+
+    const handleUserScrollIntent = () => {
+        clearTimeout(autoScrollTimeoutRef.current);
+        autoScrollTimeoutRef.current = undefined;
     };
 
     const virtualItems = rowVirtualizer.getVirtualItems();
@@ -180,6 +193,7 @@ export function ObservationTimeline({
             tabIndex={0}
             onKeyDown={handleKeyDown}
             onScroll={handleScroll}
+            onWheel={handleUserScrollIntent}
         >
             {rows.length === 0 ? (
                 <div className="px-2 py-4 text-center text-xs text-muted-foreground">No matching observations.</div>

@@ -16,11 +16,54 @@ function makeState(overrides: Partial<ObservabilityViewState> = {}): Observabili
         categories: new Set<ObservationCategory>(["generation", "tool", "lifecycle", "error"]),
         expandedObservationIds: new Set<string>(),
         followLive: true,
+        scrollOffset: 0,
+        traceStates: {},
         ...overrides,
     };
 }
 
 describe("reduceObservabilityViewState", () => {
+    it("keeps selection, expansion, follow-live, and scroll position isolated by trace", () => {
+        const reduce = reduceObservabilityViewState as (
+            state: ObservabilityViewState,
+            action: Record<string, unknown>
+        ) => ObservabilityViewState & {
+            traceStates?: Record<
+                string,
+                {
+                    selectedObservationId?: string;
+                    expandedObservationIds: Set<string>;
+                    followLive: boolean;
+                    scrollOffset: number;
+                }
+            >;
+        };
+        let state = reduce(makeState(), { type: "select-trace", traceId: "trace-1" });
+        state = reduce(state, { type: "select-observation", observationId: "obs-1" });
+        state = reduce(state, { type: "toggle-expanded", observationId: "obs-1" });
+        state = reduce(state, { type: "pause-follow-live" });
+        state = reduce(state, { type: "set-scroll-offset", scrollOffset: 128 });
+        state = reduce(state, { type: "select-trace", traceId: "trace-2" });
+
+        expect(state.traceStates).toBeDefined();
+        expect(state.traceStates?.["trace-2"]).toMatchObject({
+            selectedObservationId: undefined,
+            followLive: true,
+            scrollOffset: 0,
+        });
+
+        state = reduce(state, { type: "select-observation", observationId: "obs-2" });
+        state = reduce(state, { type: "select-trace", traceId: "trace-1" });
+
+        expect(state.traceStates?.["trace-1"]).toMatchObject({
+            selectedObservationId: "obs-1",
+            followLive: false,
+            scrollOffset: 128,
+        });
+        expect(state.traceStates?.["trace-1"].expandedObservationIds).toEqual(new Set(["obs-1"]));
+        expect(state.traceStates?.["trace-2"].selectedObservationId).toBe("obs-2");
+    });
+
     it("selects a trace and clears the selected observation", () => {
         const state = reduceObservabilityViewState(makeState(), {
             type: "select-trace",

@@ -7,10 +7,10 @@ import type { ObservationPresentation, ObservationTone } from "./observation-pre
 
 const ToneClasses: Record<ObservationTone, string> = {
     neutral: "border-border text-muted-foreground",
-    info: "border-blue-500/40 text-blue-400",
-    success: "border-green-500/40 text-green-400",
-    warning: "border-yellow-500/40 text-yellow-400",
-    error: "border-red-500/40 text-red-400",
+    info: "border-accent/40 text-accent",
+    success: "border-success/40 text-success",
+    warning: "border-warning/40 text-warning",
+    error: "border-error/40 text-error",
 };
 
 interface ObservationRowProps {
