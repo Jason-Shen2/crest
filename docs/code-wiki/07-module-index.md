@@ -14,7 +14,7 @@
 | 理解事件 | `pkg/wps/wps.go`、`pkg/wps/wpstypes.go`、`frontend/app/store/wps.ts` |
 | 理解 HTTP service | `pkg/web/web.go`、`pkg/service/service.go`、`frontend/app/store/wos.ts` |
 | 理解 AI provider | `emain/ai/api-registry.ts`、`emain/ai/stream.ts`、`emain/ai/providers/` |
-| 理解 Agent | `emain/agent/agent-loop.ts`、`emain/agent/pane-agent-session.ts`、`emain/agent/harness/agent-harness.ts` |
+| 理解 Agent | `emain/agent/agent-loop.ts`、`emain/agent/agent-session-runtime.ts`、`emain/agent/harness/agent-harness.ts` |
 | 理解构建 | `Taskfile.yml`、`package.json`、`electron.vite.config.ts`、`electron-builder.config.cjs` |
 
 ## 顶层入口索引
@@ -217,8 +217,8 @@
 | `emain/agent/agent-loop.ts` | `agentLoop()`、`agentLoopContinue()` | Agent turn loop。 |
 | `emain/agent/agent.ts` | `Agent` | Stateful loop wrapper。 |
 | `emain/agent/types.ts` | `AgentLoopConfig` | Agent 类型。 |
-| `emain/agent/pane-agent-session.ts` | `PaneAgentSession` | pane session owner。 |
-| `emain/agent/harness-factory.ts` | `buildPaneHarness()` | pane harness 构造。 |
+| `emain/agent/agent-session-runtime.ts` | `AgentSessionRuntime` | session runtime owner。 |
+| `emain/agent/harness-factory.ts` | `buildAgentHarnessHost()` | harness host 构造。 |
 | `emain/agent/harness/agent-harness.ts` | `AgentHarness` | harness 层。 |
 | `emain/agent/sessions.ts` | session paths | session 管理。 |
 | `emain/agent/harness/session/jsonl-repo.ts` | JSONL repo | session 持久化。 |
@@ -397,6 +397,6 @@ task generate
 1. `emain/ai/stream.ts`
 2. `emain/ai/api-registry.ts`
 3. `emain/agent/agent-loop.ts`
-4. `emain/agent/pane-agent-session.ts`
+4. `emain/agent/agent-session-runtime.ts`
 5. `emain/agent/tools/index.ts`
 6. `emain/agent-ipc.ts`

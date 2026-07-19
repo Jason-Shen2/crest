@@ -367,15 +367,15 @@ Agent runtime 是 main 进程内的 agent 系统，负责：
 
 关键函数：
 
-- `buildPaneHarness()`
+- `buildAgentHarnessHost()`
 - `AgentHarness.run()`
 - `AgentHarness.update()`
 
-## PaneAgentSession
+## AgentSessionRuntime
 
 关键文件：
 
-- `emain/agent/pane-agent-session.ts`
+- `emain/agent/agent-session-runtime.ts`
 
 职责：
 
@@ -413,7 +413,7 @@ Agent runtime 是 main 进程内的 agent 系统，负责：
 Agent IPC 在 `agent:send` 时会：
 
 1. 确保 session 存在。
-2. 创建或复用 `PaneAgentSession`。
+2. 创建或复用 `AgentSessionRuntime`。
 3. 生成 `runId`。
 4. 持久化 timeline marker。
 5. 异步执行 `session.send(runId, text)`。
