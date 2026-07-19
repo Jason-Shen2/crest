@@ -60,6 +60,7 @@ function JsonValue({ value }: { value: unknown }) {
 
 export function ObservationDetail({ observation, traceTimestamp }: ObservationDetailProps) {
     const [wrapRaw, setWrapRaw] = useState(false);
+    const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
     const usageEntries = Object.entries(observation.usageDetails).filter(([, value]) => typeof value === "number");
     const costEntries = Object.entries(observation.costDetails).filter(([, value]) => typeof value === "number");
     const timingEntries = [
@@ -73,6 +74,17 @@ export function ObservationDetail({ observation, traceTimestamp }: ObservationDe
     const hasUsage = usageEntries.length > 0 || costEntries.length > 0 || timingEntries.length > 0;
     const hasMetadata = hasEntries(observation.metadata);
     const rawJson = JSON.stringify(observation, null, 2);
+    const copyRawJson = async () => {
+        try {
+            if (typeof navigator === "undefined" || navigator.clipboard?.writeText == null) {
+                throw new Error("Clipboard API unavailable");
+            }
+            await navigator.clipboard.writeText(rawJson);
+            setCopyStatus("success");
+        } catch {
+            setCopyStatus("error");
+        }
+    };
 
     return (
         <article aria-label="Observation detail" className="flex min-h-0 flex-col gap-3 text-xs text-foreground">
@@ -141,9 +153,9 @@ export function ObservationDetail({ observation, traceTimestamp }: ObservationDe
                         type="button"
                         aria-label="Copy observation JSON"
                         className="cursor-pointer rounded border border-border px-2 py-1 text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
-                        onClick={() => void navigator.clipboard.writeText(rawJson)}
+                        onClick={copyRawJson}
                     >
-                        Copy
+                        {copyStatus === "success" ? "Copied" : "Copy"}
                     </button>
                     <button
                         type="button"
@@ -154,6 +166,15 @@ export function ObservationDetail({ observation, traceTimestamp }: ObservationDe
                     >
                         Wrap
                     </button>
+                    {copyStatus !== "idle" ? (
+                        <span
+                            role="status"
+                            aria-live="polite"
+                            className={copyStatus === "error" ? "text-red-500" : "text-muted-foreground"}
+                        >
+                            {copyStatus === "success" ? "Copied" : "Copy failed"}
+                        </span>
+                    ) : null}
                 </div>
                 <pre
                     className={cn(

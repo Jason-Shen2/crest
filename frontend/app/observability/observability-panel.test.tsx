@@ -196,6 +196,7 @@ function cleanupPanel() {
 
 beforeEach(() => {
     cleanupPanel();
+    vi.unstubAllGlobals();
     HookHarness.slots = [];
     HookHarness.cursor = 0;
     HookHarness.effectRan = false;
@@ -319,7 +320,35 @@ describe("ObservationDetail", () => {
         await flushPromises();
 
         expect(writeText).toHaveBeenCalledWith(JSON.stringify(observation, null, 2));
-        vi.unstubAllGlobals();
+        HookHarness.cursor = 0;
+        const feedback = renderToStaticMarkup(
+            ObservationDetail({ observation, traceTimestamp: "2026-07-19T00:00:00.000Z" })
+        );
+        expect(feedback).toContain('role="status"');
+        expect(feedback).toContain("Copied");
+    });
+
+    it.each([
+        ["clipboard API is unavailable", {}],
+        ["clipboard write rejects", { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } }],
+    ])("reports copy failure when %s", async (_name, navigatorValue) => {
+        const observation = makeObservation("tool", "TOOL");
+        vi.stubGlobal("navigator", navigatorValue);
+        const detail = ObservationDetail({ observation, traceTimestamp: "2026-07-19T00:00:00.000Z" });
+        const copyButton = findElementByAriaLabel<{ onClick: () => void | Promise<void> }>(
+            detail,
+            "Copy observation JSON"
+        );
+
+        await expect(copyButton?.props.onClick()).resolves.toBeUndefined();
+        await flushPromises();
+        HookHarness.cursor = 0;
+        const feedback = renderToStaticMarkup(
+            ObservationDetail({ observation, traceTimestamp: "2026-07-19T00:00:00.000Z" })
+        );
+
+        expect(feedback).toContain('role="status"');
+        expect(feedback).toContain("Copy failed");
     });
 
     it("toggles raw JSON wrapping without creating dashboard state", () => {
