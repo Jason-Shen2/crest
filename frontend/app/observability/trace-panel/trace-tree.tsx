@@ -10,7 +10,7 @@
 import { memo } from "react";
 
 import { SpanContent } from "./span-content";
-import { useTraceData, useTraceSelection } from "./trace-context";
+import { resolveTraceSelectionNodeId, useTraceData, useTraceSelection } from "./trace-context";
 import type { TraceNode } from "./types";
 import { VirtualizedTree } from "./virtualized-tree";
 import { type TreeNodeMetadata, VirtualizedTreeNodeWrapper } from "./virtualized-tree-node-wrapper";
@@ -61,7 +61,7 @@ TraceTreeRow.displayName = "TraceTreeRow";
 export function TraceTree() {
     const { roots, nodeMap } = useTraceData();
     const { selectedNodeId, setSelectedNodeId, collapsedNodes, toggleCollapsed } = useTraceSelection();
-    const displayedSelectedNodeId = selectedNodeId ?? roots.find((root) => root.type === "TRACE")?.id ?? null;
+    const displayedSelectedNodeId = resolveTraceSelectionNodeId(roots, selectedNodeId);
     const rootTotalCost = roots.reduce<number | undefined>((accumulator, root) => {
         if (!root.totalCost) {
             return accumulator;

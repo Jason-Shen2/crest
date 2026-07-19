@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { TraceDataProvider, TraceSelectionProvider, useTraceData, useTraceSelection } from "./trace-context";
+import { TraceSearchList } from "./trace-search-list";
+import { TraceTimeline } from "./trace-timeline";
 import { TraceTree } from "./trace-tree";
 
 afterEach(cleanup);
@@ -94,26 +96,35 @@ function ContextProbe({ detail }: { detail: TraceDetail }) {
 function Probe() {
     const { selectedNodeId, setSelectedNodeId } = useTraceSelection();
     const { traceStartTime, traceDuration } = useTraceData();
-    const traceStart = Number.isFinite(traceStartTime.getTime()) ? traceStartTime.toISOString() : "invalid";
     return (
         <>
             <button type="button" onClick={() => setSelectedNodeId("generation-1")}>
                 select generation-1
             </button>
             <span data-testid="selection">{selectedNodeId ?? "trace"}</span>
-            <span data-testid="trace-start">{traceStart}</span>
+            <span data-testid="trace-start">{traceStartTime?.toISOString() ?? "none"}</span>
             <span data-testid="trace-duration">{traceDuration}</span>
         </>
     );
 }
 
-function TraceTreeHarness({ detail }: { detail: TraceDetail }) {
+function ViewHarness({ detail, children }: { detail: TraceDetail; children: React.ReactNode }) {
     return (
         <TraceDataProvider detail={detail}>
-            <TraceSelectionProvider traceId={detail.trace.id}>
-                <TraceTree />
-            </TraceSelectionProvider>
+            <TraceSelectionProvider traceId={detail.trace.id}>{children}</TraceSelectionProvider>
         </TraceDataProvider>
+    );
+}
+
+function SearchView() {
+    const { setSearchQuery } = useTraceSelection();
+    return (
+        <>
+            <button type="button" onClick={() => setSearchQuery("trace")}>
+                search trace
+            </button>
+            <TraceSearchList />
+        </>
     );
 }
 
@@ -135,12 +146,51 @@ describe("trace context", () => {
 
     it("does not fabricate the Unix epoch when every time boundary is invalid", () => {
         render(<ContextProbe detail={makeDetailWithAllInvalidTimes()} />);
-        expect(screen.getByTestId("trace-start").textContent).toBe("invalid");
+        expect(screen.getByTestId("trace-start").textContent).toBe("none");
         expect(screen.getByTestId("trace-duration").textContent).toBe("0.001");
     });
 
-    it("shows the synthetic trace root as selected when trace selection is null", () => {
-        render(<TraceTreeHarness detail={makeDetail([])} />);
+    it("skips timeline geometry when the trace has no valid start time", () => {
+        render(
+            <ViewHarness detail={makeDetailWithAllInvalidTimes()}>
+                <TraceTimeline />
+            </ViewHarness>
+        );
+        expect(screen.getByText("Trace")).not.toBeNull();
+        const timelineRows = screen.getAllByLabelText(/timeline bar$/);
+        expect(timelineRows).toHaveLength(2);
+        expect(timelineRows.every((row) => row.childElementCount === 0)).toBe(true);
+    });
+
+    it("shows the synthetic trace root as selected in the tree", () => {
+        const detail = makeDetail([]);
+        render(
+            <ViewHarness detail={detail}>
+                <TraceTree />
+            </ViewHarness>
+        );
         expect(screen.getByRole("treeitem", { name: /^Trace/ }).getAttribute("aria-selected")).toBe("true");
+    });
+
+    it("shows the synthetic trace root as selected in search", () => {
+        const detail = makeDetail([]);
+        render(
+            <ViewHarness detail={detail}>
+                <SearchView />
+            </ViewHarness>
+        );
+        fireEvent.click(screen.getByRole("button", { name: "search trace" }));
+        expect(screen.getByRole("option", { name: /^Trace/ }).getAttribute("aria-selected")).toBe("true");
+    });
+
+    it("shows the synthetic trace root as selected in the timeline", () => {
+        const detail = makeDetail([]);
+        render(
+            <ViewHarness detail={detail}>
+                <TraceTimeline />
+            </ViewHarness>
+        );
+        expect(screen.getByRole("button", { name: "Trace" }).getAttribute("aria-pressed")).toBe("true");
+        expect(screen.getByRole("button", { name: "Trace timeline bar" }).getAttribute("aria-pressed")).toBe("true");
     });
 });

@@ -13,7 +13,7 @@ type TraceDataContextValue = {
     nodeMap: Map<string, TraceNode>;
     searchItems: TraceSearchListItem[];
     observationMap: Map<string, Observation>;
-    traceStartTime: Date;
+    traceStartTime: Date | null;
     traceDuration: number;
 };
 
@@ -36,13 +36,13 @@ function finiteTimestamp(value: string | null | undefined): number | null {
     return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function calculateTraceTimeRange(detail: TraceDetail): { traceStartTime: Date; traceDuration: number } {
+function calculateTraceTimeRange(detail: TraceDetail): { traceStartTime: Date | null; traceDuration: number } {
     const starts = [
         finiteTimestamp(detail.trace.timestamp),
         ...detail.observations.map((observation) => finiteTimestamp(observation.startTime)),
     ].filter((value): value is number => value != null);
     if (starts.length === 0) {
-        return { traceStartTime: new Date(Number.NaN), traceDuration: 0.001 };
+        return { traceStartTime: null, traceDuration: 0.001 };
     }
     const start = Math.min(...starts);
     const ends = [
@@ -53,6 +53,10 @@ function calculateTraceTimeRange(detail: TraceDetail): { traceStartTime: Date; t
     ].filter((value): value is number => value != null);
     const end = ends.length > 0 ? Math.max(start, ...ends) : start;
     return { traceStartTime: new Date(start), traceDuration: Math.max(0.001, (end - start) / 1000) };
+}
+
+export function resolveTraceSelectionNodeId(roots: TraceNode[], selectedNodeId: string | null): string | null {
+    return selectedNodeId ?? roots.find((root) => root.type === "TRACE")?.id ?? null;
 }
 
 export function useTraceData(): TraceDataContextValue {

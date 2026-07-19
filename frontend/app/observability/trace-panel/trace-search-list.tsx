@@ -8,13 +8,14 @@
 import { X } from "lucide-react";
 import { useMemo } from "react";
 
-import { useTraceData, useTraceSelection } from "./trace-context";
+import { resolveTraceSelectionNodeId, useTraceData, useTraceSelection } from "./trace-context";
 import { TraceSearchListItem } from "./trace-search-list-item";
 import { VirtualizedList } from "./virtualized-list";
 
 export function TraceSearchList() {
-    const { searchItems } = useTraceData();
+    const { roots, searchItems } = useTraceData();
     const { searchQuery, setSearchQuery, selectedNodeId, setSelectedNodeId } = useTraceSelection();
+    const displayedSelectedNodeId = resolveTraceSelectionNodeId(roots, selectedNodeId);
     const searchResults = useMemo(() => {
         if (!searchQuery.trim()) {
             return [];
@@ -52,7 +53,7 @@ export function TraceSearchList() {
     return (
         <VirtualizedList
             items={searchResults}
-            selectedItemId={selectedNodeId}
+            selectedItemId={displayedSelectedNodeId}
             onSelectItem={(id) => {
                 const item = searchResults.find((result) => result.node.id === id);
                 setSelectedNodeId(item?.node.type === "TRACE" ? null : id);
