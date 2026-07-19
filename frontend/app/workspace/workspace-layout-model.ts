@@ -24,12 +24,13 @@
 // dozens of meta writes.
 
 import { globalStore } from "@/app/store/jotaiStore";
+import { ObjectService, WorkspaceService } from "@/app/store/services";
 import { isBuilderWindow } from "@/app/store/windowtype";
 import * as WOS from "@/app/store/wos";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { getLayoutModelForStaticTab } from "@/layout/lib/layoutModelHooks";
-import { atoms, getOrefMetaKeyAtom, getSettingsKeyAtom, refocusNode } from "@/store/global";
+import { atoms, getApi, getOrefMetaKeyAtom, getSettingsKeyAtom, refocusNode } from "@/store/global";
 import * as jotai from "jotai";
 import { debounce } from "lodash-es";
 import type { RightToolId, RightToolPanelState } from "./right-tool-panel-state";
@@ -84,6 +85,7 @@ class WorkspaceLayoutModel {
     vtabVisibleAtom: jotai.PrimitiveAtom<boolean>;
     fileExplorerVisibleAtom: jotai.PrimitiveAtom<boolean>;
     sessionsPanelVisibleAtom: jotai.PrimitiveAtom<boolean>;
+    agentTabIdAtom: jotai.PrimitiveAtom<string>;
     // Widths in px.  Workspace.tsx reads these via useAtomValue.
     vtabWidthAtom: jotai.PrimitiveAtom<number>;
     fileExplorerWidthAtom: jotai.PrimitiveAtom<number>;
@@ -103,6 +105,7 @@ class WorkspaceLayoutModel {
         this.vtabVisibleAtom = jotai.atom(false);
         this.fileExplorerVisibleAtom = jotai.atom(true);
         this.sessionsPanelVisibleAtom = jotai.atom(false);
+        this.agentTabIdAtom = jotai.atom("");
         this.vtabWidthAtom = jotai.atom(VTabBar_DefaultWidth);
         this.fileExplorerWidthAtom = jotai.atom(FileExplorer_DefaultWidth);
         this.codeReviewVisibleAtom = jotai.atom(false);
@@ -171,7 +174,17 @@ class WorkspaceLayoutModel {
     }
 
     private getSessionsPanelVisibleAtom(): jotai.Atom<boolean> {
-        return getOrefMetaKeyAtom(WOS.makeORef("workspace", this.getWorkspaceId()), "layout:sessionpanelvisible");
+        return getOrefMetaKeyAtom(
+            WOS.makeORef("workspace", this.getWorkspaceId()),
+            "layout:sessionpanelvisible" as keyof MetaType
+        ) as jotai.Atom<boolean>;
+    }
+
+    private getAgentTabIdAtom(): jotai.Atom<string> {
+        return getOrefMetaKeyAtom(
+            WOS.makeORef("workspace", this.getWorkspaceId()),
+            "layout:agenttabid" as keyof MetaType
+        ) as jotai.Atom<string>;
     }
 
     private getRightToolPanelMetaAtomForWorkspace(workspaceId: string): jotai.Atom<Partial<RightToolPanelState>> {
@@ -208,6 +221,10 @@ class WorkspaceLayoutModel {
                 if (savedSessionsVisible) {
                     globalStore.set(this.fileExplorerVisibleAtom, false);
                 }
+            }
+            const savedAgentTabId = globalStore.get(this.getAgentTabIdAtom());
+            if (typeof savedAgentTabId === "string") {
+                globalStore.set(this.agentTabIdAtom, savedAgentTabId);
             }
             const tabBarPosition = globalStore.get(getSettingsKeyAtom("app:tabbar")) ?? "top";
             const showLeftTabBar = tabBarPosition === "left" && !isBuilderWindow();
@@ -353,6 +370,100 @@ class WorkspaceLayoutModel {
         return globalStore.get(this.sessionsPanelVisibleAtom);
     }
 
+    getAgentTabId(): string {
+        return globalStore.get(this.agentTabIdAtom);
+    }
+
+    isAgentTab(tabId: string): boolean {
+        const tab = globalStore.get(WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tabId)));
+        const firstBlockId = tab?.blockids?.[0];
+        if (!firstBlockId) return false;
+        const block = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", firstBlockId)));
+        return block?.meta?.view === "agent";
+    }
+
+    findAgentTabId(tabIds: string[]): string {
+        const savedAgentTabId = this.getAgentTabId();
+        if (savedAgentTabId && tabIds.includes(savedAgentTabId)) return savedAgentTabId;
+        return tabIds.find((tabId) => this.isAgentTab(tabId)) ?? "";
+    }
+
+    setAgentTabId(tabId: string): void {
+        if (globalStore.get(this.agentTabIdAtom) === tabId) return;
+        globalStore.set(this.agentTabIdAtom, tabId);
+        try {
+            RpcApi.SetMetaCommand(TabRpcClient, {
+                oref: WOS.makeORef("workspace", this.getWorkspaceId()),
+                meta: { "layout:agenttabid": tabId } as MetaType,
+            });
+        } catch (e) {
+            console.warn("Failed to persist agent tab id:", e);
+        }
+    }
+
+    async openAgentTab(session?: AgentSessionMeta): Promise<string> {
+        this.setSessionsPanelVisible(true);
+        const workspace = globalStore.get(atoms.workspace);
+        const tabIds = workspace?.tabids ?? [];
+        // Resolve the existing agent tab reliably — the sync cache may be cold
+        // on a fresh project, so fall back to loading tab/block objects before
+        // deciding whether one exists.  We only create as a true last resort so
+        // there is always exactly one fixed Agent tab, never a fresh duplicate.
+        let tabId = await this.resolveAgentTabId(tabIds);
+        if (!tabId) {
+            const meta: MetaType = { view: "agent", controller: "shell" };
+            if (session) {
+                meta["agent:session"] = session;
+            }
+            tabId = await WorkspaceService.CreateTabWithBlock(this.getWorkspaceId(), "Agent", true, { meta });
+            this.setAgentTabId(tabId);
+            return tabId;
+        }
+        this.setAgentTabId(tabId);
+        if (session) {
+            const tab = await this.getAgentBackingTab(tabId);
+            const blockId = tab?.blockids?.[0];
+            if (blockId) {
+                await ObjectService.UpdateObjectMeta(WOS.makeORef("block", blockId), { "agent:session": session });
+            }
+        }
+        getApi().setActiveTab(tabId);
+        return tabId;
+    }
+
+    private async resolveAgentTabId(tabIds: string[]): Promise<string> {
+        const savedAgentTabId = this.getAgentTabId();
+        if (savedAgentTabId && tabIds.includes(savedAgentTabId)) return savedAgentTabId;
+        const syncMatch = this.findAgentTabId(tabIds);
+        if (syncMatch) return syncMatch;
+        for (const tabId of tabIds) {
+            let tab: Tab | null = null;
+            try {
+                tab = await WOS.loadAndPinWaveObject<Tab>(WOS.makeORef("tab", tabId));
+            } catch (e) {
+                console.warn("failed to load tab while resolving agent tab", tabId, e);
+                continue;
+            }
+            const firstBlockId = tab?.blockids?.[0];
+            if (!firstBlockId) continue;
+            let block: Block | null = null;
+            try {
+                block = await WOS.loadAndPinWaveObject<Block>(WOS.makeORef("block", firstBlockId));
+            } catch (e) {
+                console.warn("failed to load block while resolving agent tab", firstBlockId, e);
+                continue;
+            }
+            if (block?.meta?.view === "agent") return tabId;
+        }
+        return "";
+    }
+
+    private async getAgentBackingTab(tabId: string): Promise<Tab> {
+        const cached = globalStore.get(WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tabId)));
+        if (cached) return cached;
+        return (await ObjectService.GetObject(WOS.makeORef("tab", tabId))) as Tab;
+    }
+
     setSessionsPanelVisible(visible: boolean): void {
         if (globalStore.get(this.sessionsPanelVisibleAtom) === visible) return;
         globalStore.set(this.sessionsPanelVisibleAtom, visible);
@@ -362,7 +473,7 @@ class WorkspaceLayoutModel {
         try {
             RpcApi.SetMetaCommand(TabRpcClient, {
                 oref: WOS.makeORef("workspace", this.getWorkspaceId()),
-                meta: { "layout:sessionpanelvisible": visible },
+                meta: { "layout:sessionpanelvisible": visible } as MetaType,
             });
         } catch (e) {
             console.warn("Failed to persist sessions panel visibility:", e);

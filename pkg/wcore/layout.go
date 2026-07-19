@@ -62,7 +62,7 @@ func GetStarterLayout() PortableLayout {
 
 func GetNewTabLayout(cwd string) PortableLayout {
 	blockMeta := waveobj.MetaMapType{
-		waveobj.MetaKey_View:       "agent",
+		waveobj.MetaKey_View:       "termblocks",
 		waveobj.MetaKey_Controller: "shell",
 	}
 	// Anchor the block's spawn cwd to the Space (workspace) dir so new

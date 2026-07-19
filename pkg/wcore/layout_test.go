@@ -9,7 +9,7 @@ import (
 	"github.com/s-zx/crest/pkg/waveobj"
 )
 
-func TestDefaultShellLayoutsUseAgentView(t *testing.T) {
+func TestDefaultShellLayoutsUseAgentBackingTabAndTermNewTabs(t *testing.T) {
 	starter := GetStarterLayout()
 	if got := starter[0].BlockDef.Meta[waveobj.MetaKey_View]; got != "agent" {
 		t.Fatalf("starter layout view = %q, want agent", got)
@@ -19,8 +19,8 @@ func TestDefaultShellLayoutsUseAgentView(t *testing.T) {
 	}
 
 	newTab := GetNewTabLayout("/repo")
-	if got := newTab[0].BlockDef.Meta[waveobj.MetaKey_View]; got != "agent" {
-		t.Fatalf("new tab layout view = %q, want agent", got)
+	if got := newTab[0].BlockDef.Meta[waveobj.MetaKey_View]; got != "termblocks" {
+		t.Fatalf("new tab layout view = %q, want termblocks", got)
 	}
 	if got := newTab[0].BlockDef.Meta[waveobj.MetaKey_Controller]; got != "shell" {
 		t.Fatalf("new tab layout controller = %q, want shell", got)

@@ -16,6 +16,8 @@ const mockLayout = vi.hoisted(() => {
         tabBarSettingAtom: null as jotai.PrimitiveAtom<string>,
         vtabVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
         fileExplorerVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
+        sessionsPanelVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
+        agentTabIdAtom: null as jotai.PrimitiveAtom<string>,
         vtabWidthAtom: null as jotai.PrimitiveAtom<number>,
         fileExplorerWidthAtom: null as jotai.PrimitiveAtom<number>,
         codeReviewVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
@@ -75,6 +77,8 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
     const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
     mockLayout.vtabVisibleAtom = jotaiActual.atom(false);
     mockLayout.fileExplorerVisibleAtom = jotaiActual.atom(false);
+    mockLayout.sessionsPanelVisibleAtom = jotaiActual.atom(false);
+    mockLayout.agentTabIdAtom = jotaiActual.atom("");
     mockLayout.vtabWidthAtom = jotaiActual.atom(248);
     mockLayout.fileExplorerWidthAtom = jotaiActual.atom(260);
     mockLayout.codeReviewVisibleAtom = jotaiActual.atom(true);
@@ -88,6 +92,8 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
     mockLayout.model = {
         vtabVisibleAtom: mockLayout.vtabVisibleAtom,
         fileExplorerVisibleAtom: mockLayout.fileExplorerVisibleAtom,
+        sessionsPanelVisibleAtom: mockLayout.sessionsPanelVisibleAtom,
+        agentTabIdAtom: mockLayout.agentTabIdAtom,
         vtabWidthAtom: mockLayout.vtabWidthAtom,
         fileExplorerWidthAtom: mockLayout.fileExplorerWidthAtom,
         codeReviewVisibleAtom: mockLayout.codeReviewVisibleAtom,
@@ -101,6 +107,8 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
         getFileExplorerMinWidth: () => 180,
         getFileExplorerMaxWidth: () => 500,
         getRightToolPanelMaxWidth: () => 840,
+        setFileExplorerVisible: vi.fn(),
+        setSessionsPanelVisible: vi.fn(),
         setVTabWidth: vi.fn(),
         setFileExplorerWidth: vi.fn(),
         previewRightToolPanelWidth: vi.fn(),

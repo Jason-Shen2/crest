@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Icon } from "@/app/icon/Icon";
+import { makeORef } from "@/app/store/wos";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
@@ -10,7 +11,7 @@ import { isMacOSTahoeOrLater } from "@/util/platformutil";
 import { fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { OverlayScrollbars } from "overlayscrollbars";
-import { createRef, memo, useCallback, useEffect, useRef, useState } from "react";
+import { createRef, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { debounce } from "throttle-debounce";
 import { Tab } from "./tab";
 import "./tabbar.scss";
@@ -66,11 +67,15 @@ function strArrayIsEqual(a: string[], b: string[]) {
 
 const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
     const env = useWaveEnv<TabBarEnv>();
+    const workspaceLayoutModel = WorkspaceLayoutModel.getInstance();
     const [tabIds, setTabIds] = useState<string[]>([]);
+    const [allTabIds, setAllTabIds] = useState<string[]>([]);
     const [dragStartPositions, setDragStartPositions] = useState<number[]>([]);
     const [draggingTab, setDraggingTab] = useState<string>();
     const [tabsLoaded, setTabsLoaded] = useState({});
-    const [newTabId, setNewTabId] = useState<string | null>(null);
+    // Kept for the Tab `isNew` grow-in animation hook; current create-tab flow
+    // does not mark the new id locally.
+    const [newTabId] = useState<string | null>(null);
 
     const tabbarWrapperRef = useRef<HTMLDivElement>(null);
     const tabBarRef = useRef<HTMLDivElement>(null);
@@ -93,6 +98,7 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
     const rightContainerRef = useRef<HTMLDivElement>(null);
     const waveAIButtonRef = useRef<HTMLDivElement>(null);
     const appMenuButtonRef = useRef<HTMLDivElement>(null);
+    const agentTabBtnRef = useRef<HTMLButtonElement>(null);
     const tabWidthRef = useRef<number>(TabDefaultWidth);
     const scrollableRef = useRef<boolean>(false);
     const prevAllLoadedRef = useRef<boolean>(false);
@@ -103,6 +109,42 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
     const confirmClose = useAtomValue(env.getSettingsKeyAtom("tab:confirmclose")) ?? false;
     const hideAiButton = useAtomValue(env.getSettingsKeyAtom("app:hideaibutton"));
     const appUpdateStatus = useAtomValue(env.atoms.updaterStatusAtom);
+    const persistedAgentTabId = useAtomValue(workspaceLayoutModel.agentTabIdAtom);
+
+    // Agent-view tabs are detected reactively (see AgentTabProbe): on a fresh
+    // project load the tab/block WaveObjects aren't in the sync cache yet, so a
+    // synchronous check would miss the backend's starter agent tab and let it
+    // leak into the strip.  New/starter tabs default to view:"agent", so a
+    // workspace can hold several — every one is reachable only through the
+    // fixed Agent button, never as its own strip tab.
+    const [agentTabIdSet, setAgentTabIdSet] = useState<Set<string>>(new Set());
+    const reportAgentTab = useCallback((tabId: string, isAgent: boolean) => {
+        setAgentTabIdSet((prev) => {
+            const has = prev.has(tabId);
+            if (isAgent === has) return prev;
+            const next = new Set(prev);
+            if (isAgent) {
+                next.add(tabId);
+            } else {
+                next.delete(tabId);
+            }
+            return next;
+        });
+    }, []);
+    const agentTabIds = useMemo(
+        () => allTabIds.filter((tabId) => agentTabIdSet.has(tabId)),
+        [allTabIds, agentTabIdSet]
+    );
+
+    const activeTabIsAgent = agentTabIdSet.has(activeTabId);
+
+    // Persist the first detected agent tab as the canonical fixed Agent tab so
+    // reloads reuse it instead of ever creating a second one.
+    useEffect(() => {
+        if (agentTabIds.length === 0) return;
+        if (persistedAgentTabId && agentTabIds.includes(persistedAgentTabId)) return;
+        workspaceLayoutModel.setAgentTabId(agentTabIds[0]);
+    }, [agentTabIds, persistedAgentTabId, workspaceLayoutModel]);
 
     let prevDelta: number;
     let prevDragDirection: string;
@@ -118,12 +160,32 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
         }
         const newTabIdsArr = workspace.tabids ?? [];
 
-        const areEqual = strArrayIsEqual(tabIds, newTabIdsArr);
+        const areEqual = strArrayIsEqual(allTabIds, newTabIdsArr);
 
         if (!areEqual) {
-            setTabIds(newTabIdsArr);
+            setAllTabIds(newTabIdsArr);
         }
-    }, [workspace, tabIds]);
+    }, [workspace, allTabIds]);
+
+    useEffect(() => {
+        setAgentTabIdSet((prev) => {
+            let changed = false;
+            const next = new Set(prev);
+            for (const tabId of prev) {
+                if (!allTabIds.includes(tabId)) {
+                    next.delete(tabId);
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+    }, [allTabIds]);
+
+    useEffect(() => {
+        const visibleTabIds = allTabIds.filter((tabId) => !agentTabIdSet.has(tabId));
+        if (strArrayIsEqual(tabIds, visibleTabIds)) return;
+        setTabIds(visibleTabIds);
+    }, [allTabIds, agentTabIdSet, tabIds]);
 
     const saveTabsPosition = useCallback(() => {
         const tabs = tabRefs.current;
@@ -159,25 +221,27 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
         const appMenuButtonWidth = appMenuButtonRef.current?.getBoundingClientRect().width ?? 0;
         const waveAIButtonWidth =
             !hideAiButton && waveAIButtonRef.current != null ? getOuterWidth(waveAIButtonRef.current) : 0;
+        const agentTabBtnWidth = agentTabBtnRef.current != null ? getOuterWidth(agentTabBtnRef.current) : 0;
 
         const nonTabElementsWidth =
             windowDragLeftWidth +
             rightContainerWidth +
             addBtnWidth +
             appMenuButtonWidth +
-            waveAIButtonWidth;
+            waveAIButtonWidth +
+            agentTabBtnWidth;
         const spaceForTabs = tabbarWrapperWidth - nonTabElementsWidth;
 
         const numberOfTabs = tabIds.length;
 
         // Compute the ideal width per tab by dividing the available space by the number of tabs
-        let idealTabWidth = spaceForTabs / numberOfTabs;
+        let idealTabWidth = numberOfTabs > 0 ? spaceForTabs / numberOfTabs : TabDefaultWidth;
 
         // Apply min/max constraints
         idealTabWidth = Math.max(TabMinWidth, Math.min(idealTabWidth, TabDefaultWidth));
 
         // Determine if the tab bar needs to be scrollable
-        const newScrollable = idealTabWidth * numberOfTabs > spaceForTabs;
+        const newScrollable = numberOfTabs > 0 && idealTabWidth * numberOfTabs > spaceForTabs;
 
         // Apply the calculated width and position to all tabs
         tabRefs.current.forEach((ref, index) => {
@@ -250,16 +314,7 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
                 prevAllLoadedRef.current = true;
             }
         }
-    }, [
-        tabIds,
-        tabsLoaded,
-        newTabId,
-        saveTabsPosition,
-        hideAiButton,
-        appUpdateStatus,
-        zoomFactor,
-        showMenuBar,
-    ]);
+    }, [tabIds, tabsLoaded, newTabId, saveTabsPosition, hideAiButton, appUpdateStatus, zoomFactor, showMenuBar]);
 
     const getDragDirection = (currentX: number) => {
         let dragDirection: string;
@@ -402,6 +457,23 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
         }
     };
 
+    const mergeAgentTabIds = useCallback(
+        (visibleTabIds: string[]): string[] => {
+            if (agentTabIds.length === 0) return visibleTabIds;
+            // Re-anchor every hidden agent tab at the index it held in the
+            // full (backend) order so a reorder of visible tabs never drops
+            // or reshuffles the agent surfaces the strip doesn't render.
+            const next = visibleTabIds.filter((tabId) => !agentTabIds.includes(tabId));
+            for (const agentTabId of [...allTabIds].filter((tabId) => agentTabIds.includes(tabId))) {
+                const backingIndex = allTabIds.indexOf(agentTabId);
+                const insertIndex = Math.max(0, Math.min(backingIndex, next.length));
+                next.splice(insertIndex, 0, agentTabId);
+            }
+            return next;
+        },
+        [allTabIds, agentTabIds]
+    );
+
     const setUpdatedTabsDebounced = useCallback(
         debounce(300, (tabIds: string[]) => {
             // Reset styles
@@ -412,9 +484,11 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
             // Reset dragging state
             setDraggingTab(null);
             // Update workspace tab ids
-            fireAndForget(() => env.rpc.UpdateWorkspaceTabIdsCommand(TabRpcClient, workspace.oid, tabIds));
+            fireAndForget(() =>
+                env.rpc.UpdateWorkspaceTabIdsCommand(TabRpcClient, workspace.oid, mergeAgentTabIds(tabIds))
+            );
         }),
-        []
+        [env, mergeAgentTabIds, workspace.oid]
     );
 
     const handleMouseUp = (_event: MouseEvent) => {
@@ -476,34 +550,18 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
 
     const handleSelectTab = (tabId: string) => {
         if (!draggingTabDataRef.current.dragged) {
+            workspaceLayoutModel.setFileExplorerVisible(true);
             env.electron.setActiveTab(tabId);
         }
     };
 
-    const updateScrollDebounced = useCallback(
-        debounce(30, () => {
-            if (scrollableRef.current) {
-                const { viewport } = osInstanceRef.current.elements();
-                viewport.scrollLeft = tabIds.length * tabWidthRef.current;
-            }
-        }),
-        [tabIds]
-    );
-
-    const setNewTabIdDebounced = useCallback(
-        debounce(100, (tabId: string) => {
-            setNewTabId(tabId);
-        }),
-        []
-    );
+    const handleAgentClick = useCallback(() => {
+        fireAndForget(() => workspaceLayoutModel.openAgentTab());
+    }, [workspaceLayoutModel]);
 
     const handleAddTab = () => {
         env.electron.createTab();
         tabsWrapperRef.current.style.setProperty("--tabs-wrapper-transition", "width 0.1s ease");
-
-        updateScrollDebounced();
-
-        setNewTabIdDebounced(null);
     };
 
     const handleCloseTab = (event: React.MouseEvent<HTMLButtonElement, MouseEvent> | null, tabId: string) => {
@@ -545,9 +603,7 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
     if (embedded) {
         windowDragLeftWidth = 0;
     } else if (env.isMacOS() && !isFullScreen) {
-        const trafficLightsWidth = isMacOSTahoeOrLater()
-            ? MacOSTahoeTrafficLightsWidth
-            : MacOSTrafficLightsWidth;
+        const trafficLightsWidth = isMacOSTahoeOrLater() ? MacOSTahoeTrafficLightsWidth : MacOSTrafficLightsWidth;
         if (zoomFactor > 0) {
             windowDragLeftWidth = trafficLightsWidth / zoomFactor;
         } else {
@@ -569,6 +625,9 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
 
     return (
         <div ref={tabbarWrapperRef} className={`tab-bar-wrapper${embedded ? " embedded" : ""}`}>
+            {allTabIds.map((tabId) => (
+                <AgentTabProbe key={`probe:${tabId}`} tabId={tabId} onResult={reportAgentTab} />
+            ))}
             <div
                 ref={draggerLeftRef}
                 className="h-full shrink-0 z-window-drag"
@@ -584,6 +643,23 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
                     <i className="fa fa-ellipsis" />
                 </div>
             )}
+            <button
+                ref={agentTabBtnRef}
+                type="button"
+                title="Agent"
+                className={
+                    "agent-tab-btn flex items-center gap-1.5 shrink-0 cursor-pointer rounded-md px-2 text-[13px] font-medium transition-colors " +
+                    (embedded ? "h-[22px] mx-0.5 " : "h-[22px] mx-1 mb-[2px] ") +
+                    (activeTabIsAgent
+                        ? "bg-white/[0.1] text-foreground"
+                        : "text-secondary hover:bg-hoverbg hover:text-primary")
+                }
+                style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                onClick={handleAgentClick}
+            >
+                <Icon name="sparkles" size={13} strokeWidth={1.75} />
+                <span>Agent</span>
+            </button>
             <div className="tab-bar" ref={tabBarRef} data-overlayscrollbars-initialize>
                 <div
                     className="tabs-wrapper"
@@ -638,3 +714,25 @@ const TabBar = memo(({ workspace, noTabs, embedded = false }: TabBarProps) => {
 });
 
 export { TabBar };
+
+// AgentTabProbe — reactively reports whether a tab is an agent-view tab.
+// Rendered (invisibly) once per tab so detection survives the async load of
+// the tab + first-block WaveObjects on a fresh project, which a synchronous
+// cache read would miss (letting the starter agent tab leak into the strip).
+const AgentTabProbe = memo(
+    ({ tabId, onResult }: { tabId: string; onResult: (tabId: string, isAgent: boolean) => void }) => {
+        const env = useWaveEnv<TabBarEnv>();
+        const [tab] = env.wos.useWaveObjectValue<Tab>(makeORef("tab", tabId));
+        const firstBlockId = tab?.blockids?.[0];
+        const [firstBlock] = env.wos.useWaveObjectValue<Block>(firstBlockId ? makeORef("block", firstBlockId) : null);
+        const isAgent = firstBlock?.meta?.view === "agent";
+        useEffect(() => {
+            onResult(tabId, isAgent);
+        }, [tabId, isAgent, onResult]);
+        useEffect(() => {
+            return () => onResult(tabId, false);
+        }, [tabId, onResult]);
+        return null;
+    }
+);
+AgentTabProbe.displayName = "AgentTabProbe";
