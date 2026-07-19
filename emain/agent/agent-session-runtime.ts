@@ -32,12 +32,14 @@
 //
 // See docs/agent-rendering-architecture.md.
 
+import type { Api, Model } from "../ai";
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import { filterTreeForDisplay } from "./commands/session-views";
-import type { AgentHarnessHost } from "./harness-factory";
+import type { AgentAuthResolver, AgentHarnessHost } from "./harness-factory";
 import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
-import type { AgentMessage } from "./types";
+import type { ToolCallHook } from "./permissions";
+import type { AgentMessage, ThinkingLevel } from "./types";
 
 export type AgentSessionRuntimeStatus = "idle" | "streaming" | "error";
 export type AgentTurnStatus = "streaming" | "done" | "error";
@@ -81,6 +83,14 @@ interface AgentSessionRuntimeStateEvent {
 
 export interface AgentSessionRuntimeOptions {
     onTurnFinished?: AgentTurnFinishedHook;
+}
+
+export interface AgentExecutionConfig {
+    promptInputs: SystemPromptInputs;
+    model: Model<Api>;
+    thinkingLevel: ThinkingLevel;
+    authResolver?: AgentAuthResolver;
+    toolCallHook?: ToolCallHook;
 }
 
 function isErroredAssistant(message: AgentMessage): boolean {
@@ -132,6 +142,7 @@ export class AgentSessionRuntime {
     // Resolvers for in-flight send() promises, awaiting the userEntryId that
     // arrives on the user message_end event. FIFO: one resolver per send.
     private pendingEntryIdResolvers: Array<{ resolve: (id: string) => void; reject: (err: unknown) => void }> = [];
+    configQueue: Promise<void> = Promise.resolve();
 
     // Synchronous send-routing gate. Flipped true the instant we call
     // prompt() (which itself flips the harness phase synchronously), so a
@@ -171,6 +182,36 @@ export class AgentSessionRuntime {
 
     isRunning(): boolean {
         return !this.host.harness.isIdle();
+    }
+
+    async syncExecutionConfig(config: AgentExecutionConfig): Promise<void> {
+        this.host.update(config.promptInputs);
+        this.host.setAuthResolver(config.authResolver);
+        this.host.setToolCallHook(config.toolCallHook);
+        const currentModel = this.host.harness.getModel();
+        const sameModel =
+            currentModel.provider === config.model.provider &&
+            currentModel.id === config.model.id &&
+            currentModel.api === config.model.api &&
+            currentModel.baseUrl === config.model.baseUrl;
+        if (!sameModel) {
+            await this.host.harness.setModel(config.model);
+        }
+        if (this.host.harness.getThinkingLevel() !== config.thinkingLevel) {
+            await this.host.harness.setThinkingLevel(config.thinkingLevel);
+        }
+    }
+
+    sendWithExecutionConfig(text: string, config: AgentExecutionConfig): Promise<string> {
+        const operation = this.configQueue.then(async () => {
+            await this.syncExecutionConfig(config);
+            return this.send(text);
+        });
+        this.configQueue = operation.then(
+            () => undefined,
+            () => undefined
+        );
+        return operation;
     }
 
     private onHarnessEvent(event: AgentHarnessEvent): void {
