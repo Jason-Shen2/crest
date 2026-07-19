@@ -27,7 +27,7 @@ vi.mock("@tanstack/react-virtual", () => {
         scrollToOffset: VirtualizerHarness.scrollToOffset,
         getTotalSize: () => VirtualizerHarness.count * 44,
         getVirtualItems: () =>
-            Array.from({ length: VirtualizerHarness.count }, (_, index) => ({
+            Array.from({ length: Math.min(VirtualizerHarness.count, 20) }, (_, index) => ({
                 index,
                 key: index,
                 start: index * 44,
@@ -197,6 +197,41 @@ describe("ObservationDetail real rerender", () => {
 });
 
 describe("ObservationTimeline real events", () => {
+    it("keeps a 1,000-observation fixture bounded, searchable, and remeasured after expansion", () => {
+        const observations = Array.from({ length: 1_000 }, (_, index) =>
+            makeObservation(`observation-${index}`, {
+                name: index === 997 ? "Needle observation" : `Observation ${index}`,
+                startTime: new Date(Date.parse("2026-07-19T00:00:00.000Z") + index * 1_000).toISOString(),
+            })
+        );
+        const graph = makeGraphWithObservations("trace-large", "Large run", observations);
+        const view = renderTimeline(graph, { followLive: false });
+        const mountedRows = view.container.querySelectorAll("[data-index]");
+
+        expect(mountedRows).toHaveLength(20);
+        expect(mountedRows.length).toBeLessThan(observations.length);
+
+        view.rerender(<Timeline {...view.props} query="Needle observation" />);
+        expect(view.getByRole("button", { name: /Needle Observation/ })).toBeTruthy();
+        expect(view.container.querySelectorAll("[data-index]")).toHaveLength(1);
+
+        VirtualizerHarness.measure.mockClear();
+        view.rerender(
+            <Timeline
+                {...view.props}
+                followLive={false}
+                expandedObservationIds={new Set(["observation-0"])}
+                selectedObservationId="observation-0"
+            />
+        );
+
+        expect(VirtualizerHarness.measure).toHaveBeenCalled();
+        const starts = Array.from(view.container.querySelectorAll<HTMLElement>("[data-index]"), (element) =>
+            Number.parseFloat(element.style.transform.match(/translateY\(([\d.]+)px\)/)?.[1] ?? "NaN")
+        );
+        expect(starts.every((start, index) => index === 0 || start >= starts[index - 1] + 44)).toBe(true);
+    });
+
     it("reuses the stable row prefix when only the active generation tail streams", () => {
         const graph = makeGraphWithObservations("trace-cache", "Cached run", [
             makeObservation("first", {

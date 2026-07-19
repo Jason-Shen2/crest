@@ -736,7 +736,7 @@ git commit -m "feat: enrich canonical observability events"
 - Modify: `docs/specs/2026-07-19-agent-observability-dashboard-design.md`
 - Modify: `docs/plans/2026-07-19-agent-observability-dashboard.md`
 
-- [ ] **Step 1: Run all targeted tests**
+- [x] **Step 1: Run all targeted tests**
 
 ```bash
 npx vitest run \
@@ -749,7 +749,9 @@ npx vitest run \
 
 Expected: zero failures.
 
-- [ ] **Step 2: Run filtered type verification**
+Result (Node `v22.23.1`): `11/11` test files and `136/136` tests passed.
+
+- [x] **Step 2: Run filtered type verification**
 
 ```bash
 npx tsc --noEmit -p tsconfig.json 2>&1 | grep -E "frontend/app/observability|frontend/app/workspace/right-tool-panel|emain/agent/observability|emain/agent-ipc"
@@ -757,7 +759,13 @@ npx tsc --noEmit -p tsconfig.json 2>&1 | grep -E "frontend/app/observability|fro
 
 Expected: no output. Repository-wide pre-existing TypeScript failures must be reported separately rather than attributed to this feature.
 
-- [ ] **Step 3: Verify normal and magnified UI**
+Result:
+
+- `npm run test:observability-types`: `1/1` typecheck file passed with zero type errors.
+- The filtered `tsc` command produced no matching target-path output (`grep` exit 1 means no matches).
+- Repository-wide `tsc` still reports 75 pre-existing errors outside the filtered feature paths.
+
+- [x] **Step 3: Verify normal and magnified UI**
 
 Start with Node 22 and isolated data:
 
@@ -778,7 +786,16 @@ Verify:
 - Magnified panel shows split detail.
 - A completed run moves from running to success/error/aborted.
 
-- [ ] **Step 4: Run a 1,000-observation fixture**
+Result: started on Node `v22.23.1` with isolated config/data and an external Electron user-data directory so Vite did not watch Chromium cache writes. Anonymous SQLite fixtures verified:
+
+- Recent Runs switched between a running and successful trace.
+- The successful Run Review matched SQLite: `5.0s`, 1 Generation, 2 Tools, 1 Error, token counts `120/30/10/5/165`, `$0.0125`, and `Review complete`.
+- Search `README` returned only Read File; category toggles isolated the controlled Error.
+- Normal mode expanded Detail inline; magnified mode rendered Timeline and fixed Detail as sibling panes.
+- A 31-row running fixture showed paused live-tail with `Back to live`; clicking it removed the action and restored the tail.
+- The targeted builder transition test covered `running -> success` plus `endedAt` on `agent_end`; manual UI validation did not invoke a real model.
+
+- [x] **Step 4: Run a 1,000-observation fixture**
 
 Render a generated graph in the panel test and assert:
 
@@ -786,11 +803,15 @@ Render a generated graph in the panel test and assert:
 - Search returns the expected matching row.
 - Expanding a row re-measures without overlap.
 
-- [ ] **Step 5: Update progress in design and plan**
+Result: `observability-interactions.test.tsx` generated 1,000 observations, mounted 20 DOM rows, found the unique matching row, and verified expansion remeasurement plus non-overlapping 44px row starts. The focused file passed `17/17` tests.
+
+- [x] **Step 5: Update progress in design and plan**
 
 Mark only completed phases and record exact test counts/commands. Do not claim swimlane/race completion.
 
-- [ ] **Step 6: Commit**
+Result: synchronized this plan and the design spec with exact commands, counts, UI fixture values, and the explicit Single Trace-only scope.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add frontend/app/observability frontend/app/workspace/right-tool-panel.tsx frontend/app/workspace/right-tool-panel.test.tsx frontend/types/custom.d.ts emain/agent/observability docs/specs/2026-07-19-agent-observability-dashboard-design.md docs/plans/2026-07-19-agent-observability-dashboard.md

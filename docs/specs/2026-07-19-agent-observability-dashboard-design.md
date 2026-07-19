@@ -3,7 +3,7 @@
 ## 状态
 
 - 日期：2026-07-19
-- 状态：已确认，待实施
+- 状态：Single Trace 已实现并完成 Task 9 验证；swimlane / race 未实施
 - 参考实现：`disler/pi-agent-observability@cbb8cc30b9bb2ff1b93a20d4415f72877b019868`
 - 数据模型：Langfuse-compatible `Trace / Observation / Score`
 
@@ -237,6 +237,19 @@ GENERATION input 为 0/3 会使 Detail 隐藏逐次 Generation 的 Input 区，�
 - SQLite 历史加载与 IPC 实时 graph 使用相同渲染路径。
 - 运行含多个 Generation、Tool 和 Error 的真实 Agent run。
 - 1,000 个 Observation 下滚动、搜索和实时追加保持可用。
+
+### Task 9 验证结果
+
+2026-07-19 使用 Node `v22.23.1` 完成最终验证：
+
+- Targeted Vitest：`11/11` 个测试文件、`136/136` 个测试通过。
+- Observability 类型契约：`1/1` 个 typecheck 文件通过，`0` 个 type error。
+- Filtered `tsc`：`frontend/app/observability`、`frontend/app/workspace/right-tool-panel`、`emain/agent/observability`、`emain/agent-ipc` 无匹配错误；全仓仍有 75 条与本功能路径无关的存量 TypeScript 错误。
+- 1,000 Observation fixture：DOM 同时挂载 20 行，搜索唯一命中目标行，展开后触发 virtualizer 重测量且行起始位置保持不重叠；focused 文件 `17/17` 个测试通过。
+- 桌面 UI：在隔离配置和匿名合成 SQLite 数据下验证 Recent Runs 切换、Run Review 数值、搜索、类别过滤、普通模式内联 Detail、magnified 模式 Timeline + 固定 Detail 双栏，以及 live-tail 暂停和 “Back to live” 恢复。
+- 完成态：targeted builder 测试验证 `agent_start` 的 `running` 状态在 `agent_end` 后变为 `success` 并写入 `endedAt`；桌面验收未调用真实模型。
+
+Run Review 的匿名 success fixture 与 SQLite 值一致：duration `5.0s`、Generation `1`、Tool `2`、Error `1`、input/output/cache read/cache write/total tokens 分别为 `120/30/10/5/165`，cost 为 `$0.0125`，final output 为 `Review complete`。
 
 完成标准：
 
