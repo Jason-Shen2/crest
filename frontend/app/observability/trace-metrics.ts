@@ -23,6 +23,14 @@ function numericValue(value: unknown): number {
     return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function observationCost(costDetails: Record<string, number> | null | undefined): number {
+    const total = costDetails?.total;
+    if (typeof total === "number" && Number.isFinite(total)) {
+        return total;
+    }
+    return Object.values(costDetails ?? {}).reduce((sum, value) => sum + numericValue(value), 0);
+}
+
 function outputText(value: unknown): string {
     if (typeof value === "string") {
         return value;
@@ -88,9 +96,7 @@ export function computeTraceMetrics(graph: AgentObservabilityTraceGraph): TraceM
         for (const key of UsageKeys) {
             usage[key] += numericValue(observation.usageDetails?.[key]);
         }
-        for (const value of Object.values(observation.costDetails ?? {})) {
-            totalCost += numericValue(value);
-        }
+        totalCost += observationCost(observation.costDetails);
     }
 
     return {
@@ -101,6 +107,7 @@ export function computeTraceMetrics(graph: AgentObservabilityTraceGraph): TraceM
         errorCount,
         usage,
         totalCost,
-        finalOutput: outputText(graph.trace.output) || lastGenerationOutput,
+        finalOutput:
+            typeof graph.trace.output === "string" && graph.trace.output ? graph.trace.output : lastGenerationOutput,
     };
 }

@@ -154,6 +154,30 @@ describe("computeTraceMetrics", () => {
         });
     });
 
+    it("uses costDetails total instead of double-counting its component costs", () => {
+        const graph = makeGraph({
+            observations: [
+                makeObservation("generation-1", "GENERATION", {
+                    costDetails: {
+                        input: 0.004,
+                        output: 0.006,
+                        cacheRead: 0.001,
+                        cacheWrite: 0.002,
+                        total: 0.013,
+                    },
+                }),
+                makeObservation("generation-2", "GENERATION", {
+                    costDetails: {
+                        input: 0.001,
+                        output: 0.002,
+                    },
+                }),
+            ],
+        });
+
+        expect(computeTraceMetrics(graph).totalCost).toBe(0.016);
+    });
+
     it("falls back to the last generation output when trace output is absent", () => {
         const graph = makeGraph({
             trace: {
@@ -168,6 +192,29 @@ describe("computeTraceMetrics", () => {
         });
 
         expect(computeTraceMetrics(graph).finalOutput).toBe("Last generation");
+    });
+
+    it("ignores the finishTrace agent_end event and uses the last generation output", () => {
+        const graph = makeGraph({
+            trace: {
+                ...makeGraph().trace,
+                output: {
+                    type: "agent_end",
+                    messages: [
+                        {
+                            role: "assistant",
+                            content: [{ type: "text", text: "Finished" }],
+                        },
+                    ],
+                },
+            },
+            observations: [
+                makeObservation("generation-1", "GENERATION", { output: "First" }),
+                makeObservation("generation-2", "GENERATION", { output: "Finished" }),
+            ],
+        });
+
+        expect(computeTraceMetrics(graph).finalOutput).toBe("Finished");
     });
 
     it("excludes the AGENT root from lifecycle and error counts", () => {
