@@ -653,7 +653,7 @@ git commit -m "feat: add observation detail dashboard"
   - `frontend/types/custom.d.ts`
 - Test only with matching implementation files.
 
-- [ ] **Step 1: Run a representative Agent trace**
+- [x] **Step 1: Run a representative Agent trace**
 
 The run must include:
 
@@ -662,7 +662,7 @@ The run must include:
 - One failed tool invocation or controlled error.
 - A completed success/error/aborted trace state.
 
-- [ ] **Step 2: Query the persisted graph**
+- [x] **Step 2: Query the persisted graph**
 
 Run with Node 22:
 
@@ -679,7 +679,7 @@ console.log(JSON.stringify({
 
 Expected: enough data to fill Run Review, Timeline summary, Tool Detail, and Generation Usage.
 
-- [ ] **Step 3: Make an evidence-based gap table**
+- [x] **Step 3: Make an evidence-based gap table**
 
 For every missing UI field, record:
 
@@ -691,7 +691,7 @@ For every missing UI field, record:
 
 If no required field is missing, do not modify harness or storage.
 
-- [ ] **Step 4: If required, write a failing builder test for one field**
+- [x] **Step 4: If required, write a failing builder test for one field**
 
 The new event must be broadcast through `emitOwn`, for example:
 
@@ -707,11 +707,11 @@ expect(builder.applyEvent({
 
 Do not subscribe to `before_provider_request`, `tool_call`, or other hook-only events.
 
-- [ ] **Step 5: Implement the smallest canonical field addition**
+- [x] **Step 5: Implement the smallest canonical field addition**
 
 Add one explicit `AgentHarnessOwnEvent`, emit it from the harness, map it in the builder, persist it, and expose it through the renderer type. Do not introduce an Adapter or `ObsEvent`.
 
-- [ ] **Step 6: Run data-layer tests**
+- [x] **Step 6: Run data-layer tests**
 
 Run:
 
@@ -721,7 +721,7 @@ npx vitest run emain/agent/observability emain/agent-ipc.test.ts
 
 Expected: all tests pass.
 
-- [ ] **Step 7: Commit only if code changed**
+- [x] **Step 7: Commit only if code changed**
 
 ```bash
 git add emain/agent/harness emain/agent/observability frontend/types/custom.d.ts

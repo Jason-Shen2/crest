@@ -156,18 +156,17 @@ type ObservationPresentation = {
 
 ### Task 8 匿名真实数据审计
 
-2026-07-19 对本机开发环境已有 `traces.db` 做只读审计。以下仅保留聚合计数和字段完整度，不记录数据库路径、Trace/Session ID、用户输入、工具参数、工具输出或模型输出。
+2026-07-19 对隔离开发环境中的代表性 run 做只读审计。以下仅保留聚合计数和字段完整度，不记录数据库路径、Trace/Session ID、用户输入、工具参数、工具输出、状态消息或模型名称。
 
-| 对象 | 样本量 | 关键证据 |
-|---|---:|---|
-| Trace | 2 | 2 个 success，0 个 error，0 个 aborted |
-| AGENT Observation | 2 | 2/2 有 input；均有完整起止时间 |
-| GENERATION Observation | 8 | 8/8 有 output、usage、cost；0/8 有 model、latency、TTFT |
-| TOOL Observation | 17 | 17/17 有 input、output、tool call ID/name 和完整起止时间 |
-| Error Observation | 0 | 真实样本未覆盖失败工具或受控错误 |
-| Score | 0 | Phase 1 仅建表，不写入，符合既定范围 |
+该 run 以 `success` 完成，包含 3 个 GENERATION、2 个 TOOL，其中 1 个 TOOL 为受控失败并以 Error 交叉计数。Trace 的 input、output 和起止时间均完整，数据库完整性检查返回 `ok`。
 
-数据库完整性检查返回 `ok`。现有数据足以支撑 Run Review、工具详情、token/cache/cost 聚合和成功轨迹回放；Generation 诊断字段存在明确缺口，错误路径仍需后续真实样本验证。
+| 对象 | 样本量 | level | status | input | output | timing | model |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| GENERATION | 3 | 3/3 | 0/3 | 0/3 | 3/3 | 3/3 | 3/3 |
+| TOOL | 2 | 2/2 | 1/2 | 2/2 | 2/2 | 2/2 | 0/2 |
+| Error | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 0/1 |
+
+其中 `status` 表示非空 `statusMessage`，只在失败 TOOL 上出现；Tool/Error 的 model 不适用。3/3 GENERATION 还具有 latency、TTFT、usage 和 cost。现有 canonical 数据足以支撑 Run Review、Generation 诊断、工具详情、错误详情和成功轨迹回放，无需新增 harness own event 或持久化字段。
 
 ### Gap 表
 
