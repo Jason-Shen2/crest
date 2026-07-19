@@ -28,6 +28,50 @@ export interface FilterableTimelineRow {
     searchableText: string;
 }
 
+export type TimelineKeyboardIntent = "next" | "previous" | "first" | "last" | "toggle" | "collapse" | "search";
+
+export function getTimelineKeyboardIntent(
+    key: string,
+    modifiers: { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } = {}
+): TimelineKeyboardIntent | undefined {
+    if (key === "/" && !modifiers.altKey && !modifiers.ctrlKey && !modifiers.metaKey) {
+        return "search";
+    }
+    if (key === "j" || key === "ArrowDown") {
+        return "next";
+    }
+    if (key === "k" || key === "ArrowUp") {
+        return "previous";
+    }
+    if (key === "g") {
+        return "first";
+    }
+    if (key === "G") {
+        return "last";
+    }
+    if (key === "Enter" || key === " ") {
+        return "toggle";
+    }
+    if (key === "Escape") {
+        return "collapse";
+    }
+    return undefined;
+}
+
+export function shouldHandleTimelineKeyboardIntent(intent: TimelineKeyboardIntent, targetTagName: string): boolean {
+    if (targetTagName === "INPUT" || targetTagName === "TEXTAREA") {
+        return false;
+    }
+    return targetTagName !== "BUTTON" || intent !== "toggle";
+}
+
+export function isTimelineAtBottom(
+    metrics: { scrollHeight: number; scrollTop: number; clientHeight: number },
+    threshold = 24
+): boolean {
+    return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= threshold;
+}
+
 export function reduceObservabilityViewState(
     state: ObservabilityViewState,
     action: ObservabilityViewStateAction

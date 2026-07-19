@@ -3,7 +3,10 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import type { ObservationCategory } from "./observation-presentation";
+import { ObservationTimeline } from "./observation-timeline";
 import { RunReview } from "./run-review";
+import { TimelineToolbar } from "./timeline-toolbar";
 import { TraceSelector } from "./trace-selector";
 
 export type AgentObservabilityApi = Window["api"]["agentObservability"];
@@ -20,8 +23,16 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
     const [selectedGraph, setSelectedGraph] = useState<AgentObservabilityTraceGraph | undefined>();
     const [selectedTraceId, setSelectedTraceId] = useState<string | undefined>();
     const [loadState, setLoadState] = useState<LoadState>(api ? "loading" : "unavailable");
+    const [query, setQuery] = useState("");
+    const [categories, setCategories] = useState(
+        new Set<ObservationCategory>(["generation", "tool", "lifecycle", "error"])
+    );
+    const [expandedObservationIds, setExpandedObservationIds] = useState(new Set<string>());
+    const [selectedObservationId, setSelectedObservationId] = useState<string | undefined>();
+    const [followLive, setFollowLive] = useState(true);
     const selectedTraceIdRef = useRef<string | undefined>(undefined);
     const requestIdRef = useRef(0);
+    const searchInputRef = useRef<HTMLInputElement>(null);
 
     const loadTrace = async (traceId: string) => {
         if (!api) {
@@ -103,6 +114,46 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
         };
     }, []);
 
+    const toggleCategory = (category: ObservationCategory) => {
+        setCategories((current) => {
+            const next = new Set(current);
+            if (next.has(category)) {
+                next.delete(category);
+            } else {
+                next.add(category);
+            }
+            return next;
+        });
+    };
+
+    const toggleExpanded = (observationId: string) => {
+        setExpandedObservationIds((current) => {
+            const next = new Set(current);
+            if (next.has(observationId)) {
+                next.delete(observationId);
+            } else {
+                next.add(observationId);
+            }
+            return next;
+        });
+    };
+
+    const collapseObservation = (observationId: string) => {
+        setExpandedObservationIds((current) => {
+            if (!current.has(observationId)) {
+                return current;
+            }
+            const next = new Set(current);
+            next.delete(observationId);
+            return next;
+        });
+    };
+
+    const timelineObservationIds =
+        selectedGraph?.observations
+            .filter((observation) => observation.type !== "AGENT")
+            .map((observation) => observation.id) ?? [];
+
     return (
         <section aria-label="Agent Observability" className="flex h-full min-h-0 flex-col bg-panel text-foreground">
             <div className="border-b border-border px-3 py-2">
@@ -111,7 +162,7 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
                     Single trace view powered by Langfuse-compatible data.
                 </div>
             </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3">
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
                 {traces.length > 0 ? (
                     <TraceSelector traces={traces} selectedTraceId={selectedTraceId} onSelectTrace={loadTrace} />
                 ) : null}
@@ -121,20 +172,39 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
                 {loadState === "error" ? <div className="text-sm">Unable to load recent runs.</div> : null}
                 {selectedGraph ? <RunReview graph={selectedGraph} /> : null}
                 {selectedGraph ? (
-                    <div className="rounded-lg border border-border bg-fg-overlay-1/30 p-3">
-                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                            Observations
+                    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-fg-overlay-1/30">
+                        <div className="px-2 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            Timeline
                         </div>
-                        <div className="mt-2 flex flex-col gap-1">
-                            {selectedGraph.observations.map((observation) => (
-                                <div key={observation.id} className="rounded border border-border/70 px-2 py-1 text-xs">
-                                    <span className="font-medium text-foreground">{observation.type}</span>
-                                    <span className="ml-2 text-muted-foreground">
-                                        {observation.name ?? observation.id}
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
+                        <TimelineToolbar
+                            query={query}
+                            categories={categories}
+                            searchInputRef={searchInputRef}
+                            showBackToLive={!followLive}
+                            onQueryChange={setQuery}
+                            onShowAll={() =>
+                                setCategories(
+                                    new Set<ObservationCategory>(["generation", "tool", "lifecycle", "error"])
+                                )
+                            }
+                            onToggleCategory={toggleCategory}
+                            onExpandAll={() => setExpandedObservationIds(new Set(timelineObservationIds))}
+                            onCollapseAll={() => setExpandedObservationIds(new Set())}
+                            onBackToLive={() => setFollowLive(true)}
+                        />
+                        <ObservationTimeline
+                            graph={selectedGraph}
+                            query={query}
+                            categories={categories}
+                            expandedObservationIds={expandedObservationIds}
+                            selectedObservationId={selectedObservationId}
+                            followLive={followLive}
+                            searchInputRef={searchInputRef}
+                            onSelectObservation={setSelectedObservationId}
+                            onToggleExpanded={toggleExpanded}
+                            onCollapseObservation={collapseObservation}
+                            onPauseFollowLive={() => setFollowLive(false)}
+                        />
                     </div>
                 ) : null}
             </div>

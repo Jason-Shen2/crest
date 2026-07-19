@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
+import { ObservationTimeline } from "./observation-timeline";
 import { RunReview } from "./run-review";
+import { TimelineToolbar } from "./timeline-toolbar";
 import { TraceSelector } from "./trace-selector";
 
 const HookHarness = vi.hoisted(() => ({
@@ -251,6 +253,91 @@ describe("ObservabilityPanel", () => {
         expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)?.props.graph.trace.id).toBe(
             "trace-1"
         );
+    });
+
+    it("renders a semantic timeline without repeating the agent root", async () => {
+        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
+        graph.observations = [
+            makeObservation("root", "AGENT", {
+                name: "Agent root",
+                parentObservationId: null,
+                startTime: "2026-07-19T00:00:00.000Z",
+                endTime: "2026-07-19T00:00:05.000Z",
+            }),
+            makeObservation("generation", "GENERATION", {
+                name: "assistant response",
+                model: "claude-sonnet",
+                output: "Implemented the requested timeline",
+                usageDetails: { input: 20, output: 8, totalTokens: 28 },
+            }),
+        ];
+        const { api } = makeApi([graph.trace], async () => graph);
+
+        renderPanel(api);
+        await flushPromises();
+        const markup = renderToStaticMarkup(renderPanel(api));
+
+        expect(markup).toContain("Timeline");
+        expect(markup).not.toContain("Agent root");
+        expect(markup).toContain(">All<");
+        expect(markup).toContain("+1.0s");
+        expect(markup).toContain("Implemented the requested timeline");
+        expect(markup).toContain("1 s");
+        expect(markup).toContain("claude-sonnet");
+        expect(markup).toContain("28 tokens");
+    });
+
+    it("composes search and error filtering and controls visible expansion", async () => {
+        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([graph.trace], async () => graph);
+
+        renderPanel(api);
+        await flushPromises();
+        let tree = renderPanel(api);
+        let toolbar = findElement<{
+            onQueryChange: (query: string) => void;
+            onToggleCategory: (category: "generation" | "tool" | "lifecycle" | "error") => void;
+            onExpandAll: () => void;
+            onCollapseAll: () => void;
+        }>(tree, TimelineToolbar);
+        toolbar?.props.onQueryChange("failed");
+        toolbar?.props.onToggleCategory("generation");
+        toolbar?.props.onToggleCategory("tool");
+        toolbar?.props.onToggleCategory("lifecycle");
+        let markup = renderToStaticMarkup(renderPanel(api));
+
+        expect(markup).toContain("Failed once");
+        expect(markup).not.toContain("No matching observations");
+
+        tree = renderPanel(api);
+        toolbar = findElement(tree, TimelineToolbar);
+        toolbar?.props.onExpandAll();
+        markup = renderToStaticMarkup(renderPanel(api));
+        expect(markup).toContain('aria-expanded="true"');
+
+        tree = renderPanel(api);
+        toolbar = findElement(tree, TimelineToolbar);
+        toolbar?.props.onCollapseAll();
+        markup = renderToStaticMarkup(renderPanel(api));
+        expect(markup).toContain('aria-expanded="false"');
+    });
+
+    it("pauses follow-live after scrolling away and resumes from the toolbar", async () => {
+        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([graph.trace], async () => graph);
+
+        renderPanel(api);
+        await flushPromises();
+        let tree = renderPanel(api);
+        findElement<{ onPauseFollowLive: () => void }>(tree, ObservationTimeline)?.props.onPauseFollowLive();
+        tree = renderPanel(api);
+        let toolbar = findElement<{ showBackToLive: boolean; onBackToLive: () => void }>(tree, TimelineToolbar);
+
+        expect(toolbar?.props.showBackToLive).toBe(true);
+        toolbar?.props.onBackToLive();
+        tree = renderPanel(api);
+        toolbar = findElement(tree, TimelineToolbar);
+        expect(toolbar?.props.showBackToLive).toBe(false);
     });
 
     it("ignores a stale trace response after a newer selection resolves", async () => {

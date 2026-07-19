@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import * as ViewStateModule from "./observability-view-state";
 import {
     filterTimelineRows,
     type ObservabilityViewState,
@@ -129,5 +130,70 @@ describe("filterTimelineRows", () => {
         );
 
         expect(filtered).toEqual(rows);
+    });
+});
+
+describe("timeline interactions", () => {
+    it("maps navigation, expansion, collapse, and search keys", () => {
+        const getTimelineKeyboardIntent = (
+            ViewStateModule as typeof ViewStateModule & {
+                getTimelineKeyboardIntent?: (
+                    key: string,
+                    modifiers?: { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean }
+                ) => string | undefined;
+            }
+        ).getTimelineKeyboardIntent;
+
+        expect(getTimelineKeyboardIntent).toBeTypeOf("function");
+        if (!getTimelineKeyboardIntent) {
+            return;
+        }
+        expect(getTimelineKeyboardIntent("j")).toBe("next");
+        expect(getTimelineKeyboardIntent("ArrowDown")).toBe("next");
+        expect(getTimelineKeyboardIntent("k")).toBe("previous");
+        expect(getTimelineKeyboardIntent("ArrowUp")).toBe("previous");
+        expect(getTimelineKeyboardIntent("g")).toBe("first");
+        expect(getTimelineKeyboardIntent("G")).toBe("last");
+        expect(getTimelineKeyboardIntent("Enter")).toBe("toggle");
+        expect(getTimelineKeyboardIntent(" ")).toBe("toggle");
+        expect(getTimelineKeyboardIntent("Escape")).toBe("collapse");
+        expect(getTimelineKeyboardIntent("/")).toBe("search");
+        expect(getTimelineKeyboardIntent("/", { ctrlKey: true })).toBeUndefined();
+    });
+
+    it("leaves row-button activation to the native button behavior", () => {
+        const shouldHandleTimelineKeyboardIntent = (
+            ViewStateModule as typeof ViewStateModule & {
+                shouldHandleTimelineKeyboardIntent?: (intent: string, targetTagName: string) => boolean;
+            }
+        ).shouldHandleTimelineKeyboardIntent;
+
+        expect(shouldHandleTimelineKeyboardIntent).toBeTypeOf("function");
+        if (!shouldHandleTimelineKeyboardIntent) {
+            return;
+        }
+        expect(shouldHandleTimelineKeyboardIntent("toggle", "BUTTON")).toBe(false);
+        expect(shouldHandleTimelineKeyboardIntent("next", "BUTTON")).toBe(true);
+        expect(shouldHandleTimelineKeyboardIntent("search", "INPUT")).toBe(false);
+        expect(shouldHandleTimelineKeyboardIntent("next", "TEXTAREA")).toBe(false);
+    });
+
+    it("detects whether the viewport remains close enough to live tail", () => {
+        const isTimelineAtBottom = (
+            ViewStateModule as typeof ViewStateModule & {
+                isTimelineAtBottom?: (metrics: {
+                    scrollHeight: number;
+                    scrollTop: number;
+                    clientHeight: number;
+                }) => boolean;
+            }
+        ).isTimelineAtBottom;
+
+        expect(isTimelineAtBottom).toBeTypeOf("function");
+        if (!isTimelineAtBottom) {
+            return;
+        }
+        expect(isTimelineAtBottom({ scrollHeight: 1000, scrollTop: 676, clientHeight: 300 })).toBe(true);
+        expect(isTimelineAtBottom({ scrollHeight: 1000, scrollTop: 675, clientHeight: 300 })).toBe(false);
     });
 });
