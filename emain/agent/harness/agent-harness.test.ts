@@ -104,6 +104,23 @@ describe("AgentHarness — promptReturningEntryId", () => {
     });
 });
 
+describe("AgentHarness — lifecycle state", () => {
+    afterEach(() => {
+        resetApiProviders();
+    });
+
+    it("reports idle before and after a prompt", async () => {
+        const { harness } = await buildHarness();
+        expect(harness.isIdle()).toBe(true);
+
+        const prompt = harness.prompt("hello");
+        expect(harness.isIdle()).toBe(false);
+
+        await prompt;
+        expect(harness.isIdle()).toBe(true);
+    });
+});
+
 describe("AgentHarness — navigateTree to the first message (parentId=null)", () => {
     afterEach(() => {
         resetApiProviders();

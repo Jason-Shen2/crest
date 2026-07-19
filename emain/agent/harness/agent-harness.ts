@@ -1035,6 +1035,10 @@ export class AgentHarness<
 		await this.runPromise;
 	}
 
+	isIdle(): boolean {
+		return this.phase === "idle";
+	}
+
 	subscribe(
 		listener: (event: AgentHarnessEvent<TSkill, TPromptTemplate>, signal?: AbortSignal) => Promise<void> | void,
 	): () => void {

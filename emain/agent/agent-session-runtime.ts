@@ -169,6 +169,10 @@ export class AgentSessionRuntime {
         this.host.update(inputs);
     }
 
+    isRunning(): boolean {
+        return !this.host.harness.isIdle();
+    }
+
     private onHarnessEvent(event: AgentHarnessEvent): void {
         // Update owned state FIRST so a subscriber that reads getSessionState()
         // synchronously inside its callback sees the post-event state.
