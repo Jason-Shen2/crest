@@ -33,6 +33,7 @@ interface ObservationTimelineProps {
     categories: Set<ObservationCategory>;
     expandedObservationIds: Set<string>;
     selectedObservationId?: string;
+    renderInlineDetails?: boolean;
     followLive: boolean;
     scrollOffset: number;
     searchInputRef: RefObject<HTMLInputElement>;
@@ -107,6 +108,7 @@ export function ObservationTimeline({
     categories,
     expandedObservationIds,
     selectedObservationId,
+    renderInlineDetails = true,
     followLive,
     scrollOffset,
     searchInputRef,
@@ -141,7 +143,7 @@ export function ObservationTimeline({
 
     useEffect(() => {
         rowVirtualizer.measure();
-    }, [expandedObservationIds, rowVirtualizer]);
+    }, [expandedObservationIds, renderInlineDetails, rowVirtualizer]);
 
     useEffect(() => {
         if (!followLive || rows.length === 0) {
@@ -255,6 +257,7 @@ export function ObservationTimeline({
                                     relativeTime={row.relativeTime}
                                     expanded={expandedObservationIds.has(row.observation.id)}
                                     selected={selectedObservationId === row.observation.id}
+                                    renderInlineDetail={renderInlineDetails}
                                     onToggle={() => {
                                         onSelectObservation(row.observation.id);
                                         onToggleExpanded(row.observation.id);

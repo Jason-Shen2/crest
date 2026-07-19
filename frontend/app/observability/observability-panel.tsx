@@ -8,6 +8,7 @@ import {
     reduceObservabilityViewState,
     type ObservabilityViewStateAction,
 } from "./observability-view-state";
+import { ObservationDetail } from "./observation-detail";
 import { ObservationTimeline } from "./observation-timeline";
 import { RunReview } from "./run-review";
 import { TimelineToolbar } from "./timeline-toolbar";
@@ -17,11 +18,12 @@ export type AgentObservabilityApi = Window["api"]["agentObservability"];
 
 interface ObservabilityPanelProps {
     api?: AgentObservabilityApi;
+    magnified?: boolean;
 }
 
 type LoadState = "unavailable" | "loading" | "ready" | "empty" | "error";
 
-export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps = {}) {
+export function ObservabilityPanel({ api: injectedApi, magnified = false }: ObservabilityPanelProps = {}) {
     const api = injectedApi ?? (typeof window === "undefined" ? undefined : window.api?.agentObservability);
     const [traces, setTraces] = useState<AgentObservabilityTrace[]>([]);
     const [selectedGraph, setSelectedGraph] = useState<AgentObservabilityTraceGraph | undefined>();
@@ -125,6 +127,9 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
         selectedGraph?.observations
             .filter((observation) => observation.type !== "AGENT")
             .map((observation) => observation.id) ?? [];
+    const selectedObservation = selectedGraph?.observations.find(
+        (observation) => observation.id === viewState.selectedObservationId
+    );
 
     return (
         <section aria-label="Agent Observability" className="flex h-full min-h-0 flex-col bg-panel text-foreground">
@@ -148,52 +153,63 @@ export function ObservabilityPanel({ api: injectedApi }: ObservabilityPanelProps
                 {loadState === "error" ? <div className="text-sm">Unable to load recent runs.</div> : null}
                 {selectedGraph ? <RunReview graph={selectedGraph} /> : null}
                 {selectedGraph ? (
-                    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-fg-overlay-1/30">
-                        <div className="px-2 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                            Timeline
-                        </div>
-                        <TimelineToolbar
-                            query={viewState.query}
-                            categories={viewState.categories}
-                            searchInputRef={searchInputRef}
-                            showBackToLive={!viewState.followLive}
-                            onQueryChange={(query) => dispatchViewState({ type: "set-query", query })}
-                            onShowAll={() => {
-                                for (const category of ["generation", "tool", "lifecycle", "error"] as const) {
-                                    if (!viewState.categories.has(category)) {
-                                        dispatchViewState({ type: "toggle-category", category });
+                    <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
+                        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-fg-overlay-1/30">
+                            <div className="px-2 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                Timeline
+                            </div>
+                            <TimelineToolbar
+                                query={viewState.query}
+                                categories={viewState.categories}
+                                searchInputRef={searchInputRef}
+                                showBackToLive={!viewState.followLive}
+                                onQueryChange={(query) => dispatchViewState({ type: "set-query", query })}
+                                onShowAll={() => {
+                                    for (const category of ["generation", "tool", "lifecycle", "error"] as const) {
+                                        if (!viewState.categories.has(category)) {
+                                            dispatchViewState({ type: "toggle-category", category });
+                                        }
                                     }
+                                }}
+                                onToggleCategory={(category) => dispatchViewState({ type: "toggle-category", category })}
+                                onExpandAll={() =>
+                                    dispatchViewState({ type: "expand-all", observationIds: timelineObservationIds })
                                 }
-                            }}
-                            onToggleCategory={(category) => dispatchViewState({ type: "toggle-category", category })}
-                            onExpandAll={() =>
-                                dispatchViewState({ type: "expand-all", observationIds: timelineObservationIds })
-                            }
-                            onCollapseAll={() => dispatchViewState({ type: "collapse-all" })}
-                            onBackToLive={() => dispatchViewState({ type: "resume-follow-live" })}
-                        />
-                        <ObservationTimeline
-                            key={selectedGraph.trace.id}
-                            graph={selectedGraph}
-                            query={viewState.query}
-                            categories={viewState.categories}
-                            expandedObservationIds={viewState.expandedObservationIds}
-                            selectedObservationId={viewState.selectedObservationId}
-                            followLive={viewState.followLive}
-                            scrollOffset={viewState.scrollOffset}
-                            searchInputRef={searchInputRef}
-                            onSelectObservation={(observationId) =>
-                                dispatchViewState({ type: "select-observation", observationId })
-                            }
-                            onToggleExpanded={(observationId) =>
-                                dispatchViewState({ type: "toggle-expanded", observationId })
-                            }
-                            onCollapseObservation={collapseObservation}
-                            onPauseFollowLive={() => dispatchViewState({ type: "pause-follow-live" })}
-                            onScrollOffsetChange={(scrollOffset) =>
-                                dispatchViewState({ type: "set-scroll-offset", scrollOffset })
-                            }
-                        />
+                                onCollapseAll={() => dispatchViewState({ type: "collapse-all" })}
+                                onBackToLive={() => dispatchViewState({ type: "resume-follow-live" })}
+                            />
+                            <ObservationTimeline
+                                key={selectedGraph.trace.id}
+                                graph={selectedGraph}
+                                query={viewState.query}
+                                categories={viewState.categories}
+                                expandedObservationIds={viewState.expandedObservationIds}
+                                selectedObservationId={viewState.selectedObservationId}
+                                renderInlineDetails={!magnified}
+                                followLive={viewState.followLive}
+                                scrollOffset={viewState.scrollOffset}
+                                searchInputRef={searchInputRef}
+                                onSelectObservation={(observationId) =>
+                                    dispatchViewState({ type: "select-observation", observationId })
+                                }
+                                onToggleExpanded={(observationId) =>
+                                    dispatchViewState({ type: "toggle-expanded", observationId })
+                                }
+                                onCollapseObservation={collapseObservation}
+                                onPauseFollowLive={() => dispatchViewState({ type: "pause-follow-live" })}
+                                onScrollOffsetChange={(scrollOffset) =>
+                                    dispatchViewState({ type: "set-scroll-offset", scrollOffset })
+                                }
+                            />
+                        </div>
+                        {magnified && selectedObservation ? (
+                            <aside
+                                aria-label="Observation detail pane"
+                                className="min-h-0 w-[min(42%,32rem)] shrink-0 overflow-auto rounded-lg border border-border bg-fg-overlay-1/30 p-3"
+                            >
+                                <ObservationDetail observation={selectedObservation} />
+                            </aside>
+                        ) : null}
                     </div>
                 ) : null}
             </div>

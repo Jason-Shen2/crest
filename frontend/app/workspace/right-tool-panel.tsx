@@ -99,6 +99,7 @@ export type RightToolTopBarProps = {
 
 export type RightToolContentProps = {
     activeTool?: RightToolId;
+    magnified?: boolean;
 };
 
 function disposeRightEditorModelPath(path: string): void {
@@ -303,7 +304,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
     );
 }
 
-export function RightToolContent({ activeTool }: RightToolContentProps) {
+export function RightToolContent({ activeTool, magnified }: RightToolContentProps) {
     if (activeTool == null) {
         return <RightToolLauncher onOpenTool={() => null} />;
     }
@@ -330,7 +331,7 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
         return <SourceControlPanel />;
     }
     if (activeTool === "observability") {
-        return <ObservabilityPanel />;
+        return <ObservabilityPanel magnified={magnified} />;
     }
     return null;
 }
@@ -345,7 +346,7 @@ function RightToolPanelContent({ state, onOpenTool }: { state: RightToolPanelSta
     }
     return (
         <div className="min-h-0 flex-1 overflow-hidden rounded-b-xl">
-            <RightToolContent activeTool={state.activeTool} />
+            <RightToolContent activeTool={state.activeTool} magnified={state.magnified} />
         </div>
     );
 }

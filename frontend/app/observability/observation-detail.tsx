@@ -1,0 +1,141 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { cn } from "@/util/util";
+import { useState } from "react";
+
+interface ObservationDetailProps {
+    observation: AgentObservabilityObservation;
+}
+
+function stringifyValue(value: unknown): string {
+    if (typeof value === "string") {
+        return value;
+    }
+    return JSON.stringify(value, null, 2);
+}
+
+function hasEntries(value: Record<string, unknown>): boolean {
+    return Object.keys(value).length > 0;
+}
+
+function formatTiming(observation: AgentObservabilityObservation): string {
+    if (observation.endTime == null) {
+        return `${observation.startTime} - running`;
+    }
+    return `${observation.startTime} - ${observation.endTime}`;
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+    return (
+        <section className="border-t border-border/70 pt-3 first:border-t-0 first:pt-0">
+            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</h3>
+            {children}
+        </section>
+    );
+}
+
+function JsonValue({ value }: { value: unknown }) {
+    return (
+        <pre className="overflow-auto whitespace-pre-wrap break-words rounded border border-border/70 bg-fg-overlay-1/30 p-2 font-mono text-[11px] text-foreground">
+            {stringifyValue(value)}
+        </pre>
+    );
+}
+
+export function ObservationDetail({ observation }: ObservationDetailProps) {
+    const [wrapRaw, setWrapRaw] = useState(false);
+    const usageEntries = Object.entries(observation.usageDetails).filter(([, value]) => typeof value === "number");
+    const costEntries = Object.entries(observation.costDetails).filter(([, value]) => typeof value === "number");
+    const hasUsage = usageEntries.length > 0 || costEntries.length > 0;
+    const hasMetadata = hasEntries(observation.metadata);
+    const rawJson = JSON.stringify(observation, null, 2);
+
+    return (
+        <article aria-label="Observation detail" className="flex min-h-0 flex-col gap-3 text-xs text-foreground">
+            <DetailSection title="Overview">
+                <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+                    <dt className="text-muted-foreground">Status</dt>
+                    <dd>{observation.level}</dd>
+                    <dt className="text-muted-foreground">Name</dt>
+                    <dd className="break-words">{observation.name}</dd>
+                    <dt className="text-muted-foreground">Type</dt>
+                    <dd>{observation.type}</dd>
+                    {observation.model ? (
+                        <>
+                            <dt className="text-muted-foreground">Model</dt>
+                            <dd className="break-words">{observation.model}</dd>
+                        </>
+                    ) : null}
+                    <dt className="text-muted-foreground">Timing</dt>
+                    <dd className="break-words font-mono text-[11px]">{formatTiming(observation)}</dd>
+                    {observation.statusMessage ? (
+                        <>
+                            <dt className="text-muted-foreground">Message</dt>
+                            <dd className="break-words">{observation.statusMessage}</dd>
+                        </>
+                    ) : null}
+                </dl>
+            </DetailSection>
+            {observation.input != null ? (
+                <DetailSection title="Input">
+                    <JsonValue value={observation.input} />
+                </DetailSection>
+            ) : null}
+            {observation.output != null ? (
+                <DetailSection title="Output">
+                    <JsonValue value={observation.output} />
+                </DetailSection>
+            ) : null}
+            {hasUsage ? (
+                <DetailSection title="Usage">
+                    <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1">
+                        {[
+                            ...usageEntries.map(([key, value]) => ({ id: `usage-${key}`, label: key, value })),
+                            ...costEntries.map(([key, value]) => ({ id: `cost-${key}`, label: `cost.${key}`, value })),
+                        ].map(({ id, label, value }) => (
+                            <div key={id} className="contents">
+                                <dt className="break-words text-muted-foreground">{label}</dt>
+                                <dd className="font-mono">{value}</dd>
+                            </div>
+                        ))}
+                    </dl>
+                </DetailSection>
+            ) : null}
+            {hasMetadata ? (
+                <DetailSection title="Metadata">
+                    <JsonValue value={observation.metadata} />
+                </DetailSection>
+            ) : null}
+            <DetailSection title="Raw">
+                <div className="mb-2 flex items-center gap-2">
+                    <button
+                        type="button"
+                        aria-label="Copy observation JSON"
+                        className="cursor-pointer rounded border border-border px-2 py-1 text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                        onClick={() => void navigator.clipboard.writeText(rawJson)}
+                    >
+                        Copy
+                    </button>
+                    <button
+                        type="button"
+                        aria-label="Wrap raw JSON"
+                        aria-pressed={wrapRaw}
+                        className="cursor-pointer rounded border border-border px-2 py-1 text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                        onClick={() => setWrapRaw((current) => !current)}
+                    >
+                        Wrap
+                    </button>
+                </div>
+                <pre
+                    className={cn(
+                        "overflow-auto rounded border border-border/70 bg-fg-overlay-1/30 p-2 font-mono text-[11px] text-foreground",
+                        wrapRaw ? "whitespace-pre-wrap break-words" : "whitespace-pre"
+                    )}
+                >
+                    {rawJson}
+                </pre>
+            </DetailSection>
+        </article>
+    );
+}

@@ -48,7 +48,11 @@ vi.mock("@/app/sourcecontrol/source-control-panel", () => ({
 }));
 
 vi.mock("@/app/observability/observability-panel", () => ({
-    ObservabilityPanel: () => <div aria-label="Agent Observability">Agent Observability</div>,
+    ObservabilityPanel: ({ magnified }: { magnified?: boolean }) => (
+        <div aria-label="Agent Observability" data-magnified={magnified ? "true" : "false"}>
+            Agent Observability
+        </div>
+    ),
 }));
 
 vi.mock("@/app/element/magnify", () => ({
@@ -119,7 +123,10 @@ function findElementByAriaLabel(node: ReactNode, ariaLabel: string): ReactElemen
         return node;
     }
     if (typeof node.type === "function") {
-        return findElementByAriaLabel(node.type(node.props), ariaLabel);
+        return findElementByAriaLabel(
+            (node.type as (props: TestElementProps) => ReactNode)(node.props),
+            ariaLabel
+        );
     }
     return findElementByAriaLabel(node.props.children, ariaLabel);
 }
@@ -155,6 +162,30 @@ describe("RightToolPanel", () => {
         expect(markup).not.toContain("Browser Tool");
         expect(markup).not.toContain("Choose a tool to get started");
         expect(markup).not.toContain(">Tools<");
+    });
+
+    it("passes magnified state only to observability content", () => {
+        const normalObservability = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["observability"],
+            activeTool: "observability",
+        });
+        const magnifiedObservability = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["observability"],
+            activeTool: "observability",
+            magnified: true,
+        });
+        const magnifiedBrowser = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["browser"],
+            activeTool: "browser",
+            magnified: true,
+        });
+
+        expect(normalObservability).toContain('data-magnified="false"');
+        expect(magnifiedObservability).toContain('data-magnified="true"');
+        expect(magnifiedBrowser).not.toContain("data-magnified");
     });
 
     it("uses theme color tokens instead of fixed hex colors for panel chrome", () => {

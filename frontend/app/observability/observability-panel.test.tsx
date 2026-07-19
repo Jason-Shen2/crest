@@ -2,6 +2,7 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from "rea
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ObservationDetail } from "./observation-detail";
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
 import { ObservationTimeline } from "./observation-timeline";
 import { RunReview } from "./run-review";
@@ -144,9 +145,9 @@ function makeApi(
     };
 }
 
-function renderPanel(api?: AgentObservabilityApi): ReactElement {
+function renderPanel(api?: AgentObservabilityApi, magnified = false): ReactElement {
     HookHarness.cursor = 0;
-    return ObservabilityPanel({ api });
+    return ObservabilityPanel({ api, magnified });
 }
 
 function findElement<P>(node: ReactNode, type: unknown): ReactElement<P> | undefined {
@@ -158,6 +159,22 @@ function findElement<P>(node: ReactNode, type: unknown): ReactElement<P> | undef
     }
     for (const child of Children.toArray((node.props as { children?: ReactNode }).children)) {
         const match = findElement<P>(child, type);
+        if (match) {
+            return match;
+        }
+    }
+    return undefined;
+}
+
+function findElementByAriaLabel<P>(node: ReactNode, ariaLabel: string): ReactElement<P> | undefined {
+    if (!isValidElement(node)) {
+        return undefined;
+    }
+    if ((node.props as { "aria-label"?: string })["aria-label"] === ariaLabel) {
+        return node as ReactElement<P>;
+    }
+    for (const child of Children.toArray((node.props as { children?: ReactNode }).children)) {
+        const match = findElementByAriaLabel<P>(child, ariaLabel);
         if (match) {
             return match;
         }
@@ -231,6 +248,70 @@ describe("RunReview", () => {
     });
 });
 
+describe("ObservationDetail", () => {
+    it("renders only structured sections backed by observation data", () => {
+        const observation = makeObservation("tool", "TOOL", {
+            name: "read",
+            model: "claude-sonnet",
+            input: { path: "README.md" },
+            output: "contents",
+            metadata: { cwd: "/repo" },
+            usageDetails: { input: 20 },
+            costDetails: { total: 0.0125 },
+            statusMessage: "complete",
+        });
+        const markup = renderToStaticMarkup(<ObservationDetail observation={observation} />);
+
+        expect(markup).toContain('aria-label="Observation detail"');
+        expect(markup).toContain("Overview");
+        expect(markup).toContain("Input");
+        expect(markup).toContain("Output");
+        expect(markup).toContain("Usage");
+        expect(markup).toContain("Metadata");
+        expect(markup).toContain("Raw");
+
+        HookHarness.cursor = 0;
+        const sparseMarkup = renderToStaticMarkup(
+            <ObservationDetail observation={makeObservation("event", "EVENT")} />
+        );
+        expect(sparseMarkup).not.toContain(">Input<");
+        expect(sparseMarkup).not.toContain(">Output<");
+        expect(sparseMarkup).not.toContain(">Usage<");
+        expect(sparseMarkup).not.toContain(">Metadata<");
+    });
+
+    it("copies complete observation JSON", async () => {
+        const observation = makeObservation("tool", "TOOL", {
+            input: { path: "README.md" },
+            metadata: { cwd: "/repo" },
+        });
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        vi.stubGlobal("navigator", { clipboard: { writeText } });
+        const detail = ObservationDetail({ observation });
+        const copyButton = findElementByAriaLabel<{ onClick: () => void }>(detail, "Copy observation JSON");
+
+        copyButton?.props.onClick();
+        await flushPromises();
+
+        expect(writeText).toHaveBeenCalledWith(JSON.stringify(observation, null, 2));
+        vi.unstubAllGlobals();
+    });
+
+    it("toggles raw JSON wrapping without creating dashboard state", () => {
+        const observation = makeObservation("tool", "TOOL", { input: { path: "README.md" } });
+        HookHarness.cursor = 0;
+        let detail = ObservationDetail({ observation });
+        expect(renderToStaticMarkup(detail)).toContain("whitespace-pre");
+        const wrapButton = findElementByAriaLabel<{ onClick: () => void }>(detail, "Wrap raw JSON");
+
+        wrapButton?.props.onClick();
+        HookHarness.cursor = 0;
+        detail = ObservationDetail({ observation });
+
+        expect(renderToStaticMarkup(detail)).toContain("whitespace-pre-wrap");
+    });
+});
+
 describe("ObservabilityPanel", () => {
     it("selects the latest trace initially and can select an older trace", async () => {
         const latest = makeGraph(makeTrace("trace-2", "Latest run"));
@@ -285,6 +366,48 @@ describe("ObservabilityPanel", () => {
         expect(markup).toContain("1 s");
         expect(markup).toContain("claude-sonnet");
         expect(markup).toContain("28 tokens");
+    });
+
+    it("renders selected observation detail inline in normal mode", async () => {
+        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([graph.trace], async () => graph);
+
+        renderPanel(api);
+        await flushPromises();
+        let tree = renderPanel(api);
+        const timelineControls = findElement<{
+            onSelectObservation: (observationId?: string) => void;
+            onToggleExpanded: (observationId: string) => void;
+        }>(tree, ObservationTimeline);
+        timelineControls?.props.onSelectObservation("tool");
+        timelineControls?.props.onToggleExpanded("tool");
+        tree = renderPanel(api);
+        const timeline = findElement<{ renderInlineDetails: boolean }>(tree, ObservationTimeline);
+        const markup = renderToStaticMarkup(tree);
+
+        expect(timeline?.props.renderInlineDetails).toBe(true);
+        expect(markup).toContain('aria-label="Observation detail"');
+        expect(markup).not.toContain('aria-label="Observation detail pane"');
+    });
+
+    it("renders selected observation detail in a sibling pane when magnified", async () => {
+        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([graph.trace], async () => graph);
+
+        renderPanel(api, true);
+        await flushPromises();
+        let tree = renderPanel(api, true);
+        findElement<{ onSelectObservation: (observationId?: string) => void }>(
+            tree,
+            ObservationTimeline
+        )?.props.onSelectObservation("tool");
+        tree = renderPanel(api, true);
+        const timeline = findElement<{ renderInlineDetails: boolean }>(tree, ObservationTimeline);
+        const markup = renderToStaticMarkup(tree);
+
+        expect(timeline?.props.renderInlineDetails).toBe(false);
+        expect(markup).toContain('aria-label="Observation detail pane"');
+        expect(markup).toContain('aria-label="Observation detail"');
     });
 
     it("composes search and error filtering and controls visible expansion", async () => {
