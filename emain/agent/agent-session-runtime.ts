@@ -120,7 +120,7 @@ export function buildPersistedTurnsFromSessionEntries(entries: SessionTreeEntry[
 
 export class AgentSessionRuntime {
     readonly path: string;
-    pane: AgentHarnessHost;
+    host: AgentHarnessHost;
 
     messages: AgentMessage[] = [];
     turns: AgentTurn[] = [];
@@ -145,13 +145,13 @@ export class AgentSessionRuntime {
 
     constructor(
         path: string,
-        pane: AgentHarnessHost,
+        host: AgentHarnessHost,
         initialMessages: AgentMessage[] = [],
         initialTurns: AgentTurn[] = [],
         options: AgentSessionRuntimeOptions = {}
     ) {
         this.path = path;
-        this.pane = pane;
+        this.host = host;
         this.onTurnFinished = options.onTurnFinished;
         // Seed the transcript from the persisted session so a REOPENED
         // conversation shows its history. A fresh session passes []. New
@@ -161,12 +161,12 @@ export class AgentSessionRuntime {
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
-        this.unsubscribeHarness = pane.harness.subscribe((event) => this.onHarnessEvent(event as AgentHarnessEvent));
+        this.unsubscribeHarness = host.harness.subscribe((event) => this.onHarnessEvent(event as AgentHarnessEvent));
     }
 
-    /** Refresh pane context (cwd / git / recent cmds) for the next turn. */
+    /** Refresh execution context (cwd / git / recent cmds) for the next turn. */
     update(inputs: SystemPromptInputs): void {
-        this.pane.update(inputs);
+        this.host.update(inputs);
     }
 
     private onHarnessEvent(event: AgentHarnessEvent): void {
@@ -177,7 +177,7 @@ export class AgentSessionRuntime {
             try {
                 listener(event);
             } catch (err) {
-                console.error(`[pane-session] listener error for ${this.path}:`, err);
+                console.error(`[agent-session] listener error for ${this.path}:`, err);
             }
         }
     }
@@ -289,7 +289,7 @@ export class AgentSessionRuntime {
             this.pendingEntryIdResolvers.push({ resolve, reject });
         });
         if (this.running) {
-            void this.pane.harness.followUp(text).catch((err) => this.onSendError("followUp", err));
+            void this.host.harness.followUp(text).catch((err) => this.onSendError("followUp", err));
             return promise;
         }
         this.running = true;
@@ -298,8 +298,8 @@ export class AgentSessionRuntime {
     }
 
     abort(): void {
-        void this.pane.harness.abort().catch((err) => {
-            console.error(`[pane-session] abort error for ${this.path}:`, err);
+        void this.host.harness.abort().catch((err) => {
+            console.error(`[agent-session] abort error for ${this.path}:`, err);
         });
     }
 
@@ -308,18 +308,18 @@ export class AgentSessionRuntime {
         leafId: string | null;
         labels: Map<string, string | undefined>;
     }> {
-        const allEntries = await this.pane.session.getEntries();
-        const leafId = await this.pane.session.getLeafId();
+        const allEntries = await this.host.session.getEntries();
+        const leafId = await this.host.session.getLeafId();
         const { entries, effectiveLeafId } = filterTreeForDisplay(allEntries, leafId);
         const labels = new Map<string, string | undefined>();
         for (const entry of entries) {
-            labels.set(entry.id, await this.pane.session.getLabel(entry.id));
+            labels.set(entry.id, await this.host.session.getLabel(entry.id));
         }
         return { entries, leafId: effectiveLeafId, labels };
     }
 
     async navigateTree(targetId: string): Promise<{ editorText?: string }> {
-        const result = await this.pane.harness.navigateTree(targetId, { summarize: false });
+        const result = await this.host.harness.navigateTree(targetId, { summarize: false });
         if (result.cancelled) {
             return {};
         }
@@ -329,13 +329,13 @@ export class AgentSessionRuntime {
     }
 
     async compact(customInstructions?: string): Promise<void> {
-        await this.pane.harness.compact(customInstructions);
+        await this.host.harness.compact(customInstructions);
         await this.rebuildFromCurrentBranch();
         this.emitSessionState();
     }
 
     async getLeafId(): Promise<string | null> {
-        return this.pane.session.getLeafId();
+        return this.host.session.getLeafId();
     }
 
     dispose(): void {
@@ -345,7 +345,7 @@ export class AgentSessionRuntime {
         // abort below tears down the run, so their user message_end will
         // never arrive.
         this.rejectPendingSends(new Error("session disposed before the user message was committed"));
-        void this.pane.harness.abort().catch(() => {
+        void this.host.harness.abort().catch(() => {
             // best-effort on teardown
         });
     }
@@ -373,12 +373,12 @@ export class AgentSessionRuntime {
         // resolver so callers don't hang forever.
         const pending = this.pendingEntryIdResolvers.shift();
         pending?.reject(err);
-        console.error(`[pane-session] ${where} error for ${this.path}:`, err);
+        console.error(`[agent-session] ${where} error for ${this.path}:`, err);
     }
 
     private async startPromptTurn(text: string): Promise<void> {
         try {
-            await this.pane.harness.prompt(text);
+            await this.host.harness.prompt(text);
         } catch (err) {
             this.onSendError("prompt", err);
         } finally {
@@ -476,12 +476,12 @@ export class AgentSessionRuntime {
     private notifyTurnFinished(turn: AgentTurn): void {
         if (!this.onTurnFinished) return;
         void Promise.resolve(this.onTurnFinished(turn)).catch((err) => {
-            console.error(`[pane-session] onTurnFinished error for ${this.path}:`, err);
+            console.error(`[agent-session] onTurnFinished error for ${this.path}:`, err);
         });
     }
 
     private async rebuildFromCurrentBranch(): Promise<void> {
-        const entries = await this.pane.session.getBranch();
+        const entries = await this.host.session.getBranch();
         this.messages = entries
             .filter((entry): entry is Extract<SessionTreeEntry, { type: "message" }> => entry.type === "message")
             .map((entry) => entry.message as AgentMessage);
@@ -507,7 +507,7 @@ export class AgentSessionRuntime {
             try {
                 listener(event as unknown as AgentHarnessEvent);
             } catch (err) {
-                console.error(`[pane-session] listener error for ${this.path}:`, err);
+                console.error(`[agent-session] listener error for ${this.path}:`, err);
             }
         }
     }
@@ -518,7 +518,7 @@ export class AgentSessionRuntime {
             try {
                 listener(event);
             } catch (err) {
-                console.error(`[pane-session] listener error for ${this.path}:`, err);
+                console.error(`[agent-session] listener error for ${this.path}:`, err);
             }
         }
     }

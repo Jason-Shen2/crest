@@ -437,7 +437,7 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
             `reasoning=${opts.reasoning ?? "off"} apiKey=${apiKey ? "present" : "MISSING"} ` +
             `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
     );
-    const pane = buildAgentHarnessHost({
+    const host = buildAgentHarnessHost({
         session: piSession,
         model,
         thinkingLevel: opts.reasoning,
@@ -483,7 +483,6 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
     // history (a fresh session's buildContext is empty).
     const seed = await piSession.buildContext();
     const initialTurns = buildPersistedTurnsFromSessionEntries(await piSession.getBranch());
-    let owner: AgentSessionRuntime;
     const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
         const operations = extractChangeOperationsFromMessages(turn.responseMessages.filter(isToolResultModelMessage), {
             turnId: turn.turnId,
@@ -499,7 +498,7 @@ async function ensurePaneSession(metadata: JsonlSessionMetadata, opts: SendOptio
             owner.setTurnChangeOutline(turn.turnId, changeOutline);
         }
     };
-    owner = new AgentSessionRuntime(metadata.path, pane, seed.messages ?? [], initialTurns, { onTurnFinished });
+    const owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, { onTurnFinished });
     sessionCache.set(metadata.path, owner);
     attachPendingSubscribers(metadata.path, owner);
     return owner;
