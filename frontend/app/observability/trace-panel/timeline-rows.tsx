@@ -3,7 +3,7 @@
 // Adapted from Langfuse TraceTimeline/TimelineRows.tsx.
 
 import type { VirtualItem } from "@tanstack/react-virtual";
-import { memo } from "react";
+import { memo, useEffect, useRef, type KeyboardEvent } from "react";
 
 import { cn } from "@/util/util";
 import { TimelineBar } from "./timeline-bar";
@@ -32,6 +32,8 @@ type RowShellProps = {
     isHovered: boolean;
     onSelect: (nodeId: string) => void;
     onHover: (nodeId: string | null) => void;
+    onNavigate: (event: KeyboardEvent<HTMLDivElement>, nodeId: string) => void;
+    registerTreeItem: (nodeId: string, element: HTMLDivElement | null) => void;
 };
 
 type GutterRowShellProps = RowShellProps & {
@@ -47,6 +49,8 @@ function TimelineGutterRowShellComponent({
     isCollapsed,
     onSelect,
     onHover,
+    onNavigate,
+    registerTreeItem,
     onToggleCollapse,
 }: GutterRowShellProps) {
     return (
@@ -62,6 +66,8 @@ function TimelineGutterRowShellComponent({
                 isCollapsed={isCollapsed}
                 onSelect={onSelect}
                 onToggleCollapse={onToggleCollapse}
+                onNavigate={onNavigate}
+                itemRef={(element) => registerTreeItem(row.node.id, element)}
             />
         </div>
     );
@@ -122,6 +128,86 @@ export function TimelineRows({
     onToggleCollapse,
     scaleWidth = ScaleWidth,
 }: TimelineRowsProps) {
+    const treeItemsRef = useRef(new Map<string, HTMLDivElement>());
+
+    useEffect(() => {
+        if (selectedNodeId != null) {
+            treeItemsRef.current.get(selectedNodeId)?.focus();
+        }
+    }, [selectedNodeId, rows]);
+
+    const registerTreeItem = (nodeId: string, element: HTMLDivElement | null) => {
+        if (element == null) {
+            treeItemsRef.current.delete(nodeId);
+            return;
+        }
+        treeItemsRef.current.set(nodeId, element);
+    };
+
+    const onNavigate = (event: KeyboardEvent<HTMLDivElement>, nodeId: string) => {
+        const index = rows.findIndex((row) => row.node.id === nodeId);
+        if (index < 0) {
+            return;
+        }
+
+        const selectIndex = (nextIndex: number) => {
+            const nextRow = rows[nextIndex];
+            if (nextRow != null) {
+                onSelect(nextRow.node.id);
+            }
+        };
+
+        if (event.key === "ArrowDown") {
+            event.preventDefault();
+            selectIndex(index + 1);
+            return;
+        }
+        if (event.key === "ArrowUp") {
+            event.preventDefault();
+            selectIndex(index - 1);
+            return;
+        }
+        if (event.key === "Home") {
+            event.preventDefault();
+            selectIndex(0);
+            return;
+        }
+        if (event.key === "End") {
+            event.preventDefault();
+            selectIndex(rows.length - 1);
+            return;
+        }
+
+        const row = rows[index];
+        if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            if (row.node.children.length > 0 && !collapsedNodes.has(nodeId)) {
+                onToggleCollapse(nodeId);
+                return;
+            }
+            for (let parentIndex = index - 1; parentIndex >= 0; parentIndex -= 1) {
+                if (rows[parentIndex].depth < row.depth) {
+                    selectIndex(parentIndex);
+                    return;
+                }
+            }
+            return;
+        }
+        if (event.key === "ArrowRight") {
+            event.preventDefault();
+            if (row.node.children.length === 0) {
+                return;
+            }
+            if (collapsedNodes.has(nodeId)) {
+                onToggleCollapse(nodeId);
+                return;
+            }
+            if (rows[index + 1]?.depth > row.depth) {
+                selectIndex(index + 1);
+            }
+        }
+    };
+
     return (
         <>
             <div
@@ -146,6 +232,8 @@ export function TimelineRows({
                             isCollapsed={collapsedNodes.has(row.node.id)}
                             onSelect={onSelect}
                             onHover={onHover}
+                            onNavigate={onNavigate}
+                            registerTreeItem={registerTreeItem}
                             onToggleCollapse={onToggleCollapse}
                         />
                     );

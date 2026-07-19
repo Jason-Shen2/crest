@@ -3,6 +3,7 @@
 // Adapted from Langfuse TraceTimeline/TimelineGutterRow.tsx.
 
 import { ChevronRight } from "lucide-react";
+import type { KeyboardEvent, Ref } from "react";
 
 import { cn } from "@/util/util";
 import { ItemBadge } from "./item-badge";
@@ -14,18 +15,23 @@ export function TimelineGutterRow({
     isCollapsed,
     onSelect,
     onToggleCollapse,
+    onNavigate,
+    itemRef,
 }: {
     row: TimelineTraceNode;
     isSelected: boolean;
     isCollapsed: boolean;
     onSelect: (nodeId: string) => void;
     onToggleCollapse: (nodeId: string) => void;
+    onNavigate: (event: KeyboardEvent<HTMLDivElement>, nodeId: string) => void;
+    itemRef: Ref<HTMLDivElement>;
 }) {
     const { node, depth, treeLines, isLastSibling } = row;
     const hasChildren = node.children.length > 0;
 
     return (
         <div
+            ref={itemRef}
             data-testid="timeline-gutter-row"
             role="treeitem"
             aria-level={depth + 1}
@@ -39,6 +45,7 @@ export function TimelineGutterRow({
             onClick={() => onSelect(node.id)}
             onKeyDown={(event) => {
                 if (event.key !== "Enter" && event.key !== " ") {
+                    onNavigate(event, node.id);
                     return;
                 }
                 event.preventDefault();

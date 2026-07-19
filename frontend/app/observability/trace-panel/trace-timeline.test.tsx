@@ -2,9 +2,11 @@
 
 import type { VirtualItem } from "@tanstack/react-virtual";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useMemo, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TimelineBar } from "./timeline-bar";
+import { flattenTimelineRows } from "./timeline-flattening";
 import { TimelineRows } from "./timeline-rows";
 import { TimelineScale } from "./timeline-scale";
 import type { TimelineTraceNode } from "./timeline-types";
@@ -137,6 +139,58 @@ function TimelineRowsHarness({ onSelect = vi.fn() }: { onSelect?: (nodeId: strin
     );
 }
 
+function TimelineKeyboardHarness() {
+    const roots = useMemo(() => {
+        const generation = makeNode(
+            "generation",
+            "GENERATION",
+            "2026-07-20T08:00:01.000Z",
+            "2026-07-20T08:00:02.000Z",
+            { parentObservationId: "turn" }
+        );
+        const tool = makeNode("tool", "TOOL", "2026-07-20T08:00:02.000Z", "2026-07-20T08:00:03.000Z", {
+            parentObservationId: "turn",
+        });
+        const turn = makeNode("turn", "SPAN", "2026-07-20T08:00:00.500Z", "2026-07-20T08:00:03.500Z", {
+            parentObservationId: "agent",
+            children: [generation, tool],
+        });
+        return [
+            makeNode("agent", "TRACE", "2026-07-20T08:00:00.000Z", "2026-07-20T08:00:04.000Z", {
+                children: [turn],
+            }),
+        ];
+    }, []);
+    const [selectedNodeId, setSelectedNodeId] = useState("generation");
+    const [collapsedNodes, setCollapsedNodes] = useState(new Set<string>());
+    const rows = flattenTimelineRows(roots, collapsedNodes, new Date("2026-07-20T08:00:00.000Z"), 4);
+
+    return (
+        <TimelineRows
+            rows={rows}
+            virtualItems={rows.map((_, index) => makeVirtualItem(index))}
+            totalSize={rows.length * 26}
+            observationMap={new Map()}
+            selectedNodeId={selectedNodeId}
+            hoveredNodeId={null}
+            collapsedNodes={collapsedNodes}
+            onSelect={setSelectedNodeId}
+            onHover={vi.fn()}
+            onToggleCollapse={(nodeId) => {
+                setCollapsedNodes((current) => {
+                    const next = new Set(current);
+                    if (next.has(nodeId)) {
+                        next.delete(nodeId);
+                    } else {
+                        next.add(nodeId);
+                    }
+                    return next;
+                });
+            }}
+        />
+    );
+}
+
 describe("timeline rows", () => {
     it("renders matching gutter and chart rows with Crest-supported badges", () => {
         render(<TimelineRowsHarness />);
@@ -167,6 +221,47 @@ describe("timeline rows", () => {
         fireEvent.keyDown(selectedItem, { key: " " });
         expect(onSelect).toHaveBeenNthCalledWith(1, "assistant-response");
         expect(onSelect).toHaveBeenNthCalledWith(2, "assistant-response");
+    });
+
+    it("supports the complete ARIA tree keyboard flow and moves focus with selection", () => {
+        render(<TimelineKeyboardHarness />);
+
+        const selectedItem = () =>
+            screen.getAllByRole("treeitem").find((item) => item.getAttribute("aria-selected") === "true")!;
+        const expectSelectedAndFocused = (name: string) => {
+            const item = screen.getByRole("treeitem", { name });
+            expect(selectedItem()).toBe(item);
+            expect(document.activeElement).toBe(item);
+        };
+
+        screen.getByRole("treeitem", { name: "generation" }).focus();
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowDown" });
+        expectSelectedAndFocused("tool");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowUp" });
+        expectSelectedAndFocused("generation");
+
+        fireEvent.keyDown(selectedItem(), { key: "Home" });
+        expectSelectedAndFocused("agent");
+
+        fireEvent.keyDown(selectedItem(), { key: "End" });
+        expectSelectedAndFocused("tool");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowLeft" });
+        expectSelectedAndFocused("turn");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowLeft" });
+        expect(screen.getByRole("treeitem", { name: "turn" }).getAttribute("aria-expanded")).toBe("false");
+        expect(screen.queryByRole("treeitem", { name: "generation" })).toBeNull();
+        expectSelectedAndFocused("turn");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowRight" });
+        expect(screen.getByRole("treeitem", { name: "turn" }).getAttribute("aria-expanded")).toBe("true");
+        expectSelectedAndFocused("turn");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowRight" });
+        expectSelectedAndFocused("generation");
     });
 });
 
