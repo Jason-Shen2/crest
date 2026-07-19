@@ -4,8 +4,8 @@
 import * as electron from "electron";
 
 import type { AgentHarness } from "./agent/harness/agent-harness";
-import { LangfuseTraceBuilder } from "./agent/observability/trace-builder";
 import { SqliteTraceStore, type TraceStore } from "./agent/observability/sqlite-trace-store";
+import { LangfuseTraceBuilder } from "./agent/observability/trace-builder";
 import type { TraceGraph } from "./agent/observability/types";
 
 type SubKey = string;
@@ -16,6 +16,69 @@ const subscriptions = new Map<SubKey, { sender: electron.WebContents; sessionId?
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
 
 let traceStore: TraceStore | undefined;
+
+interface AgentObservabilityEventCoalescerOptions {
+    builder: LangfuseTraceBuilder;
+    saveGraph: (graph: TraceGraph) => void;
+    publishGraph: (graph: TraceGraph) => void;
+    updateIntervalMs?: number;
+}
+
+interface PendingMessageUpdate {
+    graph: TraceGraph;
+    timer: ReturnType<typeof setTimeout>;
+}
+
+export class AgentObservabilityEventCoalescer {
+    private readonly builder: LangfuseTraceBuilder;
+    private readonly saveGraph: (graph: TraceGraph) => void;
+    private readonly publishGraph: (graph: TraceGraph) => void;
+    private readonly updateIntervalMs: number;
+    private readonly pendingUpdates = new Map<string, PendingMessageUpdate>();
+
+    constructor(options: AgentObservabilityEventCoalescerOptions) {
+        this.builder = options.builder;
+        this.saveGraph = options.saveGraph;
+        this.publishGraph = options.publishGraph;
+        this.updateIntervalMs = options.updateIntervalMs ?? 50;
+    }
+
+    handle(sessionPath: string, event: { type: string; [key: string]: unknown }): void {
+        if (event.type === "message_update") {
+            const graph = this.builder.applyEvent({ sessionPath, event });
+            if (!graph) return;
+            const pending = this.pendingUpdates.get(sessionPath);
+            if (pending) {
+                pending.graph = graph;
+                return;
+            }
+            const timer = setTimeout(() => this.flushSession(sessionPath), this.updateIntervalMs);
+            this.pendingUpdates.set(sessionPath, { graph, timer });
+            return;
+        }
+
+        this.flushSession(sessionPath);
+        const graph = this.builder.applyEvent({ sessionPath, event });
+        if (!graph) return;
+        this.saveGraph(graph);
+        this.publishGraph(graph);
+    }
+
+    dispose(): void {
+        for (const pending of this.pendingUpdates.values()) {
+            clearTimeout(pending.timer);
+        }
+        this.pendingUpdates.clear();
+    }
+
+    private flushSession(sessionPath: string): void {
+        const pending = this.pendingUpdates.get(sessionPath);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        this.pendingUpdates.delete(sessionPath);
+        this.publishGraph(pending.graph);
+    }
+}
 
 function getTraceStore(): TraceStore {
     if (!traceStore) {
@@ -64,6 +127,20 @@ function publishGraph(graph: TraceGraph): void {
     }
 }
 
+function saveGraph(graph: TraceGraph): void {
+    try {
+        getTraceStore().saveGraph(graph);
+    } catch (error) {
+        console.error("[agent-observability] failed to save trace graph:", error);
+    }
+}
+
+const eventCoalescer = new AgentObservabilityEventCoalescer({
+    builder,
+    saveGraph,
+    publishGraph,
+});
+
 // Observability is a second, symmetric subscriber on the AgentHarness
 // canonical event bus — peer to PaneAgentSession, not layered on top of
 // it. AgentHarness.subscribe() delivers the full AgentHarnessEvent union
@@ -77,14 +154,7 @@ export function attachAgentObservability(sessionPath: string, harness: AgentHarn
     }
     observedSessions.add(sessionPath);
     harness.subscribe((event) => {
-        const graph = builder.applyEvent({ sessionPath, event: event as { type: string; [key: string]: unknown } });
-        if (!graph) return;
-        try {
-            getTraceStore().saveGraph(graph);
-        } catch (error) {
-            console.error("[agent-observability] failed to save trace graph:", error);
-        }
-        publishGraph(graph);
+        eventCoalescer.handle(sessionPath, event as { type: string; [key: string]: unknown });
     });
 }
 
@@ -120,6 +190,7 @@ export function registerAgentObservabilityIpcHandlers(): void {
 }
 
 export function _resetAgentObservabilityForTests(): void {
+    eventCoalescer.dispose();
     observedSessions.clear();
     subscriptions.clear();
     subscriptionsBySender.clear();
