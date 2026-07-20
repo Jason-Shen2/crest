@@ -6,9 +6,19 @@
  */
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+    type KeyboardEvent,
+    type ReactNode,
+    type Ref,
+} from "react";
 
 import { cn } from "@/util/util";
+import { getTreeNavigationAction } from "./roving-navigation";
 import { flattenTree } from "./tree-flattening";
 import type { TreeNodeMetadata } from "./virtualized-tree-node-wrapper";
 import { computeMaxVisualDepth, TreeVisualDepth } from "./visual-depth";
@@ -21,9 +31,12 @@ interface VirtualizedTreeProps<T extends { id: string; children: T[] }> {
         node: T;
         treeMetadata: TreeNodeMetadata;
         isSelected: boolean;
+        isTabStop: boolean;
         isCollapsed: boolean;
         onToggleCollapse: () => void;
         onSelect: () => void;
+        onNavigate: (event: KeyboardEvent<HTMLDivElement>) => void;
+        itemRef: Ref<HTMLDivElement>;
     }) => ReactNode;
     onToggleCollapse: (nodeId: string) => void;
     onSelectNode: (nodeId: string | null) => void;
@@ -46,6 +59,7 @@ export function VirtualizedTree<T extends { id: string; children: T[] }>({
     className,
 }: VirtualizedTreeProps<T>) {
     const parentRef = useRef<HTMLDivElement>(null);
+    const treeItemsRef = useRef(new Map<string, HTMLDivElement>());
     const [maxVisualDepth, setMaxVisualDepth] = useState(TreeVisualDepth.maxDepth);
 
     useLayoutEffect(() => {
@@ -103,6 +117,53 @@ export function VirtualizedTree<T extends { id: string; children: T[] }>({
                   key: flattenedItems[index].node.id,
                   start: index * defaultRowHeight,
               }));
+    const selectedNodeIsVisible =
+        selectedNodeId != null && flattenedItems.some((item) => item.node.id === selectedNodeId);
+    const focusNodeId = selectedNodeIsVisible
+        ? selectedNodeId
+        : flattenedItems.length > 0
+          ? flattenedItems[0].node.id
+          : null;
+    const focusVirtualItemKey =
+        focusNodeId == null
+            ? null
+            : (renderedItems.find((item) => flattenedItems[item.index]?.node.id === focusNodeId)?.key ?? null);
+
+    useEffect(() => {
+        if (focusNodeId != null && focusVirtualItemKey != null) {
+            treeItemsRef.current.get(focusNodeId)?.focus();
+        }
+    }, [focusNodeId, focusVirtualItemKey]);
+
+    const registerTreeItem = (nodeId: string, element: HTMLDivElement | null) => {
+        if (element == null) {
+            treeItemsRef.current.delete(nodeId);
+            return;
+        }
+        treeItemsRef.current.set(nodeId, element);
+    };
+
+    const onNavigate = (event: KeyboardEvent<HTMLDivElement>, index: number) => {
+        if (!["ArrowDown", "ArrowUp", "Home", "End", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+            return;
+        }
+        event.preventDefault();
+        const action = getTreeNavigationAction(
+            event.key,
+            index,
+            flattenedItems.map((item) => ({
+                id: item.node.id,
+                depth: item.depth,
+                children: item.node.children,
+            })),
+            collapsedNodes
+        );
+        if (action?.type === "toggle") {
+            onToggleCollapse(action.id);
+        } else if (action?.type === "select") {
+            onSelectNode(flattenedItems[action.index].node.id);
+        }
+    };
 
     return (
         <div ref={parentRef} role="tree" aria-label="Trace tree" className={cn("h-full overflow-y-auto", className)}>
@@ -140,9 +201,12 @@ export function VirtualizedTree<T extends { id: string; children: T[] }>({
                                     maxVisualDepth,
                                 },
                                 isSelected,
+                                isTabStop: item.node.id === focusNodeId,
                                 isCollapsed,
                                 onToggleCollapse: () => onToggleCollapse(item.node.id),
                                 onSelect: () => onSelectNode(item.node.id),
+                                onNavigate: (event) => onNavigate(event, virtualRow.index),
+                                itemRef: (element) => registerTreeItem(item.node.id, element),
                             })}
                         </div>
                     );

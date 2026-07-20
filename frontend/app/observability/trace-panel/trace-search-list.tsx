@@ -60,8 +60,15 @@ export function TraceSearchList() {
             }}
             getItemId={(item) => item.node.id}
             estimatedItemSize={48}
-            renderItem={({ item, isSelected, onSelect }) => (
-                <TraceSearchListItem item={item} isSelected={isSelected} onSelect={onSelect} />
+            renderItem={({ item, isSelected, isTabStop, onSelect, onNavigate, itemRef }) => (
+                <TraceSearchListItem
+                    item={item}
+                    isSelected={isSelected}
+                    isTabStop={isTabStop}
+                    onSelect={onSelect}
+                    onNavigate={onNavigate}
+                    itemRef={itemRef}
+                />
             )}
         />
     );

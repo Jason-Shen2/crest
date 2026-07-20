@@ -8,13 +8,15 @@ import { TraceSearchList } from "./trace-search-list";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTree } from "./trace-tree";
 
+const scrollToIndex = vi.hoisted(() => vi.fn());
+
 vi.mock("@tanstack/react-virtual", () => ({
     useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: () => number }) => {
         const size = estimateSize();
         return {
             getTotalSize: () => count * size,
             measureElement: vi.fn(),
-            scrollToIndex: vi.fn(),
+            scrollToIndex,
             getVirtualItems: () =>
                 Array.from({ length: count }, (_, index) => ({
                     index,
@@ -77,6 +79,27 @@ function makeDetail(observationIds: string[]): TraceDetail {
         observations: observationIds.map((id) => makeObservation(id)),
         scores: [],
         corrections: [],
+    };
+}
+
+function makeNestedDetail(): TraceDetail {
+    return {
+        ...makeDetail([]),
+        observations: [
+            makeObservation("turn", {
+                type: "SPAN",
+                name: "result turn",
+            }),
+            makeObservation("generation", {
+                name: "result generation",
+                parentObservationId: "turn",
+            }),
+            makeObservation("tool", {
+                type: "TOOL",
+                name: "result tool",
+                parentObservationId: "turn",
+            }),
+        ],
     };
 }
 
@@ -166,6 +189,18 @@ function SearchView() {
     );
 }
 
+function SearchKeyboardView() {
+    const { setSearchQuery } = useTraceSelection();
+    return (
+        <>
+            <button type="button" onClick={() => setSearchQuery("result")}>
+                search results
+            </button>
+            <TraceSearchList />
+        </>
+    );
+}
+
 describe("trace context", () => {
     it("uses null for trace selection and clears a removed observation", () => {
         const { rerender } = render(<ContextProbe detail={makeDetail(["generation-1"])} />);
@@ -249,5 +284,120 @@ describe("trace context", () => {
         );
         expect(screen.getByRole("treeitem", { name: "Trace" }).getAttribute("aria-selected")).toBe("true");
         expect(screen.getAllByTestId("timeline-chart-row")[0].className).toContain("bg-accent/10");
+    });
+
+    it("supports roving focus and complete tree keyboard navigation", () => {
+        const detail = makeNestedDetail();
+        render(
+            <ViewHarness detail={detail}>
+                <TraceTree />
+            </ViewHarness>
+        );
+        const tree = screen.getByRole("tree", { name: "Trace tree" });
+        expect(tree.querySelectorAll('button:not([tabindex="-1"])')).toHaveLength(0);
+
+        const selectedItem = () =>
+            screen.getAllByRole("treeitem").find((item) => item.getAttribute("aria-selected") === "true")!;
+        const expectSelectedAndFocused = (name: string) => {
+            const item = screen.getByRole("treeitem", { name: new RegExp(`^${name}`) });
+            expect(selectedItem()).toBe(item);
+            expect(document.activeElement).toBe(item);
+            expect(item.tabIndex).toBe(0);
+            expect(screen.getAllByRole("treeitem").filter((candidate) => candidate.tabIndex === 0)).toEqual([item]);
+        };
+
+        const generation = screen.getByRole("treeitem", { name: /^result generation/ });
+        generation.focus();
+        fireEvent.keyDown(generation, { key: "Enter" });
+        expectSelectedAndFocused("result generation");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowDown" });
+        expectSelectedAndFocused("result tool");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowUp" });
+        expectSelectedAndFocused("result generation");
+
+        fireEvent.keyDown(selectedItem(), { key: "Home" });
+        expectSelectedAndFocused("Trace");
+
+        fireEvent.keyDown(selectedItem(), { key: "End" });
+        expectSelectedAndFocused("result tool");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowLeft" });
+        expectSelectedAndFocused("result turn");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowLeft" });
+        expect(screen.getByRole("treeitem", { name: /^result turn/ }).getAttribute("aria-expanded")).toBe("false");
+        expect(screen.queryByRole("treeitem", { name: /^result generation/ })).toBeNull();
+        expectSelectedAndFocused("result turn");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowRight" });
+        expect(screen.getByRole("treeitem", { name: /^result turn/ }).getAttribute("aria-expanded")).toBe("true");
+        expectSelectedAndFocused("result turn");
+
+        fireEvent.keyDown(selectedItem(), { key: "ArrowRight" });
+        expectSelectedAndFocused("result generation");
+
+        fireEvent.keyDown(selectedItem(), { key: " " });
+        expectSelectedAndFocused("result generation");
+
+        const turn = screen.getByRole("treeitem", { name: /^result turn/ });
+        fireEvent.click(turn.querySelector("[data-expand-button]")!);
+        expect(screen.queryByRole("treeitem", { name: /^result generation/ })).toBeNull();
+        const root = screen.getByRole("treeitem", { name: /^Trace/ });
+        expect(root.tabIndex).toBe(0);
+        expect(document.activeElement).toBe(root);
+        expect(screen.getAllByRole("treeitem").filter((candidate) => candidate.tabIndex === 0)).toEqual([root]);
+    });
+
+    it("supports roving focus and linear search keyboard navigation without left or right actions", () => {
+        const detail = makeNestedDetail();
+        const renderSearch = (currentDetail: TraceDetail) => (
+            <ViewHarness detail={currentDetail}>
+                <SearchKeyboardView />
+            </ViewHarness>
+        );
+        const { rerender } = render(renderSearch(detail));
+        fireEvent.click(screen.getByRole("button", { name: "search results" }));
+
+        const listbox = screen.getByRole("listbox", { name: "Trace search results" });
+        expect(listbox.querySelectorAll('button:not([tabindex="-1"])')).toHaveLength(0);
+        const options = () => screen.getAllByRole("option");
+        expect(options().filter((option) => option.tabIndex === 0)).toEqual([options()[0]]);
+
+        options()[0].focus();
+        fireEvent.keyDown(options()[0], { key: "ArrowDown" });
+        expect(options()[1].getAttribute("aria-selected")).toBe("true");
+        expect(document.activeElement).toBe(options()[1]);
+
+        fireEvent.keyDown(options()[1], { key: "End" });
+        expect(options()[2].getAttribute("aria-selected")).toBe("true");
+        expect(document.activeElement).toBe(options()[2]);
+        expect(scrollToIndex).toHaveBeenLastCalledWith(2, { align: "auto" });
+        const revealCount = scrollToIndex.mock.calls.length;
+        rerender(renderSearch({ ...detail, observations: [...detail.observations] }));
+        expect(scrollToIndex).toHaveBeenCalledTimes(revealCount);
+
+        fireEvent.keyDown(options()[2], { key: "ArrowRight" });
+        fireEvent.keyDown(options()[2], { key: "ArrowLeft" });
+        expect(options()[2].getAttribute("aria-selected")).toBe("true");
+
+        fireEvent.keyDown(options()[2], { key: "Home" });
+        expect(options()[0].getAttribute("aria-selected")).toBe("true");
+        expect(document.activeElement).toBe(options()[0]);
+
+        fireEvent.keyDown(options()[0], { key: "ArrowUp" });
+        expect(options()[0].getAttribute("aria-selected")).toBe("true");
+
+        options()[1].focus();
+        fireEvent.keyDown(options()[1], { key: "Enter" });
+        expect(options()[1].getAttribute("aria-selected")).toBe("true");
+        expect(document.activeElement).toBe(options()[1]);
+
+        options()[2].focus();
+        fireEvent.keyDown(options()[2], { key: " " });
+        expect(options()[2].getAttribute("aria-selected")).toBe("true");
+        expect(document.activeElement).toBe(options()[2]);
+        expect(options().filter((option) => option.tabIndex === 0)).toEqual([options()[2]]);
     });
 });

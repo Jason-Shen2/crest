@@ -19,18 +19,24 @@ const TraceTreeRow = memo(function TraceTreeRow({
     node,
     treeMetadata,
     isSelected,
+    isTabStop,
     isCollapsed,
     onToggleCollapse,
     onSelect,
+    onNavigate,
+    itemRef,
     rootTotalCost,
     rootTotalDuration,
 }: {
     node: TraceNode;
     treeMetadata: TreeNodeMetadata;
     isSelected: boolean;
+    isTabStop: boolean;
     isCollapsed: boolean;
     onToggleCollapse: () => void;
     onSelect: () => void;
+    onNavigate: React.ComponentProps<typeof VirtualizedTreeNodeWrapper>["onNavigate"];
+    itemRef: React.ComponentProps<typeof VirtualizedTreeNodeWrapper>["itemRef"];
     rootTotalCost?: number;
     rootTotalDuration?: number;
 }) {
@@ -43,13 +49,17 @@ const TraceTreeRow = memo(function TraceTreeRow({
                 isCollapsed={isCollapsed}
                 onToggleCollapse={onToggleCollapse}
                 isSelected={isSelected}
+                isTabStop={isTabStop}
                 onSelect={onSelect}
+                onNavigate={onNavigate}
+                itemRef={itemRef}
             >
                 <SpanContent
                     node={node}
                     parentTotalCost={rootTotalCost}
                     parentTotalDuration={rootTotalDuration}
                     onSelect={onSelect}
+                    tabIndex={-1}
                 />
             </VirtualizedTreeNodeWrapper>
         </div>
@@ -88,14 +98,27 @@ export function TraceTree() {
             selectedNodeId={displayedSelectedNodeId}
             onToggleCollapse={toggleCollapsed}
             onSelectNode={(id) => setSelectedNodeId(id != null && nodeMap.get(id)?.type !== "TRACE" ? id : null)}
-            renderNode={({ node, treeMetadata, isSelected, isCollapsed, onToggleCollapse, onSelect }) => (
+            renderNode={({
+                node,
+                treeMetadata,
+                isSelected,
+                isTabStop,
+                isCollapsed,
+                onToggleCollapse,
+                onSelect,
+                onNavigate,
+                itemRef,
+            }) => (
                 <TraceTreeRow
                     node={node}
                     treeMetadata={treeMetadata}
                     isSelected={isSelected}
+                    isTabStop={isTabStop}
                     isCollapsed={isCollapsed}
                     onToggleCollapse={onToggleCollapse}
                     onSelect={onSelect}
+                    onNavigate={onNavigate}
+                    itemRef={itemRef}
                     rootTotalCost={rootTotalCost}
                     rootTotalDuration={rootTotalDuration}
                 />

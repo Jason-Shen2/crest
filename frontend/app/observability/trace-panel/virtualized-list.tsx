@@ -5,11 +5,21 @@
  */
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode, type Ref } from "react";
+
+import { getLinearNavigationAction } from "./roving-navigation";
 
 interface VirtualizedListProps<T> {
     items: T[];
-    renderItem: (params: { item: T; index: number; isSelected: boolean; onSelect: () => void }) => ReactNode;
+    renderItem: (params: {
+        item: T;
+        index: number;
+        isSelected: boolean;
+        isTabStop: boolean;
+        onSelect: () => void;
+        onNavigate: (event: KeyboardEvent<HTMLDivElement>) => void;
+        itemRef: Ref<HTMLDivElement>;
+    }) => ReactNode;
     selectedItemId?: string | null;
     onSelectItem: (id: string) => void;
     getItemId: (item: T) => string;
@@ -27,6 +37,8 @@ export function VirtualizedList<T>({
     overscan = 16,
 }: VirtualizedListProps<T>) {
     const parentRef = useRef<HTMLDivElement>(null);
+    const itemElementsRef = useRef(new Map<string, HTMLDivElement>());
+    const revealedItemIdRef = useRef<string | null>(null);
     const virtualizer = useVirtualizer({
         count: items.length,
         getScrollElement: () => parentRef.current,
@@ -45,6 +57,52 @@ export function VirtualizedList<T>({
                   key: getItemId(items[index]),
                   start: index * estimatedItemSize,
               }));
+    const selectedItemIsVisible = selectedItemId != null && items.some((item) => getItemId(item) === selectedItemId);
+    const focusItemId = selectedItemIsVisible ? selectedItemId : items.length > 0 ? getItemId(items[0]) : null;
+    const selectedVirtualItemKey =
+        focusItemId == null
+            ? null
+            : (renderedItems.find((item) => getItemId(items[item.index]) === focusItemId)?.key ?? null);
+
+    useLayoutEffect(() => {
+        if (!selectedItemIsVisible) {
+            revealedItemIdRef.current = null;
+            return;
+        }
+        if (revealedItemIdRef.current === selectedItemId) {
+            return;
+        }
+        revealedItemIdRef.current = selectedItemId;
+        const index = items.findIndex((item) => getItemId(item) === selectedItemId);
+        if (index >= 0) {
+            virtualizer.scrollToIndex(index, { align: "auto" });
+        }
+    }, [getItemId, items, selectedItemId, selectedItemIsVisible, virtualizer]);
+
+    useEffect(() => {
+        if (selectedItemId != null && selectedVirtualItemKey != null) {
+            itemElementsRef.current.get(selectedItemId)?.focus();
+        }
+    }, [selectedItemId, selectedVirtualItemKey]);
+
+    const registerItem = (itemId: string, element: HTMLDivElement | null) => {
+        if (element == null) {
+            itemElementsRef.current.delete(itemId);
+            return;
+        }
+        itemElementsRef.current.set(itemId, element);
+    };
+
+    const onNavigate = (event: KeyboardEvent<HTMLDivElement>, index: number) => {
+        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+            return;
+        }
+        event.preventDefault();
+        const action = getLinearNavigationAction(event.key, index, items.length);
+        if (action?.type === "select") {
+            onSelectItem(getItemId(items[action.index]));
+        }
+    };
 
     return (
         <div ref={parentRef} role="listbox" aria-label="Trace search results" className="h-full overflow-auto">
@@ -77,7 +135,10 @@ export function VirtualizedList<T>({
                                 item,
                                 index: virtualRow.index,
                                 isSelected,
+                                isTabStop: focusItemId === itemId,
                                 onSelect: () => onSelectItem(itemId),
+                                onNavigate: (event) => onNavigate(event, virtualRow.index),
+                                itemRef: (element) => registerItem(itemId, element),
                             })}
                         </div>
                     );

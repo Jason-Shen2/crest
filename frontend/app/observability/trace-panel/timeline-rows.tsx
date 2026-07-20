@@ -6,6 +6,7 @@ import type { VirtualItem } from "@tanstack/react-virtual";
 import { memo, useEffect, useRef, type KeyboardEvent, type RefObject, type UIEventHandler } from "react";
 
 import { cn } from "@/util/util";
+import { getTreeNavigationAction } from "./roving-navigation";
 import { TimelineBar } from "./timeline-bar";
 import { ScaleWidth } from "./timeline-calculations";
 import { TimelineGutterRow } from "./timeline-gutter-row";
@@ -161,62 +162,20 @@ export function TimelineRows({
         if (index < 0) {
             return;
         }
-
-        const selectIndex = (nextIndex: number) => {
-            const nextRow = rows[nextIndex];
-            if (nextRow != null) {
-                onSelect(nextRow.node.id);
-            }
-        };
-
-        if (event.key === "ArrowDown") {
-            event.preventDefault();
-            selectIndex(index + 1);
+        if (!["ArrowDown", "ArrowUp", "Home", "End", "ArrowLeft", "ArrowRight"].includes(event.key)) {
             return;
         }
-        if (event.key === "ArrowUp") {
-            event.preventDefault();
-            selectIndex(index - 1);
-            return;
-        }
-        if (event.key === "Home") {
-            event.preventDefault();
-            selectIndex(0);
-            return;
-        }
-        if (event.key === "End") {
-            event.preventDefault();
-            selectIndex(rows.length - 1);
-            return;
-        }
-
-        const row = rows[index];
-        if (event.key === "ArrowLeft") {
-            event.preventDefault();
-            if (row.node.children.length > 0 && !collapsedNodes.has(nodeId)) {
-                onToggleCollapse(nodeId);
-                return;
-            }
-            for (let parentIndex = index - 1; parentIndex >= 0; parentIndex -= 1) {
-                if (rows[parentIndex].depth < row.depth) {
-                    selectIndex(parentIndex);
-                    return;
-                }
-            }
-            return;
-        }
-        if (event.key === "ArrowRight") {
-            event.preventDefault();
-            if (row.node.children.length === 0) {
-                return;
-            }
-            if (collapsedNodes.has(nodeId)) {
-                onToggleCollapse(nodeId);
-                return;
-            }
-            if (rows[index + 1]?.depth > row.depth) {
-                selectIndex(index + 1);
-            }
+        event.preventDefault();
+        const action = getTreeNavigationAction(
+            event.key,
+            index,
+            rows.map((row) => ({ id: row.node.id, depth: row.depth, children: row.node.children })),
+            collapsedNodes
+        );
+        if (action?.type === "toggle") {
+            onToggleCollapse(action.id);
+        } else if (action?.type === "select") {
+            onSelect(rows[action.index].node.id);
         }
     };
 

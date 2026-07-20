@@ -8,7 +8,7 @@
  */
 
 import { ChevronRight } from "lucide-react";
-import { type ReactNode } from "react";
+import { type KeyboardEvent, type ReactNode, type Ref } from "react";
 
 import { cn } from "@/util/util";
 import { ItemBadge } from "./item-badge";
@@ -28,7 +28,10 @@ interface TreeNodeWrapperProps {
     isCollapsed: boolean;
     onToggleCollapse: () => void;
     isSelected: boolean;
+    isTabStop: boolean;
     onSelect: () => void;
+    onNavigate: (event: KeyboardEvent<HTMLDivElement>) => void;
+    itemRef: Ref<HTMLDivElement>;
     children: ReactNode;
     className?: string;
 }
@@ -40,7 +43,10 @@ export function VirtualizedTreeNodeWrapper({
     isCollapsed,
     onToggleCollapse,
     isSelected,
+    isTabStop,
     onSelect,
+    onNavigate,
+    itemRef,
     children,
     className,
 }: TreeNodeWrapperProps) {
@@ -51,9 +57,12 @@ export function VirtualizedTreeNodeWrapper({
 
     return (
         <div
+            ref={itemRef}
             role="treeitem"
+            aria-level={depth + 1}
             aria-selected={isSelected}
             aria-expanded={hasChildren ? !isCollapsed : undefined}
+            tabIndex={isTabStop ? 0 : -1}
             className={cn(
                 "relative flex w-full cursor-pointer px-0",
                 isSelected ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-fg-overlay-1/50",
@@ -63,6 +72,14 @@ export function VirtualizedTreeNodeWrapper({
                 if (!event.currentTarget.closest("[data-expand-button]")) {
                     onSelect();
                 }
+            }}
+            onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") {
+                    onNavigate(event);
+                    return;
+                }
+                event.preventDefault();
+                onSelect();
             }}
         >
             <div className="flex w-full pl-2">
@@ -106,6 +123,7 @@ export function VirtualizedTreeNodeWrapper({
                             type="button"
                             aria-expanded={!isCollapsed}
                             data-expand-button
+                            tabIndex={-1}
                             onClick={(event) => {
                                 event.stopPropagation();
                                 onToggleCollapse();

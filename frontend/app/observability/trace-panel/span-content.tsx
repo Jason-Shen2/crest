@@ -77,6 +77,7 @@ interface SpanContentProps {
     parentTotalDuration?: number;
     onSelect?: () => void;
     onHover?: () => void;
+    tabIndex?: number;
     className?: string;
 }
 
@@ -86,6 +87,7 @@ export function SpanContent({
     parentTotalDuration,
     onSelect,
     onHover,
+    tabIndex,
     className,
 }: SpanContentProps) {
     const totalCost = node.totalCost;
@@ -105,6 +107,7 @@ export function SpanContent({
     return (
         <button
             type="button"
+            tabIndex={tabIndex}
             onClick={(event) => {
                 event.stopPropagation();
                 onSelect?.();
