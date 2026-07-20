@@ -7,9 +7,9 @@ import { useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 import { TraceDataProvider, TraceSelectionProvider, useTraceSelection } from "./trace-context";
-import { TraceDetailPanel } from "./trace-detail-panel";
 import { TraceGraph } from "./trace-graph";
 import { TraceNavigationHeader } from "./trace-navigation-header";
+import { TracePanelDetail } from "./trace-panel-detail";
 import { TraceSearchList } from "./trace-search-list";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTree } from "./trace-tree";
@@ -71,7 +71,7 @@ function TracePanelContent() {
             <PanelResizeHandle className="w-px bg-border hover:bg-accent/60" />
             <Panel defaultSize={44} minSize={30}>
                 <div className="h-full overflow-auto bg-panel">
-                    <TraceDetailPanel />
+                    <TracePanelDetail />
                 </div>
             </Panel>
         </PanelGroup>
