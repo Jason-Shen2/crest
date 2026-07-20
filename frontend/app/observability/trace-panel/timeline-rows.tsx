@@ -137,12 +137,16 @@ export function TimelineRows({
     onScroll,
 }: TimelineRowsProps) {
     const treeItemsRef = useRef(new Map<string, HTMLDivElement>());
+    const selectedVirtualItemKey =
+        selectedNodeId == null
+            ? null
+            : (virtualItems.find((virtualItem) => rows[virtualItem.index]?.node.id === selectedNodeId)?.key ?? null);
 
     useEffect(() => {
-        if (selectedNodeId != null) {
+        if (selectedNodeId != null && selectedVirtualItemKey != null) {
             treeItemsRef.current.get(selectedNodeId)?.focus();
         }
-    }, [selectedNodeId, rows]);
+    }, [selectedNodeId, selectedVirtualItemKey]);
 
     const registerTreeItem = (nodeId: string, element: HTMLDivElement | null) => {
         if (element == null) {

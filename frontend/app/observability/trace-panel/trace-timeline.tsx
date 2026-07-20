@@ -75,7 +75,8 @@ export function TraceTimeline() {
             return;
         }
 
-        const { top, left } = computeSelectionScrollTarget({
+        const isInitial = previousSelectedNodeIdRef.current === undefined;
+        const { left } = computeSelectionScrollTarget({
             index,
             rowHeight: TimelineRowHeight,
             scrollTop: scrollElement.scrollTop,
@@ -83,11 +84,15 @@ export function TraceTimeline() {
             clientHeight: scrollElement.clientHeight,
             clientWidth: scrollElement.clientWidth,
             barStart: rows[index].startOffset,
-            isInitial: previousSelectedNodeIdRef.current === undefined,
+            isInitial,
         });
         previousSelectedNodeIdRef.current = selectedNodeId;
-        scrollElement.scrollTo({ top, left });
-    }, [collapsedNodes, roots, rows, selectedNodeId, toggleCollapsed]);
+        rowVirtualizer.scrollToIndex(index, {
+            align: isInitial ? "center" : "auto",
+            behavior: isInitial ? "auto" : "smooth",
+        });
+        scrollElement.scrollTo({ left, behavior: isInitial ? "auto" : "smooth" });
+    }, [collapsedNodes, roots, rows, rowVirtualizer, selectedNodeId, toggleCollapsed]);
 
     const handleScroll = useCallback<React.UIEventHandler<HTMLDivElement>>((event) => {
         const scrollElement = event.currentTarget;

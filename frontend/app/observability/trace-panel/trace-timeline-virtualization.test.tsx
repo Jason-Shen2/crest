@@ -177,9 +177,11 @@ beforeAll(() => {
         scrollTo: {
             configurable: true,
             value(options: ScrollToOptions) {
-                this.scrollTop = options.top ?? this.scrollTop;
-                this.scrollLeft = options.left ?? this.scrollLeft;
-                queueMicrotask(() => this.dispatchEvent(new Event("scroll")));
+                setTimeout(() => {
+                    this.scrollTop = options.top ?? this.scrollTop;
+                    this.scrollLeft = options.left ?? this.scrollLeft;
+                    this.dispatchEvent(new Event("scroll"));
+                }, 0);
             },
         },
         getBoundingClientRect: {
@@ -246,8 +248,9 @@ describe("trace timeline real virtualization", () => {
         act(() => fireEvent.click(screen.getByRole("button", { name: "Select remote observation" })));
 
         await waitFor(() => expect(screen.getByTestId("collapsed-nodes").textContent).toBe(""));
-        await waitFor(() => expect(screen.getByRole("treeitem", { name: "Observation 997" })).toBeTruthy());
+        const selectedRow = await screen.findByRole("treeitem", { name: "Observation 997" });
         expect(chart.scrollTop).toBeGreaterThan(0);
+        expect(document.activeElement).toBe(selectedRow);
     });
 
     it("re-expands ancestors collapsed after their selected descendant was revealed", async () => {

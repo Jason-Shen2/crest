@@ -411,13 +411,16 @@ describe("ObservabilityPanel trace state", () => {
         await waitFor(() => expect(view.getByRole("tree", { name: "Trace tree" })).toBeTruthy());
 
         fireEvent.click(view.getByRole("button", { name: /read_file/i }));
+        VirtualizerHarness.scrollToIndex.mockClear();
         fireEvent.click(view.getByRole("button", { name: "Timeline" }));
 
         await waitFor(() =>
-            expect(scrollTo).toHaveBeenCalledWith(
-                expect.objectContaining({ top: expect.any(Number), left: expect.any(Number) })
-            )
+            expect(VirtualizerHarness.scrollToIndex).toHaveBeenCalledWith(2, {
+                align: "center",
+                behavior: "auto",
+            })
         );
+        expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ left: expect.any(Number) }));
         expect(scrollTo).toHaveBeenCalledTimes(1);
     });
 
