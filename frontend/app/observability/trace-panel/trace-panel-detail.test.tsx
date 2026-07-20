@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { serializeDetailValue } from "./detail-value";
 import { IOPreview } from "./io-preview";
 
+const CopyScopeKey = "observation-current";
+
 afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
@@ -27,7 +29,7 @@ function deferred<T>() {
 
 describe("IOPreview", () => {
     it("does not render a section for a null value", () => {
-        render(<IOPreview label="Output" value={null} />);
+        render(<IOPreview label="Output" value={null} copyScopeKey={CopyScopeKey} />);
 
         expect(screen.queryByRole("region", { name: "Output" })).toBeNull();
     });
@@ -37,7 +39,7 @@ describe("IOPreview", () => {
         ["false", false, "false"],
         ["empty string", "", ""],
     ])("renders %s as a present value", (_, value, expected) => {
-        render(<IOPreview label="Output" value={value} />);
+        render(<IOPreview label="Output" value={value} copyScopeKey={CopyScopeKey} />);
 
         const section = screen.getByRole("region", { name: "Output" });
         expect(within(section).getByTestId("detail-value-preview").textContent).toBe(expected);
@@ -49,7 +51,7 @@ describe("IOPreview", () => {
         const stringify = vi.spyOn(JSON, "stringify");
         const value = { output: "complete value" };
 
-        render(<IOPreview label="Output" value={value} />);
+        render(<IOPreview label="Output" value={value} copyScopeKey={CopyScopeKey} />);
         expect(stringify).not.toHaveBeenCalled();
 
         fireEvent.click(screen.getByRole("button", { name: "Copy Output" }));
@@ -63,7 +65,7 @@ describe("IOPreview", () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
         vi.stubGlobal("navigator", { clipboard: { writeText } });
         const value = { output: "x".repeat(20_000) };
-        render(<IOPreview label="Output" value={value} />);
+        render(<IOPreview label="Output" value={value} copyScopeKey={CopyScopeKey} />);
 
         const section = screen.getByRole("region", { name: "Output" });
         expect(within(section).getByTestId("detail-value-preview").textContent?.length).toBeLessThanOrEqual(10_001);
@@ -78,7 +80,7 @@ describe("IOPreview", () => {
         vi.stubGlobal("navigator", {
             clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
         });
-        render(<IOPreview label="Output" value={{ ok: true }} />);
+        render(<IOPreview label="Output" value={{ ok: true }} copyScopeKey={CopyScopeKey} />);
 
         fireEvent.click(screen.getByRole("button", { name: "Copy Output" }));
 
@@ -87,7 +89,7 @@ describe("IOPreview", () => {
 
     it("reports an unavailable clipboard API as a failure", async () => {
         vi.stubGlobal("navigator", {});
-        render(<IOPreview label="Output" value={{ ok: true }} />);
+        render(<IOPreview label="Output" value={{ ok: true }} copyScopeKey={CopyScopeKey} />);
 
         fireEvent.click(screen.getByRole("button", { name: "Copy Output" }));
 
@@ -98,10 +100,10 @@ describe("IOPreview", () => {
         const oldCopy = deferred<void>();
         const writeText = vi.fn().mockReturnValueOnce(oldCopy.promise).mockResolvedValueOnce(undefined);
         vi.stubGlobal("navigator", { clipboard: { writeText } });
-        const view = render(<IOPreview label="Output" value={{ version: "old" }} />);
+        const view = render(<IOPreview label="Output" value={{ version: "old" }} copyScopeKey="observation-old" />);
 
         fireEvent.click(screen.getByRole("button", { name: "Copy Output" }));
-        view.rerender(<IOPreview label="Output" value={{ version: "new" }} />);
+        view.rerender(<IOPreview label="Output" value={{ version: "new" }} copyScopeKey="observation-new" />);
         await act(() => oldCopy.resolve());
 
         expect(screen.queryByText("Copied")).toBeNull();
@@ -114,10 +116,10 @@ describe("IOPreview", () => {
         const oldCopy = deferred<void>();
         const writeText = vi.fn().mockReturnValueOnce(oldCopy.promise);
         vi.stubGlobal("navigator", { clipboard: { writeText } });
-        const view = render(<IOPreview label="Output" value={{ result: "same" }} />);
+        const view = render(<IOPreview label="Output" value={{ result: "same" }} copyScopeKey="observation-old" />);
 
         fireEvent.click(screen.getByRole("button", { name: "Copy Output" }));
-        view.rerender(<IOPreview label="Output" value={{ result: "same" }} />);
+        view.rerender(<IOPreview label="Output" value={{ result: "same" }} copyScopeKey="observation-new" />);
         await act(() => oldCopy.resolve());
 
         expect(screen.queryByText("Copied")).toBeNull();
@@ -136,21 +138,34 @@ describe("IOPreview", () => {
         expect(screen.queryByText("Copied")).toBeNull();
     });
 
+    it("ignores an old copy failure after the selection changes with the same string value", async () => {
+        const oldCopy = deferred<void>();
+        const writeText = vi.fn().mockReturnValueOnce(oldCopy.promise);
+        vi.stubGlobal("navigator", { clipboard: { writeText } });
+        const view = render(<IOPreview label="Output" value="same" copyScopeKey="observation-old" />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy Output" }));
+        view.rerender(<IOPreview label="Output" value="same" copyScopeKey="observation-new" />);
+        await act(() => oldCopy.reject(new Error("denied")));
+
+        expect(screen.queryByText("Copy failed")).toBeNull();
+    });
+
     it("ignores an old copy failure after the value changes", async () => {
         const oldCopy = deferred<void>();
         const writeText = vi.fn().mockReturnValueOnce(oldCopy.promise).mockResolvedValueOnce(undefined);
         vi.stubGlobal("navigator", { clipboard: { writeText } });
-        const view = render(<IOPreview label="Output" value={{ version: "old" }} />);
+        const view = render(<IOPreview label="Output" value={{ version: "old" }} copyScopeKey="observation-old" />);
 
         fireEvent.click(screen.getByRole("button", { name: "Copy Output" }));
-        view.rerender(<IOPreview label="Output" value={{ version: "new" }} />);
+        view.rerender(<IOPreview label="Output" value={{ version: "new" }} copyScopeKey="observation-new" />);
         await act(() => oldCopy.reject(new Error("denied")));
 
         expect(screen.queryByText("Copy failed")).toBeNull();
     });
 
     it("does not expose media or comments controls", () => {
-        render(<IOPreview label="Output" value={{ ok: true }} />);
+        render(<IOPreview label="Output" value={{ ok: true }} copyScopeKey={CopyScopeKey} />);
 
         expect(screen.queryByText(/media/i)).toBeNull();
         expect(screen.queryByText(/comment/i)).toBeNull();

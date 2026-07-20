@@ -13,7 +13,7 @@ export interface IOPreviewProps {
     label: string;
     value: unknown;
     maxPreviewCharacters?: number;
-    copyScopeKey?: string;
+    copyScopeKey: string;
 }
 
 export function IOPreview({
