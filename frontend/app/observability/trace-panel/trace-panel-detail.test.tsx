@@ -11,6 +11,7 @@ import { serializeDetailValue } from "./detail-value";
 import { IOPreview } from "./io-preview";
 import { ObservationDetailView } from "./observation-detail-view";
 import { TraceDataProvider, TraceSelectionProvider, useTraceSelection } from "./trace-context";
+import { TraceDetailView } from "./trace-detail-view";
 import { TracePanelDetail } from "./trace-panel-detail";
 
 const CopyScopeKey = "observation-current";
@@ -347,5 +348,99 @@ describe("ObservationDetailView error status", () => {
         const header = screen.getByRole("banner", { name: "Observation header" });
         expect(within(header).getByText("ERROR")).not.toBeNull();
         expect(within(header).getByText("File does not exist")).not.toBeNull();
+    });
+});
+
+describe("Detail JSON view", () => {
+    it("bounds trace JSON during render and copies the complete value explicitly", () => {
+        const detail = makeDetail();
+        detail.trace.metadata = { payload: "x".repeat(20_000) };
+        const completeJson = serializeDetailValue(detail.trace);
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        vi.stubGlobal("navigator", { clipboard: { writeText } });
+        const stringify = vi.spyOn(JSON, "stringify");
+
+        render(<TraceDetailView detail={detail} />);
+        fireEvent.click(screen.getByRole("tab", { name: "JSON" }));
+
+        expect(stringify).not.toHaveBeenCalledWith(detail.trace, null, 2);
+        expect(screen.getByTestId("detail-json-preview").textContent?.length).toBeLessThanOrEqual(10_001);
+        expect(within(screen.getByRole("tabpanel")).getByText("Preview truncated")).not.toBeNull();
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy JSON" }));
+        expect(writeText).toHaveBeenCalledWith(completeJson);
+    });
+
+    it("bounds observation JSON during render and copies the complete value explicitly", () => {
+        const observation = makeObservation({ metadata: { payload: "x".repeat(20_000) } });
+        const completeJson = serializeDetailValue(observation);
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        vi.stubGlobal("navigator", { clipboard: { writeText } });
+        const stringify = vi.spyOn(JSON, "stringify");
+
+        render(<ObservationDetailView trace={makeDetail().trace} observation={observation} />);
+        fireEvent.click(screen.getByRole("tab", { name: "JSON" }));
+
+        expect(stringify).not.toHaveBeenCalledWith(observation, null, 2);
+        expect(screen.getByTestId("detail-json-preview").textContent?.length).toBeLessThanOrEqual(10_001);
+        expect(within(screen.getByRole("tabpanel")).getByText("Preview truncated")).not.toBeNull();
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy JSON" }));
+        expect(writeText).toHaveBeenCalledWith(completeJson);
+    });
+});
+
+function renderDetailView(kind: "trace" | "observation") {
+    return kind === "trace"
+        ? render(<TraceDetailView detail={makeDetail()} />)
+        : render(<ObservationDetailView trace={makeDetail().trace} observation={makeObservation()} />);
+}
+
+describe.each(["trace", "observation"] as const)("%s detail tabs", (kind) => {
+    it("connects tabs to labelled tabpanels with roving tab stops", () => {
+        renderDetailView(kind);
+        const previewTab = screen.getByRole("tab", { name: "Preview" });
+        const jsonTab = screen.getByRole("tab", { name: "JSON" });
+
+        expect(previewTab.tabIndex).toBe(0);
+        expect(jsonTab.tabIndex).toBe(-1);
+        expect(previewTab.id).not.toBe("");
+        expect(jsonTab.id).not.toBe("");
+
+        for (const tab of [previewTab, jsonTab]) {
+            const panelId = tab.getAttribute("aria-controls");
+            expect(panelId).not.toBeNull();
+            const panel = document.getElementById(panelId!);
+            expect(panel?.getAttribute("role")).toBe("tabpanel");
+            expect(panel?.getAttribute("aria-labelledby")).toBe(tab.id);
+        }
+    });
+
+    it("automatically activates tabs with ArrowLeft, ArrowRight, Home, and End", () => {
+        renderDetailView(kind);
+        const previewTab = screen.getByRole("tab", { name: "Preview" });
+        const jsonTab = screen.getByRole("tab", { name: "JSON" });
+
+        previewTab.focus();
+        fireEvent.keyDown(previewTab, { key: "ArrowRight" });
+        expect(document.activeElement).toBe(jsonTab);
+        expect(jsonTab.getAttribute("aria-selected")).toBe("true");
+        expect(jsonTab.tabIndex).toBe(0);
+
+        fireEvent.keyDown(jsonTab, { key: "ArrowRight" });
+        expect(document.activeElement).toBe(previewTab);
+        expect(previewTab.getAttribute("aria-selected")).toBe("true");
+
+        fireEvent.keyDown(previewTab, { key: "ArrowLeft" });
+        expect(document.activeElement).toBe(jsonTab);
+        expect(jsonTab.getAttribute("aria-selected")).toBe("true");
+
+        fireEvent.keyDown(jsonTab, { key: "Home" });
+        expect(document.activeElement).toBe(previewTab);
+        expect(previewTab.getAttribute("aria-selected")).toBe("true");
+
+        fireEvent.keyDown(previewTab, { key: "End" });
+        expect(document.activeElement).toBe(jsonTab);
+        expect(jsonTab.getAttribute("aria-selected")).toBe("true");
     });
 });

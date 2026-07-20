@@ -4,10 +4,10 @@
 
 import { useState, type ReactNode } from "react";
 
+import { DetailJsonView } from "./detail-json-view";
 import { DetailSection } from "./detail-primitives";
+import { DetailTabs, type DetailTab } from "./detail-tabs";
 import { IOPreview } from "./io-preview";
-
-type DetailTab = "preview" | "json";
 
 function finiteValues(record: Record<string, number>): [string, number][] {
     return Object.entries(record ?? {}).filter((entry): entry is [string, number] => Number.isFinite(entry[1]));
@@ -38,25 +38,6 @@ function Metric({ children }: { children: ReactNode }) {
         <span className="rounded-full border border-border px-2 py-1 text-[10px] text-muted-foreground">
             {children}
         </span>
-    );
-}
-
-function DetailTabs({ value, onChange }: { value: DetailTab; onChange: (value: DetailTab) => void }) {
-    return (
-        <div role="tablist" aria-label="Observation detail view" className="flex border-b border-border px-3">
-            {(["preview", "json"] as const).map((tab) => (
-                <button
-                    key={tab}
-                    type="button"
-                    role="tab"
-                    aria-selected={value === tab}
-                    className="cursor-pointer border-b-2 border-transparent px-3 py-2 text-xs capitalize text-muted-foreground aria-selected:border-accent aria-selected:text-foreground"
-                    onClick={() => onChange(tab)}
-                >
-                    {tab === "json" ? "JSON" : "Preview"}
-                </button>
-            ))}
-        </div>
     );
 }
 
@@ -112,9 +93,11 @@ export function ObservationDetailView({ observation }: { trace: Trace; observati
                     {cost == null ? null : <Metric>{`$${cost}`}</Metric>}
                 </div>
             </header>
-            <DetailTabs value={tab} onChange={setTab} />
-            <div className="min-h-0 flex-1 overflow-auto">
-                {tab === "preview" ? (
+            <DetailTabs
+                label="Observation detail view"
+                value={tab}
+                onChange={setTab}
+                preview={
                     <div className="flex flex-col gap-3 p-3">
                         <IOPreview label="Input" value={observation.input} copyScopeKey={observation.id} />
                         <IOPreview label="Output" value={observation.output} copyScopeKey={observation.id} />
@@ -124,12 +107,9 @@ export function ObservationDetailView({ observation }: { trace: Trace; observati
                         <KeyValueSection label="Usage" entries={usageEntries} />
                         <KeyValueSection label="Cost" entries={costEntries} />
                     </div>
-                ) : (
-                    <pre className="m-3 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-fg-overlay-1/20 p-3 font-mono text-[11px]">
-                        {JSON.stringify(observation, null, 2)}
-                    </pre>
-                )}
-            </div>
+                }
+                json={<DetailJsonView value={observation} copyScopeKey={observation.id} />}
+            />
         </div>
     );
 }

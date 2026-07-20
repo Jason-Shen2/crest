@@ -17,11 +17,11 @@ export function DetailSection({ label, action, children }: { label: string; acti
     );
 }
 
-export function DetailValue({ text, truncated }: { text: string; truncated: boolean }) {
+export function DetailValue({ text, truncated, testId }: { text: string; truncated: boolean; testId?: string }) {
     return (
         <>
             <pre
-                data-testid="detail-value-preview"
+                data-testid={testId ?? "detail-value-preview"}
                 className="max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed"
             >
                 {text}
