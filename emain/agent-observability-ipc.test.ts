@@ -6,9 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as electron from "electron";
 import {
     _resetAgentObservabilityForTests,
-    TraceEventCoalescer,
     attachAgentObservability,
     registerAgentObservabilityIpcHandlers,
+    TraceEventCoalescer,
 } from "./agent-observability-ipc";
 import type { AgentHarness } from "./agent/harness/agent-harness";
 import { TraceBuilder } from "./agent/observability/trace-builder";
@@ -38,7 +38,10 @@ interface Coalescer {
     dispose(): void;
 }
 
-function makeCoalescer(saveTraceDetail: (detail: TraceDetail) => void, publishTraceDetail: (detail: TraceDetail) => void): Coalescer {
+function makeCoalescer(
+    saveTraceDetail: (detail: TraceDetail) => void,
+    publishTraceDetail: (detail: TraceDetail) => void
+): Coalescer {
     return new TraceEventCoalescer({
         builder: new TraceBuilder(),
         saveTraceDetail,
@@ -189,9 +192,9 @@ describe("agent observability IPC scope", () => {
             handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
         }
 
-        await expect(Promise.resolve().then(() => handlers.get("agent-observability:list-traces")?.({}))).rejects.toThrow(
-            /sessionId must be a non-empty string/
-        );
+        await expect(
+            Promise.resolve().then(() => handlers.get("agent-observability:list-traces")?.({}))
+        ).rejects.toThrow(/sessionId must be a non-empty string/);
         await expect(
             Promise.resolve().then(() => handlers.get("agent-observability:list-traces")?.({}, "   "))
         ).rejects.toThrow(/sessionId must be a non-empty string/);

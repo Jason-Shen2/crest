@@ -46,6 +46,7 @@ vi.mock("../frontend/app/store/wshclientapi", () => ({
 }));
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
+import { RpcApi } from "../frontend/app/store/wshclientapi";
 import {
     _resetAgentIpcForTests,
     abortAgentSessionForIpc,
@@ -59,13 +60,12 @@ import {
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
-import { SqliteSessionRepo } from "./agent/harness/session/sqlite-repo";
 import { AgentSessionRuntime } from "./agent/agent-session-runtime";
+import { buildAgentHarnessHost } from "./agent/harness-factory";
+import { SqliteSessionRepo } from "./agent/harness/session/sqlite-repo";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "./agent/sessions";
 import type { AgentMessage } from "./agent/types";
 import { getModel } from "./ai";
-import { buildAgentHarnessHost } from "./agent/harness-factory";
-import { RpcApi } from "../frontend/app/store/wshclientapi";
 
 function user(text: string): AgentMessage {
     return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;
@@ -513,11 +513,12 @@ describe("agent-ipc command helpers", () => {
         await expect(abortAgentSessionForIpc(outside)).rejects.toThrow(/outside sessions directory/);
         await expect(unsubscribeAgentSessionForIpc(1, outside)).rejects.toThrow(/outside sessions directory/);
         onHandlers.get("agent:subscribe")?.({ sender }, outside);
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(errorSpy).toHaveBeenCalledWith(
-            "[agent-ipc] subscribe validation error:",
-            expect.objectContaining({ message: expect.stringMatching(/outside sessions directory/) })
-        );
+        await vi.waitFor(() => {
+            expect(errorSpy).toHaveBeenCalledWith(
+                "[agent-ipc] subscribe validation error:",
+                expect.objectContaining({ message: expect.stringMatching(/outside sessions directory/) })
+            );
+        });
         errorSpy.mockRestore();
         expect(sender.send).not.toHaveBeenCalled();
     });
