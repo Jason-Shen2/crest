@@ -10,10 +10,28 @@ import { flattenTimelineRows } from "./timeline-flattening";
 import { TimelineRows } from "./timeline-rows";
 import { TimelineScale } from "./timeline-scale";
 import { resolveTraceSelectionNodeId, useTraceData, useTraceSelection } from "./trace-context";
+import type { TraceNode } from "./types";
 
 const TimelineGutterWidth = 208;
 const TimelineRowHeight = 26;
 const TimelineOverscan = 16;
+
+function findCollapsedAncestors(roots: TraceNode[], selectedNodeId: string, collapsedNodes: Set<string>): string[] {
+    const stack = roots.map((node) => ({ node, ancestors: [] as string[] }));
+    while (stack.length > 0) {
+        const current = stack.pop();
+        if (current == null) {
+            continue;
+        }
+        if (current.node.id === selectedNodeId) {
+            return current.ancestors.filter((id) => collapsedNodes.has(id));
+        }
+        for (const child of current.node.children) {
+            stack.push({ node: child, ancestors: [...current.ancestors, current.node.id] });
+        }
+    }
+    return [];
+}
 
 export function TraceTimeline() {
     const { roots, nodeMap, observationMap, traceStartTime, traceDuration } = useTraceData();
@@ -47,8 +65,14 @@ export function TraceTimeline() {
         }
 
         const index = rows.findIndex((row) => row.node.id === selectedNodeId);
+        if (index < 0) {
+            for (const ancestorId of findCollapsedAncestors(roots, selectedNodeId, collapsedNodes)) {
+                toggleCollapsed(ancestorId);
+            }
+            return;
+        }
         const scrollElement = scrollRef.current;
-        if (index < 0 || scrollElement == null) {
+        if (scrollElement == null) {
             return;
         }
 
@@ -64,7 +88,7 @@ export function TraceTimeline() {
         });
         previousSelectedNodeIdRef.current = selectedNodeId;
         scrollElement.scrollTo({ top, left });
-    }, [rows, selectedNodeId]);
+    }, [collapsedNodes, roots, rows, selectedNodeId, toggleCollapsed]);
 
     const handleScroll = useCallback<React.UIEventHandler<HTMLDivElement>>((event) => {
         const scrollElement = event.currentTarget;
