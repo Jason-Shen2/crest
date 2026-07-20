@@ -3,10 +3,18 @@
 ## 状态
 
 - 日期：2026-07-20
-- 状态：已实施，等待最终验证
+- 状态：已实施并通过自动化验证；真实 Electron 视觉验收受本机 sandbox 阻断
 - 上游参考：`langfuse/langfuse@1cb1bbcf6b269fd887a6667796f1a15417cca336`
 - 目标模块：Timeline、Trace Detail、Observation Detail、Desktop Layout
 - 数据协议：`TraceDetail`
+
+### 验证记录
+
+- Trace Panel、Observability 与 Agent Runtime 集成测试：`287/287` 通过。
+- Observability 类型契约、ESLint、Prettier、`git diff --check` 通过。
+- `npm run build:dev` 通过。
+- 真实 UI 启动被既有 Crest Dev 的 single-instance lock 和 TRAE sandbox 对
+  `~/Library/Application Support/crest-dev/waveapp.log` 的访问限制阻断，因此未将旧 5173 实例视为本分支视觉验收结果。
 
 ## 背景
 
