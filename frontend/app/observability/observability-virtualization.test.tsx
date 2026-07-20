@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
-import { createRef, type ComponentProps } from "react";
+import { createRef, useState, type ComponentProps } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
@@ -159,6 +159,31 @@ function scrollTimeline(timeline: HTMLElement, top: number) {
     });
 }
 
+function ClickExpandableTimeline({ detail }: { detail: TraceDetail }) {
+    const [expandedObservationIds, setExpandedObservationIds] = useState(new Set<string>());
+    const [selectedObservationId, setSelectedObservationId] = useState<string | undefined>();
+
+    return (
+        <ObservationTimeline
+            {...makeProps(detail)}
+            expandedObservationIds={expandedObservationIds}
+            selectedObservationId={selectedObservationId}
+            onSelectObservation={setSelectedObservationId}
+            onToggleExpanded={(observationId) =>
+                setExpandedObservationIds((current) => {
+                    const next = new Set(current);
+                    if (next.has(observationId)) {
+                        next.delete(observationId);
+                    } else {
+                        next.add(observationId);
+                    }
+                    return next;
+                })
+            }
+        />
+    );
+}
+
 beforeAll(() => {
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal("matchMedia", () => ({ matches: true }));
@@ -304,6 +329,21 @@ describe("ObservationTimeline real virtualization", () => {
             expect(shiftedSecondRow).toBeTruthy();
             expect(rowStart(shiftedSecondRow!)).toBe(rowStart(expandedFirstRow!) + ExpandedRowHeight);
         });
+    });
+
+    it("remeasures a row expanded by click before the next row can overlap", async () => {
+        const detail = makeTraceDetail();
+        const view = render(<ClickExpandableTimeline detail={detail} />);
+        await waitFor(() => expect(view.container.querySelectorAll("[data-index]").length).toBeGreaterThan(1));
+
+        fireEvent.click(view.getByRole("button", { name: /Observation 0/ }));
+
+        const firstRow = view.container.querySelector<HTMLElement>('[data-index="0"]');
+        const secondRow = view.container.querySelector<HTMLElement>('[data-index="1"]');
+        expect(firstRow).toBeTruthy();
+        expect(secondRow).toBeTruthy();
+        expect(firstRow?.getBoundingClientRect().height).toBe(ExpandedRowHeight);
+        expect(rowStart(secondRow!)).toBe(rowStart(firstRow!) + ExpandedRowHeight);
     });
 
     it("holds position while follow-live is paused and reaches an appended tail after resuming", async () => {

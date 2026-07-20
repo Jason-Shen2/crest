@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useMemo, useRef, type KeyboardEvent, type RefObject, type UIEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type RefObject, type UIEvent } from "react";
 
 import {
     filterTimelineRows,
@@ -118,6 +118,7 @@ export function ObservationTimeline({
     const scrollRef = useRef<HTMLDivElement>(null);
     const autoScrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
     const programmaticFollowScrollRef = useRef(false);
+    const rowElementsRef = useRef(new Map<string, HTMLDivElement>());
     const rowsCacheRef = useRef<TimelineRowsCache>(undefined);
     const rowsCache = useMemo(() => buildTimelineRows(detail, rowsCacheRef.current), [detail]);
     rowsCacheRef.current = rowsCache;
@@ -139,8 +140,10 @@ export function ObservationTimeline({
           )
         : "";
 
-    useEffect(() => {
-        rowVirtualizer.measure();
+    useLayoutEffect(() => {
+        for (const element of rowElementsRef.current.values()) {
+            rowVirtualizer.measureElement(element);
+        }
     }, [expandedObservationIds, renderInlineDetails, rowVirtualizer]);
 
     useEffect(() => {
@@ -253,7 +256,14 @@ export function ObservationTimeline({
                         return (
                             <div
                                 key={row.observation.id}
-                                ref={rowVirtualizer.measureElement}
+                                ref={(element) => {
+                                    if (element) {
+                                        rowElementsRef.current.set(row.observation.id, element);
+                                        rowVirtualizer.measureElement(element);
+                                        return;
+                                    }
+                                    rowElementsRef.current.delete(row.observation.id);
+                                }}
                                 className="absolute left-0 top-0 w-full pb-1"
                                 data-index={virtualItem.index}
                                 style={{ transform: `translateY(${virtualItem.start}px)` }}
