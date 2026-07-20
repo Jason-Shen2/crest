@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TraceDataProvider, TraceSelectionProvider, useTraceData, useTraceSelection } from "./trace-context";
+import { TraceNavigationHeader } from "./trace-navigation-header";
 import { TraceSearchList } from "./trace-search-list";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTree } from "./trace-tree";
@@ -196,6 +197,15 @@ function SearchKeyboardView() {
             <button type="button" onClick={() => setSearchQuery("result")}>
                 search results
             </button>
+            <TraceSearchList />
+        </>
+    );
+}
+
+function SearchHeaderView() {
+    return (
+        <>
+            <TraceNavigationHeader />
             <TraceSearchList />
         </>
     );
@@ -399,5 +409,20 @@ describe("trace context", () => {
         expect(options()[2].getAttribute("aria-selected")).toBe("true");
         expect(document.activeElement).toBe(options()[2]);
         expect(options().filter((option) => option.tabIndex === 0)).toEqual([options()[2]]);
+    });
+
+    it("keeps the real header search input focused while typing each character", () => {
+        render(
+            <ViewHarness detail={makeNestedDetail()}>
+                <SearchHeaderView />
+            </ViewHarness>
+        );
+        const input = screen.getByRole("textbox", { name: "Search trace" });
+        input.focus();
+
+        for (const query of ["r", "re", "res", "resu", "resul", "result"]) {
+            fireEvent.change(input, { target: { value: query } });
+            expect(document.activeElement).toBe(input);
+        }
     });
 });

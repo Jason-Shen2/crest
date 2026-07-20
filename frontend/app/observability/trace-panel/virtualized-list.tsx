@@ -43,6 +43,8 @@ export function VirtualizedList<T>({
     const parentRef = useRef<HTMLDivElement>(null);
     const itemElementsRef = useRef(new Map<string, HTMLDivElement>());
     const revealedItemIdRef = useRef<string | null>(null);
+    const previousSelectedItemIdRef = useRef(selectedItemId);
+    const pendingFocusItemIdRef = useRef<string | null>(null);
     const virtualizer = useVirtualizer({
         count: items.length,
         getScrollElement: () => parentRef.current,
@@ -69,6 +71,11 @@ export function VirtualizedList<T>({
             : (renderedItems.find((item) => getItemId(items[item.index]) === focusItemId)?.key ?? null);
 
     useLayoutEffect(() => {
+        const selectionChanged = previousSelectedItemIdRef.current !== selectedItemId;
+        previousSelectedItemIdRef.current = selectedItemId;
+        if (selectionChanged) {
+            pendingFocusItemIdRef.current = selectedItemId ?? null;
+        }
         if (!selectedItemIsVisible) {
             revealedItemIdRef.current = null;
             return;
@@ -84,9 +91,11 @@ export function VirtualizedList<T>({
     }, [getItemId, items, selectedItemId, selectedItemIsVisible, virtualizer]);
 
     useEffect(() => {
-        if (selectedItemId != null && selectedVirtualItemKey != null) {
-            itemElementsRef.current.get(selectedItemId)?.focus();
+        if (selectedItemId == null || pendingFocusItemIdRef.current !== selectedItemId || selectedVirtualItemKey == null) {
+            return;
         }
+        itemElementsRef.current.get(selectedItemId)?.focus();
+        pendingFocusItemIdRef.current = null;
     }, [selectedItemId, selectedVirtualItemKey]);
 
     const registerItem = (itemId: string, element: HTMLDivElement | null) => {
@@ -97,6 +106,12 @@ export function VirtualizedList<T>({
         itemElementsRef.current.set(itemId, element);
     };
 
+    const onSelect = (itemId: string) => {
+        previousSelectedItemIdRef.current = itemId;
+        pendingFocusItemIdRef.current = null;
+        onSelectItem(itemId);
+    };
+
     const onNavigate = (event: KeyboardEvent<HTMLDivElement>, index: number) => {
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
             return;
@@ -104,7 +119,9 @@ export function VirtualizedList<T>({
         event.preventDefault();
         const action = getLinearNavigationAction(event.key, index, items.length);
         if (action?.type === "select") {
-            onSelectItem(getItemId(items[action.index]));
+            const itemId = getItemId(items[action.index]);
+            pendingFocusItemIdRef.current = itemId;
+            onSelectItem(itemId);
         }
     };
 
@@ -140,7 +157,7 @@ export function VirtualizedList<T>({
                                 index: virtualRow.index,
                                 isSelected,
                                 isTabStop: focusItemId === itemId,
-                                onSelect: () => onSelectItem(itemId),
+                                onSelect: () => onSelect(itemId),
                                 onNavigate: (event) => onNavigate(event, virtualRow.index),
                                 itemRef: (element) => registerItem(itemId, element),
                             })}
