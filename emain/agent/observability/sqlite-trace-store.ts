@@ -10,18 +10,20 @@ import { TraceStoreSchemaSql } from "./trace-store-schema";
 import {
     observationFromRow,
     observationToRow,
+    scoreFromRow,
     scoreToRow,
     traceFromRow,
     traceToRow,
     type ObservationRow,
+    type ScoreRow,
     type TraceRow,
 } from "./trace-store-rows";
-import type { TraceGraph } from "./types";
+import type { TraceDetail } from "./types";
 
 export interface TraceStore {
-    saveGraph(graph: TraceGraph): void;
-    listTraces(sessionId?: string): TraceGraph["trace"][];
-    getTraceGraph(traceId: string, sessionId?: string): TraceGraph | undefined;
+    saveTraceDetail(detail: TraceDetail): void;
+    listTraces(sessionId?: string): TraceDetail["trace"][];
+    getTraceDetail(traceId: string, sessionId?: string): TraceDetail | undefined;
 }
 
 export function defaultTraceStorePath(): string {
@@ -37,8 +39,8 @@ export class SqliteTraceStore implements TraceStore {
         this.db.exec(TraceStoreSchemaSql);
     }
 
-    saveGraph(graph: TraceGraph): void {
-        const trace = traceToRow(graph.trace);
+    saveTraceDetail(detail: TraceDetail): void {
+        const trace = traceToRow(detail.trace);
         this.db.run(
             `INSERT OR REPLACE INTO traces
              (id, name, session_id, timestamp, ended_at, environment, tags, release, version, input, output, metadata, user_id, status)
@@ -59,7 +61,7 @@ export class SqliteTraceStore implements TraceStore {
             trace.status
         );
 
-        for (const observation of graph.observations.map(observationToRow)) {
+        for (const observation of detail.observations.map(observationToRow)) {
             this.db.run(
                 `INSERT OR REPLACE INTO observations
                  (id, trace_id, parent_observation_id, type, name, start_time, end_time, level, status_message, version, model, provider, input, output, metadata, latency, time_to_first_token, usage_details, cost_details, tool_calls, tool_call_names)
@@ -88,7 +90,7 @@ export class SqliteTraceStore implements TraceStore {
             );
         }
 
-        for (const score of graph.scores.map(scoreToRow)) {
+        for (const score of [...detail.scores, ...detail.corrections].map(scoreToRow)) {
             this.db.run(
                 `INSERT OR REPLACE INTO scores
                  (id, trace_id, observation_id, name, source, data_type, value, comment)
@@ -105,7 +107,7 @@ export class SqliteTraceStore implements TraceStore {
         }
     }
 
-    listTraces(sessionId?: string): TraceGraph["trace"][] {
+    listTraces(sessionId?: string): TraceDetail["trace"][] {
         const rows =
             sessionId == null
                 ? this.db.all<TraceRow>("SELECT * FROM traces ORDER BY timestamp DESC")
@@ -113,7 +115,7 @@ export class SqliteTraceStore implements TraceStore {
         return rows.map(traceFromRow);
     }
 
-    getTraceGraph(traceId: string, sessionId?: string): TraceGraph | undefined {
+    getTraceDetail(traceId: string, sessionId?: string): TraceDetail | undefined {
         const traceRow =
             sessionId == null
                 ? this.db.get<TraceRow>("SELECT * FROM traces WHERE id = ?", traceId)
@@ -123,10 +125,13 @@ export class SqliteTraceStore implements TraceStore {
             "SELECT * FROM observations WHERE trace_id = ? ORDER BY start_time ASC",
             traceId
         );
+        const scoreRows = this.db.all<ScoreRow>("SELECT * FROM scores WHERE trace_id = ? ORDER BY name ASC", traceId);
+        const allScores = scoreRows.map(scoreFromRow);
         return {
             trace: traceFromRow(traceRow),
             observations: observationRows.map(observationFromRow),
-            scores: [],
+            scores: allScores.filter((score) => score.dataType !== "CORRECTION"),
+            corrections: allScores.filter((score) => score.dataType === "CORRECTION"),
         };
     }
 

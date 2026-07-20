@@ -15,7 +15,7 @@ const ToneClasses: Record<ObservationTone, string> = {
 };
 
 interface ObservationRowProps {
-    observation: AgentObservabilityObservation;
+    observation: Observation;
     presentation: ObservationPresentation;
     relativeTime: string;
     traceTimestamp: string;

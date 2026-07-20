@@ -4,11 +4,11 @@
 import { describe, expect, it } from "vitest";
 
 import { observationFromRow, observationToRow, traceFromRow, traceToRow } from "./trace-store-rows";
-import type { LangfuseObservation, LangfuseTrace } from "./types";
+import type { Observation, Trace } from "./types";
 
 describe("trace store row serialization", () => {
     it("round-trips trace JSON fields without changing Langfuse-compatible keys", () => {
-        const trace: LangfuseTrace = {
+        const trace: Trace = {
             id: "trace-1",
             name: "agent_run",
             timestamp: "2026-07-18T08:00:00.000Z",
@@ -33,7 +33,7 @@ describe("trace store row serialization", () => {
     });
 
     it("round-trips observation usage, cost, and tool call arrays", () => {
-        const observation: LangfuseObservation = {
+        const observation: Observation = {
             id: "obs-1",
             traceId: "trace-1",
             type: "TOOL",

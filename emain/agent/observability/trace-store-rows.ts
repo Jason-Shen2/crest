@@ -1,7 +1,16 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { LangfuseObservation, LangfuseScore, LangfuseTrace, ObservationLevel, ObservationType, TraceStatus } from "./types";
+import type {
+    Observation,
+    Score,
+    ScoreDataType,
+    ScoreSource,
+    Trace,
+    ObservationLevel,
+    ObservationType,
+    TraceStatus,
+} from "./types";
 
 export type TraceRow = {
     id: string;
@@ -87,7 +96,7 @@ function parseStringArray(value: string | null): string[] | null {
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : null;
 }
 
-export function traceToRow(trace: LangfuseTrace): TraceRow {
+export function traceToRow(trace: Trace): TraceRow {
     return {
         id: trace.id,
         name: trace.name,
@@ -106,7 +115,7 @@ export function traceToRow(trace: LangfuseTrace): TraceRow {
     };
 }
 
-export function traceFromRow(row: TraceRow): LangfuseTrace {
+export function traceFromRow(row: TraceRow): Trace {
     return {
         id: row.id,
         name: row.name,
@@ -125,7 +134,7 @@ export function traceFromRow(row: TraceRow): LangfuseTrace {
     };
 }
 
-export function observationToRow(observation: LangfuseObservation): ObservationRow {
+export function observationToRow(observation: Observation): ObservationRow {
     return {
         id: observation.id,
         trace_id: observation.traceId,
@@ -151,7 +160,7 @@ export function observationToRow(observation: LangfuseObservation): ObservationR
     };
 }
 
-export function observationFromRow(row: ObservationRow): LangfuseObservation {
+export function observationFromRow(row: ObservationRow): Observation {
     return {
         id: row.id,
         traceId: row.trace_id,
@@ -176,7 +185,7 @@ export function observationFromRow(row: ObservationRow): LangfuseObservation {
     };
 }
 
-export function scoreToRow(score: LangfuseScore): ScoreRow {
+export function scoreToRow(score: Score): ScoreRow {
     return {
         id: score.id,
         trace_id: score.traceId,
@@ -186,5 +195,18 @@ export function scoreToRow(score: LangfuseScore): ScoreRow {
         data_type: score.dataType,
         value: stringify(score.value),
         comment: score.comment,
+    };
+}
+
+export function scoreFromRow(row: ScoreRow): Score {
+    return {
+        id: row.id,
+        traceId: row.trace_id,
+        observationId: row.observation_id,
+        name: row.name,
+        source: row.source as ScoreSource,
+        dataType: row.data_type as ScoreDataType,
+        value: parseJson(row.value),
+        comment: row.comment,
     };
 }

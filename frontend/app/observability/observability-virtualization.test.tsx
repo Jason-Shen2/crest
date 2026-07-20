@@ -72,7 +72,7 @@ function elementHeight(element: Element): number {
     return 0;
 }
 
-function makeObservation(index: number): AgentObservabilityObservation {
+function makeObservation(index: number): Observation {
     return {
         id: `observation-${index}`,
         traceId: "trace-large",
@@ -97,7 +97,7 @@ function makeObservation(index: number): AgentObservabilityObservation {
     };
 }
 
-function makeGraph(count = 1_000): AgentObservabilityTraceGraph {
+function makeTraceDetail(count = 1_000): TraceDetail {
     return {
         trace: {
             id: "trace-large",
@@ -105,23 +105,27 @@ function makeGraph(count = 1_000): AgentObservabilityTraceGraph {
             timestamp: "2026-07-19T00:00:00.000Z",
             environment: "test",
             tags: [],
+            release: null,
+            version: null,
             input: null,
             output: null,
             metadata: {},
             sessionId: "session-large",
+            userId: null,
             status: "success",
         },
         observations: Array.from({ length: count }, (_, index) => makeObservation(index)),
         scores: [],
+        corrections: [],
     };
 }
 
 function makeProps(
-    graph: AgentObservabilityTraceGraph,
+    detail: TraceDetail,
     overrides: Partial<ComponentProps<typeof ObservationTimeline>> = {}
 ): ComponentProps<typeof ObservationTimeline> {
     return {
-        graph,
+        detail,
         query: "",
         categories: new Set(["generation", "tool", "lifecycle", "error"]),
         expandedObservationIds: new Set(),
@@ -238,14 +242,14 @@ afterAll(() => {
 
 describe("ObservationTimeline real virtualization", () => {
     it("mounts a bounded window for 1,000 observations and searches the full row set", async () => {
-        const graph = makeGraph();
-        const props = makeProps(graph);
+        const detail = makeTraceDetail();
+        const props = makeProps(detail);
         const view = render(<ObservationTimeline {...props} />);
 
         await waitFor(() => expect(view.container.querySelectorAll("[data-index]").length).toBeGreaterThan(1));
         const mountedCount = view.container.querySelectorAll("[data-index]").length;
         expect(mountedCount).toBeLessThan(100);
-        expect(mountedCount).toBeLessThan(graph.observations.length);
+        expect(mountedCount).toBeLessThan(detail.observations.length);
 
         view.rerender(<ObservationTimeline {...props} query="Needle observation" />);
 
@@ -254,8 +258,8 @@ describe("ObservationTimeline real virtualization", () => {
     });
 
     it("keeps the mounted window bounded while scrolling through middle and late ranges", async () => {
-        const graph = makeGraph();
-        const view = render(<ObservationTimeline {...makeProps(graph)} />);
+        const detail = makeTraceDetail();
+        const view = render(<ObservationTimeline {...makeProps(detail)} />);
         const timeline = view.getByRole("listbox");
 
         for (const [top, minimumIndex] of [
@@ -267,13 +271,13 @@ describe("ObservationTimeline real virtualization", () => {
             const indexes = mountedIndexes(view.container);
             expect(indexes.length).toBeGreaterThan(1);
             expect(indexes.length).toBeLessThan(100);
-            expect(indexes.length).toBeLessThan(graph.observations.length);
+            expect(indexes.length).toBeLessThan(detail.observations.length);
         }
     });
 
     it("remeasures an expanded row and shifts following rows without overlap", async () => {
-        const graph = makeGraph();
-        const props = makeProps(graph);
+        const detail = makeTraceDetail();
+        const props = makeProps(detail);
         const view = render(<ObservationTimeline {...props} />);
         await waitFor(() => expect(view.container.querySelectorAll("[data-index]").length).toBeGreaterThan(1));
 
@@ -303,19 +307,19 @@ describe("ObservationTimeline real virtualization", () => {
     });
 
     it("holds position while follow-live is paused and reaches an appended tail after resuming", async () => {
-        const initialGraph = makeGraph(40);
+        const initialGraph = makeTraceDetail(40);
         const props = makeProps(initialGraph, { followLive: false });
         const view = render(<ObservationTimeline {...props} />);
         const timeline = view.getByRole("listbox");
         scrollTimeline(timeline, 440);
         await waitFor(() => expect(Math.min(...mountedIndexes(view.container))).toBeGreaterThan(0));
 
-        const appendedGraph = makeGraph(41);
-        view.rerender(<ObservationTimeline {...props} graph={appendedGraph} />);
+        const appendedGraph = makeTraceDetail(41);
+        view.rerender(<ObservationTimeline {...props} detail={appendedGraph} />);
         expect(mountedIndexes(view.container)).not.toContain(40);
         expect(timeline.scrollTop).toBe(440);
 
-        view.rerender(<ObservationTimeline {...props} graph={appendedGraph} followLive />);
+        view.rerender(<ObservationTimeline {...props} detail={appendedGraph} followLive />);
         await waitFor(() => expect(mountedIndexes(view.container)).toContain(40));
         expect(timeline.scrollTop).toBeGreaterThan(440);
     });
@@ -323,14 +327,14 @@ describe("ObservationTimeline real virtualization", () => {
 
 describe("ObservabilityPanel real layout boundary", () => {
     it("replaces traces when the session scope changes", async () => {
-        const firstGraph = makeGraph(1);
+        const firstGraph = makeTraceDetail(1);
         firstGraph.trace = {
             ...firstGraph.trace,
             id: "trace-a",
             input: "First session run",
             sessionId: "session-a",
         };
-        const secondGraph = makeGraph(1);
+        const secondGraph = makeTraceDetail(1);
         secondGraph.trace = {
             ...secondGraph.trace,
             id: "trace-b",
@@ -338,9 +342,7 @@ describe("ObservabilityPanel real layout boundary", () => {
             sessionId: "session-b",
         };
         const api: AgentObservabilityApi = {
-            listTraces: vi.fn(async (sessionId) => [
-                sessionId === "session-a" ? firstGraph.trace : secondGraph.trace,
-            ]),
+            listTraces: vi.fn(async (sessionId) => [sessionId === "session-a" ? firstGraph.trace : secondGraph.trace]),
             getTrace: vi.fn(async (traceId) => (traceId === "trace-a" ? firstGraph : secondGraph)),
             subscribe: vi.fn(() => vi.fn()),
         };
@@ -354,11 +356,11 @@ describe("ObservabilityPanel real layout boundary", () => {
         expect(api.getTrace).toHaveBeenCalledWith("trace-b", "session-b");
     });
 
-    it("moves selected detail from inline normal mode to a sibling pane when magnified", async () => {
-        const graph = makeGraph(20);
+    it("replaces inline detail with the Langfuse trace workspace when magnified", async () => {
+        const detail = makeTraceDetail(20);
         const api: AgentObservabilityApi = {
-            listTraces: vi.fn().mockResolvedValue([graph.trace]),
-            getTrace: vi.fn().mockResolvedValue(graph),
+            listTraces: vi.fn().mockResolvedValue([detail.trace]),
+            getTrace: vi.fn().mockResolvedValue(detail),
             subscribe: vi.fn(() => vi.fn()),
         };
         const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
@@ -371,20 +373,14 @@ describe("ObservabilityPanel real layout boundary", () => {
         expect(view.queryByLabelText("Observation detail pane")).toBeNull();
 
         view.rerender(<ObservabilityPanel api={api} sessionId="session-a" magnified />);
-        const detailPane = await view.findByLabelText("Observation detail pane");
-        const magnifiedRow = view.container.querySelector<HTMLButtonElement>(
-            '[data-index] button[aria-expanded="true"]'
-        )!;
-        expect(magnifiedRow).toBeTruthy();
-        expect(
-            within(magnifiedRow.closest("[data-index]") as HTMLElement).queryByLabelText("Observation detail")
-        ).toBeNull();
-        expect(within(detailPane).getByLabelText("Observation detail")).toBeTruthy();
+        expect(await view.findByRole("tree", { name: "Trace tree" })).toBeTruthy();
+        expect(view.queryByRole("listbox")).toBeNull();
+        expect(view.getByRole("region", { name: "Trace detail" })).toBeTruthy();
     });
 
     it("keeps an appended live tail paused until Back to live is selected", async () => {
-        const initialGraph = makeGraph(40);
-        let subscriber: ((event: AgentObservabilityEvent) => void) | undefined;
+        const initialGraph = makeTraceDetail(40);
+        let subscriber: ((event: TraceEvent) => void) | undefined;
         const api: AgentObservabilityApi = {
             listTraces: vi.fn().mockResolvedValue([initialGraph.trace]),
             getTrace: vi.fn().mockResolvedValue(initialGraph),
@@ -401,12 +397,12 @@ describe("ObservabilityPanel real layout boundary", () => {
         scrollTimeline(timeline, 440);
         expect(await view.findByRole("button", { name: "Back to live" })).toBeTruthy();
 
-        const appendedGraph = makeGraph(41);
+        const appendedGraph = makeTraceDetail(41);
         act(() => {
             subscriber?.({
                 traceId: appendedGraph.trace.id,
                 sessionId: appendedGraph.trace.sessionId ?? undefined,
-                graph: appendedGraph,
+                detail: appendedGraph,
             });
         });
         expect(mountedIndexes(view.container)).not.toContain(40);

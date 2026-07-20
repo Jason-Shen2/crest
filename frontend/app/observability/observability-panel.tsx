@@ -12,6 +12,7 @@ import { ObservationDetail } from "./observation-detail";
 import { ObservationTimeline } from "./observation-timeline";
 import { RunReview } from "./run-review";
 import { TimelineToolbar } from "./timeline-toolbar";
+import { TracePanel } from "./trace-panel/trace-panel";
 import { TraceSelector } from "./trace-selector";
 
 export type AgentObservabilityApi = Window["api"]["agentObservability"];
@@ -26,8 +27,8 @@ type LoadState = "unavailable" | "loading" | "ready" | "empty" | "error";
 
 export function ObservabilityPanel({ api: injectedApi, magnified = false, sessionId }: ObservabilityPanelProps = {}) {
     const api = injectedApi ?? (typeof window === "undefined" ? undefined : window.api?.agentObservability);
-    const [traces, setTraces] = useState<AgentObservabilityTrace[]>([]);
-    const [selectedGraph, setSelectedGraph] = useState<AgentObservabilityTraceGraph | undefined>();
+    const [traces, setTraces] = useState<Trace[]>([]);
+    const [selectedTraceDetail, setSelectedTraceDetail] = useState<TraceDetail | undefined>();
     const [loadState, setLoadState] = useState<LoadState>(api && sessionId ? "loading" : "unavailable");
     const [viewState, setViewState] = useState(makeObservabilityViewState);
     const selectedTraceIdRef = useRef<string | undefined>(undefined);
@@ -44,18 +45,18 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
         const requestId = ++requestIdRef.current;
         selectedTraceIdRef.current = traceId;
         dispatchViewState({ type: "select-trace", traceId });
-        setSelectedGraph(undefined);
+        setSelectedTraceDetail(undefined);
         setLoadState("loading");
         try {
-            const graph = await api.getTrace(traceId, sessionId);
+            const detail = await api.getTrace(traceId, sessionId);
             if (requestId !== requestIdRef.current || selectedTraceIdRef.current !== traceId) {
                 return;
             }
-            if (!graph) {
+            if (!detail) {
                 setLoadState("error");
                 return;
             }
-            setSelectedGraph(graph);
+            setSelectedTraceDetail(detail);
             setLoadState("ready");
         } catch {
             if (requestId === requestIdRef.current && selectedTraceIdRef.current === traceId) {
@@ -73,20 +74,20 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
         selectedTraceIdRef.current = undefined;
         requestIdRef.current += 1;
         setTraces([]);
-        setSelectedGraph(undefined);
+        setSelectedTraceDetail(undefined);
         setLoadState("loading");
         const unsubscribe = api.subscribe(sessionId, (event) => {
             setTraces((current) => {
-                const withoutUpdated = current.filter((trace) => trace.id !== event.graph.trace.id);
-                return [event.graph.trace, ...withoutUpdated];
+                const withoutUpdated = current.filter((trace) => trace.id !== event.detail.trace.id);
+                return [event.detail.trace, ...withoutUpdated];
             });
-            if (selectedTraceIdRef.current && selectedTraceIdRef.current !== event.graph.trace.id) {
+            if (selectedTraceIdRef.current && selectedTraceIdRef.current !== event.detail.trace.id) {
                 return;
             }
-            selectedTraceIdRef.current = event.graph.trace.id;
-            dispatchViewState({ type: "select-trace", traceId: event.graph.trace.id });
+            selectedTraceIdRef.current = event.detail.trace.id;
+            dispatchViewState({ type: "select-trace", traceId: event.detail.trace.id });
             requestIdRef.current += 1;
-            setSelectedGraph(event.graph);
+            setSelectedTraceDetail(event.detail);
             setLoadState("ready");
         });
         void api
@@ -131,10 +132,10 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
     };
 
     const timelineObservationIds =
-        selectedGraph?.observations
+        selectedTraceDetail?.observations
             .filter((observation) => observation.type !== "AGENT")
             .map((observation) => observation.id) ?? [];
-    const selectedObservation = selectedGraph?.observations.find(
+    const selectedObservation = selectedTraceDetail?.observations.find(
         (observation) => observation.id === viewState.selectedObservationId
     );
 
@@ -158,8 +159,9 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
                 {loadState === "loading" ? <div className="text-sm">Loading recent runs...</div> : null}
                 {loadState === "empty" ? <div className="text-sm">No runs recorded.</div> : null}
                 {loadState === "error" ? <div className="text-sm">Unable to load recent runs.</div> : null}
-                {selectedGraph ? <RunReview graph={selectedGraph} /> : null}
-                {selectedGraph ? (
+                {selectedTraceDetail ? <RunReview detail={selectedTraceDetail} /> : null}
+                {selectedTraceDetail && magnified ? <TracePanel detail={selectedTraceDetail} /> : null}
+                {selectedTraceDetail && !magnified ? (
                     <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-fg-overlay-1/30">
                             <div className="px-2 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -188,8 +190,8 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
                                 onBackToLive={() => dispatchViewState({ type: "resume-follow-live" })}
                             />
                             <ObservationTimeline
-                                key={selectedGraph.trace.id}
-                                graph={selectedGraph}
+                                key={selectedTraceDetail.trace.id}
+                                detail={selectedTraceDetail}
                                 query={viewState.query}
                                 categories={viewState.categories}
                                 expandedObservationIds={viewState.expandedObservationIds}
@@ -218,7 +220,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
                             >
                                 <ObservationDetail
                                     observation={selectedObservation}
-                                    traceTimestamp={selectedGraph.trace.timestamp}
+                                    traceTimestamp={selectedTraceDetail.trace.timestamp}
                                 />
                             </aside>
                         ) : null}

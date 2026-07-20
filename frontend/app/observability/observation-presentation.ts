@@ -170,7 +170,7 @@ function compactPayload(value: unknown): string {
     return writer.toString();
 }
 
-function categoryFor(observation: AgentObservabilityObservation): ObservationCategory {
+function categoryFor(observation: Observation): ObservationCategory {
     if (observation.level === "ERROR" || observation.statusMessage != null) {
         return "error";
     }
@@ -183,7 +183,7 @@ function categoryFor(observation: AgentObservabilityObservation): ObservationCat
     return "lifecycle";
 }
 
-function toneFor(observation: AgentObservabilityObservation, category: ObservationCategory): ObservationTone {
+function toneFor(observation: Observation, category: ObservationCategory): ObservationTone {
     if (category === "error") {
         return "error";
     }
@@ -199,7 +199,7 @@ function toneFor(observation: AgentObservabilityObservation, category: Observati
     return "neutral";
 }
 
-function labelFor(observation: AgentObservabilityObservation, category: ObservationCategory): string {
+function labelFor(observation: Observation, category: ObservationCategory): string {
     if (observation.type === "EVENT" && observation.name) {
         return EventLabels[observation.name] ?? humanize(observation.name);
     }
@@ -212,7 +212,7 @@ function labelFor(observation: AgentObservabilityObservation, category: Observat
     return humanize(observation.type);
 }
 
-function summaryFor(observation: AgentObservabilityObservation, category: ObservationCategory): string {
+function summaryFor(observation: Observation, category: ObservationCategory): string {
     if (category === "error" && observation.statusMessage) {
         return clampSummary(observation.statusMessage);
     }
@@ -231,7 +231,7 @@ function summaryFor(observation: AgentObservabilityObservation, category: Observ
     return compactPayload(observation.input) || compactPayload(observation.output);
 }
 
-function formatDuration(observation: AgentObservabilityObservation): string | null {
+function formatDuration(observation: Observation): string | null {
     if (!observation.endTime) {
         return null;
     }
@@ -261,7 +261,7 @@ function totalCost(cost: Record<string, number>): number | null {
     return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) : null;
 }
 
-function badgesFor(observation: AgentObservabilityObservation): ObservationBadge[] {
+function badgesFor(observation: Observation): ObservationBadge[] {
     const badges: ObservationBadge[] = [];
     const duration = formatDuration(observation);
     const tokens = totalTokens(observation.usageDetails);
@@ -285,7 +285,7 @@ function badgesFor(observation: AgentObservabilityObservation): ObservationBadge
     return badges;
 }
 
-export function presentObservation(observation: AgentObservabilityObservation): ObservationPresentation {
+export function presentObservation(observation: Observation): ObservationPresentation {
     const category = categoryFor(observation);
     const label = labelFor(observation, category);
     const summary = summaryFor(observation, category);

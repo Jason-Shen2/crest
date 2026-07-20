@@ -2,12 +2,13 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from "rea
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { LangfuseTraceBuilder } from "../../../emain/agent/observability/trace-builder";
+import { TraceBuilder } from "../../../emain/agent/observability/trace-builder";
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
 import { ObservationDetail } from "./observation-detail";
 import { ObservationTimeline } from "./observation-timeline";
 import { RunReview } from "./run-review";
 import { TimelineToolbar } from "./timeline-toolbar";
+import { TracePanel } from "./trace-panel/trace-panel";
 import { TraceSelector } from "./trace-selector";
 
 const HookHarness = vi.hoisted(() => ({
@@ -49,7 +50,7 @@ vi.mock("react", async (importOriginal) => {
     };
 });
 
-function makeTrace(id: string, name: string): AgentObservabilityTrace {
+function makeTrace(id: string, name: string): Trace {
     return {
         id,
         name,
@@ -57,18 +58,21 @@ function makeTrace(id: string, name: string): AgentObservabilityTrace {
         endedAt: "2026-07-19T00:00:10.000Z",
         environment: "test",
         tags: [],
+        release: null,
+        version: null,
         input: null,
         output: null,
         metadata: {},
         sessionId: "session-1",
+        userId: null,
         status: "success",
     };
 }
 
-function makeBuiltTrace(prompt: string, timestamp: string): AgentObservabilityTrace {
+function makeBuiltTrace(prompt: string, timestamp: string): Trace {
     let nextId = 0;
     const idScope = prompt.replaceAll(/\W+/g, "-").toLowerCase();
-    const builder = new LangfuseTraceBuilder({
+    const builder = new TraceBuilder({
         createId: (prefix) => `${prefix}-${idScope}-${++nextId}`,
         now: () => timestamp,
     });
@@ -81,16 +85,12 @@ function makeBuiltTrace(prompt: string, timestamp: string): AgentObservabilityTr
             message: { role: "user", content: [{ type: "text", text: prompt }] },
         },
     });
-    const graph = builder.applyEvent({ sessionPath, event: { type: "agent_end" } });
-    expect(graph).toBeDefined();
-    return graph!.trace;
+    const detail = builder.applyEvent({ sessionPath, event: { type: "agent_end" } });
+    expect(detail).toBeDefined();
+    return detail!.trace;
 }
 
-function makeObservation(
-    id: string,
-    type: AgentObservabilityObservation["type"],
-    overrides: Partial<AgentObservabilityObservation> = {}
-): AgentObservabilityObservation {
+function makeObservation(id: string, type: Observation["type"], overrides: Partial<Observation> = {}): Observation {
     return {
         id,
         traceId: "trace-2",
@@ -116,7 +116,7 @@ function makeObservation(
     };
 }
 
-function makeGraph(trace: AgentObservabilityTrace): AgentObservabilityTraceGraph {
+function makeTraceDetail(trace: Trace): TraceDetail {
     return {
         trace: {
             ...trace,
@@ -133,6 +133,7 @@ function makeGraph(trace: AgentObservabilityTrace): AgentObservabilityTraceGraph
             makeObservation("error", "EVENT", { level: "ERROR", statusMessage: "Failed once" }),
         ],
         scores: [],
+        corrections: [],
     };
 }
 
@@ -146,11 +147,8 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
-function makeApi(
-    traces: AgentObservabilityTrace[],
-    getTrace: (traceId: string) => Promise<AgentObservabilityTraceGraph | undefined>
-) {
-    let subscriber: ((event: AgentObservabilityEvent) => void) | undefined;
+function makeApi(traces: Trace[], getTrace: (traceId: string) => Promise<TraceDetail | undefined>) {
+    let subscriber: ((event: TraceEvent) => void) | undefined;
     const api: AgentObservabilityApi = {
         listTraces: vi.fn().mockResolvedValue(traces),
         getTrace: vi.fn(getTrace),
@@ -161,8 +159,8 @@ function makeApi(
     };
     return {
         api,
-        emit(graph: AgentObservabilityTraceGraph) {
-            subscriber?.({ traceId: graph.trace.id, sessionId: graph.trace.sessionId ?? undefined, graph });
+        emit(detail: TraceDetail) {
+            subscriber?.({ traceId: detail.trace.id, sessionId: detail.trace.sessionId ?? undefined, detail });
         },
     };
 }
@@ -262,39 +260,54 @@ describe("TraceSelector", () => {
 });
 
 describe("RunReview", () => {
-    it("renders the run status, aggregate metrics, usage, cost, and final output", () => {
-        const markup = renderToStaticMarkup(<RunReview graph={makeGraph(makeTrace("trace-2", "Latest run"))} />);
+    it("renders compact trace metrics without default final output", () => {
+        const markup = renderToStaticMarkup(<RunReview detail={makeTraceDetail(makeTrace("trace-2", "Latest run"))} />);
 
-        expect(markup).toContain("Run Review");
+        expect(markup).toContain('aria-label="Trace metrics"');
         expect(markup).toContain("success");
         expect(markup).toContain("5.0s");
-        expect(markup).toContain("Generations");
+        expect(markup).toContain("generations");
         expect(markup).toContain(">1<");
-        expect(markup).toContain("Tools");
-        expect(markup).toContain("Errors");
-        expect(markup).toContain("Input tokens");
+        expect(markup).toContain("tools");
+        expect(markup).toContain("errors");
+        expect(markup).toContain("input");
         expect(markup).toContain(">20<");
-        expect(markup).toContain("Output tokens");
+        expect(markup).toContain("output");
         expect(markup).toContain(">8<");
-        expect(markup).toContain("Cache read");
+        expect(markup).toContain("cache read");
         expect(markup).toContain(">4<");
-        expect(markup).toContain("Cache write");
+        expect(markup).toContain("cache write");
         expect(markup).toContain(">2<");
-        expect(markup).toContain("Total tokens");
+        expect(markup).toContain("tokens");
         expect(markup).toContain(">34<");
         expect(markup).toContain("$0.0125");
-        expect(markup).toContain("Review complete");
+        expect(markup).not.toContain("Final output");
+        expect(markup).not.toContain("Review complete");
     });
 
-    it("truncates a long final output to a bounded summary", () => {
-        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
-        graph.trace.output = `Summary start ${"x".repeat(2_000)} hidden-tail-sentinel`;
+    it("keeps long final output out of the run-level chrome", () => {
+        const detail = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        detail.trace.output = `Summary start ${"x".repeat(2_000)} hidden-tail-sentinel`;
 
-        const markup = renderToStaticMarkup(<RunReview graph={graph} />);
+        const markup = renderToStaticMarkup(<RunReview detail={detail} />);
 
-        expect(markup).toContain("Summary start");
-        expect(markup).toContain("...");
+        expect(markup).toContain('aria-label="Trace metrics"');
+        expect(markup).not.toContain("Summary start");
         expect(markup).not.toContain("hidden-tail-sentinel");
+    });
+
+    it("uses non-success status tones for failed and active runs", () => {
+        const errorMarkup = renderToStaticMarkup(
+            <RunReview detail={makeTraceDetail({ ...makeTrace("trace-2", "Latest run"), status: "error" })} />
+        );
+        const runningMarkup = renderToStaticMarkup(
+            <RunReview detail={makeTraceDetail({ ...makeTrace("trace-2", "Latest run"), status: "running" })} />
+        );
+
+        expect(errorMarkup).toContain("text-error");
+        expect(errorMarkup).not.toContain("text-success");
+        expect(runningMarkup).toContain("text-accent");
+        expect(runningMarkup).not.toContain("text-success");
     });
 });
 
@@ -430,8 +443,8 @@ describe("ObservabilityPanel", () => {
     });
 
     it("uses the same session scope for list, subscribe, and get", async () => {
-        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
-        const { api } = makeApi([graph.trace], async () => graph);
+        const detail = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([detail.trace], async () => detail);
 
         renderPanel(api, false, "session-1");
         await flushPromises();
@@ -442,8 +455,8 @@ describe("ObservabilityPanel", () => {
     });
 
     it("selects the latest trace initially and can select an older trace", async () => {
-        const latest = makeGraph(makeTrace("trace-2", "Latest run"));
-        const older = makeGraph(makeTrace("trace-1", "Older run"));
+        const latest = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        const older = makeTraceDetail(makeTrace("trace-1", "Older run"));
         const { api } = makeApi([latest.trace, older.trace], async (traceId) =>
             traceId === latest.trace.id ? latest : older
         );
@@ -451,22 +464,18 @@ describe("ObservabilityPanel", () => {
         renderPanel(api);
         await flushPromises();
         let tree = renderPanel(api);
-        expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)?.props.graph.trace.id).toBe(
-            "trace-2"
-        );
+        expect(findElement<{ detail: TraceDetail }>(tree, RunReview)?.props.detail.trace.id).toBe("trace-2");
 
         findElement<{ onSelectTrace: (traceId: string) => void }>(tree, TraceSelector)?.props.onSelectTrace("trace-1");
         await flushPromises();
         tree = renderPanel(api);
 
-        expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)?.props.graph.trace.id).toBe(
-            "trace-1"
-        );
+        expect(findElement<{ detail: TraceDetail }>(tree, RunReview)?.props.detail.trace.id).toBe("trace-1");
     });
 
     it("renders a semantic timeline without repeating the agent root", async () => {
-        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
-        graph.observations = [
+        const detail = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        detail.observations = [
             makeObservation("root", "AGENT", {
                 name: "Agent root",
                 parentObservationId: null,
@@ -480,7 +489,7 @@ describe("ObservabilityPanel", () => {
                 usageDetails: { input: 20, output: 8, totalTokens: 28 },
             }),
         ];
-        const { api } = makeApi([graph.trace], async () => graph);
+        const { api } = makeApi([detail.trace], async () => detail);
 
         renderPanel(api);
         await flushPromises();
@@ -497,8 +506,8 @@ describe("ObservabilityPanel", () => {
     });
 
     it("renders selected observation detail inline in normal mode", async () => {
-        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
-        const { api } = makeApi([graph.trace], async () => graph);
+        const detail = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([detail.trace], async () => detail);
 
         renderPanel(api);
         await flushPromises();
@@ -518,29 +527,22 @@ describe("ObservabilityPanel", () => {
         expect(markup).not.toContain('aria-label="Observation detail pane"');
     });
 
-    it("renders selected observation detail in a sibling pane when magnified", async () => {
-        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
-        const { api } = makeApi([graph.trace], async () => graph);
+    it("renders the Langfuse trace panel instead of the legacy timeline when magnified", async () => {
+        const detail = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([detail.trace], async () => detail);
 
         renderPanel(api, true);
         await flushPromises();
-        let tree = renderPanel(api, true);
-        findElement<{ onSelectObservation: (observationId?: string) => void }>(
-            tree,
-            ObservationTimeline
-        )?.props.onSelectObservation("tool");
-        tree = renderPanel(api, true);
-        const timeline = findElement<{ renderInlineDetails: boolean }>(tree, ObservationTimeline);
-        const markup = renderToStaticMarkup(tree);
+        const tree = renderPanel(api, true);
+        const tracePanel = findElement<{ detail: TraceDetail }>(tree, TracePanel);
 
-        expect(timeline?.props.renderInlineDetails).toBe(false);
-        expect(markup).toContain('aria-label="Observation detail pane"');
-        expect(markup).toContain('aria-label="Observation detail"');
+        expect(findElement(tree, ObservationTimeline)).toBeUndefined();
+        expect(tracePanel?.props.detail).toBe(detail);
     });
 
     it("composes search and error filtering and controls visible expansion", async () => {
-        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
-        const { api } = makeApi([graph.trace], async () => graph);
+        const detail = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([detail.trace], async () => detail);
 
         renderPanel(api);
         await flushPromises();
@@ -574,8 +576,8 @@ describe("ObservabilityPanel", () => {
     });
 
     it("pauses follow-live after scrolling away and resumes from the toolbar", async () => {
-        const graph = makeGraph(makeTrace("trace-2", "Latest run"));
-        const { api } = makeApi([graph.trace], async () => graph);
+        const detail = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        const { api } = makeApi([detail.trace], async () => detail);
 
         renderPanel(api);
         await flushPromises();
@@ -592,11 +594,11 @@ describe("ObservabilityPanel", () => {
     });
 
     it("ignores a stale trace response after a newer selection resolves", async () => {
-        const latest = makeGraph(makeTrace("trace-3", "Latest run"));
-        const older = makeGraph(makeTrace("trace-1", "Older run"));
-        const newer = makeGraph(makeTrace("trace-2", "Newer run"));
-        const first = deferred<AgentObservabilityTraceGraph | undefined>();
-        const second = deferred<AgentObservabilityTraceGraph | undefined>();
+        const latest = makeTraceDetail(makeTrace("trace-3", "Latest run"));
+        const older = makeTraceDetail(makeTrace("trace-1", "Older run"));
+        const newer = makeTraceDetail(makeTrace("trace-2", "Newer run"));
+        const first = deferred<TraceDetail | undefined>();
+        const second = deferred<TraceDetail | undefined>();
         const { api } = makeApi([latest.trace, newer.trace, older.trace], (traceId) => {
             if (traceId === "trace-1") {
                 return first.promise;
@@ -619,15 +621,13 @@ describe("ObservabilityPanel", () => {
         await flushPromises();
         tree = renderPanel(api);
 
-        expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)?.props.graph.trace.id).toBe(
-            "trace-2"
-        );
+        expect(findElement<{ detail: TraceDetail }>(tree, RunReview)?.props.detail.trace.id).toBe("trace-2");
     });
 
-    it("updates recent runs without replacing a selected historical graph", async () => {
-        const latest = makeGraph(makeTrace("trace-2", "Latest run"));
-        const older = makeGraph(makeTrace("trace-1", "Older run"));
-        const live = makeGraph({ ...makeTrace("trace-3", "Live run"), status: "running", endedAt: undefined });
+    it("updates recent runs without replacing a selected historical detail", async () => {
+        const latest = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        const older = makeTraceDetail(makeTrace("trace-1", "Older run"));
+        const live = makeTraceDetail({ ...makeTrace("trace-3", "Live run"), status: "running", endedAt: undefined });
         const source = makeApi([latest.trace, older.trace], async (traceId) =>
             traceId === latest.trace.id ? latest : older
         );
@@ -640,20 +640,18 @@ describe("ObservabilityPanel", () => {
         source.emit(live);
         tree = renderPanel(source.api);
 
-        expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)?.props.graph.trace.id).toBe(
-            "trace-1"
-        );
-        expect(
-            findElement<{ traces: AgentObservabilityTrace[] }>(tree, TraceSelector)?.props.traces.map(
-                (trace) => trace.id
-            )
-        ).toEqual(["trace-3", "trace-2", "trace-1"]);
+        expect(findElement<{ detail: TraceDetail }>(tree, RunReview)?.props.detail.trace.id).toBe("trace-1");
+        expect(findElement<{ traces: Trace[] }>(tree, TraceSelector)?.props.traces.map((trace) => trace.id)).toEqual([
+            "trace-3",
+            "trace-2",
+            "trace-1",
+        ]);
     });
 
     it("keeps a live run received before the history request resolves", async () => {
-        const history = makeGraph(makeTrace("trace-2", "History run"));
-        const live = makeGraph({ ...makeTrace("trace-3", "Live run"), status: "running", endedAt: undefined });
-        const listResponse = deferred<AgentObservabilityTrace[]>();
+        const history = makeTraceDetail(makeTrace("trace-2", "History run"));
+        const live = makeTraceDetail({ ...makeTrace("trace-3", "Live run"), status: "running", endedAt: undefined });
+        const listResponse = deferred<Trace[]>();
         const source = makeApi([], async () => history);
         source.api.listTraces = vi.fn(() => listResponse.promise);
 
@@ -663,21 +661,18 @@ describe("ObservabilityPanel", () => {
         await flushPromises();
         const tree = renderPanel(source.api);
 
-        expect(
-            findElement<{ traces: AgentObservabilityTrace[] }>(tree, TraceSelector)?.props.traces.map(
-                (trace) => trace.id
-            )
-        ).toEqual(["trace-3", "trace-2"]);
+        expect(findElement<{ traces: Trace[] }>(tree, TraceSelector)?.props.traces.map((trace) => trace.id)).toEqual([
+            "trace-3",
+            "trace-2",
+        ]);
         expect(findElement<{ selectedTraceId?: string }>(tree, TraceSelector)?.props.selectedTraceId).toBe("trace-3");
-        expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)?.props.graph.trace.id).toBe(
-            "trace-3"
-        );
+        expect(findElement<{ detail: TraceDetail }>(tree, RunReview)?.props.detail.trace.id).toBe("trace-3");
     });
 
-    it("subscribes before listing and keeps a live graph over its stale snapshot", async () => {
+    it("subscribes before listing and keeps a live detail over its stale snapshot", async () => {
         const calls: string[] = [];
-        const snapshot = makeGraph(makeTrace("trace-3", "Snapshot run"));
-        const live = makeGraph({
+        const snapshot = makeTraceDetail(makeTrace("trace-3", "Snapshot run"));
+        const live = makeTraceDetail({
             ...makeTrace("trace-3", "Live run"),
             status: "running",
             endedAt: undefined,
@@ -685,7 +680,7 @@ describe("ObservabilityPanel", () => {
         const api: AgentObservabilityApi = {
             subscribe: vi.fn((_sessionId, callback) => {
                 calls.push("subscribe");
-                callback({ traceId: live.trace.id, sessionId: "session-1", graph: live });
+                callback({ traceId: live.trace.id, sessionId: "session-1", detail: live });
                 return vi.fn();
             }),
             listTraces: vi.fn(async () => {
@@ -701,15 +696,13 @@ describe("ObservabilityPanel", () => {
 
         expect(calls).toEqual(["subscribe", "list"]);
         expect(api.getTrace).not.toHaveBeenCalled();
-        expect(findElement<{ traces: AgentObservabilityTrace[] }>(tree, TraceSelector)?.props.traces).toEqual([
-            live.trace,
-        ]);
-        expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)?.props.graph).toBe(live);
+        expect(findElement<{ traces: Trace[] }>(tree, TraceSelector)?.props.traces).toEqual([live.trace]);
+        expect(findElement<{ detail: TraceDetail }>(tree, RunReview)?.props.detail).toBe(live);
     });
 
     it("ignores an in-flight trace response after unmount", async () => {
-        const latest = makeGraph(makeTrace("trace-2", "Latest run"));
-        const response = deferred<AgentObservabilityTraceGraph | undefined>();
+        const latest = makeTraceDetail(makeTrace("trace-2", "Latest run"));
+        const response = deferred<TraceDetail | undefined>();
         const { api } = makeApi([latest.trace], () => response.promise);
 
         renderPanel(api);
@@ -719,7 +712,7 @@ describe("ObservabilityPanel", () => {
         await flushPromises();
         const tree = renderPanel(api);
 
-        expect(findElement<{ graph: AgentObservabilityTraceGraph }>(tree, RunReview)).toBeUndefined();
+        expect(findElement<{ detail: TraceDetail }>(tree, RunReview)).toBeUndefined();
     });
 
     it("distinguishes unavailable, loading, empty, and rejected states", async () => {
@@ -729,7 +722,7 @@ describe("ObservabilityPanel", () => {
         HookHarness.slots = [];
         HookHarness.cursor = 0;
         HookHarness.effectRan = false;
-        const pending = deferred<AgentObservabilityTrace[]>();
+        const pending = deferred<Trace[]>();
         const loading = makeApi([], async () => undefined);
         loading.api.listTraces = vi.fn(() => pending.promise);
         expect(renderToStaticMarkup(renderPanel(loading.api))).toContain("Loading recent runs");

@@ -1,22 +1,24 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { LangfuseObservation, LangfuseTrace, TraceBuilderEventInput, TraceGraph, TraceStatus } from "./types";
+import type { Observation, Trace, TraceBuilderEventInput, TraceDetail, TraceStatus } from "./types";
 
 type BuilderClock = () => string;
 type BuilderIdFactory = (prefix: "trace" | "observation" | "score") => string;
 
-export interface LangfuseTraceBuilderOptions {
+export interface TraceBuilderOptions {
     now?: BuilderClock;
     createId?: BuilderIdFactory;
     environment?: string;
 }
 
 interface BuilderState {
-    graph: TraceGraph;
+    detail: TraceDetail;
     rootObservationId: string;
+    currentTurnObservationId?: string;
     activeGenerationId?: string;
     activeToolObservationIds: Map<string, string>;
+    turnObservationIds: Map<string, string>;
 }
 
 function defaultCreateId(prefix: "trace" | "observation" | "score"): string {
@@ -89,10 +91,10 @@ function elapsedSeconds(startTime: string, endTime: string): number | null {
     return Number.isFinite(elapsedMs) && elapsedMs >= 0 ? elapsedMs / 1000 : null;
 }
 
-function cloneGraph(graph: TraceGraph): TraceGraph {
+function cloneTraceDetail(detail: TraceDetail): TraceDetail {
     return {
-        trace: { ...graph.trace, tags: [...graph.trace.tags], metadata: { ...graph.trace.metadata } },
-        observations: graph.observations.map((observation) => ({
+        trace: { ...detail.trace, tags: [...detail.trace.tags], metadata: { ...detail.trace.metadata } },
+        observations: detail.observations.map((observation) => ({
             ...observation,
             metadata: { ...observation.metadata },
             usageDetails: { ...observation.usageDetails },
@@ -100,24 +102,25 @@ function cloneGraph(graph: TraceGraph): TraceGraph {
             toolCalls: observation.toolCalls == null ? null : [...observation.toolCalls],
             toolCallNames: observation.toolCallNames == null ? null : [...observation.toolCallNames],
         })),
-        scores: graph.scores.map((score) => ({ ...score })),
+        scores: detail.scores.map((score) => ({ ...score })),
+        corrections: detail.corrections.map((correction) => ({ ...correction })),
     };
 }
 
-export class LangfuseTraceBuilder {
+export class TraceBuilder {
     private readonly now: BuilderClock;
     private readonly createId: BuilderIdFactory;
     private readonly environment: string;
     private readonly states = new Map<string, BuilderState>();
 
-    constructor(options: LangfuseTraceBuilderOptions = {}) {
+    constructor(options: TraceBuilderOptions = {}) {
         this.now = options.now ?? (() => new Date().toISOString());
         this.createId = options.createId ?? defaultCreateId;
         this.environment = options.environment ?? "local";
     }
 
     // Pure reducer over the AgentHarness subscriber stream:
-    // (BuilderState, AgentHarnessEvent) => TraceGraph. The event union is
+    // (BuilderState, AgentHarnessEvent) => TraceDetail. The event union is
     // exactly what AgentHarness.subscribe() delivers — raw AgentEvent
     // (agent_start / message_* / tool_execution_* / agent_end, emitted via
     // emitAny) plus the own events broadcast via emitOwn
@@ -130,7 +133,7 @@ export class LangfuseTraceBuilder {
     // that today only exists on those hook payloads (system prompt, gating
     // reason, rich tool details) must be surfaced by having the harness
     // emitOwn a broadcast event — not by observing the hook channel.
-    applyEvent(input: TraceBuilderEventInput): TraceGraph | undefined {
+    applyEvent(input: TraceBuilderEventInput): TraceDetail | undefined {
         switch (input.event.type) {
             case "agent_start":
                 return this.startTrace(input.sessionPath, input.event);
@@ -163,16 +166,16 @@ export class LangfuseTraceBuilder {
         }
     }
 
-    getTraceGraph(sessionPath: string): TraceGraph | undefined {
+    getTraceDetail(sessionPath: string): TraceDetail | undefined {
         return this.snapshot(sessionPath);
     }
 
-    private startTrace(sessionPath: string, event: Record<string, unknown>): TraceGraph {
+    private startTrace(sessionPath: string, event: Record<string, unknown>): TraceDetail {
         const traceId = this.createId("trace");
         const rootObservationId = this.createId("observation");
         const timestamp = this.now();
         const prompt = typeof event.prompt === "string" ? event.prompt : null;
-        const trace: LangfuseTrace = {
+        const trace: Trace = {
             id: traceId,
             name: "agent_run",
             timestamp,
@@ -199,33 +202,34 @@ export class LangfuseTraceBuilder {
             },
         });
         const state: BuilderState = {
-            graph: { trace, observations: [rootObservation], scores: [] },
+            detail: { trace, observations: [rootObservation], scores: [], corrections: [] },
             rootObservationId,
             activeToolObservationIds: new Map(),
+            turnObservationIds: new Map(),
         };
         this.states.set(sessionPath, state);
-        return cloneGraph(state.graph);
+        return cloneTraceDetail(state.detail);
     }
 
-    private handleMessageStart(sessionPath: string, message: unknown): TraceGraph | undefined {
+    private handleMessageStart(sessionPath: string, message: unknown): TraceDetail | undefined {
         if (!isAssistantMessage(message)) return this.snapshot(sessionPath);
         const state = this.requireState(sessionPath);
-        if (!state || state.activeGenerationId) return state ? cloneGraph(state.graph) : undefined;
+        if (!state || state.activeGenerationId) return state ? cloneTraceDetail(state.detail) : undefined;
         const observation = this.makeObservation({
-            traceId: state.graph.trace.id,
+            traceId: state.detail.trace.id,
             type: "GENERATION",
             name: "assistant_response",
-            parentObservationId: state.rootObservationId,
+            parentObservationId: this.currentParentObservationId(state),
             startTime: Number.isFinite(message.timestamp) ? new Date(message.timestamp).toISOString() : undefined,
             input: null,
         });
         this.updateGenerationModel(observation, message);
         state.activeGenerationId = observation.id;
-        state.graph.observations.push(observation);
-        return cloneGraph(state.graph);
+        state.detail.observations.push(observation);
+        return cloneTraceDetail(state.detail);
     }
 
-    private updateGenerationResponse(sessionPath: string, event: Record<string, unknown>): TraceGraph | undefined {
+    private updateGenerationResponse(sessionPath: string, event: Record<string, unknown>): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
         const observation = state ? this.findObservation(state, state.activeGenerationId) : undefined;
         if (!state || !observation) return undefined;
@@ -234,18 +238,15 @@ export class LangfuseTraceBuilder {
             status: event.status,
             headers: event.headers,
         };
-        return cloneGraph(state.graph);
+        return cloneTraceDetail(state.detail);
     }
 
-    private updateGenerationFromMessage(
-        sessionPath: string,
-        event: Record<string, unknown>
-    ): TraceGraph | undefined {
+    private updateGenerationFromMessage(sessionPath: string, event: Record<string, unknown>): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
         const observation = state ? this.findObservation(state, state.activeGenerationId) : undefined;
         const message = event.message;
         if (!state || !observation || !isAssistantMessage(message)) {
-            return state ? cloneGraph(state.graph) : undefined;
+            return state ? cloneTraceDetail(state.detail) : undefined;
         }
         observation.output = assistantText(message);
         this.updateGenerationModel(observation, message);
@@ -256,13 +257,14 @@ export class LangfuseTraceBuilder {
         ) {
             observation.timeToFirstToken = elapsedSeconds(observation.startTime, this.now());
         }
-        return cloneGraph(state.graph);
+        return cloneTraceDetail(state.detail);
     }
 
-    private endGenerationFromMessage(sessionPath: string, message: unknown): TraceGraph | undefined {
+    private endGenerationFromMessage(sessionPath: string, message: unknown): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
         const observation = state ? this.findObservation(state, state.activeGenerationId) : undefined;
-        if (!state || !observation || !isAssistantMessage(message)) return state ? cloneGraph(state.graph) : undefined;
+        if (!state || !observation || !isAssistantMessage(message))
+            return state ? cloneTraceDetail(state.detail) : undefined;
         const usage = asRecord(message.usage);
         observation.endTime = this.now();
         observation.latency = elapsedSeconds(observation.startTime, observation.endTime);
@@ -273,14 +275,14 @@ export class LangfuseTraceBuilder {
         if (message.stopReason === "error") {
             observation.level = "ERROR";
             observation.statusMessage = message.errorMessage ?? "Generation failed";
-            state.graph.trace.status = "error";
+            state.detail.trace.status = "error";
         }
         state.activeGenerationId = undefined;
-        return cloneGraph(state.graph);
+        return cloneTraceDetail(state.detail);
     }
 
     private updateGenerationModel(
-        observation: LangfuseObservation,
+        observation: Observation,
         message: {
             model?: string;
             responseModel?: string;
@@ -293,7 +295,7 @@ export class LangfuseTraceBuilder {
         if (message.model != null) observation.metadata.requestedModel = message.model;
     }
 
-    private handleMessageEnd(sessionPath: string, event: Record<string, unknown>): TraceGraph | undefined {
+    private handleMessageEnd(sessionPath: string, event: Record<string, unknown>): TraceDetail | undefined {
         if (isUserMessage(event.message)) {
             return this.updateTraceInputFromUserMessage(sessionPath, event);
         }
@@ -303,44 +305,45 @@ export class LangfuseTraceBuilder {
     private updateTraceInputFromUserMessage(
         sessionPath: string,
         event: Record<string, unknown>
-    ): TraceGraph | undefined {
+    ): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
-        if (!state || !isUserMessage(event.message)) return state ? cloneGraph(state.graph) : undefined;
+        if (!state || !isUserMessage(event.message)) return state ? cloneTraceDetail(state.detail) : undefined;
         const text = messageText(event.message);
-        if (state.graph.trace.input == null && text) {
-            state.graph.trace.input = text;
+        if (state.detail.trace.input == null && text) {
+            state.detail.trace.input = text;
         }
         if (typeof event.entryId === "string") {
-            state.graph.trace.metadata = {
-                ...state.graph.trace.metadata,
+            state.detail.trace.metadata = {
+                ...state.detail.trace.metadata,
                 userEntryId: event.entryId,
             };
         }
-        state.graph.observations[0].input = state.graph.trace.input;
-        return cloneGraph(state.graph);
+        state.detail.observations[0].input = state.detail.trace.input;
+        this.ensureTurnObservation(state, event, text);
+        return cloneTraceDetail(state.detail);
     }
 
-    private startTool(sessionPath: string, event: Record<string, unknown>): TraceGraph | undefined {
+    private startTool(sessionPath: string, event: Record<string, unknown>): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
         if (!state) return undefined;
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : this.createId("observation");
         const toolName =
             typeof event.toolName === "string" ? event.toolName : typeof event.name === "string" ? event.name : "tool";
         const observation = this.makeObservation({
-            traceId: state.graph.trace.id,
+            traceId: state.detail.trace.id,
             type: "TOOL",
             name: toolName,
-            parentObservationId: state.rootObservationId,
+            parentObservationId: this.currentParentObservationId(state),
             input: event.input ?? event.args ?? null,
             toolCalls: [toolCallId],
             toolCallNames: [toolName],
         });
         state.activeToolObservationIds.set(toolCallId, observation.id);
-        state.graph.observations.push(observation);
-        return cloneGraph(state.graph);
+        state.detail.observations.push(observation);
+        return cloneTraceDetail(state.detail);
     }
 
-    private endTool(sessionPath: string, event: Record<string, unknown>): TraceGraph | undefined {
+    private endTool(sessionPath: string, event: Record<string, unknown>): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
         if (!state) return undefined;
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
@@ -348,7 +351,7 @@ export class LangfuseTraceBuilder {
             state,
             toolCallId ? state.activeToolObservationIds.get(toolCallId) : undefined
         );
-        if (!observation) return cloneGraph(state.graph);
+        if (!observation) return cloneTraceDetail(state.detail);
         const toolName = typeof event.toolName === "string" ? event.toolName : (observation.name ?? "tool");
         const isError = event.isError === true;
         observation.endTime = this.now();
@@ -361,44 +364,42 @@ export class LangfuseTraceBuilder {
             observation.statusMessage = `Tool ${toolName} failed`;
         }
         if (toolCallId) state.activeToolObservationIds.delete(toolCallId);
-        return cloneGraph(state.graph);
+        return cloneTraceDetail(state.detail);
     }
 
-    private addEvent(sessionPath: string, name: string, event: Record<string, unknown>): TraceGraph | undefined {
+    private addEvent(sessionPath: string, name: string, event: Record<string, unknown>): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
         if (!state) return undefined;
         const observation = this.makeObservation({
-            traceId: state.graph.trace.id,
+            traceId: state.detail.trace.id,
             type: "EVENT",
             name,
-            parentObservationId: state.rootObservationId,
+            parentObservationId: this.currentParentObservationId(state),
             input: event,
         });
         observation.endTime = observation.startTime;
-        state.graph.observations.push(observation);
-        return cloneGraph(state.graph);
+        state.detail.observations.push(observation);
+        return cloneTraceDetail(state.detail);
     }
 
     private finishTrace(
         sessionPath: string,
         status: TraceStatus,
         event: Record<string, unknown>
-    ): TraceGraph | undefined {
+    ): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
         if (!state) return undefined;
         const endedAt = this.now();
-        state.graph.trace.status = state.graph.trace.status === "error" ? "error" : status;
-        state.graph.trace.endedAt = endedAt;
-        state.graph.trace.output = event;
-        for (const observation of state.graph.observations) {
+        state.detail.trace.status = state.detail.trace.status === "error" ? "error" : status;
+        state.detail.trace.endedAt = endedAt;
+        state.detail.trace.output = event;
+        for (const observation of state.detail.observations) {
             if (observation.endTime == null) observation.endTime = endedAt;
         }
-        return cloneGraph(state.graph);
+        return cloneTraceDetail(state.detail);
     }
 
-    private makeObservation(
-        input: Partial<LangfuseObservation> & { traceId: string; type: LangfuseObservation["type"] }
-    ): LangfuseObservation {
+    private makeObservation(input: Partial<Observation> & { traceId: string; type: Observation["type"] }): Observation {
         return {
             id: input.id ?? this.createId("observation"),
             traceId: input.traceId,
@@ -427,13 +428,55 @@ export class LangfuseTraceBuilder {
         return this.states.get(sessionPath);
     }
 
-    private findObservation(state: BuilderState, observationId: string | undefined): LangfuseObservation | undefined {
+    private findObservation(state: BuilderState, observationId: string | undefined): Observation | undefined {
         if (!observationId) return undefined;
-        return state.graph.observations.find((observation) => observation.id === observationId);
+        return state.detail.observations.find((observation) => observation.id === observationId);
     }
 
-    private snapshot(sessionPath: string): TraceGraph | undefined {
+    private currentParentObservationId(state: BuilderState): string {
+        return state.currentTurnObservationId ?? state.rootObservationId;
+    }
+
+    private ensureTurnObservation(state: BuilderState, event: Record<string, unknown>, input: string): Observation {
+        const entryId = typeof event.entryId === "string" ? event.entryId : undefined;
+        const existingTurnId = entryId ? state.turnObservationIds.get(entryId) : undefined;
+        const existingTurn = this.findObservation(state, existingTurnId);
+        if (existingTurn) {
+            existingTurn.input = input;
+            existingTurn.metadata = { ...existingTurn.metadata, entryId, role: "user" };
+            state.currentTurnObservationId = existingTurn.id;
+            return existingTurn;
+        }
+
+        const now = this.now();
+        const currentTurn = this.findObservation(state, state.currentTurnObservationId);
+        if (currentTurn && currentTurn.endTime == null) {
+            currentTurn.endTime = now;
+            currentTurn.latency = elapsedSeconds(currentTurn.startTime, currentTurn.endTime);
+        }
+
+        const turn = this.makeObservation({
+            traceId: state.detail.trace.id,
+            type: "SPAN",
+            name: "turn",
+            parentObservationId: state.rootObservationId,
+            startTime: now,
+            input,
+            metadata: {
+                ...(entryId ? { entryId } : {}),
+                role: "user",
+            },
+        });
+        state.detail.observations.push(turn);
+        state.currentTurnObservationId = turn.id;
+        if (entryId) {
+            state.turnObservationIds.set(entryId, turn.id);
+        }
+        return turn;
+    }
+
+    private snapshot(sessionPath: string): TraceDetail | undefined {
         const state = this.states.get(sessionPath);
-        return state ? cloneGraph(state.graph) : undefined;
+        return state ? cloneTraceDetail(state.detail) : undefined;
     }
 }

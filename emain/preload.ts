@@ -34,7 +34,7 @@ ipcRenderer.on("agent:event", (_event, payload: { sessionPath: string; event: un
 });
 
 const agentObservabilityCallbacks = new Map<string, Set<(event: unknown) => void>>();
-ipcRenderer.on("agent-observability:event", (_event, payload: { sessionId?: string; traceId: string; graph: unknown }) => {
+ipcRenderer.on("agent-observability:event", (_event, payload: { sessionId?: string; traceId: string; detail: unknown }) => {
     if (!payload.sessionId) return;
     const cbs = agentObservabilityCallbacks.get(payload.sessionId);
     if (!cbs) return;

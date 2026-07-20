@@ -45,23 +45,23 @@ function outputText(value: unknown): string {
     }
 }
 
-function traceDurationMs(graph: AgentObservabilityTraceGraph): number {
-    const startedAt = timestampMs(graph.trace.timestamp);
+function traceDurationMs(detail: TraceDetail): number {
+    const startedAt = timestampMs(detail.trace.timestamp);
     if (startedAt == null) {
         return 0;
     }
-    const endedAt = timestampMs(graph.trace.endedAt);
+    const endedAt = timestampMs(detail.trace.endedAt);
     if (endedAt != null) {
         return Math.max(0, endedAt - startedAt);
     }
-    const latestObservationAt = graph.observations.reduce((latest, observation) => {
+    const latestObservationAt = detail.observations.reduce((latest, observation) => {
         const boundary = timestampMs(observation.endTime ?? observation.startTime);
         return boundary == null ? latest : Math.max(latest, boundary);
     }, startedAt);
     return Math.max(0, latestObservationAt - startedAt);
 }
 
-export function computeTraceMetrics(graph: AgentObservabilityTraceGraph): TraceMetrics {
+export function computeTraceMetrics(detail: TraceDetail): TraceMetrics {
     const usage: TraceMetrics["usage"] = {
         input: 0,
         output: 0,
@@ -76,7 +76,7 @@ export function computeTraceMetrics(graph: AgentObservabilityTraceGraph): TraceM
     let totalCost = 0;
     let lastGenerationOutput = "";
 
-    for (const observation of graph.observations) {
+    for (const observation of detail.observations) {
         if (observation.type === "GENERATION") {
             generationCount += 1;
             const output = outputText(observation.output);
@@ -100,7 +100,7 @@ export function computeTraceMetrics(graph: AgentObservabilityTraceGraph): TraceM
     }
 
     return {
-        durationMs: traceDurationMs(graph),
+        durationMs: traceDurationMs(detail),
         generationCount,
         toolCount,
         lifecycleCount,
@@ -108,6 +108,6 @@ export function computeTraceMetrics(graph: AgentObservabilityTraceGraph): TraceM
         usage,
         totalCost,
         finalOutput:
-            typeof graph.trace.output === "string" && graph.trace.output ? graph.trace.output : lastGenerationOutput,
+            typeof detail.trace.output === "string" && detail.trace.output ? detail.trace.output : lastGenerationOutput,
     };
 }

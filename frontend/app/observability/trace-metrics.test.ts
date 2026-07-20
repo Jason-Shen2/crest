@@ -4,9 +4,9 @@ import { computeTraceMetrics } from "./trace-metrics";
 
 function makeObservation(
     id: string,
-    type: AgentObservabilityObservation["type"],
-    overrides: Partial<AgentObservabilityObservation> = {}
-): AgentObservabilityObservation {
+    type: Observation["type"],
+    overrides: Partial<Observation> = {}
+): Observation {
     return {
         id,
         traceId: "trace-1",
@@ -32,7 +32,7 @@ function makeObservation(
     };
 }
 
-function makeGraph(overrides: Partial<AgentObservabilityTraceGraph> = {}): AgentObservabilityTraceGraph {
+function makeTraceDetail(overrides: Partial<TraceDetail> = {}): TraceDetail {
     return {
         trace: {
             id: "trace-1",
@@ -41,21 +41,25 @@ function makeGraph(overrides: Partial<AgentObservabilityTraceGraph> = {}): Agent
             endedAt: "2026-07-19T00:00:05.000Z",
             environment: "test",
             tags: [],
+            release: null,
+            version: null,
             input: "Start",
             output: "Finished",
             metadata: {},
             sessionId: "session-1",
+            userId: null,
             status: "success",
         },
         observations: [],
         scores: [],
+        corrections: [],
         ...overrides,
     };
 }
 
 describe("computeTraceMetrics", () => {
     it("aggregates duration, counts, usage, cost, and final output", () => {
-        const graph = makeGraph({
+        const detail = makeTraceDetail({
             observations: [
                 makeObservation("root-1", "AGENT", { parentObservationId: null }),
                 makeObservation("generation-1", "GENERATION", {
@@ -77,7 +81,7 @@ describe("computeTraceMetrics", () => {
             ],
         });
 
-        expect(computeTraceMetrics(graph)).toMatchObject({
+        expect(computeTraceMetrics(detail)).toMatchObject({
             durationMs: 5000,
             generationCount: 2,
             toolCount: 2,
@@ -96,9 +100,9 @@ describe("computeTraceMetrics", () => {
     });
 
     it("uses the latest observation boundary for a running trace duration", () => {
-        const graph = makeGraph({
+        const detail = makeTraceDetail({
             trace: {
-                ...makeGraph().trace,
+                ...makeTraceDetail().trace,
                 status: "running",
                 endedAt: undefined,
             },
@@ -114,7 +118,7 @@ describe("computeTraceMetrics", () => {
             ],
         });
 
-        expect(computeTraceMetrics(graph).durationMs).toBe(3500);
+        expect(computeTraceMetrics(detail).durationMs).toBe(3500);
     });
 
     it("treats missing or non-numeric usage and cost values as zero", () => {
@@ -129,7 +133,7 @@ describe("computeTraceMetrics", () => {
             output: null,
             total: 0.002,
         } as unknown as Record<string, number>;
-        const graph = makeGraph({
+        const detail = makeTraceDetail({
             observations: [
                 makeObservation("generation-1", "GENERATION", {
                     usageDetails: malformedDetails,
@@ -142,7 +146,7 @@ describe("computeTraceMetrics", () => {
             ],
         });
 
-        expect(computeTraceMetrics(graph)).toMatchObject({
+        expect(computeTraceMetrics(detail)).toMatchObject({
             usage: {
                 input: 0,
                 output: 0,
@@ -155,7 +159,7 @@ describe("computeTraceMetrics", () => {
     });
 
     it("uses costDetails total instead of double-counting its component costs", () => {
-        const graph = makeGraph({
+        const detail = makeTraceDetail({
             observations: [
                 makeObservation("generation-1", "GENERATION", {
                     costDetails: {
@@ -175,13 +179,13 @@ describe("computeTraceMetrics", () => {
             ],
         });
 
-        expect(computeTraceMetrics(graph).totalCost).toBe(0.016);
+        expect(computeTraceMetrics(detail).totalCost).toBe(0.016);
     });
 
     it("falls back to the last generation output when trace output is absent", () => {
-        const graph = makeGraph({
+        const detail = makeTraceDetail({
             trace: {
-                ...makeGraph().trace,
+                ...makeTraceDetail().trace,
                 output: null,
             },
             observations: [
@@ -191,13 +195,13 @@ describe("computeTraceMetrics", () => {
             ],
         });
 
-        expect(computeTraceMetrics(graph).finalOutput).toBe("Last generation");
+        expect(computeTraceMetrics(detail).finalOutput).toBe("Last generation");
     });
 
     it("ignores the finishTrace agent_end event and uses the last generation output", () => {
-        const graph = makeGraph({
+        const detail = makeTraceDetail({
             trace: {
-                ...makeGraph().trace,
+                ...makeTraceDetail().trace,
                 output: {
                     type: "agent_end",
                     messages: [
@@ -214,11 +218,11 @@ describe("computeTraceMetrics", () => {
             ],
         });
 
-        expect(computeTraceMetrics(graph).finalOutput).toBe("Finished");
+        expect(computeTraceMetrics(detail).finalOutput).toBe("Finished");
     });
 
     it("excludes the AGENT root from lifecycle and error counts", () => {
-        const graph = makeGraph({
+        const detail = makeTraceDetail({
             observations: [
                 makeObservation("root-1", "AGENT", {
                     parentObservationId: null,
@@ -228,7 +232,7 @@ describe("computeTraceMetrics", () => {
             ],
         });
 
-        expect(computeTraceMetrics(graph)).toMatchObject({
+        expect(computeTraceMetrics(detail)).toMatchObject({
             generationCount: 0,
             toolCount: 0,
             lifecycleCount: 0,

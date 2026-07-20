@@ -21,7 +21,7 @@ export type ScoreSource = "API" | "EVAL" | "ANNOTATION";
 
 export type ScoreDataType = "NUMERIC" | "CATEGORICAL" | "BOOLEAN" | "CORRECTION" | "TEXT";
 
-export interface LangfuseTrace {
+export interface Trace {
     id: string;
     name: string | null;
     timestamp: string;
@@ -38,7 +38,7 @@ export interface LangfuseTrace {
     endedAt?: string;
 }
 
-export interface LangfuseObservation {
+export interface Observation {
     id: string;
     traceId: string;
     type: ObservationType;
@@ -61,7 +61,7 @@ export interface LangfuseObservation {
     toolCallNames: string[] | null;
 }
 
-export interface LangfuseScore {
+export interface Score {
     id: string;
     traceId: string;
     observationId: string | null;
@@ -72,10 +72,11 @@ export interface LangfuseScore {
     comment: string | null;
 }
 
-export interface TraceGraph {
-    trace: LangfuseTrace;
-    observations: LangfuseObservation[];
-    scores: LangfuseScore[];
+export interface TraceDetail {
+    trace: Trace;
+    observations: Observation[];
+    scores: Score[];
+    corrections: Score[];
 }
 
 export interface TraceBuilderEventInput {

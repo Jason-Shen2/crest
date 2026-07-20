@@ -8,9 +8,9 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { SqliteTraceStore } from "./sqlite-trace-store";
-import type { TraceGraph } from "./types";
+import type { TraceDetail } from "./types";
 
-function makeGraph(sessionId: string): TraceGraph {
+function makeTraceDetail(sessionId: string): TraceDetail {
     return {
         trace: {
             id: "trace-1",
@@ -29,6 +29,7 @@ function makeGraph(sessionId: string): TraceGraph {
         },
         observations: [],
         scores: [],
+        corrections: [],
     };
 }
 
@@ -47,9 +48,50 @@ describe("SqliteTraceStore session scope", () => {
     });
 
     it("does not return a trace outside the requested session", () => {
-        store.saveGraph(makeGraph("session-a"));
+        store.saveTraceDetail(makeTraceDetail("session-a"));
 
-        expect(store.getTraceGraph("trace-1", "session-b")).toBeUndefined();
-        expect(store.getTraceGraph("trace-1", "session-a")?.trace.id).toBe("trace-1");
+        expect(store.getTraceDetail("trace-1", "session-b")).toBeUndefined();
+        expect(store.getTraceDetail("trace-1", "session-a")?.trace.id).toBe("trace-1");
+    });
+
+    it("round-trips scores and corrections in trace detail", () => {
+        store.saveTraceDetail({
+            ...makeTraceDetail("session-a"),
+            scores: [
+                {
+                    id: "score-1",
+                    traceId: "trace-1",
+                    observationId: null,
+                    name: "quality",
+                    source: "API",
+                    dataType: "NUMERIC",
+                    value: 0.9,
+                    comment: "looks good",
+                },
+            ],
+            corrections: [
+                {
+                    id: "correction-1",
+                    traceId: "trace-1",
+                    observationId: null,
+                    name: "expected-output",
+                    source: "ANNOTATION",
+                    dataType: "CORRECTION",
+                    value: "corrected answer",
+                    comment: null,
+                },
+            ],
+        });
+
+        const detail = store.getTraceDetail("trace-1", "session-a");
+
+        expect(detail?.scores).toHaveLength(1);
+        expect(detail?.scores[0]).toMatchObject({ id: "score-1", dataType: "NUMERIC", value: 0.9 });
+        expect(detail?.corrections).toHaveLength(1);
+        expect(detail?.corrections[0]).toMatchObject({
+            id: "correction-1",
+            dataType: "CORRECTION",
+            value: "corrected answer",
+        });
     });
 });

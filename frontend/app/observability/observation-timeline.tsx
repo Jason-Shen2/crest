@@ -14,7 +14,7 @@ import { presentObservation, type ObservationCategory, type ObservationPresentat
 import { ObservationRow } from "./observation-row";
 
 export interface TimelineRow {
-    observation: AgentObservabilityObservation;
+    observation: Observation;
     presentation: ObservationPresentation;
     category: ObservationCategory;
     searchableText: string;
@@ -28,7 +28,7 @@ export interface TimelineRowsCache {
 }
 
 interface ObservationTimelineProps {
-    graph: AgentObservabilityTraceGraph;
+    detail: TraceDetail;
     query: string;
     categories: Set<ObservationCategory>;
     expandedObservationIds: Set<string>;
@@ -52,7 +52,7 @@ function formatRelativeTime(startTime: string, traceTimestamp: string): string {
     return `+${Math.max(0, offsetMs / 1000).toFixed(1)}s`;
 }
 
-function makeTimelineRow(observation: AgentObservabilityObservation, traceTimestamp: string): TimelineRow {
+function makeTimelineRow(observation: Observation, traceTimestamp: string): TimelineRow {
     const presentation = presentObservation(observation);
     return {
         observation,
@@ -64,13 +64,13 @@ function makeTimelineRow(observation: AgentObservabilityObservation, traceTimest
 }
 
 export function buildTimelineRows(
-    graph: AgentObservabilityTraceGraph,
+    detail: TraceDetail,
     previous?: TimelineRowsCache
 ): TimelineRowsCache {
-    const observations = graph.observations.filter((observation) => observation.type !== "AGENT");
+    const observations = detail.observations.filter((observation) => observation.type !== "AGENT");
     const tailObservation = observations[observations.length - 1];
     const canReuseStreamingPrefix =
-        previous?.traceId === graph.trace.id &&
+        previous?.traceId === detail.trace.id &&
         observations.length > 0 &&
         observations.length === previous.sourceObservationIds.length &&
         tailObservation.type === "GENERATION" &&
@@ -81,9 +81,9 @@ export function buildTimelineRows(
 
     if (canReuseStreamingPrefix) {
         return {
-            traceId: graph.trace.id,
+            traceId: detail.trace.id,
             sourceObservationIds: previous.sourceObservationIds,
-            rows: [...previous.rows.slice(0, -1), makeTimelineRow(tailObservation, graph.trace.timestamp)],
+            rows: [...previous.rows.slice(0, -1), makeTimelineRow(tailObservation, detail.trace.timestamp)],
         };
     }
 
@@ -94,16 +94,16 @@ export function buildTimelineRows(
                 new Date(left.observation.startTime).getTime() - new Date(right.observation.startTime).getTime() ||
                 left.index - right.index
         )
-        .map(({ observation }) => makeTimelineRow(observation, graph.trace.timestamp));
+        .map(({ observation }) => makeTimelineRow(observation, detail.trace.timestamp));
     return {
-        traceId: graph.trace.id,
+        traceId: detail.trace.id,
         sourceObservationIds: observations.map((observation) => observation.id),
         rows,
     };
 }
 
 export function ObservationTimeline({
-    graph,
+    detail,
     query,
     categories,
     expandedObservationIds,
@@ -121,7 +121,7 @@ export function ObservationTimeline({
     const scrollRef = useRef<HTMLDivElement>(null);
     const autoScrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
     const rowsCacheRef = useRef<TimelineRowsCache>(undefined);
-    const rowsCache = useMemo(() => buildTimelineRows(graph, rowsCacheRef.current), [graph]);
+    const rowsCache = useMemo(() => buildTimelineRows(detail, rowsCacheRef.current), [detail]);
     rowsCacheRef.current = rowsCache;
     const rows = useMemo(() => filterTimelineRows(rowsCache.rows, query, categories), [rowsCache, query, categories]);
     const rowVirtualizer = useVirtualizer({
@@ -255,7 +255,7 @@ export function ObservationTimeline({
                                     observation={row.observation}
                                     presentation={row.presentation}
                                     relativeTime={row.relativeTime}
-                                    traceTimestamp={graph.trace.timestamp}
+                                    traceTimestamp={detail.trace.timestamp}
                                     expanded={expandedObservationIds.has(row.observation.id)}
                                     selected={selectedObservationId === row.observation.id}
                                     renderInlineDetail={renderInlineDetails}

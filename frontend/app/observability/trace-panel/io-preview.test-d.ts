@@ -5,6 +5,7 @@ import { expectTypeOf } from "vitest";
 
 import type { IOPreviewProps } from "./io-preview";
 
-type CopyScopeKeyIsRequired = {} extends Pick<IOPreviewProps, "copyScopeKey"> ? false : true;
+type CopyScopeKey = Pick<IOPreviewProps, "copyScopeKey">;
+type CopyScopeKeyIsRequired = CopyScopeKey extends Required<CopyScopeKey> ? true : false;
 
 expectTypeOf<CopyScopeKeyIsRequired>().toEqualTypeOf<true>();

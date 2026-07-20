@@ -6,11 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as electron from "electron";
 import {
     _resetAgentObservabilityForTests,
-    AgentObservabilityEventCoalescer,
+    TraceEventCoalescer,
     registerAgentObservabilityIpcHandlers,
 } from "./agent-observability-ipc";
-import { LangfuseTraceBuilder } from "./agent/observability/trace-builder";
-import type { TraceGraph } from "./agent/observability/types";
+import { TraceBuilder } from "./agent/observability/trace-builder";
+import type { TraceDetail } from "./agent/observability/types";
 
 vi.mock("electron", () => ({
     ipcMain: {
@@ -20,13 +20,13 @@ vi.mock("electron", () => ({
 }));
 
 const TraceStoreMock = vi.hoisted(() => ({
-    getTraceGraph: vi.fn(),
+    getTraceDetail: vi.fn(),
     listTraces: vi.fn(() => []),
 }));
 
 vi.mock("./agent/observability/sqlite-trace-store", () => ({
     SqliteTraceStore: class {
-        getTraceGraph = TraceStoreMock.getTraceGraph;
+        getTraceDetail = TraceStoreMock.getTraceDetail;
         listTraces = TraceStoreMock.listTraces;
     },
 }));
@@ -36,11 +36,11 @@ interface Coalescer {
     dispose(): void;
 }
 
-function makeCoalescer(saveGraph: (graph: TraceGraph) => void, publishGraph: (graph: TraceGraph) => void): Coalescer {
-    return new AgentObservabilityEventCoalescer({
-        builder: new LangfuseTraceBuilder(),
-        saveGraph,
-        publishGraph,
+function makeCoalescer(saveTraceDetail: (detail: TraceDetail) => void, publishTraceDetail: (detail: TraceDetail) => void): Coalescer {
+    return new TraceEventCoalescer({
+        builder: new TraceBuilder(),
+        saveTraceDetail,
+        publishTraceDetail,
         updateIntervalMs: 50,
     });
 }
@@ -61,51 +61,51 @@ function update(text: string): { type: string; [key: string]: unknown } {
     };
 }
 
-function generationOutput(graph: TraceGraph): unknown {
-    return graph.observations.find((observation) => observation.type === "GENERATION")?.output;
+function generationOutput(detail: TraceDetail): unknown {
+    return detail.observations.find((observation) => observation.type === "GENERATION")?.output;
 }
 
-describe("AgentObservabilityEventCoalescer", () => {
+describe("TraceEventCoalescer", () => {
     afterEach(() => {
         vi.useRealTimers();
         _resetAgentObservabilityForTests();
         vi.clearAllMocks();
     });
 
-    it("coalesces message updates independently per session and only publishes the latest graph", () => {
+    it("coalesces message updates independently per session and only publishes the latest detail", () => {
         vi.useFakeTimers();
-        const saveGraph = vi.fn();
-        const publishGraph = vi.fn();
-        const coalescer = makeCoalescer(saveGraph, publishGraph);
+        const saveTraceDetail = vi.fn();
+        const publishTraceDetail = vi.fn();
+        const coalescer = makeCoalescer(saveTraceDetail, publishTraceDetail);
         startGeneration(coalescer, "session-a");
         startGeneration(coalescer, "session-b");
-        saveGraph.mockClear();
-        publishGraph.mockClear();
+        saveTraceDetail.mockClear();
+        publishTraceDetail.mockClear();
 
         coalescer.handle("session-a", update("a1"));
         coalescer.handle("session-a", update("a2"));
         coalescer.handle("session-b", update("b1"));
 
-        expect(saveGraph).not.toHaveBeenCalled();
-        expect(publishGraph).not.toHaveBeenCalled();
+        expect(saveTraceDetail).not.toHaveBeenCalled();
+        expect(publishTraceDetail).not.toHaveBeenCalled();
         vi.advanceTimersByTime(49);
-        expect(publishGraph).not.toHaveBeenCalled();
+        expect(publishTraceDetail).not.toHaveBeenCalled();
         vi.advanceTimersByTime(1);
 
-        expect(saveGraph).not.toHaveBeenCalled();
-        expect(publishGraph).toHaveBeenCalledTimes(2);
-        expect(publishGraph.mock.calls.map(([graph]) => generationOutput(graph))).toEqual(["a2", "b1"]);
+        expect(saveTraceDetail).not.toHaveBeenCalled();
+        expect(publishTraceDetail).toHaveBeenCalledTimes(2);
+        expect(publishTraceDetail.mock.calls.map(([detail]) => generationOutput(detail))).toEqual(["a2", "b1"]);
         coalescer.dispose();
     });
 
-    it("flushes a pending update before message_end and persists the final graph", () => {
+    it("flushes a pending update before message_end and persists the final detail", () => {
         vi.useFakeTimers();
-        const saveGraph = vi.fn();
-        const publishGraph = vi.fn();
-        const coalescer = makeCoalescer(saveGraph, publishGraph);
+        const saveTraceDetail = vi.fn();
+        const publishTraceDetail = vi.fn();
+        const coalescer = makeCoalescer(saveTraceDetail, publishTraceDetail);
         startGeneration(coalescer, "session-a");
-        saveGraph.mockClear();
-        publishGraph.mockClear();
+        saveTraceDetail.mockClear();
+        publishTraceDetail.mockClear();
 
         coalescer.handle("session-a", update("partial"));
         coalescer.handle("session-a", {
@@ -118,12 +118,12 @@ describe("AgentObservabilityEventCoalescer", () => {
             },
         });
 
-        expect(publishGraph).toHaveBeenCalledTimes(2);
-        expect(publishGraph.mock.calls.map(([graph]) => generationOutput(graph))).toEqual(["partial", "final"]);
-        expect(saveGraph).toHaveBeenCalledTimes(1);
-        expect(generationOutput(saveGraph.mock.calls[0][0])).toBe("final");
+        expect(publishTraceDetail).toHaveBeenCalledTimes(2);
+        expect(publishTraceDetail.mock.calls.map(([detail]) => generationOutput(detail))).toEqual(["partial", "final"]);
+        expect(saveTraceDetail).toHaveBeenCalledTimes(1);
+        expect(generationOutput(saveTraceDetail.mock.calls[0][0])).toBe("final");
         vi.advanceTimersByTime(50);
-        expect(publishGraph).toHaveBeenCalledTimes(2);
+        expect(publishTraceDetail).toHaveBeenCalledTimes(2);
         coalescer.dispose();
     });
 
@@ -132,7 +132,7 @@ describe("AgentObservabilityEventCoalescer", () => {
         const order: string[] = [];
         const coalescer = makeCoalescer(
             () => order.push("save"),
-            (graph) => order.push(`publish:${generationOutput(graph) ?? graph.observations.at(-1)?.type}`)
+            (detail) => order.push(`publish:${generationOutput(detail) ?? detail.observations.at(-1)?.type}`)
         );
         startGeneration(coalescer, "session-a");
         order.length = 0;
@@ -165,7 +165,7 @@ describe("agent observability IPC scope", () => {
         await handlers.get("agent-observability:get-trace")?.({}, "trace-1", "session-a");
 
         expect(TraceStoreMock.listTraces).toHaveBeenCalledWith("session-a");
-        expect(TraceStoreMock.getTraceGraph).toHaveBeenCalledWith("trace-1", "session-a");
+        expect(TraceStoreMock.getTraceDetail).toHaveBeenCalledWith("trace-1", "session-a");
     });
 
     it("rejects missing or blank session scope for list and get", async () => {
@@ -185,7 +185,7 @@ describe("agent observability IPC scope", () => {
             Promise.resolve().then(() => handlers.get("agent-observability:get-trace")?.({}, "trace-1"))
         ).rejects.toThrow(/sessionId must be a non-empty string/);
         expect(TraceStoreMock.listTraces).not.toHaveBeenCalled();
-        expect(TraceStoreMock.getTraceGraph).not.toHaveBeenCalled();
+        expect(TraceStoreMock.getTraceDetail).not.toHaveBeenCalled();
     });
 
     it("rejects subscription without a non-empty session scope", () => {

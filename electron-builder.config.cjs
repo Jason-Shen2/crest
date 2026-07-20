@@ -30,6 +30,16 @@ const config = {
             filter: ["package.json"],
         },
         {
+            from: ".",
+            to: ".",
+            filter: [
+                "NOTICE",
+                "NOTICES.md",
+                "frontend/app/observability/trace-panel/LICENSE.langfuse",
+                "third_party/licenses/elkjs-EPL-2.0.md",
+            ],
+        },
+        {
             from: "node_modules/typescript-language-server",
             to: "node_modules/typescript-language-server",
             filter: ["lib/**/*", "package.json"],

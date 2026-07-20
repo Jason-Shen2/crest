@@ -21,4 +21,17 @@ describe("electron-builder config", () => {
         expect(config.asarUnpack).toContain("node_modules/typescript-language-server/**");
         expect(config.asarUnpack).toContain("node_modules/typescript/**");
     });
+
+    it("packages third-party notices and license texts", () => {
+        expect(config.files).toContainEqual({
+            from: ".",
+            to: ".",
+            filter: [
+                "NOTICE",
+                "NOTICES.md",
+                "frontend/app/observability/trace-panel/LICENSE.langfuse",
+                "third_party/licenses/elkjs-EPL-2.0.md",
+            ],
+        });
+    });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { presentObservation } from "./observation-presentation";
 
-export function makeObservation(overrides: Partial<AgentObservabilityObservation> = {}): AgentObservabilityObservation {
+export function makeObservation(overrides: Partial<Observation> = {}): Observation {
     return {
         id: "obs-1",
         traceId: "trace-1",
@@ -28,7 +28,7 @@ export function makeObservation(overrides: Partial<AgentObservabilityObservation
     };
 }
 
-describe("AgentObservabilityObservation renderer contract", () => {
+describe("Observation renderer contract", () => {
     it("contains the Langfuse observation fields used by the dashboard", () => {
         const observation = makeObservation();
         expect(observation.toolCallNames).toEqual(["read"]);

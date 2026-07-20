@@ -3,30 +3,30 @@
 
 import { describe, expect, it } from "vitest";
 
-import { LangfuseTraceBuilder } from "./trace-builder";
-import type { TraceGraph } from "./types";
+import { TraceBuilder } from "./trace-builder";
+import type { TraceDetail } from "./types";
 
-function makeBuilder(): LangfuseTraceBuilder {
+function makeBuilder(): TraceBuilder {
     let nextId = 0;
     let nextTime = 0;
-    return new LangfuseTraceBuilder({
+    return new TraceBuilder({
         createId: (prefix) => `${prefix}-${++nextId}`,
         now: () => new Date(Date.UTC(2026, 6, 18, 8, 0, nextTime++)).toISOString(),
     });
 }
 
-function lastGraph(graph: TraceGraph | undefined): TraceGraph {
-    expect(graph).toBeDefined();
-    return graph!;
+function lastGraph(detail: TraceDetail | undefined): TraceDetail {
+    expect(detail).toBeDefined();
+    return detail!;
 }
 
-describe("LangfuseTraceBuilder", () => {
+describe("TraceBuilder", () => {
     it("maps subscriber-visible generation model metadata", () => {
         const builder = makeBuilder();
         const sessionPath = "/tmp/crest/sessions/project/model.db";
 
         builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
-        const graph = lastGraph(
+        const detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -40,7 +40,7 @@ describe("LangfuseTraceBuilder", () => {
                 },
             })
         );
-        expect(graph.observations[1].model).toBe("openrouter/auto");
+        expect(detail.observations[1].model).toBe("openrouter/auto");
 
         const completedGraph = lastGraph(
             builder.applyEvent({
@@ -71,7 +71,7 @@ describe("LangfuseTraceBuilder", () => {
 
     it("measures generation timing from the canonical request timestamp", () => {
         let now = "2026-07-18T08:00:00.000Z";
-        const builder = new LangfuseTraceBuilder({
+        const builder = new TraceBuilder({
             createId: (() => {
                 let nextId = 0;
                 return (prefix) => `${prefix}-${++nextId}`;
@@ -91,7 +91,7 @@ describe("LangfuseTraceBuilder", () => {
             },
         });
         now = "2026-07-18T08:00:16.000Z";
-        let graph = lastGraph(
+        let detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -101,11 +101,11 @@ describe("LangfuseTraceBuilder", () => {
                 },
             })
         );
-        expect(graph.observations[1].startTime).toBe("2026-07-18T08:00:10.000Z");
-        expect(graph.observations[1].timeToFirstToken).toBe(6);
+        expect(detail.observations[1].startTime).toBe("2026-07-18T08:00:10.000Z");
+        expect(detail.observations[1].timeToFirstToken).toBe(6);
 
         now = "2026-07-18T08:00:20.000Z";
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -119,33 +119,33 @@ describe("LangfuseTraceBuilder", () => {
                 },
             })
         );
-        expect(graph.observations[1].latency).toBe(10);
-        expect(graph.observations[1].timeToFirstToken).toBe(6);
+        expect(detail.observations[1].latency).toBe(10);
+        expect(detail.observations[1].timeToFirstToken).toBe(6);
     });
 
     it("maps the AgentHarness raw agent event stream into a visible trace", () => {
         const builder = makeBuilder();
         const sessionPath = "/tmp/crest/sessions/project/raw.db";
 
-        let graph = lastGraph(
+        let detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: { type: "agent_start" },
             })
         );
 
-        expect(graph.trace).toMatchObject({
+        expect(detail.trace).toMatchObject({
             id: "trace-1",
             name: "agent_run",
             sessionId: sessionPath,
             status: "running",
         });
-        expect(graph.observations[0]).toMatchObject({
+        expect(detail.observations[0]).toMatchObject({
             type: "AGENT",
             name: "agent",
         });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -156,10 +156,16 @@ describe("LangfuseTraceBuilder", () => {
             })
         );
 
-        expect(graph.trace.input).toBe("What changed?");
-        expect(graph.trace.metadata).toMatchObject({ userEntryId: "entry-user-1" });
+        expect(detail.trace.input).toBe("What changed?");
+        expect(detail.trace.metadata).toMatchObject({ userEntryId: "entry-user-1" });
+        const turn = detail.observations.find((observation) => observation.name === "turn");
+        expect(turn).toMatchObject({
+            type: "SPAN",
+            parentObservationId: "observation-2",
+            input: "What changed?",
+        });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -169,13 +175,14 @@ describe("LangfuseTraceBuilder", () => {
             })
         );
 
-        expect(graph.observations[1]).toMatchObject({
+        let generation = detail.observations.find((observation) => observation.name === "assistant_response");
+        expect(generation).toMatchObject({
             type: "GENERATION",
             name: "assistant_response",
-            parentObservationId: "observation-2",
+            parentObservationId: turn?.id,
         });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -189,12 +196,13 @@ describe("LangfuseTraceBuilder", () => {
             })
         );
 
-        expect(graph.observations[1]).toMatchObject({
+        generation = detail.observations.find((observation) => observation.name === "assistant_response");
+        expect(generation).toMatchObject({
             endTime: null,
             output: "Observed",
         });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -209,49 +217,50 @@ describe("LangfuseTraceBuilder", () => {
             })
         );
 
-        expect(graph.observations[1]).toMatchObject({
+        generation = detail.observations.find((observation) => observation.name === "assistant_response");
+        expect(generation).toMatchObject({
             endTime: expect.any(String),
             output: "Observed changes.",
             usageDetails: { input: 12, output: 4 },
         });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: { type: "agent_end", messages: [] },
             })
         );
 
-        expect(graph.trace.status).toBe("success");
-        expect(graph.trace.endedAt).toEqual(expect.any(String));
+        expect(detail.trace.status).toBe("success");
+        expect(detail.trace.endedAt).toEqual(expect.any(String));
     });
 
     it("maps a run with generation and tool events into Langfuse Trace/Observation objects", () => {
         const builder = makeBuilder();
         const sessionPath = "/tmp/crest/sessions/project/run.db";
 
-        let graph = lastGraph(
+        let detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: { type: "agent_start" },
             })
         );
 
-        expect(graph.trace).toMatchObject({
+        expect(detail.trace).toMatchObject({
             id: "trace-1",
             name: "agent_run",
             sessionId: sessionPath,
             status: "running",
         });
-        expect(graph.observations).toHaveLength(1);
-        expect(graph.observations[0]).toMatchObject({
+        expect(detail.observations).toHaveLength(1);
+        expect(detail.observations[0]).toMatchObject({
             id: "observation-2",
             traceId: "trace-1",
             type: "AGENT",
             name: "agent",
         });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -262,10 +271,16 @@ describe("LangfuseTraceBuilder", () => {
             })
         );
 
-        expect(graph.trace.input).toBe("Summarize the repo");
-        expect(graph.observations[0].input).toBe("Summarize the repo");
+        expect(detail.trace.input).toBe("Summarize the repo");
+        expect(detail.observations[0].input).toBe("Summarize the repo");
+        const turn = detail.observations.find((observation) => observation.name === "turn");
+        expect(turn).toMatchObject({
+            type: "SPAN",
+            parentObservationId: "observation-2",
+            input: "Summarize the repo",
+        });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -275,13 +290,14 @@ describe("LangfuseTraceBuilder", () => {
             })
         );
 
-        expect(graph.observations[1]).toMatchObject({
+        const generation = detail.observations.find((observation) => observation.name === "assistant_response");
+        expect(generation).toMatchObject({
             type: "GENERATION",
             name: "assistant_response",
-            parentObservationId: "observation-2",
+            parentObservationId: turn?.id,
         });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -293,14 +309,15 @@ describe("LangfuseTraceBuilder", () => {
             })
         );
 
-        expect(graph.observations[2]).toMatchObject({
+        let tool = detail.observations.find((observation) => observation.name === "read_file");
+        expect(tool).toMatchObject({
             type: "TOOL",
             name: "read_file",
             input: { path: "README.md" },
-            parentObservationId: "observation-2",
+            parentObservationId: turn?.id,
         });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -313,21 +330,82 @@ describe("LangfuseTraceBuilder", () => {
             })
         );
 
-        expect(graph.observations[2]).toMatchObject({
+        tool = detail.observations.find((observation) => observation.name === "read_file");
+        expect(tool).toMatchObject({
             endTime: expect.any(String),
             level: "ERROR",
             statusMessage: "Tool read_file failed",
         });
 
-        graph = lastGraph(
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: { type: "settled", nextTurnCount: 1 } as any,
             })
         );
 
-        expect(graph.trace.status).toBe("success");
-        expect(graph.trace.endedAt).toEqual(expect.any(String));
-        expect(graph.observations[0].endTime).toEqual(expect.any(String));
+        expect(detail.trace.status).toBe("success");
+        expect(detail.trace.endedAt).toEqual(expect.any(String));
+        expect(detail.observations[0].endTime).toEqual(expect.any(String));
+    });
+
+    it("groups a user turn and its child observations under a turn observation", () => {
+        const builder = makeBuilder();
+        const sessionPath = "/tmp/crest/sessions/project/turn.db";
+
+        builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
+        let detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_end",
+                    message: { role: "user", content: [{ type: "text", text: "Inspect the repo" }] },
+                    entryId: "entry-turn-1",
+                } as any,
+            })
+        );
+
+        const turn = detail.observations.find((observation) => observation.name === "turn");
+        expect(turn).toMatchObject({
+            type: "SPAN",
+            parentObservationId: "observation-2",
+            input: "Inspect the repo",
+            metadata: { entryId: "entry-turn-1", role: "user" },
+        });
+
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_start",
+                    message: { role: "assistant", content: [{ type: "text", text: "" }] },
+                } as any,
+            })
+        );
+        const generation = detail.observations.find((observation) => observation.name === "assistant_response");
+        expect(generation?.parentObservationId).toBe(turn?.id);
+
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "tool_execution_start",
+                    toolCallId: "call-1",
+                    toolName: "read_file",
+                    args: { path: "README.md" },
+                } as any,
+            })
+        );
+        const tool = detail.observations.find((observation) => observation.name === "read_file");
+        expect(tool?.parentObservationId).toBe(turn?.id);
+
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: { type: "model_select", model: "claude-sonnet" } as any,
+            })
+        );
+        const lifecycle = detail.observations.find((observation) => observation.name === "model_change");
+        expect(lifecycle?.parentObservationId).toBe(turn?.id);
     });
 });

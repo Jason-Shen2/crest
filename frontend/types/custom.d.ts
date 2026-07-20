@@ -189,29 +189,32 @@ declare global {
             ) => () => void;
         };
         agentObservability: {
-            listTraces: (sessionId: string) => Promise<AgentObservabilityTrace[]>;
-            getTrace: (traceId: string, sessionId: string) => Promise<AgentObservabilityTraceGraph | undefined>;
-            subscribe: (sessionId: string, callback: (event: AgentObservabilityEvent) => void) => () => void;
+            listTraces: (sessionId: string) => Promise<Trace[]>;
+            getTrace: (traceId: string, sessionId: string) => Promise<TraceDetail | undefined>;
+            subscribe: (sessionId: string, callback: (event: TraceEvent) => void) => () => void;
         };
     };
 
-    type AgentObservabilityTraceStatus = "running" | "success" | "error" | "aborted";
+    type TraceStatus = "running" | "success" | "error" | "aborted";
 
-    type AgentObservabilityTrace = {
+    type Trace = {
         id: string;
         name: string | null;
         timestamp: string;
-        endedAt?: string;
         environment: string;
         tags: string[];
+        release: string | null;
+        version: string | null;
         input: unknown;
         output: unknown;
         metadata: Record<string, unknown>;
         sessionId: string | null;
-        status: AgentObservabilityTraceStatus;
+        userId: string | null;
+        status: TraceStatus;
+        endedAt?: string;
     };
 
-    type AgentObservabilityObservation = {
+    type Observation = {
         id: string;
         traceId: string;
         type:
@@ -244,16 +247,28 @@ declare global {
         toolCallNames: string[] | null;
     };
 
-    type AgentObservabilityTraceGraph = {
-        trace: AgentObservabilityTrace;
-        observations: AgentObservabilityObservation[];
-        scores: unknown[];
+    type Score = {
+        id: string;
+        traceId: string;
+        observationId: string | null;
+        name: string;
+        source: "API" | "EVAL" | "ANNOTATION";
+        dataType: "NUMERIC" | "CATEGORICAL" | "BOOLEAN" | "CORRECTION" | "TEXT";
+        value: unknown;
+        comment: string | null;
     };
 
-    type AgentObservabilityEvent = {
+    type TraceDetail = {
+        trace: Trace;
+        observations: Observation[];
+        scores: Score[];
+        corrections: Score[];
+    };
+
+    type TraceEvent = {
         traceId: string;
         sessionId?: string;
-        graph: AgentObservabilityTraceGraph;
+        detail: TraceDetail;
     };
 
     type AIUserConfigReadResult = {

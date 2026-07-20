@@ -5,63 +5,63 @@ import * as electron from "electron";
 
 import type { AgentHarness } from "./agent/harness/agent-harness";
 import { SqliteTraceStore, type TraceStore } from "./agent/observability/sqlite-trace-store";
-import { LangfuseTraceBuilder } from "./agent/observability/trace-builder";
-import type { TraceGraph } from "./agent/observability/types";
+import { TraceBuilder } from "./agent/observability/trace-builder";
+import type { TraceDetail } from "./agent/observability/types";
 
 type SubKey = string;
 
-const builder = new LangfuseTraceBuilder();
+const builder = new TraceBuilder();
 const observedSessions = new Set<string>();
 const subscriptions = new Map<SubKey, { sender: electron.WebContents; sessionId?: string }>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
 
 let traceStore: TraceStore | undefined;
 
-interface AgentObservabilityEventCoalescerOptions {
-    builder: LangfuseTraceBuilder;
-    saveGraph: (graph: TraceGraph) => void;
-    publishGraph: (graph: TraceGraph) => void;
+interface TraceEventCoalescerOptions {
+    builder: TraceBuilder;
+    saveTraceDetail: (detail: TraceDetail) => void;
+    publishTraceDetail: (detail: TraceDetail) => void;
     updateIntervalMs?: number;
 }
 
 interface PendingMessageUpdate {
-    graph: TraceGraph;
+    detail: TraceDetail;
     timer: ReturnType<typeof setTimeout>;
 }
 
-export class AgentObservabilityEventCoalescer {
-    private readonly builder: LangfuseTraceBuilder;
-    private readonly saveGraph: (graph: TraceGraph) => void;
-    private readonly publishGraph: (graph: TraceGraph) => void;
+export class TraceEventCoalescer {
+    private readonly builder: TraceBuilder;
+    private readonly saveTraceDetail: (detail: TraceDetail) => void;
+    private readonly publishTraceDetail: (detail: TraceDetail) => void;
     private readonly updateIntervalMs: number;
     private readonly pendingUpdates = new Map<string, PendingMessageUpdate>();
 
-    constructor(options: AgentObservabilityEventCoalescerOptions) {
+    constructor(options: TraceEventCoalescerOptions) {
         this.builder = options.builder;
-        this.saveGraph = options.saveGraph;
-        this.publishGraph = options.publishGraph;
+        this.saveTraceDetail = options.saveTraceDetail;
+        this.publishTraceDetail = options.publishTraceDetail;
         this.updateIntervalMs = options.updateIntervalMs ?? 50;
     }
 
     handle(sessionPath: string, event: { type: string; [key: string]: unknown }): void {
         if (event.type === "message_update") {
-            const graph = this.builder.applyEvent({ sessionPath, event });
-            if (!graph) return;
+            const detail = this.builder.applyEvent({ sessionPath, event });
+            if (!detail) return;
             const pending = this.pendingUpdates.get(sessionPath);
             if (pending) {
-                pending.graph = graph;
+                pending.detail = detail;
                 return;
             }
             const timer = setTimeout(() => this.flushSession(sessionPath), this.updateIntervalMs);
-            this.pendingUpdates.set(sessionPath, { graph, timer });
+            this.pendingUpdates.set(sessionPath, { detail, timer });
             return;
         }
 
         this.flushSession(sessionPath);
-        const graph = this.builder.applyEvent({ sessionPath, event });
-        if (!graph) return;
-        this.saveGraph(graph);
-        this.publishGraph(graph);
+        const detail = this.builder.applyEvent({ sessionPath, event });
+        if (!detail) return;
+        this.saveTraceDetail(detail);
+        this.publishTraceDetail(detail);
     }
 
     dispose(): void {
@@ -76,7 +76,7 @@ export class AgentObservabilityEventCoalescer {
         if (!pending) return;
         clearTimeout(pending.timer);
         this.pendingUpdates.delete(sessionPath);
-        this.publishGraph(pending.graph);
+        this.publishTraceDetail(pending.detail);
     }
 }
 
@@ -117,42 +117,42 @@ function releaseAllForSender(senderId: number): void {
     subscriptionsBySender.delete(senderId);
 }
 
-function publishGraph(graph: TraceGraph): void {
+function publishTraceDetail(detail: TraceDetail): void {
     for (const [key, subscription] of subscriptions) {
         if (subscription.sender.isDestroyed()) {
             subscriptions.delete(key);
             continue;
         }
-        if (subscription.sessionId != null && subscription.sessionId !== graph.trace.sessionId) {
+        if (subscription.sessionId != null && subscription.sessionId !== detail.trace.sessionId) {
             continue;
         }
         subscription.sender.send("agent-observability:event", {
-            traceId: graph.trace.id,
-            sessionId: graph.trace.sessionId,
-            graph,
+            traceId: detail.trace.id,
+            sessionId: detail.trace.sessionId,
+            detail,
         });
     }
 }
 
-function saveGraph(graph: TraceGraph): void {
+function saveTraceDetail(detail: TraceDetail): void {
     try {
-        getTraceStore().saveGraph(graph);
+        getTraceStore().saveTraceDetail(detail);
     } catch (error) {
-        console.error("[agent-observability] failed to save trace graph:", error);
+        console.error("[agent-observability] failed to save trace detail:", error);
     }
 }
 
-const eventCoalescer = new AgentObservabilityEventCoalescer({
+const eventCoalescer = new TraceEventCoalescer({
     builder,
-    saveGraph,
-    publishGraph,
+    saveTraceDetail,
+    publishTraceDetail,
 });
 
 // Observability is a second, symmetric subscriber on the AgentHarness
 // canonical event bus — peer to PaneAgentSession, not layered on top of
 // it. AgentHarness.subscribe() delivers the full AgentHarnessEvent union
 // (raw AgentEvent + AgentHarnessOwnEvent) via emitAny/emitOwn; the
-// LangfuseTraceBuilder folds that stream into a Langfuse TraceGraph. We
+// TraceBuilder folds that stream into a Langfuse TraceDetail. We
 // subscribe here (not in PaneAgentSession) so the trace reflects the
 // agent runtime directly, independent of any UI aggregation.
 export function attachAgentObservability(sessionPath: string, harness: AgentHarness): void {
@@ -174,7 +174,7 @@ export function registerAgentObservabilityIpcHandlers(): void {
         if (typeof traceId !== "string" || traceId.trim() === "") {
             throw new Error("agent-observability IPC: traceId must be a non-empty string");
         }
-        return getTraceStore().getTraceGraph(traceId, requireSessionScope(sessionId));
+        return getTraceStore().getTraceDetail(traceId, requireSessionScope(sessionId));
     });
 
     electron.ipcMain.on("agent-observability:subscribe", (event, sessionId: unknown) => {

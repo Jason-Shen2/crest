@@ -24,7 +24,7 @@
 ## 设计原则
 
 - `AgentHarness.subscribe()` 是唯一 canonical 数据源。
-- `TraceGraph` 是历史加载和实时更新的唯一 UI 协议。
+- `TraceDetail` 是历史加载和实时更新的唯一 UI 协议。
 - 不引入 Pi 的 `ObsEvent`，不建立第二套事实源。
 - 不监听 hook 通道补数据；缺失字段只能由 harness 正向 `emitOwn` 广播。
 - 历史与实时使用同一套 presentation、metrics 和 timeline 组件。
@@ -37,22 +37,21 @@ ObservabilityPanel
 ├── Header
 │   ├── Recent Runs
 │   └── Live / Success / Error / Aborted
-├── RunReview
-│   ├── duration / generations / tools / errors
-│   ├── input / output / cache tokens / cost
-│   └── final output summary
-├── TimelineToolbar
-│   ├── search
-│   ├── type filters
-│   └── expand / collapse
-└── ObservationTimeline
-    └── ObservationRow
-        ├── semantic summary
-        ├── badges / relative time / duration
+├── TraceMetricsStrip
+│   └── status / duration / generations / tools / errors / tokens / cost
+└── TracePanel
+    ├── NavigationPanel
+    │   ├── Tree / Timeline / Search
+    │   └── Graph
+    └── DetailPanel
+        ├── TraceDetail
         └── ObservationDetail
 ```
 
 Recent Runs 使用紧凑选择器，不在 right panel 内增加完整 Session Sidebar。
+Trace Panel 直接移植 Langfuse 的核心 composition、iterative tree building、expanded DAG、ELK layout 和 Tree/Timeline/Detail selection 语义。Crest 只替换 Next.js、tRPC、RBAC、comments、datasets 和 analytics 等宿主依赖，不另建 adapter 或次级事件协议。
+Timeline 是 Observability 的核心导航视图之一；run-level 指标只作为一行辅助上下文，不使用大卡片。
+Final output 不在顶部默认展开，完整内容由选中的 Generation Observation Detail 承载。
 
 ## 响应式 Detail
 
@@ -62,11 +61,12 @@ Recent Runs 使用紧凑选择器，不在 right panel 内增加完整 Session S
 - 阅读顺序与执行上下文连续。
 - 可同时展开多个节点，也可 Expand All / Collapse All。
 
-magnify 模式使用 Timeline + 固定 Detail 双栏：
+magnify 模式使用 Langfuse Trace Panel workspace：
 
-- Timeline 保持紧凑摘要。
-- 右侧固定展示当前选中 Observation。
-- 与内联模式共享 `selectedObservationId`、展开态和 presentation model。
+- 左侧在 Tree 与 Timeline 之间切换，搜索优先过滤导航节点。
+- 左侧下方 Graph 使用 expanded DAG、ELK layout 和 d3 pan/zoom/fit。
+- 右侧未选择 Observation 时展示 Trace Detail，选择后切换为 Observation Detail。
+- 横向 Navigation/Detail 与纵向 Navigation/Graph 都支持 resize，Graph 支持折叠。
 
 Detail 分区：
 
@@ -79,7 +79,7 @@ Detail 分区：
 
 ## Timeline
 
-Timeline 按 `startTime` 升序排列；相同时间维持 graph 原始顺序。
+Timeline 按 `startTime` 升序排列；相同时间维持 detail 原始顺序。
 
 Observation 被投影为：
 
@@ -96,7 +96,7 @@ type ObservationPresentation = {
 
 展示规则：
 
-- AGENT 根节点进入 Run Review，不在 Timeline 重复显示。
+- AGENT 根节点进入 trace-level metrics，不在 Timeline 重复显示。
 - GENERATION 显示输出摘要、model、tokens、cost、duration。
 - TOOL 显示工具名、压缩参数、成功/失败和 duration。
 - EVENT 显示 model change、compaction、branch navigation 等生命周期地标。
@@ -112,26 +112,30 @@ type ObservationPresentation = {
 
 ## Live 行为
 
-- 首次加载从 SQLite 获取历史 TraceGraph。
-- IPC 实时更新继续推送完整 TraceGraph，本阶段不改 patch 协议。
-- 正在查看最新 run 时，实时 graph 原位更新。
+- 首次加载从 SQLite 获取历史 TraceDetail。
+- IPC 实时更新继续推送完整 TraceDetail，本阶段不改 patch 协议。
+- 正在查看最新 run 时，实时 detail 原位更新。
 - 用户切换到历史 run 后，新 run 不抢占当前视图，只更新 Recent Runs 状态。
 - 用户处于 Timeline 底部时自动跟随。
 - 用户向上滚动后暂停自动跟随，并显示“回到实时”操作。
 - 切换 Trace 时保存并恢复该 Trace 的 selected observation、展开态和滚动位置。
 - 异步 `getTrace()` 返回前再次核对 selected trace id，避免快速切换串线。
 
-## Run Review
+## Trace Metrics Strip
 
-从 TraceGraph 纯计算：
+从 TraceDetail 纯计算：
 
 - status、开始/结束时间、duration。
 - Generation、Tool、Lifecycle、Error 数量。
 - input、output、cache read、cache write、total tokens。
 - costDetails 合计。
-- Trace output 或最后一个 Generation output 的摘要。
 
-运行中未结束的 Observation 不显示完成耗时；完成后使用 `endTime - startTime`。
+展示规则：
+
+- 每个指标渲染为独立 `span`，保持单行横向排列。
+- 不渲染 Trace output 或最后一个 Generation output 的摘要。
+- 长 Final output 只能通过 Timeline 中的 Generation Detail 查看，不得挤占 Timeline 首屏空间。
+- 运行中未结束的 Observation 不显示完成耗时；完成后使用 `endTime - startTime`。
 
 ## 状态边界
 
@@ -152,7 +156,7 @@ type ObservationPresentation = {
 
 ## 数据补强
 
-第一步先审计现有真实 TraceGraph，不预先扩展事件。
+第一步先审计现有真实 TraceDetail，不预先扩展事件。
 
 ### Task 8 匿名真实数据审计
 
@@ -177,7 +181,7 @@ GENERATION input 为 0/3 会使 Detail 隐藏逐次 Generation 的 Input 区，�
 | Tool args | `tool_execution_start.args` | `Observation.input` | 是 | 已完整，无需补强 |
 | Tool result | `tool_execution_end.result` | `Observation.output` | 是 | 已完整，无需补强 |
 | Tool status/duration | tool start/end 事件 | `level`、`statusMessage`、`startTime/endTime` | 是 | 已映射；代表样本已验证 1 个失败 TOOL 的 level、status、input、output 和 timing |
-| Generation input | subscriber-visible assistant 事件未携带请求上下文 | `Observation.input` | 否 | 当前 UI 条件隐藏 Input，不影响摘要、Run Review 或 usage 诊断；后续需要真实 canonical 来源时再补强 |
+| Generation input | subscriber-visible assistant 事件未携带请求上下文 | `Observation.input` | 否 | 当前 UI 条件隐藏 Input，不影响 Timeline 摘要、trace metrics 或 usage 诊断；后续需要真实 canonical 来源时再补强 |
 | Generation output | assistant `message_update/end` | `Observation.output` | 是 | 已完整，无需补强 |
 | Usage/cost | assistant `message_end.usage` | `usageDetails/costDetails` | 是 | 已完整，无需补强 |
 | Model/provider | assistant message 的 `model`、`responseModel`、`provider` | `model`、`metadata` | 是 | Builder 消费现有 canonical 字段，不新增事件 |
@@ -212,7 +216,7 @@ GENERATION input 为 0/3 会使 Detail 隐藏逐次 Generation 的 Input 区，�
 - `observation-row.tsx`：摘要行和内联 Detail。
 - `observation-detail.tsx`：结构化详情。
 - `observation-presentation.ts`：Observation 语义投影纯函数。
-- `trace-metrics.ts`：TraceGraph 指标聚合纯函数。
+- `trace-metrics.ts`：TraceDetail 指标聚合纯函数。
 - `observability-view-state.ts`：选择、过滤、展开和 follow-live reducer。
 
 ## 测试与验收
@@ -234,7 +238,7 @@ GENERATION input 为 0/3 会使 Detail 隐藏逐次 Generation 的 Input 区，�
 
 集成测试：
 
-- SQLite 历史加载与 IPC 实时 graph 使用相同渲染路径。
+- SQLite 历史加载与 IPC 实时 detail 使用相同渲染路径。
 - 运行含多个 Generation、Tool 和 Error 的真实 Agent run。
 - 1,000 个 Observation 下滚动、搜索和实时追加保持可用。
 
@@ -246,10 +250,10 @@ GENERATION input 为 0/3 会使 Detail 隐藏逐次 Generation 的 Input 区，�
 - Observability 类型契约：`1/1` 个 typecheck 文件通过，`0` 个 type error。
 - Filtered `tsc`：`frontend/app/observability`、`frontend/app/workspace/right-tool-panel`、`emain/agent/observability`、`emain/agent-ipc` 无匹配错误；全仓仍有 75 条与本功能路径无关的存量 TypeScript 错误。
 - 1,000 Observation fixture：使用真实 `@tanstack/react-virtual`，顶部、中段和后段滚动时 DOM 挂载窗口均少于 100 行，并实际到达 index 400+ 与 900+；搜索完整数据后唯一命中第 998 条 Observation；ResizeObserver 将首行从 44px 重测为 180px 后，第二行实际移动到 180px 且不重叠。暂停 follow-live 后追加第 41 条 Observation 保持 `scrollTop=440` 且不挂载新尾行，恢复后滚动并挂载新尾行。Focused 文件 `6/6` 个测试通过。
-- Panel/UI：真实 React DOM `ObservabilityPanel` 验证 normal 模式 Detail 位于选中行内、切换 `magnified` 后同一 Detail 移入 sibling pane；真实订阅追加验证暂停状态不追尾、点击 “Back to live” 后恢复尾部。隔离桌面数据另验证 Recent Runs、Run Review、搜索和类别过滤。
+- Panel/UI：真实 React DOM `ObservabilityPanel` 验证 normal 模式 Detail 位于选中行内、切换 `magnified` 后同一 Detail 移入 sibling pane；真实订阅追加验证暂停状态不追尾、点击 “Back to live” 后恢复尾部。隔离桌面数据另验证 Recent Runs、trace metrics strip、搜索和类别过滤。
 - 完成态：targeted builder 测试验证 `agent_start` 的 `running` 状态在 `agent_end` 后变为 `success` 并写入 `endedAt`；桌面验收未调用真实模型。
 
-Run Review 的匿名 success fixture 与 SQLite 值一致：duration `5.0s`、Generation `1`、Tool `2`、Error `1`、input/output/cache read/cache write/total tokens 分别为 `120/30/10/5/165`，cost 为 `$0.0125`，final output 为 `Review complete`。
+Trace metrics strip 的匿名 success fixture 与 SQLite 值一致：duration `5.0s`、Generation `1`、Tool `2`、Error `1`、input/output/cache read/cache write/total tokens 分别为 `120/30/10/5/165`，cost 为 `$0.0125`；Final output 不在 run-level chrome 默认渲染。
 
 完成标准：
 

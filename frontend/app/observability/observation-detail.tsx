@@ -5,7 +5,7 @@ import { cn } from "@/util/util";
 import { useEffect, useRef, useState } from "react";
 
 interface ObservationDetailProps {
-    observation: AgentObservabilityObservation;
+    observation: Observation;
     traceTimestamp: string;
 }
 
@@ -33,7 +33,7 @@ function formatRelativeTime(startTime: string, traceTimestamp: string): string {
     return Number.isFinite(seconds) ? `+${Math.max(0, seconds).toFixed(1)}s` : "+0.0s";
 }
 
-function formatDuration(observation: AgentObservabilityObservation): string {
+function formatDuration(observation: Observation): string {
     if (observation.endTime == null) {
         return "running";
     }
