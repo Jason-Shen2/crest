@@ -91,7 +91,11 @@ export function VirtualizedList<T>({
     }, [getItemId, items, selectedItemId, selectedItemIsVisible, virtualizer]);
 
     useEffect(() => {
-        if (selectedItemId == null || pendingFocusItemIdRef.current !== selectedItemId || selectedVirtualItemKey == null) {
+        if (
+            selectedItemId == null ||
+            pendingFocusItemIdRef.current !== selectedItemId ||
+            selectedVirtualItemKey == null
+        ) {
             return;
         }
         itemElementsRef.current.get(selectedItemId)?.focus();

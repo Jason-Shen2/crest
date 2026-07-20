@@ -63,10 +63,7 @@ function makeTimelineRow(observation: Observation, traceTimestamp: string): Time
     };
 }
 
-export function buildTimelineRows(
-    detail: TraceDetail,
-    previous?: TimelineRowsCache
-): TimelineRowsCache {
+export function buildTimelineRows(detail: TraceDetail, previous?: TimelineRowsCache): TimelineRowsCache {
     const observations = detail.observations.filter((observation) => observation.type !== "AGENT");
     const tailObservation = observations[observations.length - 1];
     const canReuseStreamingPrefix =
