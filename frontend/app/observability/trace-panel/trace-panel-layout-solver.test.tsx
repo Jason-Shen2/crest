@@ -74,17 +74,32 @@ afterEach(() => {
     PanelHarness.handles = {};
 });
 
-function LayoutHarness({ detailContent = <div>detail content</div> }: { detailContent?: ReactNode }) {
+function LayoutHarness({
+    navigationContent = <div>navigation content</div>,
+    detailContent = <div>detail content</div>,
+}: {
+    navigationContent?: ReactNode;
+    detailContent?: ReactNode;
+}) {
     return (
         <TraceLayoutDesktop>
             <TraceLayoutDesktop.NavigationPanel>
                 <TracePanelNavigationLayoutDesktop secondaryContent={<div>graph content</div>}>
-                    <div>navigation content</div>
+                    {navigationContent}
                 </TracePanelNavigationLayoutDesktop>
             </TraceLayoutDesktop.NavigationPanel>
             <TraceLayoutDesktop.ResizeHandle />
             <TraceLayoutDesktop.DetailPanel>{detailContent}</TraceLayoutDesktop.DetailPanel>
         </TraceLayoutDesktop>
+    );
+}
+
+function StatefulNavigation() {
+    const [count, setCount] = useState(0);
+    return (
+        <button type="button" onClick={() => setCount((value) => value + 1)}>
+            Navigation count {count}
+        </button>
     );
 }
 
@@ -98,6 +113,27 @@ function StatefulDetail() {
 }
 
 describe("TracePanel desktop solver state", () => {
+    it("preserves graph collapse and resize state across navigation collapse", () => {
+        render(<LayoutHarness navigationContent={<StatefulNavigation />} />);
+        act(() => PanelHarness.groupLayouts.vertical?.([70, 30]));
+        fireEvent.click(screen.getByRole("button", { name: "Collapse graph" }));
+        fireEvent.click(screen.getByRole("button", { name: "Navigation count 0" }));
+        const statefulChild = screen.getByRole("button", { name: "Navigation count 1" });
+
+        fireEvent.click(screen.getByRole("button", { name: "Collapse navigation" }));
+
+        expect(document.body.contains(statefulChild)).toBe(true);
+        expect(statefulChild.closest("[data-testid='trace-navigation-content']")?.className).toContain("hidden");
+
+        fireEvent.click(screen.getByRole("button", { name: "Expand navigation" }));
+        expect(screen.getByRole("button", { name: "Navigation count 1" })).toBe(statefulChild);
+        expect(screen.getByRole("button", { name: "Expand graph" })).not.toBeNull();
+
+        fireEvent.click(screen.getByRole("button", { name: "Expand graph" }));
+        expect(screen.getByTestId("panel-70").getAttribute("data-default-size")).toBe("70");
+        expect(screen.getByTestId("panel-30").getAttribute("data-default-size")).toBe("30");
+    });
+
     it("keeps detail children mounted and preserves their state while collapsed", () => {
         render(<LayoutHarness detailContent={<StatefulDetail />} />);
         fireEvent.click(screen.getByRole("button", { name: "Detail count 0" }));

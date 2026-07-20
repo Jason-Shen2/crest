@@ -96,6 +96,12 @@ function NavigationPanel({ children }: { children: ReactNode }) {
                     : { minWidth: NavigationPanelMinWidth }
             }
         >
+            <div
+                data-testid="trace-navigation-content"
+                className={cn("h-full w-full", isNavigationPanelCollapsed && "hidden")}
+            >
+                {children}
+            </div>
             {isNavigationPanelCollapsed ? (
                 <div className="flex h-full w-full justify-center border-r border-border py-2">
                     <button
@@ -107,9 +113,7 @@ function NavigationPanel({ children }: { children: ReactNode }) {
                         <ChevronRight className="h-3.5 w-3.5" />
                     </button>
                 </div>
-            ) : (
-                children
-            )}
+            ) : null}
         </Panel>
     );
 }
