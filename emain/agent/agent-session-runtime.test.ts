@@ -21,6 +21,7 @@ function makeFakeHarness() {
     const calls = {
         prompt: [] as string[],
         followUp: [] as string[],
+        followUpPreparations: [] as Array<() => Promise<void>>,
         custom: [] as unknown[],
         abort: 0,
         navigateTree: [] as unknown[],
@@ -56,8 +57,9 @@ function makeFakeHarness() {
             calls.prompt.push(text);
             return promptResult();
         },
-        followUp(text: string) {
+        followUp(text: string, _options?: unknown, prepare?: () => Promise<void>) {
             calls.followUp.push(text);
+            if (prepare) calls.followUpPreparations.push(prepare);
             if (calls.prompt.length === 0) return Promise.reject(new Error("followUp before prompt"));
             return Promise.resolve();
         },
@@ -101,6 +103,9 @@ function makeFakeHarness() {
         },
         setNavigateTreeResult(fn: () => Promise<unknown>) {
             navigateTreeResult = fn;
+        },
+        async prepareNextFollowUp() {
+            await calls.followUpPreparations.shift()?.();
         },
         pane: {
             harness,
@@ -742,6 +747,50 @@ describe("AgentSessionRuntime — execution config", () => {
 
         await expect(Promise.all([first, second])).resolves.toEqual(["entry-1", "entry-2"]);
         expect(seenModels).toEqual(["model-2", "model-3"]);
+    });
+
+    it("defers a queued follow-up config until that follow-up is activated", async () => {
+        const fake = makeFakeHarness();
+        const runtime = new AgentSessionRuntime("/s", fake.pane);
+        const firstAuth = vi.fn();
+        const secondAuth = vi.fn();
+        const secondHook = vi.fn();
+        const nextModel = { ...fake.model, id: "model-2" };
+
+        const first = runtime.sendWithExecutionConfig("first", {
+            promptInputs: { cwd: "/one" },
+            model: fake.model,
+            thinkingLevel: "off",
+            authResolver: firstAuth,
+        });
+        await flush();
+        fake.emit({ type: "message_end", message: user("first"), entryId: "entry-1" });
+        await expect(first).resolves.toBe("entry-1");
+
+        const second = runtime.sendWithExecutionConfig("second", {
+            promptInputs: { cwd: "/two" },
+            model: nextModel,
+            thinkingLevel: "high",
+            authResolver: secondAuth,
+            toolCallHook: secondHook,
+        });
+        await flush();
+
+        expect(fake.calls.followUp).toEqual(["second"]);
+        expect(fake.pane.harness.setModel).not.toHaveBeenCalledWith(nextModel);
+        expect(fake.pane.setAuthResolver).not.toHaveBeenCalledWith(secondAuth);
+        expect(fake.pane.setToolCallHook).not.toHaveBeenCalledWith(secondHook);
+
+        await fake.prepareNextFollowUp();
+
+        expect(fake.pane.update).toHaveBeenLastCalledWith({ cwd: "/two" });
+        expect(fake.pane.harness.setModel).toHaveBeenCalledWith(nextModel);
+        expect(fake.pane.harness.setThinkingLevel).toHaveBeenCalledWith("high");
+        expect(fake.pane.setAuthResolver).toHaveBeenCalledWith(secondAuth);
+        expect(fake.pane.setToolCallHook).toHaveBeenCalledWith(secondHook);
+
+        fake.emit({ type: "message_end", message: user("second"), entryId: "entry-2" });
+        await expect(second).resolves.toBe("entry-2");
     });
 });
 

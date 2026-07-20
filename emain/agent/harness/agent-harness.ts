@@ -183,6 +183,7 @@ export class AgentHarness<
 	private steerQueue: UserMessage[] = [];
 	private steeringQueueMode: QueueMode;
 	private followUpQueue: UserMessage[] = [];
+	private followUpPreparations: Array<(() => Promise<void>) | undefined> = [];
 	private followUpQueueMode: QueueMode;
 	private nextTurnQueue: AgentMessage[] = [];
 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
@@ -297,6 +298,33 @@ export class AgentHarness<
 			followUp: [...this.followUpQueue],
 			nextTurn: [...this.nextTurnQueue],
 		});
+	}
+
+	private async drainFollowUpMessages(): Promise<AgentMessage[]> {
+		const hasPreparedFollowUp = this.followUpPreparations.some((prepare) => prepare != null);
+		const count =
+			this.followUpQueueMode === "all" && !hasPreparedFollowUp
+				? this.followUpQueue.length
+				: Math.min(1, this.followUpQueue.length);
+		const messages = this.followUpQueue.splice(0, count);
+		const preparations = this.followUpPreparations.splice(0, count);
+		if (messages.length === 0) return messages;
+		try {
+			await this.emitQueueUpdate();
+			for (const prepare of preparations) {
+				await prepare?.();
+			}
+			return messages;
+		} catch (error) {
+			this.followUpQueue.unshift(...messages);
+			this.followUpPreparations.unshift(...preparations);
+			try {
+				await this.emitQueueUpdate();
+			} catch {
+				// The original error remains the actionable failure.
+			}
+			throw normalizeHookError(error);
+		}
 	}
 
 	private startRunPromise(): () => void {
@@ -414,6 +442,16 @@ export class AgentHarness<
 		getTurnState: () => AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>,
 		setTurnState: (turnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>) => void,
 	): AgentLoopConfig {
+		const prepareTurn = async () => {
+			await this.flushPendingSessionWrites();
+			const nextTurnState = await this.createTurnState();
+			setTurnState(nextTurnState);
+			return {
+				context: this.createContext(nextTurnState),
+				model: nextTurnState.model,
+				thinkingLevel: nextTurnState.thinkingLevel,
+			};
+		};
 		const turnState = getTurnState();
 		return {
 			model: turnState.model,
@@ -446,18 +484,10 @@ export class AgentHarness<
 					? { content: patch.content, details: patch.details, isError: patch.isError, terminate: patch.terminate }
 					: undefined;
 			},
-			prepareNextTurn: async () => {
-				await this.flushPendingSessionWrites();
-				const nextTurnState = await this.createTurnState();
-				setTurnState(nextTurnState);
-				return {
-					context: this.createContext(nextTurnState),
-					model: nextTurnState.model,
-					thinkingLevel: nextTurnState.thinkingLevel,
-				};
-			},
+			prepareNextTurn: prepareTurn,
+			prepareFollowUpTurn: prepareTurn,
 			getSteeringMessages: async () => this.drainQueuedMessages(this.steerQueue, this.steeringQueueMode),
-			getFollowUpMessages: async () => this.drainQueuedMessages(this.followUpQueue, this.followUpQueueMode),
+			getFollowUpMessages: async () => this.drainFollowUpMessages(),
 		};
 	}
 
@@ -716,9 +746,14 @@ export class AgentHarness<
 		await this.emitQueueUpdate();
 	}
 
-	async followUp(text: string, options?: { images?: ImageContent[] }): Promise<void> {
+	async followUp(
+		text: string,
+		options?: { images?: ImageContent[] },
+		prepare?: () => Promise<void>,
+	): Promise<void> {
 		if (this.phase === "idle") throw new AgentHarnessError("invalid_state", "Cannot follow up while idle");
 		this.followUpQueue.push(createUserMessage(text, options?.images));
+		this.followUpPreparations.push(prepare);
 		await this.emitQueueUpdate();
 	}
 
@@ -1007,6 +1042,7 @@ export class AgentHarness<
 		const clearedFollowUp = [...this.followUpQueue];
 		this.steerQueue = [];
 		this.followUpQueue = [];
+		this.followUpPreparations = [];
 		this.runAbortController?.abort();
 		const errors: Error[] = [];
 		try {

@@ -217,6 +217,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	) => AgentLoopTurnUpdate | undefined | Promise<AgentLoopTurnUpdate | undefined>;
 
 	/**
+	 * Called after follow-up messages are drained and before they start their
+	 * provider turn. This lets a queued follow-up activate its own execution
+	 * configuration before the loop snapshots model, prompt, and tools.
+	 */
+	prepareFollowUpTurn?: () => AgentLoopTurnUpdate | undefined | Promise<AgentLoopTurnUpdate | undefined>;
+
+	/**
 	 * Returns steering messages to inject into the conversation mid-run.
 	 *
 	 * Called after the current assistant turn finishes executing its tool calls, unless `shouldStopAfterTurn` exits first.
