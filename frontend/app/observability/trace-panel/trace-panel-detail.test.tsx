@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { serializeDetailValue } from "./detail-value";
 import { IOPreview } from "./io-preview";
+import { ObservationDetailView } from "./observation-detail-view";
 import { TraceDataProvider, TraceSelectionProvider, useTraceSelection } from "./trace-context";
 import { TracePanelDetail } from "./trace-panel-detail";
 
@@ -309,5 +310,42 @@ describe("TracePanelDetail", () => {
         expect(within(observationHeader).getByText("claude-sonnet-4")).not.toBeNull();
         expect(within(observationHeader).getByText("28 tokens")).not.toBeNull();
         expect(within(observationHeader).getByText("$0.0125")).not.toBeNull();
+    });
+});
+
+describe("ObservationDetailView error status", () => {
+    it("shows a non-empty status message for an ERROR generation", () => {
+        render(
+            <ObservationDetailView
+                trace={makeDetail().trace}
+                observation={makeObservation({
+                    level: "ERROR",
+                    statusMessage: "Generation request failed",
+                })}
+            />
+        );
+
+        const header = screen.getByRole("banner", { name: "Observation header" });
+        expect(within(header).getByText("ERROR")).not.toBeNull();
+        expect(within(header).getByText("Generation request failed")).not.toBeNull();
+    });
+
+    it("shows a non-empty status message for an ERROR tool", () => {
+        render(
+            <ObservationDetailView
+                trace={makeDetail().trace}
+                observation={makeObservation({
+                    id: "tool-1",
+                    type: "TOOL",
+                    name: "read_file",
+                    level: "ERROR",
+                    statusMessage: "File does not exist",
+                })}
+            />
+        );
+
+        const header = screen.getByRole("banner", { name: "Observation header" });
+        expect(within(header).getByText("ERROR")).not.toBeNull();
+        expect(within(header).getByText("File does not exist")).not.toBeNull();
     });
 });

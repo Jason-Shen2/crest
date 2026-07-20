@@ -102,6 +102,7 @@ export function ObservationDetailView({ observation }: { trace: Trace; observati
                 <h2 className="truncate text-base font-semibold">{observation.name ?? observation.id}</h2>
                 <div className="flex flex-wrap gap-1">
                     <Metric>{observation.level}</Metric>
+                    {observation.statusMessage ? <Metric>{observation.statusMessage}</Metric> : null}
                     {observation.latency == null ? null : <Metric>{formatSeconds(observation.latency)}</Metric>}
                     {observation.timeToFirstToken == null ? null : (
                         <Metric>{`TTFT ${formatSeconds(observation.timeToFirstToken)}`}</Metric>
