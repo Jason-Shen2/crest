@@ -17,7 +17,9 @@ function makeFakeHarness() {
     const listeners = new Set<(event: unknown) => void>();
     const calls = {
         prompt: [] as string[],
+        promptOptions: [] as unknown[],
         followUp: [] as string[],
+        followUpOptions: [] as unknown[],
         followUpPreparations: [] as Array<() => Promise<void>>,
         custom: [] as unknown[],
         abort: 0,
@@ -50,12 +52,14 @@ function makeFakeHarness() {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
-        prompt(text: string) {
+        prompt(text: string, options?: unknown) {
             calls.prompt.push(text);
+            calls.promptOptions.push(options);
             return promptResult();
         },
-        followUp(text: string, _options?: unknown, prepare?: () => Promise<void>) {
+        followUp(text: string, options?: unknown, prepare?: () => Promise<void>) {
             calls.followUp.push(text);
+            calls.followUpOptions.push(options);
             if (prepare) calls.followUpPreparations.push(prepare);
             if (calls.prompt.length === 0) return Promise.reject(new Error("followUp before prompt"));
             return Promise.resolve();
@@ -821,6 +825,20 @@ describe("AgentSessionRuntime — send routing (no catch-busy)", () => {
         expect(fake.calls.prompt).toEqual(["a"]);
         expect(fake.calls.followUp).toEqual(["b"]);
         expect(owner.getSessionState().status).toBe("idle");
+    });
+
+    it("passes images to prompt and queued followUp sends", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const firstImage = { type: "image" as const, data: "first", mimeType: "image/png" };
+        const secondImage = { type: "image" as const, data: "second", mimeType: "image/jpeg" };
+
+        void owner.send("a", { images: [firstImage] });
+        void owner.send("b", { images: [secondImage] });
+        await flush();
+
+        expect(fake.calls.promptOptions).toEqual([{ images: [firstImage] }]);
+        expect(fake.calls.followUpOptions).toEqual([{ images: [secondImage] }]);
     });
 
     it("after the run ends (agent_end), the next send prompts again", async () => {

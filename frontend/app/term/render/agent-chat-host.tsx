@@ -72,9 +72,9 @@ export interface AgentHostState {
 /** Functions exposed via onReady for the input bar / parent. */
 export interface AgentChatHostApi {
     /** Route agent slash commands, otherwise send a user prompt. */
-    submit: (text: string) => boolean;
+    submit: (text: string, images?: string[]) => boolean;
     /** Send a user prompt. Idempotent if called twice with the same text — pi will queue. */
-    send: (text: string) => boolean;
+    send: (text: string, images?: string[]) => boolean;
     /** List the current session tree for selector UI. */
     listTree: () => Promise<AgentTreeResult>;
     /** List forkable user-message points for selector UI. */
@@ -125,7 +125,7 @@ export interface AgentInlineCommandResult {
 }
 
 interface AgentChatHostApiDeps {
-    sendPrompt: (text: string) => boolean;
+    sendPrompt: (text: string, images?: string[]) => boolean;
     abort: () => void;
     getTurns: () => PiTurn[];
     getRuntimeApi: () => AgentRuntimeApi | undefined;
@@ -231,10 +231,10 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         return command !== "tree" && command !== "fork" && command !== "clone" && command !== "model";
     };
     return {
-        submit: (text) => {
+        submit: (text, images) => {
             const route = resolveAgentSlashCommandRoute(text);
             if (!route.handled) {
-                return deps.sendPrompt(text);
+                return deps.sendPrompt(text, images);
             }
             if (route.command === "model") {
                 deps.onOpenModelPicker?.();
@@ -353,9 +353,9 @@ export function AgentChatHost({
     // One-shot wiring of the API. Stable identity so re-renders don't
     // tear down whatever the parent stored.
     useEffect(() => {
-        const sendPrompt = (text: string): boolean => {
+        const sendPrompt = (text: string, images?: string[]): boolean => {
             const trimmed = text.trim();
-            if (!trimmed) return false;
+            if (!trimmed && (images?.length ?? 0) === 0) return false;
             // Block sends when no model is resolved (e.g. ai.json
             // missing, no API key). Surface the resolver error so
             // the user sees a specific reason rather than nothing.
@@ -365,6 +365,10 @@ export function AgentChatHost({
                     "AI is not configured. Open the model picker to set up a provider and pick a model.";
                 onUserErrorRef.current?.(msg);
                 return false;
+            }
+            if ((images?.length ?? 0) > 0) {
+                void sendRef.current(trimmed, { images });
+                return true;
             }
             void sendRef.current(trimmed);
             return true;

@@ -92,7 +92,7 @@ import { loadAgentSkills } from "./agent/skills-loader";
 import { getDefaultTools } from "./agent/tools";
 import { createSpawnCliAgentTool } from "./agent/tools/spawn-cli-agent";
 import type { AgentMessage, ThinkingLevel } from "./agent/types";
-import type { Api, Message, Model } from "./ai";
+import type { Api, ImageContent, Message, Model } from "./ai";
 import { getModel } from "./ai";
 import { getSecret } from "./aiconfig/secrets";
 
@@ -125,6 +125,8 @@ interface SendOptions {
     cwd: string;
     /** Prompt text. */
     text: string;
+    /** User-attached images as renderer-safe data URLs. */
+    images?: string[];
     /** Resolved provider id (e.g. "openrouter"). */
     provider: string;
     /** Resolved model id (e.g. "anthropic/claude-opus-4-7"). */
@@ -151,6 +153,21 @@ interface SendOptions {
      * allowAll regardless of this value. See emain/agent/permissions.ts.
      */
     allowedTools?: string[];
+}
+
+function imageContentFromDataUrl(src: string): ImageContent | undefined {
+    const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(src);
+    if (!match) return undefined;
+    return {
+        type: "image",
+        mimeType: match[1],
+        data: match[2],
+    };
+}
+
+function imageContentsFromRenderer(images: string[] | undefined): ImageContent[] | undefined {
+    const result = (images ?? []).map(imageContentFromDataUrl).filter((item): item is ImageContent => item != null);
+    return result.length > 0 ? result : undefined;
 }
 
 interface AgentNavigateTreeInput {
@@ -1114,7 +1131,10 @@ export function registerAgentIpcHandlers(): void {
             // Turn identity IS the session entry id of the user message that
             // starts the turn. Prompt first so the session mints that entry,
             // the single source of truth.
-            const userEntryId = await runtime.sendWithExecutionConfig(opts.text, config);
+            const images = imageContentsFromRenderer(opts.images);
+            const userEntryId = images
+                ? await runtime.sendWithExecutionConfig(opts.text, config, { images })
+                : await runtime.sendWithExecutionConfig(opts.text, config);
 
             return { sessionMetadata: metadata, turnId: userEntryId };
         }

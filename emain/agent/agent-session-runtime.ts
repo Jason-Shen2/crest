@@ -32,7 +32,7 @@
 //
 // See docs/agent-rendering-architecture.md.
 
-import type { Api, Model } from "../ai";
+import type { Api, ImageContent, Model } from "../ai";
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import { filterTreeForDisplay } from "./commands/session-views";
@@ -91,6 +91,15 @@ export interface AgentExecutionConfig {
     thinkingLevel: ThinkingLevel;
     authResolver?: AgentAuthResolver;
     toolCallHook?: ToolCallHook;
+}
+
+export interface AgentSendRuntimeOptions {
+    images?: ImageContent[];
+    prepareFollowUp?: () => Promise<void>;
+}
+
+function harnessImageOptions(images: ImageContent[] | undefined): { images: ImageContent[] } | undefined {
+    return images && images.length > 0 ? { images } : undefined;
 }
 
 function isErroredAssistant(message: AgentMessage): boolean {
@@ -202,12 +211,15 @@ export class AgentSessionRuntime {
         }
     }
 
-    sendWithExecutionConfig(text: string, config: AgentExecutionConfig): Promise<string> {
+    sendWithExecutionConfig(text: string, config: AgentExecutionConfig, options?: AgentSendRuntimeOptions): Promise<string> {
         const operation = this.configQueue.then(async () => {
             if (this.running) {
-                return this.send(text, () => this.syncExecutionConfig(config));
+                return this.send(text, { ...options, prepareFollowUp: () => this.syncExecutionConfig(config) });
             }
             await this.syncExecutionConfig(config);
+            if (options) {
+                return this.send(text, options);
+            }
             return this.send(text);
         });
         this.configQueue = operation.then(
@@ -332,18 +344,18 @@ export class AgentSessionRuntime {
      * deterministic; prompt() flips the harness phase synchronously too, so a
      * followUp issued right after never hits the idle guard.
      */
-    send(text: string, prepareFollowUp?: () => Promise<void>): Promise<string> {
+    send(text: string, options?: AgentSendRuntimeOptions): Promise<string> {
         const promise = new Promise<string>((resolve, reject) => {
             this.pendingEntryIdResolvers.push({ resolve, reject });
         });
         if (this.running) {
             void this.host.harness
-                .followUp(text, undefined, prepareFollowUp)
+                .followUp(text, harnessImageOptions(options?.images), options?.prepareFollowUp)
                 .catch((err) => this.onSendError("followUp", err));
             return promise;
         }
         this.running = true;
-        void this.startPromptTurn(text);
+        void this.startPromptTurn(text, options);
         return promise;
     }
 
@@ -426,9 +438,9 @@ export class AgentSessionRuntime {
         console.error(`[agent-session] ${where} error for ${this.path}:`, err);
     }
 
-    private async startPromptTurn(text: string): Promise<void> {
+    private async startPromptTurn(text: string, options?: AgentSendRuntimeOptions): Promise<void> {
         try {
-            await this.host.harness.prompt(text);
+            await this.host.harness.prompt(text, harnessImageOptions(options?.images));
         } catch (err) {
             this.onSendError("prompt", err);
         } finally {

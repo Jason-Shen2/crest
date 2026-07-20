@@ -175,8 +175,12 @@ export interface UsePiChatReturn {
      * (injected sooner) then followUp. Empty while idle / nothing pending.
      */
     queuedMessages: PiAgentMessage[];
-    send: (text: string) => Promise<void>;
+    send: (text: string, options?: UsePiChatSendOptions) => Promise<void>;
     abort: () => void;
+}
+
+export interface UsePiChatSendOptions {
+    images?: string[];
 }
 
 interface AgentApiSurface {
@@ -395,7 +399,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     }, [sessionMetadata, sessionPath]);
 
     const send = useCallback(
-        async (text: string): Promise<void> => {
+        async (text: string, options?: UsePiChatSendOptions): Promise<void> => {
             const api = getAgentApi();
             if (!api) {
                 setStatus("error");
@@ -418,6 +422,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                     blockId: blockIdRef.current,
                     cwd: paneContextRef.current.cwd,
                     text,
+                    images: options?.images,
                     provider: modelSelectionRef.current.provider,
                     model: modelSelectionRef.current.model,
                     reasoning: modelSelectionRef.current.reasoning,

@@ -70,10 +70,14 @@ export function createCrestAssistantRuntimeAdapter(
             const images = imagesFromUserMessage(message);
             if (!textWithQuote && images.length === 0) return;
             if ("send" in source) {
+                if (images.length > 0) {
+                    await source.send(textWithQuote, { images });
+                    return;
+                }
                 await source.send(textWithQuote);
                 return;
             }
-            await source.submit(textWithQuote, images);
+            await source.submit(textWithQuote, images.length > 0 ? images : undefined);
         },
         onCancel: async (): Promise<void> => {
             source.abort();

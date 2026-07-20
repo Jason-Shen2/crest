@@ -285,6 +285,33 @@ describe("createCrestAssistantRuntimeAdapter", () => {
         expect(send).toHaveBeenCalledWith("hello\nworld");
     });
 
+    it("passes user image parts through the submit bridge", async () => {
+        const submit = vi.fn();
+        const adapter = createCrestAssistantRuntimeAdapter({
+            turns: [],
+            status: "idle",
+            submit,
+            abort: vi.fn(),
+        });
+        const message = {
+            role: "user",
+            content: [
+                { type: "text", text: "describe this" },
+                { type: "image", image: "data:image/png;base64,abc123" },
+            ],
+            parentId: null,
+            sourceId: null,
+            runConfig: undefined,
+            metadata: { custom: {} },
+            attachments: [],
+            createdAt: new Date(0),
+        } as AppendMessage;
+
+        await adapter.onNew(message);
+
+        expect(submit).toHaveBeenCalledWith("describe this", ["data:image/png;base64,abc123"]);
+    });
+
     it("injects quote metadata into the submitted text as markdown blockquote context", async () => {
         const send = vi.fn<UsePiChatReturn["send"]>();
         const adapter = createCrestAssistantRuntimeAdapter(makeChat({ send }));

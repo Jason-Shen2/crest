@@ -149,6 +149,36 @@ describe("Thread assistant-ui integration", () => {
         expect(html).toContain("const answer");
     });
 
+    it("renders assistant diff fences with the local DiffViewer", () => {
+        const html = renderThread(undefined, [
+            {
+                role: "assistant",
+                content: [
+                    {
+                        type: "text",
+                        text: [
+                            "最终 diff:",
+                            "",
+                            "```diff",
+                            "--- a/frontend/app.tsx",
+                            "+++ b/frontend/app.tsx",
+                            "@@ -1,2 +1,2 @@",
+                            "-old line",
+                            "+new line",
+                            "```",
+                        ].join("\n"),
+                    },
+                ],
+                status: { type: "complete", reason: "stop" },
+            },
+        ]);
+
+        expect(html).toContain('data-slot="diff-viewer"');
+        expect(html).toContain('data-slot="diff-viewer-header"');
+        expect(html).toContain("frontend/app.tsx");
+        expect(html).toContain("new line");
+    });
+
     it("renders beforeComposer content directly above the composer", () => {
         const html = renderThread({ beforeComposer: <div data-testid="before-composer">Panel</div> });
 

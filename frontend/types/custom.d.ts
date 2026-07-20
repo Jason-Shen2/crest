@@ -311,6 +311,7 @@ declare global {
         blockId: string;
         cwd: string;
         text: string;
+        images?: string[];
         provider: string;
         model: string;
         reasoning?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";

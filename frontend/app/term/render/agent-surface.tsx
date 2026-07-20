@@ -298,14 +298,14 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
     }, []);
 
     const onAgentSubmit = useCallback(
-        (text: string) => {
-            if (!text) return;
+        (text: string, images?: string[]) => {
+            if (!text && (images?.length ?? 0) === 0) return;
             const api = agentApiRef.current;
             if (!api) {
                 globalStore.set(model.notificationAtom, "Agent is still starting. Try again in a moment.");
                 return false;
             }
-            return api.submit(text);
+            return api.submit(text, images);
         },
         [model]
     );

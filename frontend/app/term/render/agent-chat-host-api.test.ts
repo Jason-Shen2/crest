@@ -32,6 +32,23 @@ describe("createAgentChatHostApi", () => {
         expect(onSelectorRequest).toHaveBeenNthCalledWith(2, expect.objectContaining({ type: "fork" }));
     });
 
+    it("passes images through when submitting a normal prompt", () => {
+        const sendPrompt = vi.fn(() => true);
+        const api = createAgentChatHostApi({
+            sendPrompt,
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: makeSession,
+            getPaneCwd: () => "/repo",
+            getBlockId: () => "b_test",
+        });
+
+        expect(api.submit("describe this", ["data:image/png;base64,abc123"])).toBe(true);
+
+        expect(sendPrompt).toHaveBeenCalledWith("describe this", ["data:image/png;base64,abc123"]);
+    });
+
     it("routes resume slash commands to selector requests without sending prompts", async () => {
         const session = makeSession();
         const detail = {

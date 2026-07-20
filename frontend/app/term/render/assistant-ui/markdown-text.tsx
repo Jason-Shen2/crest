@@ -1,11 +1,17 @@
 // Based on assistant-ui (MIT): https://www.assistant-ui.com/docs/ui/streamdown
 "use client";
 
-import { StreamdownTextPrimitive, type StreamdownTextComponents } from "@assistant-ui/react-streamdown";
+import {
+    StreamdownTextPrimitive,
+    type ComponentsByLanguage,
+    type StreamdownTextComponents,
+    type SyntaxHighlighterProps,
+} from "@assistant-ui/react-streamdown";
 import { code } from "@streamdown/code";
 import { memo } from "react";
 
 import { cn } from "@/util/util";
+import { DiffViewer } from "./diff-viewer";
 
 const SHIKI_THEME = "github-dark-high-contrast";
 
@@ -16,6 +22,7 @@ const MarkdownTextImpl = () => {
             shikiTheme={[SHIKI_THEME, SHIKI_THEME]}
             className="aui-md"
             components={streamdownComponents}
+            componentsByLanguage={streamdownComponentsByLanguage}
             controls={{
                 code: true,
                 table: false,
@@ -26,6 +33,15 @@ const MarkdownTextImpl = () => {
 };
 
 export const MarkdownText = memo(MarkdownTextImpl);
+
+function DiffSyntaxHighlighter({ code: diffPatch, language }: SyntaxHighlighterProps) {
+    return <DiffViewer code={diffPatch} language={language} viewMode="unified" size="sm" />;
+}
+
+const streamdownComponentsByLanguage = {
+    diff: { SyntaxHighlighter: DiffSyntaxHighlighter },
+    patch: { SyntaxHighlighter: DiffSyntaxHighlighter },
+} satisfies ComponentsByLanguage;
 
 const streamdownComponents = {
     h1: ({ className, ...props }) => (
