@@ -617,6 +617,7 @@ function subscribeToOwner(
 ): void {
     const key: SubKey = makeAgentSubscriptionKey(sender.id, sessionPath, rendererSessionPath);
     pendingSubscriptions.delete(key);
+    if (sender.isDestroyed()) return;
     if (subscriptions.has(key)) return;
     const unsub = session.subscribe((agentEvent) => {
         if (sender.isDestroyed()) return;
@@ -984,6 +985,7 @@ export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<voi
 export async function subscribeAgentSessionForIpc(sender: electron.WebContents, sessionPath: unknown): Promise<void> {
     const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
     const canonicalPath = await validateSessionPath(rendererPath);
+    if (sender.isDestroyed()) return;
     const session = runtimeRegistry.get(canonicalPath);
     if (!session) {
         const key: SubKey = makeAgentSubscriptionKey(sender.id, canonicalPath, rendererPath);

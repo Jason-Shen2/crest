@@ -163,6 +163,20 @@ async function runLoop(
 	let currentContext = initialContext;
 	let config = initialConfig;
 	let firstTurn = true;
+	const applyTurnUpdate = (update: Awaited<ReturnType<NonNullable<AgentLoopConfig["prepareNextTurn"]>>>) => {
+		if (!update) return;
+		currentContext = update.context ?? currentContext;
+		config = {
+			...config,
+			model: update.model ?? config.model,
+			reasoning:
+				update.thinkingLevel === undefined
+					? config.reasoning
+					: update.thinkingLevel === "off"
+						? undefined
+						: update.thinkingLevel,
+		};
+	};
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
@@ -224,19 +238,7 @@ async function runLoop(
 				newMessages,
 			};
 			const nextTurnSnapshot = await config.prepareNextTurn?.(nextTurnContext);
-			if (nextTurnSnapshot) {
-				currentContext = nextTurnSnapshot.context ?? currentContext;
-				config = {
-					...config,
-					model: nextTurnSnapshot.model ?? config.model,
-					reasoning:
-						nextTurnSnapshot.thinkingLevel === undefined
-							? config.reasoning
-							: nextTurnSnapshot.thinkingLevel === "off"
-								? undefined
-								: nextTurnSnapshot.thinkingLevel,
-				};
-			}
+			applyTurnUpdate(nextTurnSnapshot);
 
 			if (
 				await config.shouldStopAfterTurn?.({
@@ -256,6 +258,7 @@ async function runLoop(
 		// Agent would stop here. Check for follow-up messages.
 		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
 		if (followUpMessages.length > 0) {
+			applyTurnUpdate(await config.prepareFollowUpTurn?.());
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
 			continue;

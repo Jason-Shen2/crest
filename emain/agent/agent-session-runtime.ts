@@ -204,6 +204,9 @@ export class AgentSessionRuntime {
 
     sendWithExecutionConfig(text: string, config: AgentExecutionConfig): Promise<string> {
         const operation = this.configQueue.then(async () => {
+            if (this.running) {
+                return this.send(text, () => this.syncExecutionConfig(config));
+            }
             await this.syncExecutionConfig(config);
             return this.send(text);
         });
@@ -329,12 +332,14 @@ export class AgentSessionRuntime {
      * deterministic; prompt() flips the harness phase synchronously too, so a
      * followUp issued right after never hits the idle guard.
      */
-    send(text: string): Promise<string> {
+    send(text: string, prepareFollowUp?: () => Promise<void>): Promise<string> {
         const promise = new Promise<string>((resolve, reject) => {
             this.pendingEntryIdResolvers.push({ resolve, reject });
         });
         if (this.running) {
-            void this.host.harness.followUp(text).catch((err) => this.onSendError("followUp", err));
+            void this.host.harness
+                .followUp(text, undefined, prepareFollowUp)
+                .catch((err) => this.onSendError("followUp", err));
             return promise;
         }
         this.running = true;

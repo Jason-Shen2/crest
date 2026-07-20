@@ -4,7 +4,7 @@
 // Tests for AgentHarness. Uses a fake AI provider registered against a
 // custom api so prompts resolve without network/credentials.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     type AssistantMessage,
@@ -13,8 +13,8 @@ import {
     registerApiProvider,
     resetApiProviders,
     type SimpleStreamOptions,
-    AssistantMessageEventStream,
 } from "../../ai";
+import { AssistantMessageEventStream } from "../../ai/utils/event-stream";
 import { AgentHarness } from "./agent-harness";
 import { InMemorySessionRepo } from "./session/memory-repo";
 import { NodeExecutionEnv } from "../node";
@@ -87,6 +87,14 @@ async function buildHarness(capturedContexts?: Context[]) {
     return { harness, session };
 }
 
+async function waitFor(check: () => boolean): Promise<void> {
+    for (let attempt = 0; attempt < 20; attempt++) {
+        if (check()) return;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    throw new Error("condition was not reached");
+}
+
 describe("AgentHarness — promptReturningEntryId", () => {
     afterEach(() => {
         resetApiProviders();
@@ -118,6 +126,46 @@ describe("AgentHarness — lifecycle state", () => {
 
         await prompt;
         expect(harness.isIdle()).toBe(true);
+    });
+
+    it("prepares a queued follow-up before taking its turn snapshot", async () => {
+        const streams: AssistantMessageEventStream[] = [];
+        const seenModels: string[] = [];
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (model: Model<any>) => {
+                seenModels.push(model.id);
+                const stream = new AssistantMessageEventStream();
+                streams.push(stream);
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            thinkingLevel: "off",
+            tools: [],
+            systemPrompt: "you are a test harness",
+        });
+        const nextModel = { ...fakeModel(), id: "next-model" };
+        const prepare = vi.fn(async () => {
+            await harness.setModel(nextModel);
+        });
+
+        const prompt = harness.prompt("first");
+        await waitFor(() => streams.length === 1);
+        await harness.followUp("second", undefined, prepare);
+        streams[0].push({ type: "done", reason: "stop", message: fakeAssistantMessage(fakeModel()) });
+        await waitFor(() => streams.length === 2);
+
+        expect(prepare).toHaveBeenCalledOnce();
+        expect(seenModels).toEqual(["fake-model", "next-model"]);
+
+        streams[1].push({ type: "done", reason: "stop", message: fakeAssistantMessage(nextModel) });
+        await prompt;
     });
 });
 

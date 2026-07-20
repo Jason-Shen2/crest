@@ -717,6 +717,53 @@ describe("agent-ipc command helpers", () => {
         }
     });
 
+    it("does not retain a runtime for a sender destroyed before subscription attaches", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-pre-destroyed-sender");
+        vi.useFakeTimers();
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValue("entry-1");
+        const disposeSpy = vi.spyOn(AgentSessionRuntime.prototype, "dispose");
+        const sender = {
+            id: 13,
+            isDestroyed: vi.fn(() => true),
+            once: vi.fn(),
+            send: vi.fn(),
+        } as unknown as electron.WebContents;
+
+        try {
+            registerAgentIpcHandlers();
+            const handlers = new Map<string, (...args: unknown[]) => unknown>();
+            for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+                handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+            }
+            await handlers.get("agent:send")?.(
+                {},
+                {
+                    sessionMetadata: metadata,
+                    blockId: "block-1",
+                    cwd: metadata.cwd,
+                    text: "first",
+                    provider: "p",
+                    model: "m",
+                }
+            );
+
+            await subscribeAgentSessionForIpc(sender, metadata.path);
+            await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+            expect(sender.once).not.toHaveBeenCalled();
+            expect(disposeSpy).toHaveBeenCalledOnce();
+        } finally {
+            _resetAgentIpcForTests();
+            vi.useRealTimers();
+            sendConfiguredSpy.mockRestore();
+            disposeSpy.mockRestore();
+        }
+    });
+
     it("starts only one runtime sweep timer", () => {
         vi.useFakeTimers();
         try {
