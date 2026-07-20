@@ -148,6 +148,18 @@ describe("TraceBuilder", () => {
         detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
+                event: { type: "turn_start" },
+            })
+        );
+        const turn = detail.observations.find((observation) => observation.name === "turn");
+        expect(turn).toMatchObject({
+            type: "SPAN",
+            parentObservationId: "observation-2",
+        });
+
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
                 event: {
                     type: "message_end",
                     message: { role: "user", content: [{ type: "text", text: "What changed?" }] },
@@ -158,8 +170,8 @@ describe("TraceBuilder", () => {
 
         expect(detail.trace.input).toBe("What changed?");
         expect(detail.trace.metadata).toMatchObject({ userEntryId: "entry-user-1" });
-        const turn = detail.observations.find((observation) => observation.name === "turn");
-        expect(turn).toMatchObject({
+        const updatedTurn = detail.observations.find((observation) => observation.id === turn?.id);
+        expect(updatedTurn).toMatchObject({
             type: "SPAN",
             parentObservationId: "observation-2",
             input: "What changed?",
@@ -263,6 +275,18 @@ describe("TraceBuilder", () => {
         detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
+                event: { type: "turn_start" },
+            })
+        );
+        const turn = detail.observations.find((observation) => observation.name === "turn");
+        expect(turn).toMatchObject({
+            type: "SPAN",
+            parentObservationId: "observation-2",
+        });
+
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
                 event: {
                     type: "message_end",
                     message: { role: "user", content: [{ type: "text", text: "Summarize the repo" }] },
@@ -273,8 +297,8 @@ describe("TraceBuilder", () => {
 
         expect(detail.trace.input).toBe("Summarize the repo");
         expect(detail.observations[0].input).toBe("Summarize the repo");
-        const turn = detail.observations.find((observation) => observation.name === "turn");
-        expect(turn).toMatchObject({
+        const updatedTurn = detail.observations.find((observation) => observation.id === turn?.id);
+        expect(updatedTurn).toMatchObject({
             type: "SPAN",
             parentObservationId: "observation-2",
             input: "Summarize the repo",
@@ -349,12 +373,26 @@ describe("TraceBuilder", () => {
         expect(detail.observations[0].endTime).toEqual(expect.any(String));
     });
 
-    it("groups a user turn and its child observations under a turn observation", () => {
+    it("groups Pi turns as one assistant response plus its tool results", () => {
         const builder = makeBuilder();
         const sessionPath = "/tmp/crest/sessions/project/turn.db";
 
         builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
         let detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: { type: "turn_start" },
+            })
+        );
+
+        const firstTurn = detail.observations.find((observation) => observation.name === "turn");
+        expect(firstTurn).toMatchObject({
+            type: "SPAN",
+            parentObservationId: "observation-2",
+            metadata: { turnIndex: 0 },
+        });
+
+        detail = lastGraph(
             builder.applyEvent({
                 sessionPath,
                 event: {
@@ -364,13 +402,10 @@ describe("TraceBuilder", () => {
                 } as any,
             })
         );
-
-        const turn = detail.observations.find((observation) => observation.name === "turn");
-        expect(turn).toMatchObject({
-            type: "SPAN",
-            parentObservationId: "observation-2",
+        const updatedFirstTurn = detail.observations.find((observation) => observation.id === firstTurn?.id);
+        expect(updatedFirstTurn).toMatchObject({
             input: "Inspect the repo",
-            metadata: { entryId: "entry-turn-1", role: "user" },
+            metadata: { entryId: "entry-turn-1", role: "user", turnIndex: 0 },
         });
 
         detail = lastGraph(
@@ -382,8 +417,8 @@ describe("TraceBuilder", () => {
                 } as any,
             })
         );
-        const generation = detail.observations.find((observation) => observation.name === "assistant_response");
-        expect(generation?.parentObservationId).toBe(turn?.id);
+        const firstGeneration = detail.observations.find((observation) => observation.name === "assistant_response");
+        expect(firstGeneration?.parentObservationId).toBe(firstTurn?.id);
 
         detail = lastGraph(
             builder.applyEvent({
@@ -396,8 +431,72 @@ describe("TraceBuilder", () => {
                 } as any,
             })
         );
-        const tool = detail.observations.find((observation) => observation.name === "read_file");
-        expect(tool?.parentObservationId).toBe(turn?.id);
+        const firstTool = detail.observations.find((observation) => observation.name === "read_file");
+        expect(firstTool?.parentObservationId).toBe(firstTurn?.id);
+
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_end",
+                    message: {
+                        role: "assistant",
+                        content: [{ type: "text", text: "Need another tool call" }],
+                        usage: {},
+                    },
+                } as any,
+            })
+        );
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "turn_end",
+                    message: {
+                        role: "assistant",
+                        content: [{ type: "text", text: "Need another tool call" }],
+                    },
+                    toolResults: [{ toolCallId: "call-1", content: [{ type: "text", text: "ok" }] }],
+                } as any,
+            })
+        );
+        expect(detail.observations.find((observation) => observation.id === firstTurn?.id)).toMatchObject({
+            endTime: expect.any(String),
+            output: "Need another tool call",
+            metadata: {
+                turnIndex: 0,
+                toolResultCount: 1,
+            },
+        });
+
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: { type: "turn_start" },
+            })
+        );
+        const turns = detail.observations.filter((observation) => observation.name === "turn");
+        expect(turns).toHaveLength(2);
+        const secondTurn = turns[1];
+        expect(secondTurn).toMatchObject({
+            type: "SPAN",
+            parentObservationId: "observation-2",
+            metadata: { turnIndex: 1 },
+        });
+
+        detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_start",
+                    message: { role: "assistant", content: [{ type: "text", text: "" }] },
+                } as any,
+            })
+        );
+        const secondGeneration = detail.observations.filter(
+            (observation) => observation.name === "assistant_response"
+        )[1];
+        expect(secondGeneration?.parentObservationId).toBe(secondTurn.id);
 
         detail = lastGraph(
             builder.applyEvent({
@@ -406,6 +505,6 @@ describe("TraceBuilder", () => {
             })
         );
         const lifecycle = detail.observations.find((observation) => observation.name === "model_change");
-        expect(lifecycle?.parentObservationId).toBe(turn?.id);
+        expect(lifecycle?.parentObservationId).toBe(secondTurn.id);
     });
 });

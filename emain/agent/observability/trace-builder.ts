@@ -16,9 +16,9 @@ interface BuilderState {
     detail: TraceDetail;
     rootObservationId: string;
     currentTurnObservationId?: string;
+    nextTurnIndex: number;
     activeGenerationId?: string;
     activeToolObservationIds: Map<string, string>;
-    turnObservationIds: Map<string, string>;
 }
 
 function defaultCreateId(prefix: "trace" | "observation" | "score"): string {
@@ -137,6 +137,10 @@ export class TraceBuilder {
         switch (input.event.type) {
             case "agent_start":
                 return this.startTrace(input.sessionPath, input.event);
+            case "turn_start":
+                return this.startTurn(input.sessionPath);
+            case "turn_end":
+                return this.endTurn(input.sessionPath, input.event);
             case "message_start":
                 return this.handleMessageStart(input.sessionPath, input.event.message);
             case "message_update":
@@ -204,10 +208,55 @@ export class TraceBuilder {
         const state: BuilderState = {
             detail: { trace, observations: [rootObservation], scores: [], corrections: [] },
             rootObservationId,
+            nextTurnIndex: 0,
             activeToolObservationIds: new Map(),
-            turnObservationIds: new Map(),
         };
         this.states.set(sessionPath, state);
+        return cloneTraceDetail(state.detail);
+    }
+
+    private startTurn(sessionPath: string): TraceDetail | undefined {
+        const state = this.requireState(sessionPath);
+        if (!state) return undefined;
+
+        const now = this.now();
+        const currentTurn = this.findObservation(state, state.currentTurnObservationId);
+        if (currentTurn && currentTurn.endTime == null) {
+            currentTurn.endTime = now;
+            currentTurn.latency = elapsedSeconds(currentTurn.startTime, currentTurn.endTime);
+        }
+
+        const turnIndex = state.nextTurnIndex++;
+        const turn = this.makeObservation({
+            traceId: state.detail.trace.id,
+            type: "SPAN",
+            name: "turn",
+            parentObservationId: state.rootObservationId,
+            startTime: now,
+            metadata: { turnIndex },
+        });
+        state.detail.observations.push(turn);
+        state.currentTurnObservationId = turn.id;
+        return cloneTraceDetail(state.detail);
+    }
+
+    private endTurn(sessionPath: string, event: Record<string, unknown>): TraceDetail | undefined {
+        const state = this.requireState(sessionPath);
+        const turn = state ? this.findObservation(state, state.currentTurnObservationId) : undefined;
+        if (!state || !turn) return state ? cloneTraceDetail(state.detail) : undefined;
+
+        const endedAt = this.now();
+        turn.endTime = endedAt;
+        turn.latency = elapsedSeconds(turn.startTime, endedAt);
+        if (isAssistantMessage(event.message)) {
+            turn.output = assistantText(event.message);
+        }
+        const toolResults = Array.isArray(event.toolResults) ? event.toolResults : [];
+        turn.metadata = {
+            ...turn.metadata,
+            toolResultCount: toolResults.length,
+        };
+        state.currentTurnObservationId = undefined;
         return cloneTraceDetail(state.detail);
     }
 
@@ -319,7 +368,7 @@ export class TraceBuilder {
             };
         }
         state.detail.observations[0].input = state.detail.trace.input;
-        this.ensureTurnObservation(state, event, text);
+        this.updateCurrentTurnInput(state, event, text);
         return cloneTraceDetail(state.detail);
     }
 
@@ -437,42 +486,16 @@ export class TraceBuilder {
         return state.currentTurnObservationId ?? state.rootObservationId;
     }
 
-    private ensureTurnObservation(state: BuilderState, event: Record<string, unknown>, input: string): Observation {
+    private updateCurrentTurnInput(state: BuilderState, event: Record<string, unknown>, input: string): void {
+        const turn = this.findObservation(state, state.currentTurnObservationId);
+        if (!turn) return;
         const entryId = typeof event.entryId === "string" ? event.entryId : undefined;
-        const existingTurnId = entryId ? state.turnObservationIds.get(entryId) : undefined;
-        const existingTurn = this.findObservation(state, existingTurnId);
-        if (existingTurn) {
-            existingTurn.input = input;
-            existingTurn.metadata = { ...existingTurn.metadata, entryId, role: "user" };
-            state.currentTurnObservationId = existingTurn.id;
-            return existingTurn;
-        }
-
-        const now = this.now();
-        const currentTurn = this.findObservation(state, state.currentTurnObservationId);
-        if (currentTurn && currentTurn.endTime == null) {
-            currentTurn.endTime = now;
-            currentTurn.latency = elapsedSeconds(currentTurn.startTime, currentTurn.endTime);
-        }
-
-        const turn = this.makeObservation({
-            traceId: state.detail.trace.id,
-            type: "SPAN",
-            name: "turn",
-            parentObservationId: state.rootObservationId,
-            startTime: now,
-            input,
-            metadata: {
-                ...(entryId ? { entryId } : {}),
-                role: "user",
-            },
-        });
-        state.detail.observations.push(turn);
-        state.currentTurnObservationId = turn.id;
-        if (entryId) {
-            state.turnObservationIds.set(entryId, turn.id);
-        }
-        return turn;
+        turn.input = input;
+        turn.metadata = {
+            ...turn.metadata,
+            ...(entryId ? { entryId } : {}),
+            role: "user",
+        };
     }
 
     private snapshot(sessionPath: string): TraceDetail | undefined {
