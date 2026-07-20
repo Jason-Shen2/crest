@@ -120,6 +120,7 @@ export function ObservationTimeline({
 }: ObservationTimelineProps) {
     const scrollRef = useRef<HTMLDivElement>(null);
     const autoScrollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+    const programmaticFollowScrollRef = useRef(false);
     const rowsCacheRef = useRef<TimelineRowsCache>(undefined);
     const rowsCache = useMemo(() => buildTimelineRows(detail, rowsCacheRef.current), [detail]);
     rowsCacheRef.current = rowsCache;
@@ -151,13 +152,8 @@ export function ObservationTimeline({
         }
         rowVirtualizer.measure();
         const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+        programmaticFollowScrollRef.current = true;
         clearTimeout(autoScrollTimeoutRef.current);
-        autoScrollTimeoutRef.current = setTimeout(
-            () => {
-                autoScrollTimeoutRef.current = undefined;
-            },
-            reducedMotion ? 0 : 300
-        );
         rowVirtualizer.scrollToIndex(rows.length - 1, {
             align: "end",
             behavior: reducedMotion ? "auto" : "smooth",
@@ -212,6 +208,19 @@ export function ObservationTimeline({
 
     const handleScroll = (event: UIEvent<HTMLDivElement>) => {
         onScrollOffsetChange(event.currentTarget.scrollTop);
+        if (programmaticFollowScrollRef.current) {
+            if (isTimelineAtBottom(event.currentTarget)) {
+                clearTimeout(autoScrollTimeoutRef.current);
+                autoScrollTimeoutRef.current = setTimeout(() => {
+                    const scrollElement = scrollRef.current;
+                    if (scrollElement && isTimelineAtBottom(scrollElement)) {
+                        programmaticFollowScrollRef.current = false;
+                    }
+                    autoScrollTimeoutRef.current = undefined;
+                }, 0);
+            }
+            return;
+        }
         if (!followLive || autoScrollTimeoutRef.current != null) {
             return;
         }
@@ -221,6 +230,7 @@ export function ObservationTimeline({
     };
 
     const handleUserScrollIntent = () => {
+        programmaticFollowScrollRef.current = false;
         clearTimeout(autoScrollTimeoutRef.current);
         autoScrollTimeoutRef.current = undefined;
     };
