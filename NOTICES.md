@@ -9,8 +9,9 @@ copyright notices and license texts are reproduced below.
 ## Langfuse
 
 The Trace Panel under `frontend/app/observability/trace-panel/` ports
-the component composition, tree/timeline algorithms, expanded graph
-construction, and ELK graph rendering behavior from
+the component composition, tree and Timeline algorithms,
+Trace/Observation Detail views, Desktop Layout split and collapse
+behavior, expanded graph construction, and ELK graph rendering from
 [Langfuse](https://github.com/langfuse/langfuse) commit
 `1cb1bbcf6b269fd887a6667796f1a15417cca336`.
 

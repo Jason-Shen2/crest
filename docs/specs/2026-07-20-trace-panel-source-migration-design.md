@@ -3,7 +3,7 @@
 ## 状态
 
 - 日期：2026-07-20
-- 状态：设计已确认，等待实施计划
+- 状态：已实施，等待最终验证
 - 上游参考：`langfuse/langfuse@1cb1bbcf6b269fd887a6667796f1a15417cca336`
 - 目标模块：Timeline、Trace Detail、Observation Detail、Desktop Layout
 - 数据协议：`TraceDetail`
@@ -117,15 +117,15 @@ Trace root 不再以 synthetic node ID 表达 selection。Tree、Timeline、Sear
 
 迁移并保留以下模块职责：
 
-| Langfuse 模块 | Crest 目标职责 |
-|---|---|
-| `TraceTimeline/index.tsx` | Timeline 主布局、virtualizer、滚动同步和 selection reveal |
-| `timeline-calculations.ts` | origin、duration、offset、width、ticks、scroll target |
-| `timeline-flattening.ts` | 从展开后的 `TraceNode[]` 生成稳定 timeline rows |
-| `TimelineRows.tsx` | gutter/chart 虚拟行渲染边界 |
-| `TimelineGutterRow.tsx` | 层级、connector、badge、name 和 collapse control |
-| `TimelineBar.tsx` | duration bar、TTFT segment 和可用指标标签 |
-| `TimelineScale.tsx` | 时间刻度、网格线和统一坐标 |
+| Langfuse 模块              | Crest 目标职责                                            |
+| -------------------------- | --------------------------------------------------------- |
+| `TraceTimeline/index.tsx`  | Timeline 主布局、virtualizer、滚动同步和 selection reveal |
+| `timeline-calculations.ts` | origin、duration、offset、width、ticks、scroll target     |
+| `timeline-flattening.ts`   | 从展开后的 `TraceNode[]` 生成稳定 timeline rows           |
+| `TimelineRows.tsx`         | gutter/chart 虚拟行渲染边界                               |
+| `TimelineGutterRow.tsx`    | 层级、connector、badge、name 和 collapse control          |
+| `TimelineBar.tsx`          | duration bar、TTFT segment 和可用指标标签                 |
+| `TimelineScale.tsx`        | 时间刻度、网格线和统一坐标                                |
 
 ### 数据流
 
@@ -350,4 +350,3 @@ Navigation 与 Detail 使用 resizable panels：
 - 不存在 `/langfuse` 目录、shim、adapter 或 `Langfuse*` domain types。
 - 新增纯函数和组件行为均有先失败后通过的自动化测试。
 - observability tests、typecheck、format、diff check 和 `build:dev` 通过。
-
