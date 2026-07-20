@@ -3,7 +3,16 @@
 // Adapted from Langfuse TraceLayoutDesktop.
 
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { createContext, useContext, useRef, useState, type ComponentType, type ReactNode, type RefObject } from "react";
+import {
+    createContext,
+    useContext,
+    useLayoutEffect,
+    useRef,
+    useState,
+    type ComponentType,
+    type ReactNode,
+    type RefObject,
+} from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 
 import { cn } from "@/util/util";
@@ -11,12 +20,20 @@ import { cn } from "@/util/util";
 const NavigationPanelMinWidth = 260;
 const DetailPanelMinWidth = 360;
 const CollapsedPanelWidth = 40;
+const BothPanelsMinWidth = NavigationPanelMinWidth + DetailPanelMinWidth + 1;
+
+function percentOfContainer(pixels: number, containerWidth: number): number {
+    return (pixels / containerWidth) * 100;
+}
 
 type TraceLayoutDesktopContextValue = {
     navigationPanelRef: RefObject<ImperativePanelHandle>;
     detailPanelRef: RefObject<ImperativePanelHandle>;
     isNavigationPanelCollapsed: boolean;
     isDetailPanelCollapsed: boolean;
+    navigationPanelMinSize: number;
+    detailPanelMinSize: number;
+    collapsedPanelSize: number;
     setIsNavigationPanelCollapsed: (collapsed: boolean) => void;
     setIsDetailPanelCollapsed: (collapsed: boolean) => void;
     collapseNavigationPanel: () => void;
@@ -40,16 +57,40 @@ export function useDesktopTraceLayout() {
 }
 
 function TraceLayoutDesktopRoot({ children }: { children: ReactNode }) {
+    const panelContainerRef = useRef<HTMLDivElement>(null);
     const navigationPanelRef = useRef<ImperativePanelHandle>(null);
     const detailPanelRef = useRef<ImperativePanelHandle>(null);
+    const [containerWidth, setContainerWidth] = useState(BothPanelsMinWidth);
     const [isNavigationPanelCollapsed, setIsNavigationPanelCollapsed] = useState(false);
     const [isDetailPanelCollapsed, setIsDetailPanelCollapsed] = useState(false);
+
+    useLayoutEffect(() => {
+        const container = panelContainerRef.current;
+        if (!container) {
+            return;
+        }
+        const updateWidth = (width: number) => {
+            if (width > 0) {
+                setContainerWidth(width);
+            }
+        };
+        updateWidth(container.offsetWidth);
+        if (typeof ResizeObserver === "undefined") {
+            return;
+        }
+        const observer = new ResizeObserver(([entry]) => updateWidth(entry.contentRect.width));
+        observer.observe(container);
+        return () => observer.disconnect();
+    }, []);
 
     const contextValue: TraceLayoutDesktopContextValue = {
         navigationPanelRef,
         detailPanelRef,
         isNavigationPanelCollapsed,
         isDetailPanelCollapsed,
+        navigationPanelMinSize: percentOfContainer(NavigationPanelMinWidth, containerWidth),
+        detailPanelMinSize: percentOfContainer(DetailPanelMinWidth, containerWidth),
+        collapsedPanelSize: percentOfContainer(CollapsedPanelWidth, containerWidth),
         setIsNavigationPanelCollapsed,
         setIsDetailPanelCollapsed,
         collapseNavigationPanel: () => navigationPanelRef.current?.collapse(),
@@ -61,40 +102,44 @@ function TraceLayoutDesktopRoot({ children }: { children: ReactNode }) {
     return (
         <TraceLayoutContext.Provider value={contextValue}>
             <div data-testid="trace-layout-scroll" className="relative h-full w-full overflow-x-auto overflow-y-hidden">
-                <PanelGroup
+                <div
+                    ref={panelContainerRef}
                     data-testid="trace-layout-panels"
-                    direction="horizontal"
                     className={cn(
                         "h-full min-h-0",
                         !isNavigationPanelCollapsed && !isDetailPanelCollapsed ? "min-w-[621px]" : "min-w-0"
                     )}
                 >
-                    {children}
-                </PanelGroup>
+                    <PanelGroup direction="horizontal" className="h-full min-h-0">
+                        {children}
+                    </PanelGroup>
+                </div>
             </div>
         </TraceLayoutContext.Provider>
     );
 }
 
 function NavigationPanel({ children }: { children: ReactNode }) {
-    const { navigationPanelRef, isNavigationPanelCollapsed, setIsNavigationPanelCollapsed, expandNavigationPanel } =
-        useTraceLayoutContext();
+    const {
+        navigationPanelRef,
+        isNavigationPanelCollapsed,
+        navigationPanelMinSize,
+        collapsedPanelSize,
+        setIsNavigationPanelCollapsed,
+        expandNavigationPanel,
+    } = useTraceLayoutContext();
 
     return (
         <Panel
             ref={navigationPanelRef}
+            role="region"
             aria-label="Trace navigation panel"
             defaultSize={56}
-            minSize={20}
+            minSize={navigationPanelMinSize}
             collapsible
-            collapsedSize={6}
+            collapsedSize={collapsedPanelSize}
             onCollapse={() => setIsNavigationPanelCollapsed(true)}
             onExpand={() => setIsNavigationPanelCollapsed(false)}
-            style={
-                isNavigationPanelCollapsed
-                    ? { minWidth: CollapsedPanelWidth, maxWidth: CollapsedPanelWidth }
-                    : { minWidth: NavigationPanelMinWidth }
-            }
         >
             <div
                 data-testid="trace-navigation-content"
@@ -131,6 +176,8 @@ function DetailPanel({ children }: { children: ReactNode }) {
     const {
         detailPanelRef,
         isDetailPanelCollapsed,
+        detailPanelMinSize,
+        collapsedPanelSize,
         setIsDetailPanelCollapsed,
         collapseDetailPanel,
         expandDetailPanel,
@@ -139,18 +186,14 @@ function DetailPanel({ children }: { children: ReactNode }) {
     return (
         <Panel
             ref={detailPanelRef}
+            role="region"
             aria-label="Trace detail panel"
             defaultSize={44}
-            minSize={20}
+            minSize={detailPanelMinSize}
             collapsible
-            collapsedSize={6}
+            collapsedSize={collapsedPanelSize}
             onCollapse={() => setIsDetailPanelCollapsed(true)}
             onExpand={() => setIsDetailPanelCollapsed(false)}
-            style={
-                isDetailPanelCollapsed
-                    ? { minWidth: CollapsedPanelWidth, maxWidth: CollapsedPanelWidth }
-                    : { minWidth: DetailPanelMinWidth }
-            }
         >
             <div
                 data-testid="trace-detail-content"
