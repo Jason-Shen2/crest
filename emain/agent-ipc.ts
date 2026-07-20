@@ -59,8 +59,10 @@ import type {
     AgentBackendCommandName,
     AgentCommandExecutionResult,
     AgentCommandInfo,
+    AgentFlagInfo,
     AgentForkPointView,
     AgentRunCommandInput,
+    AgentShortcutInfo,
     AgentTreeEntryView,
 } from "./agent/commands/types";
 import { buildAgentHarnessHost } from "./agent/harness-factory";
@@ -72,6 +74,8 @@ import {
     type AgentExecutionConfig,
     type AgentTurn,
     type AgentSessionRuntimeStatus,
+    type ExtensionReloadState,
+    type ExtensionUiSnapshot,
 } from "./agent/agent-session-runtime";
 import { AgentRuntimeRegistry } from "./agent/agent-runtime-registry";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
@@ -87,10 +91,23 @@ import {
     openPaneSession,
     openPaneSessionByPath,
 } from "./agent/sessions";
+import {
+    createCommandContext,
+    createExtensionContext,
+    createExtensionUiBridge,
+    getExtensionGraphForRuntime,
+    loadAgentExtensions,
+    renderExtensionSessionEntries,
+    reloadExtensionsForRuntime,
+} from "./agent/extensions";
+import type { WidgetEvent } from "./agent/extensions";
+import { createExtensionLifecycleHost, unregisterExtensionLifecycleHost } from "./agent/extensions/lifecycle";
+import { loadAgentPromptTemplates } from "./agent/prompt-loader";
 import { loadAgentSkills } from "./agent/skills-loader";
 import { getDefaultTools } from "./agent/tools";
 import { createSpawnCliAgentTool } from "./agent/tools/spawn-cli-agent";
 import type { AgentMessage, ThinkingLevel } from "./agent/types";
+import type { RenderedExtensionEntryNode } from "./agent/extensions/pi-gui/crest/widget-tree";
 import type { Api, Message, Model } from "./ai";
 import { getModel } from "./ai";
 import { getSecret } from "./aiconfig/secrets";
@@ -101,26 +118,29 @@ const runtimeRegistry = new AgentRuntimeRegistry<AgentSessionRuntime>({
     idleTtlMs: AgentRuntimeIdleTtlMs,
 });
 let runtimeSweepTimer: NodeJS.Timeout | undefined;
+const sessionOperations = new Map<string, Promise<void>>();
+const extensionCwdOperations = new Map<string, Promise<void>>();
+let extensionGlobalOperation: Promise<void> = Promise.resolve();
+const pendingReloadStates = new Map<string, ExtensionReloadState>();
 
 type SubKey = string;
+type SubscriptionTarget = { sender: electron.WebContents; canonicalPath: string; rendererPath: string };
 interface AgentSubscriptionRecord {
     unsubscribe: () => void;
     sessionPath: string;
+    target: SubscriptionTarget;
 }
 
 const subscriptions = new Map<SubKey, AgentSubscriptionRecord>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
-const pendingSubscriptions = new Map<
-    SubKey,
-    { sender: electron.WebContents; canonicalPath: string; rendererPath: string }
->();
+const pendingSubscriptions = new Map<SubKey, SubscriptionTarget>();
 
 interface SendOptions {
     /** Existing session, if any. null on first send → main mints a fresh one. */
     sessionMetadata?: JsonlSessionMetadata | null;
-    /** Parent terminal block ID for pane-scoped tools and command context. */
+    /** Parent terminal block ID for workspace-scoped tools and command context. */
     blockId: string;
-    /** Pane's current cwd. Drives system prompt + tool execution dir. */
+    /** Workspace's current cwd. Drives system prompt + tool execution dir. */
     cwd: string;
     /** Prompt text. */
     text: string;
@@ -139,12 +159,12 @@ interface SendOptions {
      */
     token?: string;
     tokenSecretName?: string;
-    /** Optional pane context. */
+    /** Optional workspace context. */
     gitBranch?: string;
     recentCmds?: string[];
     connection?: string;
     /**
-     * Per-pane tool allowlist. Optional in v1 — when omitted, permissions
+     * Per-session tool allowlist. Optional in v1 — when omitted, permissions
      * default to allowAll:true (no approval UI exists yet; the agent
      * stays functional). Bench mode (CREST_AGENT_BENCH=1) also forces
      * allowAll regardless of this value. See emain/agent/permissions.ts.
@@ -385,6 +405,48 @@ function buildPromptInputs(opts: SendOptions): SystemPromptInputs {
     };
 }
 
+async function serializeSessionOperation<T>(sessionPath: string, operation: () => Promise<T>): Promise<T> {
+    const previous = sessionOperations.get(sessionPath) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const completion = result.then(
+        () => undefined,
+        () => undefined
+    );
+    sessionOperations.set(sessionPath, completion);
+    try {
+        return await result;
+    } finally {
+        if (sessionOperations.get(sessionPath) === completion) {
+            sessionOperations.delete(sessionPath);
+        }
+    }
+}
+
+async function serializeExtensionOperation<T>(cwd: string | undefined, operation: () => Promise<T>): Promise<T> {
+    const cwdKey = cwd == null ? undefined : path.resolve(cwd);
+    const barriers =
+        cwdKey == null
+            ? [extensionGlobalOperation, ...extensionCwdOperations.values()]
+            : [extensionGlobalOperation, extensionCwdOperations.get(cwdKey) ?? Promise.resolve()];
+    const result = Promise.all(barriers).then(operation);
+    const completion = result.then(
+        () => undefined,
+        () => undefined
+    );
+    if (cwdKey == null) {
+        extensionGlobalOperation = completion;
+    } else {
+        extensionCwdOperations.set(cwdKey, completion);
+    }
+    try {
+        return await result;
+    } finally {
+        if (cwdKey != null && extensionCwdOperations.get(cwdKey) === completion) {
+            extensionCwdOperations.delete(cwdKey);
+        }
+    }
+}
+
 async function ensureSession(opts: SendOptions): Promise<{
     metadata: JsonlSessionMetadata;
     isNew: boolean;
@@ -417,68 +479,84 @@ async function createAgentRuntime(
     opts: SendOptions,
     config: AgentExecutionConfig
 ): Promise<AgentSessionRuntime> {
+    const reloadState = pendingReloadStates.get(metadata.path);
     const piSession = await openPaneSession(metadata);
-    // Discover skills from <configHome>/skills and <cwd>/.crest/skills.
-    // Loaded once per harness construction (session open); the skills
-    // section is only injected into the system prompt when the read
-    // tool is active (build-system-prompt.ts).
     const skills = await loadAgentSkills({ cwd: opts.cwd });
-    let getRuntimeCwd = () => config.promptInputs.cwd;
-    const host = buildAgentHarnessHost({
-        session: piSession,
-        model: config.model,
-        thinkingLevel: config.thinkingLevel,
-        promptInputs: config.promptInputs,
-        tools: [
-            ...getDefaultTools(() => getRuntimeCwd()),
-            // spawn_cli_agent delegates long-running / interactive commands to a
-            // CLI subagent. Only the main agent runtime gets it (never in
-            // getDefaultTools, which the subagent factory also draws from). The
-            // subagent runs in an ephemeral in-memory session and shares this
-            // runtime's initial resolved model + API key.
-            createSpawnCliAgentTool({
-                parentBlockId: opts.blockId,
-                getModel: () => host.harness.getModel(),
-                createSession: () => new InMemorySessionRepo().create(),
-                getApiKeyAndHeaders: (model) => host.resolveAuth(model),
-            }),
-        ],
-        // Load AGENTS.md / CLAUDE.md from cwd up to the filesystem root so
-        // project-specific instructions reach the system prompt. Loaded once
-        // per harness construction (session open); cheap sync reads.
-        contextFiles: loadProjectContextFiles({ cwd: opts.cwd }),
-        skills,
-        getApiKeyAndHeaders: config.authResolver,
-        toolCallHook: config.toolCallHook,
-    });
-    getRuntimeCwd = () => host.getCwd();
-    // Wrap the harness in the per-session owner. Its constructor attaches
-    // the harness subscription NOW (before any prompt() runs), so it owns
-    // the authoritative transcript + queue state from the first event on —
-    // never missing a turn that finishes before a renderer subscribes.
-    // Seed it with the persisted transcript so a reopened session shows its
-    // history (a fresh session's buildContext is empty).
-    const seed = await piSession.buildContext();
-    const initialTurns = buildPersistedTurnsFromSessionEntries(await piSession.getBranch());
-    const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
-        const operations = extractChangeOperationsFromMessages(turn.responseMessages.filter(isToolResultModelMessage), {
-            turnId: turn.turnId,
+    const promptTemplates = await loadAgentPromptTemplates({ cwd: opts.cwd });
+    const { extensions, runtime: extensionRuntime } = await loadAgentExtensions({ cwd: opts.cwd });
+    const extensionUiBridge = createExtensionUiBridge();
+    const extensionLifecycleHost = createExtensionLifecycleHost(extensionRuntime);
+    let host: ReturnType<typeof buildAgentHarnessHost> | undefined;
+    try {
+        let getRuntimeCwd = () => config.promptInputs.cwd;
+        host = buildAgentHarnessHost({
+            session: piSession,
+            model: config.model,
+            thinkingLevel: config.thinkingLevel,
+            promptInputs: config.promptInputs,
+            tools: [
+                ...getDefaultTools(() => getRuntimeCwd()),
+                createSpawnCliAgentTool({
+                    parentBlockId: opts.blockId,
+                    getModel: () => host!.harness.getModel(),
+                    createSession: () => new InMemorySessionRepo().create(),
+                    getApiKeyAndHeaders: (model) => host!.resolveAuth(model),
+                }),
+            ],
+            contextFiles: loadProjectContextFiles({ cwd: opts.cwd }),
+            skills,
+            promptTemplates,
+            extensions,
+            extensionRuntime,
+            extensionUiBridge,
+            extensionLifecycleOwnerId: metadata.path,
+            extensionLifecycleHost,
+            getApiKeyAndHeaders: config.authResolver,
+            toolCallHook: config.toolCallHook,
         });
-        if (operations.length === 0) return;
-        const model = host.harness.getModel();
-        const auth = await host.resolveAuth(model);
-        const changeOutline = await generateChangeOutline({
-            model,
-            operations,
-            turnId: turn.turnId,
-            apiKey: auth?.apiKey,
+        getRuntimeCwd = () => host!.getCwd();
+        const seed = await piSession.buildContext();
+        const initialTurns = buildPersistedTurnsFromSessionEntries(await piSession.getBranch());
+        const runtime: AgentSessionRuntime = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, {
+            onTurnFinished: async (turn): Promise<void> => {
+                const operations = extractChangeOperationsFromMessages(
+                    turn.responseMessages.filter(isToolResultModelMessage),
+                    { turnId: turn.turnId }
+                );
+                if (operations.length === 0) return;
+                const model = host!.harness.getModel();
+                const auth = await host!.resolveAuth(model);
+                const changeOutline = await generateChangeOutline({
+                    model,
+                    operations,
+                    turnId: turn.turnId,
+                    apiKey: auth?.apiKey,
+                });
+                if (changeOutline) {
+                    runtime.setTurnChangeOutline(turn.turnId, changeOutline);
+                }
+            },
+            extensionUiBridge,
+            initialExtensionUi: reloadState?.ui,
+            initialFlagValues: reloadState?.flags,
         });
-        if (changeOutline) {
-            owner.setTurnChangeOutline(turn.turnId, changeOutline);
+        extensionUiBridge.attach(runtime);
+        return runtime;
+    } catch (error) {
+        extensionUiBridge.dispose();
+        if (host) {
+            await host.harness.abort().catch(() => {});
         }
-    };
-    const owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, { onTurnFinished });
-    return owner;
+        try {
+            await extensionLifecycleHost.disposeOwner(metadata.path);
+        } catch (cleanupError) {
+            console.error(`[agent-ipc] extension cleanup error for ${metadata.path}:`, cleanupError);
+        } finally {
+            unregisterExtensionLifecycleHost(extensionLifecycleHost);
+            extensionRuntime.invalidate();
+        }
+        throw error;
+    }
 }
 
 async function ensureAgentRuntime(
@@ -507,8 +585,9 @@ async function ensureAgentRuntime(
             `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
     );
     const runtime = await runtimeRegistry.getOrCreate(metadata.path, () =>
-        createAgentRuntime(metadata, opts, config)
+        serializeExtensionOperation(opts.cwd, () => createAgentRuntime(metadata, opts, config))
     );
+    pendingReloadStates.delete(metadata.path);
     attachPendingSubscribers(metadata.path, runtime);
     return { runtime, config };
 }
@@ -548,6 +627,26 @@ function trackSenderKey(sender: electron.WebContents, key: SubKey): void {
     set.add(key);
 }
 
+async function renderSessionEntriesForIpc(
+    cwd: string | undefined,
+    entries: Awaited<ReturnType<AgentSessionRuntime["listTreeEntries"]>>["entries"],
+    owner?: AgentSessionRuntime
+): Promise<RenderedExtensionEntryNode[]> {
+    try {
+        const extensions =
+            owner?.host.extensions ?? (cwd ? (await loadAgentExtensions({ cwd, trackGraph: false })).extensions : []);
+        if (extensions.length === 0) return [];
+        return renderExtensionSessionEntries(extensions, entries, { width: 80 });
+    } catch (err) {
+        console.warn("[agent-ipc] failed to render extension session entries", err);
+        return [];
+    }
+}
+
+function makeEmptyExtensionUiSnapshot(): ExtensionUiSnapshot {
+    return { statuses: {}, widgets: {}, widgetnodes: {} };
+}
+
 async function sendPersistedSessionState(
     sender: electron.WebContents,
     sessionPath: string,
@@ -557,9 +656,17 @@ async function sendPersistedSessionState(
     try {
         canonicalPath = await validateSessionPath(sessionPath);
         const session = await openPaneSessionByPath(canonicalPath);
+        const metadata = await session.getMetadata();
         const context = await session.buildContext();
-        const turns = buildPersistedTurnsFromSessionEntries(await session.getBranch());
+        const branchEntries = await session.getBranch();
+        const turns = buildPersistedTurnsFromSessionEntries(branchEntries);
+        const renderedEntries = await renderSessionEntriesForIpc(metadata.cwd, branchEntries);
         if (sender.isDestroyed()) return;
+        const owner = runtimeRegistry.get(canonicalPath);
+        if (owner) {
+            await sendLiveSessionState(sender, canonicalPath, owner, rendererSessionPath);
+            return;
+        }
         sender.send(
             "agent:event",
             makeAgentEventPayload(canonicalPath, rendererSessionPath, {
@@ -569,6 +676,8 @@ async function sendPersistedSessionState(
                 status: "idle",
                 steer: [],
                 followUp: [],
+                renderedEntries,
+                extensionUi: makeEmptyExtensionUiSnapshot(),
             })
         );
     } catch (err) {
@@ -583,10 +692,14 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
     status: AgentSessionRuntimeStatus;
     steer: AgentMessage[];
     followUp: AgentMessage[];
+    renderedEntries: RenderedExtensionEntryNode[];
+    extensionUi: ExtensionUiSnapshot;
 }> {
     const canonicalPath = await validateSessionPath(sessionPath);
     const owner = runtimeRegistry.get(canonicalPath);
     if (owner) {
+        const entries = await owner.host.session.getBranch();
+        const renderedEntries = await renderSessionEntriesForIpc(undefined, entries, owner);
         const state = owner.getSessionState();
         return {
             type: "session_state",
@@ -595,17 +708,23 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
             status: state.status,
             steer: state.steerQueue,
             followUp: state.followUpQueue,
+            renderedEntries,
+            extensionUi: state.extensionUi,
         };
     }
     const session = await openPaneSessionByPath(canonicalPath);
+    const metadata = await session.getMetadata();
     const context = await session.buildContext();
+    const entries = await session.getBranch();
     return {
         type: "session_state",
         messages: context.messages,
-        turns: buildPersistedTurnsFromSessionEntries(await session.getBranch()),
+        turns: buildPersistedTurnsFromSessionEntries(entries),
         status: "idle",
         steer: [],
         followUp: [],
+        renderedEntries: await renderSessionEntriesForIpc(metadata.cwd, entries),
+        extensionUi: makeEmptyExtensionUiSnapshot(),
     };
 }
 
@@ -614,11 +733,11 @@ function subscribeToOwner(
     sessionPath: string,
     session: AgentSessionRuntime,
     rendererSessionPath = sessionPath
-): void {
+): Promise<void> {
     const key: SubKey = makeAgentSubscriptionKey(sender.id, sessionPath, rendererSessionPath);
     pendingSubscriptions.delete(key);
-    if (sender.isDestroyed()) return;
-    if (subscriptions.has(key)) return;
+    if (sender.isDestroyed()) return Promise.resolve();
+    if (subscriptions.has(key)) return Promise.resolve();
     const unsub = session.subscribe((agentEvent) => {
         if (sender.isDestroyed()) return;
         sender.send(
@@ -629,11 +748,28 @@ function subscribeToOwner(
             })
         );
     });
-    subscriptions.set(key, { unsubscribe: unsub, sessionPath });
+    const target = { sender, canonicalPath: sessionPath, rendererPath: rendererSessionPath };
+    subscriptions.set(key, { unsubscribe: unsub, sessionPath, target });
     runtimeRegistry.acquire(sessionPath, key);
     trackSenderKey(sender, key);
-    const sessionState = session.getSessionState();
+    return sendLiveSessionState(sender, sessionPath, session, rendererSessionPath).catch((error) => {
+        if (subscriptions.get(key)?.unsubscribe === unsub) {
+            releaseSubscription(key);
+        }
+        throw error;
+    });
+}
+
+async function sendLiveSessionState(
+    sender: electron.WebContents,
+    sessionPath: string,
+    session: AgentSessionRuntime,
+    rendererSessionPath = sessionPath
+): Promise<void> {
+    const entries = await session.host.session.getBranch();
+    const renderedEntries = await renderSessionEntriesForIpc(undefined, entries, session);
     if (sender.isDestroyed()) return;
+    const sessionState = session.getSessionState();
     sender.send(
         "agent:event",
         makeAgentEventPayload(sessionPath, rendererSessionPath, {
@@ -643,6 +779,8 @@ function subscribeToOwner(
             status: sessionState.status,
             steer: sessionState.steerQueue,
             followUp: sessionState.followUpQueue,
+            renderedEntries,
+            extensionUi: sessionState.extensionUi,
         })
     );
 }
@@ -654,7 +792,9 @@ function attachPendingSubscribers(sessionPath: string, session: AgentSessionRunt
             pendingSubscriptions.delete(key);
             continue;
         }
-        subscribeToOwner(sender.sender, sender.canonicalPath, session, sender.rendererPath);
+        void subscribeToOwner(sender.sender, sender.canonicalPath, session, sender.rendererPath).catch((err) => {
+            console.error("[agent-ipc] subscribe live session_state error:", err);
+        });
     }
 }
 
@@ -677,8 +817,209 @@ async function getSessionTreeData(sessionMetadataInput: unknown): Promise<{
     return { entries, leafId: effectiveLeafId, labels };
 }
 
-export function listAgentCommandsForIpc(): AgentCommandInfo[] {
-    return getBuiltInAgentCommands();
+/**
+ * Convert an extension's RegisteredCommand into the AgentCommandInfo the
+ * slash-command menus consume. Execution routes through the runtime's live
+ * extension ctx (action.type === "extension"), never the backend switch.
+ */
+function extensionCommandToInfo(command: {
+    name: string;
+    description?: string;
+    argumentHint?: string;
+    aliases?: string[];
+}): AgentCommandInfo {
+    return {
+        name: command.name,
+        description: command.description ?? "",
+        argumentHint: command.argumentHint,
+        aliases: command.aliases,
+        source: "extension",
+        action: { type: "extension", name: command.name },
+    };
+}
+
+/**
+ * List slash commands available to a workspace. Built-ins are always returned; when
+ * a cwd is supplied we additionally discover the workspace's extensions and surface
+ * any commands they registered via pi.registerCommand(). A built-in name always
+ * wins over an extension name of the same id (extensions can't shadow built-ins).
+ */
+export async function listAgentCommandsForIpc(cwd?: string): Promise<AgentCommandInfo[]> {
+    const builtins = getBuiltInAgentCommands();
+    if (!cwd || cwd.trim() === "") return builtins;
+
+    const taken = new Set<string>();
+    for (const command of builtins) {
+        taken.add(command.name);
+        for (const alias of command.aliases ?? []) taken.add(alias);
+    }
+
+    try {
+        const { extensions } = await loadAgentExtensions({ cwd, trackGraph: false });
+        const extensionCommands: AgentCommandInfo[] = [];
+        for (const extension of extensions) {
+            for (const command of extension.commands.values()) {
+                if (taken.has(command.name)) continue;
+                taken.add(command.name);
+                extensionCommands.push(extensionCommandToInfo(command));
+            }
+        }
+        return [...builtins, ...extensionCommands];
+    } catch (error) {
+        console.warn(`[agent-ipc] listAgentCommandsForIpc: extension discovery failed: ${String(error)}`);
+        return builtins;
+    }
+}
+
+/**
+ * List extension-registered keyboard shortcuts (pi.registerShortcut) for a
+ * workspace cwd. The renderer binds these keys and routes activation back through
+ * runAgentShortcutForIpc. Returns [] when cwd is empty or discovery fails.
+ */
+export async function listAgentShortcutsForIpc(cwd?: string): Promise<AgentShortcutInfo[]> {
+    if (!cwd || cwd.trim() === "") return [];
+    try {
+        const { extensions } = await loadAgentExtensions({ cwd, trackGraph: false });
+        const shortcuts: AgentShortcutInfo[] = [];
+        const seen = new Set<string>();
+        for (const extension of extensions) {
+            for (const registered of extension.shortcuts.values()) {
+                if (seen.has(registered.shortcut)) continue;
+                seen.add(registered.shortcut);
+                shortcuts.push({
+                    shortcut: registered.shortcut,
+                    description: registered.description,
+                    extensionPath: registered.extensionPath,
+                });
+            }
+        }
+        return shortcuts;
+    } catch (error) {
+        console.warn(`[agent-ipc] listAgentShortcutsForIpc: extension discovery failed: ${String(error)}`);
+        return [];
+    }
+}
+
+/**
+ * List extension-registered flags (pi.registerFlag) for a session. When a live
+ * owner exists (sessionMetadata resolves in the cache) the current value comes
+ * from that session's bound runtime; otherwise it falls back to the registered
+ * default (headless discovery). Returns [] when cwd is empty or discovery
+ * fails.
+ */
+export async function listAgentFlagsForIpc(cwd?: string, sessionMetadata?: unknown): Promise<AgentFlagInfo[]> {
+    if (!cwd || cwd.trim() === "") return [];
+    const owner = await resolveCanonicalSessionOwner(sessionMetadata);
+    try {
+        const { extensions } = await loadAgentExtensions({ cwd, trackGraph: false });
+        const flags: AgentFlagInfo[] = [];
+        const seen = new Set<string>();
+        for (const extension of extensions) {
+            for (const registered of extension.flags.values()) {
+                if (seen.has(registered.name)) continue;
+                seen.add(registered.name);
+                const live = owner?.getFlagValue(registered.name);
+                flags.push({
+                    name: registered.name,
+                    description: registered.description,
+                    type: registered.type,
+                    default: registered.default,
+                    value: live !== undefined ? live : registered.default,
+                    extensionPath: registered.extensionPath,
+                });
+            }
+        }
+        return flags;
+    } catch (error) {
+        console.warn(`[agent-ipc] listAgentFlagsForIpc: extension discovery failed: ${String(error)}`);
+        return [];
+    }
+}
+
+async function resolveCanonicalSessionOwner(sessionMetadata: unknown): Promise<AgentSessionRuntime | undefined> {
+    if (!isRecord(sessionMetadata)) return undefined;
+    const rawPath = sessionMetadata.path;
+    if (typeof rawPath !== "string" || rawPath.trim() === "") return undefined;
+    const canonicalPath = await validateSessionPath(rawPath, "sessionMetadata.path");
+    return runtimeRegistry.get(canonicalPath);
+}
+
+interface AgentRunShortcutInput {
+    sessionMetadata?: JsonlSessionMetadata;
+    cwd: string;
+    shortcut: string;
+}
+
+function validateRunShortcutInput(value: unknown): AgentRunShortcutInput {
+    if (!isRecord(value)) throw new Error("agent IPC: runShortcut input must be an object");
+    return {
+        cwd: requireNonEmptyString(value.cwd, "cwd"),
+        shortcut: requireNonEmptyString(value.shortcut, "shortcut"),
+        sessionMetadata:
+            value.sessionMetadata == null ? undefined : validateSessionMetadataShape(value.sessionMetadata),
+    };
+}
+
+/**
+ * Activate an extension keyboard shortcut. When a live AgentSessionRuntime owns
+ * the requested session we route through it (correct cwd + attached ctx.ui host);
+ * otherwise we run headless with a fresh ctx (ctx.ui degrades to no-op). Mirrors
+ * runAgentExtensionCommandForIpc.
+ */
+export async function runAgentShortcutForIpc(input: unknown): Promise<AgentCommandExecutionResult> {
+    const parsed = validateRunShortcutInput(input);
+
+    const owner = await resolveCanonicalSessionOwner(parsed.sessionMetadata);
+    if (owner) {
+        return await owner.runShortcut(parsed.shortcut);
+    }
+
+    const { extensions } = await loadAgentExtensions({ cwd: parsed.cwd });
+    const ctx = createExtensionContext(() => parsed.cwd);
+    for (const extension of extensions) {
+        const registered = extension.shortcuts.get(parsed.shortcut);
+        if (!registered) continue;
+        await registered.handler(ctx);
+        return commandSuccess(`Ran extension shortcut ${parsed.shortcut}`);
+    }
+    return commandNoop(`Extension shortcut ${parsed.shortcut} is not available.`);
+}
+
+interface AgentSetFlagInput {
+    sessionMetadata?: JsonlSessionMetadata;
+    name: string;
+    value: boolean | string;
+}
+
+function validateSetFlagInput(value: unknown): AgentSetFlagInput {
+    if (!isRecord(value)) throw new Error("agent IPC: setFlag input must be an object");
+    const flagValue = value.value;
+    if (typeof flagValue !== "boolean" && typeof flagValue !== "string") {
+        throw new Error("agent IPC: setFlag value must be a boolean or string");
+    }
+    return {
+        name: requireNonEmptyString(value.name, "name"),
+        value: flagValue,
+        sessionMetadata:
+            value.sessionMetadata == null ? undefined : validateSessionMetadataShape(value.sessionMetadata),
+    };
+}
+
+/**
+ * Write a flag value. Only meaningful when a live owner exists — the flag value
+ * lives in that session's bound extension runtime, which the running agent reads
+ * via pi.getFlag(). Without an owner (no session yet) the write is a no-op:
+ * headless discovery rebuilds runtimes per call, so there's nothing durable to
+ * mutate. Returns success/noop the renderer can surface.
+ */
+export async function setAgentFlagForIpc(input: unknown): Promise<AgentCommandExecutionResult> {
+    const parsed = validateSetFlagInput(input);
+    const owner = await resolveCanonicalSessionOwner(parsed.sessionMetadata);
+    if (owner) {
+        owner.setFlagValue(parsed.name, parsed.value);
+        return commandSuccess(`Set flag ${parsed.name}`);
+    }
+    return commandNoop(`No active agent session to set flag ${parsed.name}.`);
 }
 
 export async function listAgentTreeForIpc(sessionMetadata: unknown): Promise<AgentTreeResult> {
@@ -757,6 +1098,7 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
     const branchEntries = await session.getBranch();
     const context = await session.buildContext();
     const turns = buildPersistedTurnsFromSessionEntries(branchEntries);
+    const renderedEntries = await renderSessionEntriesForIpc(metadata.cwd, branchEntries);
 
     // Broadcast the post-navigate session_state to every sender that has a
     // subscription (pending or active) on this session. Active-subscription
@@ -770,6 +1112,8 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
         status: "idle" as const,
         steer: [] as AgentMessage[],
         followUp: [] as AgentMessage[],
+        renderedEntries,
+        extensionUi: makeEmptyExtensionUiSnapshot(),
         errorMessage: undefined as string | undefined,
     };
     for (const [, pending] of pendingSubscriptions) {
@@ -826,16 +1170,133 @@ export async function runAgentCommandForIpc(input: unknown): Promise<AgentComman
             return await runExportSessionCommand(parsed.sessionMetadata, parsed.cwd, parsed.argsText);
         case "import":
             return await runImportSessionCommand(parsed.cwd, parsed.argsText);
-        case "reload":
-            return commandSuccess("Reloaded keybindings, extensions, skills, prompts, themes");
+        case "reload": {
+            if (!parsed.sessionMetadata?.path) {
+                return await serializeExtensionOperation(undefined, () => runReloadAgentCommand(parsed));
+            }
+            const canonicalPath = await validateSessionPath(parsed.sessionMetadata.path, "sessionMetadata.path");
+            return await serializeSessionOperation(canonicalPath, () =>
+                serializeExtensionOperation(parsed.cwd, () => runReloadAgentCommand(parsed))
+            );
+        }
         default:
             return commandNoop(`Agent command /${parsed.command} is not implemented yet.`);
     }
 }
 
+async function runReloadAgentCommand(parsed: AgentRunCommandInput): Promise<AgentCommandExecutionResult> {
+    let graph: Awaited<ReturnType<typeof reloadExtensionsForRuntime>>;
+    try {
+        const owner = await getCachedSessionOwnerForReload(parsed.sessionMetadata);
+        const reloadState = owner?.getReloadState();
+        const lifecycleHost = owner?.host.extensionLifecycleHost;
+        await detachCachedSessionOwnerForReload(owner, reloadState);
+        graph = await reloadExtensionsForRuntime({
+            cwd: parsed.cwd,
+            lifecycleHost,
+        });
+        if (lifecycleHost) {
+            unregisterExtensionLifecycleHost(lifecycleHost);
+        }
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return commandNoop(`Reload failed: ${message}`);
+    }
+    return commandSuccess(`Reloaded ${graph.nodes.length} extension${graph.nodes.length === 1 ? "" : "s"}.`);
+}
+
+async function getCachedSessionOwnerForReload(
+    sessionMetadata: JsonlSessionMetadata | undefined
+): Promise<AgentSessionRuntime | undefined> {
+    return await resolveCanonicalSessionOwner(sessionMetadata);
+}
+
+async function detachCachedSessionOwnerForReload(
+    owner: AgentSessionRuntime | undefined,
+    reloadState: ExtensionReloadState | undefined
+): Promise<void> {
+    if (!owner) return;
+    const canonicalPath = owner.path;
+    if (reloadState) {
+        pendingReloadStates.set(canonicalPath, reloadState);
+    }
+    try {
+        moveActiveSubscriptionsToPending(canonicalPath);
+        await runtimeRegistry.invalidate(canonicalPath, (runtime) => runtime.dispose("reload"));
+    } catch (error) {
+        pendingReloadStates.delete(canonicalPath);
+        throw error;
+    }
+}
+
+function moveActiveSubscriptionsToPending(sessionPath: string): void {
+    for (const [key, record] of subscriptions) {
+        if (record.sessionPath !== sessionPath) continue;
+        try {
+            record.unsubscribe();
+        } catch (err) {
+            console.error("[agent-ipc] unsubscribe error:", err);
+        }
+        subscriptions.delete(key);
+        runtimeRegistry.release(sessionPath, key);
+        if (!record.target.sender.isDestroyed()) {
+            pendingSubscriptions.set(key, record.target);
+        }
+    }
+}
+
+interface AgentRunExtensionCommandInput {
+    sessionMetadata?: JsonlSessionMetadata;
+    cwd: string;
+    name: string;
+    argsText: string;
+}
+
+function validateRunExtensionCommandInput(value: unknown): AgentRunExtensionCommandInput {
+    if (!isRecord(value)) throw new Error("agent IPC: runExtensionCommand input must be an object");
+    return {
+        cwd: requireNonEmptyString(value.cwd, "cwd"),
+        name: requireNonEmptyString(value.name, "name"),
+        argsText: typeof value.argsText === "string" ? value.argsText : "",
+        sessionMetadata:
+            value.sessionMetadata == null ? undefined : validateSessionMetadataShape(value.sessionMetadata),
+    };
+}
+
+/**
+ * Execute an extension-registered slash command (pi.registerCommand). Runs on a
+ * separate IPC channel from runAgentCommandForIpc so the built-in command union
+ * stays closed. When a live AgentSessionRuntime owns this session we route
+ * through it (correct cwd + attached ctx.ui host). Otherwise — the command was
+ * invoked before the first prompt minted a session — we fall back to a headless
+ * load: discover the workspace's extensions for `cwd` and run the handler with a
+ * fresh headless ctx (ctx.ui degrades to the no-op shim, no UI host attached).
+ */
+export async function runAgentExtensionCommandForIpc(input: unknown): Promise<AgentCommandExecutionResult> {
+    const parsed = validateRunExtensionCommandInput(input);
+
+    const owner = await resolveCanonicalSessionOwner(parsed.sessionMetadata);
+    if (owner) {
+        return await owner.runExtensionCommand(parsed.name, parsed.argsText);
+    }
+
+    // Headless fallback: no live owner (no session yet, or a different workspace).
+    // No command host available → session-control methods degrade to no-ops.
+    const { extensions } = await loadAgentExtensions({ cwd: parsed.cwd });
+    const ctx = createCommandContext(createExtensionContext(() => parsed.cwd));
+    for (const extension of extensions) {
+        const command = extension.commands.get(parsed.name);
+        if (!command) continue;
+        await command.handler(parsed.argsText, ctx);
+        return commandSuccess(`Ran extension command /${parsed.name}`);
+    }
+    return commandNoop(`Extension command /${parsed.name} is not available.`);
+}
+
+
 async function runNewAgentSessionCommand(_cwd: string): Promise<AgentCommandExecutionResult> {
     // Lazy creation: /new does NOT mint a session or touch disk. It only
-    // signals the renderer to reset the pane to a "no session" state; the
+    // signals the renderer to reset the surface to a "no session" state; the
     // next prompt flows through usePiChat.send's existing lazy-create path
     // (createSession on first send), so repeated /new never leaves behind
     // empty .jsonl files. No sessionMetadata is returned by design.
@@ -982,6 +1443,30 @@ export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<voi
     runtimeRegistry.get(canonicalPath)?.abort();
 }
 
+/**
+ * Deliver a renderer's answer to a pending ctx.ui request (confirm/select/
+ * input) back to the owning session. sessionPath is validated the same way as
+ * the other agent IPC entry points; unknown paths / requestIds are ignored.
+ */
+export async function respondUiForIpc(
+    sessionPath: unknown,
+    requestId: unknown,
+    result: unknown
+): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    const id = requireNonEmptyString(requestId, "requestId");
+    runtimeRegistry.get(canonicalPath)?.respondUi(id, result);
+}
+
+export async function respondWidgetEventForIpc(sessionPath: unknown, event: unknown): Promise<boolean> {
+    const canonicalPath = await validateSessionPath(sessionPath);
+    const widgetEvent = event as WidgetEvent | undefined;
+    if (!widgetEvent || typeof widgetEvent.nodeid !== "string" || typeof widgetEvent.type !== "string") {
+        throw new Error("Invalid widget event");
+    }
+    return runtimeRegistry.get(canonicalPath)?.respondWidgetEvent(widgetEvent) ?? false;
+}
+
 export async function subscribeAgentSessionForIpc(sender: electron.WebContents, sessionPath: unknown): Promise<void> {
     const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
     const canonicalPath = await validateSessionPath(rendererPath);
@@ -996,7 +1481,7 @@ export async function subscribeAgentSessionForIpc(sender: electron.WebContents, 
         await sendPersistedSessionState(sender, canonicalPath, rendererPath);
         return;
     }
-    subscribeToOwner(sender, canonicalPath, session, rendererPath);
+    await subscribeToOwner(sender, canonicalPath, session, rendererPath);
 }
 
 export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPath: unknown): Promise<void> {
@@ -1047,8 +1532,37 @@ export function registerAgentIpcHandlers(): void {
         }
     );
 
-    electron.ipcMain.handle("agent:list-commands", (): AgentCommandInfo[] => {
-        return listAgentCommandsForIpc();
+    electron.ipcMain.handle("agent:list-commands", async (_event, cwd?: string): Promise<AgentCommandInfo[]> => {
+        return await listAgentCommandsForIpc(typeof cwd === "string" ? cwd : undefined);
+    });
+
+    electron.ipcMain.handle("agent:list-shortcuts", async (_event, cwd?: string): Promise<AgentShortcutInfo[]> => {
+        return await listAgentShortcutsForIpc(typeof cwd === "string" ? cwd : undefined);
+    });
+
+    electron.ipcMain.handle(
+        "agent:run-shortcut",
+        async (_event, input: unknown): Promise<AgentCommandExecutionResult> => {
+            return await runAgentShortcutForIpc(input);
+        }
+    );
+
+    electron.ipcMain.handle(
+        "agent:list-flags",
+        async (_event, cwd?: string, sessionMetadata?: unknown): Promise<AgentFlagInfo[]> => {
+            return await listAgentFlagsForIpc(typeof cwd === "string" ? cwd : undefined, sessionMetadata);
+        }
+    );
+
+    electron.ipcMain.handle(
+        "agent:set-flag",
+        async (_event, input: unknown): Promise<AgentCommandExecutionResult> => {
+            return await setAgentFlagForIpc(input);
+        }
+    );
+
+    electron.ipcMain.handle("agent:extensions-graph", async () => {
+        return getExtensionGraphForRuntime();
     });
 
     electron.ipcMain.handle(
@@ -1098,6 +1612,13 @@ export function registerAgentIpcHandlers(): void {
     );
 
     electron.ipcMain.handle(
+        "agent:run-extension-command",
+        async (_event, input: unknown): Promise<AgentCommandExecutionResult> => {
+            return await runAgentExtensionCommandForIpc(input);
+        }
+    );
+
+    electron.ipcMain.handle(
         "agent:send",
         async (_event, opts: SendOptions): Promise<{ sessionMetadata: JsonlSessionMetadata; turnId: string }> => {
             console.log(
@@ -1107,13 +1628,13 @@ export function registerAgentIpcHandlers(): void {
                     `textLen=${opts.text?.length ?? 0}`
             );
             const { metadata } = await ensureSession(opts);
-            const { runtime, config } = await ensureAgentRuntime(metadata, opts);
-
-            // Turn identity IS the session entry id of the user message that
-            // starts the turn. Prompt first so the session mints that entry,
-            // the single source of truth.
-            const userEntryId = await runtime.sendWithExecutionConfig(opts.text, config);
-
+            const userEntryId = await serializeSessionOperation(metadata.path, async () => {
+                const { runtime, config } = await ensureAgentRuntime(metadata, opts);
+                // Turn identity IS the session entry id of the user message that
+                // starts the turn. Prompt first so the session mints that entry,
+                // the single source of truth.
+                return await runtime.sendWithExecutionConfig(opts.text, config);
+            });
             return { sessionMetadata: metadata, turnId: userEntryId };
         }
     );
@@ -1123,6 +1644,20 @@ export function registerAgentIpcHandlers(): void {
             console.error("[agent-ipc] abort validation error:", err);
         });
     });
+
+    electron.ipcMain.handle(
+        "agent:ui-response",
+        async (_event, sessionPath: string, requestId: string, result: unknown): Promise<void> => {
+            await respondUiForIpc(sessionPath, requestId, result);
+        }
+    );
+
+    electron.ipcMain.handle(
+        "agent:widget-event",
+        async (_event, sessionPath: string, event: unknown): Promise<boolean> => {
+            return await respondWidgetEventForIpc(sessionPath, event);
+        }
+    );
 
     electron.ipcMain.on("agent:subscribe", (event, sessionPath: string) => {
         void subscribeAgentSessionForIpc(event.sender, sessionPath).catch((err) => {
@@ -1138,7 +1673,7 @@ export function registerAgentIpcHandlers(): void {
 }
 
 /** Test-only escape hatch: clear the runtime registry + subscriptions. */
-export function _resetAgentIpcForTests(): void {
+export function _resetAgentIpcForTests(options?: { preservePendingReloadStates?: boolean }): void {
     for (const record of subscriptions.values()) {
         try {
             record.unsubscribe();
@@ -1154,4 +1689,10 @@ export function _resetAgentIpcForTests(): void {
         runtimeSweepTimer = undefined;
     }
     runtimeRegistry.disposeAll();
+    sessionOperations.clear();
+    extensionCwdOperations.clear();
+    extensionGlobalOperation = Promise.resolve();
+    if (!options?.preservePendingReloadStates) {
+        pendingReloadStates.clear();
+    }
 }

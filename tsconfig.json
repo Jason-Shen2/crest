@@ -2,13 +2,14 @@
     "include": ["frontend/**/*", "emain/**/*"],
     "exclude": ["node_modules"],
     "compilerOptions": {
-        "target": "es2022",
+        "target": "es2024",
         "module": "es2020",
         "jsx": "preserve",
         "esModuleInterop": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
         "moduleResolution": "bundler",
+        "allowImportingTsExtensions": true,
         "allowSyntheticDefaultImports": true,
         "resolveJsonModule": true,
         "isolatedModules": true,
@@ -24,7 +25,9 @@
             "@/element/*": ["frontend/app/element/*"],
             "@/shadcn/*": ["frontend/app/shadcn/*"],
             "@/preview/*": ["frontend/preview/*"],
-            "edgeflowjs": ["../edgeFlow.js/src/index.ts"]
+            "edgeflowjs": ["../edgeFlow.js/src/index.ts"],
+            "@earendil-works/pi-tui": ["emain/agent/extensions/pi-gui/src/index.ts"],
+            "@earendil-works/pi-tui/*": ["emain/agent/extensions/pi-gui/src/*"]
         },
         "lib": ["dom", "dom.iterable", "es2022"],
         "allowJs": true,

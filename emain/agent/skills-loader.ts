@@ -18,6 +18,7 @@ import { loadSkills } from "./harness/skills";
 import type { Skill } from "./harness/types";
 import { NodeExecutionEnv } from "./node";
 import { defaultConfigHome } from "./sessions";
+import { discoverExtensionManifestResourcePaths } from "./extensions";
 
 /** Project-local config dir name (mirrors pi's `.pi`). */
 const PROJECT_CONFIG_DIR = ".crest";
@@ -38,7 +39,11 @@ export function defaultSkillDirs(cwd: string, configHome: string = defaultConfig
  * skipped by loadSkills; diagnostics are logged but never throw.
  */
 export async function loadAgentSkills(options: { cwd: string; configHome?: string }): Promise<Skill[]> {
-    const dirs = defaultSkillDirs(options.cwd, options.configHome ?? defaultConfigHome());
+    const configHome = options.configHome ?? defaultConfigHome();
+    const dirs = [
+        ...defaultSkillDirs(options.cwd, configHome),
+        ...discoverExtensionManifestResourcePaths({ cwd: options.cwd, configHome, field: "skills" }),
+    ];
     const env = new NodeExecutionEnv({ cwd: options.cwd });
     const { skills, diagnostics } = await loadSkills(env, dirs);
     for (const diagnostic of diagnostics) {

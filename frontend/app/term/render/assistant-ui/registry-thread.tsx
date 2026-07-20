@@ -28,6 +28,7 @@ import {
 import {
     ArrowDownIcon,
     ArrowUpIcon,
+    BlocksIcon,
     CheckIcon,
     ChevronLeftIcon,
     ChevronRightIcon,
@@ -65,6 +66,8 @@ import {
     type ReactNode,
     type RefObject,
 } from "react";
+import { useAtomValue } from "jotai";
+import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { ComposerAddAttachment, ComposerAttachments, UserMessageAttachments } from "./attachment";
 import { ContextDisplayRing, type CrestContextUsage } from "./context-display";
 import { getCrestImageAlt } from "./crest-message";
@@ -310,7 +313,58 @@ const SLASH_ICON_MAP = {
     Download: DownloadIcon,
     Upload: UploadIcon,
     RefreshCw: RefreshCwIcon,
+    Blocks: BlocksIcon,
 };
+
+interface SlashCommandApi {
+    listCommands: (cwd?: string) => Promise<AgentCommandInfo[]>;
+}
+
+function getSlashCommandApi(): SlashCommandApi | undefined {
+    if (typeof window === "undefined") return undefined;
+    return (window as unknown as { api?: { agent?: SlashCommandApi } }).api?.agent;
+}
+
+/**
+ * Loads extension-registered slash commands (pi.registerCommand) for the
+ * current workspace cwd and maps them into the composer menu's SlashCommandDef
+ * shape. Built-in commands stay static; only the extension tail is dynamic.
+ */
+function useExtensionSlashCommands(): SlashCommandDef[] {
+    const cwd = useAtomValue(workspaceDirAtom);
+    const [commands, setCommands] = useState<SlashCommandDef[]>([]);
+    useEffect(() => {
+        const listCommands = getSlashCommandApi()?.listCommands;
+        if (!listCommands || !cwd) {
+            setCommands([]);
+            return;
+        }
+        let cancelled = false;
+        void listCommands(cwd)
+            .then((infos) => {
+                if (cancelled) return;
+                setCommands(
+                    infos
+                        .filter((info) => info.source === "extension")
+                        .map((info) => ({
+                            id: info.name,
+                            label: `/${info.name}`,
+                            description: info.argumentHint
+                                ? `${info.description} ${info.argumentHint}`.trim()
+                                : info.description,
+                            icon: "Blocks",
+                        }))
+                );
+            })
+            .catch(() => {
+                if (!cancelled) setCommands([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [cwd]);
+    return commands;
+}
 
 const SlashCommandPopoverClassName =
     "bg-[rgba(34,34,36,0.62)] text-popover-foreground absolute bottom-full left-0 z-50 mb-2 w-full overflow-hidden rounded-2xl border border-white/[0.12] p-1 shadow-[0_10px_32px_-24px_rgba(0,0,0,0.65)] backdrop-blur-2xl backdrop-saturate-150";
@@ -449,8 +503,14 @@ const SlashCommandPopover: FC = () => {
     const highlightInputModeRef = useRef<"keyboard" | "pointer">("keyboard");
     const [isScrolling, setIsScrolling] = useState(false);
 
+    const extensionCommands = useExtensionSlashCommands();
+    const allCommands = useMemo(
+        () => [...SLASH_COMMANDS, ...extensionCommands],
+        [extensionCommands]
+    );
+
     const slash = unstable_useSlashCommandAdapter({
-        commands: SLASH_COMMANDS.map((cmd) => ({
+        commands: allCommands.map((cmd) => ({
             id: cmd.id,
             label: cmd.label,
             description: cmd.description,
@@ -471,16 +531,18 @@ const SlashCommandPopover: FC = () => {
             search: (query: string) => {
                 const lower = query.toLowerCase().replace(/^\//, "");
                 if (!lower) return orig.search(query);
-                return SLASH_COMMANDS.filter((cmd) => cmd.id.toLowerCase().startsWith(lower)).map((cmd) => ({
-                    id: cmd.id,
-                    type: "command" as const,
-                    label: cmd.label,
-                    description: cmd.description,
-                    metadata: { icon: cmd.icon },
-                }));
+                return allCommands
+                    .filter((cmd) => cmd.id.toLowerCase().startsWith(lower))
+                    .map((cmd) => ({
+                        id: cmd.id,
+                        type: "command" as const,
+                        label: cmd.label,
+                        description: cmd.description,
+                        metadata: { icon: cmd.icon },
+                    }));
             },
         };
-    }, [slash.adapter]);
+    }, [slash.adapter, allCommands]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {

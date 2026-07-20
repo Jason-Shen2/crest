@@ -23,6 +23,12 @@
 //
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AppNotification } from "@/app/notifications/notifications-model";
+import { ToastModel } from "@/app/notifications/toast-model";
+import type {
+    RenderedExtensionEntryNode,
+    WidgetNode,
+} from "../../../emain/agent/extensions/pi-gui/crest/widget-tree";
 
 /**
  * Mirror of pi's AgentMessage at the renderer boundary. Kept as a
@@ -162,6 +168,39 @@ export interface UsePiChatOptions {
 
 export type UsePiChatStatus = "idle" | "streaming" | "error";
 
+/**
+ * A pending interactive ctx.ui request (confirm/select/input) surfaced from
+ * an extension. Mirrors main's ExtUiRequest + the requestId used to answer it
+ * via api.respondUi. The renderer shows an inline panel; when the user acts,
+ * respondExtUi(requestId, result) sends the answer back.
+ */
+export type PiExtUiRequest =
+    | { requestId: string; kind: "confirm"; title: string; message?: string }
+    | { requestId: string; kind: "select"; title: string; options: string[] }
+    | { requestId: string; kind: "input"; title: string; initial?: string }
+    | { requestId: string; kind: "editor"; title: string; prefill?: string }
+    | { requestId: string; kind: "custom"; widget: WidgetNode; options?: unknown };
+
+/** Non-interactive ctx.ui surface: keyed status lines + widget line blocks. */
+export interface PiExtUiState {
+    /** setStatus(key, text) — one short status line per key. */
+    statuses: Record<string, string>;
+    /** setWidget(key, lines) — a multi-line block per key. */
+    widgets: Record<string, string[]>;
+    /** setWidget(key, component) — semantic pi-gui widget blocks. */
+    widgetnodes: Record<string, WidgetNode>;
+    /** Renderer output for persisted custom session entries. */
+    renderedEntries: RenderedExtensionEntryNode[];
+    header?: WidgetNode;
+    footer?: WidgetNode;
+    /** The single active confirm/select/input prompt, or null when none. */
+    request: PiExtUiRequest | null;
+}
+
+export function makeEmptyPiExtUiState(): PiExtUiState {
+    return { statuses: {}, widgets: {}, widgetnodes: {}, renderedEntries: [], request: null };
+}
+
 export interface UsePiChatReturn {
     messages: PiAgentMessage[];
     turns: PiTurn[];
@@ -175,16 +214,23 @@ export interface UsePiChatReturn {
      * (injected sooner) then followUp. Empty while idle / nothing pending.
      */
     queuedMessages: PiAgentMessage[];
+    /** Extension ctx.ui state: statuses / widgets / the active prompt. */
+    extUi: PiExtUiState;
     send: (text: string) => Promise<void>;
     abort: () => void;
+    /** Answer the active ctx.ui prompt (confirm/select/input). */
+    respondExtUi: (requestId: string, result: unknown) => void;
+    /** Deliver a widget interaction from renderer to the live ctx.ui surface. */
+    respondWidgetEvent: (event: AgentWidgetEvent) => void;
 }
 
 interface AgentApiSurface {
     createSession: (cwd: string) => Promise<AgentSessionMeta>;
     listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
-    getSessionState: (sessionMetadata: AgentSessionMeta) => Promise<PiAgentEvent>;
     send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
     abort: (sessionPath: string) => void;
+    respondUi: (sessionPath: string, requestId: string, result: unknown) => Promise<void>;
+    respondWidgetEvent: (sessionPath: string, event: AgentWidgetEvent) => Promise<boolean>;
     subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
 }
 
@@ -261,6 +307,187 @@ export function reducePiTurnsEvent(turns: PiTurn[], event: PiAgentEvent): PiTurn
     return event.turns;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value != null && !Array.isArray(value);
+}
+
+function normalizeStatuses(value: unknown): Record<string, string> {
+    if (!isRecord(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+function normalizeLineWidgets(value: unknown): Record<string, string[]> {
+    if (!isRecord(value)) return {};
+    return Object.fromEntries(
+        Object.entries(value)
+            .filter((entry): entry is [string, string[]] => {
+                return Array.isArray(entry[1]) && entry[1].every((line) => typeof line === "string");
+            })
+            .map(([key, lines]) => [key, [...lines]])
+    );
+}
+
+function normalizeWidgetNode(value: unknown): WidgetNode | undefined {
+    if (!isRecord(value) || typeof value.kind !== "string" || typeof value.id !== "string") return undefined;
+    return structuredClone(value) as unknown as WidgetNode;
+}
+
+function normalizeWidgetNodes(value: unknown): Record<string, WidgetNode> {
+    if (!isRecord(value)) return {};
+    const widgets: Record<string, WidgetNode> = {};
+    for (const [key, candidate] of Object.entries(value)) {
+        const widget = normalizeWidgetNode(candidate);
+        if (widget) widgets[key] = widget;
+    }
+    return widgets;
+}
+
+function normalizeRenderedEntries(value: unknown): RenderedExtensionEntryNode[] {
+    if (!Array.isArray(value)) return [];
+    const entries: RenderedExtensionEntryNode[] = [];
+    for (const candidate of value) {
+        if (
+            !isRecord(candidate) ||
+            typeof candidate.id !== "string" ||
+            typeof candidate.customtype !== "string" ||
+            (candidate.source !== "entry" && candidate.source !== "message")
+        ) {
+            continue;
+        }
+        const widget = normalizeWidgetNode(candidate.widget);
+        if (!widget) continue;
+        entries.push({
+            id: candidate.id,
+            customtype: candidate.customtype,
+            source: candidate.source,
+            widget,
+        });
+    }
+    return entries;
+}
+
+/**
+ * Fold an ext_ui_* event into the ctx.ui state. Pure so the wiring is
+ * testable without React. Unknown types pass through unchanged.
+ *
+ * - ext_ui_status: set/clear a keyed status line (text undefined → delete)
+ * - ext_ui_widget: set/clear a keyed widget block (lines undefined → delete)
+ * - ext_ui_request: raise the active confirm/select/input prompt
+ * - ext_ui_resolved: clear the active prompt (main resolved/rejected it)
+ *
+ * notify is intentionally NOT handled here — it's a fire-and-forget toast,
+ * routed at the subscribe callback, not part of the persistent ext-ui state.
+ */
+export function reducePiExtUiEvent(state: PiExtUiState, event: PiAgentEvent): PiExtUiState {
+    switch (event.type) {
+        case "session_state": {
+            const snapshot = isRecord(event.extensionUi) ? event.extensionUi : {};
+            return {
+                statuses: normalizeStatuses(snapshot.statuses),
+                widgets: normalizeLineWidgets(snapshot.widgets),
+                widgetnodes: normalizeWidgetNodes(snapshot.widgetnodes),
+                renderedEntries: normalizeRenderedEntries(event.renderedEntries),
+                header: normalizeWidgetNode(snapshot.header),
+                footer: normalizeWidgetNode(snapshot.footer),
+                request: null,
+            };
+        }
+        case "ext_ui_status": {
+            const key = event.key as string;
+            const text = event.text as string | undefined;
+            const statuses = { ...state.statuses };
+            if (text === undefined || text === null) delete statuses[key];
+            else statuses[key] = text;
+            return { ...state, statuses };
+        }
+        case "ext_ui_widget": {
+            const key = event.key as string;
+            const lines = event.lines as string[] | undefined;
+            const widget = event.widget as WidgetNode | undefined;
+            if (widget != null) {
+                const widgetnodes = { ...state.widgetnodes, [key]: widget };
+                const widgets = { ...state.widgets };
+                delete widgets[key];
+                return { ...state, widgets, widgetnodes };
+            }
+            const widgets = { ...state.widgets };
+            const widgetnodes = { ...state.widgetnodes };
+            if (lines === undefined || lines === null) {
+                delete widgets[key];
+                delete widgetnodes[key];
+            } else {
+                widgets[key] = lines;
+                delete widgetnodes[key];
+            }
+            return { ...state, widgets, widgetnodes };
+        }
+        case "ext_ui_header": {
+            return { ...state, header: event.widget as WidgetNode | undefined };
+        }
+        case "ext_ui_footer": {
+            return { ...state, footer: event.widget as WidgetNode | undefined };
+        }
+        case "ext_ui_request": {
+            const requestId = event.requestId as string;
+            const request = event.request as { kind: string; [field: string]: unknown } | undefined;
+            if (!requestId || !request) return state;
+            return { ...state, request: { requestId, ...request } as PiExtUiRequest };
+        }
+        case "ext_ui_request_update": {
+            const requestId = event.requestId as string;
+            const widget = event.widget as WidgetNode | undefined;
+            if (!requestId || !widget || state.request?.requestId !== requestId || state.request.kind !== "custom") {
+                return state;
+            }
+            return { ...state, request: { ...state.request, widget } };
+        }
+        case "ext_ui_resolved": {
+            const requestId = event.requestId as string;
+            if (state.request?.requestId !== requestId) return state;
+            return { ...state, request: null };
+        }
+        default:
+            return state;
+    }
+}
+
+/**
+ * Build the toast notification for a fire-and-forget ctx.ui `notify(message,
+ * level)` event. Maps the extension's info/warn/error level onto the
+ * AppNotification kind the toast/feed UI understands. Kept pure + exported so
+ * the mapping is unit-testable without React.
+ */
+export function makeExtUiNotification(event: PiAgentEvent): AppNotification {
+    const message = (event.message as unknown as string | undefined) ?? "";
+    const level = (event.level as string | undefined) ?? "info";
+    const kind = level === "error" ? "failed" : level === "warn" ? "needs-action" : "info";
+    const now = Date.now();
+    return {
+        id: `ext-ui:${now}:${Math.random().toString(36).slice(2, 7)}`,
+        source: "crest-agent",
+        kind,
+        title: "Extension",
+        body: message,
+        ts: now,
+        read: false,
+    };
+}
+
+export function shouldReducePiExtUiSubscriptionEvent(type: string): boolean {
+    switch (type) {
+        case "ext_ui_status":
+        case "ext_ui_widget":
+        case "ext_ui_header":
+        case "ext_ui_footer":
+        case "ext_ui_request":
+        case "ext_ui_request_update":
+        case "ext_ui_resolved":
+            return true;
+        default:
+            return false;
+    }
+}
+
 export function adoptInitialSessionMetadata(
     current: AgentSessionMeta | undefined,
     incoming: AgentSessionMeta | undefined
@@ -295,6 +522,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [status, setStatus] = useState<UsePiChatStatus>("idle");
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
     const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
+    const [extUi, setExtUi] = useState<PiExtUiState>(makeEmptyPiExtUiState());
     const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(opts.initialSession);
     const sessionMetadataRef = useRef<AgentSessionMeta | undefined>(opts.initialSession);
     const activeSessionPathRef = useRef(opts.initialSession?.path ?? "");
@@ -332,19 +560,6 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         if (!sessionPath) return;
         const api = getAgentApi();
         if (!api) return;
-        let cancelled = false;
-        void Promise.resolve()
-            .then(() => api.getSessionState(sessionMetadata))
-            .then((event) => {
-                if (cancelled) return;
-                setMessages((prev) => reducePiChatEvent(prev, event));
-                setTurns((prev) => reducePiTurnsEvent(prev, event));
-                applySessionState(event, setStatus, setErrorMessage, setQueuedMessages);
-            })
-            .catch((err) => {
-                if (cancelled) return;
-                console.warn("[agent] failed to pull session_state", err);
-            });
         const unsubscribe = api.subscribe(
             sessionPath,
             (raw) => {
@@ -354,6 +569,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 switch (event.type) {
                     case "session_state": {
                         applySessionState(event, setStatus, setErrorMessage, setQueuedMessages);
+                        setExtUi((prev) => reducePiExtUiEvent(prev, event));
                         break;
                     }
                     case "queue_update":
@@ -382,17 +598,22 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                         // on its own; here we just settle the status.
                         setStatus("idle");
                         break;
+                    case "ext_ui_notify":
+                        // Fire-and-forget: surface as a toast, not part of the
+                        // persistent ext-ui state.
+                        ToastModel.getInstance().push(makeExtUiNotification(event));
+                        break;
                     default:
+                        if (shouldReducePiExtUiSubscriptionEvent(event.type)) {
+                            setExtUi((prev) => reducePiExtUiEvent(prev, event));
+                        }
                         break;
                 }
             },
             { blockId: blockIdRef.current }
         );
-        return () => {
-            cancelled = true;
-            unsubscribe();
-        };
-    }, [sessionMetadata, sessionPath]);
+        return unsubscribe;
+    }, [sessionPath]);
 
     const send = useCallback(
         async (text: string): Promise<void> => {
@@ -453,8 +674,49 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         api.abort(abortSessionPath);
     }, []);
 
+    const respondExtUi = useCallback((requestId: string, result: unknown): void => {
+        // Optimistically clear the prompt so the inline panel dismisses
+        // immediately; main also emits ext_ui_resolved which reconciles.
+        setExtUi((prev) => (prev.request?.requestId === requestId ? { ...prev, request: null } : prev));
+        const api = getAgentApi();
+        const sessionPath = resolveAbortSessionPath(sessionMetadataRef.current, activeSessionPathRef.current);
+        if (!api || !sessionPath) return;
+        void api.respondUi(sessionPath, requestId, result);
+    }, []);
+
+    const respondWidgetEvent = useCallback((event: AgentWidgetEvent): void => {
+        const api = getAgentApi();
+        const sessionPath = resolveAbortSessionPath(sessionMetadataRef.current, activeSessionPathRef.current);
+        if (!api || !sessionPath) return;
+        void api.respondWidgetEvent(sessionPath, event);
+    }, []);
+
     return useMemo(
-        () => ({ messages, turns, status, errorMessage, sessionMetadata, queuedMessages, send, abort }),
-        [messages, turns, status, errorMessage, sessionMetadata, queuedMessages, send, abort]
+        () => ({
+            messages,
+            turns,
+            status,
+            errorMessage,
+            sessionMetadata,
+            queuedMessages,
+            extUi,
+            send,
+            abort,
+            respondExtUi,
+            respondWidgetEvent,
+        }),
+        [
+            messages,
+            turns,
+            status,
+            errorMessage,
+            sessionMetadata,
+            queuedMessages,
+            extUi,
+            send,
+            abort,
+            respondExtUi,
+            respondWidgetEvent,
+        ]
     );
 }

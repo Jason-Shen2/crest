@@ -78,6 +78,12 @@ declare global {
         lspWebSocketUrl: string;
     };
 
+    type AgentWidgetEvent = {
+        nodeid: string;
+        type: string;
+        payload?: unknown;
+    };
+
     interface Window {
         waveRuntime?: WaveRuntime;
     }
@@ -119,6 +125,7 @@ declare global {
         updateWindowControlsOverlay: (rect: Dimensions) => void; // update-window-controls-overlay
         onReinjectKey: (callback: (waveEvent: WaveKeyboardEvent) => void) => void; // reinject-key
         setWebviewFocus: (focusedId: number) => void; // webview-focus, focusedId is the getWebContentsId of the webview
+        setRightBrowserActiveWebContents: (webContentsId: number | null) => void; // right-browser:set-active-webcontents
         registerGlobalWebviewKeys: (keys: string[]) => void; // register-global-webview-keys
         onControlShiftStateUpdate: (callback: (state: boolean) => void) => void; // control-shift-state-update
         createWorkspace: (dir: string) => void; // create-workspace
@@ -159,6 +166,7 @@ declare global {
         // boundary, where the concrete type is already in scope.
         ai: {
             listProviderModels: (input: ListProviderModelsInput) => Promise<AiProviderModelInfo[]>;
+            listRegistryModels: (provider: string) => Promise<AiRegistryModelInfo[]>;
             getUserConfig: () => Promise<AIUserConfigReadResult>;
             writeUserConfig: (cfg: unknown) => Promise<void>;
         };
@@ -170,7 +178,12 @@ declare global {
             listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
             listSessionDetailsForCwd: (cwd: string, limit?: number) => Promise<AgentSessionDetail[]>;
             listAllSessionDetails: (limit?: number) => Promise<AgentSessionDetail[]>;
-            listCommands: () => Promise<AgentCommandInfo[]>; // agent:list-commands
+            listCommands: (cwd?: string) => Promise<AgentCommandInfo[]>; // agent:list-commands
+            listShortcuts: (cwd?: string) => Promise<AgentShortcutInfo[]>; // agent:list-shortcuts
+            runShortcut: (input: AgentRunShortcutInput) => Promise<AgentCommandExecutionResult>; // agent:run-shortcut
+            listFlags: (cwd?: string, sessionMetadata?: AgentSessionMeta) => Promise<AgentFlagInfo[]>; // agent:list-flags
+            setFlag: (input: AgentSetFlagInput) => Promise<AgentCommandExecutionResult>; // agent:set-flag
+            getExtensionsGraph: () => Promise<AgentExtensionGraph>; // agent:extensions-graph
             getSessionState: (sessionMetadata: AgentSessionMeta) => Promise<unknown>; // agent:get-session-state
             listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>; // agent:list-tree
             listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>; // agent:list-fork-points
@@ -178,8 +191,13 @@ declare global {
             forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>; // agent:fork-session
             cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>; // agent:clone-session
             runCommand: (input: AgentRunCommandInput) => Promise<AgentCommandExecutionResult>; // agent:run-command
+            runExtensionCommand: (input: AgentRunExtensionCommandInput) => Promise<AgentCommandExecutionResult>; // agent:run-extension-command
             send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
             abort: (sessionPath: string) => void;
+            /** Answer a pending ctx.ui request (confirm/select/input). agent:ui-response */
+            respondUi: (sessionPath: string, requestId: string, result: unknown) => Promise<void>;
+            /** Deliver a renderer widget event to a live ctx.ui.custom surface. agent:widget-event */
+            respondWidgetEvent: (sessionPath: string, event: AgentWidgetEvent) => Promise<boolean>;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
             subscribe: (
                 sessionPath: string,
@@ -223,6 +241,18 @@ declare global {
         ismoderated?: boolean;
     };
 
+    type AiRegistryModelInfo = {
+        id: string;
+        name?: string;
+        reasoning: boolean;
+        thinkinglevels: string[];
+        inputmodalities: string[];
+        context?: number;
+        maxoutputtokens?: number;
+        promptcost?: number;
+        completioncost?: number;
+    };
+
     type AgentSendOptions = {
         /** Existing session metadata, or null to have main mint a new one. */
         sessionMetadata?: AgentSessionMeta | null;
@@ -250,7 +280,7 @@ declare global {
         allowedTools?: string[];
     };
 
-    type AgentCommandSource = "builtin" | "skill" | "prompt";
+    type AgentCommandSource = "builtin" | "skill" | "prompt" | "extension";
 
     type AgentBackendCommandName =
         | "tree"
@@ -267,12 +297,16 @@ declare global {
 
     type AgentCommandAction =
         | { type: "backend"; command: AgentBackendCommandName }
-        | { type: "frontend"; action: "openModelPicker" };
+        | { type: "frontend"; action: "openModelPicker" }
+        // Command registered by an extension via pi.registerCommand(). Execution
+        // routes through the pane's live extension ctx, not the static backend switch.
+        | { type: "extension"; name: string };
 
     type AgentCommandInfo = {
         name: string;
         description: string;
         argumentHint?: string;
+        aliases?: string[];
         source: AgentCommandSource;
         action: AgentCommandAction;
     };
@@ -356,6 +390,67 @@ declare global {
         command: AgentBackendCommandName;
         argsText: string;
         blockId?: string;
+    };
+
+    type AgentRunExtensionCommandInput = {
+        sessionMetadata?: AgentSessionMeta;
+        cwd: string;
+        name: string;
+        argsText: string;
+        blockId?: string;
+    };
+
+    type AgentShortcutInfo = {
+        shortcut: string;
+        description?: string;
+        extensionPath: string;
+    };
+
+    type AgentFlagInfo = {
+        name: string;
+        description?: string;
+        type: "boolean" | "string";
+        default?: boolean | string;
+        value?: boolean | string;
+        extensionPath: string;
+    };
+
+    type AgentExtensionGraphError = {
+        phase: "load" | "activate" | "hook" | "command" | "ui" | "dispose" | "reload";
+        message: string;
+        timestamp: number;
+        stack?: string;
+    };
+
+    type AgentExtensionGraphNode = {
+        id: string;
+        name: string;
+        version: string;
+        path: string;
+        scope: "global" | "workspace" | "session" | "headless";
+        status: "discovered" | "loaded" | "active" | "failed" | "disabled" | "disposed";
+        commands: string[];
+        tools: string[];
+        hooks: string[];
+        flags: string[];
+        errors: AgentExtensionGraphError[];
+    };
+
+    type AgentExtensionGraph = {
+        generation: number;
+        nodes: AgentExtensionGraphNode[];
+    };
+
+    type AgentRunShortcutInput = {
+        sessionMetadata?: AgentSessionMeta;
+        cwd: string;
+        shortcut: string;
+    };
+
+    type AgentSetFlagInput = {
+        sessionMetadata?: AgentSessionMeta;
+        name: string;
+        value: boolean | string;
     };
 
     type ElectronContextMenuItem = {

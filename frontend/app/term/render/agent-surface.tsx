@@ -13,11 +13,12 @@ import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { globalStore } from "@/app/store/jotaiStore";
 import { modalsModel } from "@/app/store/modalmodel";
 import { ObjectService } from "@/app/store/services";
-import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
+import type { PiAgentMessage, PiExtUiState, PiTurn } from "@/app/store/use-pi-chat";
+import { makeEmptyPiExtUiState } from "@/app/store/use-pi-chat";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import { useOrefMetaKeyAtom, WOS } from "@/store/global";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TerminalModel } from "../terminal-model";
 import {
@@ -28,8 +29,11 @@ import {
     type AgentSelectorRequest,
 } from "./agent-chat-host";
 import { AgentCommandResultList } from "./agent-command-result";
+import { AgentExtUiPanel, hasAgentExtUiContent } from "./agent-ext-ui";
+import { AgentFlagsPanel, useAgentExtensionShortcuts } from "./agent-ext-controls";
 import { AssistantRuntimeProvider, Thread, useAui, useCrestAssistantRuntime } from "./assistant-ui";
 import type { CrestContextUsage } from "./assistant-ui/context-display";
+import { pendingResumeSessionAtom } from "./assistant-ui/agent-sessions-atoms";
 
 export interface WorkspaceAgentSurfaceProps {
     outerBlockId: string;
@@ -249,8 +253,12 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
 
     // ---- agent wiring ----
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
+    // Bumped when the host API becomes ready / the session changes so the
+    // extension shortcut + flag hooks (which read agentApiRef) reload.
+    const [extControlsToken, setExtControlsToken] = useState(0);
     const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
         agentApiRef.current = api;
+        setExtControlsToken((t) => t + 1);
     }, []);
     const onOpenAgentModelPicker = useCallback(() => {
         setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "openModelPicker" }));
@@ -286,9 +294,29 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
         },
         [outerBlockId]
     );
+    const pendingResumeSession = useAtomValue(pendingResumeSessionAtom);
+    const consumePendingResumeSession = useSetAtom(pendingResumeSessionAtom);
+    const lastHandledSessionPathRef = useRef<string | undefined>(undefined);
+    useEffect(() => {
+        if (!pendingResumeSession?.path) return;
+        if (pendingResumeSession.path === lastHandledSessionPathRef.current) return;
+        lastHandledSessionPathRef.current = pendingResumeSession.path;
+        onSessionMintedHandler(pendingResumeSession);
+        consumePendingResumeSession(null);
+    }, [pendingResumeSession, onSessionMintedHandler, consumePendingResumeSession]);
     const [agentTurns, setAgentTurns] = useState<PiTurn[]>([]);
     const onAgentTurnsUpdate = useCallback((turns: PiTurn[]) => {
         setAgentTurns(turns);
+    }, []);
+    const [agentExtUi, setAgentExtUi] = useState<PiExtUiState>(makeEmptyPiExtUiState);
+    const onAgentExtUiChange = useCallback((extUi: PiExtUiState) => {
+        setAgentExtUi(extUi);
+    }, []);
+    const onAgentExtUiRespond = useCallback((requestId: string, result: unknown) => {
+        agentApiRef.current?.respondExtUi(requestId, result);
+    }, []);
+    const onAgentWidgetEvent = useCallback((event: AgentWidgetEvent) => {
+        agentApiRef.current?.respondWidgetEvent(event);
     }, []);
     const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
         setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "showCommandResult", result }));
@@ -320,6 +348,15 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
     );
     const assistantRuntime = useCrestAssistantRuntime(assistantRuntimeBridge);
     const contextUsage = useMemo(() => getLatestAgentContextUsage(agentTurns), [agentTurns]);
+
+    // Extension-registered keyboard shortcuts (pi.registerShortcut). Bound
+    // while this surface's block is focused; activation routes through the host
+    // API's runShortcut.
+    const onAgentUserError = useCallback(
+        (msg: string) => globalStore.set(model.notificationAtom, msg),
+        [model]
+    );
+    useAgentExtensionShortcuts(agentApiRef, context.workspaceDir, outerBlockId, extControlsToken, onAgentUserError);
 
     const chatHost = (
         <>
@@ -354,6 +391,7 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
                 onReady={onAgentHostReady}
                 onTurnsChange={onAgentTurnsUpdate}
                 onStateChange={setAgentState}
+                onExtUiChange={onAgentExtUiChange}
                 onUserError={(msg) => globalStore.set(model.notificationAtom, msg)}
                 onCommandResult={onAgentCommandResult}
                 onOpenModelPicker={onOpenAgentModelPicker}
@@ -370,13 +408,27 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
                             contextUsage={contextUsage}
                             composerAnchorRef={composerAnchorRef}
                             hideScrollToBottom={
-                                hasActiveAgentAttachedPanel(attachedPanelState) || agentState.queuedMessages.length > 0
+                                hasActiveAgentAttachedPanel(attachedPanelState) ||
+                                hasAgentExtUiContent(agentExtUi) ||
+                                agentState.queuedMessages.length > 0
                             }
                             beforeComposer={
                                 <>
                                     <AgentCommandResultList
                                         results={agentCommandResults}
                                         onDismiss={onDismissCommandResult}
+                                    />
+                                    <AgentExtUiPanel
+                                        extUi={agentExtUi}
+                                        respondExtUi={onAgentExtUiRespond}
+                                        respondWidgetEvent={onAgentWidgetEvent}
+                                        anchorRef={composerAnchorRef}
+                                    />
+                                    <AgentFlagsPanel
+                                        apiRef={agentApiRef}
+                                        cwd={context.workspaceDir}
+                                        reloadToken={extControlsToken}
+                                        onUserError={onAgentUserError}
                                     />
                                     <SessionSelector
                                         anchorRef={composerAnchorRef}

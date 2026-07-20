@@ -13,6 +13,10 @@ function writeSkill(dir: string, name: string, description: string, body = "Do t
     writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`);
 }
 
+function writeJson(path: string, value: unknown): void {
+    writeFileSync(path, JSON.stringify(value, null, 2));
+}
+
 describe("defaultSkillDirs", () => {
     const saved = { ...process.env };
     afterEach(() => {
@@ -80,5 +84,17 @@ describe("loadAgentSkills", () => {
         const names = skills.map((s) => s.name);
         expect(names).toContain("global-skill");
         expect(names).toContain("project-skill");
+    });
+
+    it("loads skills declared by an extension package pi.skills manifest", async () => {
+        const cwd = join(root, "proj");
+        const packageDir = join(cwd, ".crest", "extensions", "skill-pack");
+        const skillsDir = join(packageDir, "skills");
+        mkdirSync(skillsDir, { recursive: true });
+        writeJson(join(packageDir, "package.json"), { pi: { skills: ["skills"] } });
+        writeSkill(skillsDir, "pack-skill", "Skill from extension package.");
+
+        const skills = await loadAgentSkills({ cwd, configHome: join(root, "cfg") });
+        expect(skills.map((s) => s.name)).toContain("pack-skill");
     });
 });

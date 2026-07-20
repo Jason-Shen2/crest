@@ -17,7 +17,8 @@ export type AgentSlashCommandName =
 
 export type AgentSlashCommandRoute =
     | { handled: false }
-    | { handled: true; command: AgentSlashCommandName; argsText: string };
+    | { handled: true; kind: "builtin"; command: AgentSlashCommandName; argsText: string }
+    | { handled: true; kind: "extension"; name: string; argsText: string };
 
 const RoutedAgentSlashCommands = new Set<AgentSlashCommandName>([
     "tree",
@@ -34,7 +35,18 @@ const RoutedAgentSlashCommands = new Set<AgentSlashCommandName>([
     "reload",
 ]);
 
-export function resolveAgentSlashCommandRoute(input: string): AgentSlashCommandRoute {
+/**
+ * Resolve a composer input to a slash-command route. Built-in commands are
+ * matched against the static RoutedAgentSlashCommands set. When
+ * `extensionCommandNames` is supplied, any command name in that set that isn't
+ * a built-in resolves to an { kind: "extension" } route so extension-registered
+ * commands (pi.registerCommand) are handled instead of sent as a prompt.
+ * Unknown names stay unhandled (sent to the LLM as an ordinary prompt).
+ */
+export function resolveAgentSlashCommandRoute(
+    input: string,
+    extensionCommandNames?: ReadonlySet<string>
+): AgentSlashCommandRoute {
     const trimmed = input.trimEnd();
     if (!trimmed.startsWith("/") || trimmed === "/") {
         return { handled: false };
@@ -43,13 +55,13 @@ export function resolveAgentSlashCommandRoute(input: string): AgentSlashCommandR
     if (!match) {
         return { handled: false };
     }
-    const command = match[1] as AgentSlashCommandName;
-    if (!RoutedAgentSlashCommands.has(command)) {
-        return { handled: false };
+    const name = match[1];
+    const argsText = (match[2] ?? "").trim();
+    if (RoutedAgentSlashCommands.has(name as AgentSlashCommandName)) {
+        return { handled: true, kind: "builtin", command: name as AgentSlashCommandName, argsText };
     }
-    return {
-        handled: true,
-        command,
-        argsText: (match[2] ?? "").trim(),
-    };
+    if (extensionCommandNames?.has(name)) {
+        return { handled: true, kind: "extension", name, argsText };
+    }
+    return { handled: false };
 }

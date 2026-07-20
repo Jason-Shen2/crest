@@ -87,6 +87,22 @@ describe("AgentRuntimeRegistry", () => {
         expect(create).toHaveBeenCalledOnce();
     });
 
+    it("invalidates one runtime with a caller-provided disposer", async () => {
+        const target = makeRuntime();
+        const other = makeRuntime();
+        const dispose = vi.fn();
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        await registry.getOrCreate("/target.db", async () => target);
+        await registry.getOrCreate("/other.db", async () => other);
+
+        await expect(registry.invalidate("/target.db", dispose)).resolves.toBe(true);
+
+        expect(dispose).toHaveBeenCalledWith(target);
+        expect(target.dispose).not.toHaveBeenCalled();
+        expect(registry.get("/target.db")).toBeUndefined();
+        expect(registry.get("/other.db")).toBe(other);
+    });
+
     it("disposes every runtime during shutdown", async () => {
         const first = makeRuntime();
         const second = makeRuntime();

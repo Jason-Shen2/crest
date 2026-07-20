@@ -1298,6 +1298,7 @@ export function shouldOpenSlashCommandMenu(mode: InputMode, text: string): boole
 
 function iconForAgentCommand(command: AgentCommandInfo): string {
     if (command.action.type === "frontend") return "stars-01";
+    if (command.action.type === "extension") return "stars-01";
     if (command.action.command === "tree" || command.action.command === "fork") return "git-branch-01";
     if (command.action.command === "clone") return "copy-01";
     if (command.action.command === "new") return "plus";

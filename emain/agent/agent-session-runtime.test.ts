@@ -2,16 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Model } from "../ai";
 import type { AgentHarnessHost } from "./harness-factory";
+import { createExtensionContext, createExtensionRuntime, createExtensionUiBridge } from "./extensions";
+import {
+    createExtensionLifecycleHost,
+    getExtensionGraphForLifecycleRuntime,
+    unregisterExtensionLifecycleHosts,
+} from "./extensions/lifecycle";
 import {
     buildPersistedTurnsFromSessionEntries,
     AgentSessionRuntime,
+    ExtensionUiRequestTerminatedError,
 } from "./agent-session-runtime";
 import type { AgentMessage, ThinkingLevel } from "./types";
 import type { SessionTreeEntry } from "./harness/types";
+import { Input } from "./extensions/pi-gui/src/components/input";
+import type { WidgetBoxNode, WidgetNode } from "./extensions/pi-gui/crest/widget-tree";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
 // test drive the event stream via emit(). Mirrors the only surface
@@ -24,6 +33,8 @@ function makeFakeHarness() {
         followUpPreparations: [] as Array<() => Promise<void>>,
         custom: [] as unknown[],
         abort: 0,
+        disposeAll: 0,
+        disposeOwner: [] as string[],
         navigateTree: [] as unknown[],
     };
     let promptResult: () => Promise<unknown> = () => new Promise(() => {}); // pending forever by default
@@ -110,6 +121,18 @@ function makeFakeHarness() {
         pane: {
             harness,
             session,
+            extensions: [],
+            extensionLifecycleOwnerId: "/s",
+            extensionLifecycleHost: {
+                disposeOwner: vi.fn().mockImplementation((ownerId: string) => {
+                    calls.disposeOwner.push(ownerId);
+                    return Promise.resolve();
+                }),
+                disposeAll: vi.fn().mockImplementation(() => {
+                    calls.disposeAll += 1;
+                    return Promise.resolve();
+                }),
+            },
             appendCustomEntry: harness.appendCustomEntry,
             promptWithCustomEntry: harness.promptWithCustomEntry,
             update: vi.fn(),
@@ -151,6 +174,18 @@ describe("AgentSessionRuntime naming", () => {
         expect(source).not.toContain("pane: AgentHarnessHost");
         expect(source).not.toContain("this.pane");
     });
+});
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((next) => {
+        resolve = next;
+    });
+    return { promise, resolve };
+}
+
+afterEach(() => {
+    unregisterExtensionLifecycleHosts();
 });
 
 describe("AgentSessionRuntime — owned transcript", () => {
@@ -218,7 +253,7 @@ describe("AgentSessionRuntime — owned transcript", () => {
 });
 
 describe("AgentSessionRuntime — command operations", () => {
-    it("lists session tree entries through the pane harness session", async () => {
+    it("lists session tree entries through the session harness session", async () => {
         const fake = makeFakeHarness();
         const entry = { type: "message", id: "1", parentId: null, timestamp: "t", message: user("hello") };
         fake.session.getEntries.mockResolvedValue([entry]);
@@ -332,6 +367,7 @@ describe("AgentSessionRuntime — command operations", () => {
         ];
         fake.session.getBranch.mockResolvedValue(branchEntries);
         const owner = new AgentSessionRuntime("/s", fake.pane, oldMessages);
+        owner.setStatus("build", "Running");
         const seen: unknown[] = [];
         owner.subscribe((event) => seen.push(event));
 
@@ -346,20 +382,26 @@ describe("AgentSessionRuntime — command operations", () => {
                 status: "done",
             },
         ]);
-        expect(seen).toContainEqual(
-            expect.objectContaining({
-                type: "session_state",
-                messages: [q, a],
-                turns: [
-                    {
-                        turnId: "m1",
-                        userMessage: q,
-                        responseMessages: [a],
-                        status: "done",
-                    },
-                ],
-            }),
-        );
+        expect(seen).toContainEqual({
+            type: "session_state",
+            messages: [q, a],
+            turns: [
+                {
+                    turnId: "m1",
+                    userMessage: q,
+                    responseMessages: [a],
+                    status: "done",
+                },
+            ],
+            status: "idle",
+            steer: [],
+            followUp: [],
+            extensionUi: {
+                statuses: { build: "Running" },
+                widgets: {},
+                widgetnodes: {},
+            },
+        });
     });
 
     it("shows history up to the parent when navigating to a user message (leaf = parentId)", async () => {
@@ -425,7 +467,7 @@ describe("AgentSessionRuntime — command operations", () => {
         await expect(owner.navigateTree("entry-1")).resolves.toEqual({});
     });
 
-    it("reads the active leaf id from the pane harness session", async () => {
+    it("reads the active leaf id from the session harness session", async () => {
         const fake = makeFakeHarness();
         fake.session.getLeafId.mockResolvedValue("leaf-1");
         const owner = new AgentSessionRuntime("/s", fake.pane);
@@ -805,6 +847,273 @@ describe("AgentSessionRuntime — queue mirror", () => {
     });
 });
 
+describe("AgentSessionRuntime — extension UI snapshot", () => {
+    it("owns extension UI mutations and returns isolated snapshot copies", () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const semanticWidget: WidgetNode = {
+            kind: "box",
+            id: "result",
+            paddingx: 0,
+            paddingy: 0,
+            children: [{ kind: "terminal", id: "output", lines: ["done"] }],
+        };
+        const header: WidgetNode = {
+            kind: "box",
+            id: "header",
+            paddingx: 0,
+            paddingy: 0,
+            children: [{ kind: "text", id: "header-text", text: "Header", paddingx: 0, paddingy: 0 }],
+        };
+        const footer: WidgetNode = {
+            kind: "box",
+            id: "footer",
+            paddingx: 0,
+            paddingy: 0,
+            children: [{ kind: "text", id: "footer-text", text: "Footer", paddingx: 0, paddingy: 0 }],
+        };
+
+        owner.setStatus("build", "Running");
+        owner.setWidget("result", ["line one"]);
+        owner.setWidget("result", semanticWidget);
+        owner.setHeader(header);
+        owner.setFooter(footer);
+        (semanticWidget.children[0] as Extract<WidgetNode, { kind: "terminal" }>).lines[0] = "write-corrupted";
+        (header.children[0] as Extract<WidgetNode, { kind: "text" }>).text = "write-corrupted";
+        (footer.children[0] as Extract<WidgetNode, { kind: "text" }>).text = "write-corrupted";
+
+        expect(owner.getSessionState().extensionUi).toEqual({
+            statuses: { build: "Running" },
+            widgets: {},
+            widgetnodes: {
+                result: {
+                    kind: "box",
+                    id: "result",
+                    paddingx: 0,
+                    paddingy: 0,
+                    children: [{ kind: "terminal", id: "output", lines: ["done"] }],
+                },
+            },
+            header: {
+                kind: "box",
+                id: "header",
+                paddingx: 0,
+                paddingy: 0,
+                children: [{ kind: "text", id: "header-text", text: "Header", paddingx: 0, paddingy: 0 }],
+            },
+            footer: {
+                kind: "box",
+                id: "footer",
+                paddingx: 0,
+                paddingy: 0,
+                children: [{ kind: "text", id: "footer-text", text: "Footer", paddingx: 0, paddingy: 0 }],
+            },
+        });
+
+        const first = owner.getSessionState();
+        first.extensionUi.statuses.build = "corrupted";
+        const firstWidget = first.extensionUi.widgetnodes.result as WidgetBoxNode;
+        (firstWidget.children[0] as Extract<WidgetNode, { kind: "terminal" }>).lines[0] = "read-corrupted";
+        const firstHeader = first.extensionUi.header as WidgetBoxNode;
+        (firstHeader.children[0] as Extract<WidgetNode, { kind: "text" }>).text = "read-corrupted";
+        const firstFooter = first.extensionUi.footer as WidgetBoxNode;
+        (firstFooter.children[0] as Extract<WidgetNode, { kind: "text" }>).text = "read-corrupted";
+
+        expect(owner.getSessionState().extensionUi.statuses.build).toBe("Running");
+        const next = owner.getSessionState().extensionUi;
+        expect((next.widgetnodes.result as WidgetBoxNode).children[0]).toMatchObject({
+            lines: ["done"],
+        });
+        expect((next.header as WidgetBoxNode).children[0]).toMatchObject({ text: "Header" });
+        expect((next.footer as WidgetBoxNode).children[0]).toMatchObject({ text: "Footer" });
+    });
+
+    it("deep-clones nested widget nodes from initial and reload snapshots", () => {
+        const fake = makeFakeHarness();
+        const initialWidget: WidgetNode = {
+            kind: "richtable",
+            id: "table",
+            columns: [{ key: "status", label: "Status" }],
+            rows: [{ status: "ready" }],
+        };
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], {
+            initialExtensionUi: {
+                statuses: {},
+                widgets: {},
+                widgetnodes: { table: initialWidget },
+                header: initialWidget,
+                footer: initialWidget,
+            },
+        });
+
+        initialWidget.columns[0].label = "write-corrupted";
+        initialWidget.rows[0].status = "write-corrupted";
+        const reloadState = owner.getReloadState();
+        const reloadWidget = reloadState.ui.widgetnodes.table as Extract<WidgetNode, { kind: "richtable" }>;
+        reloadWidget.columns[0].label = "read-corrupted";
+        reloadWidget.rows[0].status = "read-corrupted";
+        const reloadHeader = reloadState.ui.header as Extract<WidgetNode, { kind: "richtable" }>;
+        reloadHeader.rows[0].status = "read-corrupted";
+        const reloadFooter = reloadState.ui.footer as Extract<WidgetNode, { kind: "richtable" }>;
+        reloadFooter.rows[0].status = "read-corrupted";
+
+        expect(owner.getReloadState().ui).toEqual({
+            statuses: {},
+            widgets: {},
+            widgetnodes: {
+                table: {
+                    kind: "richtable",
+                    id: "table",
+                    columns: [{ key: "status", label: "Status" }],
+                    rows: [{ status: "ready" }],
+                },
+            },
+            header: {
+                kind: "richtable",
+                id: "table",
+                columns: [{ key: "status", label: "Status" }],
+                rows: [{ status: "ready" }],
+            },
+            footer: {
+                kind: "richtable",
+                id: "table",
+                columns: [{ key: "status", label: "Status" }],
+                rows: [{ status: "ready" }],
+            },
+        });
+    });
+
+    it("clears recoverable UI values", () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const widget: WidgetNode = { kind: "terminal", id: "result", lines: ["done"] };
+
+        owner.setStatus("build", "Running");
+        owner.setWidget("result", widget);
+        owner.setHeader(widget);
+        owner.setFooter(widget);
+        owner.setStatus("build", undefined);
+        owner.setWidget("result", undefined);
+        owner.setHeader(undefined);
+        owner.setFooter(undefined);
+
+        expect(owner.getSessionState().extensionUi).toEqual({
+            statuses: {},
+            widgets: {},
+            widgetnodes: {},
+            header: undefined,
+            footer: undefined,
+        });
+    });
+
+    it("updates the owner snapshot before emitting extension UI deltas", () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        let statusAtCallback: string | undefined;
+        owner.subscribe((event) => {
+            if (event.type === "ext_ui_status") {
+                statusAtCallback = owner.getSessionState().extensionUi.statuses[event.key];
+            }
+        });
+
+        owner.setStatus("build", "Running");
+
+        expect(statusAtCallback).toBe("Running");
+    });
+
+    it("seeds isolated UI state and restores only registered type-compatible flags", () => {
+        const fake = makeFakeHarness();
+        const runtime = createExtensionRuntime();
+        runtime.flagValues.set("enabled", false);
+        runtime.flagValues.set("label", "default");
+        runtime.flagValues.set("disabled", true);
+        runtime.flagValues.set("empty", "default");
+        fake.pane = {
+            ...fake.pane,
+            extensions: [
+                {
+                    flags: new Map([
+                        ["enabled", { name: "enabled", extensionPath: "/ext.ts", type: "boolean" }],
+                        ["label", { name: "label", extensionPath: "/ext.ts", type: "string" }],
+                        ["disabled", { name: "disabled", extensionPath: "/ext.ts", type: "boolean" }],
+                        ["empty", { name: "empty", extensionPath: "/ext.ts", type: "string" }],
+                    ]),
+                },
+            ],
+            extensionRuntime: runtime,
+        } as unknown as AgentHarnessHost;
+        const initialUi = {
+            statuses: { build: "Running" },
+            widgets: { output: ["line one"] },
+            widgetnodes: {},
+        };
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], {
+            initialExtensionUi: initialUi,
+            initialFlagValues: {
+                enabled: true,
+                label: false,
+                disabled: false,
+                empty: "",
+                removed: "stale",
+            },
+        });
+
+        initialUi.statuses.build = "corrupted";
+        initialUi.widgets.output[0] = "corrupted";
+        const reloadState = owner.getReloadState();
+        reloadState.ui.statuses.build = "corrupted again";
+        reloadState.ui.widgets.output[0] = "corrupted again";
+        reloadState.flags.enabled = false;
+
+        expect(owner.getSessionState().extensionUi).toEqual({
+            statuses: { build: "Running" },
+            widgets: { output: ["line one"] },
+            widgetnodes: {},
+        });
+        expect(owner.getFlagValue("enabled")).toBe(true);
+        expect(owner.getFlagValue("label")).toBe("default");
+        expect(owner.getFlagValue("disabled")).toBe(false);
+        expect(owner.getFlagValue("empty")).toBe("");
+        expect(owner.getFlagValue("removed")).toBeUndefined();
+        expect(owner.getReloadState()).toEqual({
+            ui: {
+                statuses: { build: "Running" },
+                widgets: { output: ["line one"] },
+                widgetnodes: {},
+            },
+            flags: { enabled: true, label: "default", disabled: false, empty: "" },
+        });
+    });
+
+    it("restores duplicate reload flags using the first registration only", () => {
+        const fake = makeFakeHarness();
+        const runtime = createExtensionRuntime();
+        runtime.flagValues.set("duplicate", true);
+        fake.pane = {
+            ...fake.pane,
+            extensions: [
+                {
+                    flags: new Map([
+                        ["duplicate", { name: "duplicate", extensionPath: "/first.ts", type: "boolean" }],
+                    ]),
+                },
+                {
+                    flags: new Map([
+                        ["duplicate", { name: "duplicate", extensionPath: "/second.ts", type: "string" }],
+                    ]),
+                },
+            ],
+            extensionRuntime: runtime,
+        } as unknown as AgentHarnessHost;
+
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], {
+            initialFlagValues: { duplicate: "restored by second registration" },
+        });
+
+        expect(owner.getFlagValue("duplicate")).toBe(true);
+    });
+});
+
 describe("AgentSessionRuntime — send routing (no catch-busy)", () => {
     it("first send prompts; a concurrent send queues via followUp", async () => {
         const fake = makeFakeHarness(); // prompt() stays pending → running stays true
@@ -845,6 +1154,75 @@ describe("AgentSessionRuntime — send routing (no catch-busy)", () => {
 });
 
 describe("AgentSessionRuntime — subscriber fan-out", () => {
+    it.each([
+        {
+            reason: "abort" as const,
+            terminate: (owner: AgentSessionRuntime, fake: ReturnType<typeof makeFakeHarness>) => {
+                fake.emit({ type: "abort", clearedSteer: [], clearedFollowUp: [] });
+            },
+        },
+        {
+            reason: "reload" as const,
+            terminate: (owner: AgentSessionRuntime) => {
+                owner.dispose("reload");
+            },
+        },
+        {
+            reason: "dispose" as const,
+            terminate: (owner: AgentSessionRuntime) => {
+                owner.dispose();
+            },
+        },
+    ])("terminates pending confirm and custom requests on $reason and ignores stale events", async ({ reason, terminate }) => {
+        const fake = makeFakeHarness();
+        const uiBridge = createExtensionUiBridge();
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { extensionUiBridge: uiBridge });
+        uiBridge.attach(owner);
+        const ctx = createExtensionContext(() => "/work", uiBridge);
+        const done = vi.fn();
+        let widgetId = "";
+        owner.subscribe((event) => {
+            if (event.type === "ext_ui_request" && event.request.kind === "custom") {
+                widgetId = event.request.widget.id;
+            }
+        });
+        const confirmPromise = ctx.ui.confirm("Continue?");
+        const customPromise = ctx.ui.custom((_tui, _theme, _keys, finish) => {
+            const input = new Input();
+            input.onSubmit = (value) => {
+                done(value);
+                finish(value);
+            };
+            return input;
+        });
+        const expectedError = {
+            name: "ExtensionUiRequestTerminatedError",
+            code: "EXT_UI_REQUEST_TERMINATED",
+            reason,
+        };
+        const confirmRejection = expect(confirmPromise).rejects.toMatchObject(expectedError);
+        const customRejection = expect(customPromise).rejects.toMatchObject(expectedError);
+
+        terminate(owner, fake);
+
+        await Promise.all([confirmRejection, customRejection]);
+        expect(widgetId).not.toBe("");
+        expect(owner.resolveCustomWidget(widgetId, "late")).toBe(false);
+        expect(owner.respondWidgetEvent({ nodeid: widgetId, type: "submit" })).toBe(false);
+        expect(done).not.toHaveBeenCalled();
+    });
+
+    it("exposes a typed extension UI request termination error", () => {
+        const error = new ExtensionUiRequestTerminatedError("reload");
+
+        expect(error).toBeInstanceOf(Error);
+        expect(error).toMatchObject({
+            name: "ExtensionUiRequestTerminatedError",
+            message: "extension UI request terminated: reload",
+            code: "EXT_UI_REQUEST_TERMINATED",
+            reason: "reload",
+        });
+    });
     it("forwards harness events to subscribers and stops after unsubscribe", () => {
         const fake = makeFakeHarness();
         const owner = new AgentSessionRuntime("/s", fake.pane);
@@ -868,11 +1246,152 @@ describe("AgentSessionRuntime — subscriber fan-out", () => {
         expect(lenAtCallback).toBe(1);
     });
 
-    it("dispose() detaches the harness subscription and aborts", () => {
+    it("emits request update events for active custom UI widgets", () => {
         const fake = makeFakeHarness();
         const owner = new AgentSessionRuntime("/s", fake.pane);
-        owner.dispose();
+        const seen: unknown[] = [];
+        owner.subscribe((event) => {
+            if (event.type === "ext_ui_request_update") seen.push(event);
+        });
+        void owner.requestUi({
+            kind: "custom",
+            widget: {
+                kind: "terminal",
+                id: "terminal-1",
+                lines: ["count:0"],
+            },
+        });
+
+        owner.updateCustomWidget({
+            kind: "terminal",
+            id: "terminal-1",
+            lines: ["count:1"],
+        });
+
+        expect(seen).toEqual([
+            {
+                type: "ext_ui_request_update",
+                requestId: "extui-0",
+                widget: {
+                    kind: "terminal",
+                    id: "terminal-1",
+                    lines: ["count:1"],
+                },
+            },
+        ]);
+    });
+
+    it("resolves and clears an active custom UI request when widget done is called", async () => {
+        const fake = makeFakeHarness();
+        const uiBridge = createExtensionUiBridge();
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { extensionUiBridge: uiBridge });
+        uiBridge.attach(owner);
+        const ctx = createExtensionContext(() => "/work", uiBridge);
+        const seen: unknown[] = [];
+        owner.subscribe((event) => {
+            if (event.type === "ext_ui_request" || event.type === "ext_ui_resolved" || event.type === "ext_ui_request_update") {
+                seen.push(event);
+            }
+        });
+
+        const customPromise = ctx.ui.custom((_tui, _theme, _keys, done) => {
+            const input = new Input();
+            input.setValue("ready");
+            input.onSubmit = (value) => done(value);
+            return input;
+        });
+        await Promise.resolve();
+        const request = seen.find((event) => (event as { type?: string }).type === "ext_ui_request") as
+            | { type: "ext_ui_request"; requestId: string; request: { kind: string; widget: { id: string } } }
+            | undefined;
+        expect(request?.request.kind).toBe("custom");
+        if (!request || request.request.kind !== "custom") throw new Error("expected custom request");
+
+        expect(owner.respondWidgetEvent({ nodeid: request.request.widget.id, type: "submit" })).toBe(true);
+
+        await expect(customPromise).resolves.toBe("ready");
+        expect(seen).toContainEqual({ type: "ext_ui_resolved", requestId: request.requestId });
+
+        owner.updateCustomWidget({
+            kind: "input",
+            id: request.request.widget.id,
+            value: "stale",
+            cursor: 5,
+            focused: false,
+        });
+        expect(seen.filter((event) => (event as { type?: string }).type === "ext_ui_request_update")).toEqual([]);
+    });
+
+    it("dispose() detaches the harness subscription and aborts", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        await owner.dispose();
         expect(fake.listenerCount()).toBe(0);
         expect(fake.calls.abort).toBe(1);
+        expect(fake.calls.disposeOwner).toEqual(["/s"]);
+        expect(fake.calls.disposeAll).toBe(0);
+    });
+
+    it("dispose() waits for lifecycle cleanup before resolving", async () => {
+        const fake = makeFakeHarness();
+        const disposeGate = deferred<void>();
+        const disposeOwner = fake.pane.extensionLifecycleHost!.disposeOwner as ReturnType<typeof vi.fn>;
+        disposeOwner.mockImplementationOnce(async (ownerId: string) => {
+            fake.calls.disposeOwner.push(ownerId);
+            await disposeGate.promise;
+        });
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        let settled = false;
+
+        const disposePromise = owner.dispose("reload").then(() => {
+            settled = true;
+        });
+        await Promise.resolve();
+
+        expect(settled).toBe(false);
+        disposeGate.resolve();
+        await disposePromise;
+        expect(settled).toBe(true);
+    });
+
+    it("dispose() unregisters the lifecycle host from the global graph", async () => {
+        const runtime = createExtensionRuntime();
+        const lifecycleHost = createExtensionLifecycleHost(runtime);
+        lifecycleHost.setNodes([
+            {
+                id: "session.ext",
+                name: "session.ext",
+                version: "1.0.0",
+                path: "/tmp/session.ext.ts",
+                scope: "workspace",
+                status: "active",
+                commands: [],
+                tools: [],
+                hooks: [],
+                flags: [],
+                errors: [],
+            },
+        ]);
+        const fake = makeFakeHarness();
+        fake.pane = { ...fake.pane, extensionLifecycleHost: lifecycleHost } as AgentHarnessHost;
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+
+        await owner.dispose();
+
+        expect(getExtensionGraphForLifecycleRuntime().nodes).toEqual([]);
+    });
+
+    it("dispose() propagates lifecycle cleanup errors after unregistering and aborting", async () => {
+        const fake = makeFakeHarness();
+        const error = new Error("cleanup failed");
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        (fake.pane.extensionLifecycleHost!.disposeOwner as ReturnType<typeof vi.fn>).mockRejectedValueOnce(error);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+
+        await expect(owner.dispose()).rejects.toBe(error);
+
+        expect(errorSpy).toHaveBeenCalledWith("[agent-session] extension cleanup error for /s:", error);
+        expect(fake.calls.abort).toBe(1);
+        errorSpy.mockRestore();
     });
 });

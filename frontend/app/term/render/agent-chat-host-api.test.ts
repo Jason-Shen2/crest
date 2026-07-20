@@ -16,6 +16,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
+            respondExtUi: vi.fn(),
             getTurns: () => [],
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,
@@ -54,10 +55,17 @@ describe("createAgentChatHostApi", () => {
             listSessionsForCwd: vi.fn(async () => [session]),
             listSessionDetailsForCwd: vi.fn(async () => [detail]),
             listAllSessionDetails: vi.fn(),
+            listCommands: vi.fn(async () => []),
+            runExtensionCommand: vi.fn(),
+            listShortcuts: vi.fn(async () => []),
+            runShortcut: vi.fn(),
+            listFlags: vi.fn(async () => []),
+            setFlag: vi.fn(),
         };
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
+            respondExtUi: vi.fn(),
             getTurns: () => [],
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: makeSession,
@@ -92,11 +100,18 @@ describe("createAgentChatHostApi", () => {
             listSessionsForCwd: vi.fn(),
             listSessionDetailsForCwd: vi.fn(),
             listAllSessionDetails: vi.fn(),
+            listCommands: vi.fn(async () => []),
+            runExtensionCommand: vi.fn(),
+            listShortcuts: vi.fn(async () => []),
+            runShortcut: vi.fn(),
+            listFlags: vi.fn(async () => []),
+            setFlag: vi.fn(),
         };
         const onSessionMinted = vi.fn();
         const api = createAgentChatHostApi({
             sendPrompt: vi.fn(() => true),
             abort: vi.fn(),
+            respondExtUi: vi.fn(),
             getTurns: () => [],
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
@@ -138,10 +153,17 @@ describe("createAgentChatHostApi", () => {
             listSessionsForCwd: vi.fn(),
             listSessionDetailsForCwd: vi.fn(),
             listAllSessionDetails: vi.fn(),
+            listCommands: vi.fn(async () => []),
+            runExtensionCommand: vi.fn(),
+            listShortcuts: vi.fn(async () => []),
+            runShortcut: vi.fn(),
+            listFlags: vi.fn(async () => []),
+            setFlag: vi.fn(),
         };
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
+            respondExtUi: vi.fn(),
             getTurns: () => [],
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
@@ -173,10 +195,17 @@ describe("createAgentChatHostApi", () => {
             listSessionsForCwd: vi.fn(),
             listSessionDetailsForCwd: vi.fn(),
             listAllSessionDetails: vi.fn(),
+            listCommands: vi.fn(async () => []),
+            runExtensionCommand: vi.fn(),
+            listShortcuts: vi.fn(async () => []),
+            runShortcut: vi.fn(),
+            listFlags: vi.fn(async () => []),
+            setFlag: vi.fn(),
         };
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
+            respondExtUi: vi.fn(),
             getTurns: () => [],
             getRuntimeApi: () => runtimeApi,
             getSessionMetadata: () => session,
@@ -208,6 +237,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: vi.fn(),
+            respondExtUi: vi.fn(),
             getTurns: () => [],
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,
@@ -241,6 +271,7 @@ describe("createAgentChatHostApi", () => {
         const api = createAgentChatHostApi({
             sendPrompt: vi.fn(() => true),
             abort: vi.fn(),
+            respondExtUi: vi.fn(),
             getTurns: () => [],
             getRuntimeApi: vi.fn(),
             getSessionMetadata: makeSession,

@@ -95,6 +95,7 @@ export default defineConfig({
                 input: {
                     index: "emain/emain.ts",
                 },
+                external: ["jiti"],
             },
             outDir: "dist/main",
             externalizeDeps: false,

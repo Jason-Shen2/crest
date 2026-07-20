@@ -4,7 +4,7 @@
 import type { AppendMessage, PendingAttachment, ThreadMessage } from "@assistant-ui/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { PiTurn, UsePiChatReturn } from "@/app/store/use-pi-chat";
+import { makeEmptyPiExtUiState, type PiTurn, type UsePiChatReturn } from "@/app/store/use-pi-chat";
 
 import { createCrestAssistantRuntimeAdapter, piTurnsToAuiMessages } from "./runtime-bridge";
 
@@ -35,8 +35,11 @@ function makeChat(overrides: Partial<UsePiChatReturn> = {}): UsePiChatReturn {
         errorMessage: undefined,
         sessionMetadata: undefined,
         queuedMessages: [],
+        extUi: makeEmptyPiExtUiState(),
         send: vi.fn(),
         abort: vi.fn(),
+        respondExtUi: vi.fn(),
+        respondWidgetEvent: vi.fn(),
         ...overrides,
     };
 }

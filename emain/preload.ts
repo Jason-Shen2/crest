@@ -79,6 +79,8 @@ contextBridge.exposeInMainWorld("api", {
     updateWindowControlsOverlay: (rect) => ipcRenderer.send("update-window-controls-overlay", rect),
     onReinjectKey: (callback) => ipcRenderer.on("reinject-key", (_event, waveEvent) => callback(waveEvent)),
     setWebviewFocus: (focused: number) => ipcRenderer.send("webview-focus", focused),
+    setRightBrowserActiveWebContents: (webContentsId: number | null) =>
+        ipcRenderer.send("right-browser:set-active-webcontents", webContentsId),
     registerGlobalWebviewKeys: (keys) => ipcRenderer.send("register-global-webview-keys", keys),
     onControlShiftStateUpdate: (callback) =>
         ipcRenderer.on("control-shift-state-update", (_event, state) => callback(state)),
@@ -151,7 +153,13 @@ contextBridge.exposeInMainWorld("api", {
         listSessionsForCwd: (cwd: string) => ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
         listSessionDetailsForCwd: (cwd: string, limit?: number) => ipcRenderer.invoke("agent:list-session-details-for-cwd", cwd, limit),
         listAllSessionDetails: (limit?: number) => ipcRenderer.invoke("agent:list-all-session-details", limit),
-        listCommands: () => ipcRenderer.invoke("agent:list-commands"),
+        listCommands: (cwd?: string) => ipcRenderer.invoke("agent:list-commands", cwd),
+        listShortcuts: (cwd?: string) => ipcRenderer.invoke("agent:list-shortcuts", cwd),
+        runShortcut: (input: unknown) => ipcRenderer.invoke("agent:run-shortcut", input),
+        listFlags: (cwd?: string, sessionMetadata?: unknown) =>
+            ipcRenderer.invoke("agent:list-flags", cwd, sessionMetadata),
+        setFlag: (input: unknown) => ipcRenderer.invoke("agent:set-flag", input),
+        getExtensionsGraph: () => ipcRenderer.invoke("agent:extensions-graph"),
         getSessionState: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:get-session-state", sessionMetadata),
         listTree: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:list-tree", sessionMetadata),
         listForkPoints: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:list-fork-points", sessionMetadata),
@@ -159,8 +167,13 @@ contextBridge.exposeInMainWorld("api", {
         forkSession: (input: unknown) => ipcRenderer.invoke("agent:fork-session", input),
         cloneSession: (input: unknown) => ipcRenderer.invoke("agent:clone-session", input),
         runCommand: (input: unknown) => ipcRenderer.invoke("agent:run-command", input),
+        runExtensionCommand: (input: unknown) => ipcRenderer.invoke("agent:run-extension-command", input),
         send: (opts: unknown) => ipcRenderer.invoke("agent:send", opts),
         abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
+        respondUi: (sessionPath: string, requestId: string, result: unknown) =>
+            ipcRenderer.invoke("agent:ui-response", sessionPath, requestId, result),
+        respondWidgetEvent: (sessionPath: string, event: unknown) =>
+            ipcRenderer.invoke("agent:widget-event", sessionPath, event),
         subscribe: (
             sessionPath: string,
             callback: (event: unknown) => void

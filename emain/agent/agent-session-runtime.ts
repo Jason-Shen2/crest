@@ -36,6 +36,11 @@ import type { Api, Model } from "../ai";
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import { filterTreeForDisplay } from "./commands/session-views";
+import type { AgentCommandExecutionResult } from "./commands/types";
+import { createCommandContext } from "./extensions";
+import type { ExtensionCommandHost, ExtensionUiBridge, ExtUiRequest, WidgetEvent } from "./extensions";
+import { unregisterExtensionLifecycleHost } from "./extensions/lifecycle";
+import type { WidgetNode } from "./extensions/pi-gui/crest/widget-tree";
 import type { AgentAuthResolver, AgentHarnessHost } from "./harness-factory";
 import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
 import type { ToolCallHook } from "./permissions";
@@ -43,6 +48,29 @@ import type { AgentMessage, ThinkingLevel } from "./types";
 
 export type AgentSessionRuntimeStatus = "idle" | "streaming" | "error";
 export type AgentTurnStatus = "streaming" | "done" | "error";
+export type ExtensionUiTerminationReason = "abort" | "reload" | "dispose";
+
+export class ExtensionUiRequestTerminatedError extends Error {
+    readonly code = "EXT_UI_REQUEST_TERMINATED";
+
+    constructor(readonly reason: ExtensionUiTerminationReason) {
+        super(`extension UI request terminated: ${reason}`);
+        this.name = "ExtensionUiRequestTerminatedError";
+    }
+}
+
+export interface ExtensionUiSnapshot {
+    statuses: Record<string, string>;
+    widgets: Record<string, string[]>;
+    widgetnodes: Record<string, WidgetNode>;
+    header?: WidgetNode;
+    footer?: WidgetNode;
+}
+
+export interface ExtensionReloadState {
+    ui: ExtensionUiSnapshot;
+    flags: Record<string, boolean | string>;
+}
 
 export interface AgentTurn {
     // Identity of the turn = the session entry id of the user message that
@@ -67,9 +95,22 @@ export interface AgentSessionRuntimeState {
     followUpQueue: AgentMessage[];
     status: AgentSessionRuntimeStatus;
     errorMessage?: string;
+    extensionUi: ExtensionUiSnapshot;
 }
 
-export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
+export type AgentExtensionUiEvent =
+    | { type: "ext_ui_notify"; message: string; level: "info" | "warn" | "error" }
+    | { type: "ext_ui_status"; key: string; text: string | undefined }
+    | { type: "ext_ui_widget"; key: string; lines: string[] | undefined }
+    | { type: "ext_ui_widget"; key: string; widget: WidgetNode }
+    | { type: "ext_ui_header"; widget: WidgetNode | undefined }
+    | { type: "ext_ui_footer"; widget: WidgetNode | undefined }
+    | { type: "ext_ui_request"; requestId: string; request: ExtUiRequest }
+    | { type: "ext_ui_request_update"; requestId: string; widget: WidgetNode }
+    | { type: "ext_ui_resolved"; requestId: string };
+
+export type AgentSessionRuntimeEvent = AgentHarnessEvent | AgentExtensionUiEvent;
+export type AgentSessionRuntimeListener = (event: AgentSessionRuntimeEvent) => void;
 export type AgentTurnFinishedHook = (turn: AgentTurn) => void | Promise<void>;
 
 interface AgentSessionRuntimeStateEvent {
@@ -79,10 +120,14 @@ interface AgentSessionRuntimeStateEvent {
     status: AgentSessionRuntimeStatus;
     steer: AgentMessage[];
     followUp: AgentMessage[];
+    extensionUi: ExtensionUiSnapshot;
 }
 
 export interface AgentSessionRuntimeOptions {
     onTurnFinished?: AgentTurnFinishedHook;
+    extensionUiBridge?: ExtensionUiBridge;
+    initialExtensionUi?: ExtensionUiSnapshot;
+    initialFlagValues?: Record<string, boolean | string>;
 }
 
 export interface AgentExecutionConfig {
@@ -91,6 +136,30 @@ export interface AgentExecutionConfig {
     thinkingLevel: ThinkingLevel;
     authResolver?: AgentAuthResolver;
     toolCallHook?: ToolCallHook;
+}
+
+function makeEmptyExtensionUiSnapshot(): ExtensionUiSnapshot {
+    return { statuses: {}, widgets: {}, widgetnodes: {} };
+}
+
+function cloneWidgetNode(widget: WidgetNode): WidgetNode {
+    return structuredClone(widget);
+}
+
+function cloneExtensionUiSnapshot(snapshot: ExtensionUiSnapshot): ExtensionUiSnapshot {
+    return {
+        statuses: { ...snapshot.statuses },
+        widgets: Object.fromEntries(Object.entries(snapshot.widgets).map(([key, lines]) => [key, [...lines]])),
+        widgetnodes: Object.fromEntries(
+            Object.entries(snapshot.widgetnodes).map(([key, widget]) => [key, cloneWidgetNode(widget)])
+        ),
+        header: snapshot.header == null ? undefined : cloneWidgetNode(snapshot.header),
+        footer: snapshot.footer == null ? undefined : cloneWidgetNode(snapshot.footer),
+    };
+}
+
+function acceptsFlagValue(type: "boolean" | "string", value: boolean | string): boolean {
+    return type === "boolean" ? typeof value === "boolean" : typeof value === "string";
 }
 
 function isErroredAssistant(message: AgentMessage): boolean {
@@ -139,10 +208,18 @@ export class AgentSessionRuntime {
     status: AgentSessionRuntimeStatus = "idle";
     errorMessage: string | undefined;
     activeTurnId: string | undefined;
+    extensionUi: ExtensionUiSnapshot;
     // Resolvers for in-flight send() promises, awaiting the userEntryId that
     // arrives on the user message_end event. FIFO: one resolver per send.
     private pendingEntryIdResolvers: Array<{ resolve: (id: string) => void; reject: (err: unknown) => void }> = [];
     configQueue: Promise<void> = Promise.resolve();
+
+    // In-flight ctx.ui.confirm/select/input requests, keyed by a requestId we
+    // mint per request. The renderer answers via respondUi(); abort/dispose
+    // reject any still outstanding so an extension never hangs on a prompt.
+    private pendingUiRequests = new Map<string, { resolve: (value: unknown) => void; reject: (err: unknown) => void }>();
+    private customWidgetRequestIds = new Map<string, string>();
+    private nextUiRequestId = 0;
 
     // Synchronous send-routing gate. Flipped true the instant we call
     // prompt() (which itself flips the harness phase synchronously), so a
@@ -153,6 +230,7 @@ export class AgentSessionRuntime {
     listeners = new Set<AgentSessionRuntimeListener>();
     unsubscribeHarness: () => void;
     onTurnFinished: AgentTurnFinishedHook | undefined;
+    extensionUiBridge: ExtensionUiBridge | undefined;
 
     constructor(
         path: string,
@@ -164,6 +242,19 @@ export class AgentSessionRuntime {
         this.path = path;
         this.host = host;
         this.onTurnFinished = options.onTurnFinished;
+        this.extensionUiBridge = options.extensionUiBridge;
+        this.extensionUi = cloneExtensionUiSnapshot(options.initialExtensionUi ?? makeEmptyExtensionUiSnapshot());
+        const restoredFlagNames = new Set<string>();
+        for (const extension of host.extensions) {
+            for (const flag of extension.flags.values()) {
+                if (restoredFlagNames.has(flag.name)) continue;
+                restoredFlagNames.add(flag.name);
+                const value = options.initialFlagValues?.[flag.name];
+                if (value != null && acceptsFlagValue(flag.type, value)) {
+                    host.extensionRuntime?.flagValues.set(flag.name, value);
+                }
+            }
+        }
         // Seed the transcript from the persisted session so a REOPENED
         // conversation shows its history. A fresh session passes []. New
         // messages then accumulate via the live stream on top of this.
@@ -296,6 +387,7 @@ export class AgentSessionRuntime {
                 // forever AND leave a stale resolver at the FIFO head, which
                 // would mis-resolve the NEXT send. See agent-harness abort().
                 this.rejectPendingSends(new Error("send aborted before the user message was committed"));
+                this.terminatePendingUiRequests("abort");
                 return;
             }
             default:
@@ -311,6 +403,14 @@ export class AgentSessionRuntime {
             followUpQueue: this.followUpQueue,
             status: this.status,
             errorMessage: this.errorMessage,
+            extensionUi: cloneExtensionUiSnapshot(this.extensionUi),
+        };
+    }
+
+    getReloadState(): ExtensionReloadState {
+        return {
+            ui: cloneExtensionUiSnapshot(this.extensionUi),
+            flags: Object.fromEntries(this.host.extensionRuntime?.flagValues ?? []),
         };
     }
 
@@ -384,20 +484,128 @@ export class AgentSessionRuntime {
         this.emitSessionState();
     }
 
+    /**
+     * Execute an extension-registered slash command (pi.registerCommand). Looks
+     * the command up among this runtime's loaded extensions and invokes its handler
+     * with a command context: the runtime's live ctx (correct cwd + attached ctx.ui
+     * host) wrapped with the session-control methods pi exposes to command
+     * handlers (waitForIdle / navigateTree / compact / sendMessage). Session
+     * lifecycle actions that crest drives from the renderer (newSession / fork /
+     * switchSession / reload) resolve as cancelled/no-op here — they require an
+     * IPC round-trip the in-process owner can't perform. Returns a success/noop
+     * result the renderer echoes into the command-result UI.
+     */
+    async runExtensionCommand(name: string, argsText: string): Promise<AgentCommandExecutionResult> {
+        for (const extension of this.host.extensions) {
+            const command = extension.commands.get(name);
+            if (!command) continue;
+            const ctx = createCommandContext(this.host.ctx, this.buildCommandHost());
+            await command.handler(argsText, ctx);
+            return { status: "success", message: `Ran extension command /${name}` };
+        }
+        return { status: "noop", message: `Extension command /${name} is not available.` };
+    }
+
+    /**
+     * Activate an extension-registered keyboard shortcut (pi.registerShortcut).
+     * Looks the shortcut up among this runtime's loaded extensions and invokes its
+     * handler with the runtime's live ctx. Returns success/noop the renderer can
+     * surface. Shortcut handlers receive the base ExtensionContext (not the
+     * command context) — pi hands shortcuts the same read/UI surface.
+     */
+    async runShortcut(shortcut: string): Promise<AgentCommandExecutionResult> {
+        for (const extension of this.host.extensions) {
+            const registered = extension.shortcuts.get(shortcut);
+            if (!registered) continue;
+            await registered.handler(this.host.ctx);
+            return { status: "success", message: `Ran extension shortcut ${shortcut}` };
+        }
+        return { status: "noop", message: `Extension shortcut ${shortcut} is not available.` };
+    }
+
+    /** Read a live flag value from this session's bound extension runtime. */
+    getFlagValue(name: string): boolean | string | undefined {
+        return this.host.extensionRuntime?.flagValues.get(name);
+    }
+
+    /** Write a live flag value into this session's bound extension runtime. */
+    setFlagValue(name: string, value: boolean | string): void {
+        this.host.extensionRuntime?.flagValues.set(name, value);
+    }
+
+    /**
+     * The command-only session-control seam handed to extension command
+     * handlers (via createCommandContext). waitForIdle / navigateTree / compact
+     * / sendMessage route to this owner's live harness; the renderer-driven
+     * lifecycle actions (newSession / fork / switchSession / reload) can't be
+     * performed in-process and resolve as cancelled/no-op.
+     */
+    private buildCommandHost(): ExtensionCommandHost {
+        const cancelled = (): Promise<{ cancelled: boolean }> => Promise.resolve({ cancelled: true });
+        return {
+            waitForIdle: () => this.host.harness.waitForIdle(),
+            reload: () => Promise.resolve(),
+            navigateTree: async (targetId, options) => {
+                const result = await this.host.harness.navigateTree(targetId, {
+                    summarize: options?.summarize ?? false,
+                    customInstructions: options?.customInstructions,
+                    replaceInstructions: options?.replaceInstructions,
+                    label: options?.label,
+                });
+                if (!result.cancelled) {
+                    await this.rebuildFromCurrentBranch();
+                    this.emitSessionState();
+                }
+                return { cancelled: result.cancelled };
+            },
+            newSession: cancelled,
+            fork: cancelled,
+            switchSession: cancelled,
+            sendMessage: async (text, options) => {
+                const deliverAs = options?.deliverAs;
+                if (deliverAs === "steer") {
+                    await this.host.harness.steer(text);
+                } else if (deliverAs === "nextTurn") {
+                    await this.host.harness.nextTurn(text);
+                } else {
+                    await this.send(text);
+                }
+            },
+        };
+    }
+
     async getLeafId(): Promise<string | null> {
         return this.host.session.getLeafId();
     }
 
-    dispose(): void {
+    async dispose(reason: "reload" | "dispose" = "dispose"): Promise<void> {
         this.unsubscribeHarness();
         this.listeners.clear();
         // Reject any send() promises still awaiting a userEntryId — the
         // abort below tears down the run, so their user message_end will
         // never arrive.
         this.rejectPendingSends(new Error("session disposed before the user message was committed"));
-        void this.host.harness.abort().catch(() => {
+        this.terminatePendingUiRequests(reason);
+        this.extensionUiBridge?.dispose();
+        const lifecycleOwnerId = this.host.extensionLifecycleOwnerId ?? this.path;
+        const lifecycleHost = this.host.extensionLifecycleHost;
+        let cleanupError: unknown;
+        if (lifecycleHost) {
+            try {
+                await lifecycleHost.disposeOwner(lifecycleOwnerId);
+            } catch (err) {
+                console.error(`[agent-session] extension cleanup error for ${this.path}:`, err);
+                cleanupError = err;
+            } finally {
+                unregisterExtensionLifecycleHost(lifecycleHost);
+            }
+        }
+        await this.host.harness.abort().catch(() => {
             // best-effort on teardown
         });
+        if (cleanupError) {
+            throw cleanupError;
+        }
     }
 
     private rejectPendingSends(err: unknown): void {
@@ -552,6 +760,7 @@ export class AgentSessionRuntime {
             status: this.status,
             steer: this.steerQueue,
             followUp: this.followUpQueue,
+            extensionUi: cloneExtensionUiSnapshot(this.extensionUi),
         };
         for (const listener of this.listeners) {
             try {
@@ -569,6 +778,132 @@ export class AgentSessionRuntime {
                 listener(event);
             } catch (err) {
                 console.error(`[agent-session] listener error for ${this.path}:`, err);
+            }
+        }
+    }
+
+    // ---- ctx.ui host (ExtensionUiHost) ----
+    // The bridge (created in agent-ipc, wired into the harness) attaches this
+    // session as its host. Single-direction pushes fan out as events the
+    // renderer maps to a toast / inline status / inline widget; requestUi does
+    // a round-trip resolved by respondUi() once the renderer answers.
+
+    notify(message: string, level: "info" | "warn" | "error"): void {
+        this.emitExtUiEvent({ type: "ext_ui_notify", message, level });
+    }
+
+    setStatus(key: string, text: string | undefined): void {
+        const statuses = { ...this.extensionUi.statuses };
+        if (text == null) delete statuses[key];
+        else statuses[key] = text;
+        this.extensionUi = { ...this.extensionUi, statuses };
+        this.emitExtUiEvent({ type: "ext_ui_status", key, text });
+    }
+
+    setWidget(key: string, value: string[] | WidgetNode | undefined): void {
+        const widgets = { ...this.extensionUi.widgets };
+        const widgetnodes = { ...this.extensionUi.widgetnodes };
+        if (value == null) {
+            delete widgets[key];
+            delete widgetnodes[key];
+            this.extensionUi = { ...this.extensionUi, widgets, widgetnodes };
+            this.emitExtUiEvent({ type: "ext_ui_widget", key, lines: undefined });
+            return;
+        }
+        if (Array.isArray(value)) {
+            widgets[key] = [...value];
+            delete widgetnodes[key];
+            this.extensionUi = { ...this.extensionUi, widgets, widgetnodes };
+            this.emitExtUiEvent({ type: "ext_ui_widget", key, lines: value });
+            return;
+        }
+        widgetnodes[key] = cloneWidgetNode(value);
+        delete widgets[key];
+        this.extensionUi = { ...this.extensionUi, widgets, widgetnodes };
+        this.emitExtUiEvent({ type: "ext_ui_widget", key, widget: value });
+    }
+
+    setHeader(value: WidgetNode | undefined): void {
+        this.extensionUi = {
+            ...this.extensionUi,
+            header: value == null ? undefined : cloneWidgetNode(value),
+        };
+        this.emitExtUiEvent({ type: "ext_ui_header", widget: value });
+    }
+
+    setFooter(value: WidgetNode | undefined): void {
+        this.extensionUi = {
+            ...this.extensionUi,
+            footer: value == null ? undefined : cloneWidgetNode(value),
+        };
+        this.emitExtUiEvent({ type: "ext_ui_footer", widget: value });
+    }
+
+    requestUi(request: ExtUiRequest): Promise<unknown> {
+        const requestId = `extui-${this.nextUiRequestId++}`;
+        const promise = new Promise<unknown>((resolve, reject) => {
+            this.pendingUiRequests.set(requestId, { resolve, reject });
+        });
+        if (request.kind === "custom") {
+            this.customWidgetRequestIds.set(request.widget.id, requestId);
+        }
+        this.emitExtUiEvent({ type: "ext_ui_request", requestId, request });
+        return promise;
+    }
+
+    updateCustomWidget(widget: WidgetNode): void {
+        const requestId = this.customWidgetRequestIds.get(widget.id);
+        if (!requestId || !this.pendingUiRequests.has(requestId)) return;
+        this.emitExtUiEvent({ type: "ext_ui_request_update", requestId, widget });
+    }
+
+    /**
+     * Resolve a pending ctx.ui request with the renderer's answer. `result` is
+     * the raw value the renderer collected (boolean for confirm, chosen option
+     * string / undefined for select, string / undefined for input). Cancelling
+     * (dismissing the panel) resolves with undefined (→ confirm false path is
+     * handled renderer-side; select/input map undefined = cancelled).
+     */
+    respondUi(requestId: string, result: unknown): void {
+        const pending = this.pendingUiRequests.get(requestId);
+        if (!pending) return;
+        this.pendingUiRequests.delete(requestId);
+        for (const [widgetId, mappedRequestId] of this.customWidgetRequestIds) {
+            if (mappedRequestId === requestId) {
+                this.customWidgetRequestIds.delete(widgetId);
+            }
+        }
+        pending.resolve(result);
+        this.emitExtUiEvent({ type: "ext_ui_resolved", requestId });
+    }
+
+    resolveCustomWidget(widgetId: string, result: unknown): boolean {
+        const requestId = this.customWidgetRequestIds.get(widgetId);
+        if (!requestId) return false;
+        this.respondUi(requestId, result);
+        return true;
+    }
+
+    respondWidgetEvent(event: WidgetEvent): boolean {
+        return this.extensionUiBridge?.dispatchWidgetEvent(event) ?? false;
+    }
+
+    private terminatePendingUiRequests(reason: ExtensionUiTerminationReason): void {
+        const pending = [...this.pendingUiRequests.values()];
+        this.pendingUiRequests.clear();
+        this.customWidgetRequestIds.clear();
+        const error = new ExtensionUiRequestTerminatedError(reason);
+        for (const { reject } of pending) {
+            reject(error);
+        }
+    }
+
+    private emitExtUiEvent(event: AgentExtensionUiEvent): void {
+        for (const listener of this.listeners) {
+            try {
+                listener(event);
+            } catch (err) {
+                console.error(`[agent-session] ext-ui listener error for ${this.path}:`, err);
             }
         }
     }

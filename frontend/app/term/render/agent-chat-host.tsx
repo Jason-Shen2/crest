@@ -18,6 +18,7 @@ import type { ResolveError } from "@/app/store/ai-types";
 import {
     usePiChat,
     type PiAgentMessage,
+    type PiExtUiState,
     type PiTurn,
     type UsePiChatModel,
     type UsePiChatPaneContext,
@@ -50,6 +51,11 @@ export interface AgentChatHostProps {
      * activity bar above the input (streaming indicator + Stop + queued chips).
      */
     onStateChange?: (state: AgentHostState) => void;
+    /**
+     * Called on every extension ctx.ui state change (statuses / widgets / the
+     * active confirm/select/input prompt). Drives the inline ext-ui panel.
+     */
+    onExtUiChange?: (extUi: PiExtUiState) => void;
     /** Per-pane tool allowlist; undefined = main defaults to allowAll (v1). */
     allowedTools?: string[];
     /** Notification atom setter — surface user-facing errors when send can't proceed. */
@@ -87,6 +93,18 @@ export interface AgentChatHostApi {
     cloneSession: () => Promise<AgentCloneSessionResult>;
     /** Abort the in-flight run, if any. */
     abort: () => void;
+    /** Answer the active extension ctx.ui prompt (confirm/select/input). */
+    respondExtUi: (requestId: string, result: unknown) => void;
+    /** Deliver a widget interaction from renderer to a live extension UI surface. */
+    respondWidgetEvent: (event: AgentWidgetEvent) => void;
+    /** List extension-registered keyboard shortcuts (pi.registerShortcut). */
+    listShortcuts: () => Promise<AgentShortcutInfo[]>;
+    /** Activate an extension keyboard shortcut by its key string. */
+    runShortcut: (shortcut: string) => Promise<AgentCommandExecutionResult>;
+    /** List extension-registered flags (pi.registerFlag) with live values. */
+    listFlags: () => Promise<AgentFlagInfo[]>;
+    /** Write an extension flag value (only durable when a live session owns the pane). */
+    setFlag: (name: string, value: boolean | string) => Promise<AgentCommandExecutionResult>;
     /** Current turns for diagnostics / future selectors. */
     getTurns: () => PiTurn[];
 }
@@ -118,7 +136,10 @@ export interface AgentCommandExecutionResult {
 type AgentImmediateCommandName = Exclude<AgentSlashCommandName, "tree" | "fork" | "clone" | "model">;
 
 export interface AgentInlineCommandResult {
-    command: AgentImmediateCommandName;
+    // Built-in immediate command names get literal autocomplete; extension
+    // commands surface their registered name (any string) via the same feedback
+    // list. The `(string & {})` keeps the literal union for editors.
+    command: AgentImmediateCommandName | (string & {});
     status: "success" | "noop";
     message: string;
     sessionMetadata?: AgentSessionMeta;
@@ -127,6 +148,8 @@ export interface AgentInlineCommandResult {
 interface AgentChatHostApiDeps {
     sendPrompt: (text: string) => boolean;
     abort: () => void;
+    respondExtUi: (requestId: string, result: unknown) => void;
+    respondWidgetEvent?: (event: AgentWidgetEvent) => void;
     getTurns: () => PiTurn[];
     getRuntimeApi: () => AgentRuntimeApi | undefined;
     getSessionMetadata: () => AgentSessionMeta | undefined;
@@ -134,6 +157,10 @@ interface AgentChatHostApiDeps {
     /** Parent terminal block ID, used by backend commands that need pane identity. */
     getBlockId: () => string;
     runCommand?: (command: AgentImmediateCommandName, argsText: string) => Promise<AgentCommandExecutionResult>;
+    /** Execute an extension-registered command (pi.registerCommand) by name. */
+    runExtensionCommand?: (name: string, argsText: string) => Promise<AgentCommandExecutionResult>;
+    /** Names of extension-registered commands, so submit() can route them instead of prompting. */
+    getExtensionCommandNames?: () => ReadonlySet<string>;
     onSessionMinted?: (meta: AgentSessionMeta) => void;
     onCommandResult?: (result: AgentInlineCommandResult) => void;
     onUserError?: (message: string) => void;
@@ -230,11 +257,52 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
     const isImmediateCommand = (command: AgentSlashCommandName): command is AgentImmediateCommandName => {
         return command !== "tree" && command !== "fork" && command !== "clone" && command !== "model";
     };
+    const runExtensionCommand = (name: string, argsText: string): boolean => {
+        if (!deps.runExtensionCommand) {
+            deps.onUserError?.(`Extension command /${name} is not available.`);
+            return true;
+        }
+        reportAsyncError(
+            deps.runExtensionCommand(name, argsText).then((result) => {
+                if (result.message) {
+                    deps.onCommandResult?.({
+                        command: name,
+                        status: result.status ?? "success",
+                        message: result.message,
+                    });
+                }
+            })
+        );
+        return true;
+    };
+    const listShortcuts = async (): Promise<AgentShortcutInfo[]> => {
+        return await requireRuntimeApi().listShortcuts(deps.getPaneCwd());
+    };
+    const runShortcut = async (shortcut: string): Promise<AgentCommandExecutionResult> => {
+        return await requireRuntimeApi().runShortcut({
+            sessionMetadata: deps.getSessionMetadata(),
+            cwd: deps.getPaneCwd(),
+            shortcut,
+        });
+    };
+    const listFlags = async (): Promise<AgentFlagInfo[]> => {
+        return await requireRuntimeApi().listFlags(deps.getPaneCwd(), deps.getSessionMetadata());
+    };
+    const setFlag = async (name: string, value: boolean | string): Promise<AgentCommandExecutionResult> => {
+        return await requireRuntimeApi().setFlag({
+            sessionMetadata: deps.getSessionMetadata(),
+            name,
+            value,
+        });
+    };
     return {
         submit: (text) => {
-            const route = resolveAgentSlashCommandRoute(text);
+            const route = resolveAgentSlashCommandRoute(text, deps.getExtensionCommandNames?.());
             if (!route.handled) {
                 return deps.sendPrompt(text);
+            }
+            if (route.kind === "extension") {
+                return runExtensionCommand(route.name, route.argsText);
             }
             if (route.command === "model") {
                 deps.onOpenModelPicker?.();
@@ -265,6 +333,12 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         forkSession,
         cloneSession,
         abort: deps.abort,
+        respondExtUi: deps.respondExtUi,
+        respondWidgetEvent: (event) => deps.respondWidgetEvent?.(event),
+        listShortcuts,
+        runShortcut,
+        listFlags,
+        setFlag,
         getTurns: deps.getTurns,
     };
 }
@@ -279,6 +353,7 @@ export function AgentChatHost({
     onReady,
     onTurnsChange,
     onStateChange,
+    onExtUiChange,
     allowedTools,
     onUserError,
     onCommandResult,
@@ -350,6 +425,43 @@ export function AgentChatHost({
         onStateChangeRef.current?.({ status: chat.status, queuedMessages: chat.queuedMessages });
     }, [chat.status, chat.queuedMessages]);
 
+    // Surface the extension ctx.ui state (statuses / widgets / active prompt).
+    const onExtUiChangeRef = useRef(onExtUiChange);
+    onExtUiChangeRef.current = onExtUiChange;
+    const respondExtUiRef = useRef(chat.respondExtUi);
+    respondExtUiRef.current = chat.respondExtUi;
+    const respondWidgetEventRef = useRef(chat.respondWidgetEvent);
+    respondWidgetEventRef.current = chat.respondWidgetEvent;
+    useEffect(() => {
+        onExtUiChangeRef.current?.(chat.extUi);
+    }, [chat.extUi]);
+
+    // Extension-registered command names for this pane's cwd. Loaded lazily so
+    // submit() can route "/name" to the extension ctx instead of prompting the
+    // LLM. Refreshed whenever the pane cwd changes.
+    const extensionCommandNamesRef = useRef<ReadonlySet<string>>(new Set<string>());
+    useEffect(() => {
+        const cwd = paneContext.cwd;
+        if (!cwd) return;
+        let cancelled = false;
+        const runtimeApi = getAgentRuntimeApi();
+        void runtimeApi
+            ?.listCommands(cwd)
+            .then((commands) => {
+                if (cancelled) return;
+                extensionCommandNamesRef.current = new Set(
+                    commands.filter((c) => c.source === "extension").map((c) => c.name)
+                );
+            })
+            .catch(() => {
+                // Extension discovery failures shouldn't break submit; leave the
+                // previous names in place.
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [paneContext.cwd]);
+
     // One-shot wiring of the API. Stable identity so re-renders don't
     // tear down whatever the parent stored.
     useEffect(() => {
@@ -372,6 +484,8 @@ export function AgentChatHost({
         const api = createAgentChatHostApi({
             sendPrompt,
             abort: () => abortRef.current(),
+            respondExtUi: (requestId, result) => respondExtUiRef.current(requestId, result),
+            respondWidgetEvent: (event) => respondWidgetEventRef.current(event),
             getTurns: () => turnsRef.current,
             getRuntimeApi: getAgentRuntimeApi,
             getSessionMetadata: () => sessionMetadataRef.current,
@@ -395,6 +509,20 @@ export function AgentChatHost({
                     blockId: outerBlockId,
                 });
             },
+            runExtensionCommand: async (name, argsText) => {
+                const runtimeApi = getAgentRuntimeApi();
+                if (!runtimeApi) {
+                    throw new Error("Electron agent IPC not available (window.api.agent missing)");
+                }
+                return await runtimeApi.runExtensionCommand({
+                    sessionMetadata: sessionMetadataRef.current,
+                    cwd: paneContextRef.current.cwd,
+                    name,
+                    argsText,
+                    blockId: outerBlockId,
+                });
+            },
+            getExtensionCommandNames: () => extensionCommandNamesRef.current,
         });
         onReadyRef.current?.(api);
         // Re-fire when the API identity is stable; we want one-shot,
@@ -409,12 +537,18 @@ interface AgentRuntimeApi {
     listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
     listSessionDetailsForCwd: (cwd: string, limit?: number) => Promise<AgentSessionDetail[]>;
     listAllSessionDetails: (limit?: number) => Promise<AgentSessionDetail[]>;
+    listCommands: (cwd?: string) => Promise<AgentCommandInfo[]>;
     listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>;
     listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>;
     navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>;
     forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>;
     cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>;
     runCommand: (input: AgentRunCommandInput) => Promise<AgentCommandExecutionResult>;
+    runExtensionCommand: (input: AgentRunExtensionCommandInput) => Promise<AgentCommandExecutionResult>;
+    listShortcuts: (cwd?: string) => Promise<AgentShortcutInfo[]>;
+    runShortcut: (input: AgentRunShortcutInput) => Promise<AgentCommandExecutionResult>;
+    listFlags: (cwd?: string, sessionMetadata?: AgentSessionMeta) => Promise<AgentFlagInfo[]>;
+    setFlag: (input: AgentSetFlagInput) => Promise<AgentCommandExecutionResult>;
 }
 
 function getAgentRuntimeApi(): AgentRuntimeApi | undefined {

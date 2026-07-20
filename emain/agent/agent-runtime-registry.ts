@@ -77,6 +77,18 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         entry.lastUsedAt = this.now();
     }
 
+    async invalidate(path: string, dispose?: (runtime: TRuntime) => void | Promise<void>): Promise<boolean> {
+        const entry = this.entries.get(path);
+        if (!entry) return false;
+        this.entries.delete(path);
+        if (dispose) {
+            await dispose(entry.runtime);
+        } else {
+            await entry.runtime.dispose();
+        }
+        return true;
+    }
+
     evictIdle(now = this.now()): string[] {
         const evicted: string[] = [];
         for (const [path, entry] of this.entries) {

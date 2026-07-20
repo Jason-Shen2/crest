@@ -17,7 +17,13 @@ import type {
 	ThinkingLevel,
 } from "../types";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./compaction/branch-summarization";
-import { compact, DEFAULT_COMPACTION_SETTINGS, prepareCompaction } from "./compaction/compaction";
+import {
+	calculateContextTokens,
+	compact,
+	DEFAULT_COMPACTION_SETTINGS,
+	getLastAssistantUsage,
+	prepareCompaction,
+} from "./compaction/compaction";
 import { convertToLlm } from "./messages";
 import { formatPromptTemplateInvocation } from "./prompt-templates";
 import { formatSkillInvocation } from "./skills";
@@ -944,6 +950,63 @@ export class AgentHarness<
 
 	getThinkingLevel(): ThinkingLevel {
 		return this.thinkingLevel;
+	}
+
+	/** True when the harness is idle (not streaming, compacting, or navigating). */
+	isIdle(): boolean {
+		return this.phase === "idle";
+	}
+
+	/** The abort signal of the in-flight run, or undefined when idle. */
+	getCurrentSignal(): AbortSignal | undefined {
+		return this.runAbortController?.signal;
+	}
+
+	/** The underlying session (read-only use by extension ctx). */
+	getSession(): Session {
+		return this.session;
+	}
+
+	/**
+	 * Build and return the current effective system prompt. Mirrors the
+	 * per-turn construction in createTurnState so extensions (ctx.getSystemPrompt)
+	 * see exactly what the next turn would send.
+	 */
+	async buildSystemPrompt(): Promise<string> {
+		if (typeof this.systemPrompt === "string") return this.systemPrompt;
+		if (!this.systemPrompt) return "You are a helpful assistant.";
+		const activeTools = this.activeToolNames
+			.map((name) => this.tools.get(name))
+			.filter((tool): tool is TTool => tool !== undefined);
+		return this.systemPrompt({
+			env: this.env,
+			session: this.session,
+			model: this.model,
+			thinkingLevel: this.thinkingLevel,
+			activeTools,
+			resources: this.getResources(),
+		});
+	}
+
+	/**
+	 * Current context-window usage for the active model. `tokens` is the token
+	 * count reported by the most recent successful assistant usage on the
+	 * current branch (null when nothing has streamed yet); `contextWindow` is
+	 * the model's window; `percent` is tokens/window (null when tokens is null).
+	 * Mirrors the read pi's ctx.getContextUsage exposes to extensions.
+	 */
+	async getContextUsage(): Promise<{ tokens: number | null; contextWindow: number; percent: number | null }> {
+		const contextWindow = this.model.contextWindow || 0;
+		let tokens: number | null = null;
+		try {
+			const entries = await this.session.getEntries();
+			const usage = getLastAssistantUsage(entries);
+			if (usage) tokens = calculateContextTokens(usage);
+		} catch {
+			tokens = null;
+		}
+		const percent = tokens != null && contextWindow > 0 ? tokens / contextWindow : null;
+		return { tokens, contextWindow, percent };
 	}
 
 	async setModel(model: Model<any>): Promise<void> {

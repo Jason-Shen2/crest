@@ -1,23 +1,33 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+// @vitest-environment jsdom
 //
-// Tests for usePiChat's pure reducer. The hook itself needs React
-// rendering (renderHook from @testing-library/react), which is not
-// installed in crest yet — when it is, add the hook-lifecycle tests
-// from the wiring task (see the doc comment at the top of
-// use-pi-chat.ts). The reducer is the load-bearing logic; getting it
-// right covers most of the "did I write the hook correctly" question.
+// Tests for usePiChat's reducers and subscription lifecycle.
 
-import { describe, expect, it } from "vitest";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vitest";
+
+import type {
+    RenderedExtensionEntryNode,
+    WidgetNode,
+} from "../../../emain/agent/extensions/pi-gui/crest/widget-tree";
 
 import {
     adoptInitialSessionMetadata,
     getOptimisticAbortStatus,
     type PiAgentMessage,
+    type PiExtUiState,
+    makeEmptyPiExtUiState,
     reducePiChatEvent,
+    reducePiExtUiEvent,
     reducePiTurnsEvent,
     resolveAbortSessionPath,
+    shouldReducePiExtUiSubscriptionEvent,
+    usePiChat,
 } from "./use-pi-chat";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("reducePiChatEvent", () => {
     it("appends a user message_start", () => {
@@ -125,6 +135,397 @@ describe("reducePiChatEvent", () => {
         const legacy: PiAgentMessage[] = [{ role: "user", content: [{ type: "text", text: "legacy" }] }];
 
         expect(reducePiChatEvent(start, { type: "snapshot", messages: legacy })).toBe(start);
+    });
+});
+
+describe("reducePiExtUiEvent", () => {
+    it("replaces extension UI and clears the active request from session_state", () => {
+        const oldWidget: WidgetNode = {
+            kind: "text",
+            id: "old-widget",
+            text: "old widget",
+            paddingx: 0,
+            paddingy: 0,
+        };
+        const oldHeader: WidgetNode = { ...oldWidget, id: "old-header", text: "old header" };
+        const oldFooter: WidgetNode = { ...oldWidget, id: "old-footer", text: "old footer" };
+        const oldEntry: RenderedExtensionEntryNode = {
+            id: "old-entry",
+            customtype: "checkpoint",
+            source: "message",
+            widget: oldWidget,
+        };
+        const previous: PiExtUiState = {
+            statuses: { stale: "old" },
+            widgets: { stale: ["old"] },
+            widgetnodes: { stale: oldWidget },
+            renderedEntries: [oldEntry],
+            header: oldHeader,
+            footer: oldFooter,
+            request: { requestId: "old-request", kind: "confirm", title: "Old" },
+        };
+        const newWidget: WidgetNode = { ...oldWidget, id: "new-widget", text: "new widget" };
+        const newHeader: WidgetNode = { ...oldWidget, id: "new-header", text: "new header" };
+        const newEntry: RenderedExtensionEntryNode = {
+            id: "new-entry",
+            customtype: "result",
+            source: "entry",
+            widget: newWidget,
+        };
+
+        const next = reducePiExtUiEvent(previous, {
+            type: "session_state",
+            extensionUi: {
+                statuses: { fresh: "new" },
+                widgets: {},
+                widgetnodes: { fresh: newWidget },
+                header: newHeader,
+            },
+            renderedEntries: [newEntry],
+        });
+
+        expect(next).toEqual({
+            statuses: { fresh: "new" },
+            widgets: {},
+            widgetnodes: { fresh: newWidget },
+            renderedEntries: [newEntry],
+            header: newHeader,
+            footer: undefined,
+            request: null,
+        });
+    });
+
+    it("removes all prior extension UI when session_state replays empty state", () => {
+        const widget: WidgetNode = {
+            kind: "text",
+            id: "stale-widget",
+            text: "stale",
+            paddingx: 0,
+            paddingy: 0,
+        };
+        const previous: PiExtUiState = {
+            statuses: { stale: "old" },
+            widgets: { stale: ["old"] },
+            widgetnodes: { stale: widget },
+            renderedEntries: [{ id: "stale-entry", customtype: "checkpoint", source: "entry", widget }],
+            header: widget,
+            footer: widget,
+            request: { requestId: "old-request", kind: "input", title: "Old" },
+        };
+
+        const next = reducePiExtUiEvent(previous, {
+            type: "session_state",
+            extensionUi: {},
+        });
+
+        expect(next).toEqual(makeEmptyPiExtUiState());
+    });
+
+    it("applies extension UI deltas to the replayed baseline without reviving stale keys", () => {
+        const staleWidget = {
+            kind: "text" as const,
+            id: "stale-widget",
+            text: "stale",
+            paddingx: 0,
+            paddingy: 0,
+        };
+        const freshWidget = { ...staleWidget, id: "fresh-widget", text: "fresh" };
+        const previous: PiExtUiState = {
+            statuses: { stale: "old" },
+            widgets: { stale: ["old"] },
+            widgetnodes: { stale: staleWidget },
+            renderedEntries: [],
+            request: null,
+        };
+        const replayed = reducePiExtUiEvent(previous, {
+            type: "session_state",
+            extensionUi: {
+                statuses: { fresh: "new" },
+                widgetnodes: { fresh: freshWidget },
+            },
+        });
+        const withStatusDelta = reducePiExtUiEvent(replayed, {
+            type: "ext_ui_status",
+            key: "latest",
+            text: "running",
+        });
+        const withWidgetDelta = reducePiExtUiEvent(withStatusDelta, {
+            type: "ext_ui_widget",
+            key: "log",
+            lines: ["line 1"],
+        });
+
+        expect(withWidgetDelta).toEqual({
+            statuses: { fresh: "new", latest: "running" },
+            widgets: { log: ["line 1"] },
+            widgetnodes: { fresh: freshWidget },
+            renderedEntries: [],
+            header: undefined,
+            footer: undefined,
+            request: null,
+        });
+    });
+
+    it("normalizes malformed session_state fields without throwing", () => {
+        const widget: WidgetNode = {
+            kind: "text",
+            id: "valid-widget",
+            text: "valid",
+            paddingx: 0,
+            paddingy: 0,
+        };
+        const entry: RenderedExtensionEntryNode = {
+            id: "valid-entry",
+            customtype: "checkpoint",
+            source: "entry",
+            widget,
+        };
+
+        const next = reducePiExtUiEvent(makeEmptyPiExtUiState(), {
+            type: "session_state",
+            extensionUi: {
+                statuses: { valid: "ready", number: 42 },
+                widgets: { valid: ["line"], mixed: ["line", 42], scalar: 42 },
+                widgetnodes: { valid: widget, missingId: { kind: "text" }, nil: null },
+                header: "not-a-widget",
+                footer: widget,
+            },
+            renderedEntries: [entry, null, { id: "bad", customtype: 42, source: "entry", widget }],
+        });
+
+        expect(next).toEqual({
+            statuses: { valid: "ready" },
+            widgets: { valid: ["line"] },
+            widgetnodes: { valid: widget },
+            renderedEntries: [entry],
+            header: undefined,
+            footer: widget,
+            request: null,
+        });
+    });
+
+    it("deep-copies replayed extension UI and rendered entries", () => {
+        const child: WidgetNode = {
+            kind: "text",
+            id: "child",
+            text: "original",
+            paddingx: 0,
+            paddingy: 0,
+        };
+        const container: WidgetNode = {
+            kind: "container",
+            id: "container",
+            paddingx: 0,
+            paddingy: 0,
+            children: [child],
+        };
+        const lines = ["original"];
+        const entry: RenderedExtensionEntryNode = {
+            id: "entry",
+            customtype: "checkpoint",
+            source: "entry",
+            widget: container,
+        };
+        const event = {
+            type: "session_state",
+            extensionUi: {
+                widgets: { log: lines },
+                widgetnodes: { panel: container },
+                header: container,
+            },
+            renderedEntries: [entry],
+        };
+
+        const next = reducePiExtUiEvent(makeEmptyPiExtUiState(), event);
+        lines[0] = "mutated";
+        child.text = "mutated";
+        entry.id = "mutated";
+
+        expect(next.widgets.log).toEqual(["original"]);
+        expect(next.widgetnodes.panel).toMatchObject({
+            children: [expect.objectContaining({ text: "original" })],
+        });
+        expect(next.header).toMatchObject({
+            children: [expect.objectContaining({ text: "original" })],
+        });
+        expect(next.renderedEntries[0]).toMatchObject({
+            id: "entry",
+            widget: { children: [expect.objectContaining({ text: "original" })] },
+        });
+    });
+
+    it("stores custom widget requests from extension UI events", () => {
+        const out = reducePiExtUiEvent(makeEmptyPiExtUiState(), {
+            type: "ext_ui_request",
+            requestId: "r1",
+            request: {
+                kind: "custom",
+                widget: {
+                    kind: "text",
+                    id: "w1",
+                    text: "native gui",
+                    paddingx: 0,
+                    paddingy: 0,
+                },
+                options: { anchor: "center" },
+            },
+        });
+
+        expect(out.request).toEqual({
+            requestId: "r1",
+            kind: "custom",
+            widget: {
+                kind: "text",
+                id: "w1",
+                text: "native gui",
+                paddingx: 0,
+                paddingy: 0,
+            },
+            options: { anchor: "center" },
+        });
+    });
+
+    it("updates the active custom widget request from extension UI update events", () => {
+        const initial = reducePiExtUiEvent(makeEmptyPiExtUiState(), {
+            type: "ext_ui_request",
+            requestId: "r1",
+            request: {
+                kind: "custom",
+                widget: {
+                    kind: "terminal",
+                    id: "terminal-1",
+                    lines: ["count:0"],
+                },
+            },
+        });
+
+        const out = reducePiExtUiEvent(initial, {
+            type: "ext_ui_request_update",
+            requestId: "r1",
+            widget: {
+                kind: "terminal",
+                id: "terminal-1",
+                lines: ["count:1"],
+            },
+        });
+
+        expect(out.request).toEqual({
+            requestId: "r1",
+            kind: "custom",
+            widget: {
+                kind: "terminal",
+                id: "terminal-1",
+                lines: ["count:1"],
+            },
+        });
+    });
+
+    it("stores semantic widget, header, and footer events", () => {
+        const textWidget = {
+            kind: "text" as const,
+            id: "w1",
+            text: "semantic widget",
+            paddingx: 0,
+            paddingy: 0,
+        };
+        const headerWidget = { ...textWidget, id: "h1", text: "header gui" };
+        const footerWidget = { ...textWidget, id: "f1", text: "footer gui" };
+
+        const withWidget = reducePiExtUiEvent(makeEmptyPiExtUiState(), {
+            type: "ext_ui_widget",
+            key: "summary",
+            widget: textWidget,
+        });
+        const withHeader = reducePiExtUiEvent(withWidget, { type: "ext_ui_header", widget: headerWidget });
+        const withFooter = reducePiExtUiEvent(withHeader, { type: "ext_ui_footer", widget: footerWidget });
+
+        expect(withFooter.widgetnodes.summary).toEqual(textWidget);
+        expect(withFooter.header).toEqual(headerWidget);
+        expect(withFooter.footer).toEqual(footerWidget);
+    });
+
+    it("mirrors rendered extension entries from session_state", () => {
+        const widget = {
+            kind: "text" as const,
+            id: "entry-widget",
+            text: "rendered entry",
+            paddingx: 0,
+            paddingy: 0,
+        };
+
+        const out = reducePiExtUiEvent(makeEmptyPiExtUiState(), {
+            type: "session_state",
+            renderedEntries: [{ id: "entry-1", customtype: "checkpoint", source: "entry", widget }],
+        });
+
+        expect(out.renderedEntries).toEqual([{ id: "entry-1", customtype: "checkpoint", source: "entry", widget }]);
+    });
+});
+
+describe("usePiChat session replay", () => {
+    it("uses subscribe as the only replay channel so a late pull cannot roll state back", async () => {
+        const getSessionState = vi.fn(() => new Promise<never>(() => {}));
+        let subscriptionCallback: (event: unknown) => void = () => {};
+        const subscribe = vi.fn((_path: string, callback: (event: unknown) => void) => {
+            subscriptionCallback = callback;
+            return () => {};
+        });
+        (window as unknown as { api: unknown }).api = {
+            agent: {
+                getSessionState,
+                subscribe,
+            },
+        };
+        let latest: ReturnType<typeof usePiChat>;
+        const container = document.createElement("div");
+        const root = createRoot(container);
+
+        function TestComponent() {
+            latest = usePiChat({
+                initialSession: { path: "/tmp/session.jsonl" } as AgentSessionMeta,
+                paneContext: { cwd: "/tmp" },
+                modelSelection: { provider: "test", model: "test" },
+            });
+            return null;
+        }
+
+        try {
+            await act(async () => {
+                root.render(<TestComponent />);
+                await Promise.resolve();
+            });
+
+            expect(subscribe).toHaveBeenCalledOnce();
+            expect(getSessionState).not.toHaveBeenCalled();
+
+            act(() => {
+                subscriptionCallback({
+                    type: "session_state",
+                    extensionUi: { statuses: { build: "fresh" } },
+                    renderedEntries: [],
+                    messages: [],
+                    turns: [],
+                    status: "idle",
+                    steer: [],
+                    followUp: [],
+                });
+            });
+
+            expect(latest.extUi.statuses).toEqual({ build: "fresh" });
+        } finally {
+            await act(async () => root.unmount());
+            delete (window as unknown as { api?: unknown }).api;
+        }
+    });
+});
+
+describe("shouldReducePiExtUiSubscriptionEvent", () => {
+    it("includes live custom widget update events from the subscription stream", () => {
+        expect(shouldReducePiExtUiSubscriptionEvent("ext_ui_request_update")).toBe(true);
+    });
+
+    it("excludes notify because notifications are routed as toasts", () => {
+        expect(shouldReducePiExtUiSubscriptionEvent("ext_ui_notify")).toBe(false);
     });
 });
 
