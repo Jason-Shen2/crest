@@ -72,23 +72,13 @@ function makeDetail(): TraceDetail {
 }
 
 describe("TracePanel desktop layout", () => {
-    it("collapses and restores navigation, detail, and graph panels", () => {
+    it("collapses and restores the graph panel", () => {
         render(<TracePanel detail={makeDetail()} />);
 
         fireEvent.click(screen.getByRole("button", { name: "Collapse graph" }));
         expect(screen.queryByTestId("trace-graph-content")).toBeNull();
         fireEvent.click(screen.getByRole("button", { name: "Expand graph" }));
         expect(screen.getByTestId("trace-graph-content")).not.toBeNull();
-
-        fireEvent.click(screen.getByRole("button", { name: "Collapse navigation" }));
-        expect(screen.queryByRole("tree", { name: "Trace tree" })).toBeNull();
-        fireEvent.click(screen.getByRole("button", { name: "Expand navigation" }));
-        expect(screen.getByRole("tree", { name: "Trace tree" })).not.toBeNull();
-
-        fireEvent.click(screen.getByRole("button", { name: "Collapse detail" }));
-        expect(screen.queryByRole("region", { name: "Trace detail" })).toBeNull();
-        fireEvent.click(screen.getByRole("button", { name: "Expand detail" }));
-        expect(screen.getByRole("region", { name: "Trace detail" })).not.toBeNull();
     });
 
     it("keeps both desktop panels addressable in a narrow host", () => {

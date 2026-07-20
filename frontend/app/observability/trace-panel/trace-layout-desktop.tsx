@@ -3,8 +3,8 @@
 // Adapted from Langfuse TraceLayoutDesktop.
 
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { createContext, useContext, useState, type ComponentType, type ReactNode } from "react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { createContext, useContext, useRef, useState, type ComponentType, type ReactNode, type RefObject } from "react";
+import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 
 import { cn } from "@/util/util";
 
@@ -13,6 +13,8 @@ const DetailPanelMinWidth = 360;
 const CollapsedPanelWidth = 40;
 
 type TraceLayoutDesktopContextValue = {
+    navigationPanelRef: RefObject<ImperativePanelHandle>;
+    detailPanelRef: RefObject<ImperativePanelHandle>;
     isNavigationPanelCollapsed: boolean;
     isDetailPanelCollapsed: boolean;
     setIsNavigationPanelCollapsed: (collapsed: boolean) => void;
@@ -38,18 +40,22 @@ export function useDesktopTraceLayout() {
 }
 
 function TraceLayoutDesktopRoot({ children }: { children: ReactNode }) {
+    const navigationPanelRef = useRef<ImperativePanelHandle>(null);
+    const detailPanelRef = useRef<ImperativePanelHandle>(null);
     const [isNavigationPanelCollapsed, setIsNavigationPanelCollapsed] = useState(false);
     const [isDetailPanelCollapsed, setIsDetailPanelCollapsed] = useState(false);
 
     const contextValue: TraceLayoutDesktopContextValue = {
+        navigationPanelRef,
+        detailPanelRef,
         isNavigationPanelCollapsed,
         isDetailPanelCollapsed,
         setIsNavigationPanelCollapsed,
         setIsDetailPanelCollapsed,
-        collapseNavigationPanel: () => setIsNavigationPanelCollapsed(true),
-        expandNavigationPanel: () => setIsNavigationPanelCollapsed(false),
-        collapseDetailPanel: () => setIsDetailPanelCollapsed(true),
-        expandDetailPanel: () => setIsDetailPanelCollapsed(false),
+        collapseNavigationPanel: () => navigationPanelRef.current?.collapse(),
+        expandNavigationPanel: () => navigationPanelRef.current?.expand(),
+        collapseDetailPanel: () => detailPanelRef.current?.collapse(),
+        expandDetailPanel: () => detailPanelRef.current?.expand(),
     };
 
     return (
@@ -71,11 +77,12 @@ function TraceLayoutDesktopRoot({ children }: { children: ReactNode }) {
 }
 
 function NavigationPanel({ children }: { children: ReactNode }) {
-    const { isNavigationPanelCollapsed, setIsNavigationPanelCollapsed, expandNavigationPanel } =
+    const { navigationPanelRef, isNavigationPanelCollapsed, setIsNavigationPanelCollapsed, expandNavigationPanel } =
         useTraceLayoutContext();
 
     return (
         <Panel
+            ref={navigationPanelRef}
             aria-label="Trace navigation panel"
             defaultSize={56}
             minSize={20}
@@ -117,11 +124,17 @@ function ResizeHandle() {
 }
 
 function DetailPanel({ children }: { children: ReactNode }) {
-    const { isDetailPanelCollapsed, setIsDetailPanelCollapsed, collapseDetailPanel, expandDetailPanel } =
-        useTraceLayoutContext();
+    const {
+        detailPanelRef,
+        isDetailPanelCollapsed,
+        setIsDetailPanelCollapsed,
+        collapseDetailPanel,
+        expandDetailPanel,
+    } = useTraceLayoutContext();
 
     return (
         <Panel
+            ref={detailPanelRef}
             aria-label="Trace detail panel"
             defaultSize={44}
             minSize={20}
@@ -135,6 +148,20 @@ function DetailPanel({ children }: { children: ReactNode }) {
                     : { minWidth: DetailPanelMinWidth }
             }
         >
+            <div
+                data-testid="trace-detail-content"
+                className={cn("relative h-full overflow-auto bg-panel", isDetailPanelCollapsed && "hidden")}
+            >
+                <button
+                    type="button"
+                    aria-label="Collapse detail"
+                    className="absolute right-2 top-2 z-10 flex h-7 w-7 cursor-pointer items-center justify-center rounded bg-panel/90 text-muted-foreground shadow-sm hover:bg-fg-overlay-1/60 hover:text-foreground"
+                    onClick={collapseDetailPanel}
+                >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+                {children}
+            </div>
             {isDetailPanelCollapsed ? (
                 <div className="flex h-full w-full justify-center bg-panel py-2">
                     <button
@@ -146,19 +173,7 @@ function DetailPanel({ children }: { children: ReactNode }) {
                         <ChevronLeft className="h-3.5 w-3.5" />
                     </button>
                 </div>
-            ) : (
-                <div className="relative h-full overflow-auto bg-panel">
-                    <button
-                        type="button"
-                        aria-label="Collapse detail"
-                        className="absolute right-2 top-2 z-10 flex h-7 w-7 cursor-pointer items-center justify-center rounded bg-panel/90 text-muted-foreground shadow-sm hover:bg-fg-overlay-1/60 hover:text-foreground"
-                        onClick={collapseDetailPanel}
-                    >
-                        <ChevronRight className="h-3.5 w-3.5" />
-                    </button>
-                    {children}
-                </div>
-            )}
+            ) : null}
         </Panel>
     );
 }

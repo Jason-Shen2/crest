@@ -3,7 +3,7 @@
 // Adapted from Langfuse TracePanelNavigationLayoutDesktop.
 
 import { ChevronDown, ChevronLeft, ChevronUp } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 
 import { useDesktopTraceLayout } from "./trace-layout-desktop";
@@ -44,6 +44,8 @@ export function TracePanelNavigationLayoutDesktop({
 }) {
     const { collapseNavigationPanel } = useDesktopTraceLayout();
     const [graphCollapsed, setGraphCollapsed] = useState(false);
+    const graphLayoutRef = useRef<[number, number]>([62, 38]);
+    const [navigationSize, graphSize] = graphLayoutRef.current;
 
     return (
         <div className="flex h-full min-h-0 flex-col border-r border-border">
@@ -68,15 +70,23 @@ export function TracePanelNavigationLayoutDesktop({
                     <GraphPanelBar collapsed onToggle={() => setGraphCollapsed(false)} />
                 </>
             ) : (
-                <PanelGroup direction="vertical" className="min-h-0 flex-1 overflow-hidden">
-                    <Panel defaultSize={62} minSize={30}>
+                <PanelGroup
+                    direction="vertical"
+                    className="min-h-0 flex-1 overflow-hidden"
+                    onLayout={(layout) => {
+                        if (layout.length === 2) {
+                            graphLayoutRef.current = [layout[0], layout[1]];
+                        }
+                    }}
+                >
+                    <Panel defaultSize={navigationSize} minSize={30}>
                         <div className="h-full overflow-hidden">{children}</div>
                     </Panel>
                     <PanelResizeHandle
                         aria-label="Resize trace navigation and graph"
                         className="relative h-px bg-border after:absolute after:-top-0.5 after:inset-x-0 after:h-1 hover:bg-accent/60"
                     />
-                    <Panel defaultSize={38} minSize={20} maxSize={70}>
+                    <Panel defaultSize={graphSize} minSize={20} maxSize={70}>
                         <div className="flex h-full min-h-0 flex-col overflow-hidden">
                             <GraphPanelBar collapsed={false} onToggle={() => setGraphCollapsed(true)} />
                             <div data-testid="trace-graph-content" className="min-h-0 flex-1 overflow-hidden">
