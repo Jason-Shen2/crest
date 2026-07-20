@@ -3,7 +3,7 @@
 // Adapted from Langfuse TraceTimeline/TimelineRows.tsx.
 
 import type { VirtualItem } from "@tanstack/react-virtual";
-import { memo, useEffect, useRef, type KeyboardEvent } from "react";
+import { memo, useEffect, useRef, type KeyboardEvent, type RefObject, type UIEventHandler } from "react";
 
 import { cn } from "@/util/util";
 import { TimelineBar } from "./timeline-bar";
@@ -23,6 +23,10 @@ type TimelineRowsProps = {
     onHover: (nodeId: string | null) => void;
     onToggleCollapse: (nodeId: string) => void;
     scaleWidth?: number;
+    gutterWidth?: number;
+    scrollRef?: RefObject<HTMLDivElement>;
+    gutterContentRef?: RefObject<HTMLDivElement>;
+    onScroll?: UIEventHandler<HTMLDivElement>;
 };
 
 type RowShellProps = {
@@ -127,6 +131,10 @@ export function TimelineRows({
     onHover,
     onToggleCollapse,
     scaleWidth = ScaleWidth,
+    gutterWidth = 208,
+    scrollRef,
+    gutterContentRef,
+    onScroll,
 }: TimelineRowsProps) {
     const treeItemsRef = useRef(new Map<string, HTMLDivElement>());
 
@@ -209,61 +217,72 @@ export function TimelineRows({
     };
 
     return (
-        <>
-            <div
-                data-testid="timeline-gutter-rows"
-                role="tree"
-                aria-label="Trace timeline rows"
-                className="relative w-full"
-                style={{ height: totalSize }}
-            >
-                {virtualItems.map((virtualItem) => {
-                    const row = rows[virtualItem.index];
-                    if (row == null) {
-                        return null;
-                    }
-                    return (
-                        <TimelineGutterRowShell
-                            key={virtualItem.key}
-                            row={row}
-                            virtualItem={virtualItem}
-                            isSelected={selectedNodeId === row.node.id}
-                            isHovered={hoveredNodeId === row.node.id}
-                            isCollapsed={collapsedNodes.has(row.node.id)}
-                            onSelect={onSelect}
-                            onHover={onHover}
-                            onNavigate={onNavigate}
-                            registerTreeItem={registerTreeItem}
-                            onToggleCollapse={onToggleCollapse}
-                        />
-                    );
-                })}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+            <div className="shrink-0 overflow-hidden border-r border-border" style={{ width: gutterWidth }}>
+                <div ref={gutterContentRef} data-testid="timeline-gutter-content" className="will-change-transform">
+                    <div
+                        data-testid="timeline-gutter-rows"
+                        role="tree"
+                        aria-label="Trace timeline rows"
+                        className="relative w-full"
+                        style={{ height: totalSize }}
+                    >
+                        {virtualItems.map((virtualItem) => {
+                            const row = rows[virtualItem.index];
+                            if (row == null) {
+                                return null;
+                            }
+                            return (
+                                <TimelineGutterRowShell
+                                    key={virtualItem.key}
+                                    row={row}
+                                    virtualItem={virtualItem}
+                                    isSelected={selectedNodeId === row.node.id}
+                                    isHovered={hoveredNodeId === row.node.id}
+                                    isCollapsed={collapsedNodes.has(row.node.id)}
+                                    onSelect={onSelect}
+                                    onHover={onHover}
+                                    onNavigate={onNavigate}
+                                    registerTreeItem={registerTreeItem}
+                                    onToggleCollapse={onToggleCollapse}
+                                />
+                            );
+                        })}
+                    </div>
+                </div>
             </div>
             <div
-                data-testid="timeline-chart-rows"
-                className="relative shrink-0"
-                style={{ width: scaleWidth, height: totalSize }}
+                ref={scrollRef}
+                data-testid="timeline-scroll"
+                className="min-w-0 flex-1 overflow-auto"
+                onScroll={onScroll}
             >
-                {virtualItems.map((virtualItem) => {
-                    const row = rows[virtualItem.index];
-                    if (row == null) {
-                        return null;
-                    }
-                    return (
-                        <TimelineChartRowShell
-                            key={virtualItem.key}
-                            row={row}
-                            virtualItem={virtualItem}
-                            observation={observationMap.get(row.node.id)}
-                            scaleWidth={scaleWidth}
-                            isSelected={selectedNodeId === row.node.id}
-                            isHovered={hoveredNodeId === row.node.id}
-                            onSelect={onSelect}
-                            onHover={onHover}
-                        />
-                    );
-                })}
+                <div
+                    data-testid="timeline-chart-rows"
+                    className="relative shrink-0"
+                    style={{ width: scaleWidth, height: totalSize }}
+                >
+                    {virtualItems.map((virtualItem) => {
+                        const row = rows[virtualItem.index];
+                        if (row == null) {
+                            return null;
+                        }
+                        return (
+                            <TimelineChartRowShell
+                                key={virtualItem.key}
+                                row={row}
+                                virtualItem={virtualItem}
+                                observation={observationMap.get(row.node.id)}
+                                scaleWidth={scaleWidth}
+                                isSelected={selectedNodeId === row.node.id}
+                                isHovered={hoveredNodeId === row.node.id}
+                                onSelect={onSelect}
+                                onHover={onHover}
+                            />
+                        );
+                    })}
+                </div>
             </div>
-        </>
+        </div>
     );
 }

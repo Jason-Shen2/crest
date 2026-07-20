@@ -1,12 +1,32 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TraceDataProvider, TraceSelectionProvider, useTraceData, useTraceSelection } from "./trace-context";
 import { TraceSearchList } from "./trace-search-list";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTree } from "./trace-tree";
+
+vi.mock("@tanstack/react-virtual", () => ({
+    useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: () => number }) => {
+        const size = estimateSize();
+        return {
+            getTotalSize: () => count * size,
+            measureElement: vi.fn(),
+            scrollToIndex: vi.fn(),
+            getVirtualItems: () =>
+                Array.from({ length: count }, (_, index) => ({
+                    index,
+                    key: index,
+                    start: index * size,
+                    end: (index + 1) * size,
+                    size,
+                    lane: 0,
+                })),
+        };
+    },
+}));
 
 afterEach(cleanup);
 
@@ -169,15 +189,17 @@ describe("trace context", () => {
     });
 
     it("skips timeline geometry when the trace has no valid start time", () => {
-        render(
+        const { container } = render(
             <ViewHarness detail={makeDetailWithAllInvalidTimes()}>
                 <TraceTimeline />
             </ViewHarness>
         );
-        expect(screen.getByText("Trace")).not.toBeNull();
-        const timelineRows = screen.getAllByLabelText(/timeline bar$/);
-        expect(timelineRows).toHaveLength(2);
-        expect(timelineRows.every((row) => row.childElementCount === 0)).toBe(true);
+        expect(screen.getByRole("treeitem", { name: "Trace" })).not.toBeNull();
+        const timelineBars = screen.getAllByTestId("timeline-bar");
+        expect(timelineBars).toHaveLength(2);
+        expect(timelineBars.every((bar) => bar.parentElement?.style.left === "0px")).toBe(true);
+        expect(timelineBars.every((bar) => bar.style.width === "4px")).toBe(true);
+        expect(container.innerHTML).not.toContain("NaN");
     });
 
     it("renders an invalid end time as a running zero-duration row without NaN", () => {
@@ -186,10 +208,10 @@ describe("trace context", () => {
                 <TraceTimeline />
             </ViewHarness>
         );
-        const runningRow = screen.getByRole("button", { name: "assistant response timeline bar" });
-        const geometry = runningRow.querySelector<HTMLElement>("span[style]");
-        expect(runningRow.textContent).toBe("0ms");
-        expect(geometry?.style.width).toBe("3px");
+        const runningRow = screen.getAllByTestId("timeline-chart-row")[1];
+        const geometry = screen.getAllByTestId("timeline-bar")[1];
+        expect(runningRow.textContent).toContain("0ms");
+        expect(geometry.style.width).toBe("4px");
         expect(container.textContent).not.toContain("NaN");
         const inlineStyles = Array.from(container.querySelectorAll<HTMLElement>("[style]"))
             .map((element) => element.style.cssText)
@@ -225,7 +247,7 @@ describe("trace context", () => {
                 <TraceTimeline />
             </ViewHarness>
         );
-        expect(screen.getByRole("button", { name: "Trace" }).getAttribute("aria-pressed")).toBe("true");
-        expect(screen.getByRole("button", { name: "Trace timeline bar" }).getAttribute("aria-pressed")).toBe("true");
+        expect(screen.getByRole("treeitem", { name: "Trace" }).getAttribute("aria-selected")).toBe("true");
+        expect(screen.getAllByTestId("timeline-chart-row")[0].className).toContain("bg-accent/10");
     });
 });

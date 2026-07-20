@@ -10,7 +10,27 @@ import { flattenTimelineRows } from "./timeline-flattening";
 import { TimelineRows } from "./timeline-rows";
 import { TimelineScale } from "./timeline-scale";
 import type { TimelineTraceNode } from "./timeline-types";
+import { TraceDataProvider, TraceSelectionProvider } from "./trace-context";
+import { TraceTimeline } from "./trace-timeline";
 import type { TraceNode } from "./types";
+
+vi.mock("@tanstack/react-virtual", () => ({
+    useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: () => number }) => {
+        const size = estimateSize();
+        return {
+            getTotalSize: () => count * size,
+            getVirtualItems: () =>
+                Array.from({ length: count }, (_, index) => ({
+                    index,
+                    key: index,
+                    start: index * size,
+                    end: (index + 1) * size,
+                    size,
+                    lane: 0,
+                })),
+        };
+    },
+}));
 
 afterEach(cleanup);
 
@@ -190,6 +210,70 @@ function TimelineKeyboardHarness() {
         />
     );
 }
+
+function TraceTimelineHarness() {
+    const detail: TraceDetail = {
+        trace: {
+            id: "trace-1",
+            name: "agent",
+            timestamp: "2026-07-20T08:00:00.000Z",
+            endedAt: "2026-07-20T08:00:04.000Z",
+            environment: "test",
+            tags: [],
+            release: null,
+            version: null,
+            input: null,
+            output: null,
+            metadata: {},
+            sessionId: "session-1",
+            userId: null,
+            status: "success",
+        },
+        observations: [
+            makeObservation("turn", {
+                type: "SPAN",
+                name: "turn",
+                startTime: "2026-07-20T08:00:00.500Z",
+                endTime: "2026-07-20T08:00:03.500Z",
+            }),
+            makeObservation("generation", {
+                name: "generation",
+                parentObservationId: "turn",
+            }),
+        ],
+        scores: [],
+        corrections: [],
+    };
+
+    return (
+        <TraceDataProvider detail={detail}>
+            <TraceSelectionProvider traceId={detail.trace.id}>
+                <TraceTimeline />
+            </TraceSelectionProvider>
+        </TraceDataProvider>
+    );
+}
+
+describe("trace timeline workspace", () => {
+    it("uses the chart as the only scroll source and synchronizes gutter and scale", () => {
+        render(<TraceTimelineHarness />);
+        const chart = screen.getByTestId("timeline-scroll");
+
+        expect(screen.getAllByTestId("timeline-scroll")).toHaveLength(1);
+        fireEvent.scroll(chart, { target: { scrollTop: 78, scrollLeft: 240 } });
+
+        expect(screen.getByTestId("timeline-gutter-content").style.transform).toBe("translateY(-78px)");
+        expect(screen.getByTestId("timeline-scale-content").style.transform).toBe("translateX(-240px)");
+    });
+
+    it("flattens rows again when a timeline parent is collapsed", () => {
+        render(<TraceTimelineHarness />);
+
+        expect(screen.getAllByTestId("timeline-gutter-row")).toHaveLength(3);
+        fireEvent.click(screen.getByRole("button", { name: "Collapse turn" }));
+        expect(screen.getAllByTestId("timeline-gutter-row")).toHaveLength(2);
+    });
+});
 
 describe("timeline rows", () => {
     it("renders matching gutter and chart rows with Crest-supported badges", () => {

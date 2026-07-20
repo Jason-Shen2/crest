@@ -2,7 +2,7 @@
 
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef, type ComponentType } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
 import { ObservationDetail } from "./observation-detail";
@@ -45,16 +45,26 @@ vi.mock("@tanstack/react-virtual", () => {
     };
 });
 
+beforeEach(() => {
+    vi.stubGlobal(
+        "ResizeObserver",
+        class ResizeObserver {
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+    );
+});
+
 afterEach(() => {
     cleanup();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+    VirtualizerHarness.count = 0;
+    VirtualizerHarness.initialOffsets = [];
 });
 
-function makeObservation(
-    id: string,
-    overrides: Partial<AgentObservabilityObservation> = {}
-): AgentObservabilityObservation {
+function makeObservation(id: string, overrides: Partial<Observation> = {}): Observation {
     return {
         id,
         traceId: "trace-1",
@@ -80,7 +90,7 @@ function makeObservation(
     };
 }
 
-function makeGraph(observation: AgentObservabilityObservation): AgentObservabilityTraceGraph {
+function makeTraceDetailFromObservation(observation: Observation): TraceDetail {
     return {
         trace: {
             id: "trace-1",
@@ -88,47 +98,49 @@ function makeGraph(observation: AgentObservabilityObservation): AgentObservabili
             timestamp: "2026-07-19T00:00:00.000Z",
             environment: "test",
             tags: [],
+            release: null,
+            version: null,
             input: null,
             output: null,
             metadata: {},
             sessionId: "session-1",
+            userId: null,
             status: "running",
         },
         observations: [observation],
         scores: [],
+        corrections: [],
     };
 }
 
-function makeGraphWithObservations(
-    traceId: string,
-    name: string,
-    observations: AgentObservabilityObservation[]
-): AgentObservabilityTraceGraph {
-    const graph = makeGraph(observations[0]);
-    graph.trace = {
-        ...graph.trace,
+function makeTraceDetailWithObservations(traceId: string, name: string, observations: Observation[]): TraceDetail {
+    const detail = makeTraceDetailFromObservation(observations[0]);
+    detail.trace = {
+        ...detail.trace,
         id: traceId,
         name,
     };
-    graph.observations = observations.map((observation) => ({ ...observation, traceId }));
-    return graph;
+    detail.observations = observations.map((observation) => ({ ...observation, traceId }));
+    return detail;
 }
 
-function makeTraceGraph(traceId: string, name: string, observationId: string): AgentObservabilityTraceGraph {
-    const graph = makeGraph(makeObservation(observationId, { id: observationId, traceId }));
-    graph.trace = {
-        ...graph.trace,
+function makeTraceDetailForRun(traceId: string, name: string, observationId: string): TraceDetail {
+    const detail = makeTraceDetailFromObservation(
+        makeObservation(observationId, { id: observationId, traceId, output: observationId })
+    );
+    detail.trace = {
+        ...detail.trace,
         id: traceId,
         name,
         status: "success",
         endedAt: "2026-07-19T00:00:05.000Z",
     };
-    return graph;
+    return detail;
 }
 
-function renderTimeline(graph: AgentObservabilityTraceGraph, overrides: Record<string, unknown> = {}) {
+function renderTimeline(detail: TraceDetail, overrides: Record<string, unknown> = {}) {
     const props = {
-        graph,
+        detail,
         query: "",
         categories: new Set(["generation", "tool", "lifecycle", "error"] as const),
         expandedObservationIds: new Set<string>(),
@@ -198,7 +210,7 @@ describe("ObservationDetail real rerender", () => {
 
 describe("ObservationTimeline real events", () => {
     it("reuses the stable row prefix when only the active generation tail streams", () => {
-        const graph = makeGraphWithObservations("trace-cache", "Cached run", [
+        const detail = makeTraceDetailWithObservations("trace-cache", "Cached run", [
             makeObservation("first", {
                 type: "EVENT",
                 name: "model_change",
@@ -215,11 +227,11 @@ describe("ObservationTimeline real events", () => {
                 startTime: "2026-07-19T00:00:03.000Z",
             }),
         ]);
-        const first = buildTimelineRows(graph);
+        const first = buildTimelineRows(detail);
         const updated = buildTimelineRows(
             {
-                ...graph,
-                observations: graph.observations.map((observation) => ({
+                ...detail,
+                observations: detail.observations.map((observation) => ({
                     ...observation,
                     output: observation.id === "generation" ? "first token second token" : observation.output,
                 })),
@@ -233,7 +245,7 @@ describe("ObservationTimeline real events", () => {
     });
 
     it("rebuilds the prefix when an earlier observation is still active", () => {
-        const graph = makeGraphWithObservations("trace-active-prefix", "Active prefix run", [
+        const detail = makeTraceDetailWithObservations("trace-active-prefix", "Active prefix run", [
             makeObservation("tool", {
                 type: "TOOL",
                 name: "read_file",
@@ -246,11 +258,11 @@ describe("ObservationTimeline real events", () => {
                 startTime: "2026-07-19T00:00:03.000Z",
             }),
         ]);
-        const first = buildTimelineRows(graph);
+        const first = buildTimelineRows(detail);
         const updated = buildTimelineRows(
             {
-                ...graph,
-                observations: graph.observations.map((observation) => ({
+                ...detail,
+                observations: detail.observations.map((observation) => ({
                     ...observation,
                     endTime: observation.id === "tool" ? "2026-07-19T00:00:04.000Z" : observation.endTime,
                     output: observation.id === "tool" ? "file contents" : "first token second token",
@@ -266,13 +278,16 @@ describe("ObservationTimeline real events", () => {
     it("sticks to the live tail when the last observation content grows without adding a row", () => {
         VirtualizerHarness.scrollToIndex.mockClear();
         const observation = makeObservation("generation");
-        const view = renderTimeline(makeGraph(observation));
+        const view = renderTimeline(makeTraceDetailFromObservation(observation));
         const callsAfterFirstRender = VirtualizerHarness.scrollToIndex.mock.calls.length;
 
         view.rerender(
             <Timeline
                 {...view.props}
-                graph={makeGraph({ ...observation, output: "first chunk and streamed second chunk" })}
+                detail={makeTraceDetailFromObservation({
+                    ...observation,
+                    output: "first chunk and streamed second chunk",
+                })}
             />
         );
 
@@ -289,13 +304,15 @@ describe("ObservationTimeline real events", () => {
         ["tokens", { usageDetails: { totalTokens: 42 } }],
         ["cost", { costDetails: { total: 0.125 } }],
         ["status", { statusMessage: "stream failed" }],
-    ] satisfies Array<[string, Partial<AgentObservabilityObservation>]>) {
+    ] satisfies Array<[string, Partial<Observation>]>) {
         it(`sticks to the live tail when the visible ${badgeName} badge changes`, () => {
             const observation = makeObservation("generation");
-            const view = renderTimeline(makeGraph(observation));
+            const view = renderTimeline(makeTraceDetailFromObservation(observation));
             const callsAfterFirstRender = VirtualizerHarness.scrollToIndex.mock.calls.length;
 
-            view.rerender(<Timeline {...view.props} graph={makeGraph({ ...observation, ...overrides })} />);
+            view.rerender(
+                <Timeline {...view.props} detail={makeTraceDetailFromObservation({ ...observation, ...overrides })} />
+            );
 
             expect(VirtualizerHarness.scrollToIndex.mock.calls.length).toBeGreaterThan(callsAfterFirstRender);
             view.unmount();
@@ -306,7 +323,7 @@ describe("ObservationTimeline real events", () => {
         const onSelectObservation = vi.fn();
         const onPauseFollowLive = vi.fn();
         const onScrollOffsetChange = vi.fn();
-        const view = renderTimeline(makeGraph(makeObservation("generation")), {
+        const view = renderTimeline(makeTraceDetailFromObservation(makeObservation("generation")), {
             onSelectObservation,
             onPauseFollowLive,
             onScrollOffsetChange,
@@ -329,15 +346,147 @@ describe("ObservationTimeline real events", () => {
 });
 
 describe("ObservabilityPanel trace state", () => {
+    it("renders the Langfuse trace workspace and switches between tree and timeline", async () => {
+        VirtualizerHarness.count = 0;
+        const detail = makeTraceDetailWithObservations("trace-panel", "Panel run", [
+            makeObservation("root", {
+                type: "AGENT",
+                name: "Agent run",
+                parentObservationId: null,
+            }),
+            makeObservation("generation", {
+                name: "Generate answer",
+                parentObservationId: "root",
+            }),
+        ]);
+        const api: AgentObservabilityApi = {
+            listTraces: vi.fn().mockResolvedValue([detail.trace]),
+            getTrace: vi.fn().mockResolvedValue(detail),
+            subscribe: vi.fn(() => vi.fn()),
+        };
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" magnified />);
+
+        await waitFor(() => expect(view.getByRole("tree", { name: "Trace tree" })).toBeTruthy());
+        expect(VirtualizerHarness.count).toBe(3);
+        expect(view.getByRole("region", { name: "Trace detail" })).toBeTruthy();
+        expect(view.getByRole("region", { name: "Trace graph" })).toBeTruthy();
+
+        const graphToggle = view.getByRole("button", { name: "Graph" });
+        fireEvent.click(graphToggle);
+        expect(view.getByRole("button", { name: "Graph" }).getAttribute("aria-expanded")).toBe("false");
+        fireEvent.click(view.getByRole("button", { name: "Graph" }));
+        expect(view.getByRole("button", { name: "Graph" }).getAttribute("aria-expanded")).toBe("true");
+
+        fireEvent.click(view.getByRole("button", { name: "Timeline" }));
+
+        expect(view.getByRole("region", { name: "Trace timeline" })).toBeTruthy();
+        expect(view.queryByRole("tree", { name: "Trace tree" })).toBeNull();
+    });
+
+    it("reveals a selection made from the tree when switching to timeline", async () => {
+        const scrollTo = vi.fn();
+        Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+            configurable: true,
+            value: scrollTo,
+        });
+        const detail = makeTraceDetailWithObservations("trace-reveal", "Reveal run", [
+            makeObservation("root", {
+                type: "AGENT",
+                name: "Agent run",
+                parentObservationId: null,
+            }),
+            makeObservation("tool", {
+                type: "TOOL",
+                name: "read_file",
+                parentObservationId: "root",
+                startTime: "2026-07-19T00:00:03.000Z",
+            }),
+        ]);
+        const api: AgentObservabilityApi = {
+            listTraces: vi.fn().mockResolvedValue([detail.trace]),
+            getTrace: vi.fn().mockResolvedValue(detail),
+            subscribe: vi.fn(() => vi.fn()),
+        };
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" magnified />);
+        await waitFor(() => expect(view.getByRole("tree", { name: "Trace tree" })).toBeTruthy());
+
+        fireEvent.click(view.getByRole("button", { name: /read_file/i }));
+        fireEvent.click(view.getByRole("button", { name: "Timeline" }));
+
+        await waitFor(() =>
+            expect(scrollTo).toHaveBeenCalledWith(
+                expect.objectContaining({ top: expect.any(Number), left: expect.any(Number) })
+            )
+        );
+        expect(scrollTo).toHaveBeenCalledTimes(1);
+    });
+
+    it("switches from tree to the Langfuse search list instead of filtering tree rows", async () => {
+        const detail = makeTraceDetailWithObservations("trace-search", "Search run", [
+            makeObservation("root", {
+                type: "AGENT",
+                name: "Agent run",
+                parentObservationId: null,
+            }),
+            makeObservation("tool", {
+                type: "TOOL",
+                name: "Read source",
+                parentObservationId: "root",
+            }),
+        ]);
+        const api: AgentObservabilityApi = {
+            listTraces: vi.fn().mockResolvedValue([detail.trace]),
+            getTrace: vi.fn().mockResolvedValue(detail),
+            subscribe: vi.fn(() => vi.fn()),
+        };
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" magnified />);
+        await waitFor(() => expect(view.getByRole("tree", { name: "Trace tree" })).toBeTruthy());
+
+        fireEvent.change(view.getByLabelText("Search trace"), { target: { value: "read" } });
+
+        await waitFor(() => expect(view.queryByRole("tree", { name: "Trace tree" })).toBeNull());
+        expect(view.getByRole("listbox", { name: "Trace search results" })).toBeTruthy();
+        expect(view.getByRole("button", { name: /Read source/ })).toBeTruthy();
+    });
+
+    it("shows observation detail when a Langfuse tree node is selected", async () => {
+        const detail = makeTraceDetailWithObservations("trace-selection", "Selection run", [
+            makeObservation("root", {
+                type: "AGENT",
+                name: "Agent run",
+                parentObservationId: null,
+            }),
+            makeObservation("tool", {
+                type: "TOOL",
+                name: "Read source",
+                parentObservationId: "root",
+                input: { path: "src/main.ts" },
+                output: "source",
+            }),
+        ]);
+        const api: AgentObservabilityApi = {
+            listTraces: vi.fn().mockResolvedValue([detail.trace]),
+            getTrace: vi.fn().mockResolvedValue(detail),
+            subscribe: vi.fn(() => vi.fn()),
+        };
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" magnified />);
+
+        await waitFor(() => expect(view.getByRole("tree", { name: "Trace tree" })).toBeTruthy());
+        fireEvent.click(view.getByRole("button", { name: /Read source/ }));
+
+        expect(view.getByRole("region", { name: "Observation detail" })).toBeTruthy();
+        expect(view.getAllByText(/src\/main\.ts/).length).toBeGreaterThan(0);
+    });
+
     it("handles the complete timeline keyboard contract through DOM events", async () => {
-        const graph = makeGraphWithObservations("trace-keys", "Keyboard run", [
+        const detail = makeTraceDetailWithObservations("trace-keys", "Keyboard run", [
             makeObservation("first", { name: "first step", startTime: "2026-07-19T00:00:01.000Z" }),
             makeObservation("second", { name: "second step", startTime: "2026-07-19T00:00:02.000Z" }),
             makeObservation("third", { name: "third step", startTime: "2026-07-19T00:00:03.000Z" }),
         ]);
         const api: AgentObservabilityApi = {
-            listTraces: vi.fn().mockResolvedValue([graph.trace]),
-            getTrace: vi.fn().mockResolvedValue(graph),
+            listTraces: vi.fn().mockResolvedValue([detail.trace]),
+            getTrace: vi.fn().mockResolvedValue(detail),
             subscribe: vi.fn(() => vi.fn()),
         };
         const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
@@ -369,14 +518,14 @@ describe("ObservabilityPanel trace state", () => {
     });
 
     it("scrolls to the last row when Back to live is clicked", async () => {
-        const graph = makeGraphWithObservations("trace-live", "Live run", [
+        const detail = makeTraceDetailWithObservations("trace-live", "Live run", [
             makeObservation("first", { name: "first step", startTime: "2026-07-19T00:00:01.000Z" }),
             makeObservation("second", { name: "second step", startTime: "2026-07-19T00:00:02.000Z" }),
             makeObservation("third", { name: "third step", startTime: "2026-07-19T00:00:03.000Z" }),
         ]);
         const api: AgentObservabilityApi = {
-            listTraces: vi.fn().mockResolvedValue([graph.trace]),
-            getTrace: vi.fn().mockResolvedValue(graph),
+            listTraces: vi.fn().mockResolvedValue([detail.trace]),
+            getTrace: vi.fn().mockResolvedValue(detail),
             subscribe: vi.fn(() => vi.fn()),
         };
         const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
@@ -404,15 +553,15 @@ describe("ObservabilityPanel trace state", () => {
 
     it("restores selection, expansion, follow-live, and scroll offset through real events", async () => {
         VirtualizerHarness.initialOffsets = [];
-        const first = makeTraceGraph("trace-1", "First run", "first-observation");
-        const second = makeTraceGraph("trace-2", "Second run", "second-observation");
+        const first = makeTraceDetailForRun("trace-1", "First run", "first-observation");
+        const second = makeTraceDetailForRun("trace-2", "Second run", "second-observation");
         const api: AgentObservabilityApi = {
             listTraces: vi.fn().mockResolvedValue([first.trace, second.trace]),
             getTrace: vi.fn(async (traceId) => (traceId === first.trace.id ? first : second)),
             subscribe: vi.fn(() => vi.fn()),
         };
         const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
-        await waitFor(() => expect(view.getAllByText("First run").length).toBeGreaterThan(0));
+        await waitFor(() => expect(view.getByText("first-observation")).toBeTruthy());
 
         fireEvent.click(view.getByRole("button", { name: /Assistant Response/ }));
         const timeline = view.getByRole("listbox");
@@ -426,11 +575,11 @@ describe("ObservabilityPanel trace state", () => {
         expect(view.getByText("Back to live")).toBeTruthy();
 
         fireEvent.change(view.getByLabelText("Recent Runs"), { target: { value: "trace-2" } });
-        await waitFor(() => expect(view.getAllByText("Second run").length).toBeGreaterThan(0));
+        await waitFor(() => expect(view.getByText("second-observation")).toBeTruthy());
         expect(view.queryByText("Back to live")).toBeNull();
         expect(view.getByRole("button", { name: /Assistant Response/ }).getAttribute("aria-expanded")).toBe("false");
         fireEvent.change(view.getByLabelText("Recent Runs"), { target: { value: "trace-1" } });
-        await waitFor(() => expect(view.getAllByText("First run").length).toBeGreaterThan(0));
+        await waitFor(() => expect(view.getAllByText("first-observation").length).toBeGreaterThan(0));
 
         const restoredRow = view.getByRole("button", { name: /Assistant Response/ });
         expect(restoredRow.getAttribute("aria-expanded")).toBe("true");
