@@ -25,6 +25,24 @@ type RightToolMetadata = {
 
 const RightToolPanelFocusRingColor = "rgb(from var(--color-accent) r g b / 45%)";
 
+type RightToolPanelLayoutRect = Pick<DOMRect, "left" | "top" | "width" | "height">;
+
+export function shouldAnimateRightToolPanelLayout(
+    previousRect: RightToolPanelLayoutRect,
+    rect: RightToolPanelLayoutRect,
+    previousIsMagnified: boolean,
+    isMagnified: boolean
+): boolean {
+    if (!previousIsMagnified && !isMagnified) {
+        return false;
+    }
+    const dx = previousRect.left - rect.left;
+    const dy = previousRect.top - rect.top;
+    const sx = previousRect.width / rect.width;
+    const sy = previousRect.height / rect.height;
+    return Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5 || Math.abs(sx - 1) >= 0.01 || Math.abs(sy - 1) >= 0.01;
+}
+
 export type RightToolPanelProps = {
     state: RightToolPanelState;
     onOpenTool: (tool: RightToolId) => void;
@@ -402,6 +420,7 @@ export function RightToolPanel({
 }: RightToolPanelProps) {
     const panelRef = useRef<HTMLElement | null>(null);
     const previousRectRef = useRef<DOMRect | null>(null);
+    const previousIsMagnifiedRef = useRef<boolean | null>(null);
     const magnifiedBlockSize = useAtomValue(getSettingsKeyAtom("window:magnifiedblocksize")) ?? 0.95;
     const isMagnified = state.magnified && state.openedTools.length > 0;
     const boundedMagnifiedBlockSize = Math.min(Math.max(magnifiedBlockSize, 0.1), 1);
@@ -426,18 +445,17 @@ export function RightToolPanel({
 
         const rect = panel.getBoundingClientRect();
         const previousRect = previousRectRef.current;
+        const previousIsMagnified = previousIsMagnifiedRef.current;
         previousRectRef.current = rect;
+        previousIsMagnifiedRef.current = isMagnified;
 
-        if (!previousRect) return;
+        if (!previousRect || previousIsMagnified == null) return;
+        if (!shouldAnimateRightToolPanelLayout(previousRect, rect, previousIsMagnified, isMagnified)) return;
 
         const dx = previousRect.left - rect.left;
         const dy = previousRect.top - rect.top;
         const sx = previousRect.width / rect.width;
         const sy = previousRect.height / rect.height;
-
-        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) {
-            return;
-        }
 
         panel.style.transformOrigin = "top left";
         panel.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;

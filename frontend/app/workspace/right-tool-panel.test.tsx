@@ -60,6 +60,7 @@ import {
     RightToolPanelMagnifiedOverlayView,
     RightToolTabs,
     RightToolTopBar,
+    shouldAnimateRightToolPanelLayout,
 } from "./right-tool-panel";
 import { DefaultRightToolPanelState, RightToolPanelState } from "./right-tool-panel-state";
 
@@ -230,6 +231,28 @@ describe("RightToolPanel", () => {
 
         expect(markup).toContain('data-right-tool-panel-focus-mask="true"');
         expect(markup).toContain("rgb(from var(--color-accent) r g b / 45%)");
+    });
+
+    it("does not animate ordinary width-only resize while the panel is not magnified", () => {
+        expect(
+            shouldAnimateRightToolPanelLayout(
+                { left: 876, top: 4, width: 400, height: 792 },
+                { left: 776, top: 4, width: 500, height: 792 },
+                false,
+                false
+            )
+        ).toBe(false);
+    });
+
+    it("still animates between normal and magnified panel layouts", () => {
+        expect(
+            shouldAnimateRightToolPanelLayout(
+                { left: 876, top: 4, width: 400, height: 792 },
+                { left: 48, top: 48, width: 1824, height: 984 },
+                false,
+                true
+            )
+        ).toBe(true);
     });
 });
 
