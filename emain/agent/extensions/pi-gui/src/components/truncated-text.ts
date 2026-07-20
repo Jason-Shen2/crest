@@ -1,6 +1,12 @@
 import { type Component, PiGuiComponentKind } from "../tui.ts";
 import { truncateToWidth, visibleWidth } from "../utils.ts";
 
+export interface TruncatedTextSnapshot {
+	text: string;
+	paddingX: number;
+	paddingY: number;
+}
+
 /**
  * Text component that truncates to fit viewport width
  */
@@ -14,6 +20,10 @@ export class TruncatedText implements Component {
 		this.text = text;
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
+	}
+
+	getSnapshot(): TruncatedTextSnapshot {
+		return { text: this.text, paddingX: this.paddingX, paddingY: this.paddingY };
 	}
 
 	invalidate(): void {

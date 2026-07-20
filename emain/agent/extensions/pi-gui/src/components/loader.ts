@@ -69,6 +69,7 @@ export class Loader extends Text {
 		this.updateDisplay();
 	}
 
+	// @ts-expect-error Loader intentionally replaces Text's presentation contract with loader semantics.
 	getSnapshot(): LoaderSnapshot {
 		return {
 			label: this.message,

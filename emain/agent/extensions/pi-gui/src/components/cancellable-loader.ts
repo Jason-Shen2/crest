@@ -1,6 +1,6 @@
 import { getKeybindings } from "../keybindings.ts";
 import { PiGuiComponentKind } from "../tui.ts";
-import { Loader } from "./loader.ts";
+import { Loader, type LoaderSnapshot } from "./loader.ts";
 
 /**
  * Loader that can be cancelled with Escape.
@@ -28,11 +28,23 @@ export class CancellableLoader extends Loader {
 		return this.abortController.signal.aborted;
 	}
 
+	override getSnapshot(): LoaderSnapshot {
+		return {
+			...super.getSnapshot(),
+			cancellable: true,
+			aborted: this.aborted,
+		};
+	}
+
+	cancel(): void {
+		this.abortController.abort();
+		this.onAbort?.();
+	}
+
 	handleInput(data: string): void {
 		const kb = getKeybindings();
 		if (kb.matches(data, "tui.select.cancel")) {
-			this.abortController.abort();
-			this.onAbort?.();
+			this.cancel();
 		}
 	}
 
