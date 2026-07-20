@@ -11,7 +11,7 @@ import type { TraceDetail } from "./agent/observability/types";
 type SubKey = string;
 
 const builder = new TraceBuilder();
-const observedSessions = new Set<string>();
+let observedHarnesses = new WeakSet<AgentHarness>();
 const subscriptions = new Map<SubKey, { sender: electron.WebContents; sessionId?: string }>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
 
@@ -149,17 +149,17 @@ const eventCoalescer = new TraceEventCoalescer({
 });
 
 // Observability is a second, symmetric subscriber on the AgentHarness
-// canonical event bus — peer to PaneAgentSession, not layered on top of
+// canonical event bus — peer to AgentSessionRuntime, not layered on top of
 // it. AgentHarness.subscribe() delivers the full AgentHarnessEvent union
 // (raw AgentEvent + AgentHarnessOwnEvent) via emitAny/emitOwn; the
 // TraceBuilder folds that stream into a Langfuse TraceDetail. We
 // subscribe here (not in PaneAgentSession) so the trace reflects the
 // agent runtime directly, independent of any UI aggregation.
 export function attachAgentObservability(sessionPath: string, harness: AgentHarness): void {
-    if (observedSessions.has(sessionPath)) {
+    if (observedHarnesses.has(harness)) {
         return;
     }
-    observedSessions.add(sessionPath);
+    observedHarnesses.add(harness);
     harness.subscribe((event) => {
         eventCoalescer.handle(sessionPath, event as { type: string; [key: string]: unknown });
     });
@@ -210,7 +210,7 @@ export function registerAgentObservabilityIpcHandlers(): void {
 
 export function _resetAgentObservabilityForTests(): void {
     eventCoalescer.dispose();
-    observedSessions.clear();
+    observedHarnesses = new WeakSet();
     subscriptions.clear();
     subscriptionsBySender.clear();
     traceStore = undefined;

@@ -36,12 +36,12 @@ type RowShellProps = {
     isHovered: boolean;
     onSelect: (nodeId: string) => void;
     onHover: (nodeId: string | null) => void;
-    onNavigate: (event: KeyboardEvent<HTMLDivElement>, nodeId: string) => void;
-    registerTreeItem: (nodeId: string, element: HTMLDivElement | null) => void;
 };
 
 type GutterRowShellProps = RowShellProps & {
     isCollapsed: boolean;
+    onNavigate: (event: KeyboardEvent<HTMLDivElement>, nodeId: string) => void;
+    registerTreeItem: (nodeId: string, element: HTMLDivElement | null) => void;
     onToggleCollapse: (nodeId: string) => void;
 };
 

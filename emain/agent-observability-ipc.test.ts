@@ -7,8 +7,10 @@ import * as electron from "electron";
 import {
     _resetAgentObservabilityForTests,
     TraceEventCoalescer,
+    attachAgentObservability,
     registerAgentObservabilityIpcHandlers,
 } from "./agent-observability-ipc";
+import type { AgentHarness } from "./agent/harness/agent-harness";
 import { TraceBuilder } from "./agent/observability/trace-builder";
 import type { TraceDetail } from "./agent/observability/types";
 
@@ -166,6 +168,18 @@ describe("agent observability IPC scope", () => {
 
         expect(TraceStoreMock.listTraces).toHaveBeenCalledWith("session-a");
         expect(TraceStoreMock.getTraceDetail).toHaveBeenCalledWith("trace-1", "session-a");
+    });
+
+    it("attaches a rebuilt runtime for the same session path exactly once per Harness", () => {
+        const first = { subscribe: vi.fn(() => () => {}) } as unknown as AgentHarness;
+        const second = { subscribe: vi.fn(() => () => {}) } as unknown as AgentHarness;
+
+        attachAgentObservability("session-a", first);
+        attachAgentObservability("session-a", first);
+        attachAgentObservability("session-a", second);
+
+        expect(first.subscribe).toHaveBeenCalledOnce();
+        expect(second.subscribe).toHaveBeenCalledOnce();
     });
 
     it("rejects missing or blank session scope for list and get", async () => {

@@ -4,6 +4,7 @@
 import { ErrorBoundary } from "@/app/element/errorboundary";
 import { CenteredDiv } from "@/app/element/quickelems";
 import { FileExplorer } from "@/app/fileexplorer/file-explorer";
+import { AgentSessionsPanel } from "@/app/term/render/assistant-ui/agent-sessions-panel";
 import { ModalsRenderer } from "@/app/modals/modalsrenderer";
 import { NotificationToastStacker } from "@/app/notifications/notification-toast";
 import { NotificationsModel } from "@/app/notifications/notifications-model";
