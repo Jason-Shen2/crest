@@ -33,6 +33,20 @@ ipcRenderer.on("agent:event", (_event, payload: { sessionPath: string; event: un
     }
 });
 
+const agentObservabilityCallbacks = new Map<string, Set<(event: unknown) => void>>();
+ipcRenderer.on("agent-observability:event", (_event, payload: { sessionId?: string; traceId: string; detail: unknown }) => {
+    if (!payload.sessionId) return;
+    const cbs = agentObservabilityCallbacks.get(payload.sessionId);
+    if (!cbs) return;
+    for (const cb of cbs) {
+        try {
+            cb(payload);
+        } catch (e) {
+            console.error("agent-observability:event callback error", e);
+        }
+    }
+});
+
 // update type in custom.d.ts (ElectronApi type)
 contextBridge.exposeInMainWorld("waveRuntime", {
     lspWebSocketUrl: process.env.CREST_LSP_WEBSOCKET_URL ?? "",
@@ -182,6 +196,32 @@ contextBridge.exposeInMainWorld("api", {
                 if (cur.size === 0) {
                     agentEventCallbacks.delete(sessionPath);
                     ipcRenderer.send("agent:unsubscribe", sessionPath);
+                }
+            };
+        },
+    },
+    agentObservability: {
+        listTraces: (sessionId: string) => ipcRenderer.invoke("agent-observability:list-traces", sessionId),
+        getTrace: (traceId: string, sessionId: string) =>
+            ipcRenderer.invoke("agent-observability:get-trace", traceId, sessionId),
+        subscribe: (sessionId: string, callback: (event: unknown) => void): (() => void) => {
+            let entry = agentObservabilityCallbacks.get(sessionId);
+            const isNew = !entry;
+            if (!entry) {
+                entry = new Set();
+                agentObservabilityCallbacks.set(sessionId, entry);
+            }
+            entry.add(callback);
+            if (isNew) {
+                ipcRenderer.send("agent-observability:subscribe", sessionId);
+            }
+            return () => {
+                const cur = agentObservabilityCallbacks.get(sessionId);
+                if (!cur) return;
+                cur.delete(callback);
+                if (cur.size === 0) {
+                    agentObservabilityCallbacks.delete(sessionId);
+                    ipcRenderer.send("agent-observability:unsubscribe", sessionId);
                 }
             };
         },

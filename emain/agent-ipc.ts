@@ -44,6 +44,7 @@ import * as electron from "electron";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
+import { attachAgentObservability, _resetAgentObservabilityForTests } from "./agent-observability-ipc";
 import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent/agent-event-routing";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
@@ -478,6 +479,7 @@ async function createAgentRuntime(
         }
     };
     const owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, { onTurnFinished });
+    attachAgentObservability(metadata.path, host.harness);
     return owner;
 }
 
@@ -1139,6 +1141,7 @@ export function registerAgentIpcHandlers(): void {
 
 /** Test-only escape hatch: clear the runtime registry + subscriptions. */
 export function _resetAgentIpcForTests(): void {
+    _resetAgentObservabilityForTests();
     for (const record of subscriptions.values()) {
         try {
             record.unsubscribe();

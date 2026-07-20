@@ -14,12 +14,23 @@ This product also includes software derived from third parties under
 the MIT License. The relevant sources retain their original copyright
 notices in their file headers:
 
+  - frontend/app/observability/trace-panel/
+      Copyright (c) 2023-2026 Langfuse GmbH.
+      Source: https://github.com/langfuse/langfuse
+      Timeline, Trace/Observation Detail, and Desktop Layout source
+      modules are derived from Langfuse's MIT-licensed Trace Panel.
+      See frontend/app/observability/trace-panel/LICENSE.langfuse.
+
   - emain/agent/  (started from pi-agent-core v0.75.5)
   - emain/ai/     (started from pi-ai v0.75.5)
       Copyright (c) Mario Zechner / earendil-works.
       Source: https://github.com/earendil-works/pi
       Subsequently maintained in-tree as part of crest; see
       emain/agent/LICENSE.pi for the MIT terms.
+
+This product includes elkjs under the Eclipse Public License 2.0.
+Source: https://github.com/kieler/elkjs
+See third_party/licenses/elkjs-EPL-2.0.md.
 
 You may obtain a copy of the Apache License, Version 2.0 at:
 

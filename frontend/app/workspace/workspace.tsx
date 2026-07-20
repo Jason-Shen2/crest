@@ -17,7 +17,7 @@ import { ResizeHandle } from "@/app/workspace/resize-handle";
 import { RightToolPanel, RightToolPanelMagnifiedOverlay } from "@/app/workspace/right-tool-panel";
 import { MinRightToolPanelWidth } from "@/app/workspace/right-tool-panel-state";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
-import { atoms, getSettingsKeyAtom } from "@/store/global";
+import { atoms, getSettingsKeyAtom, WOS } from "@/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { useAtomValue } from "jotai";
 import type { PointerEvent } from "react";
@@ -46,6 +46,13 @@ export function shouldClearRightToolPanelFocusForTarget(target: EventTarget | nu
 const WorkspaceElem = memo(() => {
     const workspaceLayoutModel = WorkspaceLayoutModel.getInstance();
     const tabId = useAtomValue(atoms.staticTabId);
+    const tab = useAtomValue(WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tabId)));
+    const agentBlockId = tab?.blockids?.[0] ?? "";
+    const agentBlock = useAtomValue(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", agentBlockId)));
+    const agentSessionId =
+        agentBlock?.meta?.view === "agent" && agentBlock.meta["agent:session"]?.path
+            ? agentBlock.meta["agent:session"].path
+            : undefined;
     const ws = useAtomValue(atoms.workspace);
 
     useEffect(() => {
@@ -245,6 +252,7 @@ const WorkspaceElem = memo(() => {
                         ) : null}
                         <RightToolPanel
                             state={rightToolPanelState}
+                            sessionId={agentSessionId}
                             onOpenTool={(tool) => workspaceLayoutModel.openRightTool(tool)}
                             onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
                             onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}

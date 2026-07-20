@@ -80,6 +80,7 @@ declare global {
 
     interface Window {
         waveRuntime?: WaveRuntime;
+        api?: ElectronApi;
     }
 
     type ElectronApi = {
@@ -187,6 +188,87 @@ declare global {
                 opts?: { blockId?: string }
             ) => () => void;
         };
+        agentObservability: {
+            listTraces: (sessionId: string) => Promise<Trace[]>;
+            getTrace: (traceId: string, sessionId: string) => Promise<TraceDetail | undefined>;
+            subscribe: (sessionId: string, callback: (event: TraceEvent) => void) => () => void;
+        };
+    };
+
+    type TraceStatus = "running" | "success" | "error" | "aborted";
+
+    type Trace = {
+        id: string;
+        name: string | null;
+        timestamp: string;
+        environment: string;
+        tags: string[];
+        release: string | null;
+        version: string | null;
+        input: unknown;
+        output: unknown;
+        metadata: Record<string, unknown>;
+        sessionId: string | null;
+        userId: string | null;
+        status: TraceStatus;
+        endedAt?: string;
+    };
+
+    type Observation = {
+        id: string;
+        traceId: string;
+        type:
+            | "SPAN"
+            | "EVENT"
+            | "GENERATION"
+            | "AGENT"
+            | "TOOL"
+            | "CHAIN"
+            | "RETRIEVER"
+            | "EVALUATOR"
+            | "EMBEDDING"
+            | "GUARDRAIL";
+        name: string | null;
+        startTime: string;
+        endTime: string | null;
+        parentObservationId: string | null;
+        level: "DEBUG" | "DEFAULT" | "WARNING" | "ERROR";
+        statusMessage: string | null;
+        version: string | null;
+        model: string | null;
+        input: unknown;
+        output: unknown;
+        metadata: Record<string, unknown>;
+        latency: number | null;
+        timeToFirstToken: number | null;
+        usageDetails: Record<string, number>;
+        costDetails: Record<string, number>;
+        toolCalls: string[] | null;
+        toolCallNames: string[] | null;
+    };
+
+    type Score = {
+        id: string;
+        traceId: string;
+        observationId: string | null;
+        name: string;
+        source: "API" | "EVAL" | "ANNOTATION";
+        dataType: "NUMERIC" | "CATEGORICAL" | "BOOLEAN" | "CORRECTION" | "TEXT";
+        value: unknown;
+        comment: string | null;
+    };
+
+    type TraceDetail = {
+        trace: Trace;
+        observations: Observation[];
+        scores: Score[];
+        corrections: Score[];
+    };
+
+    type TraceEvent = {
+        traceId: string;
+        sessionId?: string;
+        detail: TraceDetail;
     };
 
     type AIUserConfigReadResult = {

@@ -4,6 +4,7 @@
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
 import { MagnifyIcon } from "@/app/element/magnify";
 import { Icon } from "@/app/icon/Icon";
+import { ObservabilityPanel } from "@/app/observability/observability-panel";
 import { RightBrowser } from "@/app/rightbrowser/right-browser";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
 import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
@@ -45,6 +46,7 @@ export function shouldAnimateRightToolPanelLayout(
 
 export type RightToolPanelProps = {
     state: RightToolPanelState;
+    sessionId: string | undefined;
     onOpenTool: (tool: RightToolId) => void;
     onSelectTool: (tool: RightToolId) => void;
     onCloseTool: (tool: RightToolId) => void;
@@ -80,6 +82,11 @@ const RightToolMetadataById: Record<RightToolId, RightToolMetadata> = {
         icon: "git-branch-01",
         description: "Manage Git changes, commits, and branches.",
     },
+    observability: {
+        label: "Observability",
+        icon: "chart-line",
+        description: "Review Langfuse-compatible agent traces.",
+    },
 };
 
 export type RightToolLauncherProps = {
@@ -111,6 +118,8 @@ export type RightToolTopBarProps = {
 
 export type RightToolContentProps = {
     activeTool?: RightToolId;
+    magnified?: boolean;
+    sessionId?: string;
 };
 
 function disposeRightEditorModelPath(path: string): void {
@@ -315,7 +324,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
     );
 }
 
-export function RightToolContent({ activeTool }: RightToolContentProps) {
+export function RightToolContent({ activeTool, magnified, sessionId }: RightToolContentProps) {
     if (activeTool == null) {
         return <RightToolLauncher onOpenTool={() => null} />;
     }
@@ -341,10 +350,21 @@ export function RightToolContent({ activeTool }: RightToolContentProps) {
     if (activeTool === "sourceControl") {
         return <SourceControlPanel />;
     }
+    if (activeTool === "observability") {
+        return <ObservabilityPanel magnified={magnified} sessionId={sessionId} />;
+    }
     return null;
 }
 
-function RightToolPanelContent({ state, onOpenTool }: { state: RightToolPanelState; onOpenTool: (tool: RightToolId) => void }) {
+function RightToolPanelContent({
+    state,
+    sessionId,
+    onOpenTool,
+}: {
+    state: RightToolPanelState;
+    sessionId?: string;
+    onOpenTool: (tool: RightToolId) => void;
+}) {
     if (state.openedTools.length === 0) {
         return (
             <div className="min-h-0 flex-1 overflow-hidden rounded-b-xl">
@@ -354,7 +374,7 @@ function RightToolPanelContent({ state, onOpenTool }: { state: RightToolPanelSta
     }
     return (
         <div className="min-h-0 flex-1 overflow-hidden rounded-b-xl">
-            <RightToolContent activeTool={state.activeTool} />
+            <RightToolContent activeTool={state.activeTool} magnified={state.magnified} sessionId={sessionId} />
         </div>
     );
 }
@@ -410,6 +430,7 @@ export function RightToolPanelMagnifiedOverlayView({
 
 export function RightToolPanel({
     state,
+    sessionId,
     onOpenTool,
     onSelectTool,
     onCloseTool,
@@ -526,7 +547,7 @@ export function RightToolPanel({
                     </button>
                 }
             />
-            <RightToolPanelContent state={state} onOpenTool={onOpenTool} />
+            <RightToolPanelContent state={state} sessionId={sessionId} onOpenTool={onOpenTool} />
         </aside>
     );
 }

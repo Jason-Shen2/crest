@@ -47,6 +47,14 @@ vi.mock("@/app/sourcecontrol/source-control-panel", () => ({
     SourceControlPanel: () => <div>Source Control Panel</div>,
 }));
 
+vi.mock("@/app/observability/observability-panel", () => ({
+    ObservabilityPanel: ({ magnified }: { magnified?: boolean }) => (
+        <div aria-label="Agent Observability" data-magnified={magnified ? "true" : "false"}>
+            Agent Observability
+        </div>
+    ),
+}));
+
 vi.mock("@/app/element/magnify", () => ({
     MagnifyIcon: ({ enabled }: { enabled: boolean }) => <div className="magnify-icon" data-enabled={enabled} />,
 }));
@@ -78,6 +86,7 @@ function renderPanel(state: RightToolPanelState): string {
     return renderToStaticMarkup(
         <RightToolPanel
             state={state}
+            sessionId={undefined}
             onOpenTool={() => null}
             onSelectTool={() => null}
             onCloseTool={() => null}
@@ -116,7 +125,10 @@ function findElementByAriaLabel(node: ReactNode, ariaLabel: string): ReactElemen
         return node;
     }
     if (typeof node.type === "function") {
-        return findElementByAriaLabel(node.type(node.props), ariaLabel);
+        return findElementByAriaLabel(
+            (node.type as (props: TestElementProps) => ReactNode)(node.props),
+            ariaLabel
+        );
     }
     return findElementByAriaLabel(node.props.children, ariaLabel);
 }
@@ -130,6 +142,7 @@ describe("RightToolPanel", () => {
         expect(markup).toContain("Browser");
         expect(markup).toContain("Terminal");
         expect(markup).toContain("Code Review");
+        expect(markup).toContain("Observability");
         expect(markup).not.toContain("Editor");
         expect(markup).toContain("width:400px");
         expect(markup).toContain('aria-label="Magnify right tool panel"');
@@ -153,15 +166,40 @@ describe("RightToolPanel", () => {
         expect(markup).not.toContain(">Tools<");
     });
 
+    it("passes magnified state only to observability content", () => {
+        const normalObservability = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["observability"],
+            activeTool: "observability",
+        });
+        const magnifiedObservability = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["observability"],
+            activeTool: "observability",
+            magnified: true,
+        });
+        const magnifiedBrowser = renderPanel({
+            ...DefaultRightToolPanelState,
+            openedTools: ["browser"],
+            activeTool: "browser",
+            magnified: true,
+        });
+
+        expect(normalObservability).toContain('data-magnified="false"');
+        expect(magnifiedObservability).toContain('data-magnified="true"');
+        expect(magnifiedBrowser).not.toContain("data-magnified");
+    });
+
     it("uses theme color tokens instead of fixed hex colors for panel chrome", () => {
         const markup = renderToStaticMarkup(
             <>
                 <RightToolPanel
                     state={{
                         ...DefaultRightToolPanelState,
-                        openedTools: ["editor", "browser", "terminal", "codeReview", "sourceControl"],
+                        openedTools: ["editor", "browser", "terminal", "codeReview", "sourceControl", "observability"],
                         activeTool: "browser",
                     }}
+                    sessionId={undefined}
                     onOpenTool={() => null}
                     onSelectTool={() => null}
                     onCloseTool={() => null}
@@ -347,6 +385,7 @@ describe("RightToolPanel parts", () => {
         expect(markup).not.toContain('role="menuitem"');
         expect(markup).toContain('aria-label="Open Browser right tool"');
         expect(markup).toContain('aria-label="Open Code Review right tool"');
+        expect(markup).toContain('aria-label="Open Observability right tool"');
         expect(markup).not.toContain('aria-label="Open Editor right tool"');
         expect(markup).not.toContain('aria-label="Open Terminal right tool"');
     });
@@ -395,7 +434,7 @@ describe("RightToolPanel parts", () => {
         const markup = renderToStaticMarkup(
             <RightToolTopBar
                 activeTool="editor"
-                openedTools={["editor", "browser", "terminal", "codeReview", "sourceControl"]}
+                openedTools={["editor", "browser", "terminal", "codeReview", "sourceControl", "observability"]}
                 onOpenTool={() => null}
                 onSelectTool={() => null}
                 onCloseTool={() => null}
@@ -544,6 +583,12 @@ describe("RightToolPanel parts", () => {
         const markup = renderToStaticMarkup(<RightToolContent activeTool="terminal" />);
 
         expect(markup).toContain('aria-label="Right Terminal"');
+    });
+
+    it("renders the observability content when the observability tab is active", () => {
+        const markup = renderToStaticMarkup(<RightToolContent activeTool="observability" />);
+
+        expect(markup).toContain('aria-label="Agent Observability"');
     });
 
     it("renders a magnified backdrop behind the active right tool", () => {

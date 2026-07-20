@@ -12,6 +12,8 @@ const mockLayout = vi.hoisted(() => {
     const state = {
         staticTabIdAtom: null as jotai.PrimitiveAtom<string>,
         workspaceAtom: null as jotai.PrimitiveAtom<Workspace>,
+        tabAtom: null as jotai.PrimitiveAtom<Tab>,
+        blockAtom: null as jotai.PrimitiveAtom<Block>,
         isFullScreenAtom: null as jotai.PrimitiveAtom<boolean>,
         tabBarSettingAtom: null as jotai.PrimitiveAtom<string>,
         vtabVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
@@ -26,6 +28,7 @@ const mockLayout = vi.hoisted(() => {
         tabContentMock: null as any,
         topBarProps: null as any,
         rightResizeHandleProps: null as any,
+        observabilityProps: null as any,
         model: null as any,
     };
     return state;
@@ -59,6 +62,29 @@ vi.mock("@/store/global", async () => {
     } as Workspace);
     mockLayout.isFullScreenAtom = jotaiActual.atom(false);
     mockLayout.tabBarSettingAtom = jotaiActual.atom("top");
+    mockLayout.tabAtom = jotaiActual.atom({
+        otype: "tab",
+        oid: "tab-a",
+        version: 1,
+        meta: {},
+        name: "Agent",
+        layoutstate: "",
+        blockids: ["block-a"],
+    } as Tab);
+    mockLayout.blockAtom = jotaiActual.atom({
+        otype: "block",
+        oid: "block-a",
+        version: 1,
+        meta: {
+            view: "agent",
+            "agent:session": {
+                id: "session-a",
+                createdAt: "2026-07-19T10:00:00.000Z",
+                cwd: "/repo",
+                path: "/sessions/current.jsonl",
+            },
+        },
+    } as Block);
 
     return {
         atoms: {
@@ -70,6 +96,10 @@ vi.mock("@/store/global", async () => {
             getHomeDir: () => "/repo",
         }),
         getSettingsKeyAtom: () => mockLayout.tabBarSettingAtom,
+        WOS: {
+            makeORef: (otype: string, oid: string) => `${otype}:${oid}`,
+            getWaveObjectAtom: (oref: string) => (oref.startsWith("tab:") ? mockLayout.tabAtom : mockLayout.blockAtom),
+        },
     };
 });
 
@@ -194,6 +224,13 @@ vi.mock("@/app/righteditor/right-editor-workbench", () => ({
     RightEditorWorkbench: () => <div>Right Editor Workbench</div>,
 }));
 
+vi.mock("@/app/observability/observability-panel", () => ({
+    ObservabilityPanel: (props: { sessionId?: string }) => {
+        mockLayout.observabilityProps = props;
+        return <div aria-label="Agent Observability" data-session-id={props.sessionId} />;
+    },
+}));
+
 vi.mock("@/app/tab/tabbar", () => ({
     TabBar: () => <div>Tab Bar</div>,
 }));
@@ -274,6 +311,7 @@ describe("Workspace right tool panel integration", () => {
         mockLayout.tabContentMock = vi.fn();
         mockLayout.topBarProps = null;
         mockLayout.rightResizeHandleProps = null;
+        mockLayout.observabilityProps = null;
     });
 
     it("renders the right tool panel in workspace chrome instead of the legacy code review PanelGroup", () => {
@@ -287,6 +325,22 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).toContain('aria-label="Resize left"');
         expect(markup).not.toContain("data-legacy-panel-group");
         expect(markup).not.toContain("data-legacy-resize-handle");
+    });
+
+    it("mounts observability with the current agent session scope", () => {
+        mockLayout.rightToolPanelAtom = jotai.atom({
+            ...DefaultRightToolPanelState,
+            openedTools: ["observability"],
+            activeTool: "observability",
+        });
+        mockLayout.model.rightToolPanelAtom = mockLayout.rightToolPanelAtom;
+
+        const markup = renderToStaticMarkup(<Workspace />);
+
+        expect(markup).toContain('aria-label="Agent Observability"');
+        expect(mockLayout.observabilityProps).toMatchObject({
+            sessionId: "/sessions/current.jsonl",
+        });
     });
 
     it("renders the right panel as a workspace chrome sibling after the main tab content", () => {

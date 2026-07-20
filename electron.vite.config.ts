@@ -204,9 +204,7 @@ export default defineConfig({
             // Allow Vite to read source files from the sibling edgeFlow.js
             // clone.  Default fs.allow is the workspace root only, so
             // /Users/.../edgeFlow.js would otherwise 403.
-            fs: USE_LOCAL_EDGEFLOW
-                ? { allow: [path.resolve(__dirname), EDGEFLOW_LOCAL] }
-                : undefined,
+            fs: USE_LOCAL_EDGEFLOW ? { allow: [path.resolve(__dirname), EDGEFLOW_LOCAL] } : undefined,
             watch: {
                 ignored: [
                     "dist/**",
