@@ -26,6 +26,9 @@ function percentOfContainer(pixels: number, containerWidth: number): number {
     return (pixels / containerWidth) * 100;
 }
 
+const DetailPanelDefaultSize = percentOfContainer(DetailPanelMinWidth, BothPanelsMinWidth);
+const NavigationPanelDefaultSize = 100 - DetailPanelDefaultSize;
+
 type TraceLayoutDesktopContextValue = {
     navigationPanelRef: RefObject<ImperativePanelHandle>;
     detailPanelRef: RefObject<ImperativePanelHandle>;
@@ -102,14 +105,7 @@ function TraceLayoutDesktopRoot({ children }: { children: ReactNode }) {
     return (
         <TraceLayoutContext.Provider value={contextValue}>
             <div data-testid="trace-layout-scroll" className="relative h-full w-full overflow-x-auto overflow-y-hidden">
-                <div
-                    ref={panelContainerRef}
-                    data-testid="trace-layout-panels"
-                    className={cn(
-                        "h-full min-h-0",
-                        !isNavigationPanelCollapsed && !isDetailPanelCollapsed ? "min-w-[621px]" : "min-w-0"
-                    )}
-                >
+                <div ref={panelContainerRef} data-testid="trace-layout-panels" className="h-full min-h-0 min-w-[621px]">
                     <PanelGroup direction="horizontal" className="h-full min-h-0">
                         {children}
                     </PanelGroup>
@@ -134,7 +130,7 @@ function NavigationPanel({ children }: { children: ReactNode }) {
             ref={navigationPanelRef}
             role="region"
             aria-label="Trace navigation panel"
-            defaultSize={56}
+            defaultSize={NavigationPanelDefaultSize}
             minSize={navigationPanelMinSize}
             collapsible
             collapsedSize={collapsedPanelSize}
@@ -188,7 +184,7 @@ function DetailPanel({ children }: { children: ReactNode }) {
             ref={detailPanelRef}
             role="region"
             aria-label="Trace detail panel"
-            defaultSize={44}
+            defaultSize={DetailPanelDefaultSize}
             minSize={detailPanelMinSize}
             collapsible
             collapsedSize={collapsedPanelSize}
