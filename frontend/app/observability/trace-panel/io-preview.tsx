@@ -22,7 +22,6 @@ export function IOPreview({
     maxPreviewCharacters = DetailPreviewCharacterLimit,
     copyScopeKey,
 }: IOPreviewProps) {
-    const serialized = useMemo(() => (value == null ? "" : serializeDetailValue(value)), [value]);
     const preview = useMemo(
         () =>
             value == null
@@ -32,8 +31,8 @@ export function IOPreview({
     );
     const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
     const copyOperationToken = useRef(0);
-    const currentSerialized = useRef(serialized);
-    currentSerialized.current = serialized;
+    const currentCopy = useRef({ value, label, copyScopeKey });
+    currentCopy.current = { value, label, copyScopeKey };
 
     useEffect(() => {
         copyOperationToken.current += 1;
@@ -49,16 +48,22 @@ export function IOPreview({
 
     const copyValue = async () => {
         const operationToken = ++copyOperationToken.current;
+        const copy = { value, label, copyScopeKey };
+        const copyIsCurrent = () =>
+            operationToken === copyOperationToken.current &&
+            copy.value === currentCopy.current.value &&
+            copy.label === currentCopy.current.label &&
+            copy.copyScopeKey === currentCopy.current.copyScopeKey;
         try {
             if (typeof navigator === "undefined" || navigator.clipboard?.writeText == null) {
                 throw new Error("Clipboard API unavailable");
             }
-            await navigator.clipboard.writeText(serialized);
-            if (operationToken === copyOperationToken.current && serialized === currentSerialized.current) {
+            await navigator.clipboard.writeText(serializeDetailValue(value));
+            if (copyIsCurrent()) {
                 setCopyStatus("success");
             }
         } catch {
-            if (operationToken === copyOperationToken.current && serialized === currentSerialized.current) {
+            if (copyIsCurrent()) {
                 setCopyStatus("error");
             }
         }

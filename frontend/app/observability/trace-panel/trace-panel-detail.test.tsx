@@ -11,6 +11,7 @@ import { IOPreview } from "./io-preview";
 
 afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
 });
 
@@ -29,6 +30,33 @@ describe("IOPreview", () => {
         render(<IOPreview label="Output" value={null} />);
 
         expect(screen.queryByRole("region", { name: "Output" })).toBeNull();
+    });
+
+    it.each([
+        ["zero", 0, "0"],
+        ["false", false, "false"],
+        ["empty string", "", ""],
+    ])("renders %s as a present value", (_, value, expected) => {
+        render(<IOPreview label="Output" value={value} />);
+
+        const section = screen.getByRole("region", { name: "Output" });
+        expect(within(section).getByTestId("detail-value-preview").textContent).toBe(expected);
+    });
+
+    it("runs complete serialization only when Copy is requested", async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        vi.stubGlobal("navigator", { clipboard: { writeText } });
+        const stringify = vi.spyOn(JSON, "stringify");
+        const value = { output: "complete value" };
+
+        render(<IOPreview label="Output" value={value} />);
+        expect(stringify).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy Output" }));
+
+        expect(stringify).toHaveBeenCalledTimes(1);
+        expect(writeText).toHaveBeenCalledWith(serializeDetailValue(value));
+        expect(await screen.findByText("Copied")).not.toBeNull();
     });
 
     it("bounds the preview but copies the complete value", async () => {
