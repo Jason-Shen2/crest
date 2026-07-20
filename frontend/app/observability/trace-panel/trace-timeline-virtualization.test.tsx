@@ -15,6 +15,8 @@ const OriginalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototy
 const OriginalScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
 const OriginalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
 const OriginalGetBoundingClientRect = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "getBoundingClientRect");
+const PendingScrollTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
+let scrollCalls: ScrollToOptions[] = [];
 
 class TestResizeObserver {
     callback: ResizeObserverCallback;
@@ -177,11 +179,17 @@ beforeAll(() => {
         scrollTo: {
             configurable: true,
             value(options: ScrollToOptions) {
-                setTimeout(() => {
+                const pendingTimer = PendingScrollTimers.get(this);
+                if (pendingTimer != null) {
+                    clearTimeout(pendingTimer);
+                }
+                scrollCalls.push(options);
+                const timer = setTimeout(() => {
                     this.scrollTop = options.top ?? this.scrollTop;
                     this.scrollLeft = options.left ?? this.scrollLeft;
                     this.dispatchEvent(new Event("scroll"));
                 }, 0);
+                PendingScrollTimers.set(this, timer);
             },
         },
         getBoundingClientRect: {
@@ -205,7 +213,10 @@ beforeAll(() => {
     });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+    cleanup();
+    scrollCalls = [];
+});
 
 afterAll(() => {
     for (const [name, descriptor] of [
@@ -245,10 +256,18 @@ describe("trace timeline real virtualization", () => {
         expect(screen.getByTestId("collapsed-nodes").textContent).toBe("parent,trace-trace-large");
         expect(screen.queryByRole("treeitem", { name: "Observation 997" })).toBeNull();
 
+        scrollCalls = [];
         act(() => fireEvent.click(screen.getByRole("button", { name: "Select remote observation" })));
 
         await waitFor(() => expect(screen.getByTestId("collapsed-nodes").textContent).toBe(""));
         const selectedRow = await screen.findByRole("treeitem", { name: "Observation 997" });
+        expect(scrollCalls).toEqual([
+            expect.objectContaining({
+                top: expect.any(Number),
+                left: expect.any(Number),
+                behavior: "smooth",
+            }),
+        ]);
         expect(chart.scrollTop).toBeGreaterThan(0);
         expect(document.activeElement).toBe(selectedRow);
     });
