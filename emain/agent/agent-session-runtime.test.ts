@@ -5,13 +5,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Model } from "../ai";
+import { AgentSessionRuntime, buildPersistedTurnsFromSessionEntries } from "./agent-session-runtime";
 import type { AgentHarnessHost } from "./harness-factory";
-import {
-    buildPersistedTurnsFromSessionEntries,
-    AgentSessionRuntime,
-} from "./agent-session-runtime";
-import type { AgentMessage, ThinkingLevel } from "./types";
 import type { SessionTreeEntry } from "./harness/types";
+import type { AgentMessage, ThinkingLevel } from "./types";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
 // test drive the event stream via emit(). Mirrors the only surface
@@ -265,8 +262,20 @@ describe("AgentSessionRuntime — command operations", () => {
             targetId: "m1",
             label: "Start",
         };
-        const userMsg = { type: "message" as const, id: "m1", parentId: "label-1", timestamp: "t1", message: user("hi") };
-        const asstMsg = { type: "message" as const, id: "m2", parentId: "m1", timestamp: "t2", message: assistant("hi") };
+        const userMsg = {
+            type: "message" as const,
+            id: "m1",
+            parentId: "label-1",
+            timestamp: "t1",
+            message: user("hi"),
+        };
+        const asstMsg = {
+            type: "message" as const,
+            id: "m2",
+            parentId: "m1",
+            timestamp: "t2",
+            message: assistant("hi"),
+        };
         fake.session.getEntries.mockResolvedValue([leafEntry, labelEntry, userMsg, asstMsg]);
         fake.session.getLeafId.mockResolvedValue("m2");
 
@@ -288,7 +297,13 @@ describe("AgentSessionRuntime — command operations", () => {
             customType: "session_note",
             data: { id: "stale" },
         };
-        const userMsg = { type: "message" as const, id: "m1", parentId: "custom-1", timestamp: "t1", message: user("hi") };
+        const userMsg = {
+            type: "message" as const,
+            id: "m1",
+            parentId: "custom-1",
+            timestamp: "t1",
+            message: user("hi"),
+        };
         fake.session.getEntries.mockResolvedValue([customEntry, userMsg]);
         fake.session.getLeafId.mockResolvedValue("m1");
 
@@ -358,7 +373,7 @@ describe("AgentSessionRuntime — command operations", () => {
                         status: "done",
                     },
                 ],
-            }),
+            })
         );
     });
 
@@ -369,7 +384,6 @@ describe("AgentSessionRuntime — command operations", () => {
         const fake = makeFakeHarness();
         const m1 = user("first question");
         const a1 = assistant("first answer", "stop");
-        const m2 = user("second question");
         const branchAfterNavigate: SessionTreeEntry[] = [
             { type: "message", id: "m1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: m1 },
             { type: "message", id: "a1", parentId: "m1", timestamp: "2026-01-01T00:00:02.000Z", message: a1 },
@@ -386,9 +400,7 @@ describe("AgentSessionRuntime — command operations", () => {
         expect(result).toEqual({ editorText: "second question" });
         const state = owner.getSessionState();
         expect(state.messages).toEqual([m1, a1]);
-        expect(state.turns).toEqual([
-            { turnId: "m1", userMessage: m1, responseMessages: [a1], status: "done" },
-        ]);
+        expect(state.turns).toEqual([{ turnId: "m1", userMessage: m1, responseMessages: [a1], status: "done" }]);
     });
 
     it("shows history including the target when navigating to the first user message (parentId=null fallback)", async () => {
@@ -412,9 +424,7 @@ describe("AgentSessionRuntime — command operations", () => {
         expect(result).toEqual({ editorText: "first question" });
         const state = owner.getSessionState();
         expect(state.messages).toEqual([m1]);
-        expect(state.turns).toEqual([
-            { turnId: "m1", userMessage: m1, responseMessages: [], status: "done" },
-        ]);
+        expect(state.turns).toEqual([{ turnId: "m1", userMessage: m1, responseMessages: [], status: "done" }]);
     });
 
     it("returns an empty navigation result when tree navigation is cancelled", async () => {
@@ -642,9 +652,7 @@ describe("buildPersistedTurnsFromSessionEntries", () => {
 
         const turns = buildPersistedTurnsFromSessionEntries(entries);
 
-        expect(turns).toEqual([
-            { turnId: "m1", userMessage: q1, responseMessages: [a1], status: "done" },
-        ]);
+        expect(turns).toEqual([{ turnId: "m1", userMessage: q1, responseMessages: [a1], status: "done" }]);
     });
 
     it("creates a turn with empty responseMessages for a user message without a reply", () => {
@@ -659,9 +667,7 @@ describe("buildPersistedTurnsFromSessionEntries", () => {
 
         const turns = buildPersistedTurnsFromSessionEntries(entries);
 
-        expect(turns).toEqual([
-            { turnId: "e1", userMessage: q1, responseMessages: [], status: "done" },
-        ]);
+        expect(turns).toEqual([{ turnId: "e1", userMessage: q1, responseMessages: [], status: "done" }]);
     });
 });
 
