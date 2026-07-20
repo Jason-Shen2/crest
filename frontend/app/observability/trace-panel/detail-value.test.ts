@@ -74,7 +74,8 @@ describe("detail value formatting", () => {
     });
 
     it("preserves sparse array positions as null", () => {
-        const value = ["first", , "third"];
+        const value = ["first"];
+        value[2] = "third";
 
         const preview = formatDetailPreview(value, { maxCharacters: 1_000, maxTraversalNodes: 10 });
 
