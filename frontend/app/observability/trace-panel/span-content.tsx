@@ -75,7 +75,6 @@ interface SpanContentProps {
     node: TraceNode;
     parentTotalCost?: number;
     parentTotalDuration?: number;
-    commentCount?: number;
     onSelect?: () => void;
     onHover?: () => void;
     className?: string;
@@ -85,7 +84,6 @@ export function SpanContent({
     node,
     parentTotalCost,
     parentTotalDuration,
-    commentCount,
     onSelect,
     onHover,
     className,
@@ -125,12 +123,6 @@ export function SpanContent({
                     </span>
 
                     <div className="flex items-center gap-x-2">
-                        {commentCount != null && commentCount > 0 && (
-                            <span className="rounded-sm bg-fg-overlay-1 px-1 text-xs text-muted-foreground">
-                                {commentCount}
-                            </span>
-                        )}
-
                         {node.type !== "TRACE" && node.level && node.level !== "DEFAULT" && (
                             <div className="flex">
                                 <span className={cn("rounded-sm p-0.5 text-xs", LevelClassNames[node.level])}>
