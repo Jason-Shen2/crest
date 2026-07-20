@@ -60,15 +60,14 @@ export function TraceTimeline() {
             previousSelectedNodeIdRef.current = null;
             return;
         }
-        if (selectedNodeId === previousSelectedNodeIdRef.current) {
-            return;
-        }
-
         const index = rows.findIndex((row) => row.node.id === selectedNodeId);
         if (index < 0) {
             for (const ancestorId of findCollapsedAncestors(roots, selectedNodeId, collapsedNodes)) {
                 toggleCollapsed(ancestorId);
             }
+            return;
+        }
+        if (selectedNodeId === previousSelectedNodeIdRef.current) {
             return;
         }
         const scrollElement = scrollRef.current;

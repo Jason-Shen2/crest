@@ -249,4 +249,20 @@ describe("trace timeline real virtualization", () => {
         await waitFor(() => expect(screen.getByRole("treeitem", { name: "Observation 997" })).toBeTruthy());
         expect(chart.scrollTop).toBeGreaterThan(0);
     });
+
+    it("re-expands ancestors collapsed after their selected descendant was revealed", async () => {
+        render(<TraceTimelineHarness />);
+        await waitFor(() => expect(screen.getAllByTestId("timeline-gutter-row").length).toBeGreaterThan(1));
+        const chart = screen.getByTestId("timeline-scroll");
+
+        fireEvent.click(screen.getByRole("button", { name: "Select remote observation" }));
+        await waitFor(() => expect(screen.getByRole("treeitem", { name: "Observation 997" })).toBeTruthy());
+        expect(chart.scrollTop).toBeGreaterThan(0);
+
+        fireEvent.click(screen.getByRole("button", { name: "Collapse ancestors" }));
+
+        await waitFor(() => expect(screen.getByTestId("collapsed-nodes").textContent).toBe(""));
+        expect(screen.getByRole("treeitem", { name: "Observation 997" }).getAttribute("aria-selected")).toBe("true");
+        expect(chart.scrollTop).toBeGreaterThan(0);
+    });
 });
