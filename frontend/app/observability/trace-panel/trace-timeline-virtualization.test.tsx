@@ -281,10 +281,22 @@ describe("trace timeline real virtualization", () => {
         await waitFor(() => expect(screen.getByRole("treeitem", { name: "Observation 997" })).toBeTruthy());
         expect(chart.scrollTop).toBeGreaterThan(0);
 
+        chart.scrollTop = 0;
+        chart.dispatchEvent(new Event("scroll"));
+        scrollCalls = [];
         fireEvent.click(screen.getByRole("button", { name: "Collapse ancestors" }));
 
         await waitFor(() => expect(screen.getByTestId("collapsed-nodes").textContent).toBe(""));
-        expect(screen.getByRole("treeitem", { name: "Observation 997" }).getAttribute("aria-selected")).toBe("true");
+        const selectedRow = await screen.findByRole("treeitem", { name: "Observation 997" });
+        expect(scrollCalls).toEqual([
+            expect.objectContaining({
+                top: expect.any(Number),
+                left: expect.any(Number),
+                behavior: "smooth",
+            }),
+        ]);
         expect(chart.scrollTop).toBeGreaterThan(0);
+        expect(selectedRow.getAttribute("aria-selected")).toBe("true");
+        expect(document.activeElement).toBe(selectedRow);
     });
 });

@@ -54,20 +54,24 @@ export function TraceTimeline() {
     const virtualItems = rowVirtualizer.getVirtualItems();
     const totalSize = rowVirtualizer.getTotalSize();
     const previousSelectedNodeIdRef = useRef<string | null | undefined>(undefined);
+    const pendingRevealRef = useRef(false);
 
     useLayoutEffect(() => {
         if (selectedNodeId == null) {
             previousSelectedNodeIdRef.current = null;
+            pendingRevealRef.current = false;
             return;
         }
         const index = rows.findIndex((row) => row.node.id === selectedNodeId);
         if (index < 0) {
-            for (const ancestorId of findCollapsedAncestors(roots, selectedNodeId, collapsedNodes)) {
+            const collapsedAncestors = findCollapsedAncestors(roots, selectedNodeId, collapsedNodes);
+            pendingRevealRef.current = collapsedAncestors.length > 0;
+            for (const ancestorId of collapsedAncestors) {
                 toggleCollapsed(ancestorId);
             }
             return;
         }
-        if (selectedNodeId === previousSelectedNodeIdRef.current) {
+        if (selectedNodeId === previousSelectedNodeIdRef.current && !pendingRevealRef.current) {
             return;
         }
         const scrollElement = scrollRef.current;
@@ -87,6 +91,7 @@ export function TraceTimeline() {
             isInitial,
         });
         previousSelectedNodeIdRef.current = selectedNodeId;
+        pendingRevealRef.current = false;
         scrollElement.scrollTo({ top, left, behavior: isInitial ? "auto" : "smooth" });
     }, [collapsedNodes, roots, rows, selectedNodeId, toggleCollapsed]);
 
