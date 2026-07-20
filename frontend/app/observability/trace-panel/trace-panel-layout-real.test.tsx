@@ -17,6 +17,10 @@ const CanvasMinWidth = 621;
 const OriginalOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
 const OriginalGetBoundingClientRect = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "getBoundingClientRect");
 
+if (!OriginalOffsetWidth) {
+    throw new Error("HTMLElement.offsetWidth descriptor is required by the layout test");
+}
+
 let hostWidth = 540;
 
 function canvasWidth(element: Element): number {
@@ -129,11 +133,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-    if (OriginalOffsetWidth) {
-        Object.defineProperty(HTMLElement.prototype, "offsetWidth", OriginalOffsetWidth);
-    } else {
-        delete HTMLElement.prototype.offsetWidth;
-    }
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", OriginalOffsetWidth);
     if (OriginalGetBoundingClientRect) {
         Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", OriginalGetBoundingClientRect);
     } else {

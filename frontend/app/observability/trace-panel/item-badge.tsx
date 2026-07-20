@@ -1,3 +1,7 @@
+// Copyright (c) 2023-2026 Langfuse GmbH
+// SPDX-License-Identifier: MIT
+// Source: https://github.com/langfuse/langfuse/blob/1cb1bbcf6b269fd887a6667796f1a15417cca336/web/src/components/ItemBadge.tsx
+
 import { Circle, GitBranch, Sparkles, Wrench } from "lucide-react";
 
 import { cn } from "@/util/util";

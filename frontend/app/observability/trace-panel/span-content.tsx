@@ -1,3 +1,7 @@
+// Copyright (c) 2023-2026 Langfuse GmbH
+// SPDX-License-Identifier: MIT
+// Source: https://github.com/langfuse/langfuse/blob/1cb1bbcf6b269fd887a6667796f1a15417cca336/web/src/components/trace/components/SpanContent.tsx
+
 /**
  * SpanContent - Pure span/observation content renderer.
  *
