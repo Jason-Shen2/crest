@@ -416,7 +416,7 @@ Environment:
 
 Commands:
 
-- `PATH=/Users/bytedance/.nvm/versions/node/v22.23.1/bin:$PATH npx vitest run emain/agent-ipc.test.ts emain/agent/pane-agent-session.test.ts emain/agent/extensions/extensions.test.ts emain/agent/harness-factory.test.ts emain/agent/prompt-loader.test.ts emain/agent/skills-loader.test.ts emain/agent/extensions/pi-gui/crest/walker.test.ts frontend/app/store/use-pi-chat.test.tsx frontend/app/term/render/agent-chat-host-api.test.ts frontend/app/term/render/agent-ext-ui.test.tsx frontend/app/term/render/agent-slash-command-routing.test.ts frontend/app/term/render/assistant-ui/runtime-bridge.test.ts`
+- `PATH=/Users/bytedance/.nvm/versions/node/v22.23.1/bin:$PATH npx vitest run emain/agent-ipc.test.ts emain/agent/agent-session-runtime.test.ts emain/agent/extensions/extensions.test.ts emain/agent/harness-factory.test.ts emain/agent/prompt-loader.test.ts emain/agent/skills-loader.test.ts emain/agent/extensions/pi-gui/crest/walker.test.ts frontend/app/store/use-pi-chat.test.tsx frontend/app/term/render/agent-chat-host-api.test.ts frontend/app/term/render/agent-ext-ui.test.tsx frontend/app/term/render/agent-slash-command-routing.test.ts frontend/app/term/render/assistant-ui/runtime-bridge.test.ts`
 - `PATH=/Users/bytedance/.nvm/versions/node/v22.23.1/bin:$PATH npx tsc --noEmit -p tsconfig.json`
 
 Results:
@@ -472,7 +472,7 @@ Environment:
 Commands:
 
 - `PATH=/Users/bytedance/.nvm/versions/node/v22.23.1/bin:$PATH npx vitest run emain/agent/extensions/certification/pi-official-examples.test.ts emain/agent/extensions/extensions.test.ts emain/agent/extensions/pi-gui/crest/walker.test.ts frontend/app/term/render/agent-ext-ui.test.tsx`
-- `PATH=/Users/bytedance/.nvm/versions/node/v22.23.1/bin:$PATH npx vitest run emain/agent-ipc.test.ts emain/agent/pane-agent-session.test.ts emain/agent/extensions/extensions.test.ts emain/agent/harness-factory.test.ts emain/agent/prompt-loader.test.ts emain/agent/skills-loader.test.ts emain/agent/extensions/pi-gui/crest/walker.test.ts frontend/app/store/use-pi-chat.test.tsx frontend/app/term/render/agent-chat-host-api.test.ts frontend/app/term/render/agent-ext-ui.test.tsx frontend/app/term/render/agent-slash-command-routing.test.ts frontend/app/term/render/assistant-ui/runtime-bridge.test.ts`
+- `PATH=/Users/bytedance/.nvm/versions/node/v22.23.1/bin:$PATH npx vitest run emain/agent-ipc.test.ts emain/agent/agent-session-runtime.test.ts emain/agent/extensions/extensions.test.ts emain/agent/harness-factory.test.ts emain/agent/prompt-loader.test.ts emain/agent/skills-loader.test.ts emain/agent/extensions/pi-gui/crest/walker.test.ts frontend/app/store/use-pi-chat.test.tsx frontend/app/term/render/agent-chat-host-api.test.ts frontend/app/term/render/agent-ext-ui.test.tsx frontend/app/term/render/agent-slash-command-routing.test.ts frontend/app/term/render/assistant-ui/runtime-bridge.test.ts`
 - `PATH=/Users/bytedance/.nvm/versions/node/v22.23.1/bin:$PATH npx tsc --noEmit -p tsconfig.json`
 
 Results:
@@ -541,7 +541,7 @@ Remaining Task 7 and M2 blockers:
 
 Status: focused and expanded lifecycle suites pass; this closes the M2.1B UI lifecycle scope but does not mark mature component parity or full M2 complete.
 
-- `PaneAgentSession` owns the authoritative `ExtensionUiSnapshot`: `statuses`, `widgets`, `widgetnodes`, `header`, and `footer`.
+- `AgentSessionRuntime` owns the authoritative `ExtensionUiSnapshot`: `statuses`, `widgets`, `widgetnodes`, `header`, and `footer`.
 - A live `session_state` replays the complete owner snapshot. The renderer replaces extension UI state and clears runtime-bound requests instead of merging stale state from a previous owner.
 - `/reload` hands recoverable UI and compatible flag values to the replacement owner. Interactive requests and live component targets are terminated or disposed rather than replayed.
 - Pending requests terminate with typed reasons `abort`, `reload`, or `dispose`; resolved renderer cancellation remains a normal `undefined` result.
@@ -552,5 +552,30 @@ Status: focused and expanded lifecycle suites pass; this closes the M2.1B UI lif
 - After the mock typing fix and snapshot retry regression coverage, the focused `agent-ipc.test.ts` run passed: 1 test file, 48 tests.
 - The post-fix expanded Node 22 suite passed again: 13 test files, 298 tests.
 - The post-fix TypeScript reporting gate exited `2` with 76 diagnostics across 31 files, down from 78 diagnostics across 32 files.
-- Task 1-6 files have zero TypeScript diagnostics: `emain/agent/pane-agent-session.ts`, `emain/agent/pane-agent-session.test.ts`, `emain/agent/extensions/bridge.ts`, `emain/agent/extensions/extensions.test.ts`, `emain/agent-ipc.ts`, `emain/agent-ipc.test.ts`, `frontend/app/store/use-pi-chat.ts`, and `frontend/app/store/use-pi-chat.test.tsx`.
+- Task 1-6 files have zero TypeScript diagnostics: `emain/agent/agent-session-runtime.ts`, `emain/agent/agent-session-runtime.test.ts`, `emain/agent/extensions/bridge.ts`, `emain/agent/extensions/extensions.test.ts`, `emain/agent-ipc.ts`, `emain/agent-ipc.test.ts`, `frontend/app/store/use-pi-chat.ts`, and `frontend/app/store/use-pi-chat.test.tsx`.
 - Remaining diagnostics belong to the previously documented repo-wide baseline groups outside the M2.1B Task 1-6 file set.
+
+### Architecture Rebase Verification: 2026-07-20
+
+- Rebasing onto the Runtime/Registry architecture preserves `AgentRuntimeRegistry` as the only live runtime owner; the old `sessionCache` was not restored.
+- Runtime disposal is asynchronous and serialized per session path. Idle eviction, reload, shutdown, and pending creation all wait for teardown before replacement.
+- Sessionless `/reload` invalidates every cached runtime and hands recoverable UI/compatible flags to the next runtime build.
+- Live snapshot replay checks runtime identity before sending, so an old runtime cannot overwrite replacement state after reload.
+- Headless shortcut/command execution uses discovery-only extension loading and does not retain lifecycle graph hosts.
+- Extension controls refresh on canonical session changes, successful reloads, and the first streaming state after runtime rebuild.
+- Flag writes validate declarations/types, serialize per flag, ignore stale-session queues, and converge from authoritative list results.
+- Final Node 22 gate passed: 19 test files, 369 tests.
+- Changed-scope ESLint passed without warnings, `git diff --check` passed, and changed-scope TypeScript filtering produced no diagnostics.
+- Repo-wide TypeScript still exits `2` only in the previously documented baseline groups outside this integration scope.
+
+### Architecture Rebase Verification: 2026-07-20
+
+- Extension ownership now uses `AgentSessionRuntime`, `AgentHarnessHost`, and `AgentRuntimeRegistry`; no parallel session cache was reintroduced.
+- Runtime disposal is awaited for idle eviction, explicit invalidation, shutdown, and pending creates. Replacement runtimes wait for prior disposal.
+- Session and global reload invalidate affected runtimes, preserve recoverable UI/compatible flags, and keep renderer subscriptions pending for rebuilt owners.
+- Live snapshot replay ignores superseded runtimes and degrades extension-entry rendering without dropping the authoritative conversation/UI snapshot.
+- Headless command and shortcut discovery does not retain lifecycle graph hosts.
+- Extension controls refresh on canonical session changes, successful reloads, and replacement runtime startup. Flag writes validate declarations/types, serialize per flag, and reconcile from authoritative state.
+- Final Node 22 Agent/Extension/Workspace gate passed: 19 test files, 364 tests.
+- Changed-scope ESLint passed with zero warnings.
+- Changed-scope TypeScript diagnostics are empty. Repo-wide TypeScript still exits `2` only for the previously documented baseline groups outside this integration scope.

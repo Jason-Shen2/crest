@@ -3,13 +3,21 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createAgentChatHostApi } from "./agent-chat-host";
+import { createAgentChatHostApi, getAgentExtensionDiscoveryKey } from "./agent-chat-host";
 
 function makeSession(): AgentSessionMeta {
     return { id: "s1", createdAt: "now", cwd: "/repo", path: "/tmp/session.jsonl" };
 }
 
 describe("createAgentChatHostApi", () => {
+    it("changes extension discovery identity for session switches and reloads", () => {
+        const initial = getAgentExtensionDiscoveryKey("/repo", "/tmp/a.jsonl", 0);
+
+        expect(getAgentExtensionDiscoveryKey("/repo", "/tmp/b.jsonl", 0)).not.toBe(initial);
+        expect(getAgentExtensionDiscoveryKey("/repo", "/tmp/a.jsonl", 1)).not.toBe(initial);
+        expect(getAgentExtensionDiscoveryKey("/repo", "/tmp/a.jsonl", 0)).toBe(initial);
+    });
+
     it("routes tree and fork slash commands to selector requests without sending prompts", () => {
         const sendPrompt = vi.fn(() => true);
         const onSelectorRequest = vi.fn();

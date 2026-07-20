@@ -93,7 +93,7 @@ function customWidth(options: unknown): number {
 }
 
 /**
- * The seam an owner (PaneAgentSession) implements to service ctx.ui. Single-
+ * The seam an owner (AgentSessionRuntime) implements to service ctx.ui. Single-
  * direction pushes (notify/setStatus/setWidget) fan out to renderer subscribers
  * as events; requestUi does a round-trip: it emits an ext_ui_request event and
  * resolves once the renderer responds via agent:ui-response.
@@ -138,8 +138,8 @@ function componentFromUiValue(value: unknown): Component | undefined {
 }
 
 /**
- * Late-bound holder for the UI host. buildPaneHarness creates the extension
- * context (and thus wires ctx.ui) BEFORE the PaneAgentSession owner exists, so
+ * Late-bound holder for the UI host. buildAgentHarnessHost creates the extension
+ * context (and thus wires ctx.ui) BEFORE the AgentSessionRuntime owner exists, so
  * we hand the context this bridge and attach the real host once the owner is
  * constructed. Until attached, ctx.ui degrades to the headless no-op behavior.
  */
@@ -342,7 +342,7 @@ function dispatchWidgetEventToComponent(target: WidgetTarget, event: WidgetEvent
  * prompt round-trip) and `hasUI` is true. With no host attached (headless /
  * pre-attach), ctx.ui degrades to console.log + auto-accept and `hasUI` is
  * false. `cwd` and `hasUI` are getters so they track the live env.cwd (which
- * buildPaneHarness mutates on update()) and the late-attached host.
+ * buildAgentHarnessHost mutates on update()) and the late-attached host.
  */
 export function createExtensionContext(
 	getCwd: () => string,
@@ -445,8 +445,7 @@ export function createExtensionContext(
 			if (!host || typeof factory !== "function") return undefined;
 			let doneCalled = false;
 			let doneValue: unknown;
-			let widgetId: string | undefined;
-			let component: Component | undefined;
+				const target: { widgetId?: string; component?: Component } = {};
 			let resolveDone: (result: unknown) => void = () => {};
 			const donePromise = new Promise<unknown>((resolve) => {
 				resolveDone = resolve;
@@ -454,22 +453,22 @@ export function createExtensionContext(
 			const width = customWidth(options);
 			const tui = {
 				requestRender: () => {
-					if (!component) return;
-					host.updateCustomWidget?.(componentToWidget(component, { width }));
+						if (!target.component) return;
+						host.updateCustomWidget?.(componentToWidget(target.component, { width }));
 				},
 			};
 			const done = (result?: unknown) => {
 				doneCalled = true;
 				doneValue = result;
-				if (widgetId) {
-					host.resolveCustomWidget?.(widgetId, result);
+					if (target.widgetId) {
+						host.resolveCustomWidget?.(target.widgetId, result);
 				}
 				resolveDone(result);
 			};
-			component = (factory as ExtensionCustomFactory)(tui, {}, {}, done);
-			const widget = componentToWidget(component, { width });
-			widgetId = widget.id;
-			const unregister = uiBridge.registerWidgetRoot(widget, component, done, {
+				target.component = (factory as ExtensionCustomFactory)(tui, {}, {}, done);
+				const widget = componentToWidget(target.component, { width });
+				target.widgetId = widget.id;
+				const unregister = uiBridge.registerWidgetRoot(widget, target.component, done, {
 				width,
 				update: (updatedWidget) => host.updateCustomWidget?.(updatedWidget),
 			});

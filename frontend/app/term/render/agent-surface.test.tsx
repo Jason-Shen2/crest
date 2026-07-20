@@ -86,6 +86,8 @@ import {
     hasActiveAgentAttachedPanel,
     makeEmptyAgentAttachedPanelState,
     mapPiUsageToContextUsage,
+    shouldRefreshAgentExtensionControls,
+    shouldRefreshAgentExtensionControlsForStatus,
     type AgentSurfaceContext,
 } from "./agent-surface";
 
@@ -180,6 +182,14 @@ describe("WorkspaceAgentSurface", () => {
 
     it("does not hide scroll to bottom when no command attached panel is open", () => {
         expect(hasActiveAgentAttachedPanel(makeEmptyAgentAttachedPanelState())).toBe(false);
+    });
+
+    it("refreshes extension controls only after a successful reload", () => {
+        expect(shouldRefreshAgentExtensionControls({ command: "reload", status: "success", message: "ok" })).toBe(true);
+        expect(shouldRefreshAgentExtensionControls({ command: "reload", status: "noop", message: "failed" })).toBe(false);
+        expect(shouldRefreshAgentExtensionControls({ command: "compact", status: "success", message: "ok" })).toBe(false);
+        expect(shouldRefreshAgentExtensionControlsForStatus("streaming")).toBe(true);
+        expect(shouldRefreshAgentExtensionControlsForStatus("idle")).toBe(false);
     });
 
     it("maps Pi usage into local context ring usage", () => {

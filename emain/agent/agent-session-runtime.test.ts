@@ -411,7 +411,6 @@ describe("AgentSessionRuntime — command operations", () => {
         const fake = makeFakeHarness();
         const m1 = user("first question");
         const a1 = assistant("first answer", "stop");
-        const m2 = user("second question");
         const branchAfterNavigate: SessionTreeEntry[] = [
             { type: "message", id: "m1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: m1 },
             { type: "message", id: "a1", parentId: "m1", timestamp: "2026-01-01T00:00:02.000Z", message: a1 },

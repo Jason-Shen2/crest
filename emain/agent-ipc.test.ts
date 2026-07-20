@@ -192,7 +192,7 @@ describe("agent-ipc command helpers", () => {
         vi.mocked(electron.ipcMain.handle).mockClear();
         vi.mocked(electron.ipcMain.on).mockClear();
         vi.mocked(buildAgentHarnessHost).mockReset();
-        _resetAgentIpcForTests();
+        await _resetAgentIpcForTests();
         previousConfigHome = process.env.WAVETERM_CONFIG_HOME;
         tmpConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-ipc-test-"));
         process.env.WAVETERM_CONFIG_HOME = tmpConfigHome;
@@ -450,6 +450,24 @@ describe("agent-ipc command helpers", () => {
         await expect(handlers.get("agent:extensions-graph")?.({})).resolves.toEqual(before);
     });
 
+    it("keeps the extensions graph stable across headless shortcut and command execution", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-headless-graph-cwd-"));
+        await fs.mkdir(path.join(cwd, ".crest", "extensions"), { recursive: true });
+        await fs.writeFile(
+            path.join(cwd, ".crest", "extensions", "headless.ts"),
+            `export default (pi) => {
+                pi.registerCommand("headless-command", { handler: () => {} });
+                pi.registerShortcut("ctrl+h", { handler: () => {} });
+            };`
+        );
+        const before = getExtensionGraphForLifecycleRuntime();
+
+        await runAgentExtensionCommandForIpc({ cwd, name: "headless-command", argsText: "" });
+        await runAgentShortcutForIpc({ cwd, shortcut: "ctrl+h" });
+
+        expect(getExtensionGraphForLifecycleRuntime()).toEqual(before);
+    });
+
     it("keeps the extensions graph stable when persisted get-session-state renders extension entries", async () => {
         registerAgentIpcHandlers();
         const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -496,6 +514,20 @@ describe("agent-ipc command helpers", () => {
         ).resolves.toEqual({ status: "success", message: "Set flag alias.enabled" });
         expect(setFlagSpy).toHaveBeenCalledWith("alias.enabled", false);
         expect(vi.mocked(buildAgentHarnessHost)).toHaveBeenCalledOnce();
+    });
+
+    it("rejects unknown and type-incompatible live flag writes", async () => {
+        const { aliasMetadata, owner } = await createAliasedExtensionOwner();
+
+        await expect(
+            setAgentFlagForIpc({ sessionMetadata: aliasMetadata, name: "missing.flag", value: true })
+        ).resolves.toEqual({ status: "noop", message: "Flag missing.flag is not available." });
+        await expect(
+            setAgentFlagForIpc({ sessionMetadata: aliasMetadata, name: "alias.enabled", value: "wrong" })
+        ).resolves.toEqual({ status: "noop", message: "Flag alias.enabled does not accept this value." });
+
+        expect(owner.getFlagValue("missing.flag")).toBeUndefined();
+        expect(owner.getFlagValue("alias.enabled")).toBe(false);
     });
 
     it("runs live shortcuts through an alias path without rebuilding the owner", async () => {
@@ -640,6 +672,43 @@ describe("agent-ipc command helpers", () => {
         expect(vi.mocked(buildAgentHarnessHost)).toHaveBeenCalledTimes(2);
     });
 
+    it("serializes flag writes behind reload and rejects writes to the disposed owner", async () => {
+        const { cwd, aliasMetadata, owner } = await createAliasedExtensionOwner();
+        const lifecycleHost = owner.host.extensionLifecycleHost;
+        if (!lifecycleHost) throw new Error("expected lifecycle host");
+        const disposeGate = deferred<void>();
+        const disposerStarted = vi.fn();
+        lifecycleHost.registerDispose(owner.path, async () => {
+            disposerStarted();
+            await disposeGate.promise;
+        });
+        let flagSettled = false;
+
+        const reloadPromise = runAgentCommandForIpc({
+            command: "reload",
+            cwd,
+            sessionMetadata: aliasMetadata,
+        });
+        await vi.waitFor(() => expect(disposerStarted).toHaveBeenCalledOnce());
+        const flagPromise = setAgentFlagForIpc({
+            sessionMetadata: aliasMetadata,
+            name: "alias.enabled",
+            value: true,
+        }).then((result) => {
+            flagSettled = true;
+            return result;
+        });
+        await Promise.resolve();
+
+        expect(flagSettled).toBe(false);
+        disposeGate.resolve();
+        await expect(reloadPromise).resolves.toMatchObject({ status: "success" });
+        await expect(flagPromise).resolves.toEqual({
+            status: "noop",
+            message: "No active agent session to set flag alias.enabled.",
+        });
+    });
+
     it("does not retain raw session cache fallback in reload owner lookup", async () => {
         const source = await fs.readFile(path.join(process.cwd(), "emain", "agent-ipc.ts"), "utf8");
         const reloadHelpers = source.slice(
@@ -713,7 +782,7 @@ describe("agent-ipc command helpers", () => {
         vi.mocked(buildAgentHarnessHost).mockImplementation((opts) => {
             if (opts.extensionUiBridge) bridges.push(opts.extensionUiBridge);
             return {
-                harness: { subscribe: () => () => {}, abort: async () => {} },
+                harness: { subscribe: () => () => {}, abort: async () => {}, isIdle: () => true },
                 session: opts.session,
                 extensions: opts.extensions,
                 ctx: {},
@@ -723,6 +792,7 @@ describe("agent-ipc command helpers", () => {
                 appendCustomEntry: async () => {},
                 promptWithCustomEntry: async () => undefined,
                 update: () => {},
+                getCwd: () => cwd,
             } as never;
         });
         const sendSpy = vi.spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig").mockResolvedValue("entry-reload-handoff");
@@ -818,7 +888,7 @@ describe("agent-ipc command helpers", () => {
         expect(replayed?.extensionUi).not.toHaveProperty("request");
 
         await unsubscribeAgentSessionForIpc(sender.id, aliasPath);
-        _resetAgentIpcForTests({ preservePendingReloadStates: true });
+        await _resetAgentIpcForTests({ preservePendingReloadStates: true });
         registerAgentIpcHandlers();
         const rebuiltHandlers = new Map<string, (...args: unknown[]) => unknown>();
         for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
@@ -944,15 +1014,13 @@ describe("agent-ipc command helpers", () => {
         sendSpy.mockRestore();
     });
 
-    it("blocks a sessionless global reload behind an active extension build", async () => {
+    it("blocks a sessionless global reload behind an active extension build and rebuilds cached runtimes", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-global-reload-barrier-"));
         const { metadata } = await createPaneSession(cwd);
         vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
-        let lifecycleHost: ReturnType<typeof createExtensionLifecycleHost> | undefined;
         vi.mocked(buildAgentHarnessHost).mockImplementation((opts) => {
-            lifecycleHost = opts.extensionLifecycleHost;
             return {
-                harness: { subscribe: () => () => {}, abort: async () => {} },
+                harness: { subscribe: () => () => {}, abort: async () => {}, isIdle: () => true },
                 session: opts.session,
                 extensions: opts.extensions,
                 ctx: {},
@@ -962,9 +1030,11 @@ describe("agent-ipc command helpers", () => {
                 appendCustomEntry: async () => {},
                 promptWithCustomEntry: async () => undefined,
                 update: () => {},
+                getCwd: () => cwd,
             } as never;
         });
         const sendSpy = vi.spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig").mockResolvedValue("entry-global-barrier");
+        const disposeSpy = vi.spyOn(AgentSessionRuntime.prototype, "dispose");
         const buildGate = deferred<void>();
         const buildStarted = deferred<void>();
         const originalBuildContext = Session.prototype.buildContext;
@@ -991,18 +1061,118 @@ describe("agent-ipc command helpers", () => {
             }
         );
         await buildStarted.promise;
-        if (!lifecycleHost) throw new Error("expected lifecycle host");
-        const reloadStartSpy = vi.spyOn(lifecycleHost, "reloadStart");
-        const reloadPromise = runAgentCommandForIpc({ command: "reload", cwd });
+        let reloadSettled = false;
+        const reloadPromise = runAgentCommandForIpc({ command: "reload", cwd }).then((result) => {
+            reloadSettled = true;
+            return result;
+        });
         await new Promise((resolve) => setTimeout(resolve, 25));
 
-        expect(reloadStartSpy).not.toHaveBeenCalled();
+        expect(reloadSettled).toBe(false);
         buildGate.resolve();
         await sendPromise;
         await expect(reloadPromise).resolves.toMatchObject({ status: "success" });
-        expect(reloadStartSpy).toHaveBeenCalledOnce();
+        expect(disposeSpy).toHaveBeenCalledWith("reload");
+        await handlers.get("agent:send")?.(
+            { sender: { id: 2 } },
+            {
+                sessionMetadata: metadata,
+                blockId: "block-1",
+                cwd,
+                text: "after reload",
+                provider: "p",
+                model: "m",
+            }
+        );
+        expect(vi.mocked(buildAgentHarnessHost)).toHaveBeenCalledTimes(2);
         buildContextSpy.mockRestore();
         sendSpy.mockRestore();
+        disposeSpy.mockRestore();
+    });
+
+    it("does not interrupt a runtime from another workspace during sessionless reload", async () => {
+        const firstCwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-global-reload-first-"));
+        const secondCwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-global-reload-second-"));
+        const { metadata } = await createPaneSession(firstCwd);
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockImplementation((opts) => ({
+            ...makeHarnessHostMock(),
+            session: opts.session,
+            extensions: opts.extensions,
+            extensionRuntime: opts.extensionRuntime,
+            extensionLifecycleOwnerId: opts.extensionLifecycleOwnerId,
+            extensionLifecycleHost: opts.extensionLifecycleHost,
+            getCwd: () => firstCwd,
+        }) as never);
+        vi.spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig").mockResolvedValue("entry-other-workspace");
+        const runningSpy = vi.spyOn(AgentSessionRuntime.prototype, "isRunning").mockReturnValue(true);
+        const disposeSpy = vi.spyOn(AgentSessionRuntime.prototype, "dispose");
+        registerAgentIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+        await handlers.get("agent:send")?.(
+            { sender: { id: 1 } },
+            {
+                sessionMetadata: metadata,
+                blockId: "block-1",
+                cwd: firstCwd,
+                text: "hello",
+                provider: "p",
+                model: "m",
+            }
+        );
+
+        await expect(runAgentCommandForIpc({ command: "reload", cwd: secondCwd })).resolves.toMatchObject({
+            status: "success",
+        });
+
+        expect(disposeSpy).not.toHaveBeenCalled();
+        runningSpy.mockRestore();
+        disposeSpy.mockRestore();
+    });
+
+    it("refuses sessionless reload while the target workspace runtime is running", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-global-reload-running-"));
+        const { metadata } = await createPaneSession(cwd);
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockImplementation((opts) => ({
+            ...makeHarnessHostMock(),
+            session: opts.session,
+            extensions: opts.extensions,
+            extensionRuntime: opts.extensionRuntime,
+            extensionLifecycleOwnerId: opts.extensionLifecycleOwnerId,
+            extensionLifecycleHost: opts.extensionLifecycleHost,
+            getCwd: () => cwd,
+        }) as never);
+        vi.spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig").mockResolvedValue("entry-running-workspace");
+        const runningSpy = vi.spyOn(AgentSessionRuntime.prototype, "isRunning").mockReturnValue(true);
+        const disposeSpy = vi.spyOn(AgentSessionRuntime.prototype, "dispose");
+        registerAgentIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+        await handlers.get("agent:send")?.(
+            { sender: { id: 1 } },
+            {
+                sessionMetadata: metadata,
+                blockId: "block-1",
+                cwd,
+                text: "hello",
+                provider: "p",
+                model: "m",
+            }
+        );
+
+        await expect(runAgentCommandForIpc({ command: "reload", cwd })).resolves.toEqual({
+            status: "noop",
+            message: "Reload failed: cannot reload extensions while an agent session in this workspace is running",
+        });
+        expect(disposeSpy).not.toHaveBeenCalled();
+        runningSpy.mockRestore();
+        disposeSpy.mockRestore();
     });
 
     it("retains reload handoff when owner construction fails and consumes it on retry", async () => {
@@ -1565,28 +1735,14 @@ describe("agent-ipc command helpers", () => {
             }
         );
         extensionUiBridge!.host!.setStatus("build", "Running");
-        vi.mocked(sender.send).mockClear();
+        const sendsBeforePersistedReplayCompletes = vi.mocked(sender.send).mock.calls.length;
 
         metadataGate.resolve(metadata);
         await subscribePromise;
-        await vi.waitFor(() =>
-            expect(
-                vi
-                    .mocked(sender.send)
-                    .mock.calls.some((call) => (call[1] as { event?: { type?: string } }).event?.type === "session_state")
-            ).toBe(true)
-        );
-
-        const sessionStates = vi
-            .mocked(sender.send)
-            .mock.calls.map((call) => (call[1] as { event?: { type?: string; extensionUi?: unknown } }).event)
-            .filter((event) => event?.type === "session_state");
-        expect(sessionStates).not.toContainEqual(
-            expect.objectContaining({ extensionUi: { statuses: {}, widgets: {}, widgetnodes: {} } })
-        );
-        expect(sessionStates.at(-1)).toEqual(
+        expect(vi.mocked(sender.send).mock.calls).toHaveLength(sendsBeforePersistedReplayCompletes);
+        expect(vi.mocked(sender.send).mock.calls.at(-1)?.[1]).toEqual(
             expect.objectContaining({
-                extensionUi: expect.objectContaining({ statuses: { build: "Running" } }),
+                event: expect.objectContaining({ type: "ext_ui_status", key: "build", text: "Running" }),
             })
         );
     });
@@ -1740,15 +1896,86 @@ describe("agent-ipc command helpers", () => {
             }
         );
         const owner = extensionUiBridge!.host!;
-        vi.spyOn(owner.host.session, "getBranch").mockRejectedValueOnce(new Error("snapshot failed once"));
+        const getBranchSpy = vi.spyOn(owner.host.session, "getBranch").mockRejectedValueOnce(new Error("snapshot failed once"));
+        vi.mocked(sender.send).mockClear();
 
-        await expect(subscribeAgentSessionForIpc(sender, metadata.path)).rejects.toThrow("snapshot failed once");
         await expect(subscribeAgentSessionForIpc(sender, metadata.path)).resolves.toBeUndefined();
-
+        expect(getBranchSpy).toHaveBeenCalledTimes(2);
         expect(sender.send).toHaveBeenCalledWith(
             "agent:event",
             expect.objectContaining({
                 event: expect.objectContaining({ type: "session_state" }),
+            })
+        );
+        vi.mocked(sender.send).mockClear();
+        owner.setStatus("retry", "still attached");
+        expect(sender.send).toHaveBeenCalledWith(
+            "agent:event",
+            expect.objectContaining({
+                event: expect.objectContaining({ type: "ext_ui_status", key: "retry", text: "still attached" }),
+            })
+        );
+    });
+
+    it("does not send a stale snapshot after reload replaces the runtime", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-stale-live-snapshot");
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        const bridges: ExtensionUiBridge[] = [];
+        vi.mocked(buildAgentHarnessHost).mockImplementation((opts: any) => {
+            if (opts.extensionUiBridge) bridges.push(opts.extensionUiBridge);
+            return {
+                ...makeHarnessHostMock(),
+                session: opts.session,
+                extensions: opts.extensions,
+                extensionRuntime: opts.extensionRuntime,
+                extensionLifecycleOwnerId: opts.extensionLifecycleOwnerId,
+                extensionLifecycleHost: opts.extensionLifecycleHost,
+            } as never;
+        });
+        vi.spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig").mockResolvedValue("entry-stale-snapshot");
+        const sender = {
+            id: 15,
+            isDestroyed: vi.fn(() => false),
+            once: vi.fn(),
+            send: vi.fn(),
+        } as unknown as electron.WebContents;
+        registerAgentIpcHandlers();
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        for (const call of vi.mocked(electron.ipcMain.handle).mock.calls) {
+            handlers.set(call[0], call[1] as (...args: unknown[]) => unknown);
+        }
+        const sendInput = {
+            sessionMetadata: metadata,
+            blockId: "block-1",
+            cwd: metadata.cwd,
+            text: "hello",
+            provider: "p",
+            model: "m",
+        };
+        await handlers.get("agent:send")?.({ sender }, sendInput);
+        await subscribeAgentSessionForIpc(sender, metadata.path);
+        const oldOwner = bridges[0].host as AgentSessionRuntime;
+        oldOwner.setStatus("owner", "old");
+        const branch = await oldOwner.host.session.getBranch();
+        const branchGate = deferred<typeof branch>();
+        vi.spyOn(oldOwner.host.session, "getBranch").mockReturnValueOnce(branchGate.promise);
+        const staleSnapshot = subscribeAgentSessionForIpc(sender, metadata.path);
+        await runAgentCommandForIpc({ command: "reload", cwd: metadata.cwd, sessionMetadata: metadata });
+        await handlers.get("agent:send")?.({ sender }, sendInput);
+        const newOwner = bridges[1].host as AgentSessionRuntime;
+        newOwner.setStatus("owner", "new");
+        vi.mocked(sender.send).mockClear();
+
+        branchGate.resolve(branch);
+        await staleSnapshot;
+
+        expect(sender.send).not.toHaveBeenCalledWith(
+            "agent:event",
+            expect.objectContaining({
+                event: expect.objectContaining({
+                    type: "session_state",
+                    extensionUi: expect.objectContaining({ statuses: { owner: "old" } }),
+                }),
             })
         );
     });
@@ -1982,7 +2209,7 @@ describe("agent-ipc command helpers", () => {
             await vi.advanceTimersByTimeAsync(60 * 1000);
             expect(disposeSpy).toHaveBeenCalledOnce();
         } finally {
-            _resetAgentIpcForTests();
+            await _resetAgentIpcForTests();
             vi.useRealTimers();
             sendConfiguredSpy.mockRestore();
             disposeSpy.mockRestore();
@@ -2032,7 +2259,7 @@ describe("agent-ipc command helpers", () => {
 
             expect(disposeSpy).toHaveBeenCalledOnce();
         } finally {
-            _resetAgentIpcForTests();
+            await _resetAgentIpcForTests();
             vi.useRealTimers();
             sendConfiguredSpy.mockRestore();
             disposeSpy.mockRestore();
@@ -2079,14 +2306,14 @@ describe("agent-ipc command helpers", () => {
             expect(sender.once).not.toHaveBeenCalled();
             expect(disposeSpy).toHaveBeenCalledOnce();
         } finally {
-            _resetAgentIpcForTests();
+            await _resetAgentIpcForTests();
             vi.useRealTimers();
             sendConfiguredSpy.mockRestore();
             disposeSpy.mockRestore();
         }
     });
 
-    it("starts only one runtime sweep timer", () => {
+    it("starts only one runtime sweep timer", async () => {
         vi.useFakeTimers();
         try {
             registerAgentIpcHandlers();
@@ -2094,7 +2321,7 @@ describe("agent-ipc command helpers", () => {
 
             expect(vi.getTimerCount()).toBe(1);
         } finally {
-            _resetAgentIpcForTests();
+            await _resetAgentIpcForTests();
             vi.useRealTimers();
         }
     });

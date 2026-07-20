@@ -952,11 +952,6 @@ export class AgentHarness<
 		return this.thinkingLevel;
 	}
 
-	/** True when the harness is idle (not streaming, compacting, or navigating). */
-	isIdle(): boolean {
-		return this.phase === "idle";
-	}
-
 	/** The abort signal of the in-flight run, or undefined when idle. */
 	getCurrentSignal(): AbortSignal | undefined {
 		return this.runAbortController?.signal;

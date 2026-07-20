@@ -134,6 +134,7 @@ function isInterceptableShortcut(shortcut: string): boolean {
 export function useAgentExtensionShortcuts(
     apiRef: RefObject<AgentChatHostApi | null>,
     cwd: string | undefined,
+    sessionPath: string | undefined,
     outerBlockId: string,
     reloadToken?: number,
     onUserError?: (message: string) => void
@@ -160,7 +161,7 @@ export function useAgentExtensionShortcuts(
         return () => {
             cancelled = true;
         };
-    }, [apiRef, cwd, reloadToken]);
+    }, [apiRef, cwd, sessionPath, reloadToken]);
 
     const interceptable = useMemo(
         () => shortcuts.filter((s) => isInterceptableShortcut(s.shortcut)),
@@ -196,17 +197,24 @@ export function useAgentExtensionShortcuts(
 export interface AgentFlagsPanelProps {
     apiRef: RefObject<AgentChatHostApi | null>;
     cwd: string | undefined;
+    sessionPath?: string;
     /** Bumped by the parent to force a reload (e.g. after session mint). */
     reloadToken?: number;
     onUserError?: (message: string) => void;
 }
 
-export const AgentFlagsPanel = memo(({ apiRef, cwd, reloadToken, onUserError }: AgentFlagsPanelProps) => {
+export const AgentFlagsPanel = memo(({ apiRef, cwd, sessionPath, reloadToken, onUserError }: AgentFlagsPanelProps) => {
     const [flags, setFlags] = useState<AgentFlagInfo[]>([]);
+    const controlsGenerationRef = useRef(0);
+    const reloadRequestRef = useRef(0);
+    const reloadTokenRef = useRef(reloadToken);
+    const flagWriteQueuesRef = useRef(new Map<string, Promise<void>>());
+    const flagWriteVersionsRef = useRef(new Map<string, number>());
     const onUserErrorRef = useRef(onUserError);
     onUserErrorRef.current = onUserError;
 
     const reload = useCallback(() => {
+        const request = ++reloadRequestRef.current;
         const api = apiRef.current;
         if (!api || !cwd) {
             setFlags([]);
@@ -214,31 +222,68 @@ export const AgentFlagsPanel = memo(({ apiRef, cwd, reloadToken, onUserError }: 
         }
         void api
             .listFlags()
-            .then(setFlags)
-            .catch(() => setFlags([]));
-    }, [apiRef, cwd]);
+            .then((nextFlags) => {
+                if (reloadRequestRef.current === request) setFlags(nextFlags);
+            })
+            .catch(() => {
+                if (reloadRequestRef.current === request) setFlags([]);
+            });
+    }, [apiRef, cwd, sessionPath]);
 
     useEffect(() => {
+        controlsGenerationRef.current++;
+        reload();
+        return () => {
+            controlsGenerationRef.current++;
+            reloadRequestRef.current++;
+        };
+    }, [reload]);
+
+    useEffect(() => {
+        if (reloadTokenRef.current === reloadToken) return;
+        reloadTokenRef.current = reloadToken;
         reload();
     }, [reload, reloadToken]);
 
     const writeFlag = useCallback(
         (name: string, value: boolean | string) => {
-            // Optimistic local update; the backend write is only durable when a
-            // live session owns the pane (surfaced via the returned noop).
             setFlags((prev) => prev.map((f) => (f.name === name ? { ...f, value } : f)));
-            void apiRef.current
-                ?.setFlag(name, value)
-                .then((result) => {
+            const api = apiRef.current;
+            if (!api) {
+                reload();
+                return;
+            }
+            const version = (flagWriteVersionsRef.current.get(name) ?? 0) + 1;
+            const controlsGeneration = controlsGenerationRef.current;
+            flagWriteVersionsRef.current.set(name, version);
+            const previous = flagWriteQueuesRef.current.get(name) ?? Promise.resolve();
+            const operation = previous.then(async () => {
+                if (controlsGenerationRef.current !== controlsGeneration) return;
+                try {
+                    const result = await api.setFlag(name, value);
                     if (result?.status === "noop" && result.message) {
                         onUserErrorRef.current?.(result.message);
                     }
-                })
-                .catch((err) => {
+                } catch (err) {
                     onUserErrorRef.current?.(err instanceof Error ? err.message : String(err));
-                });
+                } finally {
+                    if (
+                        controlsGenerationRef.current === controlsGeneration &&
+                        flagWriteVersionsRef.current.get(name) === version
+                    ) {
+                        reload();
+                    }
+                }
+            });
+            const trackedOperation = operation.finally(() => {
+                if (flagWriteQueuesRef.current.get(name) === trackedOperation) {
+                    flagWriteQueuesRef.current.delete(name);
+                }
+            });
+            flagWriteQueuesRef.current.set(name, trackedOperation);
+            void trackedOperation;
         },
-        [apiRef]
+        [apiRef, reload]
     );
 
     if (flags.length === 0) return null;
@@ -260,6 +305,11 @@ AgentFlagsPanel.displayName = "AgentFlagsPanel";
 
 const AgentFlagRow = memo(
     ({ flag, onChange }: { flag: AgentFlagInfo; onChange: (name: string, value: boolean | string) => void }) => {
+        const value = typeof flag.value === "string" ? flag.value : "";
+        const [draft, setDraft] = useState(value);
+        useEffect(() => {
+            setDraft(value);
+        }, [value]);
         const label = (
             <span className="min-w-0">
                 <span className="text-foreground">{flag.name}</span>
@@ -280,15 +330,15 @@ const AgentFlagRow = memo(
                 </label>
             );
         }
-        const value = typeof flag.value === "string" ? flag.value : "";
         return (
             <label className="flex items-center justify-between gap-3">
                 {label}
                 <input
                     type="text"
-                    defaultValue={value}
-                    onBlur={(e) => {
-                        if (e.target.value !== value) onChange(flag.name, e.target.value);
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onBlur={() => {
+                        if (draft !== value) onChange(flag.name, draft);
                     }}
                     onKeyDown={(e) => {
                         if (e.key === "Enter") {

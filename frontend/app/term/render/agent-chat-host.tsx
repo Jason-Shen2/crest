@@ -44,6 +44,10 @@ export interface AgentChatHostProps {
     selectionError?: ResolveError | null;
     /** Wired once with a send fn the input bar can call. Mirrors the previous useChat host's pattern. */
     onReady?: (api: AgentChatHostApi) => void;
+    /** Changes when extension discovery must rerun after an explicit reload. */
+    extensionRefreshToken?: number;
+    /** Called when usePiChat adopts a different canonical session. */
+    onSessionPathChange?: (sessionPath: string | undefined) => void;
     /** Called on every turns change so WorkspaceAgentSurface can feed assistant-ui. */
     onTurnsChange?: (turns: PiTurn[]) => void;
     /**
@@ -126,6 +130,14 @@ export type AgentSelectorRequest =
           listSessions: (cwd?: string) => Promise<AgentSessionDetail[]>;
           resumeSession: (sessionMetadata: AgentSessionMeta) => Promise<AgentNavigateTreeResult>;
       };
+
+export function getAgentExtensionDiscoveryKey(
+    cwd: string | undefined,
+    sessionPath: string | undefined,
+    refreshToken = 0
+): string {
+    return JSON.stringify([cwd ?? "", sessionPath ?? "", refreshToken]);
+}
 
 export interface AgentCommandExecutionResult {
     status?: "success" | "noop";
@@ -351,6 +363,8 @@ export function AgentChatHost({
     paneContext,
     selectionError,
     onReady,
+    extensionRefreshToken,
+    onSessionPathChange,
     onTurnsChange,
     onStateChange,
     onExtUiChange,
@@ -406,18 +420,21 @@ export function AgentChatHost({
     const paneContextRef = useRef(paneContext);
     const selectionErrorRef = useRef(selectionError);
     const modelSelectionRef = useRef(modelSelection);
-    useEffect(() => {
-        sendRef.current = chat.send;
-        abortRef.current = chat.abort;
-        turnsRef.current = turns;
-        sessionMetadataRef.current = chat.sessionMetadata;
-        paneContextRef.current = paneContext;
-        selectionErrorRef.current = selectionError;
-        modelSelectionRef.current = modelSelection;
-    }, [chat.send, chat.abort, turns, chat.sessionMetadata, paneContext, selectionError, modelSelection]);
+    sendRef.current = chat.send;
+    abortRef.current = chat.abort;
+    turnsRef.current = turns;
+    sessionMetadataRef.current = chat.sessionMetadata;
+    paneContextRef.current = paneContext;
+    selectionErrorRef.current = selectionError;
+    modelSelectionRef.current = modelSelection;
 
     const onReadyRef = useRef(onReady);
     onReadyRef.current = onReady;
+    const onSessionPathChangeRef = useRef(onSessionPathChange);
+    onSessionPathChangeRef.current = onSessionPathChange;
+    useEffect(() => {
+        onSessionPathChangeRef.current?.(chat.sessionMetadata?.path);
+    }, [chat.sessionMetadata?.path]);
     // Surface live status + pending queue to the parent (the activity bar).
     const onStateChangeRef = useRef(onStateChange);
     onStateChangeRef.current = onStateChange;
@@ -440,6 +457,11 @@ export function AgentChatHost({
     // submit() can route "/name" to the extension ctx instead of prompting the
     // LLM. Refreshed whenever the pane cwd changes.
     const extensionCommandNamesRef = useRef<ReadonlySet<string>>(new Set<string>());
+    const extensionDiscoveryKey = getAgentExtensionDiscoveryKey(
+        paneContext.cwd,
+        chat.sessionMetadata?.path,
+        extensionRefreshToken
+    );
     useEffect(() => {
         const cwd = paneContext.cwd;
         if (!cwd) return;
@@ -460,7 +482,7 @@ export function AgentChatHost({
         return () => {
             cancelled = true;
         };
-    }, [paneContext.cwd]);
+    }, [extensionDiscoveryKey]);
 
     // One-shot wiring of the API. Stable identity so re-renders don't
     // tear down whatever the parent stored.

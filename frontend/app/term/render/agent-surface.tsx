@@ -121,6 +121,14 @@ export function hasActiveAgentAttachedPanel(state: AgentAttachedPanelState): boo
     return state.commandResults.length > 0 || state.selectorRequest != null || state.modelPickerOpen;
 }
 
+export function shouldRefreshAgentExtensionControls(result: AgentInlineCommandResult): boolean {
+    return result.command === "reload" && result.status === "success";
+}
+
+export function shouldRefreshAgentExtensionControlsForStatus(status: AgentHostState["status"]): boolean {
+    return status === "streaming";
+}
+
 function finiteNumber(value: unknown): number | undefined {
     return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -256,9 +264,14 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
     // Bumped when the host API becomes ready / the session changes so the
     // extension shortcut + flag hooks (which read agentApiRef) reload.
     const [extControlsToken, setExtControlsToken] = useState(0);
+    const [activeAgentSessionPath, setActiveAgentSessionPath] = useState<string | undefined>(undefined);
     const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
         agentApiRef.current = api;
         setExtControlsToken((t) => t + 1);
+    }, []);
+    const onAgentSessionPathChange = useCallback((sessionPath: string | undefined) => {
+        setActiveAgentSessionPath(sessionPath);
+        setExtControlsToken((token) => token + 1);
     }, []);
     const onOpenAgentModelPicker = useCallback(() => {
         setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "openModelPicker" }));
@@ -280,6 +293,11 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
         setAgentRestoredTextRequest((prev) => ({ text, requestId: (prev?.requestId ?? 0) + 1 }));
     }, []);
     const [agentState, setAgentState] = useState<AgentHostState>({ status: "idle", queuedMessages: [] });
+    useEffect(() => {
+        if (shouldRefreshAgentExtensionControlsForStatus(agentState.status)) {
+            setExtControlsToken((token) => token + 1);
+        }
+    }, [agentState.status]);
     const onAgentStop = useCallback(() => {
         agentApiRef.current?.abort();
     }, []);
@@ -319,6 +337,9 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
         agentApiRef.current?.respondWidgetEvent(event);
     }, []);
     const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
+        if (shouldRefreshAgentExtensionControls(result)) {
+            setExtControlsToken((token) => token + 1);
+        }
         setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "showCommandResult", result }));
     }, []);
     const onDismissCommandResult = useCallback((index: number) => {
@@ -356,7 +377,14 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
         (msg: string) => globalStore.set(model.notificationAtom, msg),
         [model]
     );
-    useAgentExtensionShortcuts(agentApiRef, context.workspaceDir, outerBlockId, extControlsToken, onAgentUserError);
+    useAgentExtensionShortcuts(
+        agentApiRef,
+        context.workspaceDir,
+        activeAgentSessionPath ?? agentSession?.path,
+        outerBlockId,
+        extControlsToken,
+        onAgentUserError
+    );
 
     const chatHost = (
         <>
@@ -389,6 +417,8 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
                 }}
                 selectionError={aiConfigError}
                 onReady={onAgentHostReady}
+                extensionRefreshToken={extControlsToken}
+                onSessionPathChange={onAgentSessionPathChange}
                 onTurnsChange={onAgentTurnsUpdate}
                 onStateChange={setAgentState}
                 onExtUiChange={onAgentExtUiChange}
@@ -427,6 +457,7 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
                                     <AgentFlagsPanel
                                         apiRef={agentApiRef}
                                         cwd={context.workspaceDir}
+                                        sessionPath={activeAgentSessionPath ?? agentSession?.path}
                                         reloadToken={extControlsToken}
                                         onUserError={onAgentUserError}
                                     />

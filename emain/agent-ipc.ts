@@ -101,7 +101,11 @@ import {
     reloadExtensionsForRuntime,
 } from "./agent/extensions";
 import type { WidgetEvent } from "./agent/extensions";
-import { createExtensionLifecycleHost, unregisterExtensionLifecycleHost } from "./agent/extensions/lifecycle";
+import {
+    createExtensionLifecycleHost,
+    unregisterExtensionLifecycleHost,
+    type ExtensionLifecycleHost,
+} from "./agent/extensions/lifecycle";
 import { loadAgentPromptTemplates } from "./agent/prompt-loader";
 import { loadAgentSkills } from "./agent/skills-loader";
 import { getDefaultTools } from "./agent/tools";
@@ -132,6 +136,7 @@ interface AgentSubscriptionRecord {
 }
 
 const subscriptions = new Map<SubKey, AgentSubscriptionRecord>();
+const subscriptionGenerations = new Map<SubKey, number>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
 const pendingSubscriptions = new Map<SubKey, SubscriptionTarget>();
 
@@ -584,9 +589,7 @@ async function ensureAgentRuntime(
             `reasoning=${config.thinkingLevel} apiKey=${apiKey ? "present" : "MISSING"} ` +
             `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
     );
-    const runtime = await runtimeRegistry.getOrCreate(metadata.path, () =>
-        serializeExtensionOperation(opts.cwd, () => createAgentRuntime(metadata, opts, config))
-    );
+    const runtime = await runtimeRegistry.getOrCreate(metadata.path, () => createAgentRuntime(metadata, opts, config));
     pendingReloadStates.delete(metadata.path);
     attachPendingSubscribers(metadata.path, runtime);
     return { runtime, config };
@@ -650,7 +653,9 @@ function makeEmptyExtensionUiSnapshot(): ExtensionUiSnapshot {
 async function sendPersistedSessionState(
     sender: electron.WebContents,
     sessionPath: string,
-    rendererSessionPath = sessionPath
+    rendererSessionPath = sessionPath,
+    subscriptionKey?: SubKey,
+    subscriptionGeneration?: number
 ): Promise<void> {
     let canonicalPath = sessionPath;
     try {
@@ -662,9 +667,16 @@ async function sendPersistedSessionState(
         const turns = buildPersistedTurnsFromSessionEntries(branchEntries);
         const renderedEntries = await renderSessionEntriesForIpc(metadata.cwd, branchEntries);
         if (sender.isDestroyed()) return;
+        if (
+            subscriptionKey &&
+            (subscriptionGenerations.get(subscriptionKey) !== subscriptionGeneration ||
+                !pendingSubscriptions.has(subscriptionKey))
+        ) {
+            return;
+        }
         const owner = runtimeRegistry.get(canonicalPath);
         if (owner) {
-            await sendLiveSessionState(sender, canonicalPath, owner, rendererSessionPath);
+            await subscribeToOwner(sender, canonicalPath, owner, rendererSessionPath);
             return;
         }
         sender.send(
@@ -735,9 +747,14 @@ function subscribeToOwner(
     rendererSessionPath = sessionPath
 ): Promise<void> {
     const key: SubKey = makeAgentSubscriptionKey(sender.id, sessionPath, rendererSessionPath);
+    const subscriptionGeneration = (subscriptionGenerations.get(key) ?? 0) + 1;
+    subscriptionGenerations.set(key, subscriptionGeneration);
     pendingSubscriptions.delete(key);
     if (sender.isDestroyed()) return Promise.resolve();
-    if (subscriptions.has(key)) return Promise.resolve();
+    const existing = subscriptions.get(key);
+    if (existing) {
+        return sendLiveSessionState(sender, sessionPath, session, rendererSessionPath, key, subscriptionGeneration);
+    }
     const unsub = session.subscribe((agentEvent) => {
         if (sender.isDestroyed()) return;
         sender.send(
@@ -752,23 +769,38 @@ function subscribeToOwner(
     subscriptions.set(key, { unsubscribe: unsub, sessionPath, target });
     runtimeRegistry.acquire(sessionPath, key);
     trackSenderKey(sender, key);
-    return sendLiveSessionState(sender, sessionPath, session, rendererSessionPath).catch((error) => {
-        if (subscriptions.get(key)?.unsubscribe === unsub) {
-            releaseSubscription(key);
-        }
-        throw error;
-    });
+    return sendLiveSessionState(sender, sessionPath, session, rendererSessionPath, key, subscriptionGeneration);
 }
 
 async function sendLiveSessionState(
     sender: electron.WebContents,
     sessionPath: string,
     session: AgentSessionRuntime,
-    rendererSessionPath = sessionPath
+    rendererSessionPath = sessionPath,
+    subscriptionKey?: SubKey,
+    subscriptionGeneration?: number
 ): Promise<void> {
-    const entries = await session.host.session.getBranch();
-    const renderedEntries = await renderSessionEntriesForIpc(undefined, entries, session);
+    let renderedEntries: RenderedExtensionEntryNode[] = [];
+    try {
+        const entries = await session.host.session.getBranch();
+        renderedEntries = await renderSessionEntriesForIpc(undefined, entries, session);
+    } catch {
+        try {
+            const entries = await session.host.session.getBranch();
+            renderedEntries = await renderSessionEntriesForIpc(undefined, entries, session);
+        } catch (error) {
+            console.warn(`[agent-ipc] live extension entry replay failed for ${sessionPath}:`, error);
+        }
+    }
     if (sender.isDestroyed()) return;
+    if (runtimeRegistry.get(sessionPath) !== session) return;
+    if (
+        subscriptionKey &&
+        (subscriptionGenerations.get(subscriptionKey) !== subscriptionGeneration ||
+            !subscriptions.has(subscriptionKey))
+    ) {
+        return;
+    }
     const sessionState = session.getSessionState();
     sender.send(
         "agent:event",
@@ -974,7 +1006,7 @@ export async function runAgentShortcutForIpc(input: unknown): Promise<AgentComma
         return await owner.runShortcut(parsed.shortcut);
     }
 
-    const { extensions } = await loadAgentExtensions({ cwd: parsed.cwd });
+    const { extensions } = await loadAgentExtensions({ cwd: parsed.cwd, trackGraph: false });
     const ctx = createExtensionContext(() => parsed.cwd);
     for (const extension of extensions) {
         const registered = extension.shortcuts.get(parsed.shortcut);
@@ -1014,12 +1046,22 @@ function validateSetFlagInput(value: unknown): AgentSetFlagInput {
  */
 export async function setAgentFlagForIpc(input: unknown): Promise<AgentCommandExecutionResult> {
     const parsed = validateSetFlagInput(input);
-    const owner = await resolveCanonicalSessionOwner(parsed.sessionMetadata);
-    if (owner) {
-        owner.setFlagValue(parsed.name, parsed.value);
-        return commandSuccess(`Set flag ${parsed.name}`);
+    if (!parsed.sessionMetadata?.path) {
+        return commandNoop(`No active agent session to set flag ${parsed.name}.`);
     }
-    return commandNoop(`No active agent session to set flag ${parsed.name}.`);
+    const canonicalPath = await validateSessionPath(parsed.sessionMetadata.path, "sessionMetadata.path");
+    return await serializeSessionOperation(canonicalPath, () =>
+        serializeExtensionOperation(undefined, async () => {
+            const owner = runtimeRegistry.get(canonicalPath);
+            if (!owner) {
+                return commandNoop(`No active agent session to set flag ${parsed.name}.`);
+            }
+            const result = owner.setFlagValue(parsed.name, parsed.value);
+            if (result === "missing") return commandNoop(`Flag ${parsed.name} is not available.`);
+            if (result === "invalid") return commandNoop(`Flag ${parsed.name} does not accept this value.`);
+            return commandSuccess(`Set flag ${parsed.name}`);
+        })
+    );
 }
 
 export async function listAgentTreeForIpc(sessionMetadata: unknown): Promise<AgentTreeResult> {
@@ -1189,8 +1231,12 @@ async function runReloadAgentCommand(parsed: AgentRunCommandInput): Promise<Agen
     try {
         const owner = await getCachedSessionOwnerForReload(parsed.sessionMetadata);
         const reloadState = owner?.getReloadState();
-        const lifecycleHost = owner?.host.extensionLifecycleHost;
-        await detachCachedSessionOwnerForReload(owner, reloadState);
+        let lifecycleHost = owner?.host.extensionLifecycleHost;
+        if (owner) {
+            await detachCachedSessionOwnerForReload(owner, reloadState);
+        } else {
+            lifecycleHost = await detachWorkspaceSessionOwnersForReload(parsed.cwd);
+        }
         graph = await reloadExtensionsForRuntime({
             cwd: parsed.cwd,
             lifecycleHost,
@@ -1203,6 +1249,26 @@ async function runReloadAgentCommand(parsed: AgentRunCommandInput): Promise<Agen
         return commandNoop(`Reload failed: ${message}`);
     }
     return commandSuccess(`Reloaded ${graph.nodes.length} extension${graph.nodes.length === 1 ? "" : "s"}.`);
+}
+
+async function detachWorkspaceSessionOwnersForReload(cwd: string): Promise<ExtensionLifecycleHost> {
+    const resolvedCwd = path.resolve(cwd);
+    const targets = [...runtimeRegistry.entries.entries()].filter(
+        ([, entry]) => path.resolve(entry.runtime.host.getCwd()) === resolvedCwd
+    );
+    if (targets.some(([, entry]) => entry.runtime.isRunning())) {
+        throw new Error("cannot reload extensions while an agent session in this workspace is running");
+    }
+    const lifecycleHost =
+        targets.map(([, entry]) => entry.runtime.host.extensionLifecycleHost).find((host) => host != null) ??
+        createExtensionLifecycleHost();
+    for (const [sessionPath, entry] of targets) {
+        const runtime = entry.runtime;
+        pendingReloadStates.set(sessionPath, runtime.getReloadState());
+        moveActiveSubscriptionsToPending(sessionPath);
+        await runtimeRegistry.invalidate(sessionPath, (current) => current.dispose("reload"));
+    }
+    return lifecycleHost;
 }
 
 async function getCachedSessionOwnerForReload(
@@ -1282,7 +1348,7 @@ export async function runAgentExtensionCommandForIpc(input: unknown): Promise<Ag
 
     // Headless fallback: no live owner (no session yet, or a different workspace).
     // No command host available → session-control methods degrade to no-ops.
-    const { extensions } = await loadAgentExtensions({ cwd: parsed.cwd });
+    const { extensions } = await loadAgentExtensions({ cwd: parsed.cwd, trackGraph: false });
     const ctx = createCommandContext(createExtensionContext(() => parsed.cwd));
     for (const extension of extensions) {
         const command = extension.commands.get(parsed.name);
@@ -1474,11 +1540,13 @@ export async function subscribeAgentSessionForIpc(sender: electron.WebContents, 
     const session = runtimeRegistry.get(canonicalPath);
     if (!session) {
         const key: SubKey = makeAgentSubscriptionKey(sender.id, canonicalPath, rendererPath);
+        const subscriptionGeneration = (subscriptionGenerations.get(key) ?? 0) + 1;
+        subscriptionGenerations.set(key, subscriptionGeneration);
         if (!pendingSubscriptions.has(key)) {
             pendingSubscriptions.set(key, { sender, canonicalPath, rendererPath });
             trackSenderKey(sender, key);
         }
-        await sendPersistedSessionState(sender, canonicalPath, rendererPath);
+        await sendPersistedSessionState(sender, canonicalPath, rendererPath, key, subscriptionGeneration);
         return;
     }
     await subscribeToOwner(sender, canonicalPath, session, rendererPath);
@@ -1502,7 +1570,11 @@ export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPat
  */
 export function registerAgentIpcHandlers(): void {
     if (!runtimeSweepTimer) {
-        runtimeSweepTimer = setInterval(() => runtimeRegistry.evictIdle(), AgentRuntimeSweepIntervalMs);
+        runtimeSweepTimer = setInterval(() => {
+            void runtimeRegistry.evictIdle().catch((error) => {
+                console.error("[agent-ipc] runtime eviction error:", error);
+            });
+        }, AgentRuntimeSweepIntervalMs);
         runtimeSweepTimer.unref();
     }
 
@@ -1628,13 +1700,15 @@ export function registerAgentIpcHandlers(): void {
                     `textLen=${opts.text?.length ?? 0}`
             );
             const { metadata } = await ensureSession(opts);
-            const userEntryId = await serializeSessionOperation(metadata.path, async () => {
-                const { runtime, config } = await ensureAgentRuntime(metadata, opts);
-                // Turn identity IS the session entry id of the user message that
-                // starts the turn. Prompt first so the session mints that entry,
-                // the single source of truth.
-                return await runtime.sendWithExecutionConfig(opts.text, config);
-            });
+            const userEntryId = await serializeSessionOperation(metadata.path, () =>
+                serializeExtensionOperation(opts.cwd, async () => {
+                    const { runtime, config } = await ensureAgentRuntime(metadata, opts);
+                    // Turn identity IS the session entry id of the user message that
+                    // starts the turn. Prompt first so the session mints that entry,
+                    // the single source of truth.
+                    return await runtime.sendWithExecutionConfig(opts.text, config);
+                })
+            );
             return { sessionMetadata: metadata, turnId: userEntryId };
         }
     );
@@ -1673,7 +1747,7 @@ export function registerAgentIpcHandlers(): void {
 }
 
 /** Test-only escape hatch: clear the runtime registry + subscriptions. */
-export function _resetAgentIpcForTests(options?: { preservePendingReloadStates?: boolean }): void {
+export async function _resetAgentIpcForTests(options?: { preservePendingReloadStates?: boolean }): Promise<void> {
     for (const record of subscriptions.values()) {
         try {
             record.unsubscribe();
@@ -1682,13 +1756,14 @@ export function _resetAgentIpcForTests(options?: { preservePendingReloadStates?:
         }
     }
     subscriptions.clear();
+    subscriptionGenerations.clear();
     subscriptionsBySender.clear();
     pendingSubscriptions.clear();
     if (runtimeSweepTimer) {
         clearInterval(runtimeSweepTimer);
         runtimeSweepTimer = undefined;
     }
-    runtimeRegistry.disposeAll();
+    await runtimeRegistry.disposeAll();
     sessionOperations.clear();
     extensionCwdOperations.clear();
     extensionGlobalOperation = Promise.resolve();

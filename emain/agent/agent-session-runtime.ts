@@ -528,9 +528,18 @@ export class AgentSessionRuntime {
         return this.host.extensionRuntime?.flagValues.get(name);
     }
 
-    /** Write a live flag value into this session's bound extension runtime. */
-    setFlagValue(name: string, value: boolean | string): void {
-        this.host.extensionRuntime?.flagValues.set(name, value);
+    /** Write a type-compatible value for a registered live extension flag. */
+    setFlagValue(name: string, value: boolean | string): "updated" | "missing" | "invalid" {
+        for (const extension of this.host.extensions) {
+            const flag = extension.flags.get(name);
+            if (!flag) continue;
+            const valid = flag.type === "boolean" ? typeof value === "boolean" : typeof value === "string";
+            if (!valid) return "invalid";
+            if (!this.host.extensionRuntime) return "missing";
+            this.host.extensionRuntime.flagValues.set(name, value);
+            return "updated";
+        }
+        return "missing";
     }
 
     /**
