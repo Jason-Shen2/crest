@@ -168,13 +168,24 @@ describe("TraceBuilder", () => {
             })
         );
 
-        expect(detail.trace.input).toBe("What changed?");
-        expect(detail.trace.metadata).toMatchObject({ userEntryId: "entry-user-1" });
+        expect(detail.trace.input).toEqual([
+            {
+                role: "user",
+                content: [{ type: "text", text: "What changed?" }],
+                entryId: "entry-user-1",
+            },
+        ]);
         const updatedTurn = detail.observations.find((observation) => observation.id === turn?.id);
         expect(updatedTurn).toMatchObject({
             type: "SPAN",
             parentObservationId: "observation-2",
-            input: "What changed?",
+            input: [
+                {
+                    role: "user",
+                    content: [{ type: "text", text: "What changed?" }],
+                    entryId: "entry-user-1",
+                },
+            ],
         });
 
         detail = lastGraph(
@@ -295,13 +306,25 @@ describe("TraceBuilder", () => {
             })
         );
 
-        expect(detail.trace.input).toBe("Summarize the repo");
-        expect(detail.observations[0].input).toBe("Summarize the repo");
+        expect(detail.trace.input).toEqual([
+            {
+                role: "user",
+                content: [{ type: "text", text: "Summarize the repo" }],
+                entryId: "entry-user-1",
+            },
+        ]);
+        expect(detail.observations[0].input).toEqual(detail.trace.input);
         const updatedTurn = detail.observations.find((observation) => observation.id === turn?.id);
         expect(updatedTurn).toMatchObject({
             type: "SPAN",
             parentObservationId: "observation-2",
-            input: "Summarize the repo",
+            input: [
+                {
+                    role: "user",
+                    content: [{ type: "text", text: "Summarize the repo" }],
+                    entryId: "entry-user-1",
+                },
+            ],
         });
 
         detail = lastGraph(
@@ -404,8 +427,14 @@ describe("TraceBuilder", () => {
         );
         const updatedFirstTurn = detail.observations.find((observation) => observation.id === firstTurn?.id);
         expect(updatedFirstTurn).toMatchObject({
-            input: "Inspect the repo",
-            metadata: { entryId: "entry-turn-1", role: "user", turnIndex: 0 },
+            input: [
+                {
+                    role: "user",
+                    content: [{ type: "text", text: "Inspect the repo" }],
+                    entryId: "entry-turn-1",
+                },
+            ],
+            metadata: { turnIndex: 0 },
         });
 
         detail = lastGraph(
@@ -506,5 +535,118 @@ describe("TraceBuilder", () => {
         );
         const lifecycle = detail.observations.find((observation) => observation.name === "model_change");
         expect(lifecycle?.parentObservationId).toBe(secondTurn.id);
+    });
+
+    it("preserves every Pi prompt in a turn in event order", () => {
+        const builder = makeBuilder();
+        const sessionPath = "/tmp/crest/sessions/project/multi-prompt-turn.db";
+
+        builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
+        builder.applyEvent({ sessionPath, event: { type: "turn_start" } });
+        builder.applyEvent({
+            sessionPath,
+            event: {
+                type: "message_end",
+                message: { role: "user", content: [{ type: "text", text: "Queued prompt" }] },
+                entryId: "entry-queued",
+            },
+        });
+        const detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_end",
+                    message: {
+                        role: "user",
+                        content: [
+                            { type: "text", text: "Current prompt" },
+                            { type: "image", data: "image-data", mimeType: "image/png" },
+                        ],
+                    },
+                    entryId: "entry-current",
+                },
+            })
+        );
+
+        expect(detail.observations.find((observation) => observation.name === "turn")?.input).toEqual([
+            {
+                role: "user",
+                content: [{ type: "text", text: "Queued prompt" }],
+                entryId: "entry-queued",
+            },
+            {
+                role: "user",
+                content: [
+                    { type: "text", text: "Current prompt" },
+                    { type: "image", data: "image-data", mimeType: "image/png" },
+                ],
+                entryId: "entry-current",
+            },
+        ]);
+        expect(detail.trace.input).toEqual([
+            {
+                role: "user",
+                content: [{ type: "text", text: "Queued prompt" }],
+                entryId: "entry-queued",
+            },
+            {
+                role: "user",
+                content: [
+                    { type: "text", text: "Current prompt" },
+                    { type: "image", data: "image-data", mimeType: "image/png" },
+                ],
+                entryId: "entry-current",
+            },
+        ]);
+        expect(detail.observations[0].input).toEqual(detail.trace.input);
+    });
+
+    it("preserves Pi custom prompt messages without treating tool results as turn input", () => {
+        const builder = makeBuilder();
+        const sessionPath = "/tmp/crest/sessions/project/custom-prompt-turn.db";
+
+        builder.applyEvent({ sessionPath, event: { type: "agent_start" } });
+        builder.applyEvent({ sessionPath, event: { type: "turn_start" } });
+        builder.applyEvent({
+            sessionPath,
+            event: {
+                type: "message_end",
+                message: { role: "artifact", content: "Use artifact context", artifactId: "artifact-1" },
+                entryId: "entry-artifact",
+            },
+        });
+        const detail = lastGraph(
+            builder.applyEvent({
+                sessionPath,
+                event: {
+                    type: "message_end",
+                    message: {
+                        role: "toolResult",
+                        toolCallId: "call-1",
+                        toolName: "read_file",
+                        content: [{ type: "text", text: "result" }],
+                    },
+                    entryId: "entry-tool-result",
+                },
+            })
+        );
+
+        expect(detail.observations.find((observation) => observation.name === "turn")?.input).toEqual([
+            {
+                role: "artifact",
+                content: "Use artifact context",
+                artifactId: "artifact-1",
+                entryId: "entry-artifact",
+            },
+        ]);
+        expect(detail.trace.input).toEqual([
+            {
+                role: "artifact",
+                content: "Use artifact context",
+                artifactId: "artifact-1",
+                entryId: "entry-artifact",
+            },
+        ]);
+        expect(detail.observations[0].input).toEqual(detail.trace.input);
     });
 });

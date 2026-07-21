@@ -9,8 +9,28 @@ interface TraceSelectorProps {
 
 const TraceLabelLimit = 72;
 
+function messageInputText(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (value == null || typeof value !== "object") return "";
+    const content = (value as Record<string, unknown>).content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+        .filter(
+            (part): part is { type: "text"; text: string } =>
+                part != null &&
+                typeof part === "object" &&
+                (part as Record<string, unknown>).type === "text" &&
+                typeof (part as Record<string, unknown>).text === "string"
+        )
+        .map((part) => part.text)
+        .join("");
+}
+
 function traceInputLabel(trace: Trace): string {
-    const input = typeof trace.input === "string" ? trace.input : "";
+    const input = Array.isArray(trace.input)
+        ? (trace.input.map(messageInputText).find((message) => message.trim().length > 0) ?? "")
+        : messageInputText(trace.input);
     const compact = input.replaceAll(/\s+/g, " ").trim();
     if (!compact) return trace.name ?? "Agent run";
     if (compact.length <= TraceLabelLimit) return compact;

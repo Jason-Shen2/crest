@@ -64,10 +64,6 @@ function assistantText(message: { content?: Array<{ type: string; text?: string 
         .join("");
 }
 
-function messageText(message: { content?: Array<{ type: string; text?: string }> }): string {
-    return assistantText(message);
-}
-
 function usageDetails(usage: ReturnType<typeof asRecord>): Record<string, number> {
     const details: Record<string, number> = {};
     for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"]) {
@@ -345,10 +341,20 @@ export class TraceBuilder {
     }
 
     private handleMessageEnd(sessionPath: string, event: Record<string, unknown>): TraceDetail | undefined {
+        if (isAssistantMessage(event.message)) {
+            return this.endGenerationFromMessage(sessionPath, event.message);
+        }
         if (isUserMessage(event.message)) {
             return this.updateTraceInputFromUserMessage(sessionPath, event);
         }
-        return this.endGenerationFromMessage(sessionPath, event.message);
+        if (asRecord(event.message).role === "toolResult") {
+            return this.snapshot(sessionPath);
+        }
+        const state = this.requireState(sessionPath);
+        if (!state) return undefined;
+        this.appendTraceInput(state, event);
+        this.appendCurrentTurnInput(state, event);
+        return cloneTraceDetail(state.detail);
     }
 
     private updateTraceInputFromUserMessage(
@@ -357,18 +363,8 @@ export class TraceBuilder {
     ): TraceDetail | undefined {
         const state = this.requireState(sessionPath);
         if (!state || !isUserMessage(event.message)) return state ? cloneTraceDetail(state.detail) : undefined;
-        const text = messageText(event.message);
-        if (state.detail.trace.input == null && text) {
-            state.detail.trace.input = text;
-        }
-        if (typeof event.entryId === "string") {
-            state.detail.trace.metadata = {
-                ...state.detail.trace.metadata,
-                userEntryId: event.entryId,
-            };
-        }
-        state.detail.observations[0].input = state.detail.trace.input;
-        this.updateCurrentTurnInput(state, event, text);
+        this.appendTraceInput(state, event);
+        this.appendCurrentTurnInput(state, event);
         return cloneTraceDetail(state.detail);
     }
 
@@ -486,16 +482,25 @@ export class TraceBuilder {
         return state.currentTurnObservationId ?? state.rootObservationId;
     }
 
-    private updateCurrentTurnInput(state: BuilderState, event: Record<string, unknown>, input: string): void {
+    private promptPayload(event: Record<string, unknown>): Record<string, unknown> {
+        const entryId = typeof event.entryId === "string" ? event.entryId : undefined;
+        return {
+            ...asRecord(event.message),
+            ...(entryId ? { entryId } : {}),
+        };
+    }
+
+    private appendTraceInput(state: BuilderState, event: Record<string, unknown>): void {
+        const messages = Array.isArray(state.detail.trace.input) ? state.detail.trace.input : [];
+        state.detail.trace.input = [...messages, this.promptPayload(event)];
+        state.detail.observations[0].input = state.detail.trace.input;
+    }
+
+    private appendCurrentTurnInput(state: BuilderState, event: Record<string, unknown>): void {
         const turn = this.findObservation(state, state.currentTurnObservationId);
         if (!turn) return;
-        const entryId = typeof event.entryId === "string" ? event.entryId : undefined;
-        turn.input = input;
-        turn.metadata = {
-            ...turn.metadata,
-            ...(entryId ? { entryId } : {}),
-            role: "user",
-        };
+        const messages = Array.isArray(turn.input) ? turn.input : [];
+        turn.input = [...messages, this.promptPayload(event)];
     }
 
     private snapshot(sessionPath: string): TraceDetail | undefined {
