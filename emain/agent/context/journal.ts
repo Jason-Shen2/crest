@@ -80,40 +80,37 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
     }
 
     for (const entry of committed.entries) {
-        if (!isContextCustomEntry(entry) || entry.customType !== ContextCustomTypes.attach) continue;
-        const transaction = transactionFor(entry);
-        if (!transaction) {
-            diagnostic(diagnostics, entry, "context attachment is not in a committed transaction");
-            continue;
-        }
-        const decoded = decodeContextAttachmentData(customData(entry));
-        if (decoded.diagnostic) {
-            diagnostic(diagnostics, entry, decoded.diagnostic);
-            continue;
-        }
-        if (decoded.value!.transactionId !== transaction.transactionId) {
-            diagnostic(diagnostics, entry, "context attachment transactionId does not match its entry");
-            continue;
-        }
-        if (decoded.value!.lifecycle === "once" && decoded.value!.targetTurnId !== transaction.userEntryId) {
-            diagnostic(diagnostics, entry, "context once attachment targetTurnId does not match its transaction user");
-            continue;
-        }
-        if (attachments.has(entry.id)) {
-            diagnostic(diagnostics, entry, "duplicate context attachment entry ID");
-            continue;
-        }
-        const artifact = artifacts.get(decoded.value!.artifactEntryId);
-        if (artifact == null) {
-            diagnostic(diagnostics, entry, "context attachment references a missing artifact");
-        }
-        const attachment: ContextJournalAttachment = { attachmentEntryId: entry.id, data: decoded.value!, artifact, summary: artifact?.summary };
-        attachments.set(entry.id, attachment);
-    }
-
-    for (const entry of committed.entries) {
         if (!isContextCustomEntry(entry)) continue;
-        if (entry.customType === ContextCustomTypes.update) {
+        if (entry.customType === ContextCustomTypes.attach) {
+            const transaction = transactionFor(entry);
+            if (!transaction) {
+                diagnostic(diagnostics, entry, "context attachment is not in a committed transaction");
+                continue;
+            }
+            const decoded = decodeContextAttachmentData(customData(entry));
+            if (decoded.diagnostic) {
+                diagnostic(diagnostics, entry, decoded.diagnostic);
+                continue;
+            }
+            if (decoded.value!.transactionId !== transaction.transactionId) {
+                diagnostic(diagnostics, entry, "context attachment transactionId does not match its entry");
+                continue;
+            }
+            if (decoded.value!.lifecycle === "once" && decoded.value!.targetTurnId !== transaction.userEntryId) {
+                diagnostic(diagnostics, entry, "context once attachment targetTurnId does not match its transaction user");
+                continue;
+            }
+            const artifact = artifacts.get(decoded.value!.artifactEntryId);
+            if (artifact == null) {
+                diagnostic(diagnostics, entry, "context attachment references a missing artifact");
+            }
+            attachments.set(entry.id, {
+                attachmentEntryId: entry.id,
+                data: decoded.value!,
+                artifact,
+                summary: artifact?.summary,
+            });
+        } else if (entry.customType === ContextCustomTypes.update) {
             const decoded = decodeContextUpdateData(customData(entry));
             if (decoded.diagnostic) {
                 diagnostic(diagnostics, entry, decoded.diagnostic);
@@ -135,8 +132,7 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
                 summary: decoded.value!.summary ?? existing.summary,
             };
             attachments.set(updated.attachmentEntryId, updated);
-        }
-        if (entry.customType === ContextCustomTypes.detach) {
+        } else if (entry.customType === ContextCustomTypes.detach) {
             const decoded = decodeContextDetachData(customData(entry));
             if (decoded.diagnostic) {
                 diagnostic(diagnostics, entry, decoded.diagnostic);
@@ -152,8 +148,7 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
                 continue;
             }
             attachments.delete(existing.attachmentEntryId);
-        }
-        if (entry.customType === ContextCustomTypes.projection) {
+        } else if (entry.customType === ContextCustomTypes.projection) {
             const transaction = transactionFor(entry);
             if (!transaction) {
                 diagnostic(diagnostics, entry, "context projection is not in a committed transaction");

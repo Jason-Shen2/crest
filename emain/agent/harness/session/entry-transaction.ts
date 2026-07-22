@@ -243,6 +243,22 @@ export function filterCommittedTransactionEntries(entries: SessionTreeEntry[]): 
     const inputEntries = readArrayValues(entries, "Session entries") as SessionTreeEntry[];
     const groups = new Map<string, SessionTreeEntry[]>();
     const diagnostics: SessionEntryTransactionDiagnostic[] = [];
+    const entryIdCounts = new Map<string, number>();
+    const entryIds = new Map<SessionTreeEntry, string>();
+
+    for (const entry of inputEntries) {
+        try {
+            const id = entryId(entry);
+            entryIdCounts.set(id, (entryIdCounts.get(id) ?? 0) + 1);
+            entryIds.set(entry, id);
+        } catch (error) {
+            diagnostics.push({ message: error instanceof Error ? error.message : "invalid session entry ID" });
+        }
+    }
+    const duplicateEntryIds = new Set([...entryIdCounts].filter(([, count]) => count > 1).map(([id]) => id));
+    for (const id of duplicateEntryIds) {
+        diagnostics.push({ message: `duplicate session entry ID ${id}` });
+    }
 
     for (const entry of inputEntries) {
         try {
@@ -261,6 +277,10 @@ export function filterCommittedTransactionEntries(entries: SessionTreeEntry[]): 
     const committedTransactionIds = new Set<string>();
     const committedTransactions = new Map<string, CommittedSessionEntryTransaction>();
     for (const [transactionId, group] of groups) {
+        if (group.some((entry) => {
+            const id = entryIds.get(entry);
+            return id == null || duplicateEntryIds.has(id);
+        })) continue;
         const result = validateGroup(transactionId, group);
         if (result.transaction) {
             committedTransactionIds.add(transactionId);
@@ -272,6 +292,8 @@ export function filterCommittedTransactionEntries(entries: SessionTreeEntry[]): 
 
     const visibleEntries = inputEntries.filter((entry) => {
         try {
+            const id = entryIds.get(entry);
+            if (id == null || duplicateEntryIds.has(id)) return false;
             const transactionId = transactionIdForEntry(entry);
             return transactionId == null || committedTransactionIds.has(transactionId);
         } catch {

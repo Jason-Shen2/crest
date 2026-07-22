@@ -121,6 +121,50 @@ describe("entry transactions", () => {
         ]);
     });
 
+    it("hides every duplicate ID, including collisions between ordinary and transaction entries", () => {
+        const ordinary = entry("shared", null);
+        const artifact = entry("shared", "root", "tx");
+        const turn = user("user", "manifest", "tx");
+        const commit = manifest("manifest", "shared", "tx", [artifact, turn]);
+
+        const result = filterCommittedTransactionEntries([ordinary, artifact, commit, turn]);
+
+        expect(result.entries).toEqual([]);
+        expect(result.diagnostics).toHaveLength(1);
+        expect(result.diagnostics[0]!.message).toMatch(/shared/);
+    });
+
+    it("invalidates both transaction groups and ordinary entries that share a global ID", () => {
+        const firstArtifact = entry("shared", "root-a", "tx-a");
+        const firstUser = user("user-a", "manifest-a", "tx-a");
+        const firstManifest = manifest("manifest-a", "shared", "tx-a", [firstArtifact, firstUser]);
+        const secondArtifact = entry("shared", "root-b", "tx-b");
+        const secondUser = user("user-b", "manifest-b", "tx-b");
+        const secondManifest = manifest("manifest-b", "shared", "tx-b", [secondArtifact, secondUser]);
+        const normalFirst = entry("normal", null);
+        const normalSecond = entry("normal", null);
+
+        const result = filterCommittedTransactionEntries([
+            firstArtifact, firstManifest, firstUser,
+            secondArtifact, secondManifest, secondUser,
+            normalFirst, normalSecond,
+        ]);
+
+        expect(result.entries).toEqual([]);
+        expect(result.diagnostics).toHaveLength(2);
+        expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(expect.arrayContaining([
+            expect.stringMatching(/shared/),
+            expect.stringMatching(/normal/),
+        ]));
+    });
+
+    it("hides normal-only duplicate entries without exposing an ambiguous record", () => {
+        const result = filterCommittedTransactionEntries([entry("duplicate", null), entry("duplicate", null)]);
+
+        expect(result.entries).toEqual([]);
+        expect(result.diagnostics).toEqual([{ message: "duplicate session entry ID duplicate" }]);
+    });
+
     it("rejects multiple manifests, missing members, non-final users, bad order, and bad digests", () => {
         const artifact = entry("artifact", null, "tx");
         const turn = user("user", "manifest", "tx");
