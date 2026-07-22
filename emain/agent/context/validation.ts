@@ -7,13 +7,18 @@ import {
     ContextDecodeResult,
     ContextGeneratedSummary,
     ContextLifecycle,
+    ContextDetachData,
+    ContextProjectionItemReport,
+    ContextProjectionReport,
     ContextProvenance,
     ContextReferenceConfig,
     ContextReferenceError,
     ContextRepresentation,
+    ContextRenderedRepresentation,
     ContextSnapshotBlock,
     ContextSnapshotMessage,
     ContextSourceKind,
+    ContextUpdateData,
 } from "./types";
 
 const Sha256Pattern = /^[a-f0-9]{64}$/;
@@ -210,5 +215,104 @@ export function decodeContextAttachmentData(value: unknown): ContextDecodeResult
         return { value: validateContextAttachmentData(value) };
     } catch (error) {
         return { diagnostic: error instanceof Error ? error.message : "invalid context attachment" };
+    }
+}
+
+export function validateContextUpdateData(value: unknown): ContextUpdateData {
+    if (!isRecord(value)) invalid("context update must be an object");
+    if (value.schemaVersion !== 1) invalid("context update schemaVersion must be 1");
+    return {
+        schemaVersion: 1,
+        attachmentEntryId: requiredString(value.attachmentEntryId, "attachmentEntryId"),
+        requestedRepresentation: parseContextRepresentation(value.requestedRepresentation),
+        summary: value.summary == null ? undefined : validateSummary(value.summary),
+    };
+}
+
+export function decodeContextUpdateData(value: unknown): ContextDecodeResult<ContextUpdateData> {
+    if (isRecord(value) && value.schemaVersion !== 1) return { diagnostic: "context update schemaVersion is unsupported" };
+    try {
+        return { value: validateContextUpdateData(value) };
+    } catch (error) {
+        return { diagnostic: error instanceof Error ? error.message : "invalid context update" };
+    }
+}
+
+export function validateContextDetachData(value: unknown): ContextDetachData {
+    if (!isRecord(value)) invalid("context detach must be an object");
+    if (value.schemaVersion !== 1) invalid("context detach schemaVersion must be 1");
+    return { schemaVersion: 1, attachmentEntryId: requiredString(value.attachmentEntryId, "attachmentEntryId") };
+}
+
+export function decodeContextDetachData(value: unknown): ContextDecodeResult<ContextDetachData> {
+    if (isRecord(value) && value.schemaVersion !== 1) return { diagnostic: "context detach schemaVersion is unsupported" };
+    try {
+        return { value: validateContextDetachData(value) };
+    } catch (error) {
+        return { diagnostic: error instanceof Error ? error.message : "invalid context detach" };
+    }
+}
+
+function parseRenderedRepresentation(value: unknown): ContextRenderedRepresentation {
+    if (value === "full" || value === "summary" || value === "metadata" || value === "attention" || value === "excluded") return value;
+    return invalid("renderedRepresentation is invalid");
+}
+
+function validateProjectionItem(value: unknown): ContextProjectionItemReport {
+    if (!isRecord(value)) invalid("projection item must be an object");
+    const reason = value.reason;
+    if (reason !== "selected" && reason !== "already_present" && reason !== "user_excluded") invalid("projection item reason is invalid");
+    if (typeof value.advisoryTokens !== "number" || !Number.isFinite(value.advisoryTokens)) invalid("projection item advisoryTokens must be finite");
+    return {
+        attachmentEntryId: requiredString(value.attachmentEntryId, "attachmentEntryId"),
+        artifactEntryId: optionalString(value.artifactEntryId, "artifactEntryId"),
+        sourceKind: value.sourceKind == null ? undefined : parseSourceKind(value.sourceKind),
+        sourceSessionId: optionalString(value.sourceSessionId, "sourceSessionId"),
+        sourceSessionTitle: optionalString(value.sourceSessionTitle, "sourceSessionTitle"),
+        sourceTurnId: optionalString(value.sourceTurnId, "sourceTurnId"),
+        sourcePreview: optionalString(value.sourcePreview, "sourcePreview"),
+        lifecycle: value.lifecycle == null ? undefined : parseContextLifecycle(value.lifecycle),
+        requestedRepresentation: value.requestedRepresentation == null ? undefined : parseContextRepresentation(value.requestedRepresentation),
+        renderedRepresentation: parseRenderedRepresentation(value.renderedRepresentation),
+        advisoryTokens: value.advisoryTokens,
+        reason,
+    };
+}
+
+export function validateContextProjectionReport(value: unknown): ContextProjectionReport {
+    if (!isRecord(value)) invalid("context projection report must be an object");
+    if (value.schemaVersion !== 1) invalid("context projection report schemaVersion must be 1");
+    const countAccuracy = value.countAccuracy;
+    if (countAccuracy !== "exact" && countAccuracy !== "conservative_upper_bound") invalid("projection countAccuracy is invalid");
+    if (!Array.isArray(value.items)) invalid("projection items must be an array");
+    const number = (field: string): number => {
+        const candidate = value[field];
+        if (typeof candidate !== "number" || !Number.isFinite(candidate)) invalid(`projection ${field} must be finite`);
+        return candidate;
+    };
+    return {
+        schemaVersion: 1,
+        transactionId: requiredString(value.transactionId, "projection transactionId"),
+        targetTurnId: requiredString(value.targetTurnId, "projection targetTurnId"),
+        createdAt: requiredString(value.createdAt, "projection createdAt"),
+        contextWindow: number("contextWindow"),
+        effectiveOutputReserve: number("effectiveOutputReserve"),
+        inputLimit: number("inputLimit"),
+        baseInputTokens: number("baseInputTokens"),
+        finalInputTokens: number("finalInputTokens"),
+        referenceTokens: number("referenceTokens"),
+        countAccuracy,
+        maxReferenceTokens: value.maxReferenceTokens == null ? undefined : number("maxReferenceTokens"),
+        overlaySha256: requiredString(value.overlaySha256, "overlaySha256"),
+        items: value.items.map(validateProjectionItem),
+    };
+}
+
+export function decodeContextProjectionReport(value: unknown): ContextDecodeResult<ContextProjectionReport> {
+    if (isRecord(value) && value.schemaVersion !== 1) return { diagnostic: "context projection report schemaVersion is unsupported" };
+    try {
+        return { value: validateContextProjectionReport(value) };
+    } catch (error) {
+        return { diagnostic: error instanceof Error ? error.message : "invalid context projection report" };
     }
 }

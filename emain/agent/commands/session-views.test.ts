@@ -12,6 +12,7 @@ import {
     previewSessionEntry,
 } from "./session-views";
 import type { SessionTreeEntry } from "../harness/types";
+import { ContextCustomTypes } from "../context/journal";
 
 function userMsg(id: string, parentId: string | null, text: string): SessionTreeEntry {
     return {
@@ -55,6 +56,16 @@ function messageEntry(id: string, parentId: string | null, role: "user" | "assis
         timestamp: `2026-06-23T00:00:0${id}.000Z`,
         message: { role, content: [{ type: "text", text }] },
     } as unknown as SessionTreeEntry;
+}
+
+function contextEntry(id: string, parentId: string | null, customType: string): SessionTreeEntry {
+    return {
+        type: "custom",
+        id,
+        parentId,
+        timestamp: `t-${id}`,
+        customType,
+    } as SessionTreeEntry;
 }
 
 describe("session view helpers", () => {
@@ -135,6 +146,11 @@ describe("session view helpers", () => {
             expect(isHiddenTreeEntry(userMsg("u1", null, "hi"))).toBe(false);
             expect(isHiddenTreeEntry(asstMsg("a2", null, "hello"))).toBe(false);
         });
+        it("hides every recognized context control entry", () => {
+            for (const customType of Object.values(ContextCustomTypes)) {
+                expect(isHiddenTreeEntry(contextEntry(customType, null, customType))).toBe(true);
+            }
+        });
     });
 
     describe("filterTreeForDisplay", () => {
@@ -161,6 +177,23 @@ describe("session view helpers", () => {
             expect(entries.map((e) => e.id)).toEqual(["u1", "a1"]);
             expect(entries[1]!.parentId).toBe("u1");
             expect(effectiveLeafId).toBe("a1");
+        });
+
+        it("reparents a transactional user past every hidden context ancestor", () => {
+            const previous = userMsg("previous", null, "before");
+            const artifact = contextEntry("artifact", "previous", ContextCustomTypes.artifact);
+            const attach = contextEntry("attach", "artifact", ContextCustomTypes.attach);
+            const manifest = contextEntry("manifest", "attach", ContextCustomTypes.transactionManifest);
+            const transactionalUser = userMsg("user", "manifest", "visible turn");
+
+            const { entries, effectiveLeafId } = filterTreeForDisplay(
+                [previous, artifact, attach, manifest, transactionalUser],
+                "user"
+            );
+
+            expect(entries.map((entry) => entry.id)).toEqual(["previous", "user"]);
+            expect(entries[1]!.parentId).toBe("previous");
+            expect(effectiveLeafId).toBe("user");
         });
     });
 });

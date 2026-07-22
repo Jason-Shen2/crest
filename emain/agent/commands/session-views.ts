@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { SessionTreeEntry } from "../harness/types";
+import { isContextCustomEntry } from "../context/journal";
 import type { AgentForkPointView, AgentReferencePointView, AgentTreeEntryView } from "./types";
 
 const MaxPreviewLength = 120;
@@ -51,7 +52,7 @@ function isUserMessageEntry(entry: SessionTreeEntry): entry is Extract<SessionTr
  * attaches to the target node via the labels map — neither is a real node.
  */
 export function isHiddenTreeEntry(entry: SessionTreeEntry): boolean {
-    return entry.type === "leaf" || entry.type === "label";
+    return entry.type === "leaf" || entry.type === "label" || isContextCustomEntry(entry);
 }
 
 export function filterTreeForDisplay(
