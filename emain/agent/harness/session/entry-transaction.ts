@@ -303,6 +303,28 @@ export function filterCommittedTransactionEntries(entries: SessionTreeEntry[]): 
     return { entries: visibleEntries, diagnostics, committedTransactionIds, committedTransactions };
 }
 
+/** Reject a programmatic append unless every proposed entry remains visible after transaction validation. */
+export function validateSessionEntriesForAppend(existingEntries: SessionTreeEntry[], entries: SessionTreeEntry[]): void {
+    const allEntries = [...existingEntries, ...entries];
+    for (const entry of allEntries) {
+        try {
+            entryId(entry);
+        } catch (error) {
+            throw new SessionEntryTransactionError(
+                "invalid_transaction",
+                error instanceof Error ? error.message : "invalid session entry ID",
+            );
+        }
+    }
+    const result = filterCommittedTransactionEntries(allEntries);
+    if (result.diagnostics.length > 0) {
+        throw new SessionEntryTransactionError("invalid_transaction", result.diagnostics[0]!.message);
+    }
+    if (result.entries.length !== allEntries.length || result.entries.some((entry, index) => entry !== allEntries[index])) {
+        throw new SessionEntryTransactionError("invalid_transaction", "session entries did not form complete transactions");
+    }
+}
+
 export function getTransactionForkBoundary(
     entries: SessionTreeEntry[],
     entryIdToFork: string,

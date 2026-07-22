@@ -28,6 +28,7 @@ import type { JsonlSessionMetadata, LeafEntry, SessionStorage, SessionTreeEntry 
 import { SessionError, toError } from "../types";
 import { SqliteDb } from "./sqlite-driver";
 import { uuidv7 } from "./uuid";
+import { validateSessionEntriesForAppend } from "./entry-transaction";
 
 const SCHEMA_VERSION = 3;
 
@@ -220,7 +221,7 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 			timestamp: new Date().toISOString(),
 			targetId: leafId,
 		};
-		this.insertEntry(entry);
+		await this.appendEntry(entry);
 	}
 
 	async createEntryId(): Promise<string> {
@@ -228,7 +229,14 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 	}
 
 	async appendEntry(entry: SessionTreeEntry): Promise<void> {
-		this.insertEntry(entry);
+		return this.appendEntries([entry]);
+	}
+
+	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
+		validateSessionEntriesForAppend(this.getEntriesSync(), entries);
+		this.db.transaction(() => {
+			for (const entry of entries) this.insertEntry(entry);
+		});
 	}
 
 	async getEntry(id: string): Promise<SessionTreeEntry | undefined> {

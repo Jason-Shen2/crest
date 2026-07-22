@@ -348,6 +348,7 @@ export interface SessionTreeEntryBase {
 	id: string;
 	parentId: string | null;
 	timestamp: string;
+	transactionId?: string;
 }
 
 export interface MessageEntry extends SessionTreeEntryBase {
@@ -462,6 +463,7 @@ export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetad
 	setLeafId(leafId: string | null): Promise<void>;
 	createEntryId(): Promise<string>;
 	appendEntry(entry: SessionTreeEntry): Promise<void>;
+	appendEntries(entries: SessionTreeEntry[]): Promise<void>;
 	getEntry(id: string): Promise<SessionTreeEntry | undefined>;
 	findEntries<TType extends SessionTreeEntry["type"]>(
 		type: TType,

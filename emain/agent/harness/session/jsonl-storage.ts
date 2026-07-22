@@ -2,6 +2,7 @@ import type { FileSystem, JsonlSessionMetadata, LeafEntry, SessionStorage, Sessi
 import { SessionError, toError } from "../types";
 import { getFileSystemResultOrThrow } from "./repo-utils";
 import { uuidv7 } from "./uuid";
+import { filterCommittedTransactionEntries, validateSessionEntriesForAppend } from "./entry-transaction";
 
 type JsonlSessionStorageFileSystem = Pick<FileSystem, "readTextFile" | "readTextLines" | "writeFile" | "appendFile">;
 
@@ -145,19 +146,38 @@ async function loadJsonlStorage(
 	leafId: string | null;
 }> {
 	const content = getFileSystemResultOrThrow(await fs.readTextFile(filePath), `Failed to read session ${filePath}`);
-	const lines = content.split("\n").filter((line) => line.trim());
-	if (lines.length === 0) {
+	const lines = content.split("\n");
+	if (!lines[0]?.trim()) {
 		throw invalidSession(filePath, "missing session header");
 	}
 
 	const header = parseHeaderLine(lines[0]!, filePath);
-	const entries: SessionTreeEntry[] = [];
-	let leafId: string | null = null;
+	const parsedEntries: SessionTreeEntry[] = [];
+	let removedInterruptedTail = false;
 	for (let i = 1; i < lines.length; i++) {
-		const entry = parseEntryLine(lines[i]!, filePath, i + 1);
-		entries.push(entry);
-		leafId = leafIdAfterEntry(entry);
+		const line = lines[i]!;
+		if (!line.trim()) continue;
+		const isFinalUnterminatedLine = i === lines.length - 1 && !content.endsWith("\n");
+		try {
+			parsedEntries.push(parseEntryLine(line, filePath, i + 1));
+		} catch (error) {
+			if (!isFinalUnterminatedLine) throw error;
+			removedInterruptedTail = true;
+			break;
+		}
 	}
+	const committed = filterCommittedTransactionEntries(parsedEntries);
+	const removedTransactions = committed.diagnostics.length > 0 || committed.entries.length !== parsedEntries.length;
+	if (removedInterruptedTail || removedTransactions) {
+		const recoveredContent = `${JSON.stringify(header)}\n${committed.entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")}`;
+		getFileSystemResultOrThrow(
+			await fs.writeFile(filePath, recoveredContent),
+			`Failed to recover session ${filePath}`,
+		);
+	}
+	const entries = committed.entries;
+	let leafId: string | null = null;
+	for (const entry of entries) leafId = leafIdAfterEntry(entry);
 	return { header, entries, leafId };
 }
 
@@ -237,13 +257,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 			timestamp: new Date().toISOString(),
 			targetId: leafId,
 		};
-		getFileSystemResultOrThrow(
-			await this.fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`),
-			`Failed to append session leaf ${entry.id}`,
-		);
-		this.entries.push(entry);
-		this.byId.set(entry.id, entry);
-		this.currentLeafId = leafId;
+		await this.appendEntry(entry);
 	}
 
 	async createEntryId(): Promise<string> {
@@ -251,14 +265,22 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 	}
 
 	async appendEntry(entry: SessionTreeEntry): Promise<void> {
+		return this.appendEntries([entry]);
+	}
+
+	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
+		validateSessionEntriesForAppend(this.entries, entries);
+		if (entries.length === 0) return;
 		getFileSystemResultOrThrow(
-			await this.fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`),
-			`Failed to append session entry ${entry.id}`,
+			await this.fs.appendFile(this.filePath, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
+			"Failed to append session entries",
 		);
-		this.entries.push(entry);
-		this.byId.set(entry.id, entry);
-		updateLabelCache(this.labelsById, entry);
-		this.currentLeafId = leafIdAfterEntry(entry);
+		const labelsById = new Map(this.labelsById);
+		for (const entry of entries) updateLabelCache(labelsById, entry);
+		this.entries.push(...entries);
+		for (const entry of entries) this.byId.set(entry.id, entry);
+		this.labelsById = labelsById;
+		if (entries.length > 0) this.currentLeafId = leafIdAfterEntry(entries[entries.length - 1]!);
 	}
 
 	async getEntry(id: string): Promise<SessionTreeEntry | undefined> {

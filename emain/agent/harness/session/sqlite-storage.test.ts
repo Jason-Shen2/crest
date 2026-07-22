@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { JsonlSessionRepo } from "./jsonl-repo";
 import { SqliteSessionRepo } from "./sqlite-repo";
 import { SqliteSessionStorage } from "./sqlite-storage";
+import { SqliteDb } from "./sqlite-driver";
 import type { AgentMessage } from "../../types";
 import type { JsonlSessionMetadata } from "../types";
 import { NodeExecutionEnv } from "../../node";
@@ -64,6 +65,55 @@ describe("SqliteSessionStorage", () => {
 		expect(got?.type).toBe("message");
 		expect((got as { message: { content: { text: string }[] } }).message.content[0].text).toBe("hello");
 		storage.close();
+	});
+
+	it("appendEntries rolls back the first insert when a later ID is duplicated", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		const original = await storage.createEntryId();
+		await storage.appendEntry({ type: "message", id: original, parentId: null, timestamp: new Date().toISOString(), message: user("original") });
+
+		await expect(
+			storage.appendEntries([
+				{ type: "message", id: "first", parentId: original, timestamp: new Date().toISOString(), message: user("first") },
+				{ type: "message", id: original, parentId: "first", timestamp: new Date().toISOString(), message: user("duplicate") },
+			]),
+		).rejects.toThrow(/duplicate/i);
+
+		expect((await storage.getEntries()).map((entry) => entry.id)).toEqual([original]);
+		expect(await storage.getLeafId()).toBe(original);
+		storage.close();
+	});
+
+	it("appendEntries rejects an incomplete transaction before changing SQLite", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		await expect(
+			storage.appendEntries([
+				{
+					type: "custom",
+					id: "orphan",
+					parentId: null,
+					timestamp: new Date().toISOString(),
+					customType: "context_artifact",
+					data: {},
+					transactionId: "tx",
+				},
+			]),
+		).rejects.toThrow(/transaction|manifest/i);
+		expect(await storage.getEntries()).toEqual([]);
+		storage.close();
+	});
+
+	it("SqliteDb rolls back a failed multi-insert transaction", () => {
+		const db = new SqliteDb(dbPath("transaction.db"));
+		db.exec("CREATE TABLE values_table (id TEXT PRIMARY KEY)");
+
+		expect(() => db.transaction(() => {
+			db.run("INSERT INTO values_table (id) VALUES (?)", "first");
+			db.run("INSERT INTO values_table (id) VALUES (?)", "first");
+		})).toThrow(/UNIQUE/i);
+
+		expect(db.all("SELECT id FROM values_table")).toEqual([]);
+		db.close();
 	});
 
 	it("getLeafId tracks the last appended entry and setLeafId records a leaf", async () => {

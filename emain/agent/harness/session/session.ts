@@ -17,8 +17,10 @@ import type {
 	ThinkingLevelChangeEntry,
 } from "../types";
 import { SessionError } from "../types";
+import { filterCommittedTransactionEntries } from "./entry-transaction";
 
 export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionContext {
+	pathEntries = filterCommittedTransactionEntries(pathEntries).entries;
 	let thinkingLevel = "off";
 	let model: { provider: string; modelId: string } | null = null;
 	let compaction: CompactionEntry | null = null;
@@ -100,6 +102,10 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
 
 	getEntries(): Promise<SessionTreeEntry[]> {
 		return this.storage.getEntries();
+	}
+
+	appendEntries(entries: SessionTreeEntry[]): Promise<void> {
+		return this.storage.appendEntries(entries);
 	}
 
 	async getBranch(fromId?: string): Promise<SessionTreeEntry[]> {

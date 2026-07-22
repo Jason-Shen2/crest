@@ -6,6 +6,7 @@ import {
 	type SessionTreeEntry,
 } from "../types";
 import { uuidv7 } from "./uuid";
+import { filterCommittedTransactionEntries, validateSessionEntriesForAppend } from "./entry-transaction";
 
 function updateLabelCache(labelsById: Map<string, string>, entry: SessionTreeEntry): void {
 	if (entry.type !== "label") return;
@@ -47,7 +48,7 @@ export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionM
 	private leafId: string | null;
 
 	constructor(options?: { entries?: SessionTreeEntry[]; metadata?: TMetadata }) {
-		this.entries = options?.entries ? [...options.entries] : [];
+		this.entries = filterCommittedTransactionEntries(options?.entries ?? []).entries;
 		this.byId = new Map(this.entries.map((entry) => [entry.id, entry]));
 		this.labelsById = buildLabelsById(this.entries);
 		this.leafId = null;
@@ -80,9 +81,7 @@ export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionM
 			timestamp: new Date().toISOString(),
 			targetId: leafId,
 		};
-		this.entries.push(entry);
-		this.byId.set(entry.id, entry);
-		this.leafId = leafId;
+		await this.appendEntry(entry);
 	}
 
 	async createEntryId(): Promise<string> {
@@ -90,10 +89,17 @@ export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionM
 	}
 
 	async appendEntry(entry: SessionTreeEntry): Promise<void> {
-		this.entries.push(entry);
-		this.byId.set(entry.id, entry);
-		updateLabelCache(this.labelsById, entry);
-		this.leafId = leafIdAfterEntry(entry);
+		return this.appendEntries([entry]);
+	}
+
+	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
+		validateSessionEntriesForAppend(this.entries, entries);
+		const labelsById = new Map(this.labelsById);
+		for (const entry of entries) updateLabelCache(labelsById, entry);
+		this.entries.push(...entries);
+		for (const entry of entries) this.byId.set(entry.id, entry);
+		this.labelsById = labelsById;
+		if (entries.length > 0) this.leafId = leafIdAfterEntry(entries[entries.length - 1]!);
 	}
 
 	async getEntry(id: string): Promise<SessionTreeEntry | undefined> {

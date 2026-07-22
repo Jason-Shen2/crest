@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { SqliteSessionRepo } from "./harness/session/sqlite-repo";
+import { createTransactionManifestData } from "./harness/session/entry-transaction";
 import { buildSystemPrompt } from "./build-system-prompt";
 import {
     _setSessionsRepoForTests,
@@ -23,6 +24,7 @@ import {
     openPaneSessionByPath,
 } from "./sessions";
 import type { AgentMessage } from "./types";
+import type { SessionTreeEntry } from "./harness/types";
 
 function user(text: string): AgentMessage {
     return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;
@@ -77,6 +79,47 @@ describe("sessions — SqliteSessionRepo wiring", () => {
         expect(context.messages).toHaveLength(1);
         expect(context.messages[0].role).toBe("user");
         expect((context.messages[0] as { content: { text: string }[] }).content[0].text).toBe("persisted q");
+    });
+
+    it("builds ordinary user and assistant history around a committed context transaction", async () => {
+        const created = await createPaneSession("/tmp/proj-transaction");
+        const transactionId = "tx";
+        const artifact: SessionTreeEntry = {
+            type: "custom",
+            id: "artifact",
+            parentId: null,
+            timestamp: new Date().toISOString(),
+            customType: "context_artifact",
+            data: {},
+            transactionId,
+        };
+        const turn: SessionTreeEntry = {
+            type: "message",
+            id: "turn",
+            parentId: "manifest",
+            timestamp: new Date().toISOString(),
+            message: user("question"),
+            transactionId,
+        };
+        const manifest: SessionTreeEntry = {
+            type: "custom",
+            id: "manifest",
+            parentId: "artifact",
+            timestamp: new Date().toISOString(),
+            customType: "session_tx_manifest",
+            data: createTransactionManifestData(transactionId, [artifact, turn]),
+            transactionId,
+        };
+
+        await created.session.appendEntries([artifact, manifest, turn]);
+        await created.session.appendMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "answer" }],
+            provider: "p",
+            model: "m",
+        } as unknown as AgentMessage);
+
+        expect((await created.session.buildContext()).messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     });
 
     it("forkPaneSession forks before a user message and records the source path", async () => {
