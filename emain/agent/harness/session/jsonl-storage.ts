@@ -156,15 +156,13 @@ async function loadJsonlStorage(
 	let removedInterruptedTail = false;
 	for (let i = 1; i < lines.length; i++) {
 		const line = lines[i]!;
-		if (!line.trim()) continue;
 		const isFinalUnterminatedLine = i === lines.length - 1 && !content.endsWith("\n");
-		try {
-			parsedEntries.push(parseEntryLine(line, filePath, i + 1));
-		} catch (error) {
-			if (!isFinalUnterminatedLine) throw error;
+		if (isFinalUnterminatedLine && line.length > 0) {
 			removedInterruptedTail = true;
 			break;
 		}
+		if (!line.trim()) continue;
+		parsedEntries.push(parseEntryLine(line, filePath, i + 1));
 	}
 	const committed = filterCommittedTransactionEntries(parsedEntries);
 	const removedTransactions = committed.diagnostics.length > 0 || committed.entries.length !== parsedEntries.length;

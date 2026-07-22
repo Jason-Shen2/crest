@@ -150,6 +150,21 @@ describe("atomic session batch append", () => {
         expect(file.state.content).toBe(`${JSON.stringify(header)}\n${JSON.stringify(user("later"))}\n`);
     });
 
+    it("JSONL removes a complete unterminated final record before later appends", async () => {
+        const prior = user("prior");
+        const tail = user("tail", "prior");
+        const file = memoryJsonlFile(jsonl([prior], JSON.stringify(tail)));
+
+        const storage = await JsonlSessionStorage.open(file.fs, "/tmp/session.jsonl");
+
+        expect((await storage.getEntries()).map((entry) => entry.id)).toEqual(["prior"]);
+        expect(file.writeFile).toHaveBeenCalledTimes(1);
+        expect(file.state.content).toBe(`${JSON.stringify(header)}\n${JSON.stringify(prior)}\n`);
+        await storage.appendEntries([user("later", "prior")]);
+        const reopened = await JsonlSessionStorage.open(file.fs, "/tmp/session.jsonl");
+        expect((await reopened.getEntries()).map((entry) => entry.id)).toEqual(["prior", "later"]);
+    });
+
     it("JSONL rejects newline-terminated malformed records and recovery rewrite failures", async () => {
         const malformed = memoryJsonlFile(`${JSON.stringify(header)}\nnot-json\n`);
         await expect(JsonlSessionStorage.open(malformed.fs, "/tmp/session.jsonl")).rejects.toThrow(/line 2/i);
