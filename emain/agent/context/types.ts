@@ -90,7 +90,7 @@ export interface ContextDraftView {
     expiresAt: string;
 }
 
-export interface ContextArtifactDraft extends ContextDraftView {
+export interface ContextArtifactDraft {
     artifact: ContextArtifact;
 }
 

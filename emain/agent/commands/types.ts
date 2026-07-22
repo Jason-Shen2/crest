@@ -70,9 +70,16 @@ export interface AgentTreeEntryView {
     timestamp?: string;
     isLeaf: boolean;
     isCurrent: boolean;
+    referenceable?: boolean;
 }
 
 export interface AgentForkPointView {
+    entryId: string;
+    preview: string;
+    timestamp?: string;
+}
+
+export interface AgentReferencePointView {
     entryId: string;
     preview: string;
     timestamp?: string;

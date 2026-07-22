@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
     buildAgentForkPointViews,
+    buildAgentReferencePointViews,
     buildAgentTreeEntryViews,
     filterTreeForDisplay,
     isHiddenTreeEntry,
@@ -70,6 +71,29 @@ describe("session view helpers", () => {
         const entries = [messageEntry("1", null, "user", "fork here"), messageEntry("2", "1", "assistant", "no")];
         expect(buildAgentForkPointViews(entries)).toEqual([
             expect.objectContaining({ entryId: "1", preview: "fork here" }),
+        ]);
+    });
+
+    it("marks only active branch user rows as referenceable", () => {
+        const root = userMsg("u1", null, "root");
+        const activeAssistant = asstMsg("a1", "u1", "active answer");
+        const activeUser = userMsg("u2", "a1", "active turn");
+        const abandonedUser = userMsg("u-abandoned", "u1", "abandoned turn");
+        const rows = buildAgentTreeEntryViews([root, activeAssistant, activeUser, abandonedUser], "u2");
+
+        expect(rows.find((row) => row.id === "u1")).toMatchObject({ referenceable: true });
+        expect(rows.find((row) => row.id === "u2")).toMatchObject({ referenceable: true });
+        expect(rows.find((row) => row.id === "u-abandoned")).not.toHaveProperty("referenceable");
+    });
+
+    it("builds reference points from active user turn roots only", () => {
+        const root = userMsg("u1", null, "root");
+        const assistant = asstMsg("a1", "u1", "answer");
+        const nextUser = userMsg("u2", "a1", "next");
+
+        expect(buildAgentReferencePointViews([root, assistant, nextUser])).toEqual([
+            expect.objectContaining({ entryId: "u1", preview: "root" }),
+            expect.objectContaining({ entryId: "u2", preview: "next" }),
         ]);
     });
 
