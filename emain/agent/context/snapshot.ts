@@ -80,7 +80,7 @@ function normalizeMessage(entry: SessionTreeEntry): ContextSnapshotMessage | und
 function canonicalize(value: unknown): unknown {
     if (Array.isArray(value)) return value.map(canonicalize);
     if (typeof value !== "object" || value == null) return value;
-    const result: Record<string, unknown> = {};
+    const result = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(value).sort()) {
         result[key] = canonicalize((value as Record<string, unknown>)[key]);
     }
@@ -93,14 +93,17 @@ function canonicalJson(value: unknown): string {
 
 function hasUsefulContent(messages: ContextSnapshotMessage[]): boolean {
     return messages.some((message) =>
-        message.content.some((block) => block.type === "text" || block.type === "tool_call") || message.role === "tool_result"
+        message.content.some((block) => block.type === "tool_call" || (block.type === "text" && block.text.trim().length > 0))
     );
 }
 
 function makePreview(messages: ContextSnapshotMessage[]): string {
     for (const message of messages) {
         for (const block of message.content) {
-            if (block.type === "text") return block.text.replace(/\s+/g, " ").trim() || "Referenced context";
+            if (block.type === "text") {
+                const preview = block.text.replace(/\s+/g, " ").trim();
+                if (preview.length > 0) return preview;
+            }
             if (block.type === "tool_call") return `Tool call: ${block.name}`;
         }
         if (message.role === "tool_result") return `Tool result: ${message.toolName ?? "tool"}`;
@@ -141,7 +144,7 @@ export function captureContextArtifactDraft(input: ContextCaptureInput): Context
     });
     const messages = captured.map(({ message }) => message);
     if (!hasUsefulContent(messages)) {
-        throw new ContextReferenceError("source_not_found", "The selected source has no useful text or tool content");
+        throw new ContextReferenceError("invalid_input", "The selected source has no useful text or tool content");
     }
 
     const canonical = canonicalJson(messages);

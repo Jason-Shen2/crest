@@ -201,6 +201,70 @@ describe("context snapshot capture", () => {
         expect(first.artifact.snapshotSha256).not.toBe(changedText.artifact.snapshotSha256);
         expect(first.artifact.snapshotSha256).not.toBe(changedTool.artifact.snapshotSha256);
     });
+
+    it("preserves prototype-like tool argument keys in canonical snapshots", () => {
+        const firstArguments = JSON.parse('{"__proto__":{"value":"one"},"constructor":"first","prototype":"first"}');
+        const secondArguments = JSON.parse('{"__proto__":{"value":"a longer value"},"constructor":"first","prototype":"first"}');
+        const first = captureTurn([
+            entry("user-1", null, { role: "user", content: [{ type: "text", text: "same" }] }),
+            entry("assistant-1", "user-1", {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "call-1", name: "read", arguments: firstArguments }],
+            }),
+        ]);
+        const second = captureTurn([
+            entry("user-1", null, { role: "user", content: [{ type: "text", text: "same" }] }),
+            entry("assistant-1", "user-1", {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "call-1", name: "read", arguments: secondArguments }],
+            }),
+        ]);
+        const firstToolCall = first.artifact.messages[1]!.content[0] as { arguments: Record<string, unknown> };
+
+        expect(Object.hasOwn(firstToolCall.arguments, "__proto__")).toBe(true);
+        expect(firstToolCall.arguments).toMatchObject({ constructor: "first", prototype: "first" });
+        expect(first.artifact.snapshotSha256).not.toBe(second.artifact.snapshotSha256);
+        expect(first.artifact.canonicalByteLength).not.toBe(second.artifact.canonicalByteLength);
+    });
+
+    it("rejects whitespace-only user text", () => {
+        const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: " \n\t " }] });
+
+        expect(() => captureTurn([user])).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
+
+    it("rejects empty tool results", () => {
+        const user = entry("user-1", null, { role: "user", content: [] });
+        const toolResult = entry("result-1", "user-1", {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "read",
+            isError: false,
+            content: [],
+        });
+
+        expect(() => captureTurn([user, toolResult])).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
+
+    it("rejects image-only tool results", () => {
+        const user = entry("user-1", null, { role: "user", content: [] });
+        const toolResult = entry("result-1", "user-1", {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "read",
+            isError: false,
+            content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+        });
+
+        expect(() => captureTurn([user, toolResult])).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
+
+    it("uses the first non-blank text for previews", () => {
+        const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: "  \n" }] });
+        const assistant = entry("assistant-1", "user-1", { role: "assistant", content: [{ type: "text", text: "answer" }] });
+
+        expect(captureTurn([user, assistant]).artifact.provenance.preview).toBe("answer");
+    });
 });
 
 describe("model-visible session message IDs", () => {
