@@ -262,7 +262,10 @@ function validateProjectionItem(value: unknown): ContextProjectionItemReport {
     if (!isRecord(value)) invalid("projection item must be an object");
     const reason = value.reason;
     if (reason !== "selected" && reason !== "already_present" && reason !== "user_excluded") invalid("projection item reason is invalid");
-    if (typeof value.advisoryTokens !== "number" || !Number.isFinite(value.advisoryTokens)) invalid("projection item advisoryTokens must be finite");
+    const advisoryTokens = value.advisoryTokens;
+    if (typeof advisoryTokens !== "number" || !Number.isSafeInteger(advisoryTokens) || advisoryTokens < 0) {
+        invalid("projection item advisoryTokens must be a non-negative integer");
+    }
     return {
         attachmentEntryId: requiredString(value.attachmentEntryId, "attachmentEntryId"),
         artifactEntryId: optionalString(value.artifactEntryId, "artifactEntryId"),
@@ -274,7 +277,7 @@ function validateProjectionItem(value: unknown): ContextProjectionItemReport {
         lifecycle: value.lifecycle == null ? undefined : parseContextLifecycle(value.lifecycle),
         requestedRepresentation: value.requestedRepresentation == null ? undefined : parseContextRepresentation(value.requestedRepresentation),
         renderedRepresentation: parseRenderedRepresentation(value.renderedRepresentation),
-        advisoryTokens: value.advisoryTokens,
+        advisoryTokens,
         reason,
     };
 }
@@ -287,7 +290,9 @@ export function validateContextProjectionReport(value: unknown): ContextProjecti
     if (!Array.isArray(value.items)) invalid("projection items must be an array");
     const number = (field: string): number => {
         const candidate = value[field];
-        if (typeof candidate !== "number" || !Number.isFinite(candidate)) invalid(`projection ${field} must be finite`);
+        if (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 0) {
+            invalid(`projection ${field} must be a non-negative integer`);
+        }
         return candidate;
     };
     return {
@@ -303,7 +308,11 @@ export function validateContextProjectionReport(value: unknown): ContextProjecti
         referenceTokens: number("referenceTokens"),
         countAccuracy,
         maxReferenceTokens: value.maxReferenceTokens == null ? undefined : number("maxReferenceTokens"),
-        overlaySha256: requiredString(value.overlaySha256, "overlaySha256"),
+        overlaySha256: (() => {
+            const overlaySha256 = requiredString(value.overlaySha256, "overlaySha256");
+            if (!Sha256Pattern.test(overlaySha256)) invalid("projection overlaySha256 must be a lowercase SHA-256 hash");
+            return overlaySha256;
+        })(),
         items: value.items.map(validateProjectionItem),
     };
 }

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
     decodeContextArtifact,
     decodeContextAttachmentData,
+    decodeContextProjectionReport,
     parseContextLifecycle,
     parseContextReferenceConfig,
     parseContextRepresentation,
@@ -155,5 +156,28 @@ describe("context validation", () => {
         expect(decodeContextAttachmentData({ schemaVersion: 2 })).toEqual({
             diagnostic: expect.stringMatching(/schemaVersion/),
         });
+    });
+
+    it("returns diagnostics for invalid projection counts and overlay hashes without throwing", () => {
+        const projection = {
+            schemaVersion: 1,
+            transactionId: "tx",
+            targetTurnId: "turn",
+            createdAt: "2026-07-22T00:00:00.000Z",
+            contextWindow: 10,
+            effectiveOutputReserve: 1,
+            inputLimit: 9,
+            baseInputTokens: 2,
+            finalInputTokens: 3,
+            referenceTokens: 1,
+            countAccuracy: "exact",
+            overlaySha256: "a".repeat(64),
+            items: [{ attachmentEntryId: "attachment", renderedRepresentation: "full", advisoryTokens: 1, reason: "selected" }],
+        };
+
+        expect(decodeContextProjectionReport({ ...projection, contextWindow: -1 })).toHaveProperty("diagnostic");
+        expect(decodeContextProjectionReport({ ...projection, referenceTokens: Number.NaN })).toHaveProperty("diagnostic");
+        expect(decodeContextProjectionReport({ ...projection, overlaySha256: "bad" })).toHaveProperty("diagnostic");
+        expect(decodeContextProjectionReport({ ...projection, items: [{ ...projection.items[0], advisoryTokens: -1 }] })).toHaveProperty("diagnostic");
     });
 });

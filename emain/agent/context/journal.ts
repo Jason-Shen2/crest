@@ -56,14 +56,14 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
     const attachments = new Map<string, ContextJournalAttachment>();
     const projectionReports: ContextJournalState["projectionReports"] = [];
 
-    const isCommittedContextEntry = (entry: SessionTreeEntry): boolean => {
+    const transactionFor = (entry: SessionTreeEntry) => {
         const id = transactionId(entry);
-        return id != null && committed.committedTransactionIds.has(id);
+        return id == null ? undefined : committed.committedTransactions.get(id);
     };
 
     for (const entry of committed.entries) {
         if (!isContextCustomEntry(entry) || entry.customType !== ContextCustomTypes.artifact) continue;
-        if (!isCommittedContextEntry(entry)) {
+        if (!transactionFor(entry)) {
             diagnostic(diagnostics, entry, "context artifact is not in a committed transaction");
             continue;
         }
@@ -81,7 +81,8 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
 
     for (const entry of committed.entries) {
         if (!isContextCustomEntry(entry) || entry.customType !== ContextCustomTypes.attach) continue;
-        if (!isCommittedContextEntry(entry)) {
+        const transaction = transactionFor(entry);
+        if (!transaction) {
             diagnostic(diagnostics, entry, "context attachment is not in a committed transaction");
             continue;
         }
@@ -90,8 +91,12 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
             diagnostic(diagnostics, entry, decoded.diagnostic);
             continue;
         }
-        if (decoded.value!.transactionId !== transactionId(entry)) {
+        if (decoded.value!.transactionId !== transaction.transactionId) {
             diagnostic(diagnostics, entry, "context attachment transactionId does not match its entry");
+            continue;
+        }
+        if (decoded.value!.lifecycle === "once" && decoded.value!.targetTurnId !== transaction.userEntryId) {
+            diagnostic(diagnostics, entry, "context once attachment targetTurnId does not match its transaction user");
             continue;
         }
         if (attachments.has(entry.id)) {
@@ -101,9 +106,8 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
         const artifact = artifacts.get(decoded.value!.artifactEntryId);
         if (artifact == null) {
             diagnostic(diagnostics, entry, "context attachment references a missing artifact");
-            continue;
         }
-        const attachment: ContextJournalAttachment = { attachmentEntryId: entry.id, data: decoded.value!, artifact, summary: artifact.summary };
+        const attachment: ContextJournalAttachment = { attachmentEntryId: entry.id, data: decoded.value!, artifact, summary: artifact?.summary };
         attachments.set(entry.id, attachment);
     }
 
@@ -150,13 +154,16 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
             attachments.delete(existing.attachmentEntryId);
         }
         if (entry.customType === ContextCustomTypes.projection) {
-            if (!isCommittedContextEntry(entry)) {
+            const transaction = transactionFor(entry);
+            if (!transaction) {
                 diagnostic(diagnostics, entry, "context projection is not in a committed transaction");
                 continue;
             }
             const decoded = decodeContextProjectionReport(customData(entry));
             if (decoded.diagnostic) diagnostic(diagnostics, entry, decoded.diagnostic);
-            else projectionReports.push(decoded.value!);
+            else if (decoded.value!.transactionId !== transaction.transactionId || decoded.value!.targetTurnId !== transaction.userEntryId) {
+                diagnostic(diagnostics, entry, "context projection transactionId or targetTurnId does not match its transaction");
+            } else projectionReports.push(decoded.value!);
         }
     }
 

@@ -98,6 +98,17 @@ describe("entry transactions", () => {
         expect(result.diagnostics).toHaveLength(1);
     });
 
+    it("accepts a valid transaction around interleaved non-transaction entries", () => {
+        const artifact = entry("artifact", "root", "tx");
+        const attached = entry("attach", "artifact", "tx");
+        const turn = user("user", "manifest", "tx");
+        const commit = manifest("manifest", "attach", "tx", [artifact, attached, turn]);
+
+        expect(filterCommittedTransactionEntries([artifact, entry("ordinary-1", null), attached, commit, entry("ordinary-2", null), turn]).entries.map((item) => item.id)).toEqual([
+            "artifact", "ordinary-1", "attach", "manifest", "ordinary-2", "user",
+        ]);
+    });
+
     it("rejects multiple manifests, missing members, non-final users, bad order, and bad digests", () => {
         const artifact = entry("artifact", null, "tx");
         const turn = user("user", "manifest", "tx");
@@ -113,6 +124,25 @@ describe("entry transactions", () => {
         for (const entries of variants) {
             expect(filterCommittedTransactionEntries(entries).entries).toEqual([]);
         }
+    });
+
+    it("hides missing manifests, mismatched manifest users, and broken transaction ancestry", () => {
+        const artifact = entry("artifact", "root", "tx");
+        const attached = entry("attach", "artifact", "tx");
+        const turn = user("user", "manifest", "tx");
+        const commit = manifest("manifest", "attach", "tx", [artifact, attached, turn]);
+        const mismatchedUser = {
+            ...commit,
+            data: { ...((commit as Extract<SessionTreeEntry, { type: "custom" }>).data as object), userEntryId: "other-user" },
+        } as SessionTreeEntry;
+        const brokenAncestry = { ...attached, parentId: "root" } as SessionTreeEntry;
+        const brokenAncestryCommit = manifest("manifest", "attach", "tx", [artifact, brokenAncestry, turn]);
+
+        expect(filterCommittedTransactionEntries([artifact, attached, turn]).entries).toEqual([]);
+        expect(filterCommittedTransactionEntries([artifact, attached, mismatchedUser, turn]).entries).toEqual([]);
+        expect(filterCommittedTransactionEntries([artifact, brokenAncestry, brokenAncestryCommit, turn]).entries).toEqual([]);
+        expect(getTransactionForkBoundary([artifact, brokenAncestry, brokenAncestryCommit, turn], "user", "before")).toBeNull();
+        expect(getTransactionForkBoundary([artifact, brokenAncestry, brokenAncestryCommit, turn], "user", "at")).toBeNull();
     });
 
     it("finds before and at fork boundaries for a transactional user", () => {

@@ -24,6 +24,14 @@ export interface CommittedTransactionEntriesResult {
     entries: SessionTreeEntry[];
     diagnostics: SessionEntryTransactionDiagnostic[];
     committedTransactionIds: Set<string>;
+    committedTransactions: Map<string, CommittedSessionEntryTransaction>;
+}
+
+export interface CommittedSessionEntryTransaction {
+    transactionId: string;
+    manifest: SessionTreeEntry;
+    members: SessionTreeEntry[];
+    userEntryId: string;
 }
 
 export class SessionEntryTransactionError extends Error {
@@ -129,6 +137,13 @@ function entryId(entry: SessionTreeEntry): string {
     return requiredString(readOwnValue(entry, "id"), "entry ID");
 }
 
+function parentId(entry: SessionTreeEntry): string | null {
+    const value = readOwnValue(entry, "parentId");
+    if (value === null) return null;
+    if (typeof value === "string") return value;
+    throw new SessionEntryTransactionError("invalid_transaction", "entry parentId must be a string or null");
+}
+
 function isUserEntry(entry: SessionTreeEntry): boolean {
     if (readOwnValue(entry, "type") !== "message") return false;
     const message = readOwnValue(entry, "message");
@@ -180,26 +195,45 @@ export function createTransactionManifestData(transactionId: string, members: Se
     };
 }
 
-function validateGroup(transactionId: string, group: SessionTreeEntry[]): string | undefined {
+function validateGroup(transactionId: string, group: SessionTreeEntry[]): { issue?: string; transaction?: CommittedSessionEntryTransaction } {
     try {
         const manifests = group.filter((entry) => manifestData(entry) != null);
-        if (manifests.length !== 1) return "transaction must have exactly one manifest";
+        if (manifests.length !== 1) return { issue: "transaction must have exactly one manifest" };
         const manifest = manifests[0]!;
         const data = manifestData(manifest)!;
-        if (data.transactionId !== transactionId) return "manifest transactionId does not match entry transactionId";
+        if (data.transactionId !== transactionId) return { issue: "manifest transactionId does not match entry transactionId" };
         const manifestIndex = group.indexOf(manifest);
-        if (manifestIndex !== group.length - 2) return "manifest must precede the final user member";
+        if (manifestIndex !== group.length - 2) return { issue: "manifest must precede the final user member" };
         const members = group.filter((entry) => entry !== manifest);
+        if (members.length < 2) return { issue: "transaction must contain a member before its user" };
         const actualIds = members.map(entryId);
+        if (new Set([...actualIds, entryId(manifest)]).size !== group.length) {
+            return { issue: "transaction entry IDs must be unique" };
+        }
         if (actualIds.length !== data.orderedMemberEntryIds.length || actualIds.some((id, index) => id !== data.orderedMemberEntryIds[index])) {
-            return "manifest ordered member IDs do not match transaction entries";
+            return { issue: "manifest ordered member IDs do not match transaction entries" };
         }
         const user = members.at(-1);
-        if (!user || !isUserEntry(user) || entryId(user) !== data.userEntryId) return "manifest user member must be the final user entry";
-        if (data.membersSha256 !== sha256CanonicalJson(members)) return "manifest member digest does not match transaction entries";
-        return undefined;
+        if (!user || !isUserEntry(user) || entryId(user) !== data.userEntryId) return { issue: "manifest user member must be the final user entry" };
+        if (data.membersSha256 !== sha256CanonicalJson(members)) return { issue: "manifest member digest does not match transaction entries" };
+        if (parentId(user) !== entryId(manifest)) return { issue: "transaction user must be a child of its manifest" };
+        const nonUserMembers = members.slice(0, -1);
+        if (parentId(manifest) !== entryId(nonUserMembers.at(-1)!)) return { issue: "transaction manifest must follow its final non-user member" };
+        for (let index = 1; index < nonUserMembers.length; index++) {
+            if (parentId(nonUserMembers[index]!) !== entryId(nonUserMembers[index - 1]!)) {
+                return { issue: "transaction members must form one ancestor chain" };
+            }
+        }
+        return {
+            transaction: {
+                transactionId,
+                manifest,
+                members,
+                userEntryId: data.userEntryId,
+            },
+        };
     } catch (error) {
-        return error instanceof Error ? error.message : "invalid transaction";
+        return { issue: error instanceof Error ? error.message : "invalid transaction" };
     }
 }
 
@@ -223,10 +257,15 @@ export function filterCommittedTransactionEntries(entries: SessionTreeEntry[]): 
     }
 
     const committedTransactionIds = new Set<string>();
+    const committedTransactions = new Map<string, CommittedSessionEntryTransaction>();
     for (const [transactionId, group] of groups) {
-        const issue = validateGroup(transactionId, group);
-        if (issue == null) committedTransactionIds.add(transactionId);
-        else diagnostics.push({ transactionId, message: issue });
+        const result = validateGroup(transactionId, group);
+        if (result.transaction) {
+            committedTransactionIds.add(transactionId);
+            committedTransactions.set(transactionId, result.transaction);
+        } else {
+            diagnostics.push({ transactionId, message: result.issue ?? "invalid transaction" });
+        }
     }
 
     const visibleEntries = inputEntries.filter((entry) => {
@@ -237,7 +276,7 @@ export function filterCommittedTransactionEntries(entries: SessionTreeEntry[]): 
             return false;
         }
     });
-    return { entries: visibleEntries, diagnostics, committedTransactionIds };
+    return { entries: visibleEntries, diagnostics, committedTransactionIds, committedTransactions };
 }
 
 export function getTransactionForkBoundary(
@@ -245,7 +284,6 @@ export function getTransactionForkBoundary(
     entryIdToFork: string,
     position: "before" | "at"
 ): string | null {
-    if (position === "at") return entryIdToFork;
     const result = filterCommittedTransactionEntries(entries);
     const target = result.entries.find((entry) => {
         try {
@@ -257,21 +295,11 @@ export function getTransactionForkBoundary(
     if (!target) return null;
     try {
         const transactionId = transactionIdForEntry(target);
-        if (transactionId == null || !result.committedTransactionIds.has(transactionId)) {
-            const parentId = readOwnValue(target, "parentId");
-            return typeof parentId === "string" ? parentId : null;
-        }
-        const group = result.entries.filter((entry) => {
-            try {
-                return transactionIdForEntry(entry) === transactionId;
-            } catch {
-                return false;
-            }
-        });
-        const first = group[0];
-        if (first == null) return null;
-        const parentId = readOwnValue(first, "parentId");
-        return typeof parentId === "string" ? parentId : null;
+        if (position === "at") return entryId(target);
+        if (transactionId == null) return parentId(target);
+        const transaction = result.committedTransactions.get(transactionId);
+        if (transaction == null) return null;
+        return parentId(transaction.members[0]!);
     } catch {
         return null;
     }
