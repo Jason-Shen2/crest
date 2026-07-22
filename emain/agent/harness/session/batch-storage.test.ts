@@ -145,6 +145,24 @@ describe("atomic session batch append", () => {
         expect(await storage.getLeafId()).toBeNull();
     });
 
+    it("JSONL serialization failures do not write, recover, or poison the storage", async () => {
+        const file = memoryJsonlFile(jsonl([]));
+        const storage = await JsonlSessionStorage.open(file.fs, "/tmp/session.jsonl");
+        const unserializable = {
+            ...user("bad"),
+            message: { role: "user", content: [{ type: "text", text: BigInt(1) }] } as unknown as AgentMessage,
+        } satisfies SessionTreeEntry;
+
+        await expect(storage.appendEntries([unserializable])).rejects.toThrow(/BigInt/i);
+        expect(file.appendFile).not.toHaveBeenCalled();
+        expect(file.writeFile).not.toHaveBeenCalled();
+        expect(await storage.getEntries()).toEqual([]);
+        expect(await storage.getLeafId()).toBeNull();
+
+        await storage.appendEntries([user("later")]);
+        expect((await storage.getEntries()).map((entry) => entry.id)).toEqual(["later"]);
+    });
+
     it("JSONL recovers partial failed appends before releasing the next queued append", async () => {
         const prior = user("prior");
         const file = memoryJsonlFile(jsonl([prior]));

@@ -294,9 +294,10 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		}
 		validateSessionEntriesForAppend(this.entryIds, this.transactionIds, entries);
 		if (entries.length === 0) return;
+		const serializedEntries = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
 		try {
 			getFileSystemResultOrThrow(
-				await this.fs.appendFile(this.filePath, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
+				await this.fs.appendFile(this.filePath, serializedEntries),
 				"Failed to append session entries",
 			);
 		} catch (appendError) {
