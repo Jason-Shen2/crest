@@ -35,7 +35,7 @@ function user(id: string, parentId: string, transactionId: string): SessionTreeE
     } as unknown as SessionTreeEntry;
 }
 
-function manifest(id: string, parentId: string, transactionId: string, members: SessionTreeEntry[]): SessionTreeEntry {
+function manifest(id: string, parentId: string | null, transactionId: string, members: SessionTreeEntry[]): SessionTreeEntry {
     return {
         type: "custom",
         id,
@@ -84,6 +84,18 @@ describe("entry transactions", () => {
 
         expect(result.entries.map((item) => item.id)).toEqual(["ordinary", "artifact", "attach", "manifest", "user"]);
         expect(result.diagnostics).toEqual([]);
+    });
+
+    it("commits a single user member after its manifest and resolves both fork boundaries", () => {
+        const root = entry("root", null);
+        const turn = user("user", "manifest", "tx");
+        const commit = manifest("manifest", "root", "tx", [turn]);
+        const entries = [root, commit, turn];
+
+        expect(createTransactionManifestData("tx", [turn]).orderedMemberEntryIds).toEqual(["user"]);
+        expect(filterCommittedTransactionEntries(entries).entries.map((item) => item.id)).toEqual(["root", "manifest", "user"]);
+        expect(getTransactionForkBoundary(entries, "user", "before")).toBe("root");
+        expect(getTransactionForkBoundary(entries, "user", "at")).toBe("user");
     });
 
     it("hides malformed groups without hiding interleaved ordinary entries", () => {
@@ -143,6 +155,18 @@ describe("entry transactions", () => {
         expect(filterCommittedTransactionEntries([artifact, brokenAncestry, brokenAncestryCommit, turn]).entries).toEqual([]);
         expect(getTransactionForkBoundary([artifact, brokenAncestry, brokenAncestryCommit, turn], "user", "before")).toBeNull();
         expect(getTransactionForkBoundary([artifact, brokenAncestry, brokenAncestryCommit, turn], "user", "at")).toBeNull();
+    });
+
+    it("rejects physical transaction chains that re-enter their own group", () => {
+        const reenteringFirst = entry("artifact", "user", "tx");
+        const attached = entry("attach", "artifact", "tx");
+        const turn = user("user", "manifest", "tx");
+        const commit = manifest("manifest", "attach", "tx", [reenteringFirst, attached, turn]);
+        const singleTurn = user("single-user", "single-manifest", "single-tx");
+        const singleManifestCycle = manifest("single-manifest", "single-user", "single-tx", [singleTurn]);
+
+        expect(filterCommittedTransactionEntries([reenteringFirst, attached, commit, turn]).entries).toEqual([]);
+        expect(filterCommittedTransactionEntries([singleManifestCycle, singleTurn]).entries).toEqual([]);
     });
 
     it("finds before and at fork boundaries for a transactional user", () => {

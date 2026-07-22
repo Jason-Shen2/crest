@@ -30,6 +30,7 @@ export interface CommittedTransactionEntriesResult {
 export interface CommittedSessionEntryTransaction {
     transactionId: string;
     manifest: SessionTreeEntry;
+    physicalEntries: SessionTreeEntry[];
     members: SessionTreeEntry[];
     userEntryId: string;
 }
@@ -205,9 +206,9 @@ function validateGroup(transactionId: string, group: SessionTreeEntry[]): { issu
         const manifestIndex = group.indexOf(manifest);
         if (manifestIndex !== group.length - 2) return { issue: "manifest must precede the final user member" };
         const members = group.filter((entry) => entry !== manifest);
-        if (members.length < 2) return { issue: "transaction must contain a member before its user" };
         const actualIds = members.map(entryId);
-        if (new Set([...actualIds, entryId(manifest)]).size !== group.length) {
+        const physicalEntryIds = group.map(entryId);
+        if (new Set(physicalEntryIds).size !== group.length) {
             return { issue: "transaction entry IDs must be unique" };
         }
         if (actualIds.length !== data.orderedMemberEntryIds.length || actualIds.some((id, index) => id !== data.orderedMemberEntryIds[index])) {
@@ -216,18 +217,19 @@ function validateGroup(transactionId: string, group: SessionTreeEntry[]): { issu
         const user = members.at(-1);
         if (!user || !isUserEntry(user) || entryId(user) !== data.userEntryId) return { issue: "manifest user member must be the final user entry" };
         if (data.membersSha256 !== sha256CanonicalJson(members)) return { issue: "manifest member digest does not match transaction entries" };
-        if (parentId(user) !== entryId(manifest)) return { issue: "transaction user must be a child of its manifest" };
-        const nonUserMembers = members.slice(0, -1);
-        if (parentId(manifest) !== entryId(nonUserMembers.at(-1)!)) return { issue: "transaction manifest must follow its final non-user member" };
-        for (let index = 1; index < nonUserMembers.length; index++) {
-            if (parentId(nonUserMembers[index]!) !== entryId(nonUserMembers[index - 1]!)) {
-                return { issue: "transaction members must form one ancestor chain" };
+        if (parentId(group[0]!) != null && physicalEntryIds.includes(parentId(group[0]!)!)) {
+            return { issue: "first transaction entry parent must be outside its group" };
+        }
+        for (let index = 1; index < group.length; index++) {
+            if (parentId(group[index]!) !== entryId(group[index - 1]!)) {
+                return { issue: "transaction entries must form one physical ancestor chain" };
             }
         }
         return {
             transaction: {
                 transactionId,
                 manifest,
+                physicalEntries: group,
                 members,
                 userEntryId: data.userEntryId,
             },
@@ -299,7 +301,7 @@ export function getTransactionForkBoundary(
         if (transactionId == null) return parentId(target);
         const transaction = result.committedTransactions.get(transactionId);
         if (transaction == null) return null;
-        return parentId(transaction.members[0]!);
+        return parentId(transaction.physicalEntries[0]!);
     } catch {
         return null;
     }
