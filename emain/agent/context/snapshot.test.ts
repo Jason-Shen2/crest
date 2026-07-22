@@ -40,6 +40,16 @@ function captureTurn(entries: SessionTreeEntry[], sourceTurnId = "user-1") {
     });
 }
 
+function captureToolArguments(argumentsValue: unknown) {
+    return captureTurn([
+        entry("user-1", null, { role: "user", content: [{ type: "text", text: "question" }] }),
+        entry("assistant-1", "user-1", {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call-1", name: "read", arguments: argumentsValue }],
+        }),
+    ]);
+}
+
 describe("context snapshot capture", () => {
     it("captures one atomic turn as normalized structured content", () => {
         const user = entry("user-1", null, {
@@ -352,6 +362,61 @@ describe("context snapshot capture", () => {
         });
 
         expect(() => captureTurn([user])).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
+
+    it("rejects arrays with enumerable symbol keys", () => {
+        const argumentsValue = ["valid"];
+        Object.defineProperty(argumentsValue, Symbol("extra"), { value: "invalid", enumerable: true });
+
+        expect(() => captureToolArguments(argumentsValue)).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
+
+    it("rejects array index accessors without executing them", () => {
+        let getterCalls = 0;
+        const argumentsValue: unknown[] = [];
+        Object.defineProperty(argumentsValue, "0", {
+            enumerable: true,
+            get() {
+                getterCalls++;
+                return "invalid";
+            },
+        });
+
+        expect(() => captureToolArguments(argumentsValue)).toThrow(expect.objectContaining({ code: "invalid_input" }));
+        expect(getterCalls).toBe(0);
+    });
+
+    it.each([true, false])("rejects enumerable=%s own array map methods without calling them", (enumerable) => {
+        let mapCalls = 0;
+        const argumentsValue = ["valid"];
+        Object.defineProperty(argumentsValue, "map", {
+            enumerable,
+            value: () => {
+                mapCalls++;
+                return ["invalid"];
+            },
+        });
+
+        expect(() => captureToolArguments(argumentsValue)).toThrow(expect.objectContaining({ code: "invalid_input" }));
+        expect(mapCalls).toBe(0);
+    });
+
+    it.each([
+        ["sparse", ["first", , "third"]],
+        ["extra string property", Object.assign(["valid"], { extra: "invalid" })],
+    ])("rejects %s arrays", (_name, argumentsValue) => {
+        expect(() => captureToolArguments(argumentsValue)).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
+
+    it("deep-copies dense nested arrays through descriptors", () => {
+        const argumentsValue = [[{ value: "stable" }], [1, 2, 3]];
+        const draft = captureToolArguments(argumentsValue);
+        const capturedArguments = (draft.artifact.messages[1]!.content[0] as { arguments: unknown }).arguments;
+
+        argumentsValue[0]![0]!.value = "changed";
+        argumentsValue[1]![0] = 0;
+
+        expect(capturedArguments).toEqual([[{ value: "stable" }], [1, 2, 3]]);
     });
 });
 

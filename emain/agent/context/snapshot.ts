@@ -78,16 +78,23 @@ function normalizeJsonValue(value: unknown, ancestors = new WeakSet<object>()): 
         if (ancestors.has(value)) invalidInput("Tool arguments must not contain cycles");
         ancestors.add(value);
         if (Array.isArray(value)) {
-            const keys = Object.keys(value);
-            if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+            const ownNames = Object.getOwnPropertyNames(value);
+            if (Object.getOwnPropertySymbols(value).length > 0 || ownNames.length !== value.length + 1 || !ownNames.includes("length")) {
                 invalidInput("Tool argument arrays must contain only indexed JSON values");
             }
-            const result = value.map((item) => normalizeJsonValue(item, ancestors));
+            const result = new Array<unknown>(value.length);
+            for (let index = 0; index < value.length; index++) {
+                const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+                if (!descriptor || !("value" in descriptor)) {
+                    invalidInput("Tool argument arrays must contain only indexed JSON values");
+                }
+                result[index] = normalizeJsonValue(descriptor.value, ancestors);
+            }
             ancestors.delete(value);
             return result;
         }
         if (!isPlainObject(value)) invalidInput("Tool arguments must contain only plain JSON objects");
-        if (Object.getOwnPropertySymbols(value).some((symbol) => Object.prototype.propertyIsEnumerable.call(value, symbol))) {
+        if (Object.getOwnPropertySymbols(value).length > 0) {
             invalidInput("Tool arguments must not contain symbol keys");
         }
         const result = Object.create(null) as Record<string, unknown>;
