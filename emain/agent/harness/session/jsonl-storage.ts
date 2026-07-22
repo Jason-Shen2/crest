@@ -114,6 +114,10 @@ function leafIdAfterEntry(entry: SessionTreeEntry): string | null {
 	return entry.type === "leaf" ? entry.targetId : entry.id;
 }
 
+function buildTransactionIds(entries: SessionTreeEntry[]): Set<string> {
+	return new Set(entries.flatMap((entry) => entry.transactionId == null ? [] : [entry.transactionId]));
+}
+
 function headerToSessionMetadata(header: SessionHeader, path: string): JsonlSessionMetadata {
 	return {
 		id: header.id,
@@ -186,8 +190,11 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 	private readonly metadata: JsonlSessionMetadata;
 	private entries: SessionTreeEntry[];
 	private byId: Map<string, SessionTreeEntry>;
+	private entryIds: Set<string>;
+	private transactionIds: Set<string>;
 	private labelsById: Map<string, string>;
 	private currentLeafId: string | null;
+	private appendTail: Promise<void> = Promise.resolve();
 
 	private constructor(
 		fs: JsonlSessionStorageFileSystem,
@@ -201,6 +208,8 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		this.metadata = headerToSessionMetadata(header, this.filePath);
 		this.entries = entries;
 		this.byId = new Map(entries.map((entry) => [entry.id, entry]));
+		this.entryIds = new Set(this.byId.keys());
+		this.transactionIds = buildTransactionIds(entries);
 		this.labelsById = buildLabelsById(entries);
 		this.currentLeafId = leafId;
 	}
@@ -268,7 +277,13 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 	}
 
 	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
-		validateSessionEntriesForAppend(this.entries, entries);
+		const operation = this.appendTail.then(() => this.appendEntriesNow(entries));
+		this.appendTail = operation.catch(() => undefined);
+		return operation;
+	}
+
+	private async appendEntriesNow(entries: SessionTreeEntry[]): Promise<void> {
+		validateSessionEntriesForAppend(this.entryIds, this.transactionIds, entries);
 		if (entries.length === 0) return;
 		getFileSystemResultOrThrow(
 			await this.fs.appendFile(this.filePath, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
@@ -277,7 +292,11 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		const labelsById = new Map(this.labelsById);
 		for (const entry of entries) updateLabelCache(labelsById, entry);
 		this.entries.push(...entries);
-		for (const entry of entries) this.byId.set(entry.id, entry);
+		for (const entry of entries) {
+			this.byId.set(entry.id, entry);
+			this.entryIds.add(entry.id);
+			if (entry.transactionId != null) this.transactionIds.add(entry.transactionId);
+		}
 		this.labelsById = labelsById;
 		if (entries.length > 0) this.currentLeafId = leafIdAfterEntry(entries[entries.length - 1]!);
 	}

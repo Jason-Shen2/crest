@@ -103,6 +103,25 @@ describe("SqliteSessionStorage", () => {
 		storage.close();
 	});
 
+	it("appendEntries rolls back inserts when a later entry cannot be serialized", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		await expect(
+			storage.appendEntries([
+				{ type: "message", id: "first", parentId: null, timestamp: new Date().toISOString(), message: user("first") },
+				{
+					type: "message",
+					id: "second",
+					parentId: "first",
+					timestamp: new Date().toISOString(),
+					message: { role: "user", content: [{ type: "text", text: BigInt(1) }] } as unknown as AgentMessage,
+				},
+			]),
+		).rejects.toThrow(/BigInt/i);
+		expect(await storage.getEntries()).toEqual([]);
+		expect(await storage.getLeafId()).toBeNull();
+		storage.close();
+	});
+
 	it("SqliteDb rolls back a failed multi-insert transaction", () => {
 		const db = new SqliteDb(dbPath("transaction.db"));
 		db.exec("CREATE TABLE values_table (id TEXT PRIMARY KEY)");

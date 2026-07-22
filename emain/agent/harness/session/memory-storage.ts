@@ -38,18 +38,27 @@ function leafIdAfterEntry(entry: SessionTreeEntry): string | null {
 	return entry.type === "leaf" ? entry.targetId : entry.id;
 }
 
+function buildTransactionIds(entries: SessionTreeEntry[]): Set<string> {
+	return new Set(entries.flatMap((entry) => entry.transactionId == null ? [] : [entry.transactionId]));
+}
+
 export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionMetadata>
 	implements SessionStorage<TMetadata>
 {
 	private readonly metadata: TMetadata;
 	private entries: SessionTreeEntry[];
 	private byId: Map<string, SessionTreeEntry>;
+	private entryIds: Set<string>;
+	private transactionIds: Set<string>;
 	private labelsById: Map<string, string>;
 	private leafId: string | null;
+	private appendTail: Promise<void> = Promise.resolve();
 
 	constructor(options?: { entries?: SessionTreeEntry[]; metadata?: TMetadata }) {
 		this.entries = filterCommittedTransactionEntries(options?.entries ?? []).entries;
 		this.byId = new Map(this.entries.map((entry) => [entry.id, entry]));
+		this.entryIds = new Set(this.byId.keys());
+		this.transactionIds = buildTransactionIds(this.entries);
 		this.labelsById = buildLabelsById(this.entries);
 		this.leafId = null;
 		for (const entry of this.entries) this.leafId = leafIdAfterEntry(entry);
@@ -93,11 +102,21 @@ export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionM
 	}
 
 	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
-		validateSessionEntriesForAppend(this.entries, entries);
+		const operation = this.appendTail.then(() => this.appendEntriesNow(entries));
+		this.appendTail = operation.catch(() => undefined);
+		return operation;
+	}
+
+	private appendEntriesNow(entries: SessionTreeEntry[]): void {
+		validateSessionEntriesForAppend(this.entryIds, this.transactionIds, entries);
 		const labelsById = new Map(this.labelsById);
 		for (const entry of entries) updateLabelCache(labelsById, entry);
 		this.entries.push(...entries);
-		for (const entry of entries) this.byId.set(entry.id, entry);
+		for (const entry of entries) {
+			this.byId.set(entry.id, entry);
+			this.entryIds.add(entry.id);
+			if (entry.transactionId != null) this.transactionIds.add(entry.transactionId);
+		}
 		this.labelsById = labelsById;
 		if (entries.length > 0) this.leafId = leafIdAfterEntry(entries[entries.length - 1]!);
 	}

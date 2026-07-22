@@ -303,12 +303,29 @@ export function filterCommittedTransactionEntries(entries: SessionTreeEntry[]): 
     return { entries: visibleEntries, diagnostics, committedTransactionIds, committedTransactions };
 }
 
-/** Reject a programmatic append unless every proposed entry remains visible after transaction validation. */
-export function validateSessionEntriesForAppend(existingEntries: SessionTreeEntry[], entries: SessionTreeEntry[]): void {
-    const allEntries = [...existingEntries, ...entries];
-    for (const entry of allEntries) {
+/** Reject a programmatic append unless the batch is self-contained and transaction-complete. */
+export function validateSessionEntriesForAppend(
+    existingEntryIds: ReadonlySet<string>,
+    existingTransactionIds: ReadonlySet<string>,
+    entries: SessionTreeEntry[],
+): void {
+    const batch = readArrayValues(entries, "Session entries") as SessionTreeEntry[];
+    const knownEntryIds = new Set(existingEntryIds);
+    for (const entry of batch) {
         try {
-            entryId(entry);
+            const id = entryId(entry);
+            if (knownEntryIds.has(id)) {
+                throw new SessionEntryTransactionError("invalid_transaction", `duplicate session entry ID ${id}`);
+            }
+            const parent = parentId(entry);
+            if (parent != null && !knownEntryIds.has(parent)) {
+                throw new SessionEntryTransactionError("invalid_transaction", `entry parentId ${parent} not found`);
+            }
+            const transactionId = transactionIdForEntry(entry);
+            if (transactionId != null && existingTransactionIds.has(transactionId)) {
+                throw new SessionEntryTransactionError("invalid_transaction", `duplicate session transaction ID ${transactionId}`);
+            }
+            knownEntryIds.add(id);
         } catch (error) {
             throw new SessionEntryTransactionError(
                 "invalid_transaction",
@@ -316,11 +333,11 @@ export function validateSessionEntriesForAppend(existingEntries: SessionTreeEntr
             );
         }
     }
-    const result = filterCommittedTransactionEntries(allEntries);
+    const result = filterCommittedTransactionEntries(batch);
     if (result.diagnostics.length > 0) {
         throw new SessionEntryTransactionError("invalid_transaction", result.diagnostics[0]!.message);
     }
-    if (result.entries.length !== allEntries.length || result.entries.some((entry, index) => entry !== allEntries[index])) {
+    if (result.entries.length !== batch.length || result.entries.some((entry, index) => entry !== batch[index])) {
         throw new SessionEntryTransactionError("invalid_transaction", "session entries did not form complete transactions");
     }
 }

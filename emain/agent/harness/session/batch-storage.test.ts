@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentMessage } from "../../types";
-import { err, FileError, ok, type FileSystem, type SessionTreeEntry } from "../types";
+import { err, FileError, ok, type FileSystem, type Result, type SessionTreeEntry } from "../types";
 import { createTransactionManifestData } from "./entry-transaction";
 import { JsonlSessionStorage } from "./jsonl-storage";
 import { InMemorySessionStorage } from "./memory-storage";
@@ -85,6 +85,14 @@ function memoryJsonlFile(
     return { fs, state, appendFile, writeFile };
 }
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((nextResolve) => {
+        resolve = nextResolve;
+    });
+    return { promise, resolve };
+}
+
 describe("atomic session batch append", () => {
     it("memory rejects existing and in-batch duplicate IDs without changing the leaf", async () => {
         const storage = new InMemorySessionStorage({ entries: [user("old")] });
@@ -135,6 +143,67 @@ describe("atomic session batch append", () => {
 
         expect(await storage.getEntries()).toEqual([]);
         expect(await storage.getLeafId()).toBeNull();
+    });
+
+    it("serializes concurrent JSONL appends and continues after an append failure", async () => {
+        const file = memoryJsonlFile(jsonl([]));
+        const firstResult = deferred<Result<void, FileError>>();
+        const appendFile = vi.fn(async (_path: string, value: string) => {
+            if (appendFile.mock.calls.length === 1) {
+                const result = await firstResult.promise;
+                if (result.ok) file.state.content += value;
+                return result;
+            }
+            file.state.content += value;
+            return ok<void, FileError>(undefined);
+        });
+        file.fs.appendFile = appendFile;
+        const storage = await JsonlSessionStorage.open(file.fs, "/tmp/session.jsonl");
+
+        const first = storage.appendEntries([user("first")]);
+        const second = storage.appendEntries([user("second", "first")]);
+        const duplicate = storage.appendEntries([user("first")]);
+        await Promise.resolve();
+        expect(appendFile).toHaveBeenCalledTimes(1);
+        firstResult.resolve(ok(undefined));
+        await Promise.all([first, second]);
+        await expect(duplicate).rejects.toThrow(/duplicate/i);
+        expect(appendFile.mock.calls.map((call) => call[1])).toEqual([
+            `${JSON.stringify(user("first"))}\n`,
+            `${JSON.stringify(user("second", "first"))}\n`,
+        ]);
+        expect((await storage.getEntries()).map((entry) => entry.id)).toEqual(["first", "second"]);
+
+        const failedFile = memoryJsonlFile(jsonl([]));
+        const failure = deferred<Result<void, FileError>>();
+        const failedAppendFile = vi.fn(async (_path: string, value: string) => {
+            if (failedAppendFile.mock.calls.length === 1) return failure.promise;
+            failedFile.state.content += value;
+            return ok<void, FileError>(undefined);
+        });
+        failedFile.fs.appendFile = failedAppendFile;
+        const failedStorage = await JsonlSessionStorage.open(failedFile.fs, "/tmp/failed-session.jsonl");
+        const rejected = failedStorage.appendEntries([user("failed")]);
+        const stale = failedStorage.appendEntries([user("stale", "failed")]);
+        const continued = failedStorage.appendEntries([user("continued")]);
+        await Promise.resolve();
+        expect(failedAppendFile).toHaveBeenCalledTimes(1);
+        failure.resolve(err(new FileError("unknown", "disk full")));
+        await expect(rejected).rejects.toThrow(/append/i);
+        await expect(stale).rejects.toThrow(/parentId/i);
+        await continued;
+        expect((await failedStorage.getEntries()).map((entry) => entry.id)).toEqual(["continued"]);
+    });
+
+    it("does not recanonicalize a committed transaction before later memory appends", async () => {
+        const storage = new InMemorySessionStorage();
+        const entries = transaction();
+        await storage.appendEntries(entries);
+        Object.defineProperty((entries[0] as { data: object }).data, "poison", { value: "ignored", enumerable: false });
+
+        await storage.appendEntries([user("later", "turn")]);
+
+        expect((await storage.getEntries()).map((entry) => entry.id)).toEqual(["artifact", "manifest", "turn", "later"]);
     });
 
     it("JSONL open removes incomplete groups and a non-newline interrupted tail before accepting later appends", async () => {
