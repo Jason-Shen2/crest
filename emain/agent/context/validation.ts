@@ -167,17 +167,29 @@ export function validateContextAttachmentData(value: unknown): ContextAttachment
     if (lifecycle === "pinned" && Object.hasOwn(value, "targetTurnId")) {
         invalid("targetTurnId is not allowed for pinned attachments");
     }
-    const targetTurnId = optionalString(value.targetTurnId, "targetTurnId");
-    if (lifecycle === "once" && targetTurnId == null) invalid("targetTurnId is required for once attachments");
     if (typeof value.selectionOrder !== "number" || !Number.isInteger(value.selectionOrder) || value.selectionOrder < 0) {
         invalid("selectionOrder must be a non-negative integer");
     }
+    const transactionId = requiredString(value.transactionId, "transactionId");
+    const artifactEntryId = requiredString(value.artifactEntryId, "artifactEntryId");
+    const requestedRepresentation = parseContextRepresentation(value.requestedRepresentation);
+    if (lifecycle === "pinned") {
+        return {
+            schemaVersion: 1,
+            transactionId,
+            artifactEntryId,
+            lifecycle,
+            requestedRepresentation,
+            selectionOrder: value.selectionOrder,
+        };
+    }
+    const targetTurnId = requiredString(value.targetTurnId, "targetTurnId");
     return {
         schemaVersion: 1,
-        transactionId: requiredString(value.transactionId, "transactionId"),
-        artifactEntryId: requiredString(value.artifactEntryId, "artifactEntryId"),
+        transactionId,
+        artifactEntryId,
         lifecycle,
-        requestedRepresentation: parseContextRepresentation(value.requestedRepresentation),
+        requestedRepresentation,
         targetTurnId,
         selectionOrder: value.selectionOrder,
     };

@@ -5,12 +5,14 @@ import { describe, expect, it } from "vitest";
 
 import {
     decodeContextArtifact,
+    decodeContextAttachmentData,
     parseContextLifecycle,
     parseContextReferenceConfig,
     parseContextRepresentation,
     validateContextArtifact,
     validateContextAttachmentData,
 } from "./validation";
+import { ContextReferenceError } from "./types";
 
 function validArtifact() {
     return {
@@ -87,9 +89,37 @@ describe("context validation", () => {
         })).toThrow(/targetTurnId/);
     });
 
+    it("normalizes pinned attachments without a target turn ID property", () => {
+        const pinned = validateContextAttachmentData({
+            schemaVersion: 1,
+            transactionId: "tx-1",
+            artifactEntryId: "artifact-1",
+            lifecycle: "pinned",
+            requestedRepresentation: "full",
+            selectionOrder: 0,
+        });
+
+        expect(Object.hasOwn(pinned, "targetTurnId")).toBe(false);
+        expect(validateContextAttachmentData(pinned)).toEqual(pinned);
+    });
+
     it("rejects arbitrary renderer enum values", () => {
         expect(() => parseContextLifecycle("later")).toThrow(/lifecycle/);
         expect(() => parseContextRepresentation("compact")).toThrow(/representation/);
+    });
+
+    it("uses ContextReferenceError invalid_input codes for invalid IPC input", () => {
+        let thrown: unknown;
+        try {
+            parseContextLifecycle("later");
+        } catch (error) {
+            thrown = error;
+        }
+        expect(thrown).toBeInstanceOf(ContextReferenceError);
+        expect((thrown as ContextReferenceError).code).toBe("invalid_input");
+
+        const cause = new Error("underlying failure");
+        expect(new ContextReferenceError("invalid_input", "invalid input", cause).cause).toBe(cause);
     });
 
     it("requires lowercase SHA-256 artifact hashes", () => {
@@ -117,6 +147,12 @@ describe("context validation", () => {
 
     it("returns an unknown artifact schema diagnostic without throwing", () => {
         expect(decodeContextArtifact({ ...validArtifact(), schemaVersion: 2 })).toEqual({
+            diagnostic: expect.stringMatching(/schemaVersion/),
+        });
+    });
+
+    it("returns an unknown attachment schema diagnostic without throwing", () => {
+        expect(decodeContextAttachmentData({ schemaVersion: 2 })).toEqual({
             diagnostic: expect.stringMatching(/schemaVersion/),
         });
     });
