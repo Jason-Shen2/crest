@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { SqliteSessionRepo } from "./harness/session/sqlite-repo";
 import { createTransactionManifestData } from "./harness/session/entry-transaction";
+import { makeCommittedContextTransaction } from "./harness/session/context-transaction-fixture";
 import { buildSystemPrompt } from "./build-system-prompt";
 import {
     _setSessionsRepoForTests,
@@ -136,6 +137,30 @@ describe("sessions — SqliteSessionRepo wiring", () => {
         expect(forked.metadata.parentSessionPath).toBe(source.metadata.path);
         expect(context.messages).toHaveLength(1);
         expect((context.messages[0] as { content: { text: string }[] }).content[0].text).toBe("keep this");
+    });
+
+    it("forks committed context transactions only as complete groups", async () => {
+        const source = await createPaneSession("/tmp/proj-context-fork");
+        const rootId = await source.session.appendMessage(user("before context"));
+        const transaction = makeCommittedContextTransaction({ parentId: rootId });
+        await source.session.appendEntries(transaction);
+        const transactionUserId = transaction.at(-1)!.id;
+
+        const before = await forkPaneSession(source.metadata, { entryId: transactionUserId, position: "before" });
+        const at = await forkPaneSession(source.metadata, { entryId: transactionUserId, position: "at" });
+
+        expect((await before.session.getEntries()).map((entry) => entry.id)).toEqual([rootId]);
+        expect((await at.session.getEntries()).map((entry) => entry.id)).toEqual([rootId, ...transaction.map((entry) => entry.id)]);
+        expect((await at.session.buildContext()).messages.map((message) => message.role)).toEqual(["user", "user"]);
+    });
+
+    it("keeps context custom entries out of session detail message previews", async () => {
+        const created = await createPaneSession("/tmp/proj-context-details");
+        await created.session.appendEntries(makeCommittedContextTransaction());
+
+        const details = await listSessionDetailsForCwd("/tmp/proj-context-details");
+
+        expect(details).toEqual([expect.objectContaining({ messageCount: 1, firstMessage: "contextual question", previewText: "contextual question" })]);
     });
 
     it("listSessionsForCwd returns only sessions for the given cwd, newest first", async () => {

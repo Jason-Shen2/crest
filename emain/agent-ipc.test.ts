@@ -63,6 +63,7 @@ import {
 import { AgentSessionRuntime } from "./agent/agent-session-runtime";
 import { buildAgentHarnessHost } from "./agent/harness-factory";
 import { SqliteSessionRepo } from "./agent/harness/session/sqlite-repo";
+import { makeCommittedContextTransaction } from "./agent/harness/session/context-transaction-fixture";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "./agent/sessions";
 import type { AgentMessage } from "./agent/types";
 import { getModel } from "./ai";
@@ -429,6 +430,22 @@ describe("agent-ipc command helpers", () => {
         await expect(listAgentTreeForIpc(result.sessionMetadata)).resolves.toMatchObject({
             entries: [expect.objectContaining({ preview: "imported question" })],
         });
+    });
+
+    it("preserves committed context transactions through /export and /import", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "agent-ipc-context-roundtrip-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        const transaction = makeCommittedContextTransaction();
+        await session.appendEntries(transaction);
+        const outputPath = path.join(cwd, "context.jsonl");
+
+        await runAgentCommandForIpc({ command: "export", cwd, sessionMetadata: metadata, argsText: `"${outputPath}"` });
+        const result = await runAgentCommandForIpc({ command: "import", cwd, argsText: `"${outputPath}"` });
+
+        const exportedEntries = (await fs.readFile(outputPath, "utf8")).trim().split("\n").slice(1).map((line) => JSON.parse(line));
+
+        expect(exportedEntries.map((entry) => entry.id)).toEqual(transaction.map((entry) => entry.id));
+        expect((await listAgentTreeForIpc(result.sessionMetadata)).entries.map((entry) => entry.preview)).toContain("contextual question");
     });
 
     it("sends persisted session_state using the renderer subscription path", async () => {

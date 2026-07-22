@@ -11,6 +11,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { JsonlSessionRepo } from "./jsonl-repo";
+import { makeCommittedContextTransaction } from "./context-transaction-fixture";
+import { foldContextJournal } from "../../context/journal";
 import { SqliteSessionRepo } from "./sqlite-repo";
 import { SqliteSessionStorage } from "./sqlite-storage";
 import { SqliteDb } from "./sqlite-driver";
@@ -430,5 +432,57 @@ describe("SqliteSessionRepo — JSONL interchange", () => {
 		// Entry payloads (id/type/message) survive the round-trip identically.
 		expect(exportedEntries.map((e) => e.id)).toEqual(srcEntries.map((e) => e.id));
 		expect(exportedEntries.map((e) => e.type)).toEqual(srcEntries.map((e) => e.type));
+	});
+
+	it("preserves committed context transactions through SQLite export and import", async () => {
+		const source = await jsonlRepo.create({ cwd: "/tmp/context-roundtrip" });
+		const entries = makeCommittedContextTransaction();
+		await source.appendEntries(entries);
+		const sourceMeta = await source.getMetadata();
+
+		const imported = await repo.importFromJsonl(sourceMeta.path, { cwd: "/tmp/context-roundtrip" });
+		const importedEntries = await imported.getEntries();
+		const exported = await repo.exportToJsonl(await imported.getMetadata());
+
+		expect(importedEntries.map((entry) => entry.id)).toEqual(entries.map((entry) => entry.id));
+		expect(importedEntries.filter((entry) => entry.type === "custom").map((entry) => entry.customType)).toContain("context_attach");
+		expect(foldContextJournal(importedEntries).activeAttachments).toHaveLength(1);
+		expect(exported).toContain('"customType":"context_projection"');
+	});
+
+	it("preserves ordinary records interleaved with a committed context transaction on import", async () => {
+		const source = await jsonlRepo.create({ cwd: "/tmp/context-interleaved" });
+		const transaction = makeCommittedContextTransaction();
+		const ordinary = { type: "message", id: "ordinary-user", parentId: null, timestamp: new Date().toISOString(), message: user("ordinary question") } as const;
+		await source.appendEntries([transaction[0]!, ordinary, ...transaction.slice(1)]);
+
+		const imported = await repo.importFromJsonl((await source.getMetadata()).path, { cwd: "/tmp/context-interleaved" });
+
+		expect((await imported.getEntries()).map((entry) => entry.id)).toContain(ordinary.id);
+	});
+
+	it("drops incomplete context transactions when importing JSONL", async () => {
+		const entries = makeCommittedContextTransaction();
+		const incomplete = entries.filter((entry) => entry.id !== "context-manifest");
+		const inputPath = path.join(jsonlRoot, "incomplete.jsonl");
+		await fs.writeFile(inputPath, `${JSON.stringify({ type: "session", version: 3, id: "incomplete", timestamp: new Date().toISOString(), cwd: "/tmp/context-roundtrip" })}\n${incomplete.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+
+		const imported = await repo.importFromJsonl(inputPath, { cwd: "/tmp/context-roundtrip" });
+		const importedEntries = await imported.getEntries();
+
+		expect(importedEntries).toEqual([]);
+		expect((await imported.buildContext()).messages).toEqual([]);
+		expect(foldContextJournal(importedEntries).activeAttachments).toEqual([]);
+	});
+
+	it("hides incomplete context transactions from JSONL session details", async () => {
+		const source = await jsonlRepo.create({ cwd: "/tmp/context-detail" });
+		const sourceMeta = await source.getMetadata();
+		const incomplete = makeCommittedContextTransaction().filter((entry) => entry.id !== "context-manifest");
+		await fs.writeFile(sourceMeta.path, `${JSON.stringify({ type: "session", version: 3, id: sourceMeta.id, timestamp: sourceMeta.createdAt, cwd: sourceMeta.cwd })}\n${incomplete.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+
+		const details = await jsonlRepo.listDetails({ cwd: "/tmp/context-detail" });
+
+		expect(details).toEqual([expect.objectContaining({ messageCount: 0, firstMessage: "", previewText: "" })]);
 	});
 });

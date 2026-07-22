@@ -6,6 +6,7 @@ import {
 	type SessionStorage,
 	type SessionTreeEntry,
 } from "../types";
+import { filterCommittedTransactionEntries, getTransactionForkBoundary } from "./entry-transaction";
 import { Session } from "./session";
 import { uuidv7 } from "./uuid";
 
@@ -33,19 +34,40 @@ export async function getEntriesToFork(
 	storage: SessionStorage,
 	options: { entryId?: string; position?: "before" | "at" },
 ): Promise<SessionTreeEntry[]> {
-	if (!options.entryId) return storage.getEntries();
-	const target = await storage.getEntry(options.entryId);
+	const entries = await storage.getEntries();
+	if (!options.entryId) return entries;
+	const target = entries.find((entry) => entry.id === options.entryId);
 	if (!target) {
 		throw new SessionError("invalid_fork_target", `Entry ${options.entryId} not found`);
 	}
-	let effectiveLeafId: string | null;
-	if ((options.position ?? "before") === "at") {
-		effectiveLeafId = target.id;
-	} else {
+	const position = options.position ?? "before";
+	if (position === "before") {
 		if (target.type !== "message" || target.message.role !== "user") {
 			throw new SessionError("invalid_fork_target", `Entry ${options.entryId} is not a user message`);
 		}
-		effectiveLeafId = target.parentId;
+	}
+	const effectiveLeafId = getTransactionForkBoundary(entries, target.id, position);
+	if (effectiveLeafId == null && position === "at") {
+		throw new SessionError("invalid_fork_target", `Entry ${options.entryId} is not a committed session entry`);
 	}
 	return storage.getPathToRoot(effectiveLeafId);
+}
+
+export async function appendCommittedEntryGroups(
+	storage: Pick<SessionStorage, "appendEntry" | "appendEntries">,
+	entries: SessionTreeEntry[],
+): Promise<void> {
+	const committed = filterCommittedTransactionEntries(entries);
+	const appendedTransactions = new Set<string>();
+	for (const entry of committed.entries) {
+		if (entry.transactionId == null) {
+			await storage.appendEntry(entry);
+			continue;
+		}
+		if (appendedTransactions.has(entry.transactionId)) continue;
+		const transaction = committed.committedTransactions.get(entry.transactionId);
+		if (!transaction) continue;
+		await storage.appendEntries(transaction.physicalEntries);
+		appendedTransactions.add(entry.transactionId);
+	}
 }
