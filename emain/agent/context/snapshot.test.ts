@@ -265,6 +265,94 @@ describe("context snapshot capture", () => {
 
         expect(captureTurn([user, assistant]).artifact.provenance.preview).toBe("answer");
     });
+
+    it.each([
+        ["Date", new Date("2026-07-22T00:00:00.000Z")],
+        ["undefined root", undefined],
+        ["undefined nested object", { value: undefined }],
+        ["undefined nested array", ["valid", undefined]],
+        ["NaN", Number.NaN],
+        ["Infinity", Number.POSITIVE_INFINITY],
+        ["negative infinity", Number.NEGATIVE_INFINITY],
+        ["BigInt", BigInt(1)],
+        ["function", () => "invalid"],
+        ["symbol", Symbol("invalid")],
+    ])("rejects unsupported tool arguments: %s", (_name, argumentsValue) => {
+        const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: "question" }] });
+        const assistant = entry("assistant-1", "user-1", {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call-1", name: "read", arguments: argumentsValue }],
+        });
+
+        expect(() => captureTurn([user, assistant])).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
+
+    it("rejects cyclic tool arguments with an invalid input error", () => {
+        const argumentsValue: { self?: unknown } = {};
+        argumentsValue.self = argumentsValue;
+        const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: "question" }] });
+        const assistant = entry("assistant-1", "user-1", {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call-1", name: "read", arguments: argumentsValue }],
+        });
+
+        expect(() => captureTurn([user, assistant])).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
+
+    it("deep-copies supported nested tool arguments before hashing", () => {
+        const argumentsValue = JSON.parse(
+            '{"__proto__":{"nested":[1,{"value":"stable"}]},"constructor":{"items":[true,null]},"prototype":"kept","regular":[{"deep":"copy"}]}'
+        );
+        const expectedArguments = JSON.parse(
+            '{"__proto__":{"nested":[1,{"value":"stable"}]},"constructor":{"items":[true,null]},"prototype":"kept","regular":[{"deep":"copy"}]}'
+        );
+        const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: "question" }] });
+        const assistant = entry("assistant-1", "user-1", {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call-1", name: "read", arguments: argumentsValue }],
+        });
+        const draft = captureTurn([user, assistant]);
+        const capturedArguments = (draft.artifact.messages[1]!.content[0] as { arguments: Record<string, unknown> }).arguments;
+        const hash = draft.artifact.snapshotSha256;
+
+        expect(capturedArguments).toEqual(argumentsValue);
+        expect(Object.hasOwn(capturedArguments, "__proto__")).toBe(true);
+        argumentsValue.__proto__.nested[1].value = "changed";
+        argumentsValue.constructor.items[0] = false;
+        argumentsValue.regular[0].deep = "changed";
+
+        expect(capturedArguments).toEqual(expectedArguments);
+        expect(draft.artifact.snapshotSha256).toBe(hash);
+    });
+
+    it("accepts unpadded base64 image data with valid two- and three-character remainders", () => {
+        const user = entry("user-1", null, {
+            role: "user",
+            content: [
+                { type: "text", text: "image" },
+                { type: "image", data: "TQ", mimeType: "image/png" },
+                { type: "image", data: "aGVsbG8", mimeType: "image/png" },
+            ],
+        });
+
+        expect(captureTurn([user]).artifact.messages[0]!.content).toEqual([
+            { type: "text", text: "image" },
+            { type: "image_omitted", mimeType: "image/png", byteLength: 1 },
+            { type: "image_omitted", mimeType: "image/png", byteLength: 5 },
+        ]);
+    });
+
+    it.each(["====", "A", "A=AA", "A===", "A@AA"])("rejects malformed base64 image data: %s", (data) => {
+        const user = entry("user-1", null, {
+            role: "user",
+            content: [
+                { type: "text", text: "image" },
+                { type: "image", data, mimeType: "image/png" },
+            ],
+        });
+
+        expect(() => captureTurn([user])).toThrow(expect.objectContaining({ code: "invalid_input" }));
+    });
 });
 
 describe("model-visible session message IDs", () => {

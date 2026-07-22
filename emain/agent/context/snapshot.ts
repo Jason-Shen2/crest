@@ -29,9 +29,79 @@ function isUserMessageEntry(entry: SessionTreeEntry): boolean {
     return entry.type === "message" && entry.message.role === "user";
 }
 
-function normalizedImageBlock(block: { data?: unknown; mimeType?: unknown }): ContextSnapshotBlock | undefined {
-    if (typeof block.data !== "string" || typeof block.mimeType !== "string") return undefined;
-    return { type: "image_omitted", mimeType: block.mimeType, byteLength: Buffer.byteLength(block.data, "base64") };
+function invalidInput(message: string): never {
+    throw new ContextReferenceError("invalid_input", message);
+}
+
+function getBase64ByteLength(data: string): number {
+    const paddingStart = data.indexOf("=");
+    const unpadded = paddingStart < 0 ? data : data.slice(0, paddingStart);
+    if (!/^[A-Za-z0-9+/]*$/.test(unpadded)) invalidInput("Image data must be valid standard base64");
+
+    if (paddingStart < 0) {
+        const remainder = data.length % 4;
+        if (remainder === 1) invalidInput("Image data must be valid standard base64");
+        return Math.floor(data.length / 4) * 3 + (remainder === 2 ? 1 : remainder === 3 ? 2 : 0);
+    }
+
+    const padding = data.length - paddingStart;
+    if (padding > 2 || !/^=+$/.test(data.slice(paddingStart)) || data.length % 4 !== 0) {
+        invalidInput("Image data must be valid standard base64");
+    }
+    if ((padding === 1 && unpadded.length % 4 !== 3) || (padding === 2 && unpadded.length % 4 !== 2)) {
+        invalidInput("Image data must be valid standard base64");
+    }
+    return (data.length / 4) * 3 - padding;
+}
+
+function normalizedImageBlock(block: { data?: unknown; mimeType?: unknown }): ContextSnapshotBlock {
+    if (typeof block.data !== "string" || typeof block.mimeType !== "string") {
+        invalidInput("Image data and mimeType must be strings");
+    }
+    return { type: "image_omitted", mimeType: block.mimeType, byteLength: getBase64ByteLength(block.data) };
+}
+
+function isPlainObject(value: object): value is Record<string, unknown> {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+
+function normalizeJsonValue(value: unknown, ancestors = new WeakSet<object>()): unknown {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+    if (typeof value === "number") {
+        if (Number.isFinite(value)) return value;
+        invalidInput("Tool arguments must contain only finite JSON numbers");
+    }
+    if (typeof value !== "object") invalidInput("Tool arguments must contain only JSON values");
+
+    try {
+        if (ancestors.has(value)) invalidInput("Tool arguments must not contain cycles");
+        ancestors.add(value);
+        if (Array.isArray(value)) {
+            const keys = Object.keys(value);
+            if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+                invalidInput("Tool argument arrays must contain only indexed JSON values");
+            }
+            const result = value.map((item) => normalizeJsonValue(item, ancestors));
+            ancestors.delete(value);
+            return result;
+        }
+        if (!isPlainObject(value)) invalidInput("Tool arguments must contain only plain JSON objects");
+        if (Object.getOwnPropertySymbols(value).some((symbol) => Object.prototype.propertyIsEnumerable.call(value, symbol))) {
+            invalidInput("Tool arguments must not contain symbol keys");
+        }
+        const result = Object.create(null) as Record<string, unknown>;
+        for (const key of Object.keys(value).sort()) {
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            if (!descriptor || !("value" in descriptor)) invalidInput("Tool arguments must not contain accessors");
+            result[key] = normalizeJsonValue(descriptor.value, ancestors);
+        }
+        ancestors.delete(value);
+        return result;
+    } catch (error) {
+        if (error instanceof ContextReferenceError) throw error;
+        throw new ContextReferenceError("invalid_input", "Tool arguments must contain only JSON values", error instanceof Error ? error : undefined);
+    }
 }
 
 function normalizeContent(content: unknown, includeToolCalls: boolean): ContextSnapshotBlock[] {
@@ -47,10 +117,9 @@ function normalizeContent(content: unknown, includeToolCalls: boolean): ContextS
         if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
             blocks.push({ type: "text", text: block.text });
         } else if (block.type === "image") {
-            const image = normalizedImageBlock(block);
-            if (image) blocks.push(image);
+            blocks.push(normalizedImageBlock(block));
         } else if (includeToolCalls && block.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string") {
-            blocks.push({ type: "tool_call", id: block.id, name: block.name, arguments: block.arguments });
+            blocks.push({ type: "tool_call", id: block.id, name: block.name, arguments: normalizeJsonValue(block.arguments) });
         }
     }
     return blocks;
@@ -142,7 +211,7 @@ export function captureContextArtifactDraft(input: ContextCaptureInput): Context
         const message = normalizeMessage(entry);
         return message == null ? [] : [{ entryId: entry.id, message }];
     });
-    const messages = captured.map(({ message }) => message);
+    const messages = canonicalize(captured.map(({ message }) => message)) as ContextSnapshotMessage[];
     if (!hasUsefulContent(messages)) {
         throw new ContextReferenceError("invalid_input", "The selected source has no useful text or tool content");
     }
