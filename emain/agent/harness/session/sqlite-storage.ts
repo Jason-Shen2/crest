@@ -104,20 +104,13 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 	private readonly db: SqliteDb;
 	private readonly location: string;
 	private readonly metadata: JsonlSessionMetadata;
-	private readonly entryIds: Set<string>;
-	private readonly transactionIds: Set<string>;
+	private entryIds: Set<string> | undefined;
+	private transactionIds: Set<string> | undefined;
 
 	private constructor(db: SqliteDb, location: string, header: HeaderRow) {
 		this.db = db;
 		this.location = location;
 		this.metadata = headerToSessionMetadata(header, location);
-		this.entryIds = new Set();
-		this.transactionIds = new Set();
-		for (const row of this.db.all<{ id: string; data: string }>("SELECT id, data FROM entries ORDER BY seq")) {
-			const entry = deserializeEntry(row, this.location);
-			this.entryIds.add(entry.id);
-			if (entry.transactionId != null) this.transactionIds.add(entry.transactionId);
-		}
 	}
 
 	static open(filePath: string): SqliteSessionStorage {
@@ -180,7 +173,21 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 	}
 
 	private hasEntryId(id: string): boolean {
-		return this.entryIds.has(id);
+		if (this.entryIds) return this.entryIds.has(id);
+		return this.db.get("SELECT 1 AS x FROM entries WHERE id = ? LIMIT 1", id) !== undefined;
+	}
+
+	private ensureAppendIndexes(): void {
+		if (this.entryIds && this.transactionIds) return;
+		const entryIds = new Set<string>();
+		const transactionIds = new Set<string>();
+		for (const row of this.db.all<{ data: string }>("SELECT data FROM entries ORDER BY seq")) {
+			const entry = deserializeEntry(row, this.location);
+			entryIds.add(entry.id);
+			if (entry.transactionId != null) transactionIds.add(entry.transactionId);
+		}
+		this.entryIds = entryIds;
+		this.transactionIds = transactionIds;
 	}
 
 	private generateEntryId(): string {
@@ -242,13 +249,14 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 	}
 
 	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
-		validateSessionEntriesForAppend(this.entryIds, this.transactionIds, entries);
+		this.ensureAppendIndexes();
+		validateSessionEntriesForAppend(this.entryIds!, this.transactionIds!, entries);
 		this.db.transaction(() => {
 			for (const entry of entries) this.insertEntry(entry);
 		});
 		for (const entry of entries) {
-			this.entryIds.add(entry.id);
-			if (entry.transactionId != null) this.transactionIds.add(entry.transactionId);
+			this.entryIds!.add(entry.id);
+			if (entry.transactionId != null) this.transactionIds!.add(entry.transactionId);
 		}
 	}
 

@@ -199,6 +199,27 @@ describe("SqliteSessionStorage", () => {
 		// as a session must surface as invalid_session (no header row).
 		expect(() => SqliteSessionStorage.open(path.join(tmpRoot, "fresh.db"))).toThrow(/missing session header/);
 	});
+
+	it("open reads metadata without deserializing malformed entry payloads", async () => {
+		const created = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		created.close();
+		const db = new SqliteDb(dbPath());
+		db.run(
+			"INSERT INTO entries (id, parent_id, type, timestamp, target_id, data) VALUES (?, ?, ?, ?, ?, ?)",
+			"broken",
+			null,
+			"message",
+			new Date().toISOString(),
+			null,
+			"not-json",
+		);
+		db.close();
+
+		const reopened = SqliteSessionStorage.open(dbPath());
+		expect((await reopened.getMetadata()).id).toBe("s1");
+		await expect(reopened.getEntries()).rejects.toThrow(/valid JSON/i);
+		reopened.close();
+	});
 });
 
 describe("SqliteSessionRepo — drop-in for JsonlSessionRepo", () => {

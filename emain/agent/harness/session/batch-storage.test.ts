@@ -145,6 +145,45 @@ describe("atomic session batch append", () => {
         expect(await storage.getLeafId()).toBeNull();
     });
 
+    it("JSONL recovers partial failed appends before releasing the next queued append", async () => {
+        const prior = user("prior");
+        const file = memoryJsonlFile(jsonl([prior]));
+        const appendFile = vi.fn(async (_path: string, value: string) => {
+            if (appendFile.mock.calls.length === 1) {
+                file.state.content += value.slice(0, Math.floor(value.length / 2));
+                return err<void, FileError>(new FileError("unknown", "disk full"));
+            }
+            file.state.content += value;
+            return ok<void, FileError>(undefined);
+        });
+        file.fs.appendFile = appendFile;
+        const storage = await JsonlSessionStorage.open(file.fs, "/tmp/session.jsonl");
+
+        const failed = storage.appendEntries([user("failed", "prior")]);
+        const next = storage.appendEntries([user("next", "prior")]);
+
+        await expect(failed).rejects.toThrow(/append/i);
+        await next;
+        expect((await storage.getEntries()).map((entry) => entry.id)).toEqual(["prior", "next"]);
+        const reopened = await JsonlSessionStorage.open(file.fs, "/tmp/session.jsonl");
+        expect((await reopened.getEntries()).map((entry) => entry.id)).toEqual(["prior", "next"]);
+    });
+
+    it("JSONL becomes unwritable when recovery after a partial append fails", async () => {
+        const file = memoryJsonlFile(jsonl([]), ok(undefined), err(new FileError("unknown", "readonly")));
+        const appendFile = vi.fn(async (_path: string, value: string) => {
+            file.state.content += value.slice(0, Math.floor(value.length / 2));
+            return err<void, FileError>(new FileError("unknown", "disk full"));
+        });
+        file.fs.appendFile = appendFile;
+        const storage = await JsonlSessionStorage.open(file.fs, "/tmp/session.jsonl");
+
+        await expect(storage.appendEntries([user("failed")])).rejects.toThrow(/append.*recover|recover.*append/i);
+        await expect(storage.appendEntries([user("after")])).rejects.toThrow(/reopen/i);
+        expect(appendFile).toHaveBeenCalledTimes(1);
+        expect(await storage.getEntries()).toEqual([]);
+    });
+
     it("serializes concurrent JSONL appends and continues after an append failure", async () => {
         const file = memoryJsonlFile(jsonl([]));
         const firstResult = deferred<Result<void, FileError>>();

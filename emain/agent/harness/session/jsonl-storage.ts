@@ -187,6 +187,7 @@ async function loadJsonlStorage(
 export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata> {
 	private readonly fs: JsonlSessionStorageFileSystem;
 	private readonly filePath: string;
+	private readonly header: SessionHeader;
 	private readonly metadata: JsonlSessionMetadata;
 	private entries: SessionTreeEntry[];
 	private byId: Map<string, SessionTreeEntry>;
@@ -195,6 +196,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 	private labelsById: Map<string, string>;
 	private currentLeafId: string | null;
 	private appendTail: Promise<void> = Promise.resolve();
+	private poisonedError: Error | undefined;
 
 	private constructor(
 		fs: JsonlSessionStorageFileSystem,
@@ -205,6 +207,7 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 	) {
 		this.fs = fs;
 		this.filePath = filePath;
+		this.header = header;
 		this.metadata = headerToSessionMetadata(header, this.filePath);
 		this.entries = entries;
 		this.byId = new Map(entries.map((entry) => [entry.id, entry]));
@@ -277,18 +280,44 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 	}
 
 	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
+		if (this.poisonedError) {
+			throw new SessionError("storage", "Session storage recovery failed; reopen the session before appending", this.poisonedError);
+		}
 		const operation = this.appendTail.then(() => this.appendEntriesNow(entries));
 		this.appendTail = operation.catch(() => undefined);
 		return operation;
 	}
 
 	private async appendEntriesNow(entries: SessionTreeEntry[]): Promise<void> {
+		if (this.poisonedError) {
+			throw new SessionError("storage", "Session storage recovery failed; reopen the session before appending", this.poisonedError);
+		}
 		validateSessionEntriesForAppend(this.entryIds, this.transactionIds, entries);
 		if (entries.length === 0) return;
-		getFileSystemResultOrThrow(
-			await this.fs.appendFile(this.filePath, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
-			"Failed to append session entries",
-		);
+		try {
+			getFileSystemResultOrThrow(
+				await this.fs.appendFile(this.filePath, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
+				"Failed to append session entries",
+			);
+		} catch (appendError) {
+			try {
+				getFileSystemResultOrThrow(
+					await this.fs.writeFile(this.filePath, this.canonicalContent()),
+					`Failed to recover session ${this.filePath}`,
+				);
+			} catch (recoveryError) {
+				const appendCause = toError(appendError);
+				const recoveryCause = toError(recoveryError);
+				const error = new SessionError(
+					"storage",
+					`Failed to append session entries (${appendCause.message}) and recover session (${recoveryCause.message}); reopen the session before appending`,
+					appendCause,
+				);
+				this.poisonedError = error;
+				throw error;
+			}
+			throw appendError;
+		}
 		const labelsById = new Map(this.labelsById);
 		for (const entry of entries) updateLabelCache(labelsById, entry);
 		this.entries.push(...entries);
@@ -299,6 +328,10 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		}
 		this.labelsById = labelsById;
 		if (entries.length > 0) this.currentLeafId = leafIdAfterEntry(entries[entries.length - 1]!);
+	}
+
+	private canonicalContent(): string {
+		return `${JSON.stringify(this.header)}\n${this.entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")}`;
 	}
 
 	async getEntry(id: string): Promise<SessionTreeEntry | undefined> {
