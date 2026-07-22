@@ -152,11 +152,12 @@ async function loadJsonlStorage(
 	}
 
 	const header = parseHeaderLine(lines[0]!, filePath);
+	const needsFinalNewline = !content.endsWith("\n");
 	const parsedEntries: SessionTreeEntry[] = [];
 	let removedInterruptedTail = false;
 	for (let i = 1; i < lines.length; i++) {
 		const line = lines[i]!;
-		const isFinalUnterminatedLine = i === lines.length - 1 && !content.endsWith("\n");
+		const isFinalUnterminatedLine = i === lines.length - 1 && needsFinalNewline;
 		if (isFinalUnterminatedLine && line.length > 0) {
 			removedInterruptedTail = true;
 			break;
@@ -166,7 +167,7 @@ async function loadJsonlStorage(
 	}
 	const committed = filterCommittedTransactionEntries(parsedEntries);
 	const removedTransactions = committed.diagnostics.length > 0 || committed.entries.length !== parsedEntries.length;
-	if (removedInterruptedTail || removedTransactions) {
+	if (needsFinalNewline || removedInterruptedTail || removedTransactions) {
 		const recoveredContent = `${JSON.stringify(header)}\n${committed.entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")}`;
 		getFileSystemResultOrThrow(
 			await fs.writeFile(filePath, recoveredContent),
