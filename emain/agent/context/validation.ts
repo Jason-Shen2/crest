@@ -53,15 +53,15 @@ export function parseContextRepresentation(value: unknown): ContextRepresentatio
 
 export function parseContextReferenceConfig(value: unknown): ContextReferenceConfig {
     if (!isRecord(value)) invalid("AI config must be an object");
+    if (!Object.hasOwn(value, "context_references")) return { enabled: true };
     const rawConfig = value.context_references;
-    if (rawConfig == null) return { enabled: true };
     if (!isRecord(rawConfig)) invalid("context_references must be an object");
 
-    const enabled = rawConfig.enabled == null ? true : rawConfig.enabled;
+    const enabled = Object.hasOwn(rawConfig, "enabled") ? rawConfig.enabled : true;
     if (typeof enabled !== "boolean") invalid("context_references.enabled must be a boolean");
 
+    if (!Object.hasOwn(rawConfig, "max_tokens")) return { enabled };
     const rawMaxTokens = rawConfig.max_tokens;
-    if (rawMaxTokens == null) return { enabled };
     if (typeof rawMaxTokens !== "number" || !Number.isFinite(rawMaxTokens)) {
         invalid("context_references.max_tokens must be a finite number");
     }
@@ -164,9 +164,11 @@ export function validateContextAttachmentData(value: unknown): ContextAttachment
     if (!isRecord(value)) invalid("context attachment must be an object");
     if (value.schemaVersion !== 1) invalid("context attachment schemaVersion must be 1");
     const lifecycle = parseContextLifecycle(value.lifecycle);
+    if (lifecycle === "pinned" && Object.hasOwn(value, "targetTurnId")) {
+        invalid("targetTurnId is not allowed for pinned attachments");
+    }
     const targetTurnId = optionalString(value.targetTurnId, "targetTurnId");
     if (lifecycle === "once" && targetTurnId == null) invalid("targetTurnId is required for once attachments");
-    if (lifecycle === "pinned" && targetTurnId != null) invalid("targetTurnId is not allowed for pinned attachments");
     if (typeof value.selectionOrder !== "number" || !Number.isInteger(value.selectionOrder) || value.selectionOrder < 0) {
         invalid("selectionOrder must be a non-negative integer");
     }

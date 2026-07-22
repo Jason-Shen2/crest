@@ -75,6 +75,16 @@ describe("context validation", () => {
             targetTurnId: "turn-1",
             selectionOrder: 0,
         })).toThrow(/targetTurnId/);
+
+        expect(() => validateContextAttachmentData({
+            schemaVersion: 1,
+            transactionId: "tx-1",
+            artifactEntryId: "artifact-1",
+            lifecycle: "pinned",
+            requestedRepresentation: "full",
+            targetTurnId: null,
+            selectionOrder: 0,
+        })).toThrow(/targetTurnId/);
     });
 
     it("rejects arbitrary renderer enum values", () => {
@@ -97,6 +107,12 @@ describe("context validation", () => {
         expect(parseContextReferenceConfig({ context_references: {} })).toEqual({ enabled: true });
         expect(parseContextReferenceConfig({ context_references: { max_tokens: -2 } })).toEqual({ enabled: true, maxTokens: 0 });
         expect(parseContextReferenceConfig({ context_references: { max_tokens: 200000 } })).toEqual({ enabled: true, maxTokens: 128000 });
+    });
+
+    it("rejects explicit null context reference configuration fields", () => {
+        expect(() => parseContextReferenceConfig({ context_references: null })).toThrow(/context_references/);
+        expect(() => parseContextReferenceConfig({ context_references: { enabled: null } })).toThrow(/enabled/);
+        expect(() => parseContextReferenceConfig({ context_references: { max_tokens: null } })).toThrow(/max_tokens/);
     });
 
     it("returns an unknown artifact schema diagnostic without throwing", () => {
