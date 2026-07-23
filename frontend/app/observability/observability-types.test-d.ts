@@ -1,10 +1,10 @@
+import { expectTypeOf } from "vitest";
 import type {
     Observation as StoredObservation,
     Score as StoredScore,
     Trace as StoredTrace,
     TraceDetail as StoredTraceDetail,
 } from "../../../emain/agent/observability/types";
-import { expectTypeOf } from "vitest";
 
 type SubscribeEvent = Parameters<Window["api"]["agentObservability"]["subscribe"]>[1] extends (
     event: infer Event
