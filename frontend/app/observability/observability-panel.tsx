@@ -3,15 +3,6 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import {
-    makeObservabilityViewState,
-    reduceObservabilityViewState,
-    type ObservabilityViewStateAction,
-} from "./observability-view-state";
-import { ObservationDetail } from "./observation-detail";
-import { ObservationTimeline } from "./observation-timeline";
-import { RunReview } from "./run-review";
-import { TimelineToolbar } from "./timeline-toolbar";
 import { TracePanel } from "./trace-panel/trace-panel";
 import { TraceSelector } from "./trace-selector";
 
@@ -30,13 +21,9 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
     const [traces, setTraces] = useState<Trace[]>([]);
     const [selectedTraceDetail, setSelectedTraceDetail] = useState<TraceDetail | undefined>();
     const [loadState, setLoadState] = useState<LoadState>(api && sessionId ? "loading" : "unavailable");
-    const [viewState, setViewState] = useState(makeObservabilityViewState);
+    const [selectedTraceId, setSelectedTraceId] = useState<string | undefined>();
     const selectedTraceIdRef = useRef<string | undefined>(undefined);
     const requestIdRef = useRef(0);
-    const searchInputRef = useRef<HTMLInputElement>(null);
-    const dispatchViewState = (action: ObservabilityViewStateAction) => {
-        setViewState((current) => reduceObservabilityViewState(current, action));
-    };
 
     const loadTrace = async (traceId: string) => {
         if (!api || !sessionId) {
@@ -44,7 +31,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
         }
         const requestId = ++requestIdRef.current;
         selectedTraceIdRef.current = traceId;
-        dispatchViewState({ type: "select-trace", traceId });
+        setSelectedTraceId(traceId);
         setSelectedTraceDetail(undefined);
         setLoadState("loading");
         try {
@@ -72,6 +59,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
         }
         let disposed = false;
         selectedTraceIdRef.current = undefined;
+        setSelectedTraceId(undefined);
         requestIdRef.current += 1;
         setTraces([]);
         setSelectedTraceDetail(undefined);
@@ -85,7 +73,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
                 return;
             }
             selectedTraceIdRef.current = event.detail.trace.id;
-            dispatchViewState({ type: "select-trace", traceId: event.detail.trace.id });
+            setSelectedTraceId(event.detail.trace.id);
             requestIdRef.current += 1;
             setSelectedTraceDetail(event.detail);
             setLoadState("ready");
@@ -124,21 +112,6 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
         };
     }, [api, sessionId]);
 
-    const collapseObservation = (observationId: string) => {
-        if (!viewState.expandedObservationIds.has(observationId)) {
-            return;
-        }
-        dispatchViewState({ type: "toggle-expanded", observationId });
-    };
-
-    const timelineObservationIds =
-        selectedTraceDetail?.observations
-            .filter((observation) => observation.type !== "AGENT")
-            .map((observation) => observation.id) ?? [];
-    const selectedObservation = selectedTraceDetail?.observations.find(
-        (observation) => observation.id === viewState.selectedObservationId
-    );
-
     return (
         <section aria-label="Agent Observability" className="flex h-full min-h-0 flex-col bg-panel text-foreground">
             <div className="border-b border-border px-3 py-2">
@@ -149,82 +122,14 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
                 {traces.length > 0 ? (
-                    <TraceSelector
-                        traces={traces}
-                        selectedTraceId={viewState.selectedTraceId}
-                        onSelectTrace={loadTrace}
-                    />
+                    <TraceSelector traces={traces} selectedTraceId={selectedTraceId} onSelectTrace={loadTrace} />
                 ) : null}
                 {loadState === "unavailable" ? <div className="text-sm">Observability is unavailable.</div> : null}
                 {loadState === "loading" ? <div className="text-sm">Loading recent runs...</div> : null}
                 {loadState === "empty" ? <div className="text-sm">No runs recorded.</div> : null}
                 {loadState === "error" ? <div className="text-sm">Unable to load recent runs.</div> : null}
-                {selectedTraceDetail ? <RunReview detail={selectedTraceDetail} /> : null}
-                {selectedTraceDetail && magnified ? <TracePanel detail={selectedTraceDetail} layout="desktop" /> : null}
-                {selectedTraceDetail && !magnified ? (
-                    <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
-                        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-fg-overlay-1/30">
-                            <div className="px-2 pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                Timeline
-                            </div>
-                            <TimelineToolbar
-                                query={viewState.query}
-                                categories={viewState.categories}
-                                searchInputRef={searchInputRef}
-                                showBackToLive={!viewState.followLive}
-                                onQueryChange={(query) => dispatchViewState({ type: "set-query", query })}
-                                onShowAll={() => {
-                                    for (const category of ["generation", "tool", "lifecycle", "error"] as const) {
-                                        if (!viewState.categories.has(category)) {
-                                            dispatchViewState({ type: "toggle-category", category });
-                                        }
-                                    }
-                                }}
-                                onToggleCategory={(category) =>
-                                    dispatchViewState({ type: "toggle-category", category })
-                                }
-                                onExpandAll={() =>
-                                    dispatchViewState({ type: "expand-all", observationIds: timelineObservationIds })
-                                }
-                                onCollapseAll={() => dispatchViewState({ type: "collapse-all" })}
-                                onBackToLive={() => dispatchViewState({ type: "resume-follow-live" })}
-                            />
-                            <ObservationTimeline
-                                key={selectedTraceDetail.trace.id}
-                                detail={selectedTraceDetail}
-                                query={viewState.query}
-                                categories={viewState.categories}
-                                expandedObservationIds={viewState.expandedObservationIds}
-                                selectedObservationId={viewState.selectedObservationId}
-                                renderInlineDetails={!magnified}
-                                followLive={viewState.followLive}
-                                scrollOffset={viewState.scrollOffset}
-                                searchInputRef={searchInputRef}
-                                onSelectObservation={(observationId) =>
-                                    dispatchViewState({ type: "select-observation", observationId })
-                                }
-                                onToggleExpanded={(observationId) =>
-                                    dispatchViewState({ type: "toggle-expanded", observationId })
-                                }
-                                onCollapseObservation={collapseObservation}
-                                onPauseFollowLive={() => dispatchViewState({ type: "pause-follow-live" })}
-                                onScrollOffsetChange={(scrollOffset) =>
-                                    dispatchViewState({ type: "set-scroll-offset", scrollOffset })
-                                }
-                            />
-                        </div>
-                        {magnified && selectedObservation ? (
-                            <aside
-                                aria-label="Observation detail pane"
-                                className="min-h-0 w-[min(42%,32rem)] shrink-0 overflow-auto rounded-lg border border-border bg-fg-overlay-1/30 p-3"
-                            >
-                                <ObservationDetail
-                                    observation={selectedObservation}
-                                    traceTimestamp={selectedTraceDetail.trace.timestamp}
-                                />
-                            </aside>
-                        ) : null}
-                    </div>
+                {selectedTraceDetail ? (
+                    <TracePanel detail={selectedTraceDetail} layout={magnified ? "desktop" : "compact"} />
                 ) : null}
             </div>
         </section>
