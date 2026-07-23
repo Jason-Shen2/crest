@@ -107,10 +107,11 @@ Electron BrowserWindow
 +-- WorkspaceRenderer (始终在窗口内，完整窗口 bounds)
 |   |
 |   +-- TopBar
+|   |   +-- Files / Agent / Terminal Panel Buttons
 |   |   +-- Fixed Agent Entry
 |   |   +-- TopTabBar
 |   |
-|   +-- LeftPanel
+|   +-- LeftPanel (single active mode)
 |   |   +-- FileExplorer
 |   |   +-- AgentSessionsPanel
 |   |   +-- TerminalTabList
@@ -180,6 +181,7 @@ tab:<terminalTabId>
 Workspace Renderer 是以下状态和 UI 的唯一 owner：
 
 - `ActiveContent`；
+- 左侧 Panel 的 `LeftPanelState`；
 - Top Tab 列表、顺序和临时 UI 状态；
 - 固定 Agent 入口；
 - File Explorer、Agent Session Panel、Terminal 列表；
@@ -339,20 +341,64 @@ Workspace 可以没有 Terminal Tab。
 - 否则激活 Agent；
 - Terminal Tab 列表展示空态和“New Terminal”入口。
 
-### 7.5 左侧 Terminal List
+### 7.5 左侧 Panel 与 Terminal List
 
-左侧不再复用当前面向所有 Wave Tab 的完整 `VTabBar`。
+左侧只有一个 Panel，存在三种互斥模式：
 
-新的 `TerminalTabList` 是 Terminal domain 的薄投影：
+```ts
+type LeftPanelMode = "files" | "sessions" | "terminals";
 
-- File Explorer 与 Agent Sessions 沿用现有互斥切换，位于左侧主区域；
-- Terminal List 是同一左侧 panel 中独立、可折叠的区域；
-- 只读取 `terminalTabIds`、标题、运行状态和 `activeTerminalTabId`；
-- 支持 select、new、rename、close 和同组 reorder；
-- 不支持 File/Browser 类型探测、Pane 详情 sidecar 或跨类型拖拽；
-- 点击 Terminal 只设置全局 `ActiveContent` 并请求 main 显示对应 Terminal Renderer。
+interface LeftPanelState {
+    visible: boolean;
+    mode: LeftPanelMode;
+    width: number;
+}
+```
 
-具体高度和折叠交互属于 Phase 2 的 UI 细化，不改变本设计的数据边界。
+切换入口继续放在当前 TopBar：
+
+- 保留现有 Files 和 Agent 按钮；
+- 新增 Terminal 按钮；
+- 点击非当前模式时，打开 Panel 并切换到对应模式；
+- 再次点击当前模式按钮时，收起整个 Panel；
+- 三种模式共享同一宽度、resize handle 和持久化状态；
+- 收起时保留 `mode`，再次打开回到上次模式；
+- TopBar 按钮只控制左侧 Panel，不直接切换主内容；
+- 固定 Agent 入口激活 Agent 时，沿用当前行为，将左侧模式切到 `sessions`。
+
+不再保留当前独立的 `vtabVisible`、`fileExplorerVisible` 和 `sessionsPanelVisible` 三组 boolean，也不再把 Vertical Tab 与 File/Session 渲染成两列。
+
+`LeftPanelState` 写入 workspace layout metadata。启动时一次性恢复 `visible`、`mode` 和 `width`，三种模式不分别保存宽度。
+
+Terminal 模式直接复用并专门化现有 `VTabBar` 实现，而不是另写一套纵向列表。实现时将其重命名为 `TerminalTabList`：
+
+保留：
+
+- 现有纵向 Tab 行、搜索和 ControlBar；
+- new、select、rename、close；
+- 拖拽排序和自动滚动；
+- context menu；
+- Tabs/Panes 显示模式；
+- Pane detail sidecar。
+
+替换：
+
+- 数据源从 `workspace.tabids` 改为 `terminalTabIds`；
+- active ID 从 renderer `staticTabId` 改为 `activeTerminalTabId`；
+- select/close/reorder 改为 Terminal 专属命令；
+- 删除 File、Browser、Diff、Agent 类型探测和跨类型逻辑；
+- 解除对旧 renderer `WaveEnv` 和 `env.electron.setActiveTab` 的依赖。
+
+点击 Terminal 行时：
+
+```text
+TerminalTabList.select(tabId)
+  -> set ActiveContent(terminal, tabId)
+  -> set activeTerminalTabId = tabId
+  -> main 显示对应 Terminal Renderer
+```
+
+左侧 Panel 模式和主内容选择是两份状态。用户可以在查看 File/Agent 时保留 Terminal List，也可以在使用 Terminal 时保留 File Explorer。
 
 ## 8. 当前内容模型
 
@@ -818,6 +864,11 @@ Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦
 ### 15.3 Workspace Renderer
 
 - `ActiveContent` 三分支只有一个 active。
+- `LeftPanelState.mode` 只有 `files`、`sessions`、`terminals` 之一。
+- TopBar 的 Files、Agent、Terminal 按钮能打开、切换和收起同一个左侧 Panel。
+- 三种左侧模式共享宽度，并从 workspace layout metadata 恢复。
+- `TerminalTabList` 保留搜索、拖拽排序、Tabs/Panes 模式和 Pane detail sidecar。
+- `TerminalTabList` 不读取非 Terminal Tab，也不调用旧 `setActiveTab`。
 - Agent 固定入口不进入 Top Tab 排序/关闭。
 - File path 去重。
 - Top Tab reorder 与 snapshot restore。
@@ -852,6 +903,7 @@ Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦
 
 ### 15.7 手工验证
 
+- TopBar 的 Files、Agent、Terminal 按钮切换同一个左侧 Panel，不会同时渲染两种 Panel 内容。
 - 连续切换 Agent、多个 File 和 Browser，TopBar/LeftPanel 不闪烁、不重置。
 - Terminal 激活时 chrome 保持稳定，只有中央内容变化。
 - resize 左右面板时 Terminal Renderer 紧贴中央区域，无缝隙和覆盖。
@@ -879,7 +931,8 @@ Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦
 - `WaveTabView` 收敛为 Terminal-only；
 - 实现中央 bounds IPC、z-order、focus 和 cold-init fallback；
 - Workspace Tab 数据收敛为 Terminal-only；
-- 上线左侧精简 Terminal List；
+- 将左侧 Panel 收敛为 Files/Sessions/Terminals 三种互斥模式；
+- 将现有 `VTabBar` 专门化为 `TerminalTabList`，并接入 TopBar Terminal 按钮；
 - 禁止非 Terminal Block 进入 Terminal Layout。
 
 验收：多 Terminal Pane 能力保持；Terminal 与 Workspace 内非 Terminal 内容可稳定互切。
