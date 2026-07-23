@@ -32,7 +32,6 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
         const requestId = ++requestIdRef.current;
         selectedTraceIdRef.current = traceId;
         setSelectedTraceId(traceId);
-        setSelectedTraceDetail(undefined);
         setLoadState("loading");
         try {
             const detail = await api.getTrace(traceId, sessionId);
@@ -53,16 +52,16 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
     };
 
     useEffect(() => {
-        if (!api || !sessionId) {
-            setLoadState("unavailable");
-            return;
-        }
-        let disposed = false;
         selectedTraceIdRef.current = undefined;
         setSelectedTraceId(undefined);
         requestIdRef.current += 1;
         setTraces([]);
         setSelectedTraceDetail(undefined);
+        if (!api || !sessionId) {
+            setLoadState("unavailable");
+            return;
+        }
+        let disposed = false;
         setLoadState("loading");
         const unsubscribe = api.subscribe(sessionId, (event) => {
             setTraces((current) => {
@@ -129,7 +128,9 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
                 {loadState === "empty" ? <div className="text-sm">No runs recorded.</div> : null}
                 {loadState === "error" ? <div className="text-sm">Unable to load recent runs.</div> : null}
                 {selectedTraceDetail ? (
-                    <TracePanel detail={selectedTraceDetail} layout={magnified ? "desktop" : "compact"} />
+                    <div hidden={loadState !== "ready"} className="min-h-0 flex-1">
+                        <TracePanel detail={selectedTraceDetail} layout={magnified ? "desktop" : "compact"} />
+                    </div>
                 ) : null}
             </div>
         </section>

@@ -117,6 +117,14 @@ function makeTraceDetailWithObservations(traceId: string, name: string, observat
     return detail;
 }
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+    return { promise, resolve };
+}
+
 describe("ObservabilityPanel trace state", () => {
     it("renders the Langfuse trace workspace and switches between tree and timeline", async () => {
         VirtualizerHarness.count = 0;
@@ -306,5 +314,67 @@ describe("ObservabilityPanel trace state", () => {
 
         expect(view.getByRole("region", { name: "Trace detail drawer" })).toBeTruthy();
         expect(view.getByRole("region", { name: "Observation detail" })).toBeTruthy();
+    });
+
+    it("restores compact observation selection after switching traces without reopening the drawer", async () => {
+        const traceA = makeTraceDetailWithObservations("trace-a", "Trace A", [
+            makeObservation("root-a", {
+                type: "AGENT",
+                name: "Agent A",
+                parentObservationId: null,
+            }),
+            makeObservation("observation-a", {
+                type: "TOOL",
+                name: "Read A",
+                parentObservationId: "root-a",
+            }),
+        ]);
+        const traceB = makeTraceDetailWithObservations("trace-b", "Trace B", [
+            makeObservation("root-b", {
+                type: "AGENT",
+                name: "Agent B",
+                parentObservationId: null,
+            }),
+            makeObservation("observation-b", {
+                type: "TOOL",
+                name: "Read B",
+                parentObservationId: "root-b",
+            }),
+        ]);
+        const traceBResponse = deferred<TraceDetail | undefined>();
+        const returningTraceAResponse = deferred<TraceDetail | undefined>();
+        let traceARequests = 0;
+        const api: AgentObservabilityApi = {
+            listTraces: vi.fn().mockResolvedValue([traceA.trace, traceB.trace]),
+            getTrace: vi.fn((traceId) => {
+                if (traceId === traceB.trace.id) {
+                    return traceBResponse.promise;
+                }
+                traceARequests += 1;
+                return traceARequests === 1 ? Promise.resolve(traceA) : returningTraceAResponse.promise;
+            }),
+            subscribe: vi.fn(() => vi.fn()),
+        };
+        const view = render(<ObservabilityPanel api={api} sessionId="session-a" />);
+
+        const observationA = await view.findByRole("treeitem", { name: /Read A/ });
+        fireEvent.click(observationA);
+        expect(observationA.getAttribute("aria-selected")).toBe("true");
+        expect(view.getByRole("region", { name: "Trace detail drawer" })).toBeTruthy();
+
+        fireEvent.change(view.getByLabelText("Recent Runs"), { target: { value: traceB.trace.id } });
+        expect(view.getByText("Loading recent runs...")).toBeTruthy();
+        expect(view.queryByRole("treeitem", { name: /Read A/ })).toBeNull();
+        traceBResponse.resolve(traceB);
+        await view.findByRole("treeitem", { name: /Read B/ });
+
+        fireEvent.change(view.getByLabelText("Recent Runs"), { target: { value: traceA.trace.id } });
+        expect(view.getByText("Loading recent runs...")).toBeTruthy();
+        expect(view.queryByRole("treeitem", { name: /Read B/ })).toBeNull();
+        returningTraceAResponse.resolve(traceA);
+        const restoredObservationA = await view.findByRole("treeitem", { name: /Read A/ });
+
+        expect(restoredObservationA.getAttribute("aria-selected")).toBe("true");
+        expect(view.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
     });
 });
