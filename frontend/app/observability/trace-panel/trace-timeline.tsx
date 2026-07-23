@@ -33,7 +33,7 @@ function findCollapsedAncestors(roots: TraceNode[], selectedNodeId: string, coll
     return [];
 }
 
-export function TraceTimeline() {
+export function TraceTimeline({ showGutter = true }: { showGutter?: boolean }) {
     const { roots, nodeMap, observationMap, traceStartTime, traceDuration } = useTraceData();
     const { collapsedNodes, toggleCollapsed, selectedNodeId, selectNode } = useTraceSelection();
     const displayedSelectedNodeId = resolveTraceSelectionNodeId(roots, selectedNodeId);
@@ -120,12 +120,14 @@ export function TraceTimeline() {
             onMouseLeave={() => setHoveredNodeId(null)}
         >
             <div className="flex shrink-0 border-b border-border">
-                <div
-                    className="flex h-7 shrink-0 items-center border-r border-border bg-panel px-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
-                    style={{ width: TimelineGutterWidth }}
-                >
-                    Name
-                </div>
+                {showGutter ? (
+                    <div
+                        className="flex h-7 shrink-0 items-center border-r border-border bg-panel px-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                        style={{ width: TimelineGutterWidth }}
+                    >
+                        Name
+                    </div>
+                ) : null}
                 <div className="min-w-0 flex-1 overflow-hidden bg-panel">
                     <div ref={scaleContentRef} data-testid="timeline-scale-content" className="will-change-transform">
                         <TimelineScale traceDuration={traceDuration} />
@@ -148,6 +150,7 @@ export function TraceTimeline() {
                 scrollRef={scrollRef}
                 gutterContentRef={gutterContentRef}
                 onScroll={handleScroll}
+                showGutter={showGutter}
             />
         </div>
     );

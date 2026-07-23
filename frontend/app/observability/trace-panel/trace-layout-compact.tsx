@@ -24,7 +24,7 @@ export function TraceLayoutCompact({
     return (
         <div
             data-testid="trace-layout-compact"
-            className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-fg-overlay-1/30"
+            className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-[var(--observability-workspace-bg)]"
         >
             <div ref={navigationRef} className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 {navigation}
@@ -32,7 +32,7 @@ export function TraceLayoutCompact({
             {detailOpen ? (
                 <section
                     aria-label="Trace detail drawer"
-                    className="absolute inset-x-0 bottom-0 z-10 flex max-h-[70%] min-h-48 flex-col border-t border-border bg-panel shadow-xl"
+                    className="absolute inset-x-0 bottom-0 z-10 flex max-h-[70%] min-h-48 flex-col border-t border-border bg-[var(--observability-drawer-bg)] shadow-xl"
                 >
                     <div className="flex h-8 shrink-0 items-center justify-end border-b border-border px-2">
                         <button

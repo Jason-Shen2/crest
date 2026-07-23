@@ -240,6 +240,15 @@ describe("TraceSelector", () => {
 });
 
 describe("ObservabilityPanel", () => {
+    it("defines opaque local surfaces without changing shared panel colors", () => {
+        const markup = renderToStaticMarkup(renderPanel());
+
+        expect(markup).toContain("--observability-panel-bg:rgb(from var(--color-panel) r g b / 90%)");
+        expect(markup).toContain("--observability-workspace-bg:rgb(from var(--color-panel) r g b / 92%)");
+        expect(markup).toContain("--observability-drawer-bg:rgb(from var(--color-panel) r g b / 96%)");
+        expect(markup).toContain("bg-[var(--observability-panel-bg)]");
+    });
+
     it("does not call observability APIs without a session scope", async () => {
         const { api } = makeApi([], async () => undefined);
         HookHarness.cursor = 0;

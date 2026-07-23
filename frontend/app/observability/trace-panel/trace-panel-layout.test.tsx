@@ -83,6 +83,15 @@ describe("TracePanel desktop layout", () => {
         expect(screen.getByRole("region", { name: "Trace detail" })).not.toBeNull();
     });
 
+    it("keeps the timeline name gutter in the desktop host", () => {
+        render(<TracePanel detail={makeDetail()} layout="desktop" />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Timeline" }));
+
+        expect(screen.getByText(/^Name$/i)).not.toBeNull();
+        expect(screen.getByTestId("timeline-gutter-content")).not.toBeNull();
+    });
+
     it("collapses and restores the graph panel", () => {
         render(<TracePanel detail={makeDetail()} layout="desktop" />);
 
@@ -111,7 +120,9 @@ describe("TracePanel compact layout", () => {
     it("renders only the compact navigation host with the detail drawer initially closed", () => {
         render(<TracePanel detail={makeDetail()} layout="compact" />);
 
-        expect(screen.getByTestId("trace-layout-compact")).not.toBeNull();
+        expect(screen.getByTestId("trace-layout-compact").className).toContain(
+            "bg-[var(--observability-workspace-bg)]"
+        );
         expect(screen.getByTestId("trace-navigation-workspace")).not.toBeNull();
         expect(screen.queryByTestId("trace-layout-scroll")).toBeNull();
         expect(screen.queryByRole("region", { name: "Trace graph" })).toBeNull();
@@ -120,12 +131,25 @@ describe("TracePanel compact layout", () => {
         expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
     });
 
+    it("always hides the timeline name gutter in the compact host", () => {
+        render(<TracePanel detail={makeDetail()} layout="compact" />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Timeline" }));
+
+        expect(screen.queryByText(/^Name$/i)).toBeNull();
+        expect(screen.queryByTestId("timeline-gutter-content")).toBeNull();
+        expect(screen.getByRole("tree", { name: "Trace timeline rows" })).not.toBeNull();
+    });
+
     it("opens, closes, focuses, and reopens an observation detail drawer", () => {
         render(<TracePanel detail={makeDetail()} layout="compact" />);
         const generation = screen.getByRole("treeitem", { name: /^generation/ });
 
         fireEvent.click(generation);
         expect(screen.getByRole("region", { name: "Observation detail" })).not.toBeNull();
+        expect(screen.getByRole("region", { name: "Trace detail drawer" }).className).toContain(
+            "bg-[var(--observability-drawer-bg)]"
+        );
 
         fireEvent.click(screen.getByRole("button", { name: "Close trace detail" }));
         expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();

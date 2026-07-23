@@ -105,7 +105,13 @@ function makeVirtualItem(index: number): VirtualItem {
     };
 }
 
-function TimelineRowsHarness({ onSelect = vi.fn() }: { onSelect?: (nodeId: string) => void } = {}) {
+function TimelineRowsHarness({
+    onSelect = vi.fn(),
+    showGutter = true,
+}: {
+    onSelect?: (nodeId: string) => void;
+    showGutter?: boolean;
+} = {}) {
     const generation = makeNode(
         "assistant-response",
         "GENERATION",
@@ -155,11 +161,12 @@ function TimelineRowsHarness({ onSelect = vi.fn() }: { onSelect?: (nodeId: strin
             onSelect={onSelect}
             onHover={vi.fn()}
             onToggleCollapse={vi.fn()}
+            showGutter={showGutter}
         />
     );
 }
 
-function TimelineKeyboardHarness() {
+function TimelineKeyboardHarness({ showGutter = true }: { showGutter?: boolean } = {}) {
     const roots = useMemo(() => {
         const generation = makeNode(
             "generation",
@@ -207,11 +214,12 @@ function TimelineKeyboardHarness() {
                     return next;
                 });
             }}
+            showGutter={showGutter}
         />
     );
 }
 
-function TraceTimelineHarness() {
+function TraceTimelineHarness({ showGutter = true }: { showGutter?: boolean } = {}) {
     const detail: TraceDetail = {
         trace: {
             id: "trace-1",
@@ -248,7 +256,7 @@ function TraceTimelineHarness() {
     return (
         <TraceDataProvider detail={detail}>
             <TraceSelectionProvider traceId={detail.trace.id}>
-                <TraceTimeline />
+                <TraceTimeline showGutter={showGutter} />
             </TraceSelectionProvider>
         </TraceDataProvider>
     );
@@ -272,6 +280,14 @@ describe("trace timeline workspace", () => {
         expect(screen.getAllByTestId("timeline-gutter-row")).toHaveLength(3);
         fireEvent.click(screen.getByRole("button", { name: "Collapse turn" }));
         expect(screen.getAllByTestId("timeline-gutter-row")).toHaveLength(2);
+    });
+
+    it("uses the full workspace for the chart when the gutter is hidden", () => {
+        render(<TraceTimelineHarness showGutter={false} />);
+
+        expect(screen.queryByText(/^Name$/i)).toBeNull();
+        expect(screen.queryByTestId("timeline-gutter-content")).toBeNull();
+        expect(screen.getByTestId("timeline-scroll").parentElement?.children).toHaveLength(1);
     });
 });
 
@@ -346,6 +362,25 @@ describe("timeline rows", () => {
 
         fireEvent.keyDown(selectedItem(), { key: "ArrowRight" });
         expectSelectedAndFocused("generation");
+    });
+
+    it("moves the accessible tree interaction to chart rows when the gutter is hidden", () => {
+        render(<TimelineKeyboardHarness showGutter={false} />);
+
+        expect(screen.queryByTestId("timeline-gutter-row")).toBeNull();
+        const tree = screen.getByRole("tree", { name: "Trace timeline rows" });
+        const generation = screen.getByRole("treeitem", { name: "generation" });
+        expect(tree.contains(generation)).toBe(true);
+        expect(generation.getAttribute("aria-selected")).toBe("true");
+
+        generation.focus();
+        fireEvent.keyDown(generation, { key: "ArrowDown" });
+        const tool = screen.getByRole("treeitem", { name: "tool" });
+        expect(tool.getAttribute("aria-selected")).toBe("true");
+        expect(document.activeElement).toBe(tool);
+
+        fireEvent.keyDown(tool, { key: "ArrowLeft" });
+        expect(screen.getByRole("treeitem", { name: "turn" }).getAttribute("aria-selected")).toBe("true");
     });
 });
 

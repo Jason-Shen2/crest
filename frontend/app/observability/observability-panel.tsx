@@ -1,10 +1,16 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import { TracePanel } from "./trace-panel/trace-panel";
 import { TraceSelector } from "./trace-selector";
+
+const ObservabilitySurfaceStyle = {
+    "--observability-panel-bg": "rgb(from var(--color-panel) r g b / 90%)",
+    "--observability-workspace-bg": "rgb(from var(--color-panel) r g b / 92%)",
+    "--observability-drawer-bg": "rgb(from var(--color-panel) r g b / 96%)",
+} as CSSProperties;
 
 export type AgentObservabilityApi = Window["api"]["agentObservability"];
 
@@ -112,7 +118,11 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
     }, [api, sessionId]);
 
     return (
-        <section aria-label="Agent Observability" className="flex h-full min-h-0 flex-col bg-panel text-foreground">
+        <section
+            aria-label="Agent Observability"
+            className="flex h-full min-h-0 flex-col bg-[var(--observability-panel-bg)] text-foreground"
+            style={ObservabilitySurfaceStyle}
+        >
             <div className="border-b border-border px-3 py-2">
                 <div className="text-sm font-medium text-primary">Agent Observability</div>
                 <div className="mt-0.5 text-xs text-muted-foreground">

@@ -28,6 +28,7 @@ type TimelineRowsProps = {
     scrollRef?: RefObject<HTMLDivElement>;
     gutterContentRef?: RefObject<HTMLDivElement>;
     onScroll?: UIEventHandler<HTMLDivElement>;
+    showGutter?: boolean;
 };
 
 type RowShellProps = {
@@ -84,6 +85,10 @@ TimelineGutterRowShell.displayName = "TimelineGutterRowShell";
 type ChartRowShellProps = RowShellProps & {
     observation?: Observation;
     scaleWidth: number;
+    isCollapsed: boolean;
+    isTreeItem: boolean;
+    onNavigate: (event: KeyboardEvent<HTMLDivElement>, nodeId: string) => void;
+    registerTreeItem: (nodeId: string, element: HTMLDivElement | null) => void;
 };
 
 function TimelineChartRowShellComponent({
@@ -93,12 +98,24 @@ function TimelineChartRowShellComponent({
     scaleWidth,
     isSelected,
     isHovered,
+    isCollapsed,
+    isTreeItem,
     onSelect,
     onHover,
+    onNavigate,
+    registerTreeItem,
 }: ChartRowShellProps) {
+    const hasChildren = row.node.children.length > 0;
     return (
         <div
+            ref={isTreeItem ? (element) => registerTreeItem(row.node.id, element) : undefined}
             data-testid="timeline-chart-row"
+            role={isTreeItem ? "treeitem" : undefined}
+            aria-label={isTreeItem ? row.node.name || `Unnamed ${row.node.type.toLowerCase()}` : undefined}
+            aria-level={isTreeItem ? row.depth + 1 : undefined}
+            aria-selected={isTreeItem ? isSelected : undefined}
+            aria-expanded={isTreeItem && hasChildren ? !isCollapsed : undefined}
+            tabIndex={isTreeItem ? (isSelected ? 0 : -1) : undefined}
             className={cn(
                 "absolute top-0 left-0 cursor-pointer border-b border-border/30",
                 isSelected ? "bg-accent/10" : isHovered ? "bg-fg-overlay-1/30" : ""
@@ -111,6 +128,17 @@ function TimelineChartRowShellComponent({
             onClick={() => onSelect(row.node.id)}
             onMouseEnter={() => onHover(row.node.id)}
             onMouseLeave={() => onHover(null)}
+            onKeyDown={(event) => {
+                if (!isTreeItem) {
+                    return;
+                }
+                if (event.key !== "Enter" && event.key !== " ") {
+                    onNavigate(event, row.node.id);
+                    return;
+                }
+                event.preventDefault();
+                onSelect(row.node.id);
+            }}
         >
             <TimelineBar row={row} observation={observation} isSelected={isSelected} isHovered={isHovered} />
         </div>
@@ -136,6 +164,7 @@ export function TimelineRows({
     scrollRef,
     gutterContentRef,
     onScroll,
+    showGutter = true,
 }: TimelineRowsProps) {
     const treeItemsRef = useRef(new Map<string, HTMLDivElement>());
     const selectedVirtualItemKey =
@@ -181,39 +210,41 @@ export function TimelineRows({
 
     return (
         <div className="flex min-h-0 flex-1 overflow-hidden">
-            <div className="shrink-0 overflow-hidden border-r border-border" style={{ width: gutterWidth }}>
-                <div ref={gutterContentRef} data-testid="timeline-gutter-content" className="will-change-transform">
-                    <div
-                        data-testid="timeline-gutter-rows"
-                        role="tree"
-                        aria-label="Trace timeline rows"
-                        className="relative w-full"
-                        style={{ height: totalSize }}
-                    >
-                        {virtualItems.map((virtualItem) => {
-                            const row = rows[virtualItem.index];
-                            if (row == null) {
-                                return null;
-                            }
-                            return (
-                                <TimelineGutterRowShell
-                                    key={virtualItem.key}
-                                    row={row}
-                                    virtualItem={virtualItem}
-                                    isSelected={selectedNodeId === row.node.id}
-                                    isHovered={hoveredNodeId === row.node.id}
-                                    isCollapsed={collapsedNodes.has(row.node.id)}
-                                    onSelect={onSelect}
-                                    onHover={onHover}
-                                    onNavigate={onNavigate}
-                                    registerTreeItem={registerTreeItem}
-                                    onToggleCollapse={onToggleCollapse}
-                                />
-                            );
-                        })}
+            {showGutter ? (
+                <div className="shrink-0 overflow-hidden border-r border-border" style={{ width: gutterWidth }}>
+                    <div ref={gutterContentRef} data-testid="timeline-gutter-content" className="will-change-transform">
+                        <div
+                            data-testid="timeline-gutter-rows"
+                            role="tree"
+                            aria-label="Trace timeline rows"
+                            className="relative w-full"
+                            style={{ height: totalSize }}
+                        >
+                            {virtualItems.map((virtualItem) => {
+                                const row = rows[virtualItem.index];
+                                if (row == null) {
+                                    return null;
+                                }
+                                return (
+                                    <TimelineGutterRowShell
+                                        key={virtualItem.key}
+                                        row={row}
+                                        virtualItem={virtualItem}
+                                        isSelected={selectedNodeId === row.node.id}
+                                        isHovered={hoveredNodeId === row.node.id}
+                                        isCollapsed={collapsedNodes.has(row.node.id)}
+                                        onSelect={onSelect}
+                                        onHover={onHover}
+                                        onNavigate={onNavigate}
+                                        registerTreeItem={registerTreeItem}
+                                        onToggleCollapse={onToggleCollapse}
+                                    />
+                                );
+                            })}
+                        </div>
                     </div>
                 </div>
-            </div>
+            ) : null}
             <div
                 ref={scrollRef}
                 data-testid="timeline-scroll"
@@ -222,6 +253,8 @@ export function TimelineRows({
             >
                 <div
                     data-testid="timeline-chart-rows"
+                    role={showGutter ? undefined : "tree"}
+                    aria-label={showGutter ? undefined : "Trace timeline rows"}
                     className="relative shrink-0"
                     style={{ width: scaleWidth, height: totalSize }}
                 >
@@ -239,8 +272,12 @@ export function TimelineRows({
                                 scaleWidth={scaleWidth}
                                 isSelected={selectedNodeId === row.node.id}
                                 isHovered={hoveredNodeId === row.node.id}
+                                isCollapsed={collapsedNodes.has(row.node.id)}
+                                isTreeItem={!showGutter}
                                 onSelect={onSelect}
                                 onHover={onHover}
+                                onNavigate={onNavigate}
+                                registerTreeItem={registerTreeItem}
                             />
                         );
                     })}

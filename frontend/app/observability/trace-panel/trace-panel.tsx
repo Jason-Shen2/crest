@@ -22,12 +22,12 @@ export type TracePanelProps = {
     layout: TracePanelLayout;
 };
 
-function TraceNavigation() {
+function TraceNavigation({ showTimelineGutter = true }: { showTimelineGutter?: boolean }) {
     const { navigationMode, searchQuery } = useTraceSelection();
     if (searchQuery.trim().length > 0) {
         return <TraceSearchList />;
     }
-    return navigationMode === "timeline" ? <TraceTimeline /> : <TraceTree />;
+    return navigationMode === "timeline" ? <TraceTimeline showGutter={showTimelineGutter} /> : <TraceTree />;
 }
 
 function TracePanelDesktopContent() {
@@ -51,7 +51,7 @@ function TracePanelCompactContent({ detailOpen, onCloseDetail }: { detailOpen: b
         <TraceLayoutCompact
             navigation={
                 <TracePanelNavigationWorkspace>
-                    <TraceNavigation />
+                    <TraceNavigation showTimelineGutter={false} />
                 </TracePanelNavigationWorkspace>
             }
             detail={<TracePanelDetail />}
