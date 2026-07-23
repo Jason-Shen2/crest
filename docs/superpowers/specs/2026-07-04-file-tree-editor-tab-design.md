@@ -1,5 +1,7 @@
 # File Tree Editor Tab Design
 
+> Superseded by [`2026-07-23-workspace-surface-tab-architecture-design.md`](./2026-07-23-workspace-surface-tab-architecture-design.md). File tabs are now lightweight Workbench surfaces rather than Wave Tabs.
+
 Date: 2026-07-04
 
 ## Goal

@@ -1,5 +1,7 @@
 # Git Diff Tab Design
 
+> Superseded by [`2026-07-23-workspace-surface-tab-architecture-design.md`](./2026-07-23-workspace-surface-tab-architecture-design.md). Git diff tabs are now lightweight Workbench surfaces rather than Wave Tabs.
+
 ## Goal
 
 Bring Terax's Source Control diff-tab behavior into Crest.

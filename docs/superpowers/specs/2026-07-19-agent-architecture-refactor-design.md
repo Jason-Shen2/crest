@@ -1,5 +1,7 @@
 # Agent 架构去 Pane 化重构设计
 
+> `WorkspaceAgentSurface -> AgentRuntimeRegistry -> AgentSessionRuntime` 仍然有效；其中 backing block 兼容阶段已被 [`2026-07-23-workspace-surface-tab-architecture-design.md`](./2026-07-23-workspace-surface-tab-architecture-design.md) 取代。新架构直接移除 hidden Agent Tab 和 backing Block。
+
 - 状态: 已确认
 - 日期: 2026-07-19
 - 决策页面: [`docs/agent-architecture-refactor.html`](../../agent-architecture-refactor.html)
