@@ -1,6 +1,6 @@
 # Workspace 与 Tab 架构重构设计
 
-- 状态：已与用户口头确认，待文档评审
+- 状态：已确认，进入分阶段实施
 - 日期：2026-07-23
 - 适用范围：Workspace、Agent、Terminal Tab、Top Tab、持久化与 renderer 生命周期
 
