@@ -2,11 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { computeTraceMetrics } from "./trace-metrics";
 
-function makeObservation(
-    id: string,
-    type: Observation["type"],
-    overrides: Partial<Observation> = {}
-): Observation {
+function makeObservation(id: string, type: Observation["type"], overrides: Partial<Observation> = {}): Observation {
     return {
         id,
         traceId: "trace-1",
