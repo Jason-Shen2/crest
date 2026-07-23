@@ -106,7 +106,7 @@ afterEach(() => {
 describe("Trace graph layout lifecycle", () => {
     it("reuses layout for streaming fields and recomputes for topology changes", async () => {
         const detail = makeDetail();
-        const { rerender } = render(<TracePanel detail={detail} />);
+        const { rerender } = render(<TracePanel detail={detail} layout="desktop" />);
         await waitFor(() => expect(computeGraphLayoutMock).toHaveBeenCalledTimes(1));
 
         rerender(
@@ -120,22 +120,23 @@ describe("Trace graph layout lifecycle", () => {
                         }),
                     ],
                 }}
+                layout="desktop"
             />
         );
         await Promise.resolve();
         expect(computeGraphLayoutMock).toHaveBeenCalledTimes(1);
 
-        rerender(<TracePanel detail={withChild(detail)} />);
+        rerender(<TracePanel detail={withChild(detail)} layout="desktop" />);
         await waitFor(() => expect(computeGraphLayoutMock).toHaveBeenCalledTimes(2));
     });
 
     it("does not run layout while the graph is collapsed", async () => {
         const detail = makeDetail();
-        const { rerender } = render(<TracePanel detail={detail} />);
+        const { rerender } = render(<TracePanel detail={detail} layout="desktop" />);
         await waitFor(() => expect(computeGraphLayoutMock).toHaveBeenCalledTimes(1));
 
         fireEvent.click(screen.getByRole("button", { name: "Collapse graph" }));
-        rerender(<TracePanel detail={withChild(detail)} />);
+        rerender(<TracePanel detail={withChild(detail)} layout="desktop" />);
         await Promise.resolve();
         expect(computeGraphLayoutMock).toHaveBeenCalledTimes(1);
 

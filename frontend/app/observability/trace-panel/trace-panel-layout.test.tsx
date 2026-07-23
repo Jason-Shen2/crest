@@ -72,8 +72,17 @@ function makeDetail(): TraceDetail {
 }
 
 describe("TracePanel desktop layout", () => {
+    it("composes the shared navigation workspace inside the desktop host", () => {
+        render(<TracePanel detail={makeDetail()} layout="desktop" />);
+
+        expect(screen.getByTestId("trace-navigation-workspace")).not.toBeNull();
+        expect(screen.getByRole("button", { name: "Collapse navigation" })).not.toBeNull();
+        expect(screen.getByRole("region", { name: "Trace graph" })).not.toBeNull();
+        expect(screen.getByRole("region", { name: "Trace detail" })).not.toBeNull();
+    });
+
     it("collapses and restores the graph panel", () => {
-        render(<TracePanel detail={makeDetail()} />);
+        render(<TracePanel detail={makeDetail()} layout="desktop" />);
 
         fireEvent.click(screen.getByRole("button", { name: "Collapse graph" }));
         expect(screen.queryByTestId("trace-graph-content")).toBeNull();
@@ -84,7 +93,7 @@ describe("TracePanel desktop layout", () => {
     it("keeps both desktop panels addressable in a narrow host", () => {
         render(
             <div style={{ width: 540 }}>
-                <TracePanel detail={makeDetail()} />
+                <TracePanel detail={makeDetail()} layout="desktop" />
             </div>
         );
 

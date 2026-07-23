@@ -11,6 +11,11 @@ import { TraceSearchList } from "./trace-search-list";
 import { TraceTimeline } from "./trace-timeline";
 import { TraceTree } from "./trace-tree";
 
+export type TracePanelProps = {
+    detail: TraceDetail;
+    layout: "desktop";
+};
+
 function TraceNavigation() {
     const { navigationMode, searchQuery } = useTraceSelection();
     if (searchQuery.trim().length > 0) {
@@ -19,27 +24,30 @@ function TraceNavigation() {
     return navigationMode === "timeline" ? <TraceTimeline /> : <TraceTree />;
 }
 
-function TracePanelContent() {
-    return (
-        <TraceLayoutDesktop>
-            <TraceLayoutDesktop.NavigationPanel>
-                <TracePanelNavigationLayoutDesktop secondaryContent={<TraceGraph />}>
-                    <TraceNavigation />
-                </TracePanelNavigationLayoutDesktop>
-            </TraceLayoutDesktop.NavigationPanel>
-            <TraceLayoutDesktop.ResizeHandle />
-            <TraceLayoutDesktop.DetailPanel>
-                <TracePanelDetail />
-            </TraceLayoutDesktop.DetailPanel>
-        </TraceLayoutDesktop>
-    );
+function TracePanelContent({ layout }: Pick<TracePanelProps, "layout">) {
+    switch (layout) {
+        case "desktop":
+            return (
+                <TraceLayoutDesktop>
+                    <TraceLayoutDesktop.NavigationPanel>
+                        <TracePanelNavigationLayoutDesktop secondaryContent={<TraceGraph />}>
+                            <TraceNavigation />
+                        </TracePanelNavigationLayoutDesktop>
+                    </TraceLayoutDesktop.NavigationPanel>
+                    <TraceLayoutDesktop.ResizeHandle />
+                    <TraceLayoutDesktop.DetailPanel>
+                        <TracePanelDetail />
+                    </TraceLayoutDesktop.DetailPanel>
+                </TraceLayoutDesktop>
+            );
+    }
 }
 
-export function TracePanel({ detail }: { detail: TraceDetail }) {
+export function TracePanel({ detail, layout }: TracePanelProps) {
     return (
         <TraceDataProvider detail={detail}>
             <TraceSelectionProvider traceId={detail.trace.id}>
-                <TracePanelContent />
+                <TracePanelContent layout={layout} />
             </TraceSelectionProvider>
         </TraceDataProvider>
     );

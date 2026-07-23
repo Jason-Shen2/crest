@@ -160,7 +160,7 @@ export function ObservabilityPanel({ api: injectedApi, magnified = false, sessio
                 {loadState === "empty" ? <div className="text-sm">No runs recorded.</div> : null}
                 {loadState === "error" ? <div className="text-sm">Unable to load recent runs.</div> : null}
                 {selectedTraceDetail ? <RunReview detail={selectedTraceDetail} /> : null}
-                {selectedTraceDetail && magnified ? <TracePanel detail={selectedTraceDetail} /> : null}
+                {selectedTraceDetail && magnified ? <TracePanel detail={selectedTraceDetail} layout="desktop" /> : null}
                 {selectedTraceDetail && !magnified ? (
                     <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
                         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-fg-overlay-1/30">
