@@ -35,7 +35,7 @@ function findCollapsedAncestors(roots: TraceNode[], selectedNodeId: string, coll
 
 export function TraceTimeline() {
     const { roots, nodeMap, observationMap, traceStartTime, traceDuration } = useTraceData();
-    const { collapsedNodes, toggleCollapsed, selectedNodeId, setSelectedNodeId } = useTraceSelection();
+    const { collapsedNodes, toggleCollapsed, selectedNodeId, selectNode } = useTraceSelection();
     const displayedSelectedNodeId = resolveTraceSelectionNodeId(roots, selectedNodeId);
     const rows = useMemo(
         () => flattenTimelineRows(roots, collapsedNodes, traceStartTime ?? new Date(Number.NaN), traceDuration),
@@ -107,9 +107,9 @@ export function TraceTimeline() {
 
     const handleSelect = useCallback(
         (nodeId: string) => {
-            setSelectedNodeId(nodeMap.get(nodeId)?.type === "TRACE" ? null : nodeId);
+            selectNode(nodeMap.get(nodeId)?.type === "TRACE" ? null : nodeId);
         },
-        [nodeMap, setSelectedNodeId]
+        [nodeMap, selectNode]
     );
 
     return (

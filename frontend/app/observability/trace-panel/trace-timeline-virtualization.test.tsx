@@ -108,7 +108,7 @@ function makeTraceDetail(count = 1_000): TraceDetail {
 }
 
 function TimelineControls() {
-    const { collapsedNodes, toggleCollapsed, setSelectedNodeId } = useTraceSelection();
+    const { collapsedNodes, toggleCollapsed, selectNode } = useTraceSelection();
     return (
         <>
             <button
@@ -120,7 +120,7 @@ function TimelineControls() {
             >
                 Collapse ancestors
             </button>
-            <button type="button" onClick={() => setSelectedNodeId("observation-997")}>
+            <button type="button" onClick={() => selectNode("observation-997")}>
                 Select remote observation
             </button>
             <output data-testid="collapsed-nodes">{[...collapsedNodes].sort().join(",")}</output>

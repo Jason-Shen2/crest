@@ -18,7 +18,7 @@ import { VirtualizedList } from "./virtualized-list";
 
 export function TraceSearchList() {
     const { roots, searchItems } = useTraceData();
-    const { searchQuery, setSearchQuery, selectedNodeId, setSelectedNodeId } = useTraceSelection();
+    const { searchQuery, setSearchQuery, selectedNodeId, selectNode } = useTraceSelection();
     const displayedSelectedNodeId = resolveTraceSelectionNodeId(roots, selectedNodeId);
     const searchResults = useMemo(() => {
         if (!searchQuery.trim()) {
@@ -60,7 +60,7 @@ export function TraceSearchList() {
             selectedItemId={displayedSelectedNodeId}
             onSelectItem={(id) => {
                 const item = searchResults.find((result) => result.node.id === id);
-                setSelectedNodeId(item?.node.type === "TRACE" ? null : id);
+                selectNode(item?.node.type === "TRACE" ? null : id);
             }}
             getItemId={(item) => item.node.id}
             estimatedItemSize={48}

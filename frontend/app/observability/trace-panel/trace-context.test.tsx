@@ -145,10 +145,16 @@ function makeRunningDetailWithInvalidEndTime(): TraceDetail {
     };
 }
 
-function ContextProbe({ detail }: { detail: TraceDetail }) {
+function ContextProbe({
+    detail,
+    onSelectionIntent,
+}: {
+    detail: TraceDetail;
+    onSelectionIntent?: (id: string | null) => void;
+}) {
     return (
         <TraceDataProvider detail={detail}>
-            <TraceSelectionProvider traceId={detail.trace.id}>
+            <TraceSelectionProvider traceId={detail.trace.id} onSelectionIntent={onSelectionIntent}>
                 <Probe />
             </TraceSelectionProvider>
         </TraceDataProvider>
@@ -156,12 +162,15 @@ function ContextProbe({ detail }: { detail: TraceDetail }) {
 }
 
 function Probe() {
-    const { selectedNodeId, setSelectedNodeId } = useTraceSelection();
+    const { selectedNodeId, selectNode } = useTraceSelection();
     const { traceStartTime, traceDuration } = useTraceData();
     return (
         <>
-            <button type="button" onClick={() => setSelectedNodeId("generation-1")}>
+            <button type="button" onClick={() => selectNode("generation-1")}>
                 select generation-1
+            </button>
+            <button type="button" onClick={() => selectNode(null)}>
+                select trace
             </button>
             <span data-testid="selection">{selectedNodeId ?? "trace"}</span>
             <span data-testid="trace-start">{traceStartTime?.toISOString() ?? "none"}</span>
@@ -212,6 +221,31 @@ function SearchHeaderView() {
 }
 
 describe("trace context", () => {
+    it("reports every explicit selection intent, including reselection", () => {
+        const onSelectionIntent = vi.fn();
+        render(<ContextProbe detail={makeDetail(["generation-1"])} onSelectionIntent={onSelectionIntent} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "select generation-1" }));
+        fireEvent.click(screen.getByRole("button", { name: "select generation-1" }));
+        fireEvent.click(screen.getByRole("button", { name: "select trace" }));
+
+        expect(onSelectionIntent.mock.calls).toEqual([["generation-1"], ["generation-1"], [null]]);
+    });
+
+    it("falls back to trace without reporting a user selection intent", () => {
+        const onSelectionIntent = vi.fn();
+        const { rerender } = render(
+            <ContextProbe detail={makeDetail(["generation-1"])} onSelectionIntent={onSelectionIntent} />
+        );
+        fireEvent.click(screen.getByRole("button", { name: "select generation-1" }));
+        onSelectionIntent.mockClear();
+
+        rerender(<ContextProbe detail={makeDetail([])} onSelectionIntent={onSelectionIntent} />);
+
+        expect(screen.getByTestId("selection").textContent).toBe("trace");
+        expect(onSelectionIntent).not.toHaveBeenCalled();
+    });
+
     it("uses null for trace selection and clears a removed observation", () => {
         const { rerender } = render(<ContextProbe detail={makeDetail(["generation-1"])} />);
         fireEvent.click(screen.getByRole("button", { name: "select generation-1" }));

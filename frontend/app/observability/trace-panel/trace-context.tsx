@@ -19,7 +19,7 @@ type TraceDataContextValue = {
 
 type TraceSelectionContextValue = {
     selectedNodeId: string | null;
-    setSelectedNodeId: (id: string | null) => void;
+    selectNode: (id: string | null) => void;
     collapsedNodes: Set<string>;
     toggleCollapsed: (id: string) => void;
     navigationMode: TraceNavigationMode;
@@ -90,7 +90,15 @@ export function TraceDataProvider({ detail, children }: { detail: TraceDetail; c
     return <TraceDataContext.Provider value={value}>{children}</TraceDataContext.Provider>;
 }
 
-export function TraceSelectionProvider({ traceId, children }: { traceId: string; children: ReactNode }) {
+export function TraceSelectionProvider({
+    traceId,
+    children,
+    onSelectionIntent,
+}: {
+    traceId: string;
+    children: ReactNode;
+    onSelectionIntent?: (id: string | null) => void;
+}) {
     const { observationMap } = useTraceData();
     const [selectedNodeByTrace, setSelectedNodeByTrace] = useState<Record<string, string | null>>({});
     const [collapsedByTrace, setCollapsedByTrace] = useState<Record<string, Set<string>>>({});
@@ -100,11 +108,12 @@ export function TraceSelectionProvider({ traceId, children }: { traceId: string;
     const selectedNodeId =
         storedSelectedNodeId != null && observationMap.has(storedSelectedNodeId) ? storedSelectedNodeId : null;
     const collapsedNodes = collapsedByTrace[traceId] ?? new Set<string>();
-    const setSelectedNodeId = useCallback(
+    const selectNode = useCallback(
         (id: string | null) => {
             setSelectedNodeByTrace((current) => ({ ...current, [traceId]: id }));
+            onSelectionIntent?.(id);
         },
-        [traceId]
+        [onSelectionIntent, traceId]
     );
     const toggleCollapsed = useCallback(
         (id: string) => {
@@ -123,7 +132,7 @@ export function TraceSelectionProvider({ traceId, children }: { traceId: string;
     const value = useMemo(
         () => ({
             selectedNodeId,
-            setSelectedNodeId,
+            selectNode,
             collapsedNodes,
             toggleCollapsed,
             navigationMode,
@@ -131,7 +140,7 @@ export function TraceSelectionProvider({ traceId, children }: { traceId: string;
             searchQuery,
             setSearchQuery,
         }),
-        [selectedNodeId, setSelectedNodeId, collapsedNodes, toggleCollapsed, navigationMode, searchQuery]
+        [selectedNodeId, selectNode, collapsedNodes, toggleCollapsed, navigationMode, searchQuery]
     );
 
     return <TraceSelectionContext.Provider value={value}>{children}</TraceSelectionContext.Provider>;

@@ -24,7 +24,7 @@ function graphTopology(observations: Observation[]): GraphObservation[] {
 
 export function TraceGraph() {
     const { detail } = useTraceData();
-    const { selectedNodeId, setSelectedNodeId } = useTraceSelection();
+    const { selectedNodeId, selectNode } = useTraceSelection();
     const topologyKey = JSON.stringify(graphTopology(detail.observations));
     const graph = useMemo(() => buildExpandedGraph(JSON.parse(topologyKey) as GraphObservation[]), [topologyKey]);
 
@@ -35,7 +35,7 @@ export function TraceGraph() {
                     No graph data available
                 </div>
             ) : (
-                <ElkGraphRenderer graph={graph} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} />
+                <ElkGraphRenderer graph={graph} selectedNodeId={selectedNodeId} onSelectNode={selectNode} />
             )}
         </div>
     );

@@ -94,11 +94,11 @@ function makeDetail(): TraceDetail {
 }
 
 function SelectionSync({ selectedNodeId }: { selectedNodeId: string | null }) {
-    const { setSelectedNodeId } = useTraceSelection();
+    const { selectNode } = useTraceSelection();
 
     useEffect(() => {
-        setSelectedNodeId(selectedNodeId);
-    }, [selectedNodeId, setSelectedNodeId]);
+        selectNode(selectedNodeId);
+    }, [selectedNodeId, selectNode]);
 
     return null;
 }
