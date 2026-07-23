@@ -1,26 +1,28 @@
-# Workspace Surface 与 Terminal Tab 架构重构设计
+# Workspace 与 Tab 架构重构设计
 
 - 状态：已与用户口头确认，待文档评审
 - 日期：2026-07-23
-- 适用范围：Workspace Shell、Terminal Tab、Agent Surface、顶部 Workbench Tab、持久化与切换生命周期
+- 适用范围：Workspace、Agent、Terminal Tab、Top Tab、持久化与 renderer 生命周期
 
 ## 1. 决策摘要
 
 Crest 不再把所有主内容都建模为 Wave Tab。
 
-目标架构将顶层内容拆成三个生命周期彼此独立的域：
+本文只使用四个产品概念：
 
-1. **Workspace Shell**
-   - 每个窗口只有一个常驻 renderer。
-   - 拥有 TopBar、固定 Agent 入口、左侧 File/Session/Terminal 列表、顶部 Workbench Tab、右侧工具面板、全局通知与 modal。
-2. **Terminal Tab**
-   - 继续使用 Wave Tab、LayoutState、Block、controller、WPS/RPC 和独立 `WebContentsView`。
-   - 一个 Terminal Tab 可以包含多个 Terminal Pane，但禁止 File、Web、Preview、Diff、Agent 等非 Terminal Block。
-   - renderer 只渲染中央 Terminal 内容，不再重复 Workspace chrome。
-3. **Workspace Surface**
-   - Agent 是固定、不可关闭的 workspace-level Surface。
-   - File、Browser、Preview、Diff 等是顶部轻量 Workbench Tab。
-   - Workbench Tab 不创建 Wave Tab、LayoutState、Block、controller 或独立顶层 `WebContentsView`。
+1. **Workspace**：整个窗口工作区，包含顶部栏、左右面板和主内容区。
+2. **Agent**：固定入口，不是 Tab。
+3. **Terminal Tab**：位于左侧，一个 Tab 可以包含多个 Terminal Pane。
+4. **Top Tab**：位于顶部，包括 File、Browser、Preview、Diff。
+
+实现层只使用两个 renderer 名称：
+
+1. **Workspace Renderer**：每个窗口一个，始终存在，渲染 Workspace 和所有非 Terminal 内容。
+2. **Terminal Renderer**：每个 Terminal Tab 一个，只渲染中央 Terminal 内容。
+
+Terminal Tab 继续使用 Wave Tab、LayoutState、Block、controller、WPS/RPC 和独立 `WebContentsView`，但禁止 File、Web、Preview、Diff、Agent 等非 Terminal Block。Top Tab 不创建 Wave Tab、LayoutState、Block、controller 或独立顶层 `WebContentsView`。
+
+`shell` 只用于描述 Agent/Terminal 的命令执行环境，不作为 UI 架构名。`View` 只在引用 Electron `WebContentsView` 或现有 `ViewModel` 类型时出现。
 
 本次采用 hard cut：
 
@@ -39,7 +41,7 @@ Crest 不再把所有主内容都建模为 Wave Tab。
 
 本设计同时推进 `2026-07-19-agent-architecture-refactor-design.md` 的最终目标：
 
-- 保留 `WorkspaceAgentSurface -> AgentRuntimeRegistry -> AgentSessionRuntime`；
+- 保留 `AgentContent -> AgentRuntimeRegistry -> AgentSessionRuntime`；
 - 取消该文档中的 backing block 兼容阶段；
 - Agent 在没有任何 Terminal Tab 时仍能独立运行 shell/tool 任务。
 
@@ -68,24 +70,24 @@ Crest 不再把所有主内容都建模为 Wave Tab。
 但 Agent、File、Browser、Preview、Diff 不需要这套成本。继续复用 Wave Tab 会导致：
 
 - 每个非 Terminal Tab 重复初始化完整 Workspace chrome；
-- File/Browser 切换仍触发 Electron View 交换；
+- File/Browser 切换仍触发 Electron renderer 交换；
 - Agent 固定入口背后仍需隐藏 Wave Tab；
 - 顶部栏通过异步 Block 探测判断 Tab 类型；
 - 快捷键、关闭、排序和持久化被迫共享一份 `workspace.tabids`；
-- 新 Surface 类型继续放大 `staticTabId`、LayoutModel 和 RPC route 的耦合。
+- 新的非 Terminal 类型继续放大 `staticTabId`、LayoutModel 和 RPC route 的耦合。
 
 ## 4. 目标与非目标
 
 ### 4.1 目标
 
-- 非 Terminal Surface 间切换只更新 Shell 内的本地状态，不交换顶层 Electron View。
+- 非 Terminal 内容间切换只更新 Workspace 内的本地状态，不交换顶层 Electron renderer。
 - TopBar、左右面板和全局 UI 在任何内容切换期间保持挂载。
 - Terminal 保留成熟的 Wave Tab runtime 和多 Terminal Pane 能力。
 - Agent UI 与 Agent 执行生命周期完全脱离 Tab、Block 和 Terminal。
-- File 路径、Browser URL、Workbench Tab 顺序和最后激活 Surface 可随 workspace 恢复。
-- 恢复时只预热最后激活 Surface，其余重资源首次激活时创建。
+- File 路径、Browser URL、Top Tab 顺序和最后选中项可随 workspace 恢复。
+- 恢复时只预热最后选中项，其余重资源首次激活时创建。
 - Workspace 允许零个 Terminal Tab。
-- 为以后新增 Markdown、Settings、Database 等 Surface 提供显式扩展点。
+- 为以后新增 Markdown、Settings、Database 等 Top Tab 提供显式扩展点。
 
 ### 4.2 非目标
 
@@ -102,30 +104,30 @@ Crest 不再把所有主内容都建模为 Wave Tab。
 ```text
 Electron BrowserWindow
 |
-+-- WorkspaceShellView (始终在窗口内，完整窗口 bounds)
++-- WorkspaceRenderer (始终在窗口内，完整窗口 bounds)
 |   |
 |   +-- TopBar
 |   |   +-- Fixed Agent Entry
-|   |   +-- WorkbenchTabBar
+|   |   +-- TopTabBar
 |   |
 |   +-- LeftPanel
 |   |   +-- FileExplorer
 |   |   +-- AgentSessionsPanel
 |   |   +-- TerminalTabList
 |   |
-|   +-- WorkspaceSurfaceHost
-|   |   +-- WorkspaceAgentSurface
-|   |   +-- FileSurface
-|   |   +-- BrowserSurface
-|   |   +-- Preview/Diff Surface
-|   |   +-- TerminalHostPlaceholder
+|   +-- MainContent
+|   |   +-- AgentContent
+|   |   +-- FileContent
+|   |   +-- BrowserContent
+|   |   +-- PreviewContent / DiffContent
+|   |   +-- TerminalContentPlaceholder
 |   |
 |   +-- RightToolPanel
 |   +-- StatusBar / Modals / Notifications
 |
-+-- Active TerminalTabView (仅 Terminal 激活时覆盖中央内容矩形)
++-- Active TerminalRenderer (仅 Terminal 激活时覆盖中央内容矩形)
     |
-    +-- TerminalSurfaceApp
+    +-- TerminalApp
         +-- staticTabId
         +-- TabRpcClient
         +-- LayoutModel
@@ -133,34 +135,34 @@ Electron BrowserWindow
         +-- Terminal Blocks
 ```
 
-`WorkspaceShellView` 和 `TerminalTabView` 是同一个 Electron Window 下的同级 `WebContentsView`。
+`WorkspaceRenderer` 和 `TerminalRenderer` 是同一个 Electron Window 下的同级 `WebContentsView`。
 
-Shell 先加入 window content view；活动 Terminal View 后加入并位于 Shell 上方，但其 bounds 只覆盖中央内容区。因此：
+Workspace Renderer 先加入 window content view；活动 Terminal Renderer 后加入并位于它的上方，但其 bounds 只覆盖中央内容区。因此：
 
-- 顶部栏、左侧栏、右侧栏始终由 Shell 显示；
-- Terminal 激活时只覆盖 Shell 的中央 `TerminalHostPlaceholder`；
-- 非 Terminal Surface 激活时，所有 Terminal View 都移出可见区域；
-- Shell renderer 从窗口创建到窗口关闭始终不切换。
+- 顶部栏、左侧栏、右侧栏始终由 Workspace Renderer 显示；
+- Terminal 激活时只覆盖主内容区的 `TerminalContentPlaceholder`；
+- 非 Terminal 内容激活时，所有 Terminal Renderer 都移出可见区域；
+- Workspace Renderer 从窗口创建到窗口关闭始终不切换。
 
-## 6. Workspace Shell
+## 6. Workspace Renderer
 
 ### 6.1 身份与初始化
 
-每个 `WaveWindow` 创建一个 `WorkspaceShellView`。
+每个 `WaveWindow` 创建一个 `WorkspaceRenderer`。
 
-Shell 初始化参数只包含 workspace/window 身份：
+Workspace Renderer 初始化参数只包含 workspace/window 身份：
 
 ```ts
-interface WorkspaceShellInit {
+interface WorkspaceRendererInit {
     clientId: string;
     windowId: string;
     workspaceId: string;
 }
 ```
 
-Shell 不接收 `tabId`，也不创建 `staticTabId`。
+Workspace Renderer 不接收 `tabId`，也不创建 `staticTabId`。
 
-Shell 使用 workspace/window scoped route，例如：
+Workspace Renderer 使用 workspace/window scoped route，例如：
 
 ```text
 window:<windowId>
@@ -173,12 +175,12 @@ Terminal renderer 继续使用：
 tab:<terminalTabId>
 ```
 
-### 6.2 Shell 职责
+### 6.2 职责
 
-Shell 是以下状态和 UI 的唯一 renderer owner：
+Workspace Renderer 是以下状态和 UI 的唯一 owner：
 
-- `ActiveSurface`；
-- Workbench Tab 列表、顺序和临时 UI 状态；
+- `ActiveContent`；
+- Top Tab 列表、顺序和临时 UI 状态；
 - 固定 Agent 入口；
 - File Explorer、Agent Session Panel、Terminal 列表；
 - TopBar、RightToolPanel、StatusBar；
@@ -186,7 +188,7 @@ Shell 是以下状态和 UI 的唯一 renderer owner：
 - 全局 modal、toast、搜索和 context menu；
 - 中央内容矩形测量。
 
-Shell 不负责：
+Workspace Renderer 不负责：
 
 - Terminal PTY/controller；
 - Terminal Tab 的 LayoutModel；
@@ -196,10 +198,10 @@ Shell 不负责：
 
 ### 6.3 中央内容 bounds
 
-Shell 使用 `ResizeObserver` 测量 `WorkspaceSurfaceHost` 中 Terminal 占位区域的矩形，并通过 typed IPC 发送给 Electron main：
+Workspace Renderer 使用 `ResizeObserver` 测量 `MainContent` 中 Terminal 占位区域的矩形，并通过 typed IPC 发送给 Electron main：
 
 ```ts
-interface TerminalHostBoundsUpdate {
+interface TerminalContentBoundsUpdate {
     windowId: string;
     revision: number;
     bounds: {
@@ -220,35 +222,35 @@ interface TerminalHostBoundsUpdate {
 - fullscreen 变化；
 - device scale/zoom 变化。
 
-main 只接受比当前 revision 更新的 bounds，并将矩形限制在 window content bounds 内。空矩形不会显示 Terminal View。
+main 只接受比当前 revision 更新的 bounds，并将矩形限制在 window content bounds 内。空矩形不会显示 Terminal Renderer。
 
 切换到 Terminal 时，main 按以下顺序执行：
 
-1. 获取或初始化目标 `TerminalTabView`；
+1. 获取或初始化目标 `TerminalRenderer`；
 2. 将目标 View 设置为最新中央 bounds；
 3. 将目标 View 加入正确 z-order；
-4. 将旧 Terminal View 移出屏幕；
+4. 将旧 Terminal Renderer 移出屏幕；
 5. 标记目标可见；
 6. 聚焦目标 WebContents。
 
-初始化失败时不允许一个空白 View 覆盖 Shell。Shell 的占位区域展示错误与重试操作。
+初始化失败时不允许一个空白 View 覆盖 Workspace Renderer。主内容区的占位区域展示错误与重试操作。
 
-### 6.4 Shell overlay 与 Terminal 原生 View 的遮挡
+### 6.4 全局 overlay 与 Terminal Renderer 的遮挡
 
-Terminal `WebContentsView` 位于 Shell 之上时，Shell DOM 不能直接覆盖 Terminal 矩形。所有会进入中央区域的全局 UI 必须经过统一 `SurfaceOcclusionController`：
+Terminal Renderer 位于 Workspace Renderer 之上时，Workspace DOM 不能直接覆盖 Terminal 矩形。所有会进入中央区域的全局 UI 必须经过统一 `ContentOcclusionController`：
 
-- 普通 TopBar popover、左侧菜单、右侧 panel 和 toast 不与 Terminal bounds 相交，继续由 Shell 直接渲染；
-- Terminal 内右键菜单使用 Electron native menu，不从 Shell DOM 跨 View 绘制；
+- 普通 TopBar popover、左侧菜单、右侧 panel 和 toast 不与 Terminal bounds 相交，继续由 Workspace Renderer 直接渲染；
+- Terminal 内右键菜单使用 Electron native menu，不跨 renderer 绘制；
 - command palette、全局 modal、全屏搜索、RightToolPanel magnified overlay 等需要覆盖中央区域时：
-  1. 保留 `ActiveSurface` 为当前 Terminal；
+  1. 保留 `ActiveContent` 为当前 Terminal；
   2. 设置 `terminalOccluded = true`；
-  3. main 将活动 Terminal View 移出可见区域；
-  4. Shell 在中央占位区域绘制稳定背景并展示 overlay；
+  3. main 将活动 Terminal Renderer 移出可见区域；
+  4. Workspace Renderer 在中央占位区域绘制稳定背景并展示 overlay；
   5. overlay 关闭后先恢复 Terminal bounds，再恢复焦点。
 
 首个实现不截取 Terminal 画面作为 modal 背景，以免把 `capturePage` 延迟引入所有 overlay。遮挡期间使用主题背景；后续只有在真实体验证明必要时才增加快照。
 
-`terminalOccluded` 不是新的 active Surface，也不参与持久化。它只是 Shell overlay 的瞬时 native-view 协调状态。
+`terminalOccluded` 不改变当前选中项，也不参与持久化。它只是两个 renderer 之间的瞬时遮挡状态。
 
 ## 7. Terminal Tab
 
@@ -270,7 +272,7 @@ Wave Tab 从本设计开始只表示 Terminal 容器。
 - `preview`；
 - `gitdiff`；
 - Agent；
-- 其他 Workbench Surface。
+- 其他 Top Tab。
 
 所有创建 Block、恢复 Layout 和拖拽入口都必须在数据边界验证该约束，不能只依赖 UI 隐藏。
 
@@ -299,11 +301,11 @@ backend `waveobj.Tab` 可以继续保留类型名以避免无收益的 Wave core
 现有 full-app renderer 拆成两个入口：
 
 ```text
-WorkspaceShellApp
-TerminalSurfaceApp
+WorkspaceApp
+TerminalApp
 ```
 
-`TerminalSurfaceApp` 保留：
+`TerminalApp` 保留：
 
 - tab-scoped WOS/WPS；
 - `staticTabId`；
@@ -324,7 +326,7 @@ TerminalSurfaceApp
 - StatusBar、全局通知；
 - 非 Terminal ViewModel 注册和初始化。
 
-`wave.ts` 中 Monaco、Workbench Browser、Agent/NLD UI 等非 Terminal 全局初始化不得在 `TerminalSurfaceApp` 启动路径执行。
+`wave.ts` 中 Monaco、Top Tab Browser、Agent/NLD UI 等非 Terminal 全局初始化不得在 `TerminalApp` 启动路径执行。
 
 ### 7.4 零 Terminal 状态
 
@@ -333,7 +335,7 @@ Workspace 可以没有 Terminal Tab。
 关闭最后一个 Terminal Tab 时：
 
 - 不关闭窗口；
-- 如果存在 `lastActiveWorkbenchTabId`，激活该 Workbench Tab；
+- 如果存在 `lastActiveTopTabId`，激活该 Top Tab；
 - 否则激活 Agent；
 - Terminal Tab 列表展示空态和“New Terminal”入口。
 
@@ -348,25 +350,25 @@ Workspace 可以没有 Terminal Tab。
 - 只读取 `terminalTabIds`、标题、运行状态和 `activeTerminalTabId`；
 - 支持 select、new、rename、close 和同组 reorder；
 - 不支持 File/Browser 类型探测、Pane 详情 sidecar 或跨类型拖拽；
-- 点击 Terminal 只设置全局 `ActiveSurface` 并请求 main 显示对应 Terminal View。
+- 点击 Terminal 只设置全局 `ActiveContent` 并请求 main 显示对应 Terminal Renderer。
 
 具体高度和折叠交互属于 Phase 2 的 UI 细化，不改变本设计的数据边界。
 
-## 8. Active Surface 模型
+## 8. 当前内容模型
 
-Shell 使用一份全局激活状态：
+Workspace 使用一份全局激活状态：
 
 ```ts
-type ActiveSurface =
+type ActiveContent =
     | { kind: "agent" }
     | { kind: "terminal"; terminalTabId: string }
-    | { kind: "workbench"; workbenchTabId: string };
+    | { kind: "top-tab"; topTabId: string };
 ```
 
-Workbench Tab 自身再使用 discriminated union：
+Top Tab 自身再使用 discriminated union：
 
 ```ts
-type WorkbenchTab =
+type TopTab =
     | {
           id: string;
           kind: "file";
@@ -395,58 +397,58 @@ type WorkbenchTab =
       };
 ```
 
-Agent 不进入 `WorkbenchTab[]`。Terminal 不进入 `WorkbenchTab[]`。
+Agent 不进入 `TopTab[]`。Terminal 不进入 `TopTab[]`。
 
-Shell 还保存：
+Workspace 还保存：
 
 ```ts
-interface WorkspaceSurfaceState {
-    activeSurface: ActiveSurface;
-    workbenchTabs: WorkbenchTab[];
-    lastActiveWorkbenchTabId: string | null;
+interface WorkspaceContentState {
+    activeContent: ActiveContent;
+    topTabs: TopTab[];
+    lastActiveTopTabId: string | null;
 }
 ```
 
-Terminal 最后选中项由 `activeTerminalTabId` 保存，不在 Workbench state 中重复。
+Terminal 最后选中项由 `activeTerminalTabId` 保存，不在 Top Tab state 中重复。
 
 ### 8.1 激活视觉
 
-全局只能有一个 active Surface：
+Workspace 当前只能选中一项：
 
-- Agent 激活：固定 Agent 入口高亮；Terminal 列表和 Workbench Tab 没有 active 高亮。
-- Terminal 激活：对应 Terminal 列表项高亮；Agent 和 Workbench Tab 不高亮。
-- Workbench 激活：对应顶部 Tab 高亮；Agent 和 Terminal 列表不高亮。
+- Agent 激活：固定 Agent 入口高亮；Terminal 列表和 Top Tab 没有 active 高亮。
+- Terminal 激活：对应 Terminal 列表项高亮；Agent 和 Top Tab 不高亮。
+- Top Tab 激活：对应顶部 Tab 高亮；Agent 和 Terminal 列表不高亮。
 
 每组可以记住 last active ID，但 last active 不等于当前 active。
 
-## 9. Workbench Tab 与生命周期
+## 9. Top Tab 与生命周期
 
 ### 9.1 Runtime owner
 
-Shell 内的 `WorkbenchTabModel` 是当前运行期间的唯一 owner：
+Workspace 内的 `TopTabModel` 是当前运行期间的唯一 owner：
 
 - 打开、去重、关闭、排序和激活；
 - dirty/process close guard；
-- 每类 Surface 的 warm/cold 状态；
+- 每类内容的 warm/cold 状态；
 - 持久化调度。
 
 backend 只保存可恢复 snapshot，不参与每次视觉切换的同步 round trip。
 
 ### 9.2 持久化
 
-Workspace backend 增加 typed `surfaceState` 字段，保存：
+Workspace backend 增加 typed `contentState` 字段，保存：
 
-- `WorkbenchTab[]` 描述；
+- `TopTab[]` 描述；
 - Tab 顺序；
-- `ActiveSurface`；
-- `lastActiveWorkbenchTabId`。
+- `ActiveContent`；
+- `lastActiveTopTabId`。
 
 Terminal 列表和 `activeTerminalTabId` 继续由 Terminal backend state 保存。
 
-`surfaceState` 与 Terminal state 都属于同一个 Workspace 持久化对象。选择 Terminal 时，Shell 在本地同时更新：
+`contentState` 与 Terminal state 都属于同一个 Workspace 持久化对象。选择 Terminal 时，Workspace 在本地同时更新：
 
 ```text
-activeSurface = terminal(tabId)
+activeContent = terminal(tabId)
 activeTerminalTabId = tabId
 ```
 
@@ -454,7 +456,7 @@ activeTerminalTabId = tabId
 
 持久化策略：
 
-- Shell 启动时读取一次 snapshot；
+- Workspace 启动时读取一次 snapshot；
 - 打开、关闭、排序、URL 变化和激活使用本地同步更新；
 - 结构变化和 URL 变化通过 debounce 保存完整 snapshot；
 - window blur、document hidden 和 app shutdown 时 flush；
@@ -464,21 +466,21 @@ activeTerminalTabId = tabId
 恢复策略：
 
 1. 验证所有 descriptor；
-2. 无效 descriptor 单独丢弃并记录日志，不阻断 Shell；
-3. `activeSurface` 指向不存在对象时，依次 fallback：
-   - `lastActiveWorkbenchTabId`；
+2. 无效 descriptor 单独丢弃并记录日志，不阻断 Workspace；
+3. `activeContent` 指向不存在对象时，依次 fallback：
+   - `lastActiveTopTabId`；
    - `activeTerminalTabId`；
    - Agent；
-4. 只 warm 最终 active Surface；
-5. 其他 Workbench Tab 保持 cold。
+4. 只 warm 最终选中项；
+5. 其他 Top Tab 保持 cold。
 
 恢复内容：
 
 - File 路径；
 - Browser 最后 URL；
 - Preview/Diff 的可重建资源描述；
-- Workbench Tab 顺序；
-- 最后激活 Surface。
+- Top Tab 顺序；
+- 最后选中项。
 
 不恢复：
 
@@ -488,7 +490,7 @@ activeTerminalTabId = tabId
 - Diff 计算缓存；
 - React 组件实例。
 
-### 9.3 File Surface
+### 9.3 File Tab
 
 File Tab 以 normalized absolute path 去重。
 
@@ -504,9 +506,9 @@ File Tab 以 normalized absolute path 去重。
 
 虽然未保存 buffer 不跨 app restart 持久化，但正常关闭流程不能静默丢失。
 
-### 9.4 Browser Surface
+### 9.4 Browser Tab
 
-Browser Tab 以自己的 Workbench Tab ID 为身份，不按 URL 去重。
+Browser Tab 以自己的 Top Tab ID 为身份，不按 URL 去重。
 
 生命周期：
 
@@ -521,35 +523,35 @@ Browser Tab 以自己的 Workbench Tab ID 为身份，不按 URL 去重。
 
 ### 9.5 Preview 与 Diff
 
-Preview、Git Diff 等可重建 Surface 默认只挂载 active 项：
+Preview、Git Diff 等可重建 Tab 默认只挂载 active 项：
 
 - 切走后允许卸载；
 - descriptor 保存重建所需资源；
 - 数据缓存可以放在独立 repository，但不作为 Tab 身份；
-- 加载失败只影响当前 Surface，不影响 Shell。
+- 加载失败只影响当前 Tab，不影响 Workspace。
 
-## 10. Agent 固定 Surface
+## 10. Agent
 
 ### 10.1 身份
 
-Agent 是 Workspace Shell 中固定导航项：
+Agent 是 Workspace 中固定导航项：
 
 - 永远可见；
 - 不可关闭；
 - 不参与排序；
-- 不进入 Workbench Tab；
+- 不进入 Top Tab；
 - 不进入 Terminal Tab；
 - 不拥有 Tab ID、Block ID 或 LayoutState。
 
 点击固定入口只执行：
 
 ```ts
-activeSurface = { kind: "agent" };
+activeContent = { kind: "agent" };
 ```
 
 ### 10.2 UI 生命周期
 
-`WorkspaceAgentSurface` 首次激活后保持挂载，切走时隐藏。
+`AgentContent` 首次激活后保持挂载，切走时隐藏。
 
 保持挂载用于保留：
 
@@ -565,7 +567,7 @@ Agent 的执行连续性不依赖该组件保持挂载。即使 renderer reload�
 目标调用链：
 
 ```text
-WorkspaceAgentSurface
+AgentContent
   -> AgentRuntimeClient
   -> AgentRuntimeRegistry
   -> AgentSessionRuntime
@@ -583,7 +585,7 @@ WorkspaceAgentSurface
 
 切换到 File、Browser 或 Terminal：
 
-- Surface 可以 unsubscribe 当前可见流；
+- `AgentContent` 可以 unsubscribe 当前可见流；
 - running session 继续执行；
 - canonical session event 继续写入 runtime/repository；
 - 返回 Agent 后通过 snapshot + subscription 恢复 UI。
@@ -638,12 +640,12 @@ Agent 自己提供：
 
 ```text
 FileExplorer.open(path)
-  -> WorkbenchTabModel.openFile(path)
+  -> TopTabModel.openFile(path)
   -> normalize + find existing file descriptor
-  -> existing: set ActiveSurface(workbench, id)
+  -> existing: set ActiveContent(top-tab, id)
   -> missing: append cold file descriptor
-  -> set ActiveSurface(workbench, id)
-  -> FileSurface warm/read/model
+  -> set ActiveContent(top-tab, id)
+  -> FileContent warm/read/model
   -> debounce persist snapshot
 ```
 
@@ -654,7 +656,7 @@ FileExplorer.open(path)
 ```text
 OpenBrowser(url)
   -> append browser descriptor
-  -> activate Workbench Tab
+  -> activate Top Tab
   -> create or reuse live webview slot
   -> navigation updates descriptor url/title
   -> enforce Browser LRU cap
@@ -665,12 +667,12 @@ OpenBrowser(url)
 
 ```text
 TerminalTabList.select(tabId)
-  -> Shell validates terminalTabId
-  -> locally set ActiveSurface(terminal, tabId)
+  -> Workspace validates terminalTabId
+  -> locally set ActiveContent(terminal, tabId)
   -> locally set activeTerminalTabId = tabId
   -> enqueue one workspace navigation checkpoint
-  -> IPC showTerminalSurface(tabId, currentBounds)
-  -> main get/create TerminalTabView
+  -> IPC showTerminal(tabId, currentBounds)
+  -> main get/create TerminalRenderer
   -> initialize/wave-ready if cold
   -> position target before hiding old view
   -> focus target
@@ -680,11 +682,11 @@ TerminalTabList.select(tabId)
 
 ```text
 FixedAgentEntry.select()
-  -> set ActiveSurface(agent)
-  -> IPC hideActiveTerminalSurface()
-  -> show existing WorkspaceAgentSurface
+  -> set ActiveContent(agent)
+  -> IPC hideActiveTerminal()
+  -> show existing AgentContent
   -> acquire/subscribe active Agent session
-  -> persist active surface
+  -> persist active content
 ```
 
 ### 11.5 Agent 后台运行
@@ -692,7 +694,7 @@ FixedAgentEntry.select()
 ```text
 Agent session A running
   -> user selects File
-  -> Agent Surface hidden
+  -> AgentContent hidden
   -> AgentRuntimeRegistry keeps A
   -> events continue to runtime/repository
   -> user returns Agent
@@ -705,123 +707,123 @@ Agent session A running
 
 当前 workspace 导航快捷键分散在每个 tab renderer。新架构增加 window-level `WorkspaceCommandRouter`：
 
-- Shell 是 workspace navigation command 的 owner；
+- Workspace 是 workspace navigation command 的 owner；
 - Terminal renderer 只处理 Terminal-local 命令；
-- 从 Terminal renderer 触发的 workspace 命令通过 preload IPC 转发给 Shell；
-- main 根据 windowId 将命令发送给唯一 Shell；
-- Shell 根据 `ActiveSurface` 决定作用对象。
+- 从 Terminal renderer 触发的 workspace 命令通过 preload IPC 转发给 Workspace；
+- main 根据 windowId 将命令发送给唯一 Workspace；
+- Workspace 根据 `ActiveContent` 决定作用对象。
 
 ### 12.2 `Close Active`
 
 - Agent active：不关闭 Agent，不删除 Session；命令无操作并保留窗口。
-- Workbench active：执行对应 Workbench Tab close guard，然后关闭该 Tab。
+- Top Tab active：执行对应 Top Tab close guard，然后关闭该 Tab。
 - Terminal active：执行 Terminal process/close guard，然后关闭 Terminal Tab。
 - 关闭 window 使用独立 window close 命令。
 
 ### 12.3 Focus
 
-- 点击 TopBar、左侧栏或右侧栏：焦点回 Shell。
+- 点击 TopBar、左侧栏或右侧栏：焦点回 Workspace。
 - 点击 Terminal 中央区域：焦点进入活动 Terminal WebContents。
-- Workbench/Agent 激活后：main 隐藏 Terminal View，Shell Surface 恢复焦点。
-- Browser Surface 激活后：Shell 将焦点交给 active guest webview。
-- 任何隐藏 Surface 必须禁用 pointer events。
-- Shell overlay 打开时暂时遮挡 Terminal；关闭后按打开 overlay 前的焦点 owner 恢复焦点。
+- Top Tab/Agent 激活后：main 隐藏 Terminal Renderer，Workspace Renderer 恢复焦点。
+- Browser Tab 激活后：Workspace Renderer 将焦点交给 active guest webview。
+- 任何隐藏内容必须禁用 pointer events。
+- 全局 overlay 打开时暂时遮挡 Terminal；关闭后按打开 overlay 前的焦点 owner 恢复焦点。
 
-Terminal View 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦点恢复；仅用于 Terminal 自身。
+Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦点恢复；仅用于 Terminal 自身。
 
 ## 13. 错误处理
 
-### 13.1 Shell 初始化失败
+### 13.1 Workspace Renderer 初始化失败
 
 - BrowserWindow 保持背景色；
-- 展示独立的 Shell fatal-error fallback；
+- 展示独立的 Workspace fatal-error fallback；
 - 提供 reload window；
 - 不自动销毁 Terminal runtime 或 Agent runtime。
 
 ### 13.2 Terminal cold init 失败
 
 - 失败 View 不覆盖中央区域；
-- Shell 展示 Terminal 错误占位区域；
+- Workspace 展示 Terminal 错误占位区域；
 - 用户可 Retry 或 Close Terminal；
-- 其他 Workbench/Agent Surface 仍可使用。
+- 其他 Top Tab 和 Agent 仍可使用。
 
-### 13.3 Workbench snapshot 损坏
+### 13.3 Top Tab snapshot 损坏
 
 - 每个 descriptor 独立校验；
 - 丢弃非法项并记录结构化日志；
-- 使用 fallback 规则选择 active Surface；
-- 不因单个坏 URL/path 阻断 Shell。
+- 使用 fallback 规则选择当前内容；
+- 不因单个坏 URL/path 阻断 Workspace。
 
 ### 13.4 File 不存在或读取失败
 
 - 保留 Tab 和 path；
-- Surface 展示 missing/read error；
+- File Tab 展示 missing/read error；
 - 允许 Retry、Close、Locate；
 - 不静默移除，以免恢复后 Tab 顺序发生不可解释变化。
 
 ### 13.5 Agent context 或 runtime 失败
 
 - 错误归属当前 Session；
-- Agent Surface 可切换到其他 Session；
-- Shell 和 Terminal 不受影响；
+- Agent 可切换到其他 Session；
+- Workspace 和 Terminal 不受影响；
 - preferred Terminal 不存在时自动清除可选关联，不影响执行。
 
 ## 14. 性能与资源约束
 
 ### 14.1 必须满足
 
-- 每个 window 恰好一个 `WorkspaceShellView`。
-- Agent/File/Browser/Preview/Diff 激活不创建或 reposition 顶层 Terminal View。
+- 每个 window 恰好一个 `WorkspaceRenderer`。
+- Agent/File/Browser/Preview/Diff 激活不创建或 reposition 顶层 Terminal Renderer。
 - 非 Terminal 切换不发送 `wave-init`。
 - 没有 hidden Agent WaveTabView。
-- Terminal renderer 不加载 Monaco、Workbench Browser 和 Agent UI。
-- 恢复时只有 active Surface warm。
+- Terminal renderer 不加载 Monaco、Browser UI 和 Agent UI。
+- 恢复时只有当前内容 warm。
 - live Browser webview 不超过 5 个。
 
 ### 14.2 观测指标
 
 实现前后记录：
 
-- warm/cold Surface switch p50/p95；
-- Shell 首次可交互时间；
+- warm/cold 内容切换 p50/p95；
+- Workspace 首次可交互时间；
 - Terminal cold `wave-ready` 时间；
 - renderer/WebContentsView 数量；
 - 1/5/10 个 File 或 Browser Tab 下的 RSS；
 - nested webview 创建和 LRU eviction 次数；
-- Terminal bounds update 到 first committed frame 的时间；
-- focus retry、blank frame 和 guest reload 事件。
+- Terminal bounds update 到首个合成帧的时间；
+- focus retry、空白帧和 guest reload 事件。
 
 ## 15. 测试策略
 
 ### 15.1 Backend
 
-- Workspace surface snapshot 序列化、校验和 revision。
+- Workspace content snapshot 序列化、校验和 revision。
 - Terminal tab 列表只接受 Terminal Tab。
 - 向 Terminal Tab 创建非 Terminal Block 时拒绝。
 - 关闭最后一个 Terminal Tab 不关闭 Workspace/window。
-- active Surface fallback 顺序。
+- 当前内容 fallback 顺序。
 - Agent execution context 在零 Terminal Tab 时可创建。
 
 ### 15.2 Electron main
 
-- 一个 window 只创建一个 Shell View。
-- Shell View ID 在 Agent/File/Browser/Terminal 切换期间不变。
-- Terminal View bounds 只覆盖 Shell 报告的中央矩形。
+- 一个 window 只创建一个 Workspace Renderer。
+- Workspace Renderer ID 在 Agent/File/Browser/Terminal 切换期间不变。
+- Terminal Renderer bounds 只覆盖 Workspace 报告的中央矩形。
 - stale bounds revision 被忽略。
-- 非 Terminal 激活时所有 Terminal View offscreen。
-- Terminal cold init 失败不会覆盖 Shell。
-- Terminal View z-order、切换顺序和 focus 正确。
+- 非 Terminal 激活时所有 Terminal Renderer offscreen。
+- Terminal cold init 失败不会覆盖 Workspace。
+- Terminal Renderer z-order、切换顺序和 focus 正确。
 - 打开中央全局 overlay 时 Terminal 暂时隐藏，关闭后恢复同一 View 和焦点。
 
-### 15.3 Shell renderer
+### 15.3 Workspace Renderer
 
-- `ActiveSurface` 三分支只有一个 active。
-- Agent 固定入口不进入 Workbench 排序/关闭。
+- `ActiveContent` 三分支只有一个 active。
+- Agent 固定入口不进入 Top Tab 排序/关闭。
 - File path 去重。
-- Workbench reorder 与 snapshot restore。
+- Top Tab reorder 与 snapshot restore。
 - invalid persisted active ID fallback。
-- cold restore 只 warm active Surface。
-- `Close Active` 按 Surface kind 分发。
+- cold restore 只 warm 当前内容。
+- `Close Active` 按当前内容类型分发。
 - 从 Terminal IPC 转发的 workspace command 正确执行。
 
 ### 15.4 File
@@ -852,49 +854,49 @@ Terminal View 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦点�
 
 - 连续切换 Agent、多个 File 和 Browser，TopBar/LeftPanel 不闪烁、不重置。
 - Terminal 激活时 chrome 保持稳定，只有中央内容变化。
-- resize 左右面板时 Terminal View 紧贴中央区域，无缝隙和覆盖。
+- resize 左右面板时 Terminal Renderer 紧贴中央区域，无缝隙和覆盖。
 - Terminal 与 Browser guest 来回切换后焦点、输入法和快捷键正常。
-- 重启 workspace 后恢复 File、Browser URL、顺序和 active Surface。
+- 重启 workspace 后恢复 File、Browser URL、顺序和最后选中项。
 - 关闭全部 Terminal 后仍可使用 Agent/File/Browser。
 
 ## 16. 实施分解
 
 本设计作为一份总架构，实施拆成四个可独立验收的子项目。
 
-### Phase 1：Workspace Surface 数据模型与 Shell
+### Phase 1：Workspace Renderer 与当前内容模型
 
-- 新增 `WorkspaceShellView` 和 `WorkspaceShellApp`；
-- 新增 `ActiveSurface`、Workbench Tab model 和 snapshot 持久化；
-- Shell 接管 TopBar、左右面板、全局 UI；
-- 暂时用 Terminal 占位区域验证 Shell 生命周期；
+- 新增 `WorkspaceRenderer` 和 `WorkspaceApp`；
+- 新增 `ActiveContent`、Top Tab model 和 snapshot 持久化；
+- Workspace 接管 TopBar、左右面板、全局 UI；
+- 暂时用 Terminal 占位区域验证 Workspace 生命周期；
 - 建立 window-level WorkspaceCommandRouter。
 
-验收：Agent/File/Browser 的轻量 mock Surface 可在同一 Shell 内切换，Shell WebContents ID 不变。
+验收：Agent/File/Browser 的轻量 mock 可在同一 Workspace 内切换，Workspace Renderer ID 不变。
 
-### Phase 2：Terminal Content Host
+### Phase 2：Terminal Renderer
 
-- 拆出 `TerminalSurfaceApp`；
+- 拆出 `TerminalApp`；
 - `WaveTabView` 收敛为 Terminal-only；
 - 实现中央 bounds IPC、z-order、focus 和 cold-init fallback；
 - Workspace Tab 数据收敛为 Terminal-only；
 - 上线左侧精简 Terminal List；
 - 禁止非 Terminal Block 进入 Terminal Layout。
 
-验收：多 Terminal Pane 能力保持；Terminal 与 Shell Surface 可稳定互切。
+验收：多 Terminal Pane 能力保持；Terminal 与 Workspace 内非 Terminal 内容可稳定互切。
 
 ### Phase 3：Agent 完全去 Tab/Block 化
 
-- 将固定 Agent UI 移入 Shell；
-- 完成 WorkspaceAgentSurface 与 RuntimeRegistry 接线；
+- 将固定 Agent UI 移入 Workspace；
+- 完成 AgentContent 与 RuntimeRegistry 接线；
 - 新增 workspace-level AgentExecutionContext；
 - 移除 hidden Agent Tab、backing Block 和 TerminalModel 依赖；
 - 验证零 Terminal Agent 执行。
 
 验收：Agent 后台任务与任何 Tab/Block 生命周期无关。
 
-### Phase 4：Workbench Surface 生产化与旧路径删除
+### Phase 4：Top Tab 生产化与旧路径删除
 
-- File、Browser、Preview、Git Diff 迁入 Workbench model；
+- File、Browser、Preview、Git Diff 迁入 Top Tab model；
 - 实现 Monaco model/view-state owner；
 - 实现 Browser LRU；
 - 重写 File Explorer、Browser、Diff 打开入口；
@@ -912,11 +914,11 @@ Terminal View 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦点�
 2. Terminal Layout 中只存在 Terminal-compatible Block。
 3. Agent 没有 backend Tab、Block 或 `staticTabId`。
 4. File/Browser/Preview/Diff 不调用 `CreateTabWithBlock` 或 Electron `setActiveTab`。
-5. TopBar、LeftPanel、RightToolPanel 只由唯一 Shell renderer 渲染。
+5. TopBar、LeftPanel、RightToolPanel 只由唯一 Workspace Renderer 渲染。
 6. Terminal renderer 只渲染中央 Terminal 内容。
 7. Workspace 可在零 Terminal 状态下正常运行。
-8. File 路径、Browser URL、Workbench 顺序和 active Surface 可恢复。
+8. File 路径、Browser URL、Top Tab 顺序和最后选中项可恢复。
 9. Browser 页面运行时不承诺跨重启恢复。
-10. 非 Terminal Surface 切换不会发生顶层 WebContentsView 交换。
+10. 非 Terminal 内容切换不会发生顶层 WebContentsView 交换。
 11. Agent 可在零 Terminal 状态下独立执行 shell/tool。
 12. 所有自动化测试和手工焦点/resize/恢复验证通过。
