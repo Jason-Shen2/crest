@@ -24,11 +24,11 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-function makeDetail(): TraceDetail {
+function makeDetail(traceId = "trace-layout", includeGeneration = true): TraceDetail {
     return {
         trace: {
-            id: "trace-layout",
-            name: "layout_run",
+            id: traceId,
+            name: "Trace",
             timestamp: "2026-07-20T08:00:00.000Z",
             endedAt: "2026-07-20T08:00:04.000Z",
             environment: "test",
@@ -42,30 +42,32 @@ function makeDetail(): TraceDetail {
             userId: null,
             status: "success",
         },
-        observations: [
-            {
-                id: "agent-1",
-                traceId: "trace-layout",
-                type: "AGENT",
-                name: "agent",
-                startTime: "2026-07-20T08:00:00.000Z",
-                endTime: "2026-07-20T08:00:04.000Z",
-                parentObservationId: null,
-                level: "DEFAULT",
-                statusMessage: null,
-                version: null,
-                model: null,
-                input: null,
-                output: null,
-                metadata: {},
-                latency: 4,
-                timeToFirstToken: null,
-                usageDetails: {},
-                costDetails: {},
-                toolCalls: null,
-                toolCallNames: null,
-            },
-        ],
+        observations: includeGeneration
+            ? [
+                  {
+                      id: `${traceId}-generation`,
+                      traceId,
+                      type: "GENERATION",
+                      name: "generation",
+                      startTime: "2026-07-20T08:00:00.000Z",
+                      endTime: "2026-07-20T08:00:04.000Z",
+                      parentObservationId: null,
+                      level: "DEFAULT",
+                      statusMessage: null,
+                      version: null,
+                      model: "test-model",
+                      input: null,
+                      output: null,
+                      metadata: {},
+                      latency: 4,
+                      timeToFirstToken: null,
+                      usageDetails: {},
+                      costDetails: {},
+                      toolCalls: null,
+                      toolCallNames: null,
+                  },
+              ]
+            : [],
         scores: [],
         corrections: [],
     };
@@ -102,5 +104,87 @@ describe("TracePanel desktop layout", () => {
         expect(screen.getByLabelText("Resize navigation and detail panels")).not.toBeNull();
         expect(screen.getByTestId("trace-layout-scroll").className).toContain("overflow-x-auto");
         expect(screen.getByTestId("trace-layout-panels").className).toContain("min-w-[621px]");
+    });
+});
+
+describe("TracePanel compact layout", () => {
+    it("renders only the compact navigation host with the detail drawer initially closed", () => {
+        render(<TracePanel detail={makeDetail()} layout="compact" />);
+
+        expect(screen.getByTestId("trace-layout-compact")).not.toBeNull();
+        expect(screen.getByTestId("trace-navigation-workspace")).not.toBeNull();
+        expect(screen.queryByTestId("trace-layout-scroll")).toBeNull();
+        expect(screen.queryByRole("region", { name: "Trace graph" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Collapse navigation" })).toBeNull();
+        expect(screen.queryByRole("region", { name: "Trace detail" })).toBeNull();
+        expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
+    });
+
+    it("opens, closes, focuses, and reopens an observation detail drawer", () => {
+        render(<TracePanel detail={makeDetail()} layout="compact" />);
+        const generation = screen.getByRole("treeitem", { name: /^generation/ });
+
+        fireEvent.click(generation);
+        expect(screen.getByRole("region", { name: "Observation detail" })).not.toBeNull();
+
+        fireEvent.click(screen.getByRole("button", { name: "Close trace detail" }));
+        expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
+        expect(generation.getAttribute("aria-selected")).toBe("true");
+        expect(document.activeElement).toBe(generation);
+
+        fireEvent.click(generation);
+        expect(screen.getByRole("region", { name: "Observation detail" })).not.toBeNull();
+    });
+
+    it("opens trace detail after explicitly selecting the trace root", () => {
+        render(<TracePanel detail={makeDetail()} layout="compact" />);
+
+        fireEvent.click(screen.getByRole("treeitem", { name: /^Trace/ }));
+
+        expect(screen.getByRole("region", { name: "Trace detail" })).not.toBeNull();
+    });
+
+    it("closes the drawer when switching traces", () => {
+        const { rerender } = render(<TracePanel detail={makeDetail("trace-a")} layout="compact" />);
+        fireEvent.click(screen.getByRole("treeitem", { name: /^generation/ }));
+        expect(screen.getByRole("region", { name: "Trace detail drawer" })).not.toBeNull();
+
+        rerender(<TracePanel detail={makeDetail("trace-b")} layout="compact" />);
+
+        expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
+    });
+
+    it("restores per-trace selection without reopening the drawer", () => {
+        const { rerender } = render(<TracePanel detail={makeDetail("trace-a")} layout="compact" />);
+        fireEvent.click(screen.getByRole("treeitem", { name: /^generation/ }));
+
+        rerender(<TracePanel detail={makeDetail("trace-b")} layout="compact" />);
+        rerender(<TracePanel detail={makeDetail("trace-a")} layout="compact" />);
+
+        expect(screen.getByRole("treeitem", { name: /^generation/ }).getAttribute("aria-selected")).toBe("true");
+        expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
+    });
+
+    it("keeps an open drawer and falls back to trace detail when the selected observation disappears", () => {
+        const { rerender } = render(<TracePanel detail={makeDetail()} layout="compact" />);
+        fireEvent.click(screen.getByRole("treeitem", { name: /^generation/ }));
+
+        rerender(<TracePanel detail={makeDetail("trace-layout", false)} layout="compact" />);
+
+        expect(screen.getByRole("region", { name: "Trace detail drawer" })).not.toBeNull();
+        expect(screen.getByRole("region", { name: "Trace detail" })).not.toBeNull();
+    });
+
+    it("preserves selection across layouts while keeping compact detail closed on return", () => {
+        const detail = makeDetail();
+        const { rerender } = render(<TracePanel detail={detail} layout="compact" />);
+        fireEvent.click(screen.getByRole("treeitem", { name: /^generation/ }));
+
+        rerender(<TracePanel detail={detail} layout="desktop" />);
+        expect(screen.getByRole("region", { name: "Observation detail" })).not.toBeNull();
+
+        rerender(<TracePanel detail={detail} layout="compact" />);
+        expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
+        expect(screen.getByRole("treeitem", { name: /^generation/ }).getAttribute("aria-selected")).toBe("true");
     });
 });
