@@ -9,6 +9,7 @@ import {
     filterCommittedTransactionEntries,
     getTransactionForkBoundary,
     SessionEntryTransactionError,
+    validateSessionEntriesForAppend,
 } from "./entry-transaction";
 import type { SessionTreeEntry } from "../types";
 
@@ -48,6 +49,19 @@ function manifest(id: string, parentId: string | null, transactionId: string, me
 }
 
 describe("entry transactions", () => {
+    it("validates an append through index lookups without iterating existing entry IDs", () => {
+        const existingEntryIds = {
+            has: (id: string) => id === "root",
+            [Symbol.iterator]: () => {
+                throw new Error("existing entry IDs were iterated");
+            },
+        } as unknown as ReadonlySet<string>;
+
+        expect(() =>
+            validateSessionEntriesForAppend(existingEntryIds, new Set(), [entry("child", "root")])
+        ).not.toThrow();
+    });
+
     it("canonicalizes recursively without changing special JSON keys", () => {
         const value = JSON.parse('{"z":{"b":1,"a":2},"__proto__":{"x":true},"constructor":"safe"}');
         expect(canonicalJson(value)).toBe(

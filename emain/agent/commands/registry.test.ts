@@ -14,14 +14,22 @@ describe("agent command registry", () => {
             "clone",
             "model",
             "new",
-            "resume",
             "compact",
             "session",
+            "info",
             "copy",
             "export",
             "import",
             "reload",
         ]);
+    });
+
+    it("keeps the deprecated /resume alias out of command discovery", () => {
+        const names = getBuiltInAgentCommands().map((command) => command.name);
+
+        expect(names).toContain("session");
+        expect(names).toContain("info");
+        expect(names).not.toContain("resume");
     });
 
     it("exposes /clear as an alias of /new for Claude Code compatibility", () => {

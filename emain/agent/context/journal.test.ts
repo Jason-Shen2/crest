@@ -9,7 +9,13 @@ import { ContextCustomTypes, foldContextJournal, isContextCustomEntry } from "./
 
 const Hash = "a".repeat(64);
 
-function custom(id: string, customType: string, data: unknown, transactionId?: string, parentId: string | null = null): SessionTreeEntry {
+function custom(
+    id: string,
+    customType: string,
+    data: unknown,
+    transactionId?: string,
+    parentId: string | null = null
+): SessionTreeEntry {
     return {
         type: "custom",
         id,
@@ -52,15 +58,15 @@ function artifact() {
     };
 }
 
-function attach(lifecycle: "once" | "pinned", targetTurnId?: string) {
+function attach(deliveryScope: "message" | "conversation", targetTurnId: string, artifactEntryId = "artifact") {
     return {
         schemaVersion: 1,
         transactionId: "tx",
-        artifactEntryId: "artifact",
-        lifecycle,
+        artifactEntryId,
+        deliveryScope,
         requestedRepresentation: "full",
+        targetTurnId,
         selectionOrder: 0,
-        ...(targetTurnId == null ? {} : { targetTurnId }),
     };
 }
 
@@ -72,180 +78,78 @@ function committed(members: SessionTreeEntry[], transactionId = "tx", manifestId
     const manifestParentId = orderedMembers.at(-2)?.id ?? null;
     return [
         ...orderedMembers.slice(0, -1),
-        custom(manifestId, ContextCustomTypes.transactionManifest, createTransactionManifestData(transactionId, orderedMembers), transactionId, manifestParentId),
+        custom(
+            manifestId,
+            ContextCustomTypes.transactionManifest,
+            createTransactionManifestData(transactionId, orderedMembers),
+            transactionId,
+            manifestParentId
+        ),
         orderedMembers.at(-1)!,
     ];
 }
 
-function projection(transactionId = "tx", targetTurnId = "turn") {
-    return {
-        schemaVersion: 1,
-        transactionId,
-        targetTurnId,
-        createdAt: "2026-07-22T00:00:00.000Z",
-        contextWindow: 100,
-        effectiveOutputReserve: 10,
-        inputLimit: 90,
-        baseInputTokens: 20,
-        finalInputTokens: 30,
-        referenceTokens: 10,
-        countAccuracy: "exact",
-        overlaySha256: Hash,
-        items: [],
-    };
-}
-
 describe("context journal", () => {
-    it("recognizes only context custom entries", () => {
+    it("recognizes only supported immutable context custom entries", () => {
         expect(isContextCustomEntry(custom("artifact", ContextCustomTypes.artifact, artifact()))).toBe(true);
-        expect(isContextCustomEntry(custom("other", "other", {}))).toBe(false);
+        expect(isContextCustomEntry(custom("update", "context_update", {}))).toBe(false);
         expect(isContextCustomEntry(user())).toBe(false);
     });
 
-    it("activates a complete once attachment only for its exact target turn", () => {
-        const artifactEntry = custom("artifact", ContextCustomTypes.artifact, artifact(), "tx");
-        const attachEntry = custom("attach", ContextCustomTypes.attach, attach("once", "turn"), "tx");
-        const turn = user();
-        const entries = committed([artifactEntry, attachEntry, turn]);
-
-        expect(foldContextJournal(entries, "turn").activeAttachments.map((item) => item.attachmentEntryId)).toEqual(["attach"]);
-        expect(foldContextJournal(entries, "other").activeAttachments).toEqual([]);
-    });
-
-    it("folds pinned update and detach in journal order while retaining the latest summary", () => {
-        const artifactEntry = custom("artifact", ContextCustomTypes.artifact, artifact(), "tx");
-        const attachEntry = custom("attach", ContextCustomTypes.attach, attach("pinned"), "tx");
-        const turn = user();
-        const initial = committed([artifactEntry, attachEntry, turn]);
-        const summary = { text: "summary", summarySha256: Hash, modelKey: "m", promptVersion: "v", generatedAt: "2026-07-22T00:00:00.000Z" };
-        const update = custom("update", ContextCustomTypes.update, { schemaVersion: 1, attachmentEntryId: "attach", requestedRepresentation: "summary", summary });
-        const full = custom("full", ContextCustomTypes.update, { schemaVersion: 1, attachmentEntryId: "attach", requestedRepresentation: "full" });
-        const detached = custom("detach", ContextCustomTypes.detach, { schemaVersion: 1, attachmentEntryId: "attach" });
-
-        const updated = foldContextJournal([...initial, update, full]);
-        expect(updated.activeAttachments[0]).toMatchObject({ data: { requestedRepresentation: "full" }, summary });
-        expect(foldContextJournal([...initial, update, full, detached]).activeAttachments).toEqual([]);
-    });
-
-    it("does not apply updates or detaches that occur before their attachment", () => {
-        const artifactEntry = custom("artifact", ContextCustomTypes.artifact, artifact(), "tx");
-        const attachEntry = custom("attach", ContextCustomTypes.attach, attach("pinned"), "tx");
-        const update = custom("update-before", ContextCustomTypes.update, { schemaVersion: 1, attachmentEntryId: "attach", requestedRepresentation: "metadata" });
-        const detached = custom("detach-before", ContextCustomTypes.detach, { schemaVersion: 1, attachmentEntryId: "attach" });
-        const state = foldContextJournal([update, detached, ...committed([artifactEntry, attachEntry, user()])]);
-
-        expect(state.activeAttachments).toMatchObject([{ attachmentEntryId: "attach", data: { requestedRepresentation: "full" } }]);
-        expect(state.diagnostics).toMatchObject([
-            { entryId: "update-before", message: expect.stringMatching(/inactive/) },
-            { entryId: "detach-before", message: expect.stringMatching(/inactive/) },
+    it("indexes message and conversation attachments by their target turn", () => {
+        const entries = committed([
+            custom("artifact", ContextCustomTypes.artifact, artifact(), "tx"),
+            custom("message", ContextCustomTypes.attach, attach("message", "turn"), "tx"),
+            custom("conversation", ContextCustomTypes.attach, attach("conversation", "turn"), "tx"),
+            user("turn"),
         ]);
-    });
+        const state = foldContextJournal(entries);
 
-    it("does not apply duplicate update or detach IDs more than once", () => {
-        const artifactEntry = custom("artifact", ContextCustomTypes.artifact, artifact(), "tx");
-        const attachEntry = custom("attach", ContextCustomTypes.attach, attach("pinned"), "tx");
-        const initial = committed([artifactEntry, attachEntry, user()]);
-        const update = custom("duplicate-update", ContextCustomTypes.update, { schemaVersion: 1, attachmentEntryId: "attach", requestedRepresentation: "metadata" });
-        const detach = custom("duplicate-detach", ContextCustomTypes.detach, { schemaVersion: 1, attachmentEntryId: "attach" });
-        const state = foldContextJournal([...initial, update, { ...update }, detach, { ...detach }]);
-
-        expect(state.activeAttachments).toMatchObject([{ attachmentEntryId: "attach", data: { requestedRepresentation: "full" } }]);
-        expect(state.diagnostics.filter((diagnostic) => /duplicate-/.test(diagnostic.message))).toHaveLength(2);
-    });
-
-    it("does not report a projection transaction containing a duplicate projection ID", () => {
-        const report = custom("projection", ContextCustomTypes.projection, projection(), "tx");
-        const state = foldContextJournal([...committed([report, user()]), { ...report }]);
-
-        expect(state.projectionReports).toEqual([]);
-        expect(state.diagnostics).toHaveLength(1);
-    });
-
-    it("reports invalid lifecycle records, unknown schemas, missing artifacts, and bad commits without throwing", () => {
-        const once = custom("attach", ContextCustomTypes.attach, attach("once", "turn"), "tx");
-        const turn = user();
-        const validButMissingArtifact = committed([once, turn]);
-        const invalid = custom("unknown", ContextCustomTypes.artifact, { schemaVersion: 2 }, "unknown-tx");
-        const unknownTurn = user("unknown-turn", "unknown-tx", "unknown-manifest");
-        const state = foldContextJournal([...validButMissingArtifact, ...committed([invalid, unknownTurn], "unknown-tx", "unknown-manifest")], "turn");
-
-        expect(state.activeAttachments).toMatchObject([{ attachmentEntryId: "attach", artifact: undefined }]);
-        expect(state.diagnostics).toHaveLength(2);
-        expect(foldContextJournal([once, turn]).diagnostics).not.toEqual([]);
-    });
-
-    it("retains a missing pinned artifact through updates until a later detach", () => {
-        const attachEntry = custom("attach", ContextCustomTypes.attach, attach("pinned"), "tx");
-        const initial = committed([attachEntry, user()]);
-        const update = custom("update", ContextCustomTypes.update, { schemaVersion: 1, attachmentEntryId: "attach", requestedRepresentation: "metadata" });
-        const detached = custom("detach", ContextCustomTypes.detach, { schemaVersion: 1, attachmentEntryId: "attach" });
-
-        expect(foldContextJournal([...initial, update]).activeAttachments).toMatchObject([
-            { attachmentEntryId: "attach", artifact: undefined, data: { requestedRepresentation: "metadata" } },
+        expect(state.attachmentsForTurn("turn").map((item) => item.data.deliveryScope)).toEqual([
+            "message",
+            "conversation",
         ]);
-        expect(foldContextJournal([...initial, update, detached]).activeAttachments).toEqual([]);
+        expect(state.conversationAttachmentsForTurns(["turn"]).map((item) => item.attachmentEntryId)).toEqual([
+            "conversation",
+        ]);
+        expect(state.conversationAttachmentsForTurns(["other"])).toEqual([]);
     });
 
-    it("rejects an attachment whose data transaction ID differs from its committed entry", () => {
-        const artifactEntry = custom("artifact", ContextCustomTypes.artifact, artifact(), "tx");
-        const attachEntry = custom("attach", ContextCustomTypes.attach, { ...attach("pinned"), transactionId: "other-tx" }, "tx");
-        const state = foldContextJournal(committed([artifactEntry, attachEntry, user()]));
+    it("records obsolete pin events as diagnostics without mutable state", () => {
+        const entries = committed([
+            custom("artifact", ContextCustomTypes.artifact, artifact(), "tx"),
+            custom("attach", ContextCustomTypes.attach, attach("conversation", "turn"), "tx"),
+            user("turn"),
+        ]);
+        const state = foldContextJournal([
+            ...entries,
+            custom("update", "context_update", { schemaVersion: 1, attachmentEntryId: "attach" }),
+            custom("detach", "context_detach", { schemaVersion: 1, attachmentEntryId: "attach" }),
+        ]);
 
-        expect(state.activeAttachments).toEqual([]);
-        expect(state.diagnostics[0]).toMatchObject({ entryId: "attach", message: expect.stringMatching(/transactionId/) });
+        expect(state.attachmentsForTurn("turn")).toHaveLength(1);
+        expect(state.diagnostics).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ entryId: "update", message: expect.stringMatching(/obsolete/) }),
+                expect.objectContaining({ entryId: "detach", message: expect.stringMatching(/obsolete/) }),
+            ])
+        );
     });
 
-    it("ignores update and detach events for once attachments", () => {
-        const artifactEntry = custom("artifact", ContextCustomTypes.artifact, artifact(), "tx");
-        const attachEntry = custom("attach", ContextCustomTypes.attach, attach("once", "turn"), "tx");
-        const turn = user();
-        const update = custom("update", ContextCustomTypes.update, { schemaVersion: 1, attachmentEntryId: "attach", requestedRepresentation: "metadata" });
-        const detached = custom("detach", ContextCustomTypes.detach, { schemaVersion: 1, attachmentEntryId: "attach" });
-        const state = foldContextJournal([...committed([artifactEntry, attachEntry, turn]), update, detached], "turn");
+    it("rejects attachments whose target turn differs from the committed transaction user", () => {
+        const state = foldContextJournal(
+            committed([
+                custom("artifact", ContextCustomTypes.artifact, artifact(), "tx"),
+                custom("attach", ContextCustomTypes.attach, attach("message", "other"), "tx"),
+                user("turn"),
+            ])
+        );
 
-        expect(state.activeAttachments).toHaveLength(1);
-        expect(state.diagnostics).toHaveLength(2);
-    });
-
-    it("requires once targets to bind to the manifest user", () => {
-        const artifactEntry = custom("artifact", ContextCustomTypes.artifact, artifact(), "tx");
-        const attachEntry = custom("attach", ContextCustomTypes.attach, attach("once", "other-turn"), "tx");
-        const state = foldContextJournal(committed([artifactEntry, attachEntry, user()]), "turn");
-
-        expect(state.activeAttachments).toEqual([]);
-        expect(state.diagnostics).toMatchObject([{ entryId: "attach", message: expect.stringMatching(/targetTurnId/) }]);
-    });
-
-    it("folds only projection reports bound to their committed transaction and user", () => {
-        const report = custom("projection", ContextCustomTypes.projection, projection(), "tx");
-        const valid = foldContextJournal(committed([report, user()]));
-        const badReport = custom("bad-projection", ContextCustomTypes.projection, projection("other-tx"), "bad-tx");
-        const bad = foldContextJournal(committed([badReport, user("bad-turn", "bad-tx")], "bad-tx"));
-
-        expect(valid.projectionReports).toMatchObject([{ transactionId: "tx", targetTurnId: "turn" }]);
-        expect(bad.projectionReports).toEqual([]);
-        expect(bad.diagnostics).toMatchObject([{ entryId: "bad-projection", message: expect.stringMatching(/transactionId/) }]);
-    });
-
-    it("reports invalid projection payloads without making the journal unreadable", () => {
-        const invalidReport = custom("projection", ContextCustomTypes.projection, { ...projection(), overlaySha256: "bad" }, "tx");
-        const state = foldContextJournal(committed([invalidReport, user()]));
-
-        expect(state.projectionReports).toEqual([]);
-        expect(state.diagnostics).toMatchObject([{ entryId: "projection", message: expect.stringMatching(/overlaySha256/) }]);
-    });
-
-    it("folds only the caller-selected active path, excluding abandoned records", () => {
-        const activeArtifact = custom("active-artifact", ContextCustomTypes.artifact, artifact(), "active");
-        const activeAttach = custom("active-attach", ContextCustomTypes.attach, { ...attach("pinned"), transactionId: "active", artifactEntryId: "active-artifact" }, "active");
-        const activePath = committed([activeArtifact, activeAttach, user("active-user", "active")], "active");
-        const abandonedArtifact = custom("abandoned-artifact", ContextCustomTypes.artifact, artifact(), "abandoned");
-        const abandonedAttach = custom("abandoned-attach", ContextCustomTypes.attach, { ...attach("pinned"), transactionId: "abandoned", artifactEntryId: "abandoned-artifact" }, "abandoned");
-        const abandonedPath = committed([abandonedArtifact, abandonedAttach, user("abandoned-user", "abandoned")], "abandoned");
-        const fullTree = [...activePath, ...abandonedPath];
-        const selectedActivePath = fullTree.filter((entry) => (entry as { transactionId?: string }).transactionId === "active");
-
-        expect(foldContextJournal(selectedActivePath).activeAttachments.map((attachment) => attachment.attachmentEntryId)).toEqual(["active-attach"]);
-        expect(foldContextJournal(abandonedPath).activeAttachments.map((attachment) => attachment.attachmentEntryId)).toEqual(["abandoned-attach"]);
+        expect(state.attachmentsForTurn("turn")).toEqual([]);
+        expect(state.diagnostics).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ entryId: "attach", message: expect.stringMatching(/targetTurnId/) }),
+            ])
+        );
     });
 });

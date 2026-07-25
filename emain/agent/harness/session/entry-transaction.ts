@@ -305,27 +305,27 @@ export function filterCommittedTransactionEntries(entries: SessionTreeEntry[]): 
 
 /** Reject a programmatic append unless the batch is self-contained and transaction-complete. */
 export function validateSessionEntriesForAppend(
-    existingEntryIds: ReadonlySet<string>,
-    existingTransactionIds: ReadonlySet<string>,
+    existingEntryIds: Pick<ReadonlySet<string>, "has">,
+    existingTransactionIds: Pick<ReadonlySet<string>, "has">,
     entries: SessionTreeEntry[],
 ): void {
     const batch = readArrayValues(entries, "Session entries") as SessionTreeEntry[];
-    const knownEntryIds = new Set(existingEntryIds);
+    const batchEntryIds = new Set<string>();
     for (const entry of batch) {
         try {
             const id = entryId(entry);
-            if (knownEntryIds.has(id)) {
+            if (existingEntryIds.has(id) || batchEntryIds.has(id)) {
                 throw new SessionEntryTransactionError("invalid_transaction", `duplicate session entry ID ${id}`);
             }
             const parent = parentId(entry);
-            if (parent != null && !knownEntryIds.has(parent)) {
+            if (parent != null && !existingEntryIds.has(parent) && !batchEntryIds.has(parent)) {
                 throw new SessionEntryTransactionError("invalid_transaction", `entry parentId ${parent} not found`);
             }
             const transactionId = transactionIdForEntry(entry);
             if (transactionId != null && existingTransactionIds.has(transactionId)) {
                 throw new SessionEntryTransactionError("invalid_transaction", `duplicate session transaction ID ${transactionId}`);
             }
-            knownEntryIds.add(id);
+            batchEntryIds.add(id);
         } catch (error) {
             throw new SessionEntryTransactionError(
                 "invalid_transaction",

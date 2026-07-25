@@ -3,17 +3,17 @@
 
 import { describe, expect, it } from "vitest";
 
+import { ContextReferenceError } from "./types";
 import {
     decodeContextArtifact,
     decodeContextAttachmentData,
     decodeContextProjectionReport,
-    parseContextLifecycle,
+    parseContextDeliveryScope,
     parseContextReferenceConfig,
     parseContextRepresentation,
     validateContextArtifact,
     validateContextAttachmentData,
 } from "./validation";
-import { ContextReferenceError } from "./types";
 
 function validArtifact() {
     return {
@@ -57,62 +57,56 @@ describe("context validation", () => {
         expect(() => validateContextArtifact(artifact)).toThrow(/sourceLeafId/);
     });
 
-    it("requires target turn IDs for once attachments", () => {
-        expect(() => validateContextAttachmentData({
-            schemaVersion: 1,
-            transactionId: "tx-1",
-            artifactEntryId: "artifact-1",
-            lifecycle: "once",
-            requestedRepresentation: "full",
-            selectionOrder: 0,
-        })).toThrow(/targetTurnId/);
+    it("requires target turn IDs for every immutable attachment", () => {
+        expect(() =>
+            validateContextAttachmentData({
+                schemaVersion: 1,
+                transactionId: "tx-1",
+                artifactEntryId: "artifact-1",
+                deliveryScope: "message",
+                requestedRepresentation: "full",
+                selectionOrder: 0,
+            })
+        ).toThrow(/targetTurnId/);
+        expect(() =>
+            validateContextAttachmentData({
+                schemaVersion: 1,
+                transactionId: "tx-1",
+                artifactEntryId: "artifact-1",
+                deliveryScope: "conversation",
+                requestedRepresentation: "full",
+                selectionOrder: 0,
+            })
+        ).toThrow(/targetTurnId/);
     });
 
-    it("rejects target turn IDs for pinned attachments", () => {
-        expect(() => validateContextAttachmentData({
+    it("normalizes message and conversation attachments with a target turn", () => {
+        const attachment = validateContextAttachmentData({
             schemaVersion: 1,
             transactionId: "tx-1",
             artifactEntryId: "artifact-1",
-            lifecycle: "pinned",
+            deliveryScope: "conversation",
             requestedRepresentation: "full",
             targetTurnId: "turn-1",
             selectionOrder: 0,
-        })).toThrow(/targetTurnId/);
-
-        expect(() => validateContextAttachmentData({
-            schemaVersion: 1,
-            transactionId: "tx-1",
-            artifactEntryId: "artifact-1",
-            lifecycle: "pinned",
-            requestedRepresentation: "full",
-            targetTurnId: null,
-            selectionOrder: 0,
-        })).toThrow(/targetTurnId/);
-    });
-
-    it("normalizes pinned attachments without a target turn ID property", () => {
-        const pinned = validateContextAttachmentData({
-            schemaVersion: 1,
-            transactionId: "tx-1",
-            artifactEntryId: "artifact-1",
-            lifecycle: "pinned",
-            requestedRepresentation: "full",
-            selectionOrder: 0,
         });
 
-        expect(Object.hasOwn(pinned, "targetTurnId")).toBe(false);
-        expect(validateContextAttachmentData(pinned)).toEqual(pinned);
+        expect(attachment).toMatchObject({ deliveryScope: "conversation", targetTurnId: "turn-1" });
+        expect(validateContextAttachmentData(attachment)).toEqual(attachment);
     });
 
-    it("rejects arbitrary renderer enum values", () => {
-        expect(() => parseContextLifecycle("later")).toThrow(/lifecycle/);
+    it("accepts only message or conversation scope and Full or Summary", () => {
+        expect(parseContextDeliveryScope("message")).toBe("message");
+        expect(parseContextDeliveryScope("conversation")).toBe("conversation");
+        expect(() => parseContextDeliveryScope("pinned")).toThrow(/delivery scope/);
+        expect(() => parseContextRepresentation("metadata")).toThrow(/representation/);
         expect(() => parseContextRepresentation("compact")).toThrow(/representation/);
     });
 
     it("uses ContextReferenceError invalid_input codes for invalid IPC input", () => {
         let thrown: unknown;
         try {
-            parseContextLifecycle("later");
+            parseContextDeliveryScope("later");
         } catch (error) {
             thrown = error;
         }
@@ -136,8 +130,14 @@ describe("context validation", () => {
 
     it("keeps max tokens optional and clamps it when present", () => {
         expect(parseContextReferenceConfig({ context_references: {} })).toEqual({ enabled: true });
-        expect(parseContextReferenceConfig({ context_references: { max_tokens: -2 } })).toEqual({ enabled: true, maxTokens: 0 });
-        expect(parseContextReferenceConfig({ context_references: { max_tokens: 200000 } })).toEqual({ enabled: true, maxTokens: 128000 });
+        expect(parseContextReferenceConfig({ context_references: { max_tokens: -2 } })).toEqual({
+            enabled: true,
+            maxTokens: 0,
+        });
+        expect(parseContextReferenceConfig({ context_references: { max_tokens: 200000 } })).toEqual({
+            enabled: true,
+            maxTokens: 128000,
+        });
     });
 
     it("rejects explicit null context reference configuration fields", () => {
@@ -172,12 +172,24 @@ describe("context validation", () => {
             referenceTokens: 1,
             countAccuracy: "exact",
             overlaySha256: "a".repeat(64),
-            items: [{ attachmentEntryId: "attachment", renderedRepresentation: "full", advisoryTokens: 1, reason: "selected" }],
+            items: [
+                {
+                    attachmentEntryId: "attachment",
+                    deliveryScope: "message",
+                    renderedRepresentation: "full",
+                    advisoryTokens: 1,
+                    reason: "selected",
+                },
+            ],
         };
 
         expect(decodeContextProjectionReport({ ...projection, contextWindow: -1 })).toHaveProperty("diagnostic");
-        expect(decodeContextProjectionReport({ ...projection, referenceTokens: Number.NaN })).toHaveProperty("diagnostic");
+        expect(decodeContextProjectionReport({ ...projection, referenceTokens: Number.NaN })).toHaveProperty(
+            "diagnostic"
+        );
         expect(decodeContextProjectionReport({ ...projection, overlaySha256: "bad" })).toHaveProperty("diagnostic");
-        expect(decodeContextProjectionReport({ ...projection, items: [{ ...projection.items[0], advisoryTokens: -1 }] })).toHaveProperty("diagnostic");
+        expect(
+            decodeContextProjectionReport({ ...projection, items: [{ ...projection.items[0], advisoryTokens: -1 }] })
+        ).toHaveProperty("diagnostic");
     });
 });

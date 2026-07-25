@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export type ContextSourceKind = "turn" | "session";
-export type ContextLifecycle = "once" | "pinned";
-export type ContextRepresentation = "full" | "summary" | "metadata";
-export type ContextRenderedRepresentation = ContextRepresentation | "attention" | "excluded";
+export type ContextDeliveryScope = "message" | "conversation";
+export type ContextRepresentation = "full" | "summary";
+export type ContextRenderedRepresentation = ContextRepresentation | "attention";
 export type ContextBudgetStatus = "fits" | "references_over_budget" | "base_over_budget" | "counter_unavailable";
-export type ContextCountAccuracy = "exact" | "conservative_upper_bound";
+export type ContextCountAccuracy = "exact" | "conservative_upper_bound" | "estimated";
 
 export interface ContextReferenceConfig {
     enabled: boolean;
@@ -60,22 +60,10 @@ export interface ContextAttachmentData {
     schemaVersion: 1;
     transactionId: string;
     artifactEntryId: string;
-    lifecycle: ContextLifecycle;
+    deliveryScope: ContextDeliveryScope;
     requestedRepresentation: ContextRepresentation;
-    targetTurnId?: string;
+    targetTurnId: string;
     selectionOrder: number;
-}
-
-export interface ContextUpdateData {
-    schemaVersion: 1;
-    attachmentEntryId: string;
-    requestedRepresentation: ContextRepresentation;
-    summary?: ContextGeneratedSummary;
-}
-
-export interface ContextDetachData {
-    schemaVersion: 1;
-    attachmentEntryId: string;
 }
 
 export interface ContextTransactionalEntryBase {
@@ -125,11 +113,11 @@ export interface ContextProjectionItemReport {
     sourceSessionTitle?: string;
     sourceTurnId?: string;
     sourcePreview?: string;
-    lifecycle?: ContextLifecycle;
+    deliveryScope: ContextDeliveryScope;
     requestedRepresentation?: ContextRepresentation;
     renderedRepresentation: ContextRenderedRepresentation;
     advisoryTokens: number;
-    reason: "selected" | "already_present" | "user_excluded";
+    reason: "selected" | "already_present";
 }
 
 export interface ContextProjectionReport {
@@ -163,7 +151,9 @@ export interface ContextJournalAttachment {
 
 export interface ContextJournalState {
     artifacts: Map<string, ContextArtifact>;
-    activeAttachments: ContextJournalAttachment[];
+    attachmentsByTurn: Map<string, ContextJournalAttachment[]>;
+    attachmentsForTurn(targetTurnId: string): ContextJournalAttachment[];
+    conversationAttachmentsForTurns(targetTurnIds: readonly string[]): ContextJournalAttachment[];
     projectionReports: ContextProjectionReport[];
     diagnostics: ContextJournalDiagnostic[];
 }
@@ -171,6 +161,7 @@ export interface ContextJournalState {
 export type ContextDecodeResult<T> = { value: T; diagnostic?: never } | { value?: never; diagnostic: string };
 
 export class ContextReferenceError extends Error {
+    budget?: ContextBudgetResult;
     code:
         | "disabled"
         | "invalid_input"

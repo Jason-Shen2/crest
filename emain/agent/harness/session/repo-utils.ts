@@ -54,20 +54,10 @@ export async function getEntriesToFork(
 }
 
 export async function appendCommittedEntryGroups(
-	storage: Pick<SessionStorage, "appendEntry" | "appendEntries">,
+	storage: Pick<SessionStorage, "appendEntries">,
 	entries: SessionTreeEntry[],
 ): Promise<void> {
 	const committed = filterCommittedTransactionEntries(entries);
-	const appendedTransactions = new Set<string>();
-	for (const entry of committed.entries) {
-		if (entry.transactionId == null) {
-			await storage.appendEntry(entry);
-			continue;
-		}
-		if (appendedTransactions.has(entry.transactionId)) continue;
-		const transaction = committed.committedTransactions.get(entry.transactionId);
-		if (!transaction) continue;
-		await storage.appendEntries(transaction.physicalEntries);
-		appendedTransactions.add(entry.transactionId);
-	}
+	if (committed.entries.length === 0) return;
+	await storage.appendEntries(committed.entries);
 }

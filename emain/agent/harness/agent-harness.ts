@@ -3,6 +3,7 @@ import {
 	type ImageContent,
 	type Model,
 	streamSimple,
+	type TextContent,
 	type UserMessage,
 } from "../../ai";
 import { runAgentLoop } from "../agent-loop";
@@ -25,12 +26,17 @@ import type {
 	AbortResult,
 	AgentHarnessEvent,
 	AgentHarnessEventResultMap,
+	AgentHarnessFollowUpOptions,
 	AgentHarnessOptions,
 	AgentHarnessOwnEvent,
 	AgentHarnessPhase,
+	AgentHarnessPreparedTurn,
+	AgentHarnessPromptOptions,
 	AgentHarnessResources,
 	AgentHarnessStreamOptions,
 	AgentHarnessStreamOptionsPatch,
+	AgentHarnessTurnPreparation,
+	AgentHarnessTurnPreparationInput,
 	ExecutionEnv,
 	NavigateTreeResult,
 	PendingSessionWrite,
@@ -38,7 +44,15 @@ import type {
 	Session,
 	Skill,
 } from "./types";
-import { AgentHarnessError, BranchSummaryError, CompactionError, SessionError, toError } from "./types";
+import { buildSessionContext } from "./session/session";
+import {
+	AgentHarnessError,
+	AgentHarnessTerminalPreparationError,
+	BranchSummaryError,
+	CompactionError,
+	SessionError,
+	toError,
+} from "./types";
 
 function createUserMessage(text: string, images?: ImageContent[]): UserMessage {
 	const content: Array<{ type: "text"; text: string } | ImageContent> = [{ type: "text", text }];
@@ -84,6 +98,12 @@ function mergeHeaders(...headers: Array<Record<string, string> | undefined>): Re
 		hasHeaders = true;
 	}
 	return hasHeaders ? merged : undefined;
+}
+
+function joinSystemPrompt(systemPrompt: string, suffix: string): string {
+	if (suffix.length === 0) return systemPrompt;
+	if (systemPrompt.length === 0) return suffix;
+	return `${systemPrompt}\n\n${suffix}`;
 }
 
 function applyStreamOptionsPatch(
@@ -161,6 +181,13 @@ interface AgentHarnessTurnState<
 	activeTools: TTool[];
 }
 
+interface InFlightFollowUpDrain {
+	messages: UserMessage[];
+	preparations: Array<AgentHarnessTurnPreparation | undefined>;
+	activations: AgentHarnessFollowUpOptions["activate"][];
+	cancelled: boolean;
+}
+
 export class AgentHarness<
 	TSkill extends Skill = Skill,
 	TPromptTemplate extends PromptTemplate = PromptTemplate,
@@ -176,6 +203,7 @@ export class AgentHarness<
 	private thinkingLevel: ThinkingLevel;
 	private systemPrompt: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>["systemPrompt"];
 	private streamOptions: AgentHarnessStreamOptions;
+	private transformSessionContext?: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>["transformSessionContext"];
 	private getApiKeyAndHeaders?: AgentHarnessOptions["getApiKeyAndHeaders"];
 	private resources: AgentHarnessResources<TSkill, TPromptTemplate>;
 	private tools = new Map<string, TTool>();
@@ -183,9 +211,17 @@ export class AgentHarness<
 	private steerQueue: UserMessage[] = [];
 	private steeringQueueMode: QueueMode;
 	private followUpQueue: UserMessage[] = [];
-	private followUpPreparations: Array<(() => Promise<void>) | undefined> = [];
+	private followUpPreparations: Array<AgentHarnessTurnPreparation | undefined> = [];
+	private followUpActivations: AgentHarnessFollowUpOptions["activate"][] = [];
+	private preparedProviderRequests: Array<{ userEntryId: string; options: AgentHarnessStreamOptions }> = [];
+	private preparedContextTransforms: Array<{ userEntryId: string; messages: AgentMessage[] }> = [];
+	private preparedProviderPayloads: Array<{ userEntryId: string; payload: unknown }> = [];
+	private preparedProviderReceipts: Array<{ userEntryId: string }> = [];
+	private activePreparedProviderUserEntryId: string | undefined;
+	private inFlightFollowUpDrain?: InFlightFollowUpDrain;
 	private followUpQueueMode: QueueMode;
 	private nextTurnQueue: AgentMessage[] = [];
+	private preparedUserEntryIds: Array<string | undefined> = [];
 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
 
 	constructor(options: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>) {
@@ -193,6 +229,7 @@ export class AgentHarness<
 		this.session = options.session;
 		this.resources = options.resources ?? {};
 		this.streamOptions = cloneStreamOptions(options.streamOptions);
+		this.transformSessionContext = options.transformSessionContext;
 		this.systemPrompt = options.systemPrompt;
 		this.getApiKeyAndHeaders = options.getApiKeyAndHeaders;
 		for (const tool of options.tools ?? []) {
@@ -300,24 +337,63 @@ export class AgentHarness<
 		});
 	}
 
+	private async prepareUserMessage(
+		turnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>,
+		userMessage: UserMessage,
+		prepare: AgentHarnessTurnPreparation,
+		signal?: AbortSignal,
+	): Promise<AgentHarnessPreparedTurn> {
+		return await prepare({
+			userMessage,
+			systemPrompt: turnState.systemPrompt,
+			messages: turnState.messages.slice(),
+			model: turnState.model,
+			activeTools: turnState.activeTools.slice(),
+			transformProviderRequest: async () => {
+				const auth = await this.getApiKeyAndHeaders?.(turnState.model);
+				const snapshotOptions: AgentHarnessStreamOptions = {
+					...turnState.streamOptions,
+					headers: mergeHeaders(turnState.streamOptions.headers, auth?.headers),
+				};
+				return await this.emitBeforeProviderRequest(
+					turnState.model,
+					turnState.sessionId,
+					snapshotOptions,
+				);
+			},
+			transformContextMessages: async (messages) => {
+				const result = await this.emitHook({ type: "context", messages: [...messages] });
+				return result?.messages ?? messages;
+			},
+			transformProviderPayload: async (payload) => await this.emitBeforeProviderPayload(turnState.model, payload),
+			signal,
+		});
+	}
+
 	private async drainFollowUpMessages(): Promise<AgentMessage[]> {
-		const hasPreparedFollowUp = this.followUpPreparations.some((prepare) => prepare != null);
+		const requiresPerSendActivation =
+			this.followUpPreparations.some((prepare) => prepare != null) ||
+			this.followUpActivations.some((activate) => activate != null);
 		const count =
-			this.followUpQueueMode === "all" && !hasPreparedFollowUp
+			this.followUpQueueMode === "all" && !requiresPerSendActivation
 				? this.followUpQueue.length
 				: Math.min(1, this.followUpQueue.length);
 		const messages = this.followUpQueue.splice(0, count);
 		const preparations = this.followUpPreparations.splice(0, count);
+		const activations = this.followUpActivations.splice(0, count);
 		if (messages.length === 0) return messages;
+		const drain: InFlightFollowUpDrain = { messages, preparations, activations, cancelled: false };
+		this.inFlightFollowUpDrain = drain;
 		try {
 			await this.emitQueueUpdate();
-			for (const prepare of preparations) {
-				await prepare?.();
-			}
 			return messages;
 		} catch (error) {
-			this.followUpQueue.unshift(...messages);
-			this.followUpPreparations.unshift(...preparations);
+			if (!drain.cancelled) {
+				this.followUpQueue.unshift(...messages);
+				this.followUpPreparations.unshift(...preparations);
+				this.followUpActivations.unshift(...activations);
+			}
+			if (this.inFlightFollowUpDrain === drain) this.inFlightFollowUpDrain = undefined;
 			try {
 				await this.emitQueueUpdate();
 			} catch {
@@ -339,7 +415,11 @@ export class AgentHarness<
 	}
 
 	private async createTurnState(): Promise<AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>> {
-		const context = await this.session.buildContext();
+		const entries = await this.session.getBranch();
+		let context = buildSessionContext(entries);
+		if (this.transformSessionContext) {
+			context = await this.transformSessionContext({ entries, context });
+		}
 		const messages = context.messages;
 		// When the leaf is positioned on a user message (e.g. after navigating
 		// to the first message in a session where parentId=null falls back to
@@ -349,6 +429,7 @@ export class AgentHarness<
 		// duplicate consecutive user messages that confuse the model.
 		if (messages.length > 0 && messages[messages.length - 1]?.role === "user") {
 			messages.splice(-1, 1);
+			context.messageEntryIds.splice(-1, 1);
 		}
 		const resources = this.getResources();
 		const sessionMetadata = await this.session.getMetadata();
@@ -382,6 +463,50 @@ export class AgentHarness<
 		};
 	}
 
+	async createTurnPreparationSnapshot(
+		text: string,
+		images?: ImageContent[],
+	): Promise<AgentHarnessTurnPreparationInput> {
+		if (this.phase !== "idle") {
+			throw new AgentHarnessError("busy", "AgentHarness is busy");
+		}
+		const turnState = await this.createTurnState();
+		const userMessage = createUserMessage(text, images);
+		let messages: AgentMessage[] = [userMessage];
+		const beforeResult = await this.emitHook({
+			type: "before_agent_start",
+			prompt: text,
+			images,
+			systemPrompt: turnState.systemPrompt,
+			resources: turnState.resources,
+		});
+		if (beforeResult?.messages) messages = [...messages, ...beforeResult.messages];
+		const activeTools = this.activeToolNames
+			.map((name) => this.tools.get(name))
+			.filter((tool): tool is TTool => tool !== undefined);
+		const systemPrompt = beforeResult?.systemPrompt ?? turnState.systemPrompt;
+		return {
+			userMessage,
+			systemPrompt,
+			messages: [...turnState.messages, ...messages],
+			model: this.model,
+			activeTools,
+			transformProviderRequest: async () => {
+				const auth = await this.getApiKeyAndHeaders?.(this.model);
+				const snapshotOptions: AgentHarnessStreamOptions = {
+					...turnState.streamOptions,
+					headers: mergeHeaders(turnState.streamOptions.headers, auth?.headers),
+				};
+				return await this.emitBeforeProviderRequest(this.model, turnState.sessionId, snapshotOptions);
+			},
+			transformContextMessages: async (contextMessages) => {
+				const result = await this.emitHook({ type: "context", messages: [...contextMessages] });
+				return result?.messages ?? contextMessages;
+			},
+			transformProviderPayload: async (payload) => await this.emitBeforeProviderPayload(this.model, payload),
+		};
+	}
+
 	private createContext(
 		turnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>,
 		systemPrompt?: string,
@@ -401,14 +526,39 @@ export class AgentHarness<
 				...turnState.streamOptions,
 				headers: mergeHeaders(turnState.streamOptions.headers, auth?.headers),
 			};
-			const requestOptions = await this.emitBeforeProviderRequest(model, turnState.sessionId, snapshotOptions);
+			const expectedUserEntryId = this.activePreparedProviderUserEntryId;
+			const preparedRequest = this.preparedProviderRequests[0];
+			if (
+				preparedRequest &&
+				(expectedUserEntryId == null || preparedRequest.userEntryId !== expectedUserEntryId)
+			) {
+				this.preparedProviderRequests = [];
+				throw new AgentHarnessError("invalid_state", "Prepared provider request is out of sequence");
+			}
+			const requestOptions = preparedRequest
+				? this.preparedProviderRequests.shift()!.options
+				: await this.emitBeforeProviderRequest(model, turnState.sessionId, snapshotOptions);
 			return streamSimple(model, context, {
 				cacheRetention: requestOptions.cacheRetention,
 				headers: requestOptions.headers,
 				maxRetries: requestOptions.maxRetries,
 				maxRetryDelayMs: requestOptions.maxRetryDelayMs,
 				metadata: requestOptions.metadata,
-				onPayload: async (payload) => await this.emitBeforeProviderPayload(model, payload),
+				onPayload: async (payload) => {
+					if (this.preparedProviderPayloads.length > 0) {
+						const prepared = this.preparedProviderPayloads[0]!;
+						if (expectedUserEntryId == null || prepared.userEntryId !== expectedUserEntryId) {
+							this.preparedProviderPayloads = [];
+							throw new AgentHarnessError("invalid_state", "Prepared provider payload is out of sequence");
+						}
+						const preparedPayload = this.preparedProviderPayloads.shift()!.payload;
+						this.activePreparedProviderUserEntryId = undefined;
+						return preparedPayload;
+					}
+					const transformedPayload = await this.emitBeforeProviderPayload(model, payload);
+					if (expectedUserEntryId != null) this.activePreparedProviderUserEntryId = undefined;
+					return transformedPayload;
+				},
 				onResponse: async (response) => {
 					const headers = { ...(response.headers as Record<string, string>) };
 					await this.emitOwn(
@@ -441,13 +591,20 @@ export class AgentHarness<
 	private createLoopConfig(
 		getTurnState: () => AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>,
 		setTurnState: (turnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>) => void,
+		initialSystemPromptSuffix = "",
+		signal?: AbortSignal,
 	): AgentLoopConfig {
-		const prepareTurn = async () => {
+		let activeSystemPromptSuffix = initialSystemPromptSuffix;
+		const prepareTurn = async (keepSystemPromptSuffix = false) => {
+			if (!keepSystemPromptSuffix) activeSystemPromptSuffix = "";
 			await this.flushPendingSessionWrites();
 			const nextTurnState = await this.createTurnState();
 			setTurnState(nextTurnState);
 			return {
-				context: this.createContext(nextTurnState),
+				context: this.createContext(
+					nextTurnState,
+					joinSystemPrompt(nextTurnState.systemPrompt, activeSystemPromptSuffix),
+				),
 				model: nextTurnState.model,
 				thinkingLevel: nextTurnState.thinkingLevel,
 			};
@@ -458,6 +615,20 @@ export class AgentHarness<
 			reasoning: turnState.thinkingLevel === "off" ? undefined : turnState.thinkingLevel,
 			convertToLlm,
 			transformContext: async (messages) => {
+				const receipt = this.preparedProviderReceipts[0];
+				if (receipt) {
+					const prepared = this.preparedContextTransforms[0];
+					if (prepared && prepared.userEntryId !== receipt.userEntryId) {
+						this.preparedContextTransforms = [];
+						throw new AgentHarnessError("invalid_state", "Prepared context transform is out of sequence");
+					}
+					this.preparedProviderReceipts.shift();
+					this.activePreparedProviderUserEntryId = receipt.userEntryId;
+					if (prepared) return this.preparedContextTransforms.shift()!.messages;
+				} else if (this.preparedContextTransforms.length > 0) {
+					this.preparedContextTransforms = [];
+					throw new AgentHarnessError("invalid_state", "Prepared context transform has no matching receipt");
+				}
 				const result = await this.emitHook({ type: "context", messages: [...messages] });
 				return result?.messages ?? messages;
 			},
@@ -484,10 +655,96 @@ export class AgentHarness<
 					? { content: patch.content, details: patch.details, isError: patch.isError, terminate: patch.terminate }
 					: undefined;
 			},
-			prepareNextTurn: prepareTurn,
-			prepareFollowUpTurn: prepareTurn,
+			prepareNextTurn: async ({ toolResults }) => await prepareTurn(toolResults.length > 0),
+			prepareFollowUpTurn: async () => {
+				if (signal?.aborted) {
+					throw new AgentHarnessError("invalid_state", "Turn preparation was aborted");
+				}
+				const drain = this.inFlightFollowUpDrain;
+				if (!drain) return await prepareTurn();
+				try {
+					const activatedPrepare = await drain.activations[0]?.(signal);
+					if (signal?.aborted) {
+						throw new AgentHarnessError("invalid_state", "Turn preparation was aborted");
+					}
+					await this.flushPendingSessionWrites();
+					const nextTurnState = await this.createTurnState();
+					setTurnState(nextTurnState);
+					const prepare =
+						typeof activatedPrepare === "function" ? activatedPrepare : drain.preparations[0];
+					if (!prepare) {
+						this.inFlightFollowUpDrain = undefined;
+						activeSystemPromptSuffix = "";
+						return {
+							context: this.createContext(nextTurnState),
+							model: nextTurnState.model,
+							thinkingLevel: nextTurnState.thinkingLevel,
+						};
+					}
+					const userMessage = drain.messages[0]!;
+					const prepared = await this.prepareUserMessage(
+						{ ...nextTurnState, messages: [...nextTurnState.messages, userMessage] },
+						userMessage,
+						prepare,
+						signal,
+					);
+					if (signal?.aborted) {
+						throw new AgentHarnessError("invalid_state", "Turn preparation was aborted");
+					}
+					this.inFlightFollowUpDrain = undefined;
+					activeSystemPromptSuffix = prepared.systemPromptSuffix;
+					if (prepared.finalProviderRequestOptions !== undefined) {
+						this.preparedProviderRequests.push({
+							userEntryId: prepared.userEntryId,
+							options: prepared.finalProviderRequestOptions,
+						});
+					}
+					if (
+						prepared.finalProviderRequestOptions !== undefined ||
+						prepared.transformedContextMessages !== undefined ||
+						prepared.finalProviderPayload !== undefined
+					) {
+						this.preparedProviderReceipts.push({ userEntryId: prepared.userEntryId });
+					}
+					if (prepared.transformedContextMessages !== undefined) {
+						this.preparedContextTransforms.push({
+							userEntryId: prepared.userEntryId,
+							messages: prepared.transformedContextMessages,
+						});
+					}
+					if (prepared.finalProviderPayload !== undefined) {
+						this.preparedProviderPayloads.push({
+							userEntryId: prepared.userEntryId,
+							payload: prepared.finalProviderPayload,
+						});
+					}
+					this.preparedUserEntryIds.push(prepared.userEntryId);
+					return {
+						context: this.createContext(
+							nextTurnState,
+							joinSystemPrompt(nextTurnState.systemPrompt, activeSystemPromptSuffix),
+						),
+						model: nextTurnState.model,
+						thinkingLevel: nextTurnState.thinkingLevel,
+					};
+				} catch (error) {
+					const terminal = error instanceof AgentHarnessTerminalPreparationError;
+					if (!drain.cancelled && !terminal) {
+						this.followUpQueue.unshift(...drain.messages);
+						this.followUpPreparations.unshift(...drain.preparations);
+						this.followUpActivations.unshift(...drain.activations);
+					}
+					if (this.inFlightFollowUpDrain === drain) this.inFlightFollowUpDrain = undefined;
+					try {
+						await this.emitQueueUpdate();
+					} catch {
+						// The original error remains the actionable failure.
+					}
+					throw normalizeHookError(terminal ? (error.cause ?? error) : error);
+				}
+			},
 			getSteeringMessages: async () => this.drainQueuedMessages(this.steerQueue, this.steeringQueueMode),
-			getFollowUpMessages: async () => this.drainFollowUpMessages(),
+			getFollowUpMessages: async () => await this.drainFollowUpMessages(),
 		};
 	}
 
@@ -522,6 +779,13 @@ export class AgentHarness<
 
 	private async handleAgentEvent(event: AgentEvent, signal?: AbortSignal): Promise<void> {
 		if (event.type === "message_end") {
+			if (event.message.role === "user" && this.preparedUserEntryIds.length > 0) {
+				const entryId = this.preparedUserEntryIds.shift();
+				if (entryId) {
+					await this.emitAny({ ...event, entryId }, signal);
+					return;
+				}
+			}
 			const entryId = await this.session.appendMessage(event.message);
 			await this.emitAny({ ...event, entryId }, signal);
 			return;
@@ -566,10 +830,19 @@ export class AgentHarness<
 	private async executeTurn(
 		turnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>,
 		text: string,
-		options?: { images?: ImageContent[] },
+		options?: AgentHarnessPromptOptions,
+		queuedUserMessage?: UserMessage,
+		existingAbortController?: AbortController,
 	): Promise<AssistantMessage> {
+		if (options?.prepare && this.nextTurnQueue.length > 0) {
+			throw new AgentHarnessError(
+				"invalid_state",
+				"Cannot prepare a prompt while next-turn messages are pending",
+			);
+		}
 		let activeTurnState = turnState;
-		let messages: AgentMessage[] = [createUserMessage(text, options?.images)];
+		const userMessage = queuedUserMessage ?? createUserMessage(text, options?.images);
+		let messages: AgentMessage[] = [userMessage];
 		if (this.nextTurnQueue.length > 0) {
 			const queuedMessages = this.nextTurnQueue.splice(0);
 			try {
@@ -588,8 +861,81 @@ export class AgentHarness<
 			resources: turnState.resources,
 		});
 		if (beforeResult?.messages) messages = [...messages, ...beforeResult.messages];
+		const currentTools = [...this.tools.values()];
+		const effectiveTurnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool> = {
+			...turnState,
+			resources: this.getResources(),
+			streamOptions: cloneStreamOptions(this.streamOptions),
+			systemPrompt: beforeResult?.systemPrompt ?? turnState.systemPrompt,
+			model: this.model,
+			thinkingLevel: this.thinkingLevel,
+			tools: currentTools,
+			activeTools: this.activeToolNames
+				.map((name) => this.tools.get(name))
+				.filter((tool): tool is TTool => tool !== undefined),
+		};
+		activeTurnState = effectiveTurnState;
+		const abortController = existingAbortController ?? new AbortController();
+		this.runAbortController = abortController;
+		let preparedTurn: AgentHarnessPreparedTurn | undefined;
+		try {
+			preparedTurn = options?.prepare
+				? await this.prepareUserMessage(
+						{
+							...effectiveTurnState,
+							messages: [...turnState.messages, ...messages],
+						},
+						userMessage,
+						options.prepare,
+						abortController.signal,
+					)
+				: undefined;
+			if (abortController.signal.aborted) {
+				throw new AgentHarnessError("invalid_state", "Turn preparation was aborted");
+			}
+		} catch (error) {
+			this.preparedUserEntryIds = [];
+			this.preparedProviderRequests = [];
+			this.preparedProviderReceipts = [];
+			this.activePreparedProviderUserEntryId = undefined;
+			this.preparedContextTransforms = [];
+			this.preparedProviderPayloads = [];
+			this.runAbortController = undefined;
+			throw error;
+		}
+		if (preparedTurn) {
+			if (preparedTurn.finalProviderRequestOptions !== undefined) {
+				this.preparedProviderRequests.push({
+					userEntryId: preparedTurn.userEntryId,
+					options: preparedTurn.finalProviderRequestOptions,
+				});
+			}
+			if (
+				preparedTurn.finalProviderRequestOptions !== undefined ||
+				preparedTurn.transformedContextMessages !== undefined ||
+				preparedTurn.finalProviderPayload !== undefined
+			) {
+				this.preparedProviderReceipts.push({ userEntryId: preparedTurn.userEntryId });
+			}
+			if (preparedTurn.transformedContextMessages !== undefined) {
+				this.preparedContextTransforms.push({
+					userEntryId: preparedTurn.userEntryId,
+					messages: preparedTurn.transformedContextMessages,
+				});
+			}
+			if (preparedTurn.finalProviderPayload !== undefined) {
+				this.preparedProviderPayloads.push({
+					userEntryId: preparedTurn.userEntryId,
+					payload: preparedTurn.finalProviderPayload,
+				});
+			}
+			for (const message of messages) {
+				if (message.role === "user") {
+					this.preparedUserEntryIds.push(message === userMessage ? preparedTurn.userEntryId : undefined);
+				}
+			}
+		}
 
-		const abortController = new AbortController();
 		const getTurnState = () => activeTurnState;
 		const setTurnState = (nextTurnState: AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>) => {
 			activeTurnState = nextTurnState;
@@ -599,8 +945,19 @@ export class AgentHarness<
 			try {
 				return await runAgentLoop(
 					messages,
-					this.createContext(turnState, beforeResult?.systemPrompt),
-					this.createLoopConfig(getTurnState, setTurnState),
+					this.createContext(
+						effectiveTurnState,
+						joinSystemPrompt(
+							effectiveTurnState.systemPrompt,
+							preparedTurn?.systemPromptSuffix ?? "",
+						),
+					),
+					this.createLoopConfig(
+						getTurnState,
+						setTurnState,
+						preparedTurn?.systemPromptSuffix,
+						abortController.signal,
+					),
 					(event) => this.handleAgentEvent(event, abortController.signal),
 					abortController.signal,
 					this.createStreamFn(getTurnState),
@@ -635,12 +992,86 @@ export class AgentHarness<
 			try {
 				await this.flushPendingSessionWrites();
 			} finally {
+				this.preparedUserEntryIds = [];
+				this.preparedProviderRequests = [];
+				this.preparedProviderReceipts = [];
+				this.activePreparedProviderUserEntryId = undefined;
+				this.preparedContextTransforms = [];
+				this.preparedProviderPayloads = [];
+				this.inFlightFollowUpDrain = undefined;
 				this.runAbortController = undefined;
 			}
 		}
 	}
 
-	async prompt(text: string, options?: { images?: ImageContent[] }): Promise<AssistantMessage> {
+	private async promoteQueuedFollowUp(): Promise<AssistantMessage | undefined> {
+		while (this.followUpQueue.length > 0) {
+			const userMessage = this.followUpQueue.shift()!;
+			const prepare = this.followUpPreparations.shift();
+			const activate = this.followUpActivations.shift();
+			try {
+				await this.emitQueueUpdate();
+			} catch (error) {
+				this.followUpQueue.unshift(userMessage);
+				this.followUpPreparations.unshift(prepare);
+				this.followUpActivations.unshift(activate);
+				throw normalizeHookError(error);
+			}
+			const abortController = new AbortController();
+			this.runAbortController = abortController;
+			try {
+				const activatedPrepare = await activate?.(abortController.signal);
+				if (abortController.signal.aborted) {
+					throw new AgentHarnessError("invalid_state", "Turn preparation was aborted");
+				}
+				const turnState = await this.createTurnState();
+				const content = userMessage.content;
+				const text =
+					typeof content === "string"
+						? content
+						: content
+								.filter((item): item is TextContent => item.type === "text")
+								.map((item) => item.text)
+								.join("\n");
+				const images =
+					typeof content === "string"
+						? []
+						: content.filter((item): item is ImageContent => item.type === "image");
+				return await this.executeTurn(
+					turnState,
+					text,
+					{
+						...(images.length > 0 ? { images } : {}),
+						...(typeof activatedPrepare === "function"
+							? { prepare: activatedPrepare }
+							: prepare
+								? { prepare }
+								: {}),
+					},
+					userMessage,
+					abortController,
+				);
+			} catch (error) {
+				this.runAbortController = undefined;
+				const terminal = error instanceof AgentHarnessTerminalPreparationError;
+				if (terminal) continue;
+				if (!abortController.signal.aborted) {
+					this.followUpQueue.unshift(userMessage);
+					this.followUpPreparations.unshift(prepare);
+					this.followUpActivations.unshift(activate);
+					try {
+						await this.emitQueueUpdate();
+					} catch {
+						// The original error remains the actionable failure.
+					}
+				}
+				throw error;
+			}
+		}
+		return undefined;
+	}
+
+	async prompt(text: string, options?: AgentHarnessPromptOptions): Promise<AssistantMessage> {
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
 		this.phase = "turn";
 		const finishRunPromise = this.startRunPromise();
@@ -648,8 +1079,17 @@ export class AgentHarness<
 			const turnState = await this.createTurnState();
 			return await this.executeTurn(turnState, text, options);
 		} catch (error) {
+			let failure = error;
+			if (error instanceof AgentHarnessTerminalPreparationError) {
+				try {
+					const promoted = await this.promoteQueuedFollowUp();
+					if (promoted) return promoted;
+				} catch (promotionError) {
+					failure = promotionError;
+				}
+			}
 			this.phase = "idle";
-			throw normalizeHarnessError(error, "unknown");
+			throw normalizeHarnessError(failure, "unknown");
 		} finally {
 			finishRunPromise();
 		}
@@ -657,12 +1097,12 @@ export class AgentHarness<
 
 	async promptReturningEntryId(
 		text: string,
-		options?: { images?: ImageContent[] },
+		options?: AgentHarnessPromptOptions,
 	): Promise<{ assistant: AssistantMessage; userEntryId: string }> {
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
 		this.phase = "turn";
 		const finishRunPromise = this.startRunPromise();
-		const baseLeafId = await this.session.getLeafId();
+		const baseEntryIds = new Set((await this.session.getBranch()).map((entry) => entry.id));
 		try {
 			const turnState = await this.createTurnState();
 			const assistant = await this.executeTurn(turnState, text, options);
@@ -670,7 +1110,7 @@ export class AgentHarness<
 			const userEntry = branch.find(
 				(e) =>
 					e.type === "message" &&
-					e.parentId === baseLeafId &&
+					!baseEntryIds.has(e.id) &&
 					(e.message as { role?: string }).role === "user",
 			);
 			if (!userEntry) {
@@ -689,7 +1129,7 @@ export class AgentHarness<
 		customType: string,
 		data: unknown,
 		text: string,
-		options?: { images?: ImageContent[] },
+		options?: AgentHarnessPromptOptions,
 	): Promise<AssistantMessage> {
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
 		this.phase = "turn";
@@ -748,12 +1188,13 @@ export class AgentHarness<
 
 	async followUp(
 		text: string,
-		options?: { images?: ImageContent[] },
-		prepare?: () => Promise<void>,
+		options?: AgentHarnessFollowUpOptions,
+		prepare?: AgentHarnessTurnPreparation,
 	): Promise<void> {
 		if (this.phase === "idle") throw new AgentHarnessError("invalid_state", "Cannot follow up while idle");
 		this.followUpQueue.push(createUserMessage(text, options?.images));
 		this.followUpPreparations.push(prepare);
+		this.followUpActivations.push(options?.activate);
 		await this.emitQueueUpdate();
 	}
 
@@ -1040,9 +1481,14 @@ export class AgentHarness<
 	async abort(): Promise<AbortResult> {
 		const clearedSteer = [...this.steerQueue];
 		const clearedFollowUp = [...this.followUpQueue];
+		if (this.inFlightFollowUpDrain && !this.inFlightFollowUpDrain.cancelled) {
+			this.inFlightFollowUpDrain.cancelled = true;
+			clearedFollowUp.push(...this.inFlightFollowUpDrain.messages);
+		}
 		this.steerQueue = [];
 		this.followUpQueue = [];
 		this.followUpPreparations = [];
+		this.followUpActivations = [];
 		this.runAbortController?.abort();
 		const errors: Error[] = [];
 		try {

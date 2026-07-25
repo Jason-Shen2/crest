@@ -1,16 +1,30 @@
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentMessage } from "../../types";
-import { err, FileError, ok, type FileSystem, type Result, type SessionTreeEntry } from "../types";
+import {
+    err,
+    FileError,
+    ok,
+    type FileSystem,
+    type MessageEntry,
+    type Result,
+    type SessionStorage,
+    type SessionTreeEntry,
+} from "../types";
 import { createTransactionManifestData } from "./entry-transaction";
 import { JsonlSessionStorage } from "./jsonl-storage";
 import { InMemorySessionStorage } from "./memory-storage";
-import { Session, buildSessionContext } from "./session";
+import { buildSessionContext, Session } from "./session";
+import { SqliteSessionStorage } from "./sqlite-storage";
 
 const timestamp = "2026-07-22T00:00:00.000Z";
 const header = { type: "session", version: 3, id: "session", timestamp, cwd: "/tmp" };
 
-function user(id: string, parentId: string | null = null, transactionId?: string): SessionTreeEntry {
+function user(id: string, parentId: string | null = null, transactionId?: string): MessageEntry {
     return {
         type: "message",
         id,
@@ -21,21 +35,26 @@ function user(id: string, parentId: string | null = null, transactionId?: string
     };
 }
 
-function assistant(id: string, parentId: string): SessionTreeEntry {
+function assistant(id: string, parentId: string): MessageEntry {
     return {
         type: "message",
         id,
         parentId,
         timestamp,
-        message: { role: "assistant", content: [{ type: "text", text: id }], provider: "p", model: "m" } as unknown as AgentMessage,
+        message: {
+            role: "assistant",
+            content: [{ type: "text", text: id }],
+            provider: "p",
+            model: "m",
+        } as unknown as AgentMessage,
     };
 }
 
-function transaction(transactionId = "tx"): SessionTreeEntry[] {
+function transaction(transactionId = "tx", parentId: string | null = null): SessionTreeEntry[] {
     const artifact: SessionTreeEntry = {
         type: "custom",
         id: "artifact",
-        parentId: null,
+        parentId,
         timestamp,
         customType: "context_artifact",
         data: {},
@@ -65,7 +84,7 @@ function jsonl(entries: SessionTreeEntry[], suffix = ""): string {
 function memoryJsonlFile(
     content: string,
     appendResult = ok<void, FileError>(undefined),
-    writeResult = ok<void, FileError>(undefined),
+    writeResult = ok<void, FileError>(undefined)
 ) {
     const state = { content };
     const appendFile = vi.fn(async (_path: string, value: string) => {
@@ -93,7 +112,94 @@ function deferred<T>() {
     return { promise, resolve };
 }
 
+interface CasStorageFixture {
+    storage: SessionStorage;
+    cleanup(): Promise<void>;
+}
+
+const CasStorageFactories: Array<{
+    name: string;
+    create(entries: SessionTreeEntry[]): Promise<CasStorageFixture>;
+}> = [
+    {
+        name: "memory",
+        create: async (entries) => ({
+            storage: new InMemorySessionStorage({ entries }),
+            cleanup: async () => undefined,
+        }),
+    },
+    {
+        name: "JSONL",
+        create: async (entries) => {
+            const file = memoryJsonlFile(jsonl(entries));
+            return {
+                storage: await JsonlSessionStorage.open(file.fs, "/tmp/cas-session.jsonl"),
+                cleanup: async () => undefined,
+            };
+        },
+    },
+    {
+        name: "SQLite",
+        create: async (entries) => {
+            const directory = await fs.mkdtemp(path.join(os.tmpdir(), "crest-cas-storage-"));
+            const storage = SqliteSessionStorage.create(path.join(directory, "session.db"), {
+                cwd: "/tmp",
+                sessionId: "cas-session",
+            });
+            if (entries.length > 0) await storage.appendEntries(entries);
+            return {
+                storage,
+                cleanup: async () => {
+                    storage.close();
+                    await fs.rm(directory, { recursive: true, force: true });
+                },
+            };
+        },
+    },
+];
+
+function appendWithExpectedLeaf(
+    storage: SessionStorage,
+    entries: SessionTreeEntry[],
+    expectedLeafId: string | null
+): Promise<void> {
+    return storage.appendEntries(entries, { expectedLeafId });
+}
+
 describe("atomic session batch append", () => {
+    describe.each(CasStorageFactories)("$name expected-leaf CAS", ({ create }) => {
+        it("rejects behind a queued ordinary append without changing its leaf", async () => {
+            const fixture = await create([user("prior")]);
+            try {
+                const ordinary = fixture.storage.appendEntries([user("ordinary", "prior")]);
+                const stale = appendWithExpectedLeaf(fixture.storage, transaction("stale-tx", "prior"), "prior");
+
+                await ordinary;
+                await expect(stale).rejects.toMatchObject({ code: "stale_leaf" });
+                expect((await fixture.storage.getEntries()).map((entry) => entry.id)).toEqual(["prior", "ordinary"]);
+                expect(await fixture.storage.getLeafId()).toBe("ordinary");
+            } finally {
+                await fixture.cleanup();
+            }
+        });
+
+        it("distinguishes explicit null from an omitted expectation", async () => {
+            const fixture = await create([]);
+            try {
+                await appendWithExpectedLeaf(fixture.storage, [user("root")], null);
+                await expect(
+                    appendWithExpectedLeaf(fixture.storage, [user("second-root")], null)
+                ).rejects.toMatchObject({ code: "stale_leaf" });
+                await fixture.storage.appendEntries([user("ordinary", "root")]);
+
+                expect((await fixture.storage.getEntries()).map((entry) => entry.id)).toEqual(["root", "ordinary"]);
+                expect(await fixture.storage.getLeafId()).toBe("ordinary");
+            } finally {
+                await fixture.cleanup();
+            }
+        });
+    });
+
     it("memory rejects existing and in-batch duplicate IDs without changing the leaf", async () => {
         const storage = new InMemorySessionStorage({ entries: [user("old")] });
 
@@ -260,7 +366,12 @@ describe("atomic session batch append", () => {
 
         await storage.appendEntries([user("later", "turn")]);
 
-        expect((await storage.getEntries()).map((entry) => entry.id)).toEqual(["artifact", "manifest", "turn", "later"]);
+        expect((await storage.getEntries()).map((entry) => entry.id)).toEqual([
+            "artifact",
+            "manifest",
+            "turn",
+            "later",
+        ]);
     });
 
     it("JSONL open removes incomplete groups and a non-newline interrupted tail before accepting later appends", async () => {
@@ -305,9 +416,11 @@ describe("atomic session batch append", () => {
         const rewriteFailure = memoryJsonlFile(
             JSON.stringify(header),
             ok(undefined),
-            err(new FileError("unknown", "readonly")),
+            err(new FileError("unknown", "readonly"))
         );
-        await expect(JsonlSessionStorage.open(rewriteFailure.fs, "/tmp/session.jsonl")).rejects.toThrow(/recover|session/i);
+        await expect(JsonlSessionStorage.open(rewriteFailure.fs, "/tmp/session.jsonl")).rejects.toThrow(
+            /recover|session/i
+        );
     });
 
     it("JSONL rejects newline-terminated malformed records and recovery rewrite failures", async () => {
@@ -317,9 +430,11 @@ describe("atomic session batch append", () => {
         const rewriteFailure = memoryJsonlFile(
             jsonl(incompleteTransaction()),
             ok(undefined),
-            err(new FileError("unknown", "readonly")),
+            err(new FileError("unknown", "readonly"))
         );
-        await expect(JsonlSessionStorage.open(rewriteFailure.fs, "/tmp/session.jsonl")).rejects.toThrow(/rewrite|recover|session/i);
+        await expect(JsonlSessionStorage.open(rewriteFailure.fs, "/tmp/session.jsonl")).rejects.toThrow(
+            /rewrite|recover|session/i
+        );
     });
 
     it("builds a normal transcript from a committed context transaction", () => {
@@ -330,10 +445,12 @@ describe("atomic session batch append", () => {
         expect(context.messages).toHaveLength(2);
     });
 
-    it("forwards appendEntries through Session", async () => {
+    it("forwards appendEntries and its expected leaf through Session", async () => {
         const storage = new InMemorySessionStorage();
         const session = new Session(storage);
-        await session.appendEntries([user("turn")]);
+        const appendEntries = vi.spyOn(storage, "appendEntries");
+        await session.appendEntries([user("turn")], { expectedLeafId: null });
+        expect(appendEntries).toHaveBeenCalledWith([user("turn")], { expectedLeafId: null });
         expect(await session.getLeafId()).toBe("turn");
     });
 });

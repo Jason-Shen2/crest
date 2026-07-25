@@ -85,6 +85,53 @@ function renderEmptyThread(props?: ThreadProps): string {
 }
 
 describe("Thread assistant-ui integration", () => {
+    it("discovers /session and /info while keeping /resume hidden", () => {
+        const byId = new Map(registryThreadTesting.SlashCommands.map((command) => [command.id, command]));
+
+        expect(byId.get("session")).toMatchObject({
+            label: "/session",
+            icon: "History",
+            description: expect.stringMatching(/manage|resume|reference/i),
+        });
+        expect(byId.get("info")).toMatchObject({
+            label: "/info",
+            icon: "Info",
+            description: expect.stringMatching(/current.*session.*information/i),
+        });
+        expect(byId.has("resume")).toBe(false);
+    });
+
+    it("renders a persisted context projection before assistant content and omits it when absent", () => {
+        const report = {
+            schemaVersion: 1,
+            transactionId: "transaction-1",
+            targetTurnId: "turn-1",
+            createdAt: "2026-07-23T00:00:00.000Z",
+            contextWindow: 1000,
+            effectiveOutputReserve: 100,
+            inputLimit: 900,
+            baseInputTokens: 100,
+            finalInputTokens: 110,
+            referenceTokens: 10,
+            countAccuracy: "exact",
+            overlaySha256: "projection-sha",
+            items: [],
+        } satisfies AgentContextProjectionReportView;
+        const html = renderThread(undefined, [
+            {
+                role: "assistant",
+                content: [{ type: "text", text: "Projected answer" }],
+                status: { type: "complete", reason: "stop" },
+                metadata: { custom: { contextProjection: report } },
+            } as ThreadMessageLike,
+        ]);
+
+        expect(html).toContain("Show context projection details");
+        expect(html).toContain("projection-sha");
+        expect(html.indexOf("Show context projection details")).toBeLessThan(html.indexOf("Projected answer"));
+        expect(renderThread(undefined, [messages[1]])).not.toContain("Show context projection details");
+    });
+
     it("renders real Thread/Parts/Markdown/tool UI and image alt text without mocking assistant-ui packages", () => {
         const html = renderThread();
 

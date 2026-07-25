@@ -6,38 +6,25 @@ import {
     SessionTransactionManifestCustomType,
 } from "../harness/session/entry-transaction";
 import type { SessionTreeEntry } from "../harness/types";
-import type {
-    ContextArtifact,
-    ContextAttachmentData,
-    ContextJournalAttachment,
-    ContextJournalDiagnostic,
-    ContextJournalState,
-} from "./types";
-import {
-    decodeContextArtifact,
-    decodeContextAttachmentData,
-    decodeContextDetachData,
-    decodeContextProjectionReport,
-    decodeContextUpdateData,
-} from "./validation";
+import type { ContextArtifact, ContextJournalAttachment, ContextJournalDiagnostic, ContextJournalState } from "./types";
+import { decodeContextArtifact, decodeContextAttachmentData, decodeContextProjectionReport } from "./validation";
 
 export const ContextCustomTypes = {
     artifact: "context_artifact",
     attach: "context_attach",
-    update: "context_update",
-    detach: "context_detach",
     projection: "context_projection",
     transactionManifest: SessionTransactionManifestCustomType,
 } as const;
 
 const ContextCustomTypeValues = new Set<string>(Object.values(ContextCustomTypes));
+const ObsoleteContextCustomTypes = new Set(["context_update", "context_detach"]);
 
 function customData(entry: SessionTreeEntry): unknown {
     return entry.type === "custom" ? entry.data : undefined;
 }
 
 function transactionId(entry: SessionTreeEntry): string | undefined {
-    const value = (entry as unknown as { transactionId?: unknown }).transactionId;
+    const value = (entry as { transactionId?: unknown }).transactionId;
     return typeof value === "string" ? value : undefined;
 }
 
@@ -45,15 +32,19 @@ function diagnostic(diagnostics: ContextJournalDiagnostic[], entry: SessionTreeE
     diagnostics.push({ entryId: entry.id, message });
 }
 
+function sortAttachments(attachments: ContextJournalAttachment[]): ContextJournalAttachment[] {
+    return [...attachments].sort((left, right) => left.data.selectionOrder - right.data.selectionOrder);
+}
+
 export function isContextCustomEntry(entry: SessionTreeEntry): entry is Extract<SessionTreeEntry, { type: "custom" }> {
     return entry.type === "custom" && ContextCustomTypeValues.has(entry.customType);
 }
 
-export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: string): ContextJournalState {
+export function foldContextJournal(entries: SessionTreeEntry[]): ContextJournalState {
     const committed = filterCommittedTransactionEntries(entries);
     const diagnostics: ContextJournalDiagnostic[] = committed.diagnostics.map((item) => ({ message: item.message }));
     const artifacts = new Map<string, ContextArtifact>();
-    const attachments = new Map<string, ContextJournalAttachment>();
+    const attachmentsByTurn = new Map<string, ContextJournalAttachment[]>();
     const projectionReports: ContextJournalState["projectionReports"] = [];
 
     const transactionFor = (entry: SessionTreeEntry) => {
@@ -80,7 +71,11 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
     }
 
     for (const entry of committed.entries) {
-        if (!isContextCustomEntry(entry)) continue;
+        if (entry.type !== "custom") continue;
+        if (ObsoleteContextCustomTypes.has(entry.customType)) {
+            diagnostic(diagnostics, entry, `${entry.customType} is obsolete and ignored`);
+            continue;
+        }
         if (entry.customType === ContextCustomTypes.attach) {
             const transaction = transactionFor(entry);
             if (!transaction) {
@@ -96,58 +91,21 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
                 diagnostic(diagnostics, entry, "context attachment transactionId does not match its entry");
                 continue;
             }
-            if (decoded.value!.lifecycle === "once" && decoded.value!.targetTurnId !== transaction.userEntryId) {
-                diagnostic(diagnostics, entry, "context once attachment targetTurnId does not match its transaction user");
+            if (decoded.value!.targetTurnId !== transaction.userEntryId) {
+                diagnostic(diagnostics, entry, "context attachment targetTurnId does not match its transaction user");
                 continue;
             }
             const artifact = artifacts.get(decoded.value!.artifactEntryId);
-            if (artifact == null) {
-                diagnostic(diagnostics, entry, "context attachment references a missing artifact");
-            }
-            attachments.set(entry.id, {
+            if (artifact == null) diagnostic(diagnostics, entry, "context attachment references a missing artifact");
+            const attachment: ContextJournalAttachment = {
                 attachmentEntryId: entry.id,
                 data: decoded.value!,
                 artifact,
                 summary: artifact?.summary,
-            });
-        } else if (entry.customType === ContextCustomTypes.update) {
-            const decoded = decodeContextUpdateData(customData(entry));
-            if (decoded.diagnostic) {
-                diagnostic(diagnostics, entry, decoded.diagnostic);
-                continue;
-            }
-            const existing = attachments.get(decoded.value!.attachmentEntryId);
-            if (existing == null) {
-                diagnostic(diagnostics, entry, "context update references an inactive attachment");
-                continue;
-            }
-            if (existing.data.lifecycle !== "pinned") {
-                diagnostic(diagnostics, entry, "context update is only valid for pinned attachments");
-                continue;
-            }
-            const data: ContextAttachmentData = { ...existing.data, requestedRepresentation: decoded.value!.requestedRepresentation };
-            const updated: ContextJournalAttachment = {
-                ...existing,
-                data,
-                summary: decoded.value!.summary ?? existing.summary,
             };
-            attachments.set(updated.attachmentEntryId, updated);
-        } else if (entry.customType === ContextCustomTypes.detach) {
-            const decoded = decodeContextDetachData(customData(entry));
-            if (decoded.diagnostic) {
-                diagnostic(diagnostics, entry, decoded.diagnostic);
-                continue;
-            }
-            const existing = attachments.get(decoded.value!.attachmentEntryId);
-            if (existing == null) {
-                diagnostic(diagnostics, entry, "context detach references an inactive attachment");
-                continue;
-            }
-            if (existing.data.lifecycle !== "pinned") {
-                diagnostic(diagnostics, entry, "context detach is only valid for pinned attachments");
-                continue;
-            }
-            attachments.delete(existing.attachmentEntryId);
+            const targetAttachments = attachmentsByTurn.get(attachment.data.targetTurnId) ?? [];
+            targetAttachments.push(attachment);
+            attachmentsByTurn.set(attachment.data.targetTurnId, targetAttachments);
         } else if (entry.customType === ContextCustomTypes.projection) {
             const transaction = transactionFor(entry);
             if (!transaction) {
@@ -156,15 +114,32 @@ export function foldContextJournal(entries: SessionTreeEntry[], targetTurnId?: s
             }
             const decoded = decodeContextProjectionReport(customData(entry));
             if (decoded.diagnostic) diagnostic(diagnostics, entry, decoded.diagnostic);
-            else if (decoded.value!.transactionId !== transaction.transactionId || decoded.value!.targetTurnId !== transaction.userEntryId) {
-                diagnostic(diagnostics, entry, "context projection transactionId or targetTurnId does not match its transaction");
+            else if (
+                decoded.value!.transactionId !== transaction.transactionId ||
+                decoded.value!.targetTurnId !== transaction.userEntryId
+            ) {
+                diagnostic(
+                    diagnostics,
+                    entry,
+                    "context projection transactionId or targetTurnId does not match its transaction"
+                );
             } else projectionReports.push(decoded.value!);
         }
     }
 
-    const activeAttachments = [...attachments.values()].filter((attachment) => {
-        if (attachment.data.lifecycle === "pinned") return true;
-        return attachment.data.targetTurnId === targetTurnId;
-    });
-    return { artifacts, activeAttachments, projectionReports, diagnostics };
+    const attachmentsForTurn = (targetTurnId: string): ContextJournalAttachment[] =>
+        sortAttachments(attachmentsByTurn.get(targetTurnId) ?? []);
+    const conversationAttachmentsForTurns = (targetTurnIds: readonly string[]): ContextJournalAttachment[] =>
+        targetTurnIds.flatMap((targetTurnId) =>
+            attachmentsForTurn(targetTurnId).filter((attachment) => attachment.data.deliveryScope === "conversation")
+        );
+
+    return {
+        artifacts,
+        attachmentsByTurn,
+        attachmentsForTurn,
+        conversationAttachmentsForTurns,
+        projectionReports,
+        diagnostics,
+    };
 }

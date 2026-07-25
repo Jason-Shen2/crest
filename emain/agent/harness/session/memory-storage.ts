@@ -1,5 +1,7 @@
 import {
+	assertExpectedSessionLeaf,
 	type LeafEntry,
+	type SessionAppendOptions,
 	SessionError,
 	type SessionMetadata,
 	type SessionStorage,
@@ -101,13 +103,15 @@ export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionM
 		return this.appendEntries([entry]);
 	}
 
-	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
-		const operation = this.appendTail.then(() => this.appendEntriesNow(entries));
+	async appendEntries(entries: SessionTreeEntry[], options?: SessionAppendOptions): Promise<void> {
+		const appendOptions = options == null ? undefined : { ...options };
+		const operation = this.appendTail.then(() => this.appendEntriesNow(entries, appendOptions));
 		this.appendTail = operation.catch(() => undefined);
 		return operation;
 	}
 
-	private appendEntriesNow(entries: SessionTreeEntry[]): void {
+	private appendEntriesNow(entries: SessionTreeEntry[], options?: SessionAppendOptions): void {
+		assertExpectedSessionLeaf(options, this.leafId);
 		validateSessionEntriesForAppend(this.entryIds, this.transactionIds, entries);
 		const labelsById = new Map(this.labelsById);
 		for (const entry of entries) updateLabelCache(labelsById, entry);

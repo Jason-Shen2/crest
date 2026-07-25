@@ -44,14 +44,24 @@ import * as electron from "electron";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
-import { attachAgentObservability, _resetAgentObservabilityForTests } from "./agent-observability-ipc";
+import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
 import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent/agent-event-routing";
+import { AgentRuntimeRegistry } from "./agent/agent-runtime-registry";
+import {
+    AgentSessionRuntime,
+    buildContextStateFromSessionEntries,
+    buildPersistedTurnsFromSessionEntries,
+    type AgentExecutionConfig,
+    type AgentSessionRuntimeStatus,
+    type AgentTurn,
+} from "./agent/agent-session-runtime";
 import type { SystemPromptInputs } from "./agent/build-system-prompt";
 import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
 import { getBuiltInAgentCommands } from "./agent/commands/registry";
 import { commandNoop, commandSuccess } from "./agent/commands/session-command-results";
 import {
     buildAgentForkPointViews,
+    buildAgentReferencePointViews,
     buildAgentTreeEntryViews,
     filterTreeForDisplay,
     previewSessionEntry,
@@ -60,21 +70,31 @@ import type {
     AgentBackendCommandName,
     AgentCommandExecutionResult,
     AgentCommandInfo,
+    AgentContextStateView,
     AgentForkPointView,
+    AgentPrepareContextDraftInput,
+    AgentReferencePointView,
     AgentRunCommandInput,
     AgentTreeEntryView,
 } from "./agent/commands/types";
+import { ContextDraftRegistry } from "./agent/context/draft-registry";
+import { decorateContextHistory } from "./agent/context/history";
+import type { ContextProviderRequest } from "./agent/context/projector";
+import { createContextProviderAdapter, type ContextProviderAdapter } from "./agent/context/provider-adapter";
+import { captureContextArtifactDraft } from "./agent/context/snapshot";
+import { summarizeContextDraft, type ContextSummaryCompletion } from "./agent/context/summary";
+import { createContextTurnPreparation, type ContextTurnDraftAttachmentInput } from "./agent/context/turn-preparer";
+import type { ContextBudgetResult, ContextReferenceConfig, ContextRepresentation } from "./agent/context/types";
+import { ContextReferenceError } from "./agent/context/types";
 import { buildAgentHarnessHost } from "./agent/harness-factory";
+import { convertToLlm } from "./agent/harness/messages";
 import { InMemorySessionRepo } from "./agent/harness/session/memory-repo";
-import type { JsonlSessionMetadata, SessionDetailInfo } from "./agent/harness/types";
-import {
-    buildPersistedTurnsFromSessionEntries,
-    AgentSessionRuntime,
-    type AgentExecutionConfig,
-    type AgentTurn,
-    type AgentSessionRuntimeStatus,
-} from "./agent/agent-session-runtime";
-import { AgentRuntimeRegistry } from "./agent/agent-runtime-registry";
+import type {
+    AgentHarnessTurnPreparation,
+    AgentHarnessTurnPreparationInput,
+    JsonlSessionMetadata,
+    SessionDetailInfo,
+} from "./agent/harness/types";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { loadProjectContextFiles } from "./agent/resource-loader";
 import {
@@ -95,12 +115,15 @@ import type { AgentMessage, ThinkingLevel } from "./agent/types";
 import type { Api, ImageContent, Message, Model } from "./ai";
 import { getModel } from "./ai";
 import { getSecret } from "./aiconfig/secrets";
+import { readAIUserConfig } from "./aiconfig/user-config";
 
 const AgentRuntimeIdleTtlMs = 5 * 60 * 1000;
 const AgentRuntimeSweepIntervalMs = 60 * 1000;
 const runtimeRegistry = new AgentRuntimeRegistry<AgentSessionRuntime>({
     idleTtlMs: AgentRuntimeIdleTtlMs,
 });
+let contextDraftRegistry = new ContextDraftRegistry();
+let contextSummaryCompletion: ContextSummaryCompletion | undefined;
 let runtimeSweepTimer: NodeJS.Timeout | undefined;
 
 type SubKey = string;
@@ -115,6 +138,7 @@ const pendingSubscriptions = new Map<
     SubKey,
     { sender: electron.WebContents; canonicalPath: string; rendererPath: string }
 >();
+const sendIngressTails = new Map<string, Promise<void>>();
 
 interface SendOptions {
     /** Existing session, if any. null on first send → main mints a fresh one. */
@@ -153,7 +177,40 @@ interface SendOptions {
      * allowAll regardless of this value. See emain/agent/permissions.ts.
      */
     allowedTools?: string[];
+    contextAttachments?: ContextTurnDraftAttachmentInput[];
 }
+
+function reserveAgentSendIngress(opts: SendOptions): <T>(operation: () => Promise<T>) => Promise<T> {
+    const sessionPath = opts.sessionMetadata?.path;
+    const key =
+        typeof sessionPath === "string" && sessionPath.trim() !== ""
+            ? `session:${path.resolve(sessionPath)}`
+            : `new:${opts.blockId}`;
+    const previous = sendIngressTails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(async () => await hold);
+    sendIngressTails.set(key, tail);
+    return async <T>(operation: () => Promise<T>): Promise<T> => {
+        await previous.catch(() => undefined);
+        try {
+            return await operation();
+        } finally {
+            release();
+            if (sendIngressTails.get(key) === tail) sendIngressTails.delete(key);
+        }
+    };
+}
+
+let contextProviderAdapterFactory:
+    | ((
+          model: Model<Api>,
+          apiKey: string | undefined,
+          thinkingLevel: ThinkingLevel | "off"
+      ) => ContextProviderAdapter | undefined)
+    | undefined = createContextProviderAdapter;
 
 function imageContentFromDataUrl(src: string): ImageContent | undefined {
     const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(src);
@@ -220,6 +277,7 @@ const RunnableAgentCommands = new Set<AgentBackendCommandName>([
     "resume",
     "compact",
     "session",
+    "info",
     "copy",
     "export",
     "import",
@@ -433,7 +491,8 @@ async function resolveApiKey(opts: SendOptions): Promise<string | undefined> {
 async function createAgentRuntime(
     metadata: JsonlSessionMetadata,
     opts: SendOptions,
-    config: AgentExecutionConfig
+    config: AgentExecutionConfig,
+    options: { attachObservability?: boolean } = {}
 ): Promise<AgentSessionRuntime> {
     const piSession = await openPaneSession(metadata);
     // Discover skills from <configHome>/skills and <cwd>/.crest/skills.
@@ -468,6 +527,12 @@ async function createAgentRuntime(
         skills,
         getApiKeyAndHeaders: config.authResolver,
         toolCallHook: config.toolCallHook,
+        transformSessionContext: async ({ entries, context }) =>
+            await decorateContextHistory({
+                entries,
+                context,
+                targetSessionPath: metadata.path,
+            }),
     });
     getRuntimeCwd = () => host.getCwd();
     // Wrap the harness in the per-session owner. Its constructor attaches
@@ -477,7 +542,8 @@ async function createAgentRuntime(
     // Seed it with the persisted transcript so a reopened session shows its
     // history (a fresh session's buildContext is empty).
     const seed = await piSession.buildContext();
-    const initialTurns = buildPersistedTurnsFromSessionEntries(await piSession.getBranch());
+    const initialEntries = await piSession.getBranch();
+    const initialTurns = buildPersistedTurnsFromSessionEntries(initialEntries);
     const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
         const operations = extractChangeOperationsFromMessages(turn.responseMessages.filter(isToolResultModelMessage), {
             turnId: turn.turnId,
@@ -495,15 +561,29 @@ async function createAgentRuntime(
             owner.setTurnChangeOutline(turn.turnId, changeOutline);
         }
     };
-    const owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, { onTurnFinished });
-    attachAgentObservability(metadata.path, host.harness);
+    const owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, {
+        onTurnFinished,
+        initialContextEntries: initialEntries,
+    });
+    if (options.attachObservability !== false) {
+        attachAgentObservability(metadata.path, host.harness);
+    }
     return owner;
 }
 
 async function ensureAgentRuntime(
     metadata: JsonlSessionMetadata,
     opts: SendOptions
-): Promise<{ runtime: AgentSessionRuntime; config: AgentExecutionConfig }> {
+): Promise<{ runtime: AgentSessionRuntime; config: AgentExecutionConfig; apiKey?: string }> {
+    const resolved = await resolveAgentExecution(opts);
+    const runtime = await runtimeRegistry.getOrCreate(metadata.path, () =>
+        createAgentRuntime(metadata, opts, resolved.config)
+    );
+    attachPendingSubscribers(metadata.path, runtime);
+    return { runtime, ...resolved };
+}
+
+async function resolveAgentExecution(opts: SendOptions): Promise<{ config: AgentExecutionConfig; apiKey?: string }> {
     const apiKey = await resolveApiKey(opts);
     const model = resolveModelOrThrow(opts.provider, opts.model);
     const config: AgentExecutionConfig = {
@@ -525,11 +605,7 @@ async function ensureAgentRuntime(
             `reasoning=${config.thinkingLevel} apiKey=${apiKey ? "present" : "MISSING"} ` +
             `(tokenSecretName=${opts.tokenSecretName ?? "-"})`
     );
-    const runtime = await runtimeRegistry.getOrCreate(metadata.path, () =>
-        createAgentRuntime(metadata, opts, config)
-    );
-    attachPendingSubscribers(metadata.path, runtime);
-    return { runtime, config };
+    return { config, ...(apiKey == null ? {} : { apiKey }) };
 }
 
 function releaseSubscription(key: SubKey): void {
@@ -577,7 +653,9 @@ async function sendPersistedSessionState(
         canonicalPath = await validateSessionPath(sessionPath);
         const session = await openPaneSessionByPath(canonicalPath);
         const context = await session.buildContext();
-        const turns = buildPersistedTurnsFromSessionEntries(await session.getBranch());
+        const branch = await session.getBranch();
+        const turns = buildPersistedTurnsFromSessionEntries(branch);
+        const contextState = buildContextStateFromSessionEntries(branch);
         if (sender.isDestroyed()) return;
         sender.send(
             "agent:event",
@@ -588,6 +666,7 @@ async function sendPersistedSessionState(
                 status: "idle",
                 steer: [],
                 followUp: [],
+                ...contextState,
             })
         );
     } catch (err) {
@@ -602,6 +681,7 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
     status: AgentSessionRuntimeStatus;
     steer: AgentMessage[];
     followUp: AgentMessage[];
+    contextReports: ReturnType<typeof buildContextStateFromSessionEntries>["contextReports"];
 }> {
     const canonicalPath = await validateSessionPath(sessionPath);
     const owner = runtimeRegistry.get(canonicalPath);
@@ -614,17 +694,20 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
             status: state.status,
             steer: state.steerQueue,
             followUp: state.followUpQueue,
+            contextReports: state.contextReports,
         };
     }
     const session = await openPaneSessionByPath(canonicalPath);
     const context = await session.buildContext();
+    const branch = await session.getBranch();
     return {
         type: "session_state",
         messages: context.messages,
-        turns: buildPersistedTurnsFromSessionEntries(await session.getBranch()),
+        turns: buildPersistedTurnsFromSessionEntries(branch),
         status: "idle",
         steer: [],
         followUp: [],
+        ...buildContextStateFromSessionEntries(branch),
     };
 }
 
@@ -662,6 +745,7 @@ function subscribeToOwner(
             status: sessionState.status,
             steer: sessionState.steerQueue,
             followUp: sessionState.followUpQueue,
+            contextReports: sessionState.contextReports,
         })
     );
 }
@@ -710,11 +794,285 @@ export async function listAgentForkPointsForIpc(sessionMetadata: unknown): Promi
     return buildAgentForkPointViews(entries);
 }
 
+async function readContextReferenceConfig(): Promise<ContextReferenceConfig> {
+    const result = await readAIUserConfig();
+    if (result.status !== "ok" || !result.config) {
+        throw new ContextReferenceError("disabled", "Context references require a valid AI configuration");
+    }
+    const configured = result.config.context_references;
+    return {
+        enabled: configured?.enabled ?? true,
+        ...(configured?.max_tokens == null
+            ? {}
+            : { maxTokens: Math.max(0, Math.min(128_000, Math.trunc(configured.max_tokens))) }),
+    };
+}
+
+async function requireContextReferencesEnabled(): Promise<ContextReferenceConfig> {
+    const config = await readContextReferenceConfig();
+    if (!config.enabled) {
+        throw new ContextReferenceError("disabled", "Context references are disabled");
+    }
+    return config;
+}
+
+async function openCanonicalContextSession(value: unknown, fieldName: string) {
+    const requestedPath = requireNonEmptyString(value, fieldName);
+    let canonicalPath: string;
+    try {
+        canonicalPath = await validateSessionPath(requestedPath, fieldName);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new ContextReferenceError(
+            message.includes("outside sessions directory") ? "invalid_input" : "source_not_found",
+            `${fieldName} does not identify a managed session`,
+            error instanceof Error ? error : undefined
+        );
+    }
+    if (path.resolve(requestedPath) !== canonicalPath) {
+        throw new ContextReferenceError("invalid_input", `${fieldName} must be a canonical session path`);
+    }
+    const session = await openPaneSessionByPath(canonicalPath);
+    return { canonicalPath, session, metadata: await session.getMetadata() };
+}
+
+function requireContextObject(input: unknown, operation: string): Record<string, unknown> {
+    if (!isRecord(input)) {
+        throw new ContextReferenceError("invalid_input", `${operation} input must be an object`);
+    }
+    return input;
+}
+
+export async function listAgentReferencePointsForIpc(input: unknown): Promise<AgentReferencePointView[]> {
+    const value = requireContextObject(input, "listReferencePoints");
+    const { session } = await openCanonicalContextSession(value.sourceSessionPath, "sourceSessionPath");
+    return buildAgentReferencePointViews(await session.getBranch());
+}
+
+export async function prepareContextDraftForIpc(input: unknown) {
+    await requireContextReferencesEnabled();
+    const value = requireContextObject(input, "prepareContextDraft");
+    for (const forbidden of ["artifact", "messages", "summary", "snapshot"]) {
+        if (Object.hasOwn(value, forbidden)) {
+            throw new ContextReferenceError(
+                "invalid_input",
+                "Renderer-provided context artifact content is not accepted"
+            );
+        }
+    }
+    const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
+    const source = await openCanonicalContextSession(value.sourceSessionPath, "sourceSessionPath");
+    if (value.sourceKind !== "turn" && value.sourceKind !== "session") {
+        throw new ContextReferenceError("invalid_input", "sourceKind must be turn or session");
+    }
+    const sourceTurnId =
+        value.sourceTurnId == null ? undefined : requireNonEmptyString(value.sourceTurnId, "sourceTurnId");
+    if (value.sourceKind === "turn" && sourceTurnId == null) {
+        throw new ContextReferenceError("invalid_input", "sourceTurnId is required for turn context");
+    }
+    if (value.sourceKind === "session" && sourceTurnId != null) {
+        throw new ContextReferenceError("invalid_input", "sourceTurnId is not valid for session context");
+    }
+    const sourceEntries = await source.session.getBranch();
+    const sourceTitle = (await source.session.getSessionName()) || path.basename(source.metadata.cwd) || undefined;
+    const draft = captureContextArtifactDraft({
+        sourceMetadata: source.metadata,
+        sourceEntries,
+        sourceLeafId: sourceEntries.at(-1)?.id ?? null,
+        sourceKind: value.sourceKind as AgentPrepareContextDraftInput["sourceKind"],
+        ...(sourceTitle == null ? {} : { sourceTitle }),
+        ...(sourceTurnId == null ? {} : { sourceTurnId }),
+    });
+    return contextDraftRegistry.create(target.canonicalPath, draft);
+}
+
+export async function listContextStateForIpc(input: unknown): Promise<AgentContextStateView> {
+    const value = requireContextObject(input, "listContextState");
+    const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
+    const state = buildContextStateFromSessionEntries(await target.session.getBranch());
+    return {
+        drafts: contextDraftRegistry.list(target.canonicalPath),
+        contextReports: state.contextReports,
+    };
+}
+
+export async function discardContextDraftForIpc(input: unknown): Promise<{ discarded: boolean }> {
+    const value = requireContextObject(input, "discardContextDraft");
+    const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
+    const draftId = requireNonEmptyString(value.draftId, "draftId");
+    const existing = contextDraftRegistry.peek(target.canonicalPath, draftId);
+    if (!existing) {
+        if (contextDraftRegistry.findTarget(draftId) != null) {
+            throw new ContextReferenceError("invalid_input", "Context draft belongs to another target session");
+        }
+        return { discarded: false };
+    }
+    return { discarded: contextDraftRegistry.discard(target.canonicalPath, draftId) };
+}
+
+async function resolveContextSummaryConfig() {
+    const result = await readAIUserConfig();
+    if (result.status !== "ok" || !result.config) {
+        throw new ContextReferenceError("disabled", "Context summaries require a valid AI configuration");
+    }
+    const provider = result.config.default.provider;
+    const modelId = result.config.default.model;
+    const credentials = result.config.providers[provider];
+    const apiKey =
+        credentials?.token?.trim() ||
+        (credentials?.tokensecretname ? await getSecret(credentials.tokensecretname) : undefined);
+    return {
+        model: resolveModelOrThrow(provider, modelId),
+        modelKey: `${provider}/${modelId}`,
+        ...(apiKey ? { apiKey } : {}),
+        ...(contextSummaryCompletion ? { complete: contextSummaryCompletion } : {}),
+    };
+}
+
+export async function summarizeContextDraftForIpc(input: unknown) {
+    await requireContextReferencesEnabled();
+    const value = requireContextObject(input, "summarizeContextDraft");
+    const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
+    const draftId = requireNonEmptyString(value.draftId, "draftId");
+    const result = await summarizeContextDraft({
+        registry: contextDraftRegistry,
+        targetSessionPath: target.canonicalPath,
+        draftId,
+        ...(await resolveContextSummaryConfig()),
+    });
+    if (!result.ok) throw result.error;
+    return contextDraftRegistry.peek(target.canonicalPath, draftId);
+}
+
+function requireRepresentation(value: unknown): ContextRepresentation {
+    if (value !== "full" && value !== "summary") {
+        throw new ContextReferenceError("invalid_input", "requestedRepresentation is invalid");
+    }
+    return value;
+}
+
+function parseContextAttachments(value: unknown): ContextTurnDraftAttachmentInput[] {
+    if (value == null) return [];
+    if (!Array.isArray(value)) {
+        throw new ContextReferenceError("invalid_input", "contextAttachments must be an array");
+    }
+    return value.map((item) => {
+        const input = requireContextObject(item, "contextAttachment");
+        for (const forbidden of ["artifact", "body", "messages", "snapshot", "summary"]) {
+            if (Object.hasOwn(input, forbidden)) {
+                throw new ContextReferenceError(
+                    "invalid_input",
+                    "Renderer-provided context attachment content is not accepted"
+                );
+            }
+        }
+        const draftId = requireNonEmptyString(input.draftId, "draftId");
+        if (input.deliveryScope !== "message" && input.deliveryScope !== "conversation") {
+            throw new ContextReferenceError("invalid_input", "context attachment delivery scope is invalid");
+        }
+        return {
+            draftId,
+            deliveryScope: input.deliveryScope,
+            requestedRepresentation: requireRepresentation(input.requestedRepresentation),
+        };
+    });
+}
+
+function makeContextTurnPrepareCallback(input: {
+    targetSessionPath: string;
+    session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
+    attachments: ContextTurnDraftAttachmentInput[];
+    model: Model<Api>;
+}) {
+    let prepare: ReturnType<typeof createContextTurnPreparation> | undefined;
+    let finalProviderRequestOptions:
+        | Awaited<ReturnType<AgentHarnessTurnPreparationInput["transformProviderRequest"]>>
+        | undefined;
+
+    return async (turn: AgentHarnessTurnPreparationInput) => {
+        if (!prepare) {
+            finalProviderRequestOptions = await turn.transformProviderRequest();
+            const providerRequest: ContextProviderRequest = {
+                systemPrompt: turn.systemPrompt,
+                tools: turn.activeTools,
+                history: await convertToLlm(turn.messages),
+                currentUserContent: null,
+            };
+            prepare = createContextTurnPreparation({
+                session: input.session,
+                draftRegistry: contextDraftRegistry,
+                targetSessionPath: input.targetSessionPath,
+                userMessage: turn.userMessage,
+                contextMessages: turn.messages,
+                attachments: input.attachments,
+                provider: input.model.provider,
+                modelKey: `${input.model.provider}/${input.model.id}`,
+                contextWindow: input.model.contextWindow,
+                effectiveOutputReserve: input.model.maxTokens,
+                request: providerRequest,
+                revisionData: {
+                    model: input.model,
+                    attachments: input.attachments,
+                },
+                signal: turn.signal,
+            });
+        }
+        const result = await prepare();
+        if ("error" in result) {
+            result.error.budget = result.budget;
+            throw result.error;
+        }
+        const transformedMessages = await turn.transformContextMessages(
+            result.transformedContextMessages ?? turn.messages
+        );
+        return {
+            userEntryId: result.userEntryId,
+            systemPromptSuffix: result.systemPromptSuffix,
+            projectionReport: result.projectionReport,
+            finalProviderRequestOptions,
+            transformedContextMessages: transformedMessages,
+        };
+    };
+}
+
 export async function getAgentSessionStateForIpc(
     sessionMetadata: unknown
 ): Promise<Awaited<ReturnType<typeof buildPersistedSessionState>>> {
     const { metadata, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
     return await buildPersistedSessionState(requestedPath || metadata.path);
+}
+
+type ContextIpcEnvelope<T> =
+    | { ok: true; value: T }
+    | {
+          ok: false;
+          error:
+              | {
+                    kind: "context";
+                    code: ContextReferenceError["code"];
+                    message: string;
+                    budget?: ContextBudgetResult;
+                }
+              | { kind: "generic"; message: string };
+      };
+
+async function contextIpcEnvelope<T>(operation: () => Promise<T>): Promise<ContextIpcEnvelope<T>> {
+    try {
+        return { ok: true, value: await operation() };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!(error instanceof ContextReferenceError)) {
+            return { ok: false, error: { kind: "generic", message } };
+        }
+        const budget =
+            error != null && typeof error === "object" && "budget" in error
+                ? (error as { budget?: ContextBudgetResult }).budget
+                : undefined;
+        return {
+            ok: false,
+            error: { kind: "context", code: error.code, message, ...(budget == null ? {} : { budget }) },
+        };
+    }
 }
 
 export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavigateTreeResult> {
@@ -790,6 +1148,7 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
         steer: [] as AgentMessage[],
         followUp: [] as AgentMessage[],
         errorMessage: undefined as string | undefined,
+        ...buildContextStateFromSessionEntries(branchEntries),
     };
     for (const [, pending] of pendingSubscriptions) {
         if (pending.canonicalPath !== metadata.path) continue;
@@ -838,6 +1197,13 @@ export async function runAgentCommandForIpc(input: unknown): Promise<AgentComman
         case "compact":
             return await runCompactSessionCommand(parsed.sessionMetadata, parsed.argsText);
         case "session":
+        case "resume":
+            return {
+                status: "success",
+                message: "Open session manager",
+                managerMode: "session",
+            };
+        case "info":
             return await runSessionInfoCommand(parsed.sessionMetadata);
         case "copy":
             return await runCopyLastAssistantMessageCommand(parsed.sessionMetadata);
@@ -1036,7 +1402,10 @@ export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPat
  */
 export function registerAgentIpcHandlers(): void {
     if (!runtimeSweepTimer) {
-        runtimeSweepTimer = setInterval(() => runtimeRegistry.evictIdle(), AgentRuntimeSweepIntervalMs);
+        runtimeSweepTimer = setInterval(() => {
+            runtimeRegistry.evictIdle();
+            contextDraftRegistry.sweepExpired();
+        }, AgentRuntimeSweepIntervalMs);
         runtimeSweepTimer.unref();
     }
 
@@ -1088,6 +1457,16 @@ export function registerAgentIpcHandlers(): void {
         }
     );
 
+    const contextHandler =
+        <T>(operation: (input: unknown) => Promise<T>) =>
+        async (_event: unknown, input: unknown) =>
+            await contextIpcEnvelope(() => operation(input));
+    electron.ipcMain.handle("agent:prepare-context-draft", contextHandler(prepareContextDraftForIpc));
+    electron.ipcMain.handle("agent:discard-context-draft", contextHandler(discardContextDraftForIpc));
+    electron.ipcMain.handle("agent:list-reference-points", contextHandler(listAgentReferencePointsForIpc));
+    electron.ipcMain.handle("agent:list-context-state", contextHandler(listContextStateForIpc));
+    electron.ipcMain.handle("agent:summarize-context-draft", contextHandler(summarizeContextDraftForIpc));
+
     electron.ipcMain.handle(
         "agent:navigate-tree",
         async (_event, input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> => {
@@ -1118,25 +1497,63 @@ export function registerAgentIpcHandlers(): void {
 
     electron.ipcMain.handle(
         "agent:send",
-        async (_event, opts: SendOptions): Promise<{ sessionMetadata: JsonlSessionMetadata; turnId: string }> => {
-            console.log(
-                `[agent-ipc] agent:send provider=${opts.provider} model=${opts.model} ` +
-                    `reasoning=${opts.reasoning ?? "off"} ` +
-                    `cred=${opts.token ? "token" : opts.tokenSecretName ? `secret:${opts.tokenSecretName}` : "NONE"} ` +
-                    `textLen=${opts.text?.length ?? 0}`
+        async (
+            _event,
+            opts: SendOptions
+        ): Promise<ContextIpcEnvelope<{ sessionMetadata: JsonlSessionMetadata; turnId: string }>> => {
+            const runInIngress = reserveAgentSendIngress(opts);
+            return await runInIngress(
+                async () =>
+                    await contextIpcEnvelope(async () => {
+                        console.log(
+                            `[agent-ipc] agent:send provider=${opts.provider} model=${opts.model} ` +
+                                `reasoning=${opts.reasoning ?? "off"} ` +
+                                `cred=${opts.token ? "token" : opts.tokenSecretName ? `secret:${opts.tokenSecretName}` : "NONE"} ` +
+                                `textLen=${opts.text?.length ?? 0}`
+                        );
+                        const { metadata } = await ensureSession(opts);
+                        const targetSessionPath = await validateSessionPath(metadata.path);
+                        const targetSession = await openPaneSessionByPath(targetSessionPath);
+                        const attachments = parseContextAttachments(opts.contextAttachments);
+                        const { runtime, config } = await ensureAgentRuntime(metadata, opts);
+                        const images = imageContentsFromRenderer(opts.images);
+                        const resolveContextPreparation = async (): Promise<
+                            AgentHarnessTurnPreparation | undefined
+                        > => {
+                            if (attachments.length === 0) return undefined;
+                            try {
+                                await requireContextReferencesEnabled();
+                            } catch (error) {
+                                if (
+                                    attachments.length > 0 ||
+                                    !(error instanceof ContextReferenceError) ||
+                                    error.code !== "disabled"
+                                ) {
+                                    throw error;
+                                }
+                                return undefined;
+                            }
+                            if (attachments.length > 0) {
+                                contextDraftRegistry.readMany(
+                                    targetSessionPath,
+                                    attachments.map((attachment) => attachment.draftId)
+                                );
+                            }
+                            return makeContextTurnPrepareCallback({
+                                targetSessionPath,
+                                session: targetSession,
+                                attachments,
+                                model: config.model,
+                            });
+                        };
+                        const userEntryId = await runtime.sendWithExecutionConfig(opts.text, config, {
+                            ...(images ? { images } : {}),
+                            activatePreparation: async () => await resolveContextPreparation(),
+                        });
+
+                        return { sessionMetadata: metadata, turnId: userEntryId };
+                    })
             );
-            const { metadata } = await ensureSession(opts);
-            const { runtime, config } = await ensureAgentRuntime(metadata, opts);
-
-            // Turn identity IS the session entry id of the user message that
-            // starts the turn. Prompt first so the session mints that entry,
-            // the single source of truth.
-            const images = imageContentsFromRenderer(opts.images);
-            const userEntryId = images
-                ? await runtime.sendWithExecutionConfig(opts.text, config, { images })
-                : await runtime.sendWithExecutionConfig(opts.text, config);
-
-            return { sessionMetadata: metadata, turnId: userEntryId };
         }
     );
 
@@ -1172,9 +1589,21 @@ export function _resetAgentIpcForTests(): void {
     subscriptions.clear();
     subscriptionsBySender.clear();
     pendingSubscriptions.clear();
+    sendIngressTails.clear();
     if (runtimeSweepTimer) {
         clearInterval(runtimeSweepTimer);
         runtimeSweepTimer = undefined;
     }
     runtimeRegistry.disposeAll();
+    contextDraftRegistry = new ContextDraftRegistry();
+    contextSummaryCompletion = undefined;
+    contextProviderAdapterFactory = createContextProviderAdapter;
+}
+
+export function _setContextSummaryCompletionForTests(completion: ContextSummaryCompletion | undefined): void {
+    contextSummaryCompletion = completion;
+}
+
+export function _setContextProviderAdapterFactoryForTests(factory: typeof contextProviderAdapterFactory): void {
+    contextProviderAdapterFactory = factory;
 }

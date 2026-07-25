@@ -14,6 +14,7 @@ import {
     type ExternalStoreAdapter,
     type MessageStatus,
     type PendingAttachment,
+    type QuoteInfo,
     type ThreadAssistantMessagePart,
     type ThreadMessage,
     type ThreadUserMessagePart,
@@ -37,6 +38,9 @@ export interface CrestAssistantRuntimeBridge {
     status: UsePiChatStatus;
     submit: (text: string, images?: string[]) => boolean | Promise<boolean | void> | void;
     abort: () => void;
+    isSendDisabled?: boolean;
+    onSubmissionError?: (error: unknown) => void;
+    submissionLease?: CanonicalComposerSubmissionLease;
 }
 
 type CrestAssistantRuntimeSource = UsePiChatReturn | CrestAssistantRuntimeBridge;
@@ -53,36 +57,61 @@ export function piTurnsToAuiMessages(turns: PiTurn[]): ThreadMessage[] {
 export function createCrestAssistantRuntimeAdapter(
     source: CrestAssistantRuntimeSource
 ): ExternalStoreAdapter<ThreadMessage> {
+    const submissionLease = "submissionLease" in source ? source.submissionLease : undefined;
     return {
         messages: piTurnsToAuiMessages(source.turns),
         isRunning: source.status === "streaming",
+        ...(!("send" in source) ? { isSendDisabled: source.isSendDisabled } : {}),
         adapters: {
             attachments: new CompositeAttachmentAdapter([
-                new SimpleImageAttachmentAdapter(),
+                new CachedImageAttachmentAdapter(submissionLease),
                 new SimpleTextAttachmentAdapter(),
                 new CrestFileAttachmentAdapter(),
             ]),
         },
-        onNew: async (message: AppendMessage): Promise<void> => {
-            if (message.role !== "user") return;
-            const text = textFromUserMessage(message);
-            const textWithQuote = injectQuoteContext(text, quoteFromUserMessage(message));
-            const images = imagesFromUserMessage(message);
-            if (!textWithQuote && images.length === 0) return;
-            if ("send" in source) {
-                if (images.length > 0) {
-                    await source.send(textWithQuote, { images });
+        onNew: (message: AppendMessage): Promise<void> => {
+            void submitCrestAppendMessage(source, message).catch((error) => {
+                if ("onSubmissionError" in source && source.onSubmissionError) {
+                    source.onSubmissionError(error);
                     return;
                 }
-                await source.send(textWithQuote);
-                return;
-            }
-            await source.submit(textWithQuote, images.length > 0 ? images : undefined);
+                console.error("Agent submission failed", error);
+            });
+            return Promise.resolve();
         },
         onCancel: async (): Promise<void> => {
             source.abort();
         },
     };
+}
+
+export async function submitCrestAppendMessage(
+    source: CrestAssistantRuntimeSource,
+    message: AppendMessage
+): Promise<void> {
+    if (message.role !== "user") return;
+    const payload = await canonicalComposerPayloadFromState({
+        text: textFromUserMessage(message),
+        quote: quoteFromUserMessage(message),
+        attachments: message.attachments ?? [],
+    });
+    if (!payload.text && (payload.images?.length ?? 0) === 0) return;
+    const leaseToken = "submissionLease" in source ? source.submissionLease?.claim(payload) : undefined;
+    try {
+        if ("send" in source) {
+            if (payload.images?.length) {
+                await source.send(payload.text, { images: payload.images });
+                return;
+            }
+            await source.send(payload.text);
+            return;
+        }
+        await source.submit(payload.text, payload.images);
+    } finally {
+        if ("submissionLease" in source && leaseToken != null) {
+            source.submissionLease?.release(leaseToken);
+        }
+    }
 }
 
 export class CrestFileAttachmentAdapter implements AttachmentAdapter {
@@ -136,6 +165,7 @@ function createUserMessage(turn: PiTurn): ThreadMessage {
 }
 
 function createAssistantMessage(turn: PiTurn): ThreadMessage {
+    const turnMetadata = metadataForTurn(turn);
     return {
         id: `assistant-${turn.turnId}`,
         role: "assistant",
@@ -143,7 +173,11 @@ function createAssistantMessage(turn: PiTurn): ThreadMessage {
         content: assistantContentFromTurn(turn),
         status: statusFromPiTurn(turn),
         metadata: {
-            ...metadataForTurn(turn),
+            ...turnMetadata,
+            custom: {
+                ...turnMetadata.custom,
+                contextProjection: turn.contextProjection,
+            },
             unstable_state: undefined,
             unstable_annotations: [],
             unstable_data: [],
@@ -272,7 +306,7 @@ function textFromUserMessage(message: AppendMessage): string {
     return textParts.join("\n");
 }
 
-function quoteFromUserMessage(message: AppendMessage): { text: string; messageId: string } | undefined {
+function quoteFromUserMessage(message: AppendMessage): QuoteInfo | undefined {
     const quote = message.metadata?.custom?.quote;
     if (!quote || typeof quote !== "object") return undefined;
 
@@ -285,7 +319,7 @@ function quoteFromUserMessage(message: AppendMessage): { text: string; messageId
     };
 }
 
-function injectQuoteContext(text: string, quote: { text: string } | undefined): string {
+export function injectQuoteContext(text: string, quote: Pick<QuoteInfo, "text"> | undefined): string {
     if (!quote?.text.trim()) return text;
 
     const quotedText = quote.text
@@ -297,14 +331,181 @@ function injectQuoteContext(text: string, quote: { text: string } | undefined): 
     return `${quotedText}\n\n${text}`;
 }
 
-function imagesFromUserMessage(message: AppendMessage): string[] {
-    const images: string[] = [];
-    for (const part of message.content) {
-        if (part.type === "image" && typeof part.image === "string") {
-            images.push(part.image);
+export interface CanonicalComposerPayload {
+    text: string;
+    images?: string[];
+}
+
+export interface CanonicalComposerState {
+    text: string;
+    quote?: QuoteInfo;
+    attachments: readonly Attachment[];
+}
+
+interface CanonicalPreviewRecord {
+    token: number;
+    payload: CanonicalComposerPayload;
+    files: Set<File>;
+}
+
+function canonicalPayloadEqual(left: CanonicalComposerPayload, right: CanonicalComposerPayload): boolean {
+    return (
+        left.text === right.text &&
+        left.images?.length === right.images?.length &&
+        (left.images?.every((image, index) => image === right.images?.[index]) ?? true)
+    );
+}
+
+function isClearedComposerState(state: CanonicalComposerState): boolean {
+    return !state.text && !state.quote && state.attachments.length === 0;
+}
+
+export class CanonicalComposerSubmissionLease {
+    sequence = 0;
+    preview?: CanonicalPreviewRecord;
+    active?: { token: number; payload: CanonicalComposerPayload };
+    listeners = new Set<() => void>();
+
+    registerPreview(state: CanonicalComposerState, payload: CanonicalComposerPayload): void {
+        this.sequence += 1;
+        this.preview = {
+            token: this.sequence,
+            payload,
+            files: new Set(
+                state.attachments.flatMap((attachment) =>
+                    attachment.status.type === "complete" || !("file" in attachment) ? [] : [attachment.file]
+                )
+            ),
+        };
+    }
+
+    beginForFile(file: File): number | undefined {
+        if (!this.preview?.files.has(file)) return undefined;
+        this.active = {
+            token: this.preview.token,
+            payload: this.preview.payload,
+        };
+        return this.active.token;
+    }
+
+    payloadForObserver(state: CanonicalComposerState, payload: CanonicalComposerPayload): CanonicalComposerPayload {
+        if (this.active && isClearedComposerState(state)) {
+            return this.active.payload;
+        }
+        return payload;
+    }
+
+    claim(payload: CanonicalComposerPayload): number | undefined {
+        if (!this.active || !canonicalPayloadEqual(this.active.payload, payload)) return undefined;
+        return this.active.token;
+    }
+
+    release(token: number): void {
+        if (this.active?.token !== token) return;
+        this.active = undefined;
+        for (const listener of this.listeners) {
+            listener();
         }
     }
-    return images;
+
+    subscribe(listener: () => void): () => void {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    }
+}
+
+function attachmentImage(attachment: Attachment): string | undefined {
+    for (const part of attachment.content ?? []) {
+        if (part.type === "image" && typeof part.image === "string" && part.image) {
+            return part.image;
+        }
+    }
+}
+
+const ImageResolutionCache = new WeakMap<File, Promise<string>>();
+
+function resolvePendingImage(
+    attachment: PendingAttachment,
+    imageAdapter: SimpleImageAttachmentAdapter
+): Promise<string> {
+    return resolvePendingImageWith(attachment, () => imageAdapter.send(attachment));
+}
+
+function resolvePendingImageWith(
+    attachment: PendingAttachment,
+    resolve: () => Promise<CompleteAttachment>
+): Promise<string> {
+    const cached = ImageResolutionCache.get(attachment.file);
+    if (cached) return cached;
+
+    const resolution = resolve().then((resolved) => {
+        const image = attachmentImage(resolved);
+        if (!image) {
+            throw new Error(`Image attachment "${attachment.name}" is not ready`);
+        }
+        return image;
+    });
+    ImageResolutionCache.set(attachment.file, resolution);
+    void resolution.catch(() => {
+        if (ImageResolutionCache.get(attachment.file) === resolution) {
+            ImageResolutionCache.delete(attachment.file);
+        }
+    });
+    return resolution;
+}
+
+class CachedImageAttachmentAdapter extends SimpleImageAttachmentAdapter {
+    submissionLease?: CanonicalComposerSubmissionLease;
+
+    constructor(submissionLease?: CanonicalComposerSubmissionLease) {
+        super();
+        this.submissionLease = submissionLease;
+    }
+
+    override async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+        const leaseToken = this.submissionLease?.beginForFile(attachment.file);
+        try {
+            const image = await resolvePendingImageWith(attachment, () => super.send(attachment));
+            return {
+                ...attachment,
+                status: { type: "complete" },
+                content: [{ type: "image", image }],
+            };
+        } catch (error) {
+            if (leaseToken != null) {
+                this.submissionLease?.release(leaseToken);
+            }
+            throw error;
+        }
+    }
+}
+
+export function composerImagesNeedResolution(attachments: readonly Attachment[]): boolean {
+    return attachments.some((attachment) => attachment.type === "image" && attachmentImage(attachment) == null);
+}
+
+export async function canonicalComposerPayloadFromState(
+    state: CanonicalComposerState,
+    imageAdapter = new SimpleImageAttachmentAdapter()
+): Promise<CanonicalComposerPayload> {
+    const images: string[] = [];
+    for (const attachment of state.attachments) {
+        if (attachment.type !== "image") {
+            continue;
+        }
+        let image = attachmentImage(attachment);
+        if (!image && attachment.status.type !== "complete") {
+            image = await resolvePendingImage(attachment as PendingAttachment, imageAdapter);
+        }
+        if (!image) {
+            throw new Error(`Image attachment "${attachment.name}" is not ready`);
+        }
+        images.push(image);
+    }
+    return {
+        text: injectQuoteContext(state.text, state.quote),
+        ...(images.length ? { images } : {}),
+    };
 }
 
 function dateFromPiMessage(message: PiAgentMessage | undefined): Date {

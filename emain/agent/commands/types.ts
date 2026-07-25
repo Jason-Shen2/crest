@@ -1,6 +1,13 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type {
+    ContextDeliveryScope,
+    ContextDraftView,
+    ContextProjectionReport,
+    ContextRepresentation,
+    ContextSourceKind,
+} from "../context/types";
 import type { JsonlSessionMetadata } from "../harness/types";
 
 export type AgentCommandSource = "builtin" | "skill" | "prompt";
@@ -13,6 +20,7 @@ export type AgentBackendCommandName =
     | "resume"
     | "compact"
     | "session"
+    | "info"
     | "copy"
     | "export"
     | "import"
@@ -44,6 +52,7 @@ export interface AgentCommandExecutionResult {
     status: AgentCommandExecutionStatus;
     message: string;
     sessionMetadata?: JsonlSessionMetadata;
+    managerMode?: "session";
 }
 
 export interface AgentRunCommandInput {
@@ -83,4 +92,35 @@ export interface AgentReferencePointView {
     entryId: string;
     preview: string;
     timestamp?: string;
+}
+
+export interface AgentPrepareContextDraftInput {
+    targetSessionPath: string;
+    sourceSessionPath: string;
+    sourceKind: ContextSourceKind;
+    sourceTurnId?: string;
+}
+
+export interface AgentContextDraftAttachmentInput {
+    draftId: string;
+    deliveryScope: ContextDeliveryScope;
+    requestedRepresentation: ContextRepresentation;
+}
+
+export interface AgentDiscardContextDraftInput {
+    targetSessionPath: string;
+    draftId: string;
+}
+
+export interface AgentListReferencePointsInput {
+    sourceSessionPath: string;
+}
+
+export interface AgentListContextStateInput {
+    targetSessionPath: string;
+}
+
+export interface AgentContextStateView {
+    drafts: ContextDraftView[];
+    contextReports: ContextProjectionReport[];
 }

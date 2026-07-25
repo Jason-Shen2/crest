@@ -13,7 +13,14 @@
 
 import type { Api, Model } from "../ai";
 import { AgentHarness } from "./harness/agent-harness";
-import type { Session, Skill, ToolCallEvent, ToolCallResult } from "./harness/types";
+import type {
+    Session,
+    SessionContext,
+    SessionTreeEntry,
+    Skill,
+    ToolCallEvent,
+    ToolCallResult,
+} from "./harness/types";
 import { NodeExecutionEnv } from "./node";
 import type { ToolCallHook } from "./permissions";
 import type { ProjectContextFile } from "./resource-loader";
@@ -64,6 +71,10 @@ export interface BuildAgentHarnessHostOptions {
      * passes it here.
      */
     getApiKeyAndHeaders?: AgentAuthResolver;
+    transformSessionContext?: (input: {
+        entries: SessionTreeEntry[];
+        context: SessionContext;
+    }) => Promise<SessionContext>;
 }
 
 export interface AgentHarnessHost {
@@ -123,6 +134,7 @@ export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): Agent
             });
         },
         getApiKeyAndHeaders: async (model) => authResolver?.(model),
+        transformSessionContext: opts.transformSessionContext,
     });
     harness.on("tool_call", async (event) => toolCallHook?.(event));
     return {

@@ -34,18 +34,46 @@ ipcRenderer.on("agent:event", (_event, payload: { sessionPath: string; event: un
 });
 
 const agentObservabilityCallbacks = new Map<string, Set<(event: unknown) => void>>();
-ipcRenderer.on("agent-observability:event", (_event, payload: { sessionId?: string; traceId: string; detail: unknown }) => {
-    if (!payload.sessionId) return;
-    const cbs = agentObservabilityCallbacks.get(payload.sessionId);
-    if (!cbs) return;
-    for (const cb of cbs) {
-        try {
-            cb(payload);
-        } catch (e) {
-            console.error("agent-observability:event callback error", e);
+ipcRenderer.on(
+    "agent-observability:event",
+    (_event, payload: { sessionId?: string; traceId: string; detail: unknown }) => {
+        if (!payload.sessionId) return;
+        const cbs = agentObservabilityCallbacks.get(payload.sessionId);
+        if (!cbs) return;
+        for (const cb of cbs) {
+            try {
+                cb(payload);
+            } catch (e) {
+                console.error("agent-observability:event callback error", e);
+            }
         }
     }
-});
+);
+
+type AgentIpcEnvelope<T> =
+    | { ok: true; value: T }
+    | {
+          ok: false;
+          error:
+              | { kind: "context"; code: string; message: string; budget?: unknown }
+              | { kind: "generic"; message: string };
+      };
+
+async function invokeAgentContext<T>(channel: string, input: unknown): Promise<T> {
+    const envelope = (await ipcRenderer.invoke(channel, input)) as AgentIpcEnvelope<T>;
+    if (envelope?.ok === true) return envelope.value;
+    if (envelope?.ok === false) {
+        const error = new Error(envelope.error.message);
+        if (envelope.error.kind === "generic") throw error;
+        error.name = "ContextReferenceError";
+        Object.assign(error, {
+            code: envelope.error.code,
+            ...(envelope.error.budget == null ? {} : { budget: envelope.error.budget }),
+        });
+        throw error;
+    }
+    throw new Error(`Invalid context IPC response from ${channel}`);
+}
 
 // update type in custom.d.ts (ElectronApi type)
 contextBridge.exposeInMainWorld("waveRuntime", {
@@ -163,7 +191,8 @@ contextBridge.exposeInMainWorld("api", {
     agent: {
         createSession: (cwd: string) => ipcRenderer.invoke("agent:create-session", cwd),
         listSessionsForCwd: (cwd: string) => ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
-        listSessionDetailsForCwd: (cwd: string, limit?: number) => ipcRenderer.invoke("agent:list-session-details-for-cwd", cwd, limit),
+        listSessionDetailsForCwd: (cwd: string, limit?: number) =>
+            ipcRenderer.invoke("agent:list-session-details-for-cwd", cwd, limit),
         listAllSessionDetails: (limit?: number) => ipcRenderer.invoke("agent:list-all-session-details", limit),
         listCommands: () => ipcRenderer.invoke("agent:list-commands"),
         getSessionState: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:get-session-state", sessionMetadata),
@@ -173,12 +202,14 @@ contextBridge.exposeInMainWorld("api", {
         forkSession: (input: unknown) => ipcRenderer.invoke("agent:fork-session", input),
         cloneSession: (input: unknown) => ipcRenderer.invoke("agent:clone-session", input),
         runCommand: (input: unknown) => ipcRenderer.invoke("agent:run-command", input),
-        send: (opts: unknown) => ipcRenderer.invoke("agent:send", opts),
+        prepareContextDraft: (input: unknown) => invokeAgentContext("agent:prepare-context-draft", input),
+        summarizeContextDraft: (input: unknown) => invokeAgentContext("agent:summarize-context-draft", input),
+        discardContextDraft: (input: unknown) => invokeAgentContext("agent:discard-context-draft", input),
+        listReferencePoints: (input: unknown) => invokeAgentContext("agent:list-reference-points", input),
+        listContextState: (input: unknown) => invokeAgentContext("agent:list-context-state", input),
+        send: (opts: unknown) => invokeAgentContext("agent:send", opts),
         abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
-        subscribe: (
-            sessionPath: string,
-            callback: (event: unknown) => void
-        ): (() => void) => {
+        subscribe: (sessionPath: string, callback: (event: unknown) => void): (() => void) => {
             let entry = agentEventCallbacks.get(sessionPath);
             const isNew = !entry;
             if (!entry) {

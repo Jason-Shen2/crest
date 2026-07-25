@@ -1,5 +1,7 @@
 # Context Overlay Frontend Implementation Plan
 
+> **2026-07-25 supersession:** The Pin/Once/Metadata and live-preview UI details in the original plan below are retained as historical context. The current interaction configures immutable “This message” / “Conversation” delivery plus Full / Summary before adding a reference, has no Pin controls, and never gates Send on a client-side budget preview. Follow the [2026-07-25 design amendment](../specs/2026-07-20-cross-session-context-reference-design.md) for the normative contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `/tree` and `/session` reference flows, composer draft/pin controls, reliable send recovery, and per-turn projection visibility on top of the backend-authoritative context API.
@@ -11,6 +13,8 @@
 **Design:** `docs/specs/2026-07-20-cross-session-context-reference-design.md`
 
 **Backend dependency:** `docs/plans/2026-07-21-context-overlay-backend-plan.md`
+
+**2026-07-24 amendment:** The approved implementation removes live budget preview, stale-budget state, and context-window send gating. Renderer eligibility is limited to feature enablement, Summary readiness, and protection against editing references captured by an in-flight send. Provider overflow errors preserve the composer and references for explicit user adjustment.
 
 ## Scope and ownership
 
@@ -475,8 +479,8 @@ Assert:
 - draft callbacks invoke the current host API;
 - committed pin callbacks invoke update/detach APIs;
 - recovery actions invoke retry after the user has adjusted the request; no bypass action is rendered;
-- a current `fits` budget is required to enable Send whenever drafts or active pins exist;
-- pending/stale preview, pending/missing Summary, duplicate references, missing artifacts, projection errors, over-budget results, and unavailable counters disable Send with specific guidance;
+- a current `fits` or non-blocking `counter_unavailable` budget is required to enable Send whenever drafts or active pins exist;
+- pending/stale preview, pending/missing Summary, duplicate references, missing artifacts, projection errors, and authoritatively over-budget results disable Send; unavailable counters show an unverified estimate without disabling Send;
 - send rejection restores exact composer text via `AgentComposerTextRestore`;
 - selector and model picker remain mutually exclusive under the existing attached-panel reducer;
 - switching/resuming a session causes the newly hydrated pins to replace old pins;

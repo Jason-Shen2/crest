@@ -1,12 +1,28 @@
+// @vitest-environment jsdom
+
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { AppendMessage, PendingAttachment, ThreadMessage } from "@assistant-ui/react";
+import {
+    SimpleImageAttachmentAdapter,
+    type AppendMessage,
+    type PendingAttachment,
+    type ThreadMessage,
+} from "@assistant-ui/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { contextSendDisabledReason, createContextReferenceState } from "@/app/store/context-references";
 import type { PiTurn, UsePiChatReturn } from "@/app/store/use-pi-chat";
 
-import { createCrestAssistantRuntimeAdapter, piTurnsToAuiMessages } from "./runtime-bridge";
+import {
+    CanonicalComposerSubmissionLease,
+    canonicalComposerPayloadFromState,
+    createCrestAssistantRuntimeAdapter,
+    piTurnsToAuiMessages,
+    submitCrestAppendMessage,
+    useCrestAssistantRuntime,
+} from "./runtime-bridge";
 
 function user(text: string, timestamp = 1): PiTurn["userMessage"] {
     return { role: "user", timestamp, content: [{ type: "text", text }] };
@@ -37,6 +53,11 @@ function makeChat(overrides: Partial<UsePiChatReturn> = {}): UsePiChatReturn {
         queuedMessages: [],
         send: vi.fn(),
         abort: vi.fn(),
+        contextState: createContextReferenceState(),
+        prepareContextDraft: vi.fn(),
+        discardContextDraft: vi.fn(),
+        summarizeContextDraft: vi.fn(),
+        retryContextSend: vi.fn(),
         ...overrides,
     };
 }
@@ -68,6 +89,29 @@ describe("piTurnsToAuiMessages", () => {
             status: { type: "complete" },
             metadata: { custom: { turnId: "turn-1" } },
         });
+    });
+
+    it("stores a turn projection report in assistant message custom metadata", () => {
+        const contextProjection = {
+            schemaVersion: 1,
+            transactionId: "transaction-1",
+            targetTurnId: "turn-1",
+            createdAt: "2026-07-23T00:00:00.000Z",
+            contextWindow: 1000,
+            effectiveOutputReserve: 100,
+            inputLimit: 900,
+            baseInputTokens: 100,
+            finalInputTokens: 200,
+            referenceTokens: 100,
+            countAccuracy: "exact",
+            overlaySha256: "sha",
+            items: [],
+        } satisfies AgentContextProjectionReportView;
+
+        const [userMessage, assistant] = piTurnsToAuiMessages([makeTurn({ contextProjection })]);
+
+        expect(userMessage.metadata.custom).not.toHaveProperty("contextProjection");
+        expect(assistant.metadata.custom).toMatchObject({ turnId: "turn-1", contextProjection });
     });
 
     it("maps user text and image parts without reordering", () => {
@@ -253,7 +297,9 @@ describe("createCrestAssistantRuntimeAdapter", () => {
         const adapter = createCrestAssistantRuntimeAdapter(
             makeChat({
                 turns: [
-                    makeTurn({ responseMessages: [{ role: "assistant", content: [{ type: "text", text: "answer" }] }] }),
+                    makeTurn({
+                        responseMessages: [{ role: "assistant", content: [{ type: "text", text: "answer" }] }],
+                    }),
                 ],
                 status: "streaming",
             })
@@ -265,7 +311,6 @@ describe("createCrestAssistantRuntimeAdapter", () => {
 
     it("sends the latest user message text through usePiChat.send", async () => {
         const send = vi.fn<UsePiChatReturn["send"]>();
-        const adapter = createCrestAssistantRuntimeAdapter(makeChat({ send }));
         const message = {
             role: "user",
             content: [
@@ -280,25 +325,250 @@ describe("createCrestAssistantRuntimeAdapter", () => {
             createdAt: new Date(0),
         } as AppendMessage;
 
-        await adapter.onNew(message);
+        await submitCrestAppendMessage(makeChat({ send }), message);
 
         expect(send).toHaveBeenCalledWith("hello\nworld");
     });
 
-    it("passes user image parts through the submit bridge", async () => {
+    it("reads resolved user images from complete message attachments", async () => {
         const submit = vi.fn();
+        const message = {
+            role: "user",
+            content: [{ type: "text", text: "describe this" }],
+            parentId: null,
+            sourceId: null,
+            runConfig: undefined,
+            metadata: { custom: {} },
+            attachments: [
+                {
+                    id: "image-1",
+                    type: "image",
+                    name: "pixel.png",
+                    contentType: "image/png",
+                    status: { type: "complete" },
+                    content: [{ type: "image", image: "data:image/png;base64,abc123" }],
+                },
+            ],
+            createdAt: new Date(0),
+        } as AppendMessage;
+
+        await submitCrestAppendMessage(
+            {
+                turns: [],
+                status: "idle",
+                submit,
+                abort: vi.fn(),
+            },
+            message
+        );
+
+        expect(submit).toHaveBeenCalledWith("describe this", ["data:image/png;base64,abc123"]);
+    });
+
+    it("uses one canonical payload for a real composer image, quote preview, and final submit", async () => {
+        const submit = vi.fn().mockResolvedValue(undefined);
+        const bridge = {
+            turns: [],
+            status: "idle" as const,
+            submit,
+            abort: vi.fn(),
+        };
+        const { result } = renderHook(() => useCrestAssistantRuntime(bridge));
+        const composer = result.current.thread.composer;
+        const file = new File([new Uint8Array([1, 2, 3])], "pixel.png", { type: "image/png" });
+        const quote = { text: "quoted\ncontext", messageId: "assistant-source" };
+
+        await act(async () => {
+            await composer.addAttachment(file);
+            composer.setText("describe it");
+            composer.setQuote(quote);
+        });
+        const pendingState = composer.getState();
+        expect(pendingState.attachments[0]?.status.type).toBe("requires-action");
+
+        const preview = await canonicalComposerPayloadFromState({
+            text: pendingState.text,
+            quote: pendingState.quote,
+            attachments: pendingState.attachments,
+        });
+        expect(preview).toEqual({
+            text: ["> quoted", "> context", "", "describe it"].join("\n"),
+            images: ["data:image/png;base64,AQID"],
+        });
+
+        act(() => {
+            composer.send();
+        });
+        await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+        expect(submit).toHaveBeenCalledWith(preview.text, preview.images);
+    });
+
+    it("resolves the same pending image only once across rapid text and quote previews", async () => {
+        const file = new File([new Uint8Array([1, 2, 3])], "pixel.png", { type: "image/png" });
+        const attachment = {
+            id: "image-1",
+            type: "image",
+            name: file.name,
+            contentType: file.type,
+            file,
+            status: { type: "requires-action", reason: "composer-send" },
+        } as PendingAttachment;
+        const imageAdapter = new SimpleImageAttachmentAdapter();
+        const send = vi.spyOn(imageAdapter, "send").mockResolvedValue({
+            ...attachment,
+            status: { type: "complete" },
+            content: [{ type: "image", image: "data:image/png;base64,AQID" }],
+        });
+
+        const [first, second] = await Promise.all([
+            canonicalComposerPayloadFromState({ text: "first", attachments: [attachment] }, imageAdapter),
+            canonicalComposerPayloadFromState(
+                {
+                    text: "second",
+                    quote: { text: "quote", messageId: "source" },
+                    attachments: [attachment],
+                },
+                imageAdapter
+            ),
+        ]);
+
+        expect(send).toHaveBeenCalledOnce();
+        expect(first.images).toEqual(["data:image/png;base64,AQID"]);
+        expect(second).toEqual({
+            text: ["> quote", "", "second"].join("\n"),
+            images: ["data:image/png;base64,AQID"],
+        });
+    });
+
+    it("holds the verified reference preview while a real composer clears for image submission", async () => {
+        const reads: Array<() => void> = [];
+        class DelayedFileReader {
+            result: string | ArrayBuffer | null = null;
+            onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
+            onerror: ((event: ProgressEvent<FileReader>) => void) | null = null;
+
+            readAsDataURL(): void {
+                reads.push(() => {
+                    this.result = "data:image/png;base64,AQID";
+                    this.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+                });
+            }
+        }
+        vi.stubGlobal("FileReader", DelayedFileReader);
+        const submissionLease = new CanonicalComposerSubmissionLease();
+        let settleSubmit!: () => void;
+        const submit = vi.fn(
+            () =>
+                new Promise<void>((resolve) => {
+                    settleSubmit = resolve;
+                })
+        );
+        const bridge = {
+            turns: [],
+            status: "idle" as const,
+            submit,
+            abort: vi.fn(),
+            submissionLease,
+        };
+        const { result } = renderHook(() => useCrestAssistantRuntime(bridge));
+        const composer = result.current.thread.composer;
+        const file = new File([new Uint8Array([1, 2, 3])], "lease.png", { type: "image/png" });
+        await act(async () => {
+            await composer.addAttachment(file);
+            composer.setText("send with reference");
+        });
+        const composerState = composer.getState();
+        const previewPromise = canonicalComposerPayloadFromState(composerState);
+        expect(reads).toHaveLength(1);
+        reads.shift()?.();
+        const verifiedPreview = await previewPromise;
+        submissionLease.registerPreview(composerState, verifiedPreview);
+        const referenceState = {
+            ...createContextReferenceState(),
+            drafts: [
+                {
+                    status: "ready",
+                    deliveryScope: "message",
+                    requestedRepresentation: "full",
+                    view: {
+                        draftId: "draft",
+                        targetSessionPath: "/sessions/target.jsonl",
+                        provenance: {
+                            sourceKind: "turn",
+                            sourceSessionId: "source",
+                            sourceSessionPath: "/sessions/source.jsonl",
+                            sourceCwd: "/workspace",
+                            sourceTurnId: "turn",
+                            sourceLeafId: "leaf",
+                            sourceMessageEntryIds: ["message"],
+                            preview: "preview",
+                            capturedAt: "2026-07-25T00:00:00.000Z",
+                        },
+                        summaryStatus: "none",
+                        expiresAt: "2026-07-25T01:00:00.000Z",
+                    },
+                },
+            ],
+        } as ReturnType<typeof createContextReferenceState>;
+        expect(contextSendDisabledReason(referenceState)).toBeUndefined();
+
+        const observedAfterClear: Array<typeof verifiedPreview> = [];
+        const unsubscribe = composer.subscribe(() => {
+            const state = composer.getState();
+            if (state.text || state.attachments.length || state.quote) return;
+            const observed = submissionLease.payloadForObserver(state, { text: "" });
+            observedAfterClear.push(observed);
+        });
+
+        act(() => {
+            expect(composer.send()).toBeUndefined();
+        });
+        await waitFor(() => expect(submit).toHaveBeenCalledWith(verifiedPreview.text, verifiedPreview.images));
+        expect(reads).toHaveLength(0);
+        expect(observedAfterClear).toContain(verifiedPreview);
+        expect(contextSendDisabledReason(referenceState)).toBeUndefined();
+
+        settleSubmit();
+        await waitFor(() => expect(submissionLease.active).toBeUndefined());
+        unsubscribe();
+        vi.unstubAllGlobals();
+    });
+
+    it("reports a rejected real composer send once without leaking the detached promise", async () => {
+        const error = new Error("send rejected");
+        const onSubmissionError = vi.fn();
+        const bridge = {
+            turns: [],
+            status: "idle" as const,
+            submit: vi.fn().mockRejectedValue(error),
+            abort: vi.fn(),
+            onSubmissionError,
+        };
+        const { result } = renderHook(() => useCrestAssistantRuntime(bridge));
+        const composer = result.current.thread.composer;
+        act(() => {
+            composer.setText("will reject");
+            expect(composer.send()).toBeUndefined();
+        });
+
+        await waitFor(() => expect(onSubmissionError).toHaveBeenCalledOnce());
+        expect(onSubmissionError).toHaveBeenCalledWith(error);
+        expect(bridge.submit).toHaveBeenCalledOnce();
+    });
+
+    it("consumes runtime callback rejection and reports it through the explicit error sink", async () => {
+        const error = new Error("budget changed");
+        const onSubmissionError = vi.fn();
         const adapter = createCrestAssistantRuntimeAdapter({
             turns: [],
             status: "idle",
-            submit,
+            submit: vi.fn().mockRejectedValue(error),
             abort: vi.fn(),
-        });
+            onSubmissionError,
+        } as any);
         const message = {
             role: "user",
-            content: [
-                { type: "text", text: "describe this" },
-                { type: "image", image: "data:image/png;base64,abc123" },
-            ],
+            content: [{ type: "text", text: "preserve exactly" }],
             parentId: null,
             sourceId: null,
             runConfig: undefined,
@@ -307,14 +577,70 @@ describe("createCrestAssistantRuntimeAdapter", () => {
             createdAt: new Date(0),
         } as AppendMessage;
 
-        await adapter.onNew(message);
+        const result = adapter.onNew(message);
+        await expect(result).resolves.toBeUndefined();
+        await waitFor(() => expect(onSubmissionError).toHaveBeenCalledWith(error));
+    });
 
-        expect(submit).toHaveBeenCalledWith("describe this", ["data:image/png;base64,abc123"]);
+    it("awaits async submit completion and propagates rejection", async () => {
+        let rejectSubmit!: (error: Error) => void;
+        const submit = vi.fn(
+            () =>
+                new Promise<void>((_resolve, reject) => {
+                    rejectSubmit = reject;
+                })
+        );
+        const message = {
+            role: "user",
+            content: [{ type: "text", text: "preserve exactly" }],
+            parentId: null,
+            sourceId: null,
+            runConfig: undefined,
+            metadata: { custom: {} },
+            attachments: [],
+            createdAt: new Date(0),
+        } as AppendMessage;
+
+        const submission = submitCrestAppendMessage(
+            {
+                turns: [],
+                status: "idle",
+                submit,
+                abort: vi.fn(),
+            },
+            message
+        );
+        let settled = false;
+        void submission.then(
+            () => {
+                settled = true;
+            },
+            () => {
+                settled = true;
+            }
+        );
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        const error = new Error("budget changed");
+        rejectSubmit(error);
+        await expect(submission).rejects.toBe(error);
+    });
+
+    it("passes the context send gate to the external runtime", () => {
+        const adapter = createCrestAssistantRuntimeAdapter({
+            turns: [],
+            status: "idle",
+            submit: vi.fn(),
+            abort: vi.fn(),
+            isSendDisabled: true,
+        });
+
+        expect(adapter.isSendDisabled).toBe(true);
     });
 
     it("injects quote metadata into the submitted text as markdown blockquote context", async () => {
         const send = vi.fn<UsePiChatReturn["send"]>();
-        const adapter = createCrestAssistantRuntimeAdapter(makeChat({ send }));
         const message = {
             role: "user",
             content: [{ type: "text", text: "Can you explain how the layers connect?" }],
@@ -333,7 +659,7 @@ describe("createCrestAssistantRuntimeAdapter", () => {
             createdAt: new Date(0),
         } as AppendMessage;
 
-        await adapter.onNew(message);
+        await submitCrestAppendMessage(makeChat({ send }), message);
 
         expect(send).toHaveBeenCalledWith(
             [

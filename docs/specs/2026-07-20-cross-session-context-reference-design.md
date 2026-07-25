@@ -4,7 +4,7 @@
 
 **Last revised:** 2026-07-25
 
-**Status:** Approved core design; reference-configuration interaction pending implementation
+**Status:** Implemented
 
 **Scope:** Crest integrated agent sessions
 
@@ -54,7 +54,9 @@ After the user selects one or more turns and activates Next, the second-level co
 
 The header contains Back on the left and the selection count on the right. The footer contains keyboard hints and a dynamic primary action: **Add reference** for one item or **Add N references** for multiple items. It never says “Add to conversation,” because message-scoped references are the default and the button commits either delivery scope.
 
-Each segment shows a short label and one-line explanation. The selected value and keyboard focus are distinct states: selection uses the filled surface, while focus adds a cyan outline. Defaults remain This message + Full. Entering the page initially focuses the selected This message segment without changing either value.
+Each segment shows a short label and one-line explanation. The selected value and keyboard focus are distinct states: selection uses the filled surface, while focus adds a theme-accent outline. Defaults remain This message + Full. Entering the page initially focuses the selected This message segment without changing either value.
+
+Selection indicators and focus emphasis use Crest's semantic `accent` theme token; the configuration panel must not hard-code cyan or another palette color. The selected surface remains neutral so the panel follows every active theme without competing with the primary action.
 
 The complete keyboard contract is:
 
@@ -142,6 +144,8 @@ The feature must make those references useful without allowing them to crowd out
 - `/session` becomes the session manager. It has Resume and Reference flows. Reference lets the user select either the active branch of another session or one of its user-message turns.
 - `/info` owns the former `/session` session-information output.
 - `/resume` is hidden from command discovery and remains a deprecated alias of `/session` for one release.
+
+Session rows expose Resume and Add context as a keyboard-selectable action pair. Up / Down changes the active session row, Left selects Resume, Right selects Add context, and Enter executes the visibly selected action. Resume is the default; when Add context is unavailable for a row, Right leaves Resume selected.
 
 ### 2.2 Reference controls
 

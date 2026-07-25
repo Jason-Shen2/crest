@@ -285,11 +285,12 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 	 * malformed or wrong-version file is rejected instead of silently stored.
 	 */
 	async importFromJsonl(jsonlPath: string, options: { cwd: string; id?: string }): Promise<Session<JsonlSessionMetadata>> {
-		const env = new NodeExecutionEnv({ cwd: path.dirname(jsonlPath) });
+		const inputPath = path.resolve(jsonlPath);
+		const env = new NodeExecutionEnv({ cwd: path.dirname(inputPath) });
 		let sourceMetadata: JsonlSessionMetadata;
 		let entries: SessionTreeEntry[];
 		try {
-			const source = await JsonlSessionStorage.open(env, jsonlPath);
+			const source = await JsonlSessionStorage.open(env, inputPath);
 			[sourceMetadata, entries] = await Promise.all([source.getMetadata(), source.getEntries()]);
 		} finally {
 			await env.cleanup();

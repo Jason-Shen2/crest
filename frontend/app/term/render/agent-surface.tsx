@@ -10,6 +10,12 @@ import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
 import { resolveAIConfig } from "@/app/store/ai-resolver";
 import { AgentSelection, ResolvedAIConfig, ResolveError } from "@/app/store/ai-types";
 import { aiUserConfigAtom } from "@/app/store/ai-user-config";
+import {
+    contextSendDisabledReason,
+    createContextReferenceState,
+    resolveContextReferenceUiConfig,
+    type ContextReferenceSendDisabledReason,
+} from "@/app/store/context-references";
 import { globalStore } from "@/app/store/jotaiStore";
 import { modalsModel } from "@/app/store/modalmodel";
 import { ObjectService } from "@/app/store/services";
@@ -17,6 +23,7 @@ import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import { useOrefMetaKeyAtom, WOS } from "@/store/global";
+import { useAuiState } from "@assistant-ui/react";
 import { useAtomValue } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TerminalModel } from "../terminal-model";
@@ -28,8 +35,15 @@ import {
     type AgentSelectorRequest,
 } from "./agent-chat-host";
 import { AgentCommandResultList } from "./agent-command-result";
-import { AssistantRuntimeProvider, Thread, useAui, useCrestAssistantRuntime } from "./assistant-ui";
+import {
+    AssistantRuntimeProvider,
+    ContextReferenceBar,
+    Thread,
+    useAui,
+    useCrestAssistantRuntime,
+} from "./assistant-ui";
 import type { CrestContextUsage } from "./assistant-ui/context-display";
+import { canonicalComposerPayloadFromState, CanonicalComposerSubmissionLease } from "./assistant-ui/runtime-bridge";
 
 export interface WorkspaceAgentSurfaceProps {
     outerBlockId: string;
@@ -166,6 +180,19 @@ export function getLatestAgentContextUsage(turns: PiTurn[]): CrestContextUsage |
     return undefined;
 }
 
+export function agentContextSendGuidance(reason: ContextReferenceSendDisabledReason): string {
+    if (reason === "feature_disabled") {
+        return "Context references are disabled in ai.json. Remove them or enable context references before sending.";
+    }
+    if (reason === "summary_not_ready") {
+        return "Prepare the missing Summary, or choose Full or Metadata before sending.";
+    }
+    if (reason === "references_sending") {
+        return "These references are already sending. Wait for that request to finish.";
+    }
+    return "";
+}
+
 export function WorkspaceAgentSurface({ outerBlockId, model, context }: WorkspaceAgentSurfaceProps) {
     const [attachedPanelState, setAttachedPanelState] = useState<AgentAttachedPanelState>(
         makeEmptyAgentAttachedPanelState
@@ -178,6 +205,8 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
 
     // ---- AI model picker / selection ----
     const userConfigState = useAtomValue(aiUserConfigAtom);
+    const contextReferenceUiConfig = useMemo(() => resolveContextReferenceUiConfig(userConfigState), [userConfigState]);
+    const contextReferencesEnabled = contextReferenceUiConfig.enabled;
     const blockAgentSelection = useOrefMetaKeyAtom(WOS.makeORef("block", outerBlockId), "agent:selection");
     const activeSelection = useMemo<AgentSelection | null>(() => {
         if (blockAgentSelection?.provider && blockAgentSelection?.model) {
@@ -251,6 +280,7 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
     const onAgentHostReady = useCallback((api: AgentChatHostApi) => {
         agentApiRef.current = api;
+        setAgentApiReady(true);
     }, []);
     const onOpenAgentModelPicker = useCallback(() => {
         setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "openModelPicker" }));
@@ -265,21 +295,47 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
         setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "setModelPickerOpen", open }));
     }, []);
     const composerAnchorRef = useRef<HTMLDivElement>(null);
-    const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
-        { text: string; requestId: number } | undefined
-    >(undefined);
-    const onAgentEditorText = useCallback((text: string) => {
-        setAgentRestoredTextRequest((prev) => ({ text, requestId: (prev?.requestId ?? 0) + 1 }));
-    }, []);
-    const [agentState, setAgentState] = useState<AgentHostState>({ status: "idle", queuedMessages: [] });
-    const onAgentStop = useCallback(() => {
-        agentApiRef.current?.abort();
-    }, []);
     const persistedAgentSession = useOrefMetaKeyAtom(WOS.makeORef("block", outerBlockId), "agent:session");
     const agentSession = useMemo<AgentSessionMeta | undefined>(() => {
         if (persistedAgentSession?.path) return persistedAgentSession;
         return undefined;
     }, [persistedAgentSession]);
+    const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
+        { text: string; requestId: number; sessionPath?: string } | undefined
+    >(undefined);
+    const agentRestoreSequenceRef = useRef(0);
+    const onAgentEditorText = useCallback(
+        (text: string) => {
+            agentRestoreSequenceRef.current += 1;
+            setAgentRestoredTextRequest({
+                text,
+                requestId: agentRestoreSequenceRef.current,
+                sessionPath: agentSession?.path,
+            });
+        },
+        [agentSession?.path]
+    );
+    const onAgentRestoreApplied = useCallback((requestId: number) => {
+        setAgentRestoredTextRequest((current) => (current?.requestId === requestId ? undefined : current));
+    }, []);
+    useEffect(() => {
+        setAgentRestoredTextRequest((current) =>
+            current && current.sessionPath !== agentSession?.path ? undefined : current
+        );
+    }, [agentSession?.path]);
+    const [agentState, setAgentState] = useState<AgentHostState>({
+        status: "idle",
+        queuedMessages: [],
+        context: {
+            ...createContextReferenceState(),
+            enabled: contextReferencesEnabled,
+        },
+    });
+    const submissionLeaseRef = useRef(new CanonicalComposerSubmissionLease());
+    const [agentApiReady, setAgentApiReady] = useState(false);
+    const onAgentStop = useCallback(() => {
+        agentApiRef.current?.abort();
+    }, []);
     const onSessionMintedHandler = useCallback(
         (meta: AgentSessionMeta) => {
             void ObjectService.UpdateObjectMeta(WOS.makeORef("block", outerBlockId), { "agent:session": meta });
@@ -296,27 +352,124 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
     const onDismissCommandResult = useCallback((index: number) => {
         setAttachedPanelState((prev) => getNextAgentAttachedPanelState(prev, { type: "dismissCommandResult", index }));
     }, []);
+    const contextTargetMatchesSession = agentState.context.targetSessionPath === agentSession?.path;
+    const contextHydrating = !!agentSession?.path && !contextTargetMatchesSession;
+    const currentSessionPathRef = useRef(agentSession?.path);
+    const currentContextTargetPathRef = useRef(agentState.context.targetSessionPath);
+    const currentContextGenerationRef = useRef(agentState.context.targetGeneration);
+    currentSessionPathRef.current = agentSession?.path;
+    currentContextTargetPathRef.current = agentState.context.targetSessionPath;
+    currentContextGenerationRef.current = agentState.context.targetGeneration;
+    const contextCallbackIdentity = useMemo(
+        () => ({
+            targetSessionPath: agentState.context.targetSessionPath,
+            targetGeneration: agentState.context.targetGeneration,
+        }),
+        [agentState.context.targetGeneration, agentState.context.targetSessionPath]
+    );
+    const requireAgentApi = useCallback((): AgentChatHostApi => {
+        const api = agentApiRef.current;
+        if (api) {
+            return api;
+        }
+        const message = "Agent is still starting. Try again in a moment.";
+        globalStore.set(model.notificationAtom, message);
+        throw new Error(message);
+    }, [model]);
+    const requireCurrentContextApi = useCallback(
+        (expected: typeof contextCallbackIdentity): AgentChatHostApi => {
+            if (currentContextTargetPathRef.current !== currentSessionPathRef.current) {
+                throw new Error("Context for the selected session is still loading.");
+            }
+            if (
+                expected.targetSessionPath !== currentContextTargetPathRef.current ||
+                expected.targetGeneration !== currentContextGenerationRef.current
+            ) {
+                throw new Error("This context control is no longer current.");
+            }
+            return requireAgentApi();
+        },
+        [requireAgentApi]
+    );
+
+    const onSummarizeContextDraft = useCallback(
+        async (draftId: string) => {
+            await requireCurrentContextApi(contextCallbackIdentity).summarizeContextDraft(draftId);
+        },
+        [contextCallbackIdentity, requireCurrentContextApi]
+    );
+    const onDiscardContextDraft = useCallback(
+        async (draftId: string) => {
+            await requireCurrentContextApi(contextCallbackIdentity).discardContextDraft(draftId);
+        },
+        [contextCallbackIdentity, requireCurrentContextApi]
+    );
+    const onRetryContextSend = useCallback(async () => {
+        await requireCurrentContextApi(contextCallbackIdentity).retryContextSend();
+    }, [contextCallbackIdentity, requireCurrentContextApi]);
 
     const onAgentSubmit = useCallback(
         (text: string, images?: string[]) => {
             if (!text && (images?.length ?? 0) === 0) return;
             const api = agentApiRef.current;
             if (!api) {
-                globalStore.set(model.notificationAtom, "Agent is still starting. Try again in a moment.");
-                return false;
+                const message = "Agent is still starting. Try again in a moment.";
+                globalStore.set(model.notificationAtom, message);
+                onAgentEditorText(text);
+                return Promise.reject(new Error(message));
+            }
+            if (contextHydrating) {
+                const message = "Context for the selected session is still loading.";
+                onAgentEditorText(text);
+                return Promise.reject(new Error(message));
             }
             return api.submit(text, images);
         },
+        [contextHydrating, model, onAgentEditorText]
+    );
+    const onAgentSubmissionError = useCallback(
+        (error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            globalStore.set(model.notificationAtom, message);
+        },
         [model]
     );
+    const contextForSendGate = useMemo(
+        () =>
+            contextReferencesEnabled
+                ? agentState.context
+                : {
+                      ...agentState.context,
+                      enabled: false,
+                  },
+        [agentState.context, contextReferencesEnabled]
+    );
+    const contextSendGate = contextSendDisabledReason(contextForSendGate);
+    const contextSendGuidance = contextHydrating
+        ? "Context for the selected session is loading. Send will be available after hydration finishes."
+        : contextSendGate
+          ? agentContextSendGuidance(contextSendGate)
+          : undefined;
     const assistantRuntimeBridge = useMemo(
         () => ({
             turns: agentTurns,
             status: agentState.status,
             submit: onAgentSubmit,
             abort: onAgentStop,
+            onSubmissionError: onAgentSubmissionError,
+            submissionLease: submissionLeaseRef.current,
+            isSendDisabled: !agentApiReady || contextHydrating || contextSendGate != null,
         }),
-        [agentTurns, agentState.status, onAgentSubmit, onAgentStop]
+        [
+            agentApiReady,
+            agentTurns,
+            agentState.status,
+            contextHydrating,
+            contextSendGate,
+            onAgentSubmit,
+            onAgentSubmissionError,
+            onAgentStop,
+        ]
     );
     const assistantRuntime = useCrestAssistantRuntime(assistantRuntimeBridge);
     const contextUsage = useMemo(() => getLatestAgentContextUsage(agentTurns), [agentTurns]);
@@ -358,11 +511,18 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
                 onCommandResult={onAgentCommandResult}
                 onOpenModelPicker={onOpenAgentModelPicker}
                 onSelectorRequest={onAgentSelectorRequest}
+                onRestoreComposerText={onAgentEditorText}
+                contextReferencesEnabled={contextReferencesEnabled}
             />
             {!context.inAltScreen && (
                 <div className="min-h-0 flex-1">
                     <AssistantRuntimeProvider runtime={assistantRuntime}>
-                        <AgentComposerTextRestore request={agentRestoredTextRequest} />
+                        <AgentComposerSubmissionLeaseObserver submissionLease={submissionLeaseRef.current} />
+                        <AgentComposerTextRestore
+                            request={agentRestoredTextRequest}
+                            sessionPath={agentSession?.path}
+                            onApplied={onAgentRestoreApplied}
+                        />
                         <Thread
                             modelLabel={modelDisplayLabel}
                             onOpenModelPicker={onOpenAgentModelPicker}
@@ -374,6 +534,30 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
                             }
                             beforeComposer={
                                 <>
+                                    {contextTargetMatchesSession &&
+                                        (agentState.context.drafts.length > 0 || agentState.contextSendRecovery) && (
+                                            <ContextReferenceBar
+                                                drafts={agentState.context.drafts}
+                                                recovery={
+                                                    agentState.contextSendRecovery
+                                                        ? { errorMessage: agentState.contextSendRecovery.errorMessage }
+                                                        : undefined
+                                                }
+                                                onSummarizeDraft={onSummarizeContextDraft}
+                                                onDiscardDraft={onDiscardContextDraft}
+                                                onRetrySend={onRetryContextSend}
+                                                readOnly={!contextReferencesEnabled || !agentState.context.enabled}
+                                                operatorMaxTokens={contextReferenceUiConfig.maxTokens}
+                                            />
+                                        )}
+                                    {contextSendGuidance && (
+                                        <p
+                                            className="rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-xs text-muted-foreground"
+                                            role="status"
+                                        >
+                                            {contextSendGuidance}
+                                        </p>
+                                    )}
                                     <AgentCommandResultList
                                         results={agentCommandResults}
                                         onDismiss={onDismissCommandResult}
@@ -381,6 +565,11 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
                                     <SessionSelector
                                         anchorRef={composerAnchorRef}
                                         request={agentSelectorRequest}
+                                        referencesEnabled={
+                                            contextReferencesEnabled &&
+                                            agentState.context.enabled &&
+                                            contextTargetMatchesSession
+                                        }
                                         onClose={onCloseAgentSelector}
                                         onUserMessage={(msg) => globalStore.set(model.notificationAtom, msg)}
                                         onEditorText={onAgentEditorText}
@@ -478,12 +667,57 @@ export function AgentQueuedMessagesPanel({ messages }: { messages: PiAgentMessag
     );
 }
 
-function AgentComposerTextRestore({ request }: { request?: { text: string; requestId: number } }) {
+function AgentComposerTextRestore({
+    request,
+    sessionPath,
+    onApplied,
+}: {
+    request?: { text: string; requestId: number; sessionPath?: string };
+    sessionPath?: string;
+    onApplied: (requestId: number) => void;
+}) {
     const aui = useAui();
     useEffect(() => {
-        if (!request) return;
+        if (!request || request.sessionPath !== sessionPath) return;
         aui.composer().setText(request.text);
-    }, [aui, request]);
+        onApplied(request.requestId);
+    }, [aui, onApplied, request, sessionPath]);
+    return null;
+}
+
+function AgentComposerSubmissionLeaseObserver({
+    submissionLease,
+}: {
+    submissionLease: CanonicalComposerSubmissionLease;
+}) {
+    const text = useAuiState((state) => state.composer.text);
+    const attachments = useAuiState((state) => state.composer.attachments);
+    const quote = useAuiState((state) => state.composer.quote);
+    const operationRef = useRef(0);
+    const [leaseRevision, setLeaseRevision] = useState(0);
+    useEffect(
+        () =>
+            submissionLease.subscribe(() => {
+                setLeaseRevision((current) => current + 1);
+            }),
+        [submissionLease]
+    );
+    useEffect(() => {
+        operationRef.current += 1;
+        const operation = operationRef.current;
+        const state = { text, attachments, quote };
+        void canonicalComposerPayloadFromState(state)
+            .then((payload) => {
+                if (operation !== operationRef.current) return;
+                submissionLease.registerPreview(state, payload);
+            })
+            .catch(() => undefined);
+        return () => {
+            if (operation === operationRef.current) {
+                operationRef.current += 1;
+            }
+        };
+    }, [attachments, leaseRevision, quote, submissionLease, text]);
     return null;
 }
 

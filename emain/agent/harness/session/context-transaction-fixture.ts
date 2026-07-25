@@ -18,7 +18,6 @@ export function makeCommittedContextTransaction(options: { parentId?: string | n
     const artifactId = `${prefix}-artifact`;
     const attachId = `${prefix}-attach`;
     const projectionId = `${prefix}-projection`;
-    const reportId = `${prefix}-report`;
     const manifestId = `${prefix}-manifest`;
     const userId = `${prefix}-user`;
     const artifact: SessionTreeEntry = {
@@ -57,8 +56,9 @@ export function makeCommittedContextTransaction(options: { parentId?: string | n
             schemaVersion: 1,
             transactionId,
             artifactEntryId: artifactId,
-            lifecycle: "pinned",
+            deliveryScope: "conversation",
             requestedRepresentation: "full",
+            targetTurnId: userId,
             selectionOrder: 0,
         },
     };
@@ -82,17 +82,16 @@ export function makeCommittedContextTransaction(options: { parentId?: string | n
             referenceTokens: 18,
             countAccuracy: "exact",
             overlaySha256: Hash,
-            items: [{ attachmentEntryId: attachId, artifactEntryId: artifactId, renderedRepresentation: "full", advisoryTokens: 18, reason: "selected" }],
+            items: [{
+                attachmentEntryId: attachId,
+                artifactEntryId: artifactId,
+                deliveryScope: "conversation",
+                requestedRepresentation: "full",
+                renderedRepresentation: "full",
+                advisoryTokens: 18,
+                reason: "selected",
+            }],
         },
-    };
-    const report: SessionTreeEntry = {
-        type: "custom",
-        id: reportId,
-        parentId: projectionId,
-        timestamp: Timestamp,
-        customType: "context_report",
-        transactionId,
-        data: { schemaVersion: 1, transactionId },
     };
     const turn: SessionTreeEntry = {
         type: "message",
@@ -105,11 +104,11 @@ export function makeCommittedContextTransaction(options: { parentId?: string | n
     const manifest: SessionTreeEntry = {
         type: "custom",
         id: manifestId,
-        parentId: reportId,
+        parentId: projectionId,
         timestamp: Timestamp,
         customType: "session_tx_manifest",
         transactionId,
-        data: createTransactionManifestData(transactionId, [artifact, attach, projection, report, turn]),
+        data: createTransactionManifestData(transactionId, [artifact, attach, projection, turn]),
     };
-    return [artifact, attach, projection, report, manifest, turn];
+    return [artifact, attach, projection, manifest, turn];
 }

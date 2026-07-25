@@ -20,6 +20,7 @@ const testState = vi.hoisted(() => {
         activeElement: null as HTMLElement | null,
         lastModel: null as ReturnType<typeof makeModel> | null,
         loading: false,
+        notification: "",
         defaultFgOverride: null as string | null,
         defaultBgOverride: null as string | null,
         blocks: null as Array<{
@@ -216,7 +217,7 @@ function makeModel() {
         revisionAtom: testState.atomValue(1),
         loadingAtom: { read: () => testState.loading },
         errorAtom: testState.atomValue(""),
-        notificationAtom: testState.atomValue(""),
+        notificationAtom: { read: () => testState.notification },
         paletteOverridesAtom: testState.atomValue({}),
         defaultFgOverrideAtom: { read: () => testState.defaultFgOverride },
         defaultBgOverrideAtom: { read: () => testState.defaultBgOverride },
@@ -321,6 +322,7 @@ describe("TerminalView TUI mode", () => {
         testState.effectCleanups.length = 0;
         testState.activeElement = null;
         testState.loading = false;
+        testState.notification = "";
         testState.defaultFgOverride = null;
         testState.defaultBgOverride = null;
         testState.blocks = null;
@@ -339,6 +341,16 @@ describe("TerminalView TUI mode", () => {
         }
         testState.documentListeners.clear();
         vi.unstubAllGlobals();
+    });
+
+    it("announces terminal notifications politely", () => {
+        testState.notification = "Reference added";
+
+        const html = renderTerminalView();
+
+        expect(html).toContain('role="status"');
+        expect(html).toContain('aria-live="polite"');
+        expect(html).toContain("Reference added");
     });
 
     it("does not render the command input while alternate screen is active", () => {
@@ -609,6 +621,7 @@ describe("TerminalView pure-terminal form", () => {
         testState.effectCleanups.length = 0;
         testState.activeElement = null;
         testState.loading = false;
+        testState.notification = "";
         testState.blocks = null;
         testState.modeOverride = null;
         testState.inputStateOverride = { kind: "input-editor" };

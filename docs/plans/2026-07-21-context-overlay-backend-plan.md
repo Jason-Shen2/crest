@@ -1,5 +1,7 @@
 # Context Overlay Backend Implementation Plan
 
+> **2026-07-25 supersession:** The Pin/Once/Metadata and authoritative preview details in the original plan below are retained as historical context. The current implementation uses immutable `message` / `conversation` delivery scopes, Full / Summary representations, no Pin update/detach state machine, and no preview-based send gate. Follow the [2026-07-25 design amendment](../specs/2026-07-20-cross-session-context-reference-design.md) for the normative contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement immutable turn/session snapshots, atomic send-bound attachments, bounded projection, persisted reports and pins, and the Electron API required by the context-reference UI.
@@ -9,6 +11,8 @@
 **Tech stack:** TypeScript, Electron IPC, Vitest, JSONL session storage, `node:sqlite`, pi agent harness.
 
 **Design:** `docs/specs/2026-07-20-cross-session-context-reference-design.md`
+
+**2026-07-24 amendment:** Reference-bearing sends no longer call provider token-count endpoints or reject based on a Budget Preview/revision. Turn preparation still renders and atomically commits the selected overlay, but its token values are advisory local estimates; the normal provider call is authoritative for context overflow.
 
 ## Scope and ownership
 
@@ -477,7 +481,7 @@ Expected: PASS.
 At minimum cover:
 
 1. the final request includes system prompt, tools, history, current user content/images, exact overlay, provider transforms, and the same effective output reserve later sent to the provider;
-2. unknown context window, unresolved output reserve, or unavailable authoritative counter returns `counter_unavailable` and cannot authorize send;
+2. unknown context window, unresolved output reserve, or unavailable authoritative counter returns an `estimated` `counter_unavailable` preview without blocking send;
 3. an exact count or documented conservative upper bound can authorize send;
 4. optional `maxTokens` limits overlay tokens when present and imposes no limit when absent;
 5. `base_over_budget` and `references_over_budget` are distinct and report exact `excessTokens`;
@@ -535,7 +539,7 @@ Test the ordered behavior:
 - create immutable artifacts from drafts;
 - bind once attachments to the reserved user ID;
 - project explicit attachments plus existing pins, minus only `excludedPinAttachmentIds` supplied for this turn;
-- build the final provider-ready request, run authoritative counting, and reject stale/over-budget/uncountable requests before append;
+- build the final provider-ready request and run authoritative counting when supported; reject stale or authoritatively over-budget requests before append, while uncountable requests continue with an estimated report;
 - create `context_projection` before the user entry;
 - create `session_tx_manifest` immediately before the user entry with the complete ordered IDs/digest;
 - append the normal user message last so it remains the physical session leaf;
@@ -544,7 +548,7 @@ Test the ordered behavior:
 - consume drafts only after append succeeds;
 - never invoke summary generation from preparation;
 - on duplicate hashes, missing/corrupt artifacts, invalid attachment data, projector throw, or serialization failure, append nothing and make no provider request;
-- on `base_over_budget`, `references_over_budget`, or `counter_unavailable`, append nothing, preserve drafts, and return the typed budget result;
+- on `base_over_budget` or `references_over_budget`, append nothing, preserve drafts, and return the typed budget result; `counter_unavailable` remains non-blocking;
 - on append failure, do not consume drafts and throw `transaction_failed`;
 - re-invoking the same preparation closure after commit returns the same result without a second append.
 
@@ -786,7 +790,7 @@ Cover:
 - send with two drafts preserves selection order;
 - send with no drafts but an active pin still uses prepared projection and injects that pin;
 - `excludedPinAttachmentIds` pauses only those pins for the target turn and reports them as Excluded;
-- duplicate snapshots, missing/corrupt artifacts, missing summaries, projection errors, stale previews, over-budget requests, and unavailable authoritative counters all reject before commit/model call and retain drafts;
+- duplicate snapshots, missing/corrupt artifacts, missing summaries, projection errors, stale previews, and authoritatively over-budget requests reject before commit/model call and retain drafts; unavailable counters produce an estimated report and continue;
 - send transaction failure makes no provider request and retains drafts;
 - projection failure returns a typed error with no overlay/report transaction;
 - normal sends without context remain byte-for-byte compatible at the IPC result boundary;

@@ -3,9 +3,9 @@
 
 import { describe, expect, it } from "vitest";
 
+import type { JsonlSessionMetadata, SessionTreeEntry } from "../harness/types";
 import { captureContextArtifactDraft, getModelVisibleMessageEntryIds } from "./snapshot";
 import { ContextReferenceError } from "./types";
-import type { JsonlSessionMetadata, SessionTreeEntry } from "../harness/types";
 
 const Metadata: JsonlSessionMetadata = {
     id: "source-session",
@@ -87,7 +87,10 @@ describe("context snapshot capture", () => {
             ],
             details: { secret: "not captured" },
         });
-        const laterUser = entry("user-2", "result-1", { role: "user", content: [{ type: "text", text: "later turn" }] });
+        const laterUser = entry("user-2", "result-1", {
+            role: "user",
+            content: [{ type: "text", text: "later turn" }],
+        });
 
         const draft = captureTurn([user, assistant, result, laterUser]);
 
@@ -136,7 +139,10 @@ describe("context snapshot capture", () => {
 
     it("captures only the supplied active session branch and its leaf", () => {
         const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: "active" }] });
-        const assistant = entry("assistant-1", "user-1", { role: "assistant", content: [{ type: "text", text: "answer" }] });
+        const assistant = entry("assistant-1", "user-1", {
+            role: "assistant",
+            content: [{ type: "text", text: "answer" }],
+        });
         const draft = captureContextArtifactDraft({
             sourceMetadata: Metadata,
             sourceEntries: [user, assistant],
@@ -156,7 +162,10 @@ describe("context snapshot capture", () => {
 
     it("rejects sources that are not active user turn roots", () => {
         const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: "question" }] });
-        const assistant = entry("assistant-1", "user-1", { role: "assistant", content: [{ type: "text", text: "answer" }] });
+        const assistant = entry("assistant-1", "user-1", {
+            role: "assistant",
+            content: [{ type: "text", text: "answer" }],
+        });
         const toolResult = entry("result-1", "assistant-1", {
             role: "toolResult",
             toolCallId: "call-1",
@@ -172,13 +181,19 @@ describe("context snapshot capture", () => {
     });
 
     it("rejects snapshots without useful text or tool content", () => {
-        const user = entry("user-1", null, { role: "user", content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }] });
+        const user = entry("user-1", null, {
+            role: "user",
+            content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+        });
 
         expect(() => captureTurn([user])).toThrow(ContextReferenceError);
     });
 
     it("bounds canonical normalized JSON while excluding omitted image bytes", () => {
-        const oversized = entry("user-1", null, { role: "user", content: [{ type: "text", text: "x".repeat(2 * 1024 * 1024) }] });
+        const oversized = entry("user-1", null, {
+            role: "user",
+            content: [{ type: "text", text: "x".repeat(2 * 1024 * 1024) }],
+        });
         const imageOnly = entry("user-1", null, {
             role: "user",
             content: [
@@ -214,7 +229,9 @@ describe("context snapshot capture", () => {
 
     it("preserves prototype-like tool argument keys in canonical snapshots", () => {
         const firstArguments = JSON.parse('{"__proto__":{"value":"one"},"constructor":"first","prototype":"first"}');
-        const secondArguments = JSON.parse('{"__proto__":{"value":"a longer value"},"constructor":"first","prototype":"first"}');
+        const secondArguments = JSON.parse(
+            '{"__proto__":{"value":"a longer value"},"constructor":"first","prototype":"first"}'
+        );
         const first = captureTurn([
             entry("user-1", null, { role: "user", content: [{ type: "text", text: "same" }] }),
             entry("assistant-1", "user-1", {
@@ -271,7 +288,10 @@ describe("context snapshot capture", () => {
 
     it("uses the first non-blank text for previews", () => {
         const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: "  \n" }] });
-        const assistant = entry("assistant-1", "user-1", { role: "assistant", content: [{ type: "text", text: "answer" }] });
+        const assistant = entry("assistant-1", "user-1", {
+            role: "assistant",
+            content: [{ type: "text", text: "answer" }],
+        });
 
         expect(captureTurn([user, assistant]).artifact.provenance.preview).toBe("answer");
     });
@@ -322,7 +342,8 @@ describe("context snapshot capture", () => {
             content: [{ type: "toolCall", id: "call-1", name: "read", arguments: argumentsValue }],
         });
         const draft = captureTurn([user, assistant]);
-        const capturedArguments = (draft.artifact.messages[1]!.content[0] as { arguments: Record<string, unknown> }).arguments;
+        const capturedArguments = (draft.artifact.messages[1]!.content[0] as { arguments: Record<string, unknown> })
+            .arguments;
         const hash = draft.artifact.snapshotSha256;
 
         expect(capturedArguments).toEqual(argumentsValue);
@@ -409,7 +430,7 @@ describe("context snapshot capture", () => {
     });
 
     it("deep-copies dense nested arrays through descriptors", () => {
-        const argumentsValue = [[{ value: "stable" }], [1, 2, 3]];
+        const argumentsValue: [{ value: string }[], number[]] = [[{ value: "stable" }], [1, 2, 3]];
         const draft = captureToolArguments(argumentsValue);
         const capturedArguments = (draft.artifact.messages[1]!.content[0] as { arguments: unknown }).arguments;
 
@@ -424,14 +445,20 @@ describe("model-visible session message IDs", () => {
     it("returns message IDs from the active path without compaction", () => {
         const user = entry("user-1", null, { role: "user", content: [{ type: "text", text: "question" }] });
         const custom = customEntry("custom-1", "user-1");
-        const assistant = entry("assistant-1", "custom-1", { role: "assistant", content: [{ type: "text", text: "answer" }] });
+        const assistant = entry("assistant-1", "custom-1", {
+            role: "assistant",
+            content: [{ type: "text", text: "answer" }],
+        });
 
         expect(getModelVisibleMessageEntryIds([user, custom, assistant])).toEqual(["user-1", "assistant-1"]);
     });
 
     it("uses the latest compaction first-kept boundary", () => {
         const oldUser = entry("user-1", null, { role: "user", content: [{ type: "text", text: "old" }] });
-        const keptAssistant = entry("assistant-1", "user-1", { role: "assistant", content: [{ type: "text", text: "kept" }] });
+        const keptAssistant = entry("assistant-1", "user-1", {
+            role: "assistant",
+            content: [{ type: "text", text: "kept" }],
+        });
         const firstCompaction = {
             type: "compaction",
             id: "compact-1",
@@ -448,11 +475,20 @@ describe("model-visible session message IDs", () => {
             parentId: "user-2",
             firstKeptEntryId: "user-2",
         } as SessionTreeEntry;
-        const finalAssistant = entry("assistant-2", "compact-2", { role: "assistant", content: [{ type: "text", text: "final" }] });
+        const finalAssistant = entry("assistant-2", "compact-2", {
+            role: "assistant",
+            content: [{ type: "text", text: "final" }],
+        });
 
-        expect(getModelVisibleMessageEntryIds([oldUser, keptAssistant, firstCompaction, newUser, latestCompaction, finalAssistant])).toEqual([
-            "user-2",
-            "assistant-2",
-        ]);
+        expect(
+            getModelVisibleMessageEntryIds([
+                oldUser,
+                keptAssistant,
+                firstCompaction,
+                newUser,
+                latestCompaction,
+                finalAssistant,
+            ])
+        ).toEqual(["user-2", "assistant-2"]);
     });
 });

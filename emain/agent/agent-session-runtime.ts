@@ -36,8 +36,17 @@ import type { Api, ImageContent, Model } from "../ai";
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import { filterTreeForDisplay } from "./commands/session-views";
+import { foldContextJournal } from "./context/journal";
+import type { ContextProjectionReport } from "./context/types";
 import type { AgentAuthResolver, AgentHarnessHost } from "./harness-factory";
-import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
+import type {
+    AgentHarnessEvent,
+    AgentHarnessPreparedTurn,
+    AgentHarnessTurnPreparation,
+    AgentHarnessTurnPreparationInput,
+    SessionTreeEntry,
+} from "./harness/types";
+import { AgentHarnessTerminalPreparationError } from "./harness/types";
 import type { ToolCallHook } from "./permissions";
 import type { AgentMessage, ThinkingLevel } from "./types";
 
@@ -67,6 +76,7 @@ export interface AgentSessionRuntimeState {
     followUpQueue: AgentMessage[];
     status: AgentSessionRuntimeStatus;
     errorMessage?: string;
+    contextReports: ContextProjectionReport[];
 }
 
 export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
@@ -79,10 +89,12 @@ interface AgentSessionRuntimeStateEvent {
     status: AgentSessionRuntimeStatus;
     steer: AgentMessage[];
     followUp: AgentMessage[];
+    contextReports: ContextProjectionReport[];
 }
 
 export interface AgentSessionRuntimeOptions {
     onTurnFinished?: AgentTurnFinishedHook;
+    initialContextEntries?: SessionTreeEntry[];
 }
 
 export interface AgentExecutionConfig {
@@ -95,11 +107,36 @@ export interface AgentExecutionConfig {
 
 export interface AgentSendRuntimeOptions {
     images?: ImageContent[];
-    prepareFollowUp?: () => Promise<void>;
+    prepare?: AgentHarnessTurnPreparation;
+    activatePreparation?: (signal?: AbortSignal) => Promise<AgentHarnessTurnPreparation | undefined>;
 }
 
-function harnessImageOptions(images: ImageContent[] | undefined): { images: ImageContent[] } | undefined {
-    return images && images.length > 0 ? { images } : undefined;
+interface InternalAgentSendRuntimeOptions extends AgentSendRuntimeOptions {
+    activate?: (signal?: AbortSignal) => Promise<AgentHarnessTurnPreparation | void>;
+}
+
+interface PendingSend {
+    settled: boolean;
+    awaitingUserEvent: boolean;
+    committedEntryId?: string;
+    resolve: (id: string) => void;
+    reject: (err: unknown) => void;
+}
+
+function harnessFollowUpOptions(
+    images: ImageContent[] | undefined,
+    activate: ((signal?: AbortSignal) => Promise<AgentHarnessTurnPreparation | void>) | undefined
+):
+    | {
+          images?: ImageContent[];
+          activate?: (signal?: AbortSignal) => Promise<AgentHarnessTurnPreparation | void>;
+      }
+    | undefined {
+    if ((!images || images.length === 0) && !activate) return undefined;
+    return {
+        ...(images && images.length > 0 ? { images } : {}),
+        ...(activate ? { activate } : {}),
+    };
 }
 
 function isErroredAssistant(message: AgentMessage): boolean {
@@ -137,6 +174,13 @@ export function buildPersistedTurnsFromSessionEntries(entries: SessionTreeEntry[
     return turns;
 }
 
+export function buildContextStateFromSessionEntries(entries: SessionTreeEntry[]): {
+    contextReports: ContextProjectionReport[];
+} {
+    const journal = foldContextJournal(entries);
+    return { contextReports: journal.projectionReports };
+}
+
 export class AgentSessionRuntime {
     readonly path: string;
     host: AgentHarnessHost;
@@ -147,10 +191,12 @@ export class AgentSessionRuntime {
     followUpQueue: AgentMessage[] = [];
     status: AgentSessionRuntimeStatus = "idle";
     errorMessage: string | undefined;
+    contextReports: ContextProjectionReport[] = [];
     activeTurnId: string | undefined;
-    // Resolvers for in-flight send() promises, awaiting the userEntryId that
-    // arrives on the user message_end event. FIFO: one resolver per send.
-    private pendingEntryIdResolvers: Array<{ resolve: (id: string) => void; reject: (err: unknown) => void }> = [];
+    // Per-send completion records. Prepared sends settle at their atomic
+    // commit; ordinary sends settle from the matching user message event.
+    private pendingSends: PendingSend[] = [];
+    private ignoredCommittedEntryIds = new Set<string>();
     configQueue: Promise<void> = Promise.resolve();
 
     // Synchronous send-routing gate. Flipped true the instant we call
@@ -178,6 +224,7 @@ export class AgentSessionRuntime {
         // messages then accumulate via the live stream on top of this.
         this.messages = initialMessages;
         this.turns = initialTurns;
+        this.applyContextEntries(options.initialContextEntries ?? []);
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
@@ -211,14 +258,40 @@ export class AgentSessionRuntime {
         }
     }
 
-    sendWithExecutionConfig(text: string, config: AgentExecutionConfig, options?: AgentSendRuntimeOptions): Promise<string> {
+    async createTurnPreparationSnapshot(
+        text: string,
+        config: AgentExecutionConfig,
+        images?: ImageContent[]
+    ): Promise<AgentHarnessTurnPreparationInput> {
+        await this.syncExecutionConfig(config);
+        return await this.host.harness.createTurnPreparationSnapshot(text, images);
+    }
+
+    sendWithExecutionConfig(
+        text: string,
+        config: AgentExecutionConfig,
+        options?: AgentSendRuntimeOptions
+    ): Promise<string> {
         const operation = this.configQueue.then(async () => {
             if (this.running) {
-                return this.send(text, { ...options, prepareFollowUp: () => this.syncExecutionConfig(config) });
+                return this.send(text, {
+                    ...(options?.images ? { images: options.images } : {}),
+                    ...(options?.prepare ? { prepare: options.prepare } : {}),
+                    activate: async (signal) => {
+                        await this.syncExecutionConfig(config);
+                        return await options?.activatePreparation?.(signal);
+                    },
+                });
             }
             await this.syncExecutionConfig(config);
-            if (options) {
-                return this.send(text, options);
+            const activatedPrepare = await options?.activatePreparation?.();
+            if (options || activatedPrepare) {
+                return this.send(text, {
+                    ...(options?.images ? { images: options.images } : {}),
+                    ...((activatedPrepare ?? options?.prepare)
+                        ? { prepare: activatedPrepare ?? options?.prepare }
+                        : {}),
+                });
             }
             return this.send(text);
         });
@@ -290,6 +363,11 @@ export class AgentSessionRuntime {
                 this.running = false;
                 this.finishActiveTurn();
                 if (this.status !== "error") this.status = "idle";
+                // agent_end is emitted only after the Harness has finished
+                // delivering this run's message events. Any committed-entry
+                // tombstones left by a terminal path can no longer match a
+                // late event and must not accumulate across runs.
+                this.ignoredCommittedEntryIds.clear();
                 return;
             }
             case "queue_update": {
@@ -297,6 +375,16 @@ export class AgentSessionRuntime {
                 this.followUpQueue = (event as { followUp?: AgentMessage[] }).followUp ?? [];
                 return;
             }
+            case "context_projection":
+                this.contextReports = [
+                    ...this.contextReports.filter(
+                        (report) =>
+                            report.transactionId !== event.report.transactionId ||
+                            report.targetTurnId !== event.report.targetTurnId
+                    ),
+                    event.report,
+                ];
+                return;
             case "abort": {
                 this.running = false;
                 this.finishActiveTurn(false);
@@ -308,6 +396,10 @@ export class AgentSessionRuntime {
                 // forever AND leave a stale resolver at the FIFO head, which
                 // would mis-resolve the NEXT send. See agent-harness abort().
                 this.rejectPendingSends(new Error("send aborted before the user message was committed"));
+                // Harness abort waits for the active run to become idle before
+                // emitting this event, so no user message event from that run
+                // can arrive after this lifecycle boundary.
+                this.ignoredCommittedEntryIds.clear();
                 return;
             }
             default:
@@ -323,6 +415,7 @@ export class AgentSessionRuntime {
             followUpQueue: this.followUpQueue,
             status: this.status,
             errorMessage: this.errorMessage,
+            contextReports: this.contextReports,
         };
     }
 
@@ -335,8 +428,8 @@ export class AgentSessionRuntime {
 
     /**
      * Send a user message. Resolves with the userEntryId of THIS send's user
-     * message — the run identity, which only becomes known when the user
-     * message_end event arrives (carrying the session entry id). Routes
+     * message. Prepared sends learn it from the atomic commit; ordinary sends
+     * learn it from message_end. Routes
      * prompt-vs-followUp from our own tracked run state — pi decides the same
      * way (it checks streaming state / queue mode before steer/followUp;
      * agent-session.ts:1225/1242), not by catching the harness "busy" error.
@@ -344,18 +437,23 @@ export class AgentSessionRuntime {
      * deterministic; prompt() flips the harness phase synchronously too, so a
      * followUp issued right after never hits the idle guard.
      */
-    send(text: string, options?: AgentSendRuntimeOptions): Promise<string> {
+    send(text: string, options?: InternalAgentSendRuntimeOptions): Promise<string> {
+        let pending!: PendingSend;
         const promise = new Promise<string>((resolve, reject) => {
-            this.pendingEntryIdResolvers.push({ resolve, reject });
+            pending = { settled: false, awaitingUserEvent: false, resolve, reject };
+            this.pendingSends.push(pending);
         });
+        const prepare = options?.prepare ? this.wrapPreparation(options.prepare, pending) : undefined;
+        const activate = this.wrapActivation(options?.activate, pending, prepare != null);
         if (this.running) {
             void this.host.harness
-                .followUp(text, harnessImageOptions(options?.images), options?.prepareFollowUp)
-                .catch((err) => this.onSendError("followUp", err));
+                .followUp(text, harnessFollowUpOptions(options?.images, activate), prepare)
+                .catch((err) => this.rejectPendingSend(pending, err));
             return promise;
         }
         this.running = true;
-        void this.startPromptTurn(text, options);
+        pending.awaitingUserEvent = true;
+        void this.startPromptTurn(text, { ...options, prepare }, pending);
         return promise;
     }
 
@@ -407,20 +505,24 @@ export class AgentSessionRuntime {
         // abort below tears down the run, so their user message_end will
         // never arrive.
         this.rejectPendingSends(new Error("session disposed before the user message was committed"));
+        this.ignoredCommittedEntryIds.clear();
         void this.host.harness.abort().catch(() => {
             // best-effort on teardown
         });
     }
 
     private rejectPendingSends(err: unknown): void {
-        const pending = this.pendingEntryIdResolvers;
-        this.pendingEntryIdResolvers = [];
-        for (const { reject } of pending) {
-            reject(err);
+        const pending = this.pendingSends;
+        this.pendingSends = [];
+        for (const send of pending) {
+            if (send.committedEntryId) this.ignoredCommittedEntryIds.add(send.committedEntryId);
+            if (send.settled) continue;
+            send.settled = true;
+            send.reject(err);
         }
     }
 
-    private onSendError(where: "prompt" | "followUp", err: unknown): void {
+    private onSendError(where: "prompt", err: unknown, pending: PendingSend): void {
         this.running = false;
         this.status = "error";
         this.errorMessage = err instanceof Error ? err.message : String(err);
@@ -430,22 +532,98 @@ export class AgentSessionRuntime {
             turn.errorMessage = this.errorMessage;
             this.turns = this.turns.map((t) => (t.turnId === turn.turnId ? turn : t));
         }
-        // The user message_end that would resolve a waiting send() will never
-        // arrive on a prompt/followUp failure — reject the oldest pending
-        // resolver so callers don't hang forever.
-        const pending = this.pendingEntryIdResolvers.shift();
-        pending?.reject(err);
+        // The user message_end that would resolve this prompt will never
+        // arrive on failure, so settle its exact completion record.
+        this.rejectPendingSend(pending, err);
+        // prompt() has settled, so the Harness has no remaining message event
+        // to deliver for this failed run.
+        this.ignoredCommittedEntryIds.clear();
         console.error(`[agent-session] ${where} error for ${this.path}:`, err);
     }
 
-    private async startPromptTurn(text: string, options?: AgentSendRuntimeOptions): Promise<void> {
+    private async startPromptTurn(
+        text: string,
+        options: InternalAgentSendRuntimeOptions | undefined,
+        pending: PendingSend
+    ): Promise<void> {
         try {
-            await this.host.harness.prompt(text, harnessImageOptions(options?.images));
+            await this.host.harness.prompt(text, {
+                ...(options?.images && options.images.length > 0 ? { images: options.images } : {}),
+                ...(options?.prepare ? { prepare: options.prepare } : {}),
+            });
         } catch (err) {
-            this.onSendError("prompt", err);
+            this.onSendError("prompt", err, pending);
         } finally {
             this.running = false;
         }
+    }
+
+    private wrapPreparation(prepare: AgentHarnessTurnPreparation, pending: PendingSend): AgentHarnessTurnPreparation {
+        return async (input): Promise<AgentHarnessPreparedTurn> => {
+            if (input.signal?.aborted) {
+                const error = new Error("send aborted before the context transaction committed");
+                this.rejectPendingSend(pending, error);
+                throw error;
+            }
+            try {
+                const prepared = await prepare(input);
+                // A successful preparation result is the commit receipt. The
+                // signal may have raced immediately after the append, but an
+                // abort cannot roll back or reject an already durable send.
+                // AgentHarness performs its own post-prepare abort gate before
+                // invoking the provider.
+                pending.committedEntryId = prepared.userEntryId;
+                if (!pending.settled) {
+                    pending.settled = true;
+                    pending.resolve(prepared.userEntryId);
+                }
+                try {
+                    await this.rebuildContextState();
+                } catch (error) {
+                    console.error(`[agent-session] context state refresh error for ${this.path}:`, error);
+                }
+                if (prepared.projectionReport) {
+                    this.onHarnessEvent({ type: "context_projection", report: prepared.projectionReport });
+                }
+                return prepared;
+            } catch (error) {
+                this.rejectPendingSend(pending, error);
+                throw new AgentHarnessTerminalPreparationError(error);
+            }
+        };
+    }
+
+    private wrapActivation(
+        activate: ((signal?: AbortSignal) => Promise<AgentHarnessTurnPreparation | void>) | undefined,
+        pending: PendingSend,
+        hasStaticPreparation: boolean
+    ): (signal?: AbortSignal) => Promise<AgentHarnessTurnPreparation | void> {
+        return async (signal) => {
+            try {
+                if (signal?.aborted) throw new Error("send aborted before activation completed");
+                const activatedPreparation = await activate?.(signal);
+                if (signal?.aborted) throw new Error("send aborted before activation completed");
+                pending.awaitingUserEvent = !hasStaticPreparation && typeof activatedPreparation !== "function";
+                return typeof activatedPreparation !== "function"
+                    ? undefined
+                    : this.wrapPreparation(activatedPreparation, pending);
+            } catch (error) {
+                this.rejectPendingSend(pending, error);
+                throw new AgentHarnessTerminalPreparationError(error);
+            }
+        };
+    }
+
+    private rejectPendingSend(pending: PendingSend, error: unknown): void {
+        const index = this.pendingSends.indexOf(pending);
+        if (index >= 0) this.pendingSends.splice(index, 1);
+        if (pending.committedEntryId) {
+            this.ignoredCommittedEntryIds.add(pending.committedEntryId);
+            return;
+        }
+        if (pending.settled) return;
+        pending.settled = true;
+        pending.reject(error);
     }
 
     private ensureTurn(turnId: string): AgentTurn {
@@ -491,15 +669,26 @@ export class AgentSessionRuntime {
     private applyMessageUpdateToTurn(message: AgentMessage, isEnd: boolean, entryId?: string): void {
         const role = (message as { role?: string }).role;
         if (role === "user") {
-            // The turn's identity IS the user message's session entry id. It
-            // only becomes known on message_end, so we open/identify the turn
-            // here and resolve the matching send() promise.
+            // Live turn reconstruction remains event-driven even when a
+            // prepared send promise already resolved at commit.
             if (isEnd && entryId) {
                 this.activeTurnId = entryId;
                 const turn = this.ensureTurn(entryId);
                 this.setTurn({ ...turn, userMessage: message, status: "streaming", errorMessage: undefined });
-                const pending = this.pendingEntryIdResolvers.shift();
-                pending?.resolve(entryId);
+                if (this.ignoredCommittedEntryIds.delete(entryId)) return;
+                const committedIndex = this.pendingSends.findIndex((pending) => pending.committedEntryId === entryId);
+                const pendingIndex =
+                    committedIndex >= 0
+                        ? committedIndex
+                        : this.pendingSends.findIndex(
+                              (pending) =>
+                                  pending.awaitingUserEvent && pending.committedEntryId == null && !pending.settled
+                          );
+                const pending = pendingIndex >= 0 ? this.pendingSends.splice(pendingIndex, 1)[0] : undefined;
+                if (pending && !pending.settled) {
+                    pending.settled = true;
+                    pending.resolve(entryId);
+                }
                 return;
             }
             const turn = this.getActiveTurn();
@@ -554,6 +743,16 @@ export class AgentSessionRuntime {
         this.errorMessage = undefined;
         this.activeTurnId = undefined;
         this.running = false;
+        this.applyContextEntries(entries);
+    }
+
+    private applyContextEntries(entries: SessionTreeEntry[]): void {
+        const contextState = buildContextStateFromSessionEntries(entries);
+        this.contextReports = contextState.contextReports;
+    }
+
+    private async rebuildContextState(): Promise<void> {
+        this.applyContextEntries(await this.host.session.getBranch());
     }
 
     private emitSessionState(): void {
@@ -564,6 +763,7 @@ export class AgentSessionRuntime {
             status: this.status,
             steer: this.steerQueue,
             followUp: this.followUpQueue,
+            contextReports: this.contextReports,
         };
         for (const listener of this.listeners) {
             try {

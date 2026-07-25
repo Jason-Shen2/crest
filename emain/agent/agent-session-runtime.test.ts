@@ -2,12 +2,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Model } from "../ai";
+import {
+    type AssistantMessage,
+    type Model,
+    registerApiProvider,
+    resetApiProviders,
+    type UserMessage,
+} from "../ai";
+import { AssistantMessageEventStream } from "../ai/utils/event-stream";
+import type { ContextProjectionReport } from "./context/types";
 import { AgentSessionRuntime, buildPersistedTurnsFromSessionEntries } from "./agent-session-runtime";
-import type { AgentHarnessHost } from "./harness-factory";
-import type { SessionTreeEntry } from "./harness/types";
+import { buildAgentHarnessHost, type AgentHarnessHost } from "./harness-factory";
+import { InMemorySessionRepo } from "./harness/session/memory-repo";
+import { makeCommittedContextTransaction } from "./harness/session/context-transaction-fixture";
+import type {
+    AgentHarnessPromptOptions,
+    AgentHarnessTurnPreparation,
+    AgentHarnessTurnPreparationInput,
+    SessionTreeEntry,
+} from "./harness/types";
 import type { AgentMessage, ThinkingLevel } from "./types";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
@@ -20,18 +35,19 @@ function makeFakeHarness() {
         promptOptions: [] as unknown[],
         followUp: [] as string[],
         followUpOptions: [] as unknown[],
-        followUpPreparations: [] as Array<() => Promise<void>>,
+        followUpPreparations: [] as Array<AgentHarnessTurnPreparation | undefined>,
         custom: [] as unknown[],
         abort: 0,
         navigateTree: [] as unknown[],
     };
-    let promptResult: () => Promise<unknown> = () => new Promise(() => {}); // pending forever by default
+    let promptResult: (options?: unknown) => Promise<unknown> = () => new Promise(() => {}); // pending forever by default
     let navigateTreeResult: () => Promise<unknown> = () => Promise.resolve({ cancelled: false });
     const session = {
         getEntries: vi.fn().mockResolvedValue([]),
         getBranch: vi.fn().mockResolvedValue([]),
         getLeafId: vi.fn().mockResolvedValue(null),
         getLabel: vi.fn().mockResolvedValue(undefined),
+        appendCustomEntry: vi.fn().mockResolvedValue(undefined),
     };
     const model = {
         id: "model-1",
@@ -55,19 +71,19 @@ function makeFakeHarness() {
         prompt(text: string, options?: unknown) {
             calls.prompt.push(text);
             calls.promptOptions.push(options);
-            return promptResult();
+            return promptResult(options);
         },
-        followUp(text: string, options?: unknown, prepare?: () => Promise<void>) {
+        followUp(text: string, options?: unknown, prepare?: AgentHarnessTurnPreparation) {
             calls.followUp.push(text);
             calls.followUpOptions.push(options);
-            if (prepare) calls.followUpPreparations.push(prepare);
+            calls.followUpPreparations.push(prepare);
             if (calls.prompt.length === 0) return Promise.reject(new Error("followUp before prompt"));
             return Promise.resolve();
         },
-        appendCustomEntry(customType: string, data?: unknown) {
+        appendCustomEntry: vi.fn((customType: string, data?: unknown) => {
             calls.custom.push({ customType, data });
             return Promise.resolve();
-        },
+        }),
         promptWithCustomEntry(customType: string, data: unknown, text: string) {
             calls.custom.push({ customType, data });
             calls.prompt.push(text);
@@ -99,14 +115,46 @@ function makeFakeHarness() {
             for (const l of listeners) l(event);
         },
         listenerCount: () => listeners.size,
-        setPromptResult(fn: () => Promise<unknown>) {
+        setPromptResult(fn: (options?: unknown) => Promise<unknown>) {
             promptResult = fn;
         },
         setNavigateTreeResult(fn: () => Promise<unknown>) {
             navigateTreeResult = fn;
         },
-        async prepareNextFollowUp() {
-            await calls.followUpPreparations.shift()?.();
+        async prepareNextFollowUp(input?: Partial<AgentHarnessTurnPreparationInput>) {
+            const queuedPrepare = calls.followUpPreparations.shift();
+            const options = calls.followUpOptions.shift() as
+                | { activate?: () => Promise<AgentHarnessTurnPreparation | void> }
+                | undefined;
+            const activatedPrepare = await options?.activate?.();
+            const prepare = typeof activatedPrepare === "function" ? activatedPrepare : queuedPrepare;
+            if (!prepare) return;
+            return await prepare({
+                userMessage: user("queued"),
+                systemPrompt: "system",
+                messages: [],
+                model: currentModel,
+                activeTools: [],
+                transformProviderRequest: async () => ({}),
+                transformContextMessages: async (messages) => messages,
+                transformProviderPayload: async (payload) => payload,
+                ...input,
+            });
+        },
+        async preparePrompt(input?: Partial<AgentHarnessTurnPreparationInput>) {
+            const options = calls.promptOptions.at(-1) as AgentHarnessPromptOptions | undefined;
+            if (!options?.prepare) return;
+            return await options.prepare({
+                userMessage: user("prompt"),
+                systemPrompt: "system",
+                messages: [],
+                model: currentModel,
+                activeTools: [],
+                transformProviderRequest: async () => ({}),
+                transformContextMessages: async (messages) => messages,
+                transformProviderPayload: async (payload) => payload,
+                ...input,
+            });
         },
         pane: {
             harness,
@@ -122,8 +170,8 @@ function makeFakeHarness() {
     };
 }
 
-function user(text: string): AgentMessage {
-    return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;
+function user(text: string): UserMessage {
+    return { role: "user", content: [{ type: "text", text }] } as UserMessage;
 }
 function assistant(text: string, stopReason?: string, errorMessage?: string): AgentMessage {
     return {
@@ -135,6 +183,32 @@ function assistant(text: string, stopReason?: string, errorMessage?: string): Ag
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+async function waitFor(check: () => boolean): Promise<void> {
+    for (let attempt = 0; attempt < 30; attempt++) {
+        if (check()) return;
+        await flush();
+    }
+    throw new Error("condition was not reached");
+}
+
+function projectionReport(targetTurnId: string, transactionId = `tx-${targetTurnId}`): ContextProjectionReport {
+    return {
+        schemaVersion: 1,
+        transactionId,
+        targetTurnId,
+        createdAt: "2026-07-23T00:00:00.000Z",
+        contextWindow: 1000,
+        effectiveOutputReserve: 100,
+        inputLimit: 900,
+        baseInputTokens: 10,
+        finalInputTokens: 20,
+        referenceTokens: 10,
+        countAccuracy: "exact",
+        overlaySha256: "a".repeat(64),
+        items: [],
+    };
+}
 
 describe("AgentHarnessHost naming", () => {
     it("exports the session-scoped harness adapter without pane terminology", () => {
@@ -448,6 +522,106 @@ describe("AgentSessionRuntime — command operations", () => {
     });
 });
 
+describe("AgentSessionRuntime — authoritative context state", () => {
+    it("hydrates projection reports without exposing persistent pin state", () => {
+        const fake = makeFakeHarness();
+        const branch = makeCommittedContextTransaction({ prefix: "hydrated" });
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { initialContextEntries: branch });
+
+        const state = owner.getSessionState();
+
+        expect(state).not.toHaveProperty("contextPins");
+        expect(state.contextReports).toEqual([
+            expect.objectContaining({
+                transactionId: "hydrated-transaction",
+                targetTurnId: "hydrated-user",
+            }),
+        ]);
+    });
+
+    it("recomputes reports from the selected branch after tree navigation", async () => {
+        const fake = makeFakeHarness();
+        const attached = makeCommittedContextTransaction({ prefix: "active" });
+        fake.session.getBranch.mockResolvedValue([]);
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { initialContextEntries: attached });
+
+        await owner.navigateTree("before-attach");
+
+        expect(owner.getSessionState().contextReports).toEqual([]);
+    });
+
+    it("applies a context projection before notifying listeners", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const report = projectionReport("prepared-user");
+        let reportsAtNotification: ContextProjectionReport[] | undefined;
+        owner.subscribe((event) => {
+            if (event.type === "context_projection") {
+                reportsAtNotification = owner.getSessionState().contextReports;
+            }
+        });
+        const send = owner.send("hello", {
+            prepare: async () => ({
+                userEntryId: "prepared-user",
+                systemPromptSuffix: "overlay",
+                projectionReport: report,
+            }),
+        });
+        await flush();
+
+        await fake.preparePrompt();
+        await send;
+
+        expect(reportsAtNotification).toEqual([report]);
+    });
+
+    it("refreshes committed projection reports before a prepared send resolves", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const branch = makeCommittedContextTransaction({ prefix: "new-context" });
+        const report = (branch.find(
+            (entry) => entry.type === "custom" && entry.customType === "context_projection"
+        ) as Extract<SessionTreeEntry, { type: "custom" }>).data as ContextProjectionReport;
+        const send = owner.send("hello", {
+            prepare: async () => {
+                fake.session.getBranch.mockResolvedValue(branch);
+                return {
+                    userEntryId: "new-context-user",
+                    systemPromptSuffix: "overlay",
+                    projectionReport: report,
+                };
+            },
+        });
+        await flush();
+
+        await fake.preparePrompt();
+        await send;
+
+        expect(owner.getSessionState().contextReports).toEqual([
+            expect.objectContaining({ targetTurnId: "new-context-user" }),
+        ]);
+    });
+
+    it("replays reports in session_state after rebuilding", async () => {
+        const fake = makeFakeHarness();
+        const branch = makeCommittedContextTransaction({ prefix: "replay" });
+        fake.session.getBranch.mockResolvedValue(branch);
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const events: unknown[] = [];
+        owner.subscribe((event) => events.push(event));
+
+        await owner.navigateTree("replay-user");
+
+        expect(events.at(-1)).toEqual(
+            expect.objectContaining({
+                type: "session_state",
+                contextReports: [expect.objectContaining({ targetTurnId: "replay-user" })],
+            })
+        );
+        expect(events.at(-1)).not.toHaveProperty("contextPins");
+    });
+});
+
 describe("AgentSessionRuntime — owned turns", () => {
     it("builds a completed turn keyed by the user entry id", () => {
         const fake = makeFakeHarness();
@@ -483,6 +657,237 @@ describe("AgentSessionRuntime — owned turns", () => {
         fake.emit({ type: "message_end", message: q, entryId: "e-a" });
 
         await expect(sendPromise).resolves.toBe("e-a");
+    });
+
+    it("resolves a prepared send when its context transaction commits", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const report = projectionReport("prepared-user");
+        const sendPromise = owner.send("hello", {
+            prepare: async () => ({
+                userEntryId: "prepared-user",
+                systemPromptSuffix: "overlay",
+                projectionReport: report,
+            }),
+        });
+        await flush();
+
+        await fake.preparePrompt();
+
+        await expect(sendPromise).resolves.toBe("prepared-user");
+        expect(owner.getSessionState().contextReports).toEqual([report]);
+    });
+
+    it("resolves a queued prepared send only when its own preparation commits", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const first = owner.send("first");
+        await flush();
+        fake.emit({ type: "message_end", message: user("first"), entryId: "first-user" });
+        await expect(first).resolves.toBe("first-user");
+
+        let settled = false;
+        const second = owner
+            .send("second", {
+                prepare: async () => ({
+                    userEntryId: "second-user",
+                    systemPromptSuffix: "overlay",
+                }),
+            })
+            .finally(() => {
+                settled = true;
+            });
+        await flush();
+        expect(settled).toBe(false);
+
+        await fake.prepareNextFollowUp({ userMessage: user("second") });
+
+        await expect(second).resolves.toBe("second-user");
+    });
+
+    it("keeps queued preparation inputs and user ids bound to their own sends", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        void owner.send("active");
+        await flush();
+        fake.emit({ type: "message_end", message: user("active"), entryId: "active-user" });
+        const seen: string[][] = [];
+        const prepare = (draftIds: string[], userEntryId: string): AgentHarnessTurnPreparation => async () => {
+            seen.push(draftIds);
+            return { userEntryId, systemPromptSuffix: userEntryId };
+        };
+
+        const second = owner.send("second", { prepare: prepare(["draft-2"], "user-2") });
+        const third = owner.send("third", { prepare: prepare(["draft-3a", "draft-3b"], "user-3") });
+        await flush();
+
+        await fake.prepareNextFollowUp({ userMessage: user("second") });
+        await expect(second).resolves.toBe("user-2");
+        expect(await Promise.race([third.then(() => "settled"), flush().then(() => "pending")])).toBe("pending");
+        await fake.prepareNextFollowUp({ userMessage: user("third") });
+        await expect(third).resolves.toBe("user-3");
+        expect(seen).toEqual([["draft-2"], ["draft-3a", "draft-3b"]]);
+    });
+
+    it("rejects only the failed prepared send without leaving a stale resolver", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        void owner.send("active");
+        await flush();
+        fake.emit({ type: "message_end", message: user("active"), entryId: "active-user" });
+        const failed = owner.send("failed", {
+            prepare: async () => {
+                throw new Error("budget exceeded");
+            },
+        });
+        const next = owner.send("next", {
+            prepare: async () => ({ userEntryId: "next-user", systemPromptSuffix: "overlay" }),
+        });
+        await flush();
+
+        await expect(fake.prepareNextFollowUp()).rejects.toThrow("budget exceeded");
+        await expect(failed).rejects.toThrow("budget exceeded");
+        await fake.prepareNextFollowUp();
+        await expect(next).resolves.toBe("next-user");
+    });
+
+    it("does not reject the next queued send when an initial preparation fails", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        fake.setPromptResult(async (options) => {
+            const prepare = (options as AgentHarnessPromptOptions).prepare!;
+            await prepare({
+                userMessage: user("failed"),
+                systemPrompt: "system",
+                messages: [],
+                model: fake.model,
+                activeTools: [],
+                transformProviderRequest: async () => ({}),
+                transformContextMessages: async (messages) => messages,
+                transformProviderPayload: async (payload) => payload,
+            });
+        });
+        const failed = owner.send("failed", {
+            prepare: async () => {
+                throw new Error("initial preparation failed");
+            },
+        });
+        const next = owner.send("next", {
+            prepare: async () => ({ userEntryId: "next-user", systemPromptSuffix: "overlay" }),
+        });
+
+        await expect(failed).rejects.toThrow("initial preparation failed");
+        const beforeNextPreparation = await Promise.race([
+            next.then(
+                () => "resolved",
+                () => "rejected"
+            ),
+            flush().then(() => "pending"),
+        ]);
+        expect(beforeNextPreparation).toBe("pending");
+
+        await fake.prepareNextFollowUp();
+        await expect(next).resolves.toBe("next-user");
+    });
+
+    it("rejects the exact queued send when config activation fails", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        void owner.send("active");
+        await flush();
+        fake.emit({ type: "message_end", message: user("active"), entryId: "active-user" });
+        vi.mocked(fake.pane.harness.setModel).mockRejectedValueOnce(new Error("activation failed"));
+        const queued = owner.sendWithExecutionConfig("queued", {
+            promptInputs: { cwd: "/queued" },
+            model: { ...fake.model, id: "next-model" },
+            thinkingLevel: "high",
+        });
+        await flush();
+
+        await expect(fake.prepareNextFollowUp()).rejects.toThrow("activation failed");
+        const result = await Promise.race([
+            queued.then(
+                () => "resolved",
+                (error) => (error as Error).message
+            ),
+            flush().then(() => "pending"),
+        ]);
+
+        expect(result).toBe("activation failed");
+    });
+
+    it("keeps a committed send successful when post-commit context refresh fails", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        fake.session.getBranch.mockRejectedValueOnce(new Error("refresh failed"));
+        const send = owner.send("hello", {
+            prepare: async () => ({
+                userEntryId: "committed-user",
+                systemPromptSuffix: "overlay",
+                projectionReport: projectionReport("committed-user"),
+            }),
+        });
+        await flush();
+
+        await expect(fake.preparePrompt()).resolves.toEqual(
+            expect.objectContaining({ userEntryId: "committed-user" })
+        );
+        await expect(send).resolves.toBe("committed-user");
+        expect(owner.getSessionState().contextReports).toEqual([
+            expect.objectContaining({ targetTurnId: "committed-user" }),
+        ]);
+    });
+
+    it("lets a committed preparation win when abort races with its successful return", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const abortController = new AbortController();
+        let releasePreparation!: () => void;
+        const preparationGate = new Promise<void>((resolve) => {
+            releasePreparation = resolve;
+        });
+        let preparationStarted = false;
+        const send = owner.send("hello", {
+            prepare: async () => {
+                preparationStarted = true;
+                await preparationGate;
+                return {
+                    userEntryId: "late-user",
+                    systemPromptSuffix: "overlay",
+                    projectionReport: projectionReport("late-user"),
+                };
+            },
+        });
+        await flush();
+        const preparation = fake.preparePrompt({ signal: abortController.signal });
+        await waitFor(() => preparationStarted);
+
+        abortController.abort();
+        releasePreparation();
+
+        await expect(preparation).resolves.toEqual(expect.objectContaining({ userEntryId: "late-user" }));
+        fake.emit({ type: "abort", clearedSteer: [], clearedFollowUp: [] });
+        await expect(send).resolves.toBe("late-user");
+        expect(owner.getSessionState().contextReports).toEqual([
+            expect.objectContaining({ targetTurnId: "late-user" }),
+        ]);
+        expect(
+            (owner as unknown as { ignoredCommittedEntryIds: Set<string> }).ignoredCommittedEntryIds.size
+        ).toBe(0);
+    });
+
+    it("rejects queued uncommitted prepared sends on abort", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        void owner.send("active").catch(() => {});
+        const queued = owner.send("queued", {
+            prepare: async () => ({ userEntryId: "must-not-commit", systemPromptSuffix: "overlay" }),
+        });
+        await flush();
+
+        fake.emit({ type: "abort", clearedSteer: [], clearedFollowUp: [user("queued")] });
+
+        await expect(queued).rejects.toThrow(/aborted/);
     });
 
     it("rejects a pending send() promise on abort (queued followUp never commits)", async () => {
@@ -802,6 +1207,69 @@ describe("AgentSessionRuntime — execution config", () => {
         fake.emit({ type: "message_end", message: user("second"), entryId: "entry-2" });
         await expect(second).resolves.toBe("entry-2");
     });
+
+    it("passes a fresh activated model to queued semantic preparation", async () => {
+        const fake = makeFakeHarness();
+        const runtime = new AgentSessionRuntime("/s", fake.pane);
+        void runtime.send("active");
+        await flush();
+        fake.emit({ type: "message_end", message: user("active"), entryId: "active-user" });
+        const nextModel = { ...fake.model, id: "prepared-model" };
+        const seenModels: string[] = [];
+
+        const queued = runtime.sendWithExecutionConfig(
+            "queued",
+            {
+                promptInputs: { cwd: "/queued" },
+                model: nextModel,
+                thinkingLevel: "high",
+            },
+            {
+                prepare: async (input) => {
+                    seenModels.push(input.model.id);
+                    return { userEntryId: "queued-user", systemPromptSuffix: "overlay" };
+                },
+            }
+        );
+        await flush();
+
+        await fake.prepareNextFollowUp();
+
+        await expect(queued).resolves.toBe("queued-user");
+        expect(seenModels).toEqual(["prepared-model"]);
+    });
+
+    it("chooses queued semantic preparation at activation time", async () => {
+        const fake = makeFakeHarness();
+        const runtime = new AgentSessionRuntime("/s", fake.pane);
+        void runtime.send("active");
+        await flush();
+        fake.emit({ type: "message_end", message: user("active"), entryId: "active-user" });
+        let includeContext = false;
+        const activatePreparation = vi.fn(async (): Promise<AgentHarnessTurnPreparation | undefined> =>
+            includeContext
+                ? async () => ({ userEntryId: "queued-context-user", systemPromptSuffix: "fresh overlay" })
+                : undefined
+        );
+
+        const queued = runtime.sendWithExecutionConfig(
+            "queued",
+            {
+                promptInputs: { cwd: "/queued" },
+                model: fake.model,
+                thinkingLevel: "off",
+            },
+            { activatePreparation }
+        );
+        await flush();
+        includeContext = true;
+
+        const prepared = await fake.prepareNextFollowUp();
+
+        expect(activatePreparation).toHaveBeenCalledOnce();
+        expect(prepared).toMatchObject({ userEntryId: "queued-context-user" });
+        await expect(queued).resolves.toBe("queued-context-user");
+    });
 });
 
 describe("AgentSessionRuntime — queue mirror", () => {
@@ -838,7 +1306,9 @@ describe("AgentSessionRuntime — send routing (no catch-busy)", () => {
         await flush();
 
         expect(fake.calls.promptOptions).toEqual([{ images: [firstImage] }]);
-        expect(fake.calls.followUpOptions).toEqual([{ images: [secondImage] }]);
+        expect(fake.calls.followUpOptions).toEqual([
+            expect.objectContaining({ images: [secondImage], activate: expect.any(Function) }),
+        ]);
     });
 
     it("after the run ends (agent_end), the next send prompts again", async () => {
@@ -898,5 +1368,198 @@ describe("AgentSessionRuntime — subscriber fan-out", () => {
         owner.dispose();
         expect(fake.listenerCount()).toBe(0);
         expect(fake.calls.abort).toBe(1);
+    });
+});
+
+describe("AgentSessionRuntime — real prepared follow-up integration", () => {
+    const api = "runtime-terminal-test";
+    const model = {
+        id: "runtime-model",
+        name: "Runtime model",
+        api,
+        provider: "runtime-provider",
+        baseUrl: "http://localhost",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1000,
+        maxTokens: 1000,
+    } as Model<any>;
+
+    afterEach(() => {
+        resetApiProviders();
+    });
+
+    function done(text: string): { type: "done"; reason: "stop"; message: AssistantMessage } {
+        return {
+            type: "done",
+            reason: "stop",
+            message: {
+                role: "assistant",
+                content: [{ type: "text", text }],
+                api,
+                provider: model.provider,
+                model: model.id,
+                stopReason: "stop",
+                timestamp: Date.now(),
+                usage: {
+                    input: 0,
+                    output: 0,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                    totalTokens: 0,
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                },
+            } as AssistantMessage,
+        };
+    }
+
+    it("resolves a durably committed send when abort wins before provider start", async () => {
+        const streams: AssistantMessageEventStream[] = [];
+        registerApiProvider({
+            api,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: () => {
+                const stream = new AssistantMessageEventStream();
+                streams.push(stream);
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const host = buildAgentHarnessHost({
+            session,
+            model,
+            promptInputs: { cwd: process.cwd() },
+        });
+        const runtime = new AgentSessionRuntime("/runtime", host);
+        let committedUserId = "";
+        let appendCompleted = false;
+        const send = runtime.send("commit then abort", {
+            prepare: async (input) => {
+                committedUserId = await session.appendMessage(input.userMessage);
+                appendCompleted = true;
+                await new Promise<void>((resolve) => {
+                    if (input.signal?.aborted) {
+                        resolve();
+                    } else {
+                        input.signal?.addEventListener("abort", () => resolve(), { once: true });
+                    }
+                });
+                return {
+                    userEntryId: committedUserId,
+                    systemPromptSuffix: "committed overlay",
+                    projectionReport: projectionReport(committedUserId),
+                };
+            },
+        });
+        await waitFor(() => appendCompleted);
+
+        runtime.abort();
+
+        await expect(send).resolves.toBe(committedUserId);
+        await host.harness.waitForIdle();
+        await waitFor(() => !runtime.running);
+        expect(streams).toEqual([]);
+        expect(runtime.getSessionState().contextReports).toEqual([
+            expect.objectContaining({ targetTurnId: committedUserId }),
+        ]);
+        expect(
+            (runtime as unknown as { ignoredCommittedEntryIds: Set<string> }).ignoredCommittedEntryIds.size
+        ).toBe(0);
+    });
+
+    it("promotes an innocent queued send after an initial terminal failure", async () => {
+        const streams: AssistantMessageEventStream[] = [];
+        registerApiProvider({
+            api,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: () => {
+                const stream = new AssistantMessageEventStream();
+                streams.push(stream);
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const runtime = new AgentSessionRuntime(
+            "/runtime",
+            buildAgentHarnessHost({
+                session,
+                model,
+                promptInputs: { cwd: process.cwd() },
+            })
+        );
+        let queuedUserId = "";
+        const initial = runtime.send("initial", {
+            prepare: async () => {
+                throw new Error("initial terminal failure");
+            },
+        });
+        const queued = runtime.send("queued", {
+            prepare: async (input) => {
+                queuedUserId = await session.appendMessage(input.userMessage);
+                return { userEntryId: queuedUserId, systemPromptSuffix: "queued overlay" };
+            },
+        });
+
+        await expect(initial).rejects.toThrow("initial terminal failure");
+        await waitFor(() => streams.length === 1);
+        await expect(queued).resolves.toBe(queuedUserId);
+        const later = runtime.send("later");
+        streams[0]!.push(done("queued done"));
+        await waitFor(() => streams.length === 2);
+        await expect(later).resolves.toEqual(expect.any(String));
+        expect(await later).not.toBe(queuedUserId);
+        streams[1]!.push(done("later done"));
+        await waitFor(() => !runtime.running);
+    });
+
+    it("drops one terminally failed follow-up and preserves the next send identity", async () => {
+        const streams: AssistantMessageEventStream[] = [];
+        registerApiProvider({
+            api,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: () => {
+                const stream = new AssistantMessageEventStream();
+                streams.push(stream);
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const host = buildAgentHarnessHost({
+            session,
+            model,
+            promptInputs: { cwd: process.cwd() },
+        });
+        const runtime = new AgentSessionRuntime("/runtime", host);
+        const failedPrepare = vi.fn(async () => {
+            throw new Error("terminal preparation failed");
+        });
+        let nextUserId = "";
+        const nextPrepare = vi.fn(async (input: AgentHarnessTurnPreparationInput) => {
+            nextUserId = await session.appendMessage(input.userMessage);
+            return { userEntryId: nextUserId, systemPromptSuffix: "next overlay" };
+        });
+
+        const active = runtime.send("active");
+        await waitFor(() => streams.length === 1);
+        await active;
+        const failed = runtime.send("failed", { prepare: failedPrepare });
+        const next = runtime.send("next", { prepare: nextPrepare });
+        streams[0]!.push(done("active done"));
+
+        await expect(failed).rejects.toThrow("terminal preparation failed");
+        await waitFor(() => !runtime.running);
+        const kick = runtime.send("kick");
+        await waitFor(() => streams.length === 2);
+        await kick;
+        streams[1]!.push(done("kick done"));
+
+        await waitFor(() => nextPrepare.mock.calls.length > 0);
+        await expect(next).resolves.toBe(nextUserId);
+        expect(failedPrepare).toHaveBeenCalledOnce();
+        expect(nextPrepare).toHaveBeenCalledOnce();
+        await waitFor(() => streams.length === 3);
+        streams[2]!.push(done("next done"));
+        await waitFor(() => !runtime.running);
     });
 });

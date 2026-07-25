@@ -24,6 +24,41 @@ Crest is BYO-API-key. In a packaged release, configure providers + credentials i
 
 That's it. After saving, the model picker (the chip next to the input bar) populates with OpenAI's catalog models; selecting one writes the choice to the pane's meta and the next agent message uses it.
 
+### Context references (optional)
+
+Turn and session references are enabled by default for a valid `ai.json`. You can make that explicit:
+
+```jsonc
+{
+    "providers": { "openai": { "tokensecretname": "OPENAI_API_KEY" } },
+    "default": { "provider": "openai", "model": "gpt-5" },
+    "context_references": { "enabled": true }
+}
+```
+
+To disable reference controls without deleting stored pins:
+
+```jsonc
+"context_references": { "enabled": false }
+```
+
+Re-enabling restores those pins with the representations you selected. Disabling never rewrites,
+summarizes, downgrades, or deletes a reference, and ordinary messages without selected references keep
+working.
+
+Optionally cap the complete reference overlay:
+
+```jsonc
+"context_references": {
+    "enabled": true,
+    "max_tokens": 64000
+}
+```
+
+`max_tokens` has no default and is clamped at runtime to `0`–`128000`. It is a hard limit, not an
+automatic packing target: if a request does not fit, Send stays disabled until you explicitly change,
+summarize, pause, or remove references. Crest leaves the numeric value in `ai.json` unchanged.
+
 ### Where credentials live
 
 Two ways to provide an API key:

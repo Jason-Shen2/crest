@@ -79,7 +79,11 @@ function normalizeJsonValue(value: unknown, ancestors = new WeakSet<object>()): 
         ancestors.add(value);
         if (Array.isArray(value)) {
             const ownNames = Object.getOwnPropertyNames(value);
-            if (Object.getOwnPropertySymbols(value).length > 0 || ownNames.length !== value.length + 1 || !ownNames.includes("length")) {
+            if (
+                Object.getOwnPropertySymbols(value).length > 0 ||
+                ownNames.length !== value.length + 1 ||
+                !ownNames.includes("length")
+            ) {
                 invalidInput("Tool argument arrays must contain only indexed JSON values");
             }
             const result = new Array<unknown>(value.length);
@@ -107,7 +111,11 @@ function normalizeJsonValue(value: unknown, ancestors = new WeakSet<object>()): 
         return result;
     } catch (error) {
         if (error instanceof ContextReferenceError) throw error;
-        throw new ContextReferenceError("invalid_input", "Tool arguments must contain only JSON values", error instanceof Error ? error : undefined);
+        throw new ContextReferenceError(
+            "invalid_input",
+            "Tool arguments must contain only JSON values",
+            error instanceof Error ? error : undefined
+        );
     }
 }
 
@@ -120,13 +128,31 @@ function normalizeContent(content: unknown, includeToolCalls: boolean): ContextS
     const blocks: ContextSnapshotBlock[] = [];
     for (const contentBlock of content) {
         if (typeof contentBlock !== "object" || contentBlock == null) continue;
-        const block = contentBlock as { type?: unknown; text?: unknown; data?: unknown; mimeType?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
+        const block = contentBlock as {
+            type?: unknown;
+            text?: unknown;
+            data?: unknown;
+            mimeType?: unknown;
+            id?: unknown;
+            name?: unknown;
+            arguments?: unknown;
+        };
         if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
             blocks.push({ type: "text", text: block.text });
         } else if (block.type === "image") {
             blocks.push(normalizedImageBlock(block));
-        } else if (includeToolCalls && block.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string") {
-            blocks.push({ type: "tool_call", id: block.id, name: block.name, arguments: normalizeJsonValue(block.arguments) });
+        } else if (
+            includeToolCalls &&
+            block.type === "toolCall" &&
+            typeof block.id === "string" &&
+            typeof block.name === "string"
+        ) {
+            blocks.push({
+                type: "tool_call",
+                id: block.id,
+                name: block.name,
+                arguments: normalizeJsonValue(block.arguments),
+            });
         }
     }
     return blocks;
@@ -134,7 +160,13 @@ function normalizeContent(content: unknown, includeToolCalls: boolean): ContextS
 
 function normalizeMessage(entry: SessionTreeEntry): ContextSnapshotMessage | undefined {
     if (entry.type !== "message") return undefined;
-    const message = entry.message as { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown };
+    const message = entry.message as {
+        role?: unknown;
+        content?: unknown;
+        toolCallId?: unknown;
+        toolName?: unknown;
+        isError?: unknown;
+    };
     if (message.role === "user") {
         return { role: "user", content: normalizeContent(message.content, false) };
     }
@@ -169,7 +201,9 @@ function canonicalJson(value: unknown): string {
 
 function hasUsefulContent(messages: ContextSnapshotMessage[]): boolean {
     return messages.some((message) =>
-        message.content.some((block) => block.type === "tool_call" || (block.type === "text" && block.text.trim().length > 0))
+        message.content.some(
+            (block) => block.type === "tool_call" || (block.type === "text" && block.text.trim().length > 0)
+        )
     );
 }
 

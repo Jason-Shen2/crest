@@ -40,12 +40,6 @@ const BuiltInAgentCommands: AgentCommandInfo[] = [
         action: { type: "backend", command: "new" },
     },
     {
-        name: "resume",
-        description: "Resume an existing agent session for this workspace",
-        source: "builtin",
-        action: { type: "backend", command: "resume" },
-    },
-    {
         name: "compact",
         description: "Compact the current session context",
         argumentHint: "[instructions]",
@@ -54,9 +48,15 @@ const BuiltInAgentCommands: AgentCommandInfo[] = [
     },
     {
         name: "session",
-        description: "Show current agent session information",
+        description: "Open the session manager",
         source: "builtin",
         action: { type: "backend", command: "session" },
+    },
+    {
+        name: "info",
+        description: "Show current agent session information",
+        source: "builtin",
+        action: { type: "backend", command: "info" },
     },
     {
         name: "copy",

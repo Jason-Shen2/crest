@@ -83,6 +83,11 @@ export interface AISelectionConfigPersisted {
     reasoning?: string;
 }
 
+export interface AIContextReferencesConfig {
+    enabled?: boolean;
+    max_tokens?: number;
+}
+
 export interface AIUserConfig {
     providers: { [key: string]: ProviderCredentials };
     default: AISelectionConfigPersisted;
@@ -90,6 +95,7 @@ export interface AIUserConfig {
     custom_models?: UserCustomModel[];
     custom_endpoints?: { [key: string]: UserCustomEndpoint };
     pinned?: PinnedModel[];
+    context_references?: AIContextReferencesConfig;
 }
 
 // `UserConfig` is a local alias so resolver / picker code can stay

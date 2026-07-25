@@ -1,5 +1,6 @@
-import type { ImageContent, Model, SimpleStreamOptions, TextContent, Transport } from "../../ai";
+import type { Api, ImageContent, Model, SimpleStreamOptions, TextContent, Transport, UserMessage } from "../../ai";
 import type { AgentEvent, AgentMessage, AgentTool, QueueMode, ThinkingLevel } from "../index";
+import type { ContextProjectionReport } from "../context/types";
 import type { Session } from "./session/session";
 
 /** Result of a fallible operation. Expected failures are returned as `ok: false` instead of thrown.
@@ -200,6 +201,7 @@ export type SessionErrorCode =
 	| "not_found"
 	| "invalid_session"
 	| "invalid_entry"
+	| "stale_leaf"
 	| "invalid_fork_target"
 	| "storage"
 	| "unknown";
@@ -428,6 +430,7 @@ export type SessionTreeEntry =
 
 export interface SessionContext {
 	messages: AgentMessage[];
+	messageEntryIds: Array<string | undefined>;
 	thinkingLevel: string;
 	model: { provider: string; modelId: string } | null;
 }
@@ -463,7 +466,7 @@ export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetad
 	setLeafId(leafId: string | null): Promise<void>;
 	createEntryId(): Promise<string>;
 	appendEntry(entry: SessionTreeEntry): Promise<void>;
-	appendEntries(entries: SessionTreeEntry[]): Promise<void>;
+	appendEntries(entries: SessionTreeEntry[], options?: SessionAppendOptions): Promise<void>;
 	getEntry(id: string): Promise<SessionTreeEntry | undefined>;
 	findEntries<TType extends SessionTreeEntry["type"]>(
 		type: TType,
@@ -471,6 +474,22 @@ export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetad
 	getLabel(id: string): Promise<string | undefined>;
 	getPathToRoot(leafId: string | null): Promise<SessionTreeEntry[]>;
 	getEntries(): Promise<SessionTreeEntry[]>;
+}
+
+export interface SessionAppendOptions {
+	expectedLeafId?: string | null;
+}
+
+export function assertExpectedSessionLeaf(
+	options: SessionAppendOptions | undefined,
+	currentLeafId: string | null,
+): void {
+	if (options == null || !Object.hasOwn(options, "expectedLeafId")) return;
+	if (options.expectedLeafId === currentLeafId) return;
+	throw new SessionError(
+		"stale_leaf",
+		`Session leaf changed before append: expected ${String(options.expectedLeafId)}, found ${String(currentLeafId)}`,
+	);
 }
 
 export type { Session } from "./session/session";
@@ -649,6 +668,11 @@ export interface ResourcesUpdateEvent<
 	previousResources: AgentHarnessResources<TSkill, TPromptTemplate>;
 }
 
+export interface ContextProjectionEvent {
+	type: "context_projection";
+	report: ContextProjectionReport;
+}
+
 export type AgentHarnessOwnEvent<
 	TSkill extends Skill = Skill,
 	TPromptTemplate extends PromptTemplate = PromptTemplate,
@@ -670,6 +694,7 @@ export type AgentHarnessOwnEvent<
 	| SessionTreeEvent
 	| ModelSelectEvent
 	| ThinkingLevelSelectEvent
+	| ContextProjectionEvent
 	| ResourcesUpdateEvent<TSkill, TPromptTemplate>;
 
 export type AgentHarnessEvent<TSkill extends Skill = Skill, TPromptTemplate extends PromptTemplate = PromptTemplate> =
@@ -732,6 +757,7 @@ export type AgentHarnessEventResultMap = {
 	session_tree: undefined;
 	model_select: undefined;
 	thinking_level_select: undefined;
+	context_projection: undefined;
 	resources_update: undefined;
 	queue_update: undefined;
 	save_point: undefined;
@@ -741,6 +767,46 @@ export type AgentHarnessEventResultMap = {
 
 export interface AgentHarnessPromptOptions {
 	images?: ImageContent[];
+	prepare?: AgentHarnessTurnPreparation;
+}
+
+export interface AgentHarnessTurnPreparationInput {
+	userMessage: UserMessage;
+	systemPrompt: string;
+	messages: AgentMessage[];
+	model: Model<Api>;
+	activeTools: AgentTool[];
+	transformProviderRequest(): Promise<AgentHarnessStreamOptions>;
+	transformContextMessages(messages: AgentMessage[]): Promise<AgentMessage[]>;
+	transformProviderPayload(payload: unknown): Promise<unknown>;
+	signal?: AbortSignal;
+}
+
+export interface AgentHarnessFollowUpOptions {
+	images?: ImageContent[];
+	activate?: (signal?: AbortSignal) => Promise<AgentHarnessTurnPreparation | void>;
+}
+
+export interface AgentHarnessPreparedTurn {
+	userEntryId: string;
+	systemPromptSuffix: string;
+	projectionReport?: ContextProjectionReport;
+	finalProviderRequestOptions?: AgentHarnessStreamOptions;
+	transformedContextMessages?: AgentMessage[];
+	finalProviderPayload?: unknown;
+}
+
+export type AgentHarnessTurnPreparation = (
+	input: AgentHarnessTurnPreparationInput,
+) => Promise<AgentHarnessPreparedTurn>;
+
+export class AgentHarnessTerminalPreparationError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), {
+			cause: cause instanceof Error ? cause : undefined,
+		});
+		this.name = "AgentHarnessTerminalPreparationError";
+	}
 }
 
 export interface AbortResult {
@@ -844,6 +910,7 @@ export interface AgentHarnessOptions<
 	activeToolNames?: string[];
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
+	transformSessionContext?: (input: { entries: SessionTreeEntry[]; context: SessionContext }) => Promise<SessionContext>;
 }
 
 export type { AgentHarness } from "./agent-harness";

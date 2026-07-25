@@ -164,10 +164,9 @@ export const CommandSelectorMessage = memo(function CommandSelectorMessage({
 }: CommandSelectorMessageProps) {
     return (
         <div
-            className={cn(
-                "px-3 py-4 text-center font-sans",
-                tone === "error" ? "text-rose-300" : "text-secondary/75"
-            )}
+            role={tone === "error" ? "alert" : undefined}
+            aria-live={tone === "error" ? "assertive" : undefined}
+            className={cn("px-3 py-4 text-center font-sans", tone === "error" ? "text-rose-300" : "text-secondary/75")}
         >
             {children}
         </div>
@@ -189,6 +188,7 @@ export interface CommandSelectorSearchBarProps {
     shortcutKey?: string;
     py?: string;
     fontFamily?: "mono" | "sans";
+    ariaLabel?: string;
 }
 
 export const CommandSelectorSearchBar = memo(function CommandSelectorSearchBar({
@@ -202,6 +202,7 @@ export const CommandSelectorSearchBar = memo(function CommandSelectorSearchBar({
     shortcutKey = "/",
     py = "py-1.5",
     fontFamily = "mono",
+    ariaLabel,
 }: CommandSelectorSearchBarProps) {
     return (
         <div
@@ -220,6 +221,7 @@ export const CommandSelectorSearchBar = memo(function CommandSelectorSearchBar({
             <input
                 ref={inputRef}
                 type="text"
+                aria-label={ariaLabel}
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
                 onKeyDown={onKeyDown}
@@ -258,13 +260,26 @@ export interface SelectorHint {
 interface CommandSelectorHintFooterProps {
     hints: SelectorHint[];
     countText?: string;
+    /**
+     * Element rendered at the right edge of the footer (e.g. a primary action
+     * button). Pushed to the right via `ml-auto` and rendered after the hint
+     * chips. When provided, `countText` is suppressed to keep the trailing
+     * slot unambiguous.
+     */
+    trailing?: React.ReactNode;
+    /** Optional className override for the outer wrapper. */
+    className?: string;
 }
 
 function KbdKey({ children }: { children: React.ReactNode }) {
     return (
         <kbd
             className="inline-flex items-center justify-center rounded-[3px] bg-fg-overlay-2/70 px-1 font-sans"
-            style={{ height: `${COMMAND_SELECTOR_KBD_HEIGHT_PX}px`, minWidth: `${COMMAND_SELECTOR_KBD_HEIGHT_PX}px`, fontSize: "10px" }}
+            style={{
+                height: `${COMMAND_SELECTOR_KBD_HEIGHT_PX}px`,
+                minWidth: `${COMMAND_SELECTOR_KBD_HEIGHT_PX}px`,
+                fontSize: "10px",
+            }}
         >
             {children}
         </kbd>
@@ -274,10 +289,15 @@ function KbdKey({ children }: { children: React.ReactNode }) {
 export const CommandSelectorHintFooter = memo(function CommandSelectorHintFooter({
     hints,
     countText,
+    trailing,
+    className,
 }: CommandSelectorHintFooterProps) {
     return (
         <div
-            className="flex items-center gap-x-3 border-t border-white/[0.06] px-3 py-2 font-sans text-secondary/65"
+            className={cn(
+                "flex items-center gap-x-3 border-t border-white/[0.06] px-3 py-2 font-sans text-secondary/65",
+                className
+            )}
             style={{ fontSize: `${COMMAND_SELECTOR_FOOTER_FONT_PX}px` }}
         >
             {hints.map((hint, i) => (
@@ -288,10 +308,12 @@ export const CommandSelectorHintFooter = memo(function CommandSelectorHintFooter
                     <span>{hint.label}</span>
                 </span>
             ))}
-            {countText && (
-                <span className="ml-auto font-mono tabular-nums text-secondary/50">
-                    {countText}
-                </span>
+            {trailing != null ? (
+                <span className="ml-auto flex items-center">{trailing}</span>
+            ) : (
+                countText && (
+                    <span className="ml-auto font-mono tabular-nums text-secondary/50">{countText}</span>
+                )
             )}
         </div>
     );
@@ -301,7 +323,7 @@ export const CommandSelectorHintFooter = memo(function CommandSelectorHintFooter
 // CommandSelectorPanel — root container with consistent styling
 // =========================================================================
 
-interface CommandSelectorPanelProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "ref" | "role" | "tabIndex"> {
+interface CommandSelectorPanelProps extends Omit<React.HTMLAttributes<HTMLDivElement>, "ref" | "tabIndex"> {
     panelRef?: RefObject<HTMLDivElement | null>;
     ariaLabel?: string;
     fontFamily?: "mono" | "sans";
@@ -312,6 +334,7 @@ export const CommandSelectorPanel = memo(function CommandSelectorPanel({
     ariaLabel,
     children,
     fontFamily = "mono",
+    role = "listbox",
     className,
     ...rest
 }: CommandSelectorPanelProps) {
@@ -319,7 +342,7 @@ export const CommandSelectorPanel = memo(function CommandSelectorPanel({
         <div
             ref={panelRef}
             tabIndex={-1}
-            role="listbox"
+            role={role}
             aria-label={ariaLabel}
             className={cn(
                 "text-foreground outline-none focus:outline-none",

@@ -167,14 +167,20 @@ export const streamSimpleOpenAIResponses: StreamFunction<"openai-responses", Sim
 	}
 
 	const base = buildBaseOptions(model, options, apiKey);
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
-	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 
 	return streamOpenAIResponses(model, context, {
 		...base,
-		reasoningEffort,
+		...getOpenAIResponsesReasoningOptions(model, options?.reasoning),
 	} satisfies OpenAIResponsesOptions);
 };
+
+export function getOpenAIResponsesReasoningOptions(
+	model: Model<"openai-responses">,
+	reasoning: SimpleStreamOptions["reasoning"],
+): Pick<OpenAIResponsesOptions, "reasoningEffort"> {
+	const clampedReasoning = reasoning ? clampThinkingLevel(model, reasoning) : undefined;
+	return { reasoningEffort: clampedReasoning === "off" ? undefined : clampedReasoning };
+}
 
 function createClient(
 	model: Model<"openai-responses">,
@@ -280,6 +286,73 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 	}
 
 	return params;
+}
+
+export function buildOpenAIResponsesPayload(
+	model: Model<"openai-responses">,
+	context: Context,
+	options?: OpenAIResponsesOptions,
+): unknown {
+	return buildParams(model, context, options);
+}
+
+const openAIResponsesCountFields = new Set([
+	"conversation",
+	"input",
+	"instructions",
+	"model",
+	"parallel_tool_calls",
+	"previous_response_id",
+	"reasoning",
+	"text",
+	"tool_choice",
+	"tools",
+	"truncation",
+]);
+const openAIResponsesGenerationOnlyFields = new Set([
+	"background",
+	"include",
+	"max_output_tokens",
+	"metadata",
+	"prompt_cache_key",
+	"prompt_cache_retention",
+	"safety_identifier",
+	"service_tier",
+	"store",
+	"stream",
+	"temperature",
+	"top_logprobs",
+	"top_p",
+]);
+
+export function toOpenAIResponsesCountParams(payload: unknown): Record<string, unknown> {
+	if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
+		throw new Error("OpenAI Responses count payload must be an object");
+	}
+	const params: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(payload)) {
+		if (openAIResponsesCountFields.has(key)) {
+			params[key] = value;
+			continue;
+		}
+		if (!openAIResponsesGenerationOnlyFields.has(key)) {
+			throw new Error(`OpenAI Responses count payload contains unsupported field: ${key}`);
+		}
+	}
+	return params;
+}
+
+export async function countOpenAIResponsesPayload(
+	model: Model<"openai-responses">,
+	payload: unknown,
+	apiKey?: string,
+	signal?: AbortSignal,
+): Promise<number> {
+	const client = createClient(model, { messages: [] }, apiKey, undefined);
+	const response = await client.responses.inputTokens.count(toOpenAIResponsesCountParams(payload) as never, {
+		signal,
+	});
+	return response.input_tokens;
 }
 
 function getServiceTierCostMultiplier(

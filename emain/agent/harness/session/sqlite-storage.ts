@@ -24,8 +24,8 @@
 // file into memory, so opening a long conversation is no longer O(file_size).
 // See docs/agent-dual-mode-design.html §9.
 
-import type { JsonlSessionMetadata, LeafEntry, SessionStorage, SessionTreeEntry } from "../types";
-import { SessionError, toError } from "../types";
+import type { JsonlSessionMetadata, LeafEntry, SessionAppendOptions, SessionStorage, SessionTreeEntry } from "../types";
+import { assertExpectedSessionLeaf, SessionError, toError } from "../types";
 import { SqliteDb } from "./sqlite-driver";
 import { uuidv7 } from "./uuid";
 import { validateSessionEntriesForAppend } from "./entry-transaction";
@@ -106,6 +106,7 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 	private readonly metadata: JsonlSessionMetadata;
 	private entryIds: Set<string> | undefined;
 	private transactionIds: Set<string> | undefined;
+	private lastIndexedSeq = 0;
 
 	private constructor(db: SqliteDb, location: string, header: HeaderRow) {
 		this.db = db;
@@ -173,21 +174,27 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 	}
 
 	private hasEntryId(id: string): boolean {
-		if (this.entryIds) return this.entryIds.has(id);
+		if (this.entryIds?.has(id)) return true;
 		return this.db.get("SELECT 1 AS x FROM entries WHERE id = ? LIMIT 1", id) !== undefined;
 	}
 
-	private ensureAppendIndexes(): void {
-		if (this.entryIds && this.transactionIds) return;
+	private readAppendIndexDelta(
+		afterSeq: number,
+		throughSeq: number,
+	): { entryIds: Set<string>; transactionIds: Set<string> } {
 		const entryIds = new Set<string>();
 		const transactionIds = new Set<string>();
-		for (const row of this.db.all<{ data: string }>("SELECT data FROM entries ORDER BY seq")) {
+		const rows = this.db.all<{ seq: number; data: string }>(
+			"SELECT seq, data FROM entries WHERE seq > ? AND seq <= ? ORDER BY seq",
+			afterSeq,
+			throughSeq,
+		);
+		for (const row of rows) {
 			const entry = deserializeEntry(row, this.location);
 			entryIds.add(entry.id);
 			if (entry.transactionId != null) transactionIds.add(entry.transactionId);
 		}
-		this.entryIds = entryIds;
-		this.transactionIds = transactionIds;
+		return { entryIds, transactionIds };
 	}
 
 	private generateEntryId(): string {
@@ -198,8 +205,8 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 		return uuidv7();
 	}
 
-	private insertEntry(entry: SessionTreeEntry): void {
-		this.db.run(
+	private insertEntry(entry: SessionTreeEntry): number {
+		const result = this.db.run(
 			"INSERT INTO entries (id, parent_id, type, timestamp, target_id, data) VALUES (?, ?, ?, ?, ?, ?)",
 			entry.id,
 			entry.parentId,
@@ -208,6 +215,7 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 			targetIdOf(entry),
 			JSON.stringify(entry),
 		);
+		return Number(result.lastInsertRowid);
 	}
 
 	async getMetadata(): Promise<JsonlSessionMetadata> {
@@ -248,16 +256,48 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 		return this.appendEntries([entry]);
 	}
 
-	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
-		this.ensureAppendIndexes();
-		validateSessionEntriesForAppend(this.entryIds!, this.transactionIds!, entries);
-		this.db.transaction(() => {
-			for (const entry of entries) this.insertEntry(entry);
+	async appendEntries(entries: SessionTreeEntry[], options?: SessionAppendOptions): Promise<void> {
+		const cacheUpdate = this.db.transaction(() => {
+			const last = this.db.get<{ seq: number; type: string; id: string; target_id: string | null }>(
+				"SELECT seq, type, id, target_id FROM entries ORDER BY seq DESC LIMIT 1",
+			);
+			const currentMaxSeq = last?.seq ?? 0;
+			const currentLeafId = last == null ? null : leafIdAfterRow(last);
+			assertExpectedSessionLeaf(options, currentLeafId);
+			const reuseCache =
+				this.entryIds != null && this.transactionIds != null && this.lastIndexedSeq <= currentMaxSeq;
+			const baseEntryIds = reuseCache ? this.entryIds! : new Set<string>();
+			const baseTransactionIds = reuseCache ? this.transactionIds! : new Set<string>();
+			const indexedSeq = reuseCache ? this.lastIndexedSeq : 0;
+			const delta =
+				indexedSeq === currentMaxSeq
+					? { entryIds: new Set<string>(), transactionIds: new Set<string>() }
+					: this.readAppendIndexDelta(indexedSeq, currentMaxSeq);
+			const authoritativeEntryIds = {
+				has: (id: string) => baseEntryIds.has(id) || delta.entryIds.has(id),
+			};
+			const authoritativeTransactionIds = {
+				has: (id: string) => baseTransactionIds.has(id) || delta.transactionIds.has(id),
+			};
+			if (currentLeafId !== null && !authoritativeEntryIds.has(currentLeafId)) {
+				throw invalidSession(this.location, `Entry ${currentLeafId} not found`);
+			}
+			validateSessionEntriesForAppend(authoritativeEntryIds, authoritativeTransactionIds, entries);
+			let nextIndexedSeq = currentMaxSeq;
+			for (const entry of entries) {
+				nextIndexedSeq = this.insertEntry(entry);
+				delta.entryIds.add(entry.id);
+				if (entry.transactionId != null) delta.transactionIds.add(entry.transactionId);
+			}
+			return { reset: !reuseCache, ...delta, lastIndexedSeq: nextIndexedSeq };
 		});
-		for (const entry of entries) {
-			this.entryIds!.add(entry.id);
-			if (entry.transactionId != null) this.transactionIds!.add(entry.transactionId);
-		}
+		const nextEntryIds = cacheUpdate.reset ? new Set<string>() : this.entryIds!;
+		const nextTransactionIds = cacheUpdate.reset ? new Set<string>() : this.transactionIds!;
+		for (const id of cacheUpdate.entryIds) nextEntryIds.add(id);
+		for (const id of cacheUpdate.transactionIds) nextTransactionIds.add(id);
+		this.entryIds = nextEntryIds;
+		this.transactionIds = nextTransactionIds;
+		this.lastIndexedSeq = cacheUpdate.lastIndexedSeq;
 	}
 
 	async getEntry(id: string): Promise<SessionTreeEntry | undefined> {

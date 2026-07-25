@@ -10,6 +10,7 @@ export type AgentSlashCommandName =
     | "resume"
     | "compact"
     | "session"
+    | "info"
     | "copy"
     | "export"
     | "import"
@@ -28,6 +29,7 @@ const RoutedAgentSlashCommands = new Set<AgentSlashCommandName>([
     "resume",
     "compact",
     "session",
+    "info",
     "copy",
     "export",
     "import",
@@ -46,6 +48,13 @@ export function resolveAgentSlashCommandRoute(input: string): AgentSlashCommandR
     const command = match[1] as AgentSlashCommandName;
     if (!RoutedAgentSlashCommands.has(command)) {
         return { handled: false };
+    }
+    if (command === "resume") {
+        return {
+            handled: true,
+            command: "session",
+            argsText: "",
+        };
     }
     return {
         handled: true,

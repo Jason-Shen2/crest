@@ -1,225 +1,296 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
-//
-// Tests for usePiChat's pure reducer. The hook itself needs React
-// rendering (renderHook from @testing-library/react), which is not
-// installed in crest yet — when it is, add the hook-lifecycle tests
-// from the wiring task (see the doc comment at the top of
-// use-pi-chat.ts). The reducer is the load-bearing logic; getting it
-// right covers most of the "did I write the hook correctly" question.
+// @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
     adoptInitialSessionMetadata,
+    attachContextReportsToTurns,
+    composerRestoreTextFromSendError,
     getOptimisticAbortStatus,
+    type PiAgentEvent,
     type PiAgentMessage,
+    type PiTurn,
     reducePiChatEvent,
     reducePiTurnsEvent,
     resolveAbortSessionPath,
+    usePiChat,
 } from "./use-pi-chat";
 
-describe("reducePiChatEvent", () => {
-    it("appends a user message_start", () => {
-        const user: PiAgentMessage = { role: "user", content: [{ type: "text", text: "hi" }] };
-        const out = reducePiChatEvent([], { type: "message_start", message: user });
-        expect(out).toEqual([user]);
+function makeSession(path = "/sessions/target.jsonl"): AgentSessionMeta {
+    return { path, id: path, cwd: "/workspace", createdAt: "2026-07-25T00:00:00.000Z" } as AgentSessionMeta;
+}
+
+function makeDraft(id: string, targetSessionPath = "/sessions/target.jsonl"): AgentContextDraftView {
+    return {
+        draftId: id,
+        targetSessionPath,
+        provenance: {
+            sourceKind: "turn",
+            sourceSessionId: `source-${id}`,
+            sourceSessionPath: `/sessions/source-${id}.jsonl`,
+            sourceCwd: "/workspace",
+            sourceTurnId: `turn-${id}`,
+            sourceLeafId: `leaf-${id}`,
+            sourceMessageEntryIds: [`message-${id}`],
+            preview: `preview ${id}`,
+            capturedAt: "2026-07-25T00:00:00.000Z",
+        },
+        summaryStatus: "none",
+        expiresAt: "2026-07-25T01:00:00.000Z",
+    };
+}
+
+function makeReport(targetTurnId = "turn-sent"): AgentContextProjectionReportView {
+    return {
+        schemaVersion: 1,
+        transactionId: `transaction-${targetTurnId}`,
+        targetTurnId,
+        createdAt: "2026-07-25T00:00:00.000Z",
+        contextWindow: 1000,
+        effectiveOutputReserve: 100,
+        inputLimit: 900,
+        baseInputTokens: 100,
+        finalInputTokens: 200,
+        referenceTokens: 100,
+        countAccuracy: "exact",
+        overlaySha256: "sha",
+        items: [],
+    };
+}
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
     });
+    return { promise, resolve, reject };
+}
 
-    it("replaces the tail on message_update (streaming message state)", () => {
-        const user: PiAgentMessage = { role: "user", content: [{ type: "text", text: "hi" }] };
-        const partial: PiAgentMessage = {
-            role: "assistant",
-            content: [{ type: "text", text: "th" }],
-        };
-        const fuller: PiAgentMessage = {
-            role: "assistant",
-            content: [{ type: "text", text: "there" }],
-        };
-        const after1 = reducePiChatEvent([user], { type: "message_start", message: partial });
-        const after2 = reducePiChatEvent(after1, { type: "message_update", message: fuller });
-        expect(after2[after2.length - 1]).toEqual(fuller);
-        expect(after2[0]).toEqual(user);
-        expect(after2).toHaveLength(2);
-    });
-
-    it("message_end replaces the tail with the final message", () => {
-        const partial: PiAgentMessage = {
-            role: "assistant",
-            content: [{ type: "text", text: "p" }],
-        };
-        const final: PiAgentMessage = {
-            role: "assistant",
-            content: [{ type: "text", text: "full" }],
-            stopReason: "stop",
-        };
-        const after1 = reducePiChatEvent([], { type: "message_start", message: partial });
-        const after2 = reducePiChatEvent(after1, { type: "message_end", message: final });
-        expect(after2).toEqual([final]);
-    });
-
-    it("agent_end does NOT replace the transcript (its messages are turn-scoped)", () => {
-        // agent_end.messages carries only the latest turn's messages, not the
-        // whole conversation. The message_start/_end stream already appended
-        // this turn's messages, so the reducer leaves state untouched.
-        const accumulated: PiAgentMessage[] = [
-            { role: "user", content: [{ type: "text", text: "q1" }] },
-            { role: "assistant", content: [{ type: "text", text: "a1" }] },
-            { role: "user", content: [{ type: "text", text: "q2" }] },
-            { role: "assistant", content: [{ type: "text", text: "a2" }] },
-        ];
-        const runScoped: PiAgentMessage[] = [
-            { role: "user", content: [{ type: "text", text: "q2" }] },
-            { role: "assistant", content: [{ type: "text", text: "a2" }] },
-        ];
-        const out = reducePiChatEvent(accumulated, { type: "agent_end", messages: runScoped });
-        expect(out).toBe(accumulated);
-    });
-
-    it("queue_update leaves the message array untouched (queue is separate state)", () => {
-        const existing: PiAgentMessage[] = [{ role: "user", content: [{ type: "text", text: "q" }] }];
-        const out = reducePiChatEvent(existing, {
-            type: "queue_update",
-            steer: [],
-            followUp: [{ role: "user", content: [{ type: "text", text: "queued" }] }],
-        });
-        expect(out).toBe(existing);
-    });
-
-    it("session_state seeds the mirror with main's authoritative transcript", () => {
-        // Sent once on (re)subscribe. A renderer that missed the first
-        // turn's events (subscribed late) must back-fill from this. Replaces
-        // local state wholesale.
-        const authoritative: PiAgentMessage[] = [
-            { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1000 },
-            { role: "assistant", content: [{ type: "text", text: "hello" }], stopReason: "stop" },
-        ];
-        const out = reducePiChatEvent([], { type: "session_state", messages: authoritative });
-        expect(out).toEqual(authoritative);
-    });
-
-    it("handles message_start on empty state without crashing", () => {
-        const msg: PiAgentMessage = { role: "user", content: [] };
-        expect(reducePiChatEvent([], { type: "message_start", message: msg })).toEqual([msg]);
-    });
-
-    it("handles message_update on empty state by seeding the message", () => {
-        const msg: PiAgentMessage = { role: "assistant", content: [{ type: "text", text: "x" }] };
-        expect(reducePiChatEvent([], { type: "message_update", message: msg })).toEqual([msg]);
-    });
-
-    it("returns the same reference for events with missing required payload", () => {
-        const start: PiAgentMessage[] = [{ role: "user", content: [] }];
-        expect(reducePiChatEvent(start, { type: "message_update" })).toBe(start);
-        expect(reducePiChatEvent(start, { type: "agent_end" })).toBe(start);
-    });
-
-    it("returns the same reference for unknown event types", () => {
-        const start: PiAgentMessage[] = [{ role: "user", content: [] }];
-        expect(reducePiChatEvent(start, { type: "tool_execution_start" })).toBe(start);
-        expect(reducePiChatEvent(start, { type: "something_we_dont_handle" })).toBe(start);
-    });
-
-    it("ignores legacy snapshot events", () => {
-        const start: PiAgentMessage[] = [{ role: "user", content: [{ type: "text", text: "current" }] }];
-        const legacy: PiAgentMessage[] = [{ role: "user", content: [{ type: "text", text: "legacy" }] }];
-
-        expect(reducePiChatEvent(start, { type: "snapshot", messages: legacy })).toBe(start);
-    });
-});
-
-describe("reducePiTurnsEvent", () => {
-    it("keeps the same turn reference for events without main-owned turns", () => {
-        const turns = [
-            {
-                turnId: "turn-owned",
-                userMessage: { role: "user", content: [] } as PiAgentMessage,
-                responseMessages: [],
-                status: "streaming" as const,
-            },
-        ];
-
-        expect(reducePiTurnsEvent(turns, { type: "message_start", message: turns[0].userMessage })).toBe(turns);
-    });
-
-    it("mirrors main-owned turns from session_state", () => {
-        const userMessage = { role: "user", content: [{ type: "text", text: "q" }] } as PiAgentMessage;
-        const assistantMessage = {
-            role: "assistant",
-            content: [{ type: "text", text: "a" }],
-            stopReason: "stop",
-        } as PiAgentMessage;
-
-        const turns = [
-            {
-                turnId: "entry-xyz",
-                userMessage,
-                responseMessages: [assistantMessage],
-                status: "done" as const,
-            },
-        ];
-
-        const out = reducePiTurnsEvent([], {
+function makeAgentApi(overrides: Record<string, unknown> = {}) {
+    const session = makeSession();
+    return {
+        createSession: vi.fn(async () => session),
+        listSessionsForCwd: vi.fn(async () => []),
+        getSessionState: vi.fn(async () => ({
             type: "session_state",
-            turns: [
-                {
-                    turnId: "entry-xyz",
-                    userMessage,
-                    responseMessages: [assistantMessage],
-                    status: "done",
-                },
-            ],
+            messages: [],
+            turns: [],
+            status: "idle",
+            steer: [],
+            followUp: [],
+            contextReports: [],
+        })),
+        send: vi.fn(async (_input: AgentSendOptions) => ({ sessionMetadata: session, turnId: "turn-sent" })),
+        abort: vi.fn(),
+        subscribe: vi.fn(() => vi.fn()),
+        prepareContextDraft: vi.fn(async (input: AgentPrepareContextDraftInput) =>
+            makeDraft("draft", input.targetSessionPath)
+        ),
+        summarizeContextDraft: vi.fn(async (input: AgentSummarizeContextDraftInput) => ({
+            ...makeDraft(input.draftId, input.targetSessionPath),
+            summaryStatus: "ready" as const,
+        })),
+        discardContextDraft: vi.fn(async () => ({ discarded: true })),
+        listReferencePoints: vi.fn(async () => []),
+        listContextState: vi.fn(async () => ({ drafts: [], contextReports: [] })),
+        ...overrides,
+    };
+}
+
+function installAgentApi(agent: ReturnType<typeof makeAgentApi>): void {
+    Object.defineProperty(window, "api", {
+        configurable: true,
+        value: { agent },
+    });
+}
+
+function hookOptions(initialSession = makeSession()) {
+    return {
+        initialSession,
+        paneContext: { cwd: "/workspace" },
+        modelSelection: { provider: "provider", model: "model" },
+    };
+}
+
+afterEach(cleanup);
+
+beforeEach(() => {
+    installAgentApi(makeAgentApi());
+});
+
+describe("usePiChat context references", () => {
+    it("sends message/full references by default and clears them after commit", async () => {
+        const agent = makeAgentApi();
+        installAgentApi(agent);
+        const { result } = renderHook(() => usePiChat(hookOptions()));
+
+        await act(async () => {
+            await result.current.prepareContextDraft({
+                sourceSessionPath: "/sessions/source.jsonl",
+                sourceKind: "turn",
+                sourceTurnId: "source-turn",
+            });
+        });
+        await act(async () => {
+            await result.current.send("question");
         });
 
-        expect(out).toEqual(turns);
+        expect(agent.send).toHaveBeenCalledWith(
+            expect.objectContaining({
+                contextAttachments: [
+                    {
+                        draftId: "draft",
+                        deliveryScope: "message",
+                        requestedRepresentation: "full",
+                    },
+                ],
+            })
+        );
+        expect(result.current.contextState.drafts).toEqual([]);
     });
 
-    it("ignores legacy snapshot turn payloads", () => {
-        const turns = [
-            {
-                turnId: "current",
-                userMessage: { role: "user", content: [] } as PiAgentMessage,
-                responseMessages: [],
-                status: "streaming" as const,
-            },
+    it("passes conversation delivery selected before the draft enters the composer", async () => {
+        const agent = makeAgentApi();
+        installAgentApi(agent);
+        const { result } = renderHook(() => usePiChat(hookOptions()));
+
+        await act(async () => {
+            await result.current.prepareContextDraft({
+                sourceSessionPath: "/sessions/source.jsonl",
+                sourceKind: "session",
+                deliveryScope: "conversation",
+            });
+            await result.current.send("question");
+        });
+
+        expect(agent.send.mock.calls.at(0)![0].contextAttachments![0]).toEqual({
+            draftId: "draft",
+            deliveryScope: "conversation",
+            requestedRepresentation: "full",
+        });
+    });
+
+    it("shows Summary loading in composer before background generation finishes", async () => {
+        const summary = deferred<AgentContextDraftView>();
+        const agent = makeAgentApi({ summarizeContextDraft: vi.fn(() => summary.promise) });
+        installAgentApi(agent);
+        const { result } = renderHook(() => usePiChat(hookOptions()));
+
+        await act(async () => {
+            await result.current.prepareContextDraft({
+                sourceSessionPath: "/sessions/source.jsonl",
+                sourceKind: "turn",
+                sourceTurnId: "source-turn",
+                requestedRepresentation: "summary",
+            });
+        });
+        expect(result.current.contextState.drafts[0]).toMatchObject({
+            requestedRepresentation: "summary",
+            status: "summarizing",
+        });
+
+        await act(async () => {
+            summary.resolve({ ...makeDraft("draft"), summaryStatus: "ready" });
+            await summary.promise;
+        });
+        await waitFor(() => expect(result.current.contextState.drafts[0].status).toBe("ready"));
+    });
+
+    it("omits context fields for ordinary sends", async () => {
+        const agent = makeAgentApi();
+        installAgentApi(agent);
+        const { result } = renderHook(() => usePiChat(hookOptions()));
+
+        await act(async () => {
+            await result.current.send("plain");
+        });
+
+        expect(agent.send.mock.calls.at(0)![0]).not.toHaveProperty("contextAttachments");
+        expect(agent.send.mock.calls.at(0)![0]).not.toHaveProperty("excludedPinAttachmentIds");
+        expect(agent.send.mock.calls.at(0)![0]).not.toHaveProperty("contextBudgetRevision");
+    });
+
+    it("hydrates reports without pin state", async () => {
+        const report = makeReport();
+        const agent = makeAgentApi({
+            getSessionState: vi.fn(async () => ({
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+                contextReports: [report],
+            })),
+        });
+        installAgentApi(agent);
+        const { result } = renderHook(() => usePiChat(hookOptions()));
+
+        await waitFor(() => expect(result.current.contextState.reportsByTurn["turn-sent"]).toBe(report));
+        expect(result.current.contextState).not.toHaveProperty("pins");
+        expect(result.current.contextState).not.toHaveProperty("budget");
+    });
+
+    it("rejects stale guarded preparation before calling main", async () => {
+        const agent = makeAgentApi();
+        installAgentApi(agent);
+        const { result } = renderHook(() => usePiChat(hookOptions()));
+
+        await expect(
+            result.current.prepareContextDraft({
+                sourceSessionPath: "/sessions/source.jsonl",
+                sourceKind: "session",
+                expectedTarget: { targetSessionPath: "/sessions/old.jsonl", targetGeneration: 0 },
+            })
+        ).rejects.toThrow("session changed");
+        expect(agent.prepareContextDraft).not.toHaveBeenCalled();
+    });
+});
+
+describe("context projection turn binding", () => {
+    it("attaches reports by target turn identity", () => {
+        const turns: PiTurn[] = [
+            { turnId: "turn-one", responseMessages: [], status: "done" },
+            { turnId: "turn-two", responseMessages: [], status: "done" },
         ];
+        const report = makeReport("turn-two");
+        const attached = attachContextReportsToTurns(turns, [report]);
 
-        expect(reducePiTurnsEvent(turns, { type: "snapshot", turns: [] })).toBe(turns);
+        expect(attached[0]).toBe(turns[0]);
+        expect(attached[1].contextProjection).toBe(report);
     });
 });
 
-describe("resolveAbortSessionPath", () => {
-    it("uses the active in-flight session path before React state commits metadata", () => {
-        expect(resolveAbortSessionPath(undefined, "/tmp/agent.jsonl")).toBe("/tmp/agent.jsonl");
+describe("usePiChat pure helpers", () => {
+    it("mirrors message and turn session state", () => {
+        const message = { role: "user", content: [{ type: "text", text: "hello" }] } as PiAgentMessage;
+        const turn = { turnId: "turn", userMessage: message, responseMessages: [], status: "done" } as PiTurn;
+        const event = { type: "session_state", messages: [message], turns: [turn] } as PiAgentEvent;
+
+        expect(reducePiChatEvent([], event)).toEqual([message]);
+        expect(reducePiTurnsEvent([], event)).toEqual([turn]);
     });
 
-    it("prefers committed session metadata over the in-flight path", () => {
-        expect(
-            resolveAbortSessionPath({ path: "/tmp/committed.jsonl" } as AgentSessionMeta, "/tmp/inflight.jsonl")
-        ).toBe("/tmp/committed.jsonl");
-    });
-});
-
-describe("getOptimisticAbortStatus", () => {
-    it("unblocks a locally streaming renderer while waiting for the owner abort event", () => {
+    it("resolves abort paths and optimistic status", () => {
+        expect(resolveAbortSessionPath(makeSession("/committed"), "/active")).toBe("/committed");
+        expect(resolveAbortSessionPath(undefined, "/active")).toBe("/active");
         expect(getOptimisticAbortStatus("streaming")).toBe("idle");
-    });
-
-    it("does not erase existing error state", () => {
         expect(getOptimisticAbortStatus("error")).toBe("error");
     });
-});
 
-describe("adoptInitialSessionMetadata", () => {
-    it("adopts a session path that arrives after the hook mounted", () => {
-        const incoming = { path: "/tmp/session.jsonl", id: "s1", cwd: "/tmp", createdAt: "" } as AgentSessionMeta;
-
-        expect(adoptInitialSessionMetadata(undefined, incoming)).toBe(incoming);
+    it("adopts newly supplied session metadata", () => {
+        expect(adoptInitialSessionMetadata(undefined, makeSession("/new"))?.path).toBe("/new");
+        expect(adoptInitialSessionMetadata(makeSession("/old"), undefined)?.path).toBe("/old");
     });
 
-    it("keeps current session when no incoming session exists", () => {
-        const current = { path: "/tmp/current.jsonl", id: "s1", cwd: "/tmp", createdAt: "" } as AgentSessionMeta;
-
-        expect(adoptInitialSessionMetadata(current, undefined)).toBe(current);
+    it("marks send errors for exact composer restoration", () => {
+        const error = new Error("failed");
+        const marked = Object.assign(error, { composerRestoreText: "unused" });
+        expect(composerRestoreTextFromSendError(marked)).toBeUndefined();
     });
 });

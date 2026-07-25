@@ -1,5 +1,5 @@
-import type { FileSystem, JsonlSessionMetadata, LeafEntry, SessionStorage, SessionTreeEntry } from "../types";
-import { SessionError, toError } from "../types";
+import type { FileSystem, JsonlSessionMetadata, LeafEntry, SessionAppendOptions, SessionStorage, SessionTreeEntry } from "../types";
+import { assertExpectedSessionLeaf, SessionError, toError } from "../types";
 import { getFileSystemResultOrThrow } from "./repo-utils";
 import { uuidv7 } from "./uuid";
 import { filterCommittedTransactionEntries, validateSessionEntriesForAppend } from "./entry-transaction";
@@ -279,19 +279,21 @@ export class JsonlSessionStorage implements SessionStorage<JsonlSessionMetadata>
 		return this.appendEntries([entry]);
 	}
 
-	async appendEntries(entries: SessionTreeEntry[]): Promise<void> {
+	async appendEntries(entries: SessionTreeEntry[], options?: SessionAppendOptions): Promise<void> {
 		if (this.poisonedError) {
 			throw new SessionError("storage", "Session storage recovery failed; reopen the session before appending", this.poisonedError);
 		}
-		const operation = this.appendTail.then(() => this.appendEntriesNow(entries));
+		const appendOptions = options == null ? undefined : { ...options };
+		const operation = this.appendTail.then(() => this.appendEntriesNow(entries, appendOptions));
 		this.appendTail = operation.catch(() => undefined);
 		return operation;
 	}
 
-	private async appendEntriesNow(entries: SessionTreeEntry[]): Promise<void> {
+	private async appendEntriesNow(entries: SessionTreeEntry[], options?: SessionAppendOptions): Promise<void> {
 		if (this.poisonedError) {
 			throw new SessionError("storage", "Session storage recovery failed; reopen the session before appending", this.poisonedError);
 		}
+		assertExpectedSessionLeaf(options, this.currentLeafId);
 		validateSessionEntriesForAppend(this.entryIds, this.transactionIds, entries);
 		if (entries.length === 0) return;
 		const serializedEntries = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");

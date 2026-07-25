@@ -1091,7 +1091,11 @@ const Editor = memo(
                     onInput={flush}
                     onBeforeInput={handleBeforeInput}
                     onKeyDown={handleKeyDown}
-                    style={{ fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`, minHeight: compact ? `${lineHeight + 12}px` : "80px" }}
+                    style={{
+                        fontSize: `${fontSize}px`,
+                        lineHeight: `${lineHeight}px`,
+                        minHeight: compact ? `${lineHeight + 12}px` : "80px",
+                    }}
                     className={cn(
                         "relative max-h-[50vh] w-full overflow-y-auto whitespace-pre-wrap break-words",
                         "bg-transparent font-mono outline-none",
@@ -1220,12 +1224,6 @@ const FallbackAgentSlashCommands: InlineCommand[] = [
     { name: "/model", icon: "stars-01", description: "Open the model picker", action: "openModelPicker" },
     { name: "/new", icon: "plus", description: "Create a fresh agent session", action: "submitAgentCommand" },
     {
-        name: "/resume",
-        icon: "clock-rewind",
-        description: "Resume an existing agent session for this workspace",
-        action: "submitAgentCommand",
-    },
-    {
         name: "/compact",
         icon: "archive",
         description: "Compact the current session context [instructions]",
@@ -1233,6 +1231,12 @@ const FallbackAgentSlashCommands: InlineCommand[] = [
     },
     {
         name: "/session",
+        icon: "clock-rewind",
+        description: "Manage, resume, or reference agent sessions",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/info",
         icon: "info-circle",
         description: "Show current agent session information",
         action: "submitAgentCommand",
@@ -1259,6 +1263,10 @@ const FallbackAgentSlashCommands: InlineCommand[] = [
 ];
 
 const SlashCommands: InlineCommand[] = mergeSlashCommands(FallbackAgentSlashCommands, LocalSlashCommands);
+
+export const __testing = {
+    FallbackAgentSlashCommands,
+};
 
 export function makeSlashCommandsFromAgentRegistry(commands: AgentCommandInfo[]): InlineCommand[] {
     return commands.map((command) => {
@@ -1303,7 +1311,8 @@ function iconForAgentCommand(command: AgentCommandInfo): string {
     if (command.action.command === "new") return "plus";
     if (command.action.command === "resume") return "clock-rewind";
     if (command.action.command === "compact") return "archive";
-    if (command.action.command === "session") return "info-circle";
+    if (command.action.command === "session") return "clock-rewind";
+    if (command.action.command === "info") return "info-circle";
     if (command.action.command === "copy") return "copy-01";
     if (command.action.command === "export") return "download-01";
     if (command.action.command === "import") return "upload-01";
