@@ -7,7 +7,6 @@
 // bundles have shown mojibake for symbol glyphs in this menu.
 
 import { Icon } from "@/app/icon/Icon";
-import { getIconByName } from "@/app/icon/icon-registry";
 import { useWaveEnv, WaveEnv, WaveEnvSubset } from "@/app/waveenv/waveenv";
 import { fireAndForget, useAtomValueSafe } from "@/util/util";
 import { OverlayScrollbarsComponent } from "overlayscrollbars-react";
@@ -433,7 +432,6 @@ function SpaceRow({
     onJumpTab: (tabId: string) => void;
     onCloseTab: (tabId: string) => void;
 }) {
-    const color = workspace.color || "#7c3aed";
     return (
         <div className={`workspace-switcher-row ${isActive ? "is-active" : ""} ${editing ? "is-editing" : ""}`}>
             <div className="workspace-switcher-row-header">
@@ -451,7 +449,6 @@ function SpaceRow({
                     />
                 </button>
                 <button type="button" onClick={onSwitch} className="workspace-switcher-main">
-                    <SpaceAvatar workspace={workspace} color={color} />
                     {editing ? (
                         <InlineRename
                             initial={workspace.name || ""}
@@ -664,41 +661,12 @@ function TabIcon({ info }: { info: TabInfo }) {
 }
 
 // ---------------------------------------------------------------------------
-// SpaceAvatar - 20x20 rounded square with workspace color tint.
-// 18% alpha bg + 32% inner border, mirrors terax SpaceAvatar.
-// Renders the workspace icon if set, else the first letter of the
-// name.  Letter color uses the workspace color (not pure white) so
-// colored spaces read as "this is mine" at a glance.
+// SpaceAvatar removed — the colored icon box on the left of every row
+// was visual noise (six different colors all rendering the same `>_`
+// glyph, name already right next to it) and burned 6 colors of the
+// diff-viewport color budget for no signal.  Row now reads:
+//   caret ▸ name   ✏  +  ×
+// TabList indent below is reduced to match the new name column.
 // ---------------------------------------------------------------------------
-
-function SpaceAvatar({ workspace, color }: { workspace: Workspace; color: string }) {
-    const name = workspace.name?.trim() || "Untitled";
-    const initial = name.charAt(0).toUpperCase();
-    // Workspace icon strings live in the Go data layer and historically
-    // used FontAwesome Kit custom glyphs ("custom@wave-logo-solid",
-    // "triangle", "solid@cloud", ...).  The new Hugeicons-based <Icon>
-    // renderer doesn't know those, so we look the name up first and fall
-    // back to the first letter when it isn't registered.  Checking here
-    // (instead of letting <Icon> warn and render nothing) keeps the
-    // dev console clean and avoids a blank avatar for legacy data.
-    const hasValidIcon = !!workspace.icon && getIconByName(workspace.icon) != null;
-    return (
-        <div
-            className="workspace-switcher-avatar"
-            style={{
-                backgroundColor: `color-mix(in srgb, ${color} 18%, transparent)`,
-                boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 32%, transparent)`,
-            }}
-        >
-            {hasValidIcon ? (
-                <Icon name={workspace.icon} size={11} strokeWidth={2} style={{ color }} />
-            ) : (
-                <span className="workspace-switcher-avatar-initial" style={{ color }}>
-                    {initial}
-                </span>
-            )}
-        </div>
-    );
-}
 
 export { WorkspaceSwitcher };

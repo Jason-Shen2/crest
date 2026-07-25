@@ -6,9 +6,8 @@
 // "<name> ▸" pill.  Empty name falls back to "Default".
 //
 // Inside the popover:
-//   - SpaceRow: caret + SpaceAvatar + name + actions
+//   - SpaceRow: caret + name + actions
 //   - TabList:  indented TabRow list under expanded spaces
-//   - SpaceAvatar: 20×20 colored square with icon-or-initial
 
 // ---- trigger pill ----
 // Exact copy of terax's SpaceSwitcher trigger:
@@ -246,35 +245,19 @@
     }
 }
 
-// ---- SpaceAvatar ----
-
-.workspace-switcher-avatar {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-    border-radius: 5px;
-}
-
-.workspace-switcher-avatar-initial {
-    font-size: 11px;
-    font-weight: 600;
-    line-height: 1;
-}
-
 // ---- TabList (under expanded space) ----
+// 30px = row padding-left (8) + caret button (18) + caret-to-name gap (4).
+// Used to be 40px to align to the avatar column, but the avatar is gone.
 
 .workspace-switcher-tab-list {
     display: flex;
     flex-direction: column;
     gap: 1px;
-    // 40px (pl-10) aligns to the avatar column.
-    padding: 2px 4px 4px 40px;
+    padding: 2px 4px 4px 30px;
 }
 
 .workspace-switcher-tab-empty {
-    padding: 4px 4px 6px 40px;
+    padding: 4px 4px 6px 30px;
     font-size: 10.5px;
     color: rgba(255, 255, 255, 0.40);
 }
