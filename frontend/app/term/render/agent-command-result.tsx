@@ -1,19 +1,13 @@
+import { COMMAND_INLINE_FRAME_CLASSNAME } from "@/app/view/cmdblock/command-inline-frame";
 import { XIcon } from "lucide-react";
 import { memo, type ReactNode } from "react";
-import { COMMAND_INLINE_FRAME_CLASSNAME } from "@/app/view/cmdblock/command-inline-frame";
 import type { AgentInlineCommandResult } from "./agent-chat-host";
 
 function splitCommandMessage(message: string): string[] {
     return message.split(/\r?\n/);
 }
 
-function ResultFrame({
-    children,
-    onDismiss,
-}: {
-    children: ReactNode;
-    onDismiss: () => void;
-}) {
+function ResultFrame({ children, onDismiss }: { children: ReactNode; onDismiss: () => void }) {
     return (
         <div className={`${COMMAND_INLINE_FRAME_CLASSNAME} animate-in fade-in slide-in-from-bottom-1 duration-150`}>
             <div className="relative">
@@ -82,7 +76,7 @@ function renderCompactResult(result: AgentInlineCommandResult) {
 export const AgentCommandResult = memo(
     ({ result, onDismiss }: { result: AgentInlineCommandResult; onDismiss: () => void }) => {
         let content: ReactNode;
-        if (result.command === "session") {
+        if (result.command === "info") {
             content = renderSessionInfo(result);
         } else if (result.command === "compact") {
             content = renderCompactResult(result);
@@ -97,19 +91,10 @@ export const AgentCommandResult = memo(
 AgentCommandResult.displayName = "AgentCommandResult";
 
 export const AgentCommandResultList = memo(
-    ({
-        results,
-        onDismiss,
-    }: {
-        results: AgentInlineCommandResult[];
-        onDismiss: (index: number) => void;
-    }) => {
+    ({ results, onDismiss }: { results: AgentInlineCommandResult[]; onDismiss: (index: number) => void }) => {
         if (results.length === 0) return null;
         return (
-            <div
-                data-testid="agent-cmd-results"
-                className="flex shrink-0 flex-col gap-2"
-            >
+            <div data-testid="agent-cmd-results" className="flex shrink-0 flex-col gap-2">
                 {results.map((result, index) => (
                     <AgentCommandResult
                         key={`${result.command}-${index}`}

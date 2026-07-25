@@ -1,11 +1,14 @@
 import {
+	assertExpectedSessionLeaf,
 	type LeafEntry,
+	type SessionAppendOptions,
 	SessionError,
 	type SessionMetadata,
 	type SessionStorage,
 	type SessionTreeEntry,
 } from "../types";
 import { uuidv7 } from "./uuid";
+import { filterCommittedTransactionEntries, validateSessionEntriesForAppend } from "./entry-transaction";
 
 function updateLabelCache(labelsById: Map<string, string>, entry: SessionTreeEntry): void {
 	if (entry.type !== "label") return;
@@ -37,18 +40,27 @@ function leafIdAfterEntry(entry: SessionTreeEntry): string | null {
 	return entry.type === "leaf" ? entry.targetId : entry.id;
 }
 
+function buildTransactionIds(entries: SessionTreeEntry[]): Set<string> {
+	return new Set(entries.flatMap((entry) => entry.transactionId == null ? [] : [entry.transactionId]));
+}
+
 export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionMetadata>
 	implements SessionStorage<TMetadata>
 {
 	private readonly metadata: TMetadata;
 	private entries: SessionTreeEntry[];
 	private byId: Map<string, SessionTreeEntry>;
+	private entryIds: Set<string>;
+	private transactionIds: Set<string>;
 	private labelsById: Map<string, string>;
 	private leafId: string | null;
+	private appendTail: Promise<void> = Promise.resolve();
 
 	constructor(options?: { entries?: SessionTreeEntry[]; metadata?: TMetadata }) {
-		this.entries = options?.entries ? [...options.entries] : [];
+		this.entries = filterCommittedTransactionEntries(options?.entries ?? []).entries;
 		this.byId = new Map(this.entries.map((entry) => [entry.id, entry]));
+		this.entryIds = new Set(this.byId.keys());
+		this.transactionIds = buildTransactionIds(this.entries);
 		this.labelsById = buildLabelsById(this.entries);
 		this.leafId = null;
 		for (const entry of this.entries) this.leafId = leafIdAfterEntry(entry);
@@ -80,9 +92,7 @@ export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionM
 			timestamp: new Date().toISOString(),
 			targetId: leafId,
 		};
-		this.entries.push(entry);
-		this.byId.set(entry.id, entry);
-		this.leafId = leafId;
+		await this.appendEntry(entry);
 	}
 
 	async createEntryId(): Promise<string> {
@@ -90,10 +100,29 @@ export class InMemorySessionStorage<TMetadata extends SessionMetadata = SessionM
 	}
 
 	async appendEntry(entry: SessionTreeEntry): Promise<void> {
-		this.entries.push(entry);
-		this.byId.set(entry.id, entry);
-		updateLabelCache(this.labelsById, entry);
-		this.leafId = leafIdAfterEntry(entry);
+		return this.appendEntries([entry]);
+	}
+
+	async appendEntries(entries: SessionTreeEntry[], options?: SessionAppendOptions): Promise<void> {
+		const appendOptions = options == null ? undefined : { ...options };
+		const operation = this.appendTail.then(() => this.appendEntriesNow(entries, appendOptions));
+		this.appendTail = operation.catch(() => undefined);
+		return operation;
+	}
+
+	private appendEntriesNow(entries: SessionTreeEntry[], options?: SessionAppendOptions): void {
+		assertExpectedSessionLeaf(options, this.leafId);
+		validateSessionEntriesForAppend(this.entryIds, this.transactionIds, entries);
+		const labelsById = new Map(this.labelsById);
+		for (const entry of entries) updateLabelCache(labelsById, entry);
+		this.entries.push(...entries);
+		for (const entry of entries) {
+			this.byId.set(entry.id, entry);
+			this.entryIds.add(entry.id);
+			if (entry.transactionId != null) this.transactionIds.add(entry.transactionId);
+		}
+		this.labelsById = labelsById;
+		if (entries.length > 0) this.leafId = leafIdAfterEntry(entries[entries.length - 1]!);
 	}
 
 	async getEntry(id: string): Promise<SessionTreeEntry | undefined> {

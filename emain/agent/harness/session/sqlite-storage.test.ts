@@ -8,13 +8,16 @@
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JsonlSessionRepo } from "./jsonl-repo";
+import { makeCommittedContextTransaction } from "./context-transaction-fixture";
+import { foldContextJournal } from "../../context/journal";
 import { SqliteSessionRepo } from "./sqlite-repo";
 import { SqliteSessionStorage } from "./sqlite-storage";
+import { SqliteDb } from "./sqlite-driver";
 import type { AgentMessage } from "../../types";
-import type { JsonlSessionMetadata } from "../types";
+import type { JsonlSessionMetadata, SessionTreeEntry } from "../types";
 import { NodeExecutionEnv } from "../../node";
 
 function user(text: string): AgentMessage {
@@ -23,6 +26,24 @@ function user(text: string): AgentMessage {
 
 function assistant(text: string): AgentMessage {
 	return { role: "assistant", content: [{ type: "text", text }] } as unknown as AgentMessage;
+}
+
+function messageEntry(id: string, parentId: string | null): Extract<SessionTreeEntry, { type: "message" }> {
+	return {
+		type: "message",
+		id,
+		parentId,
+		timestamp: new Date().toISOString(),
+		message: user(id),
+	};
+}
+
+function sqliteDb(storage: SqliteSessionStorage): SqliteDb {
+	return (storage as unknown as { db: SqliteDb }).db;
+}
+
+function historyReadCalls(calls: unknown[][]): unknown[][] {
+	return calls.filter(([sql]) => /SELECT\b.*\bdata\b.*\bFROM entries\b/i.test(String(sql)));
 }
 
 describe("SqliteSessionStorage", () => {
@@ -64,6 +85,261 @@ describe("SqliteSessionStorage", () => {
 		expect(got?.type).toBe("message");
 		expect((got as { message: { content: { text: string }[] } }).message.content[0].text).toBe("hello");
 		storage.close();
+	});
+
+	it("does not reread historical entry payloads when the append index cache is current", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		await storage.appendEntry(messageEntry("root", null));
+		const all = vi.spyOn(sqliteDb(storage), "all");
+
+		await storage.appendEntry(messageEntry("child", "root"));
+
+		expect(historyReadCalls(all.mock.calls)).toEqual([]);
+		storage.close();
+	});
+
+	it("uses the database leaf for CAS across two handles without writing a stale append", async () => {
+		const location = dbPath();
+		const first = SqliteSessionStorage.create(location, { cwd: "/c", sessionId: "s1" });
+		await first.appendEntry({
+			type: "message",
+			id: "root",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: user("root"),
+		});
+		const second = SqliteSessionStorage.open(location);
+		try {
+			await second.appendEntry({
+				type: "message",
+				id: "ordinary",
+				parentId: "root",
+				timestamp: new Date().toISOString(),
+				message: user("ordinary"),
+			});
+
+			await expect(
+				first.appendEntries(
+					[
+						{
+							type: "message",
+							id: "stale",
+							parentId: "root",
+							timestamp: new Date().toISOString(),
+							message: user("stale"),
+						},
+					],
+					{ expectedLeafId: "root" },
+				),
+			).rejects.toMatchObject({ code: "stale_leaf" });
+			expect((await first.getEntries()).map((entry) => entry.id)).toEqual(["root", "ordinary"]);
+		} finally {
+			second.close();
+			first.close();
+		}
+	});
+
+	it("validates and refreshes append indexes from authoritative database state", async () => {
+		const location = dbPath();
+		const first = SqliteSessionStorage.create(location, { cwd: "/c", sessionId: "s1" });
+		await first.appendEntry({
+			type: "message",
+			id: "root",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: user("root"),
+		});
+		const second = SqliteSessionStorage.open(location);
+		try {
+			await second.appendEntry({
+				type: "message",
+				id: "ordinary",
+				parentId: "root",
+				timestamp: new Date().toISOString(),
+				message: user("ordinary"),
+			});
+			const all = vi.spyOn(sqliteDb(first), "all");
+			await first.appendEntries(
+				[
+					{
+						type: "message",
+						id: "current",
+						parentId: "ordinary",
+						timestamp: new Date().toISOString(),
+						message: user("current"),
+					},
+				],
+				{ expectedLeafId: "ordinary" },
+			);
+			const incrementalReads = historyReadCalls(all.mock.calls);
+			expect(incrementalReads).toHaveLength(1);
+			expect(incrementalReads[0]![0]).toMatch(/WHERE seq > \?/i);
+			expect(incrementalReads[0]![1]).toBe(1);
+			all.mockClear();
+			await first.appendEntries([messageEntry("after-refresh", "current")], {
+				expectedLeafId: "current",
+			});
+
+			expect(historyReadCalls(all.mock.calls)).toEqual([]);
+			expect((await first.getEntries()).map((entry) => entry.id)).toEqual([
+				"root",
+				"ordinary",
+				"current",
+				"after-refresh",
+			]);
+			expect(await first.getLeafId()).toBe("after-refresh");
+		} finally {
+			second.close();
+			first.close();
+		}
+	});
+
+	it("appendEntries rolls back the first insert when a later ID is duplicated", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		const original = await storage.createEntryId();
+		await storage.appendEntry({ type: "message", id: original, parentId: null, timestamp: new Date().toISOString(), message: user("original") });
+
+		await expect(
+			storage.appendEntries([
+				{ type: "message", id: "first", parentId: original, timestamp: new Date().toISOString(), message: user("first") },
+				{ type: "message", id: original, parentId: "first", timestamp: new Date().toISOString(), message: user("duplicate") },
+			]),
+		).rejects.toThrow(/duplicate/i);
+
+		expect((await storage.getEntries()).map((entry) => entry.id)).toEqual([original]);
+		expect(await storage.getLeafId()).toBe(original);
+		storage.close();
+	});
+
+	it("appendEntries rejects an incomplete transaction before changing SQLite", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		await expect(
+			storage.appendEntries([
+				{
+					type: "custom",
+					id: "orphan",
+					parentId: null,
+					timestamp: new Date().toISOString(),
+					customType: "context_artifact",
+					data: {},
+					transactionId: "tx",
+				},
+			]),
+		).rejects.toThrow(/transaction|manifest/i);
+		expect(await storage.getEntries()).toEqual([]);
+		storage.close();
+	});
+
+	it("appendEntries rolls back inserts when a later entry cannot be serialized", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		await expect(
+			storage.appendEntries([
+				{ type: "message", id: "first", parentId: null, timestamp: new Date().toISOString(), message: user("first") },
+				{
+					type: "message",
+					id: "second",
+					parentId: "first",
+					timestamp: new Date().toISOString(),
+					message: { role: "user", content: [{ type: "text", text: BigInt(1) }] } as unknown as AgentMessage,
+				},
+			]),
+		).rejects.toThrow(/BigInt/i);
+		expect(await storage.getEntries()).toEqual([]);
+		expect(await storage.getLeafId()).toBeNull();
+		storage.close();
+	});
+
+	it("keeps the published append cache clean after rollback", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		await storage.appendEntry(messageEntry("root", null));
+		const all = vi.spyOn(sqliteDb(storage), "all");
+		await expect(
+			storage.appendEntries([
+				messageEntry("rolled-back-first", "root"),
+				{
+					...messageEntry("rolled-back-second", "rolled-back-first"),
+					message: {
+						role: "user",
+						content: [{ type: "text", text: BigInt(1) }],
+					} as unknown as AgentMessage,
+				},
+			]),
+		).rejects.toThrow(/BigInt/i);
+		all.mockClear();
+
+		await storage.appendEntry(messageEntry("rolled-back-first", "root"));
+
+		expect(historyReadCalls(all.mock.calls)).toEqual([]);
+		expect((await storage.getEntries()).map((entry) => entry.id)).toEqual(["root", "rolled-back-first"]);
+		storage.close();
+	});
+
+	it("detects an entry ID appended through another handle", async () => {
+		const location = dbPath();
+		const first = SqliteSessionStorage.create(location, { cwd: "/c", sessionId: "s1" });
+		await first.appendEntry(messageEntry("root", null));
+		const second = SqliteSessionStorage.open(location);
+		try {
+			await second.appendEntry(messageEntry("external", "root"));
+
+			await expect(
+				first.appendEntries([messageEntry("external", "external")], {
+					expectedLeafId: "external",
+				}),
+			).rejects.toThrow(/duplicate session entry ID external/i);
+			expect((await first.getEntries()).map((entry) => entry.id)).toEqual(["root", "external"]);
+		} finally {
+			second.close();
+			first.close();
+		}
+	});
+
+	it("detects a transaction ID appended through another handle", async () => {
+		const location = dbPath();
+		const first = SqliteSessionStorage.create(location, { cwd: "/c", sessionId: "s1" });
+		await first.appendEntry(messageEntry("root", null));
+		const second = SqliteSessionStorage.open(location);
+		try {
+			const external = makeCommittedContextTransaction({ parentId: "root", prefix: "external" });
+			await second.appendEntries(external);
+
+			await expect(
+				first.appendEntries(
+					[
+						{
+							type: "custom",
+							id: "duplicate-transaction",
+							parentId: external.at(-1)!.id,
+							timestamp: new Date().toISOString(),
+							customType: "record",
+							data: {},
+							transactionId: "external-transaction",
+						},
+					],
+					{ expectedLeafId: external.at(-1)!.id },
+				),
+			).rejects.toThrow(/duplicate session transaction ID external-transaction/i);
+			expect((await first.getEntries()).map((entry) => entry.id)).toEqual([
+				"root",
+				...external.map((entry) => entry.id),
+			]);
+		} finally {
+			second.close();
+			first.close();
+		}
+	});
+
+	it("SqliteDb rolls back a failed multi-insert transaction", () => {
+		const db = new SqliteDb(dbPath("transaction.db"));
+		db.exec("CREATE TABLE values_table (id TEXT PRIMARY KEY)");
+
+		expect(() => db.transaction(() => {
+			db.run("INSERT INTO values_table (id) VALUES (?)", "first");
+			db.run("INSERT INTO values_table (id) VALUES (?)", "first");
+		})).toThrow(/UNIQUE/i);
+
+		expect(db.all("SELECT id FROM values_table")).toEqual([]);
+		db.close();
 	});
 
 	it("getLeafId tracks the last appended entry and setLeafId records a leaf", async () => {
@@ -129,6 +405,27 @@ describe("SqliteSessionStorage", () => {
 		// node:sqlite auto-creates an empty .db at an unknown path; opening it
 		// as a session must surface as invalid_session (no header row).
 		expect(() => SqliteSessionStorage.open(path.join(tmpRoot, "fresh.db"))).toThrow(/missing session header/);
+	});
+
+	it("open reads metadata without deserializing malformed entry payloads", async () => {
+		const created = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		created.close();
+		const db = new SqliteDb(dbPath());
+		db.run(
+			"INSERT INTO entries (id, parent_id, type, timestamp, target_id, data) VALUES (?, ?, ?, ?, ?, ?)",
+			"broken",
+			null,
+			"message",
+			new Date().toISOString(),
+			null,
+			"not-json",
+		);
+		db.close();
+
+		const reopened = SqliteSessionStorage.open(dbPath());
+		expect((await reopened.getMetadata()).id).toBe("s1");
+		await expect(reopened.getEntries()).rejects.toThrow(/valid JSON/i);
+		reopened.close();
 	});
 });
 
@@ -340,5 +637,121 @@ describe("SqliteSessionRepo — JSONL interchange", () => {
 		// Entry payloads (id/type/message) survive the round-trip identically.
 		expect(exportedEntries.map((e) => e.id)).toEqual(srcEntries.map((e) => e.id));
 		expect(exportedEntries.map((e) => e.type)).toEqual(srcEntries.map((e) => e.type));
+	});
+
+	it("preserves committed context transactions through SQLite export and import", async () => {
+		const source = await jsonlRepo.create({ cwd: "/tmp/context-roundtrip" });
+		const entries = makeCommittedContextTransaction();
+		await source.appendEntries(entries);
+		const sourceMeta = await source.getMetadata();
+
+		const imported = await repo.importFromJsonl(sourceMeta.path, { cwd: "/tmp/context-roundtrip" });
+		const importedEntries = await imported.getEntries();
+		const exported = await repo.exportToJsonl(await imported.getMetadata());
+
+		expect(importedEntries.map((entry) => entry.id)).toEqual(entries.map((entry) => entry.id));
+		expect(importedEntries.filter((entry) => entry.type === "custom").map((entry) => entry.customType)).toContain("context_attach");
+		expect(foldContextJournal(importedEntries).attachmentsForTurn("context-user")).toHaveLength(1);
+		expect(exported).toContain('"customType":"context_projection"');
+	});
+
+	it("uses only the transaction structural entries", () => {
+		expect(makeCommittedContextTransaction().filter((entry) => entry.type === "custom").map((entry) => entry.customType)).toEqual([
+			"context_artifact",
+			"context_attach",
+			"context_projection",
+			"session_tx_manifest",
+		]);
+	});
+
+	it("replays the committed filtered physical order in one batch", async () => {
+		const source = await jsonlRepo.create({ cwd: "/tmp/context-interleaved" });
+		const transaction = makeCommittedContextTransaction({ prefix: "interleaved" });
+		const ordinary = { type: "message", id: "ordinary-user", parentId: transaction[0]!.id, timestamp: new Date().toISOString(), message: user("ordinary question") } as const;
+		const update = {
+			type: "custom",
+			id: "attachment-update",
+			parentId: transaction[1]!.id,
+			timestamp: new Date().toISOString(),
+			customType: "context_update",
+			data: { schemaVersion: 1, attachmentEntryId: transaction[1]!.id, requestedRepresentation: "metadata" },
+		} as const;
+		await source.appendEntries([transaction[0]!, ordinary, transaction[1]!, update, ...transaction.slice(2)]);
+		const sourceEntries = await source.getEntries();
+
+		const imported = await repo.importFromJsonl((await source.getMetadata()).path, { cwd: "/tmp/context-interleaved" });
+		const entries = await imported.getEntries();
+
+		expect(entries).toEqual(sourceEntries);
+		expect(await imported.getLeafId()).toBe(transaction.at(-1)!.id);
+		expect(await imported.getBranch()).toEqual(transaction);
+		const importedJournal = foldContextJournal(entries);
+		const sourceJournal = foldContextJournal(sourceEntries);
+		expect(importedJournal.attachmentsForTurn("interleaved-user")).toEqual(
+			sourceJournal.attachmentsForTurn("interleaved-user")
+		);
+		expect(importedJournal.projectionReports).toEqual(sourceJournal.projectionReports);
+		expect(importedJournal.diagnostics).toEqual(sourceJournal.diagnostics);
+	});
+
+	it("imports nested relative JSONL paths without resolving them twice", async () => {
+		const previousCwd = process.cwd();
+		const nestedDir = path.join(jsonlRoot, "exports");
+		const inputPath = path.join(nestedDir, "session.jsonl");
+		await fs.mkdir(nestedDir, { recursive: true });
+		await fs.writeFile(inputPath, `${JSON.stringify({ type: "session", version: 3, id: "nested", timestamp: new Date().toISOString(), cwd: "/tmp/nested" })}\n${JSON.stringify({ type: "message", id: "nested-user", parentId: null, timestamp: new Date().toISOString(), message: user("nested question") })}\n`);
+		process.chdir(jsonlRoot);
+		try {
+			const imported = await repo.importFromJsonl("exports/session.jsonl", { cwd: "/tmp/nested" });
+			expect((await imported.getEntries()).map((entry) => entry.id)).toEqual(["nested-user"]);
+		} finally {
+			process.chdir(previousCwd);
+		}
+	});
+
+	it("forks before, at, and after a committed context transaction in both carriers", async () => {
+		for (const [carrier, sessionRepo] of [["JSONL", jsonlRepo], ["SQLite", repo]] as const) {
+			const cwd = `/tmp/context-fork-${carrier}`;
+			const source = await sessionRepo.create({ cwd });
+			const rootId = await source.appendMessage(user("before context"));
+			const transaction = makeCommittedContextTransaction({ parentId: rootId, prefix: `${carrier}-context` });
+			await source.appendEntries(transaction);
+			const descendantId = await source.appendMessage(assistant("after context"));
+			const metadata = await source.getMetadata();
+			const transactionUserId = transaction.at(-1)!.id;
+
+			const before = await sessionRepo.fork(metadata, { cwd: `${cwd}-before`, entryId: transactionUserId, position: "before" });
+			const at = await sessionRepo.fork(metadata, { cwd: `${cwd}-at`, entryId: transactionUserId, position: "at" });
+			const after = await sessionRepo.fork(metadata, { cwd: `${cwd}-after`, entryId: descendantId, position: "at" });
+
+			expect((await before.getEntries()).map((entry) => entry.id)).toEqual([rootId]);
+			expect((await at.getEntries()).map((entry) => entry.id)).toEqual([rootId, ...transaction.map((entry) => entry.id)]);
+			expect((await after.getEntries()).map((entry) => entry.id)).toEqual([rootId, ...transaction.map((entry) => entry.id), descendantId]);
+		}
+	});
+
+	it("drops incomplete context transactions when importing JSONL", async () => {
+		const entries = makeCommittedContextTransaction();
+		const incomplete = entries.filter((entry) => entry.id !== "context-manifest");
+		const inputPath = path.join(jsonlRoot, "incomplete.jsonl");
+		await fs.writeFile(inputPath, `${JSON.stringify({ type: "session", version: 3, id: "incomplete", timestamp: new Date().toISOString(), cwd: "/tmp/context-roundtrip" })}\n${incomplete.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+
+		const imported = await repo.importFromJsonl(inputPath, { cwd: "/tmp/context-roundtrip" });
+		const importedEntries = await imported.getEntries();
+
+		expect(importedEntries).toEqual([]);
+		expect((await imported.buildContext()).messages).toEqual([]);
+		expect(foldContextJournal(importedEntries).attachmentsByTurn.size).toBe(0);
+	});
+
+	it("hides incomplete context transactions from JSONL session details", async () => {
+		const source = await jsonlRepo.create({ cwd: "/tmp/context-detail" });
+		const sourceMeta = await source.getMetadata();
+		const incomplete = makeCommittedContextTransaction().filter((entry) => entry.id !== "context-manifest");
+		await fs.writeFile(sourceMeta.path, `${JSON.stringify({ type: "session", version: 3, id: sourceMeta.id, timestamp: sourceMeta.createdAt, cwd: sourceMeta.cwd })}\n${incomplete.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+
+		const details = await jsonlRepo.listDetails({ cwd: "/tmp/context-detail" });
+
+		expect(details).toEqual([expect.objectContaining({ messageCount: 0, firstMessage: "", previewText: "" })]);
 	});
 });

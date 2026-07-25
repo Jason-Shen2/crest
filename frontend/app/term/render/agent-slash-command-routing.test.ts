@@ -17,7 +17,7 @@ describe("resolveAgentSlashCommandRoute", () => {
         expect(resolveAgentSlashCommandRoute("/model")).toEqual({ handled: true, command: "model", argsText: "" });
     });
 
-    it.each(["new", "resume", "compact", "session", "copy", "export", "import", "reload"] as const)(
+    it.each(["new", "compact", "session", "info", "copy", "export", "import", "reload"] as const)(
         "routes /%s as a handled agent command",
         (command) => {
             expect(resolveAgentSlashCommandRoute(`/${command}`)).toEqual({
@@ -27,6 +27,14 @@ describe("resolveAgentSlashCommandRoute", () => {
             });
         }
     );
+
+    it("normalizes the hidden /resume compatibility alias to /session", () => {
+        expect(resolveAgentSlashCommandRoute("/resume ignored")).toEqual({
+            handled: true,
+            command: "session",
+            argsText: "",
+        });
+    });
 
     it("preserves arguments for command execution", () => {
         expect(resolveAgentSlashCommandRoute("/compact keep the latest failure context")).toEqual({

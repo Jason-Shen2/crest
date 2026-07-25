@@ -62,6 +62,22 @@ export class SqliteDb {
 		return stmt.all(...params) as TRow[];
 	}
 
+	transaction<T>(callback: () => T): T {
+		this.exec("BEGIN IMMEDIATE");
+		try {
+			const result = callback();
+			this.exec("COMMIT");
+			return result;
+		} catch (error) {
+			try {
+				this.exec("ROLLBACK");
+			} catch {
+				// Preserve the callback or commit error, which is more useful to callers.
+			}
+			throw error;
+		}
+	}
+
 	/** Close the handle. Best-effort; safe to call once. */
 	close(): void {
 		this.db.close();

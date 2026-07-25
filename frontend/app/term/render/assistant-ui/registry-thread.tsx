@@ -67,6 +67,7 @@ import {
 } from "react";
 import { ComposerAddAttachment, ComposerAttachments, UserMessageAttachments } from "./attachment";
 import { ContextDisplayRing, type CrestContextUsage } from "./context-display";
+import { ContextProjectionBadge } from "./context-projection-badge";
 import { getCrestImageAlt } from "./crest-message";
 import { ThreadFollowupSuggestions } from "./follow-up-suggestions";
 import { MarkdownText } from "./markdown-text";
@@ -289,9 +290,9 @@ const SLASH_COMMANDS: SlashCommandDef[] = [
     { id: "clone", label: "/clone", description: "Clone the current session", icon: "Copy" },
     { id: "model", label: "/model", description: "Change the AI model", icon: "Settings2" },
     { id: "new", label: "/new", description: "Start a new session", icon: "Plus" },
-    { id: "resume", label: "/resume", description: "Resume a previous session", icon: "History" },
     { id: "compact", label: "/compact", description: "Compact the conversation context", icon: "Minimize2" },
-    { id: "session", label: "/session", description: "Show current session info", icon: "Info" },
+    { id: "session", label: "/session", description: "Manage, resume, or reference sessions", icon: "History" },
+    { id: "info", label: "/info", description: "Show current session information", icon: "Info" },
     { id: "copy", label: "/copy", description: "Copy the current session", icon: "Copy" },
     { id: "export", label: "/export", description: "Export the session as markdown", icon: "Download" },
     { id: "import", label: "/import", description: "Import a session from markdown", icon: "Upload" },
@@ -402,6 +403,7 @@ function scrollSlashCommandItemIntoView(itemEl: HTMLElement, containerEl: HTMLEl
 }
 
 export const __testing = {
+    SlashCommands: SLASH_COMMANDS,
     SlashCommandPopoverClassName,
     SlashCommandScrollAreaClassName,
     SlashCommandItemClassName,
@@ -864,6 +866,11 @@ const AssistantMessage: FC = () => {
         ToolGroup,
         ReasoningGroup,
     } = useContext(ThreadComponentsContext);
+    const contextProjection = useAuiState(
+        (state) =>
+            (state.message.metadata.custom as { contextProjection?: AgentContextProjectionReportView } | undefined)
+                ?.contextProjection
+    );
 
     const ACTION_BAR_PT = "pt-1.5";
     // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
@@ -880,6 +887,7 @@ const AssistantMessage: FC = () => {
                 data-slot="aui_assistant-message-content"
                 className="text-foreground px-2 leading-relaxed wrap-break-word"
             >
+                {contextProjection && <ContextProjectionBadge report={contextProjection} />}
                 <MessagePrimitive.GroupedParts
                     groupBy={groupPartByType<"group-chainOfThought" | "group-reasoning" | "group-tool">({
                         reasoning: ["group-chainOfThought", "group-reasoning"],

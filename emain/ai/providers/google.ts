@@ -79,6 +79,7 @@ export const streamGoogle: StreamFunction<"google-generative-ai", GoogleOptions>
 			if (nextParams !== undefined) {
 				params = nextParams as GenerateContentParameters;
 			}
+			params = attachGoogleTransportSignal(params, options?.signal);
 			const googleStream = await client.models.generateContentStream(params);
 
 			stream.push({ type: "start", partial: output });
@@ -286,32 +287,37 @@ export const streamSimpleGoogle: StreamFunction<"google-generative-ai", SimpleSt
 	}
 
 	const base = buildBaseOptions(model, options, apiKey);
-	if (!options?.reasoning) {
-		return streamGoogle(model, context, { ...base, thinking: { enabled: false } } satisfies GoogleOptions);
-	}
-
-	const clampedReasoning = clampThinkingLevel(model, options.reasoning);
-	const effort = (clampedReasoning === "off" ? "high" : clampedReasoning) as ClampedThinkingLevel;
-	const googleModel = model as Model<"google-generative-ai">;
-
-	if (isGemini3ProModel(googleModel) || isGemini3FlashModel(googleModel) || isGemma4Model(googleModel)) {
-		return streamGoogle(model, context, {
-			...base,
-			thinking: {
-				enabled: true,
-				level: getThinkingLevel(effort, googleModel),
-			},
-		} satisfies GoogleOptions);
-	}
-
 	return streamGoogle(model, context, {
 		...base,
-		thinking: {
-			enabled: true,
-			budgetTokens: getGoogleBudget(googleModel, effort, options.thinkingBudgets),
-		},
+		...getGoogleReasoningOptions(model, options?.reasoning, options?.thinkingBudgets),
 	} satisfies GoogleOptions);
 };
+
+export function getGoogleReasoningOptions(
+	model: Model<"google-generative-ai">,
+	reasoning: SimpleStreamOptions["reasoning"],
+	thinkingBudgets?: ThinkingBudgets,
+): Pick<GoogleOptions, "thinking"> {
+	if (!reasoning) {
+		return { thinking: { enabled: false } };
+	}
+	const clampedReasoning = clampThinkingLevel(model, reasoning);
+	const effort = (clampedReasoning === "off" ? "high" : clampedReasoning) as ClampedThinkingLevel;
+	if (isGemini3ProModel(model) || isGemini3FlashModel(model) || isGemma4Model(model)) {
+		return {
+			thinking: {
+				enabled: true,
+				level: getThinkingLevel(effort, model),
+			},
+		};
+	}
+	return {
+		thinking: {
+			enabled: true,
+			budgetTokens: getGoogleBudget(model, effort, thinkingBudgets),
+		},
+	};
+}
 
 function createClient(
 	model: Model<"google-generative-ai">,
@@ -377,13 +383,6 @@ function buildParams(
 		config.thinkingConfig = getDisabledThinkingConfig(model);
 	}
 
-	if (options.signal) {
-		if (options.signal.aborted) {
-			throw new Error("Request aborted");
-		}
-		config.abortSignal = options.signal;
-	}
-
 	const params: GenerateContentParameters = {
 		model: model.id,
 		contents,
@@ -391,6 +390,103 @@ function buildParams(
 	};
 
 	return params;
+}
+
+function attachGoogleTransportSignal(
+	params: GenerateContentParameters,
+	signal?: AbortSignal,
+): GenerateContentParameters {
+	if (!signal) {
+		return params;
+	}
+	if (signal.aborted) {
+		throw new Error("Request aborted");
+	}
+	return {
+		...params,
+		config: {
+			...params.config,
+			abortSignal: signal,
+		},
+	};
+}
+
+export function buildGooglePayload(
+	model: Model<"google-generative-ai">,
+	context: Context,
+	options?: GoogleOptions,
+): unknown {
+	const { signal: _transportSignal, ...payloadOptions } = options ?? {};
+	return buildParams(model, context, payloadOptions);
+}
+
+const googleGenerationConfigFields = new Set([
+	"abortSignal",
+	"maxOutputTokens",
+	"systemInstruction",
+	"temperature",
+	"thinkingConfig",
+	"toolConfig",
+	"tools",
+]);
+
+export function toGoogleCountParams(
+	payload: unknown,
+	signal?: AbortSignal,
+): { model: string; contents: GenerateContentParameters["contents"]; config?: Record<string, unknown> } {
+	if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
+		throw new Error("Google count payload must be an object");
+	}
+	const params = payload as Record<string, unknown>;
+	for (const key of Object.keys(params)) {
+		if (key !== "model" && key !== "contents" && key !== "config") {
+			throw new Error(`Google count payload contains unsupported field: ${key}`);
+		}
+	}
+	if (typeof params.model !== "string" || params.contents == null) {
+		throw new Error("Google count payload requires model and contents");
+	}
+	const generationConfig =
+		params.config == null
+			? {}
+			: typeof params.config === "object" && !Array.isArray(params.config)
+				? (params.config as Record<string, unknown>)
+				: (() => {
+						throw new Error("Google count config must be an object");
+					})();
+	for (const key of Object.keys(generationConfig)) {
+		if (!googleGenerationConfigFields.has(key)) {
+			throw new Error(`Google count config contains unsupported field: ${key}`);
+		}
+	}
+	if (generationConfig.systemInstruction !== undefined) {
+		throw new Error("Google Gemini API countTokens does not support systemInstruction");
+	}
+	if (generationConfig.tools !== undefined) {
+		throw new Error("Google Gemini API countTokens does not support tools");
+	}
+	const config = {
+		...(signal == null ? {} : { abortSignal: signal }),
+	};
+	return {
+		model: params.model,
+		contents: params.contents as GenerateContentParameters["contents"],
+		...(Object.keys(config).length === 0 ? {} : { config }),
+	};
+}
+
+export async function countGooglePayload(
+	model: Model<"google-generative-ai">,
+	payload: unknown,
+	apiKey?: string,
+	signal?: AbortSignal,
+): Promise<number> {
+	const client = createClient(model, apiKey);
+	const response = await client.models.countTokens(toGoogleCountParams(payload, signal) as never);
+	if (!Number.isSafeInteger(response.totalTokens) || response.totalTokens! < 0) {
+		throw new Error("Google token counter returned an invalid count");
+	}
+	return response.totalTokens!;
 }
 
 type ClampedThinkingLevel = Exclude<ThinkingLevel, "xhigh">;

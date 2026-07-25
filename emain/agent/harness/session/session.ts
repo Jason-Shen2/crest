@@ -9,6 +9,7 @@ import type {
 	LabelEntry,
 	MessageEntry,
 	ModelChangeEntry,
+	SessionAppendOptions,
 	SessionContext,
 	SessionInfoEntry,
 	SessionMetadata,
@@ -17,8 +18,10 @@ import type {
 	ThinkingLevelChangeEntry,
 } from "../types";
 import { SessionError } from "../types";
+import { filterCommittedTransactionEntries } from "./entry-transaction";
 
 export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionContext {
+	pathEntries = filterCommittedTransactionEntries(pathEntries).entries;
 	let thinkingLevel = "off";
 	let model: { provider: string; modelId: string } | null = null;
 	let compaction: CompactionEntry | null = null;
@@ -36,9 +39,11 @@ export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionCon
 	}
 
 	const messages: AgentMessage[] = [];
+	const messageEntryIds: Array<string | undefined> = [];
 	const appendMessage = (entry: SessionTreeEntry) => {
 		if (entry.type === "message") {
 			messages.push(entry.message as AgentMessage);
+			messageEntryIds.push(entry.id);
 		} else if (entry.type === "custom_message") {
 			messages.push(
 				createCustomMessage(
@@ -49,13 +54,16 @@ export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionCon
 					entry.timestamp,
 				),
 			);
+			messageEntryIds.push(entry.id);
 		} else if (entry.type === "branch_summary" && entry.summary) {
 			messages.push(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp));
+			messageEntryIds.push(entry.id);
 		}
 	};
 
 	if (compaction) {
 		messages.push(createCompactionSummaryMessage(compaction.summary, compaction.tokensBefore, compaction.timestamp));
+		messageEntryIds.push(compaction.id);
 		const compactionIdx = pathEntries.findIndex((e) => e.type === "compaction" && e.id === compaction.id);
 		let foundFirstKept = false;
 		for (let i = 0; i < compactionIdx; i++) {
@@ -72,7 +80,7 @@ export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionCon
 		}
 	}
 
-	return { messages, thinkingLevel, model };
+	return { messages, messageEntryIds, thinkingLevel, model };
 }
 
 export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
@@ -100,6 +108,10 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
 
 	getEntries(): Promise<SessionTreeEntry[]> {
 		return this.storage.getEntries();
+	}
+
+	appendEntries(entries: SessionTreeEntry[], options?: SessionAppendOptions): Promise<void> {
+		return this.storage.appendEntries(entries, options);
 	}
 
 	async getBranch(fromId?: string): Promise<SessionTreeEntry[]> {

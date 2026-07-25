@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { SessionTreeEntry } from "../harness/types";
-import type { AgentForkPointView, AgentTreeEntryView } from "./types";
+import { isContextCustomEntry } from "../context/journal";
+import type { AgentForkPointView, AgentReferencePointView, AgentTreeEntryView } from "./types";
 
 const MaxPreviewLength = 120;
 
@@ -51,7 +52,7 @@ function isUserMessageEntry(entry: SessionTreeEntry): entry is Extract<SessionTr
  * attaches to the target node via the labels map — neither is a real node.
  */
 export function isHiddenTreeEntry(entry: SessionTreeEntry): boolean {
-    return entry.type === "leaf" || entry.type === "label";
+    return entry.type === "leaf" || entry.type === "label" || isContextCustomEntry(entry);
 }
 
 export function filterTreeForDisplay(
@@ -215,6 +216,13 @@ export function buildAgentTreeEntryViews(
     labels: Map<string, string | undefined> = new Map()
 ): AgentTreeEntryView[] {
     const toolCalls = buildToolCallArgsMap(entries);
+    const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+    const activeIds = new Set<string>();
+    let activeEntry = leafId == null ? undefined : entriesById.get(leafId);
+    while (activeEntry && !activeIds.has(activeEntry.id)) {
+        activeIds.add(activeEntry.id);
+        activeEntry = activeEntry.parentId == null ? undefined : entriesById.get(activeEntry.parentId);
+    }
     return entries.map((entry) => {
         const label = labels.get(entry.id);
         const stopReason =
@@ -232,11 +240,20 @@ export function buildAgentTreeEntryViews(
             timestamp: entry.timestamp,
             isLeaf: entry.id === leafId,
             isCurrent: entry.id === leafId,
+            ...(activeIds.has(entry.id) && isUserMessageEntry(entry) ? { referenceable: true } : {}),
         };
     });
 }
 
 export function buildAgentForkPointViews(entries: SessionTreeEntry[]): AgentForkPointView[] {
+    return entries.filter(isUserMessageEntry).map((entry) => ({
+        entryId: entry.id,
+        preview: previewSessionEntry(entry),
+        timestamp: entry.timestamp,
+    }));
+}
+
+export function buildAgentReferencePointViews(entries: SessionTreeEntry[]): AgentReferencePointView[] {
     return entries.filter(isUserMessageEntry).map((entry) => ({
         entryId: entry.id,
         preview: previewSessionEntry(entry),

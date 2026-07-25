@@ -179,6 +179,13 @@ declare global {
             forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>; // agent:fork-session
             cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>; // agent:clone-session
             runCommand: (input: AgentRunCommandInput) => Promise<AgentCommandExecutionResult>; // agent:run-command
+            prepareContextDraft: (input: AgentPrepareContextDraftInput) => Promise<AgentPrepareContextDraftResult>;
+            summarizeContextDraft: (
+                input: AgentSummarizeContextDraftInput
+            ) => Promise<AgentSummarizeContextDraftResult>;
+            discardContextDraft: (input: AgentDiscardContextDraftInput) => Promise<AgentDiscardContextDraftResult>;
+            listReferencePoints: (input: AgentListReferencePointsInput) => Promise<AgentReferencePointView[]>;
+            listContextState: (input: AgentListContextStateInput) => Promise<AgentContextState>;
             send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
             abort: (sessionPath: string) => void;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
@@ -305,6 +312,123 @@ declare global {
         ismoderated?: boolean;
     };
 
+    type AgentContextSourceKind = "turn" | "session";
+    type AgentContextDeliveryScope = "message" | "conversation";
+    type AgentContextRepresentation = "full" | "summary";
+    type AgentContextRenderedRepresentation = AgentContextRepresentation | "attention";
+    type AgentContextBudgetStatus = "fits" | "references_over_budget" | "base_over_budget" | "counter_unavailable";
+    type AgentContextCountAccuracy = "exact" | "conservative_upper_bound" | "estimated";
+
+    type AgentContextProvenanceView = {
+        sourceKind: AgentContextSourceKind;
+        sourceSessionId: string;
+        sourceSessionPath: string;
+        sourceSessionTitle?: string;
+        sourceCwd: string;
+        sourceTurnId?: string;
+        sourceLeafId: string | null;
+        sourceMessageEntryIds: string[];
+        preview: string;
+        capturedAt: string;
+    };
+
+    type AgentContextDraftView = {
+        draftId: string;
+        targetSessionPath: string;
+        provenance: AgentContextProvenanceView;
+        summaryStatus: "none" | "summarizing" | "ready" | "failed";
+        expiresAt: string;
+    };
+
+    type AgentContextProjectionItemReportView = {
+        attachmentEntryId: string;
+        artifactEntryId?: string;
+        sourceKind?: AgentContextSourceKind;
+        sourceSessionId?: string;
+        sourceSessionTitle?: string;
+        sourceTurnId?: string;
+        sourcePreview?: string;
+        deliveryScope: AgentContextDeliveryScope;
+        requestedRepresentation?: AgentContextRepresentation;
+        renderedRepresentation: AgentContextRenderedRepresentation;
+        advisoryTokens: number;
+        reason: "selected" | "already_present";
+    };
+
+    type AgentContextProjectionReportView = {
+        schemaVersion: 1;
+        transactionId: string;
+        targetTurnId: string;
+        createdAt: string;
+        contextWindow: number;
+        effectiveOutputReserve: number;
+        inputLimit: number;
+        baseInputTokens: number;
+        finalInputTokens: number;
+        referenceTokens: number;
+        countAccuracy: AgentContextCountAccuracy;
+        maxReferenceTokens?: number;
+        overlaySha256: string;
+        items: AgentContextProjectionItemReportView[];
+    };
+
+    type AgentContextBudgetItemView = {
+        attachmentEntryId?: string;
+        draftId?: string;
+        representation: AgentContextRenderedRepresentation;
+        advisoryTokens: number;
+    };
+
+    type AgentContextState = {
+        drafts: AgentContextDraftView[];
+        contextReports: AgentContextProjectionReportView[];
+    };
+
+    type AgentPrepareContextDraftInput = {
+        targetSessionPath: string;
+        sourceSessionPath: string;
+        sourceKind: AgentContextSourceKind;
+        sourceTurnId?: string;
+    };
+
+    type AgentPrepareContextDraftResult = AgentContextDraftView;
+
+    type AgentSummarizeContextDraftInput = {
+        targetSessionPath: string;
+        draftId: string;
+    };
+
+    type AgentSummarizeContextDraftResult = AgentContextDraftView;
+
+    type AgentDiscardContextDraftInput = {
+        targetSessionPath: string;
+        draftId: string;
+    };
+
+    type AgentDiscardContextDraftResult = {
+        discarded: boolean;
+    };
+
+    type AgentListContextStateInput = {
+        targetSessionPath: string;
+    };
+
+    type AgentContextAttachmentDraftInput = {
+        draftId: string;
+        deliveryScope: AgentContextDeliveryScope;
+        requestedRepresentation: AgentContextRepresentation;
+    };
+
+    type AgentListReferencePointsInput = {
+        sourceSessionPath: string;
+    };
+
+    type AgentReferencePointView = {
+        entryId: string;
+        preview: string;
+        timestamp?: string;
+    };
+
     type AgentSendOptions = {
         /** Existing session metadata, or null to have main mint a new one. */
         sessionMetadata?: AgentSessionMeta | null;
@@ -331,6 +455,8 @@ declare global {
          * emain/agent/permissions.ts and the architecture doc §7.9.
          */
         allowedTools?: string[];
+        /** Ordered composer references. Main validates ownership and representation. */
+        contextAttachments?: AgentContextAttachmentDraftInput[];
     };
 
     type AgentCommandSource = "builtin" | "skill" | "prompt";
@@ -343,6 +469,7 @@ declare global {
         | "resume"
         | "compact"
         | "session"
+        | "info"
         | "copy"
         | "export"
         | "import"
@@ -371,6 +498,7 @@ declare global {
         timestamp?: string;
         isLeaf: boolean;
         isCurrent: boolean;
+        referenceable?: boolean;
     };
 
     type AgentForkPointView = {
@@ -431,6 +559,7 @@ declare global {
         status: AgentCommandExecutionStatus;
         message: string;
         sessionMetadata?: AgentSessionMeta;
+        managerMode?: "session";
     };
 
     type AgentRunCommandInput = {

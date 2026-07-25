@@ -3,9 +3,23 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CmdBlockInput } from "./cmdblock-input";
+import { CmdBlockInput, __testing } from "./cmdblock-input";
 
 describe("CmdBlockInput", () => {
+    it("discovers /session and /info while keeping /resume hidden", () => {
+        const byName = new Map(__testing.FallbackAgentSlashCommands.map((command) => [command.name, command]));
+
+        expect(byName.get("/session")).toMatchObject({
+            icon: "clock-rewind",
+            description: expect.stringMatching(/manage|resume|reference/i),
+        });
+        expect(byName.get("/info")).toMatchObject({
+            icon: "info-circle",
+            description: expect.stringMatching(/current.*session.*information/i),
+        });
+        expect(byName.has("/resume")).toBe(false);
+    });
+
     it("renders the compact terminal prompt as a themed shared icon aligned to the editor row", () => {
         const html = renderToStaticMarkup(
             <CmdBlockInput

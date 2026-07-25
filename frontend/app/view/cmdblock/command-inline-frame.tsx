@@ -24,6 +24,7 @@ export interface CommandInlineFrameProps {
     headerActions?: ReactNode;
     headerContent?: ReactNode;
     onDismiss?: () => void;
+    dismissOnEscape?: boolean;
     role?: string;
     rootRef?: Ref<HTMLDivElement>;
     onResizeStart?: (e: ReactMouseEvent<HTMLButtonElement>) => void;
@@ -65,6 +66,7 @@ export function CommandInlineFrame({
     headerActions,
     headerContent,
     onDismiss,
+    dismissOnEscape = true,
     role,
     rootRef,
     onResizeStart,
@@ -93,6 +95,7 @@ export function CommandInlineFrame({
             }
         };
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (!dismissOnEscape) return;
             if (!isCommandInlineFrameDismissKey(event.key)) return;
             event.preventDefault();
             event.stopPropagation();
@@ -105,7 +108,7 @@ export function CommandInlineFrame({
             document.removeEventListener("mousedown", handlePointerDown, true);
             window.removeEventListener("keydown", handleKeyDown, true);
         };
-    }, [dismissAnchorRef, onDismiss]);
+    }, [dismissAnchorRef, dismissOnEscape, onDismiss]);
 
     return (
         <div ref={setRootRef} className={cn(COMMAND_INLINE_FRAME_CLASSNAME, className)} role={role}>

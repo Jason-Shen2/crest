@@ -10,6 +10,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { SqliteSessionRepo } from "./harness/session/sqlite-repo";
+import { createTransactionManifestData } from "./harness/session/entry-transaction";
+import { makeCommittedContextTransaction } from "./harness/session/context-transaction-fixture";
 import { buildSystemPrompt } from "./build-system-prompt";
 import {
     _setSessionsRepoForTests,
@@ -23,6 +25,7 @@ import {
     openPaneSessionByPath,
 } from "./sessions";
 import type { AgentMessage } from "./types";
+import type { SessionTreeEntry } from "./harness/types";
 
 function user(text: string): AgentMessage {
     return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;
@@ -79,6 +82,47 @@ describe("sessions — SqliteSessionRepo wiring", () => {
         expect((context.messages[0] as { content: { text: string }[] }).content[0].text).toBe("persisted q");
     });
 
+    it("builds ordinary user and assistant history around a committed context transaction", async () => {
+        const created = await createPaneSession("/tmp/proj-transaction");
+        const transactionId = "tx";
+        const artifact: SessionTreeEntry = {
+            type: "custom",
+            id: "artifact",
+            parentId: null,
+            timestamp: new Date().toISOString(),
+            customType: "context_artifact",
+            data: {},
+            transactionId,
+        };
+        const turn: SessionTreeEntry = {
+            type: "message",
+            id: "turn",
+            parentId: "manifest",
+            timestamp: new Date().toISOString(),
+            message: user("question"),
+            transactionId,
+        };
+        const manifest: SessionTreeEntry = {
+            type: "custom",
+            id: "manifest",
+            parentId: "artifact",
+            timestamp: new Date().toISOString(),
+            customType: "session_tx_manifest",
+            data: createTransactionManifestData(transactionId, [artifact, turn]),
+            transactionId,
+        };
+
+        await created.session.appendEntries([artifact, manifest, turn]);
+        await created.session.appendMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "answer" }],
+            provider: "p",
+            model: "m",
+        } as unknown as AgentMessage);
+
+        expect((await created.session.buildContext()).messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    });
+
     it("forkPaneSession forks before a user message and records the source path", async () => {
         const source = await createPaneSession("/tmp/proj-fork");
         await source.session.appendMessage(user("keep this"));
@@ -93,6 +137,30 @@ describe("sessions — SqliteSessionRepo wiring", () => {
         expect(forked.metadata.parentSessionPath).toBe(source.metadata.path);
         expect(context.messages).toHaveLength(1);
         expect((context.messages[0] as { content: { text: string }[] }).content[0].text).toBe("keep this");
+    });
+
+    it("forks committed context transactions only as complete groups", async () => {
+        const source = await createPaneSession("/tmp/proj-context-fork");
+        const rootId = await source.session.appendMessage(user("before context"));
+        const transaction = makeCommittedContextTransaction({ parentId: rootId });
+        await source.session.appendEntries(transaction);
+        const transactionUserId = transaction.at(-1)!.id;
+
+        const before = await forkPaneSession(source.metadata, { entryId: transactionUserId, position: "before" });
+        const at = await forkPaneSession(source.metadata, { entryId: transactionUserId, position: "at" });
+
+        expect((await before.session.getEntries()).map((entry) => entry.id)).toEqual([rootId]);
+        expect((await at.session.getEntries()).map((entry) => entry.id)).toEqual([rootId, ...transaction.map((entry) => entry.id)]);
+        expect((await at.session.buildContext()).messages.map((message) => message.role)).toEqual(["user", "user"]);
+    });
+
+    it("keeps context custom entries out of session detail message previews", async () => {
+        const created = await createPaneSession("/tmp/proj-context-details");
+        await created.session.appendEntries(makeCommittedContextTransaction());
+
+        const details = await listSessionDetailsForCwd("/tmp/proj-context-details");
+
+        expect(details).toEqual([expect.objectContaining({ messageCount: 1, firstMessage: "contextual question", previewText: "contextual question" })]);
     });
 
     it("listSessionsForCwd returns only sessions for the given cwd, newest first", async () => {

@@ -729,6 +729,30 @@ function mapThinkingLevelToEffort(
 	}
 }
 
+export function getAnthropicReasoningOptions(
+	model: Model<"anthropic-messages">,
+	reasoning: SimpleStreamOptions["reasoning"],
+	maxTokens: number | undefined,
+	thinkingBudgets?: SimpleStreamOptions["thinkingBudgets"],
+): Pick<AnthropicOptions, "maxTokens" | "thinkingEnabled" | "thinkingBudgetTokens" | "effort"> {
+	if (!reasoning) {
+		return { maxTokens, thinkingEnabled: false };
+	}
+	if (model.compat?.forceAdaptiveThinking === true) {
+		return {
+			maxTokens,
+			thinkingEnabled: true,
+			effort: mapThinkingLevelToEffort(model, reasoning),
+		};
+	}
+	const adjusted = adjustMaxTokensForThinking(maxTokens, model.maxTokens, reasoning, thinkingBudgets);
+	return {
+		maxTokens: adjusted.maxTokens,
+		thinkingEnabled: true,
+		thinkingBudgetTokens: adjusted.thinkingBudget,
+	};
+}
+
 export const streamSimpleAnthropic: StreamFunction<"anthropic-messages", SimpleStreamOptions> = (
 	model: Model<"anthropic-messages">,
 	context: Context,
@@ -740,35 +764,9 @@ export const streamSimpleAnthropic: StreamFunction<"anthropic-messages", SimpleS
 	}
 
 	const base = buildBaseOptions(model, options, apiKey);
-	if (!options?.reasoning) {
-		return streamAnthropic(model, context, { ...base, thinkingEnabled: false } satisfies AnthropicOptions);
-	}
-
-	// For models with adaptive thinking: use an effort level.
-	// For older models: use budget-based thinking.
-	if (model.compat?.forceAdaptiveThinking === true) {
-		const effort = mapThinkingLevelToEffort(model, options.reasoning);
-		return streamAnthropic(model, context, {
-			...base,
-			thinkingEnabled: true,
-			effort,
-		} satisfies AnthropicOptions);
-	}
-
-	// Undefined means the caller did not request an output cap; let the helper use the model cap.
-	// Do not coerce to 0 here, or the thinking budget would become the entire max_tokens value.
-	const adjusted = adjustMaxTokensForThinking(
-		base.maxTokens,
-		model.maxTokens,
-		options.reasoning,
-		options.thinkingBudgets,
-	);
-
 	return streamAnthropic(model, context, {
 		...base,
-		maxTokens: adjusted.maxTokens,
-		thinkingEnabled: true,
-		thinkingBudgetTokens: adjusted.thinkingBudget,
+		...getAnthropicReasoningOptions(model, options?.reasoning, base.maxTokens, options?.thinkingBudgets),
 	} satisfies AnthropicOptions);
 };
 
@@ -989,6 +987,64 @@ function buildParams(
 	}
 
 	return params;
+}
+
+export function buildAnthropicPayload(
+	model: Model<"anthropic-messages">,
+	context: Context,
+	apiKey: string,
+	options?: AnthropicOptions,
+): unknown {
+	return buildParams(model, context, isOAuthToken(apiKey), options);
+}
+
+const anthropicCountFields = new Set([
+	"model",
+	"messages",
+	"cache_control",
+	"output_config",
+	"system",
+	"thinking",
+	"tool_choice",
+	"tools",
+]);
+const anthropicGenerationOnlyFields = new Set([
+	"max_tokens",
+	"metadata",
+	"service_tier",
+	"stop_sequences",
+	"stream",
+	"temperature",
+	"top_k",
+	"top_p",
+]);
+
+export function toAnthropicCountParams(payload: unknown): Record<string, unknown> {
+	if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
+		throw new Error("Anthropic count payload must be an object");
+	}
+	const params: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(payload)) {
+		if (anthropicCountFields.has(key)) {
+			params[key] = value;
+			continue;
+		}
+		if (!anthropicGenerationOnlyFields.has(key)) {
+			throw new Error(`Anthropic count payload contains unsupported field: ${key}`);
+		}
+	}
+	return params;
+}
+
+export async function countAnthropicPayload(
+	model: Model<"anthropic-messages">,
+	payload: unknown,
+	apiKey: string,
+	signal?: AbortSignal,
+): Promise<number> {
+	const created = createClient(model, apiKey, true, false);
+	const response = await created.client.messages.countTokens(toAnthropicCountParams(payload) as never, { signal });
+	return response.input_tokens;
 }
 
 // Normalize tool call IDs to match Anthropic's required pattern and length

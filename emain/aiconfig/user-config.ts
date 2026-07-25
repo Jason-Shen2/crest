@@ -36,12 +36,18 @@ interface AISelectionConfig {
     reasoning?: string;
 }
 
+interface AIContextReferencesConfig {
+    enabled?: boolean;
+    max_tokens?: number;
+}
+
 // Loose typing — we revalidate shape on write; the renderer's UserConfig
 // is the authoritative TS shape. This stays permissive so renderer-only
 // fields don't trigger spurious rejections here.
 type AIUserConfig = {
     providers: Record<string, ProviderCredentials>;
     default: AISelectionConfig;
+    context_references?: AIContextReferencesConfig;
     [k: string]: unknown;
 };
 
@@ -109,5 +115,20 @@ function validateAIUserConfig(cfg: AIUserConfig): string | null {
     if (!cfg.default) return "missing required field: default";
     if (!cfg.default.provider) return "missing required field: default.provider";
     if (!cfg.default.model) return "missing required field: default.model";
+    if (Object.hasOwn(cfg, "context_references")) {
+        const contextReferences = cfg.context_references;
+        if (!contextReferences || typeof contextReferences !== "object" || Array.isArray(contextReferences)) {
+            return "context_references must be an object";
+        }
+        if (Object.hasOwn(contextReferences, "enabled") && typeof contextReferences.enabled !== "boolean") {
+            return "context_references.enabled must be a boolean";
+        }
+        if (
+            Object.hasOwn(contextReferences, "max_tokens") &&
+            (typeof contextReferences.max_tokens !== "number" || !Number.isFinite(contextReferences.max_tokens))
+        ) {
+            return "context_references.max_tokens must be a finite number";
+        }
+    }
     return null;
 }

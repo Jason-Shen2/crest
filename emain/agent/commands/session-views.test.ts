@@ -5,12 +5,14 @@ import { describe, expect, it } from "vitest";
 
 import {
     buildAgentForkPointViews,
+    buildAgentReferencePointViews,
     buildAgentTreeEntryViews,
     filterTreeForDisplay,
     isHiddenTreeEntry,
     previewSessionEntry,
 } from "./session-views";
 import type { SessionTreeEntry } from "../harness/types";
+import { ContextCustomTypes } from "../context/journal";
 
 function userMsg(id: string, parentId: string | null, text: string): SessionTreeEntry {
     return {
@@ -56,6 +58,16 @@ function messageEntry(id: string, parentId: string | null, role: "user" | "assis
     } as unknown as SessionTreeEntry;
 }
 
+function contextEntry(id: string, parentId: string | null, customType: string): SessionTreeEntry {
+    return {
+        type: "custom",
+        id,
+        parentId,
+        timestamp: `t-${id}`,
+        customType,
+    } as SessionTreeEntry;
+}
+
 describe("session view helpers", () => {
     it("builds safe tree rows with current leaf marker", () => {
         const entries = [messageEntry("1", null, "user", "first question"), messageEntry("2", "1", "assistant", "answer")];
@@ -70,6 +82,29 @@ describe("session view helpers", () => {
         const entries = [messageEntry("1", null, "user", "fork here"), messageEntry("2", "1", "assistant", "no")];
         expect(buildAgentForkPointViews(entries)).toEqual([
             expect.objectContaining({ entryId: "1", preview: "fork here" }),
+        ]);
+    });
+
+    it("marks only active branch user rows as referenceable", () => {
+        const root = userMsg("u1", null, "root");
+        const activeAssistant = asstMsg("a1", "u1", "active answer");
+        const activeUser = userMsg("u2", "a1", "active turn");
+        const abandonedUser = userMsg("u-abandoned", "u1", "abandoned turn");
+        const rows = buildAgentTreeEntryViews([root, activeAssistant, activeUser, abandonedUser], "u2");
+
+        expect(rows.find((row) => row.id === "u1")).toMatchObject({ referenceable: true });
+        expect(rows.find((row) => row.id === "u2")).toMatchObject({ referenceable: true });
+        expect(rows.find((row) => row.id === "u-abandoned")).not.toHaveProperty("referenceable");
+    });
+
+    it("builds reference points from active user turn roots only", () => {
+        const root = userMsg("u1", null, "root");
+        const assistant = asstMsg("a1", "u1", "answer");
+        const nextUser = userMsg("u2", "a1", "next");
+
+        expect(buildAgentReferencePointViews([root, assistant, nextUser])).toEqual([
+            expect.objectContaining({ entryId: "u1", preview: "root" }),
+            expect.objectContaining({ entryId: "u2", preview: "next" }),
         ]);
     });
 
@@ -111,6 +146,11 @@ describe("session view helpers", () => {
             expect(isHiddenTreeEntry(userMsg("u1", null, "hi"))).toBe(false);
             expect(isHiddenTreeEntry(asstMsg("a2", null, "hello"))).toBe(false);
         });
+        it("hides every recognized context control entry", () => {
+            for (const customType of Object.values(ContextCustomTypes)) {
+                expect(isHiddenTreeEntry(contextEntry(customType, null, customType))).toBe(true);
+            }
+        });
     });
 
     describe("filterTreeForDisplay", () => {
@@ -137,6 +177,23 @@ describe("session view helpers", () => {
             expect(entries.map((e) => e.id)).toEqual(["u1", "a1"]);
             expect(entries[1]!.parentId).toBe("u1");
             expect(effectiveLeafId).toBe("a1");
+        });
+
+        it("reparents a transactional user past every hidden context ancestor", () => {
+            const previous = userMsg("previous", null, "before");
+            const artifact = contextEntry("artifact", "previous", ContextCustomTypes.artifact);
+            const attach = contextEntry("attach", "artifact", ContextCustomTypes.attach);
+            const manifest = contextEntry("manifest", "attach", ContextCustomTypes.transactionManifest);
+            const transactionalUser = userMsg("user", "manifest", "visible turn");
+
+            const { entries, effectiveLeafId } = filterTreeForDisplay(
+                [previous, artifact, attach, manifest, transactionalUser],
+                "user"
+            );
+
+            expect(entries.map((entry) => entry.id)).toEqual(["previous", "user"]);
+            expect(entries[1]!.parentId).toBe("previous");
+            expect(effectiveLeafId).toBe("user");
         });
     });
 });

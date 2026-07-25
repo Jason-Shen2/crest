@@ -13,6 +13,7 @@ import { JsonlSessionStorage, loadJsonlSessionMetadata } from "./jsonl-storage";
 import {
 	createSessionId,
 	createTimestamp,
+	appendCommittedEntryGroups,
 	getEntriesToFork,
 	getFileSystemResultOrThrow,
 	toSession,
@@ -169,12 +170,9 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 	}
 
 	private async loadSessionDetail(filePath: string): Promise<SessionDetailInfo | null> {
-		const contentResult = await this.fs.readTextFile(filePath);
-		if (!contentResult.ok) return null;
-		const lines = contentResult.value.split("\n").filter((line) => line.trim());
-		if (lines.length === 0) return null;
-
-		let header: { type?: string; version?: number; id: string; timestamp: string; cwd: string; parentSession?: string } | null = null;
+		const storage = await JsonlSessionStorage.open(this.fs, filePath);
+		const header = await storage.getMetadata();
+		const entries = await storage.getEntries();
 		let name: string | undefined;
 		let messageCount = 0;
 		let firstMessage = "";
@@ -183,26 +181,8 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 		const PREVIEW_MAX_LENGTH = 200;
 		const PREVIEW_MAX_MESSAGES = 6;
 
-		try {
-			header = JSON.parse(lines[0]!);
-		} catch {
-			return null;
-		}
-		// Mirror jsonl-storage.parseHeaderLine: only accept the current header
-		// schema. Reject unknown versions instead of silently misparsing them.
-		if (!header || header.type !== "session" || header.version !== 3) return null;
-
-		for (let i = 1; i < lines.length; i++) {
-			let entry: Record<string, unknown>;
-			try {
-				entry = JSON.parse(lines[i]!);
-			} catch {
-				continue;
-			}
-			if (!entry || typeof entry !== "object") continue;
-
-			const ts = typeof entry.timestamp === "string" ? entry.timestamp : null;
-			if (ts) lastActivityTime = ts;
+		for (const entry of entries) {
+			lastActivityTime = entry.timestamp;
 
 			if (entry.type === "session_info" && typeof entry.name === "string") {
 				const trimmed = entry.name.trim();
@@ -212,7 +192,7 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 			if (entry.type !== "message") continue;
 			messageCount++;
 
-			const msg = entry.message as Record<string, unknown> | undefined;
+			const msg = entry.message as unknown as Record<string, unknown> | undefined;
 			if (!msg) continue;
 			const role = typeof msg.role === "string" ? msg.role : null;
 			if (role !== "user" && role !== "assistant") continue;
@@ -232,14 +212,14 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 		}
 
 		const previewText = previewParts.join("  ").slice(0, PREVIEW_MAX_LENGTH);
-		const modifiedAt = lastActivityTime ?? header.timestamp;
+		const modifiedAt = lastActivityTime ?? header.createdAt;
 
 		return {
 			id: header.id,
 			path: filePath,
-			cwd: typeof header.cwd === "string" ? header.cwd : "",
-			parentSessionPath: typeof header.parentSession === "string" ? header.parentSession : undefined,
-			createdAt: header.timestamp,
+			cwd: header.cwd,
+			parentSessionPath: header.parentSessionPath,
+			createdAt: header.createdAt,
 			modifiedAt,
 			name,
 			messageCount,
@@ -277,9 +257,7 @@ export class JsonlSessionRepo implements JsonlSessionRepoApi {
 				parentSessionPath: options.parentSessionPath ?? sourceMetadata.path,
 			},
 		);
-		for (const entry of forkedEntries) {
-			await storage.appendEntry(entry);
-		}
+		await appendCommittedEntryGroups(storage, forkedEntries);
 		return toSession(storage);
 	}
 

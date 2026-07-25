@@ -21,6 +21,7 @@ import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
 import { PaletteContext, PaletteOverrides } from "./palette-context";
+import { TerminalNotification } from "./terminal-notification";
 
 export interface TerminalViewProps {
     outerBlockId: string;
@@ -51,11 +52,11 @@ export interface AgentSurfaceComponentProps {
 const BlockOutputHorizontalPaddingPx = 24;
 
 const TerminalWelcome = memo(() => (
-    <div data-testid="terminal-welcome" className="flex flex-1 flex-col items-center justify-center px-4 text-center text-current">
-        <div
-            data-icon-name="computer-terminal-02"
-            className="mb-3 text-current"
-        >
+    <div
+        data-testid="terminal-welcome"
+        className="flex flex-1 flex-col items-center justify-center px-4 text-center text-current"
+    >
+        <div data-icon-name="computer-terminal-02" className="mb-3 text-current">
             <Icon name="computer-terminal-02" size={28} strokeWidth={1.75} className="opacity-70" />
         </div>
         <h1 className="text-lg font-semibold text-current">Run your first command</h1>
@@ -699,20 +700,12 @@ export const TerminalView = memo(
                     </div>
                 )}
                 {AgentSurfaceComponent ? (
-                    <AgentSurfaceComponent
-                        outerBlockId={outerBlockId}
-                        model={model}
-                        context={agentSurfaceContext}
-                    />
+                    <AgentSurfaceComponent outerBlockId={outerBlockId} model={model} context={agentSurfaceContext} />
                 ) : (
                     renderTerminalContent()
                 )}
                 {overlaySlot}
-                {notification && (
-                    <div className="pointer-events-none absolute right-3 top-3 max-w-[60%] rounded border border-fg-overlay-2 bg-background/95 px-3 py-2 text-[12px] text-foreground shadow-lg">
-                        {notification}
-                    </div>
-                )}
+                {notification && <TerminalNotification message={notification} />}
             </>
         );
 

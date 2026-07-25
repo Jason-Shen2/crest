@@ -56,6 +56,7 @@ The agent HTTP handler picks one or the other based on whether the frontend sent
 │     - optional named profiles (saved selections)                    │
 │     - optional custom_models (models not in catalog) and            │
 │       custom_endpoints (e.g. OpenRouter, vLLM, Together AI)         │
+│     - optional context-reference controls                           │
 ├────────────────────────────────────────────────────────────────────┤
 │ Layer 3 — SELECTION  (block.meta["agent:selection"])                │
 │   What's selected right now in this pane.                           │
@@ -231,6 +232,14 @@ export const CATALOG: ProviderEntry[] = [
         "reasoning": "medium"            // optional, only for models that support reasoning
     },
 
+    // Optional: context references are enabled when this section, or
+    // only `enabled`, is omitted. max_tokens is an operator hard limit
+    // for the complete reference overlay, not an automatic target.
+    "context_references": {
+        "enabled": true,
+        "max_tokens": 64000
+    },
+
     // Optional: saved selections the user can pick from. Surface in the
     // model picker as a "Profiles" section above the catalog list.
     "profiles": {
@@ -274,6 +283,16 @@ export const CATALOG: ProviderEntry[] = [
     }
 }
 ```
+
+`context_references.enabled` defaults to `true` only after the rest of `ai.json` has passed validation.
+`max_tokens` has no default. When present, runtime accounting clamps it to `0`–`128000`; reading or
+writing the file preserves the user's finite numeric value rather than rewriting the JSON. The limit
+never selects, summarizes, packs, or downgrades a reference automatically. Disabling references hides
+or rejects mutation entry points but preserves committed pins and their selected representations for
+later re-enabling.
+
+These controls belong only to `ai.json`. They do not revive the deleted legacy `ai:*` keys in
+`settings.json`.
 
 ### Validation rules
 

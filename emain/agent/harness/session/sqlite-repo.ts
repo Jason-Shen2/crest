@@ -32,8 +32,9 @@ import type {
 	SessionTreeEntry,
 } from "../types";
 import { SessionError, toError } from "../types";
-import { parseEntryLine, parseHeaderLine } from "./jsonl-storage";
-import { createSessionId, createTimestamp, getEntriesToFork, toSession } from "./repo-utils";
+import { NodeExecutionEnv } from "../../node";
+import { JsonlSessionStorage } from "./jsonl-storage";
+import { appendCommittedEntryGroups, createSessionId, createTimestamp, getEntriesToFork, toSession } from "./repo-utils";
 import { SqliteSessionStorage } from "./sqlite-storage";
 
 const SESSION_FILE_EXT = ".db";
@@ -244,9 +245,7 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 			sessionId: id,
 			parentSessionPath: options.parentSessionPath ?? sourceMetadata.path,
 		});
-		for (const entry of forkedEntries) {
-			await storage.appendEntry(entry);
-		}
+		await appendCommittedEntryGroups(storage, forkedEntries);
 		return toSession(storage);
 	}
 
@@ -286,29 +285,27 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 	 * malformed or wrong-version file is rejected instead of silently stored.
 	 */
 	async importFromJsonl(jsonlPath: string, options: { cwd: string; id?: string }): Promise<Session<JsonlSessionMetadata>> {
-		const content = await fsp.readFile(jsonlPath, "utf8");
-		const lines = content.split("\n").filter((line) => line.trim());
-		if (lines.length === 0) {
-			throw new SessionError("invalid_session", `Invalid JSONL session file ${jsonlPath}: missing session header`);
-		}
-		const header = parseHeaderLine(lines[0], jsonlPath);
-		const entries: SessionTreeEntry[] = [];
-		for (let i = 1; i < lines.length; i++) {
-			entries.push(parseEntryLine(lines[i], jsonlPath, i + 1));
+		const inputPath = path.resolve(jsonlPath);
+		const env = new NodeExecutionEnv({ cwd: path.dirname(inputPath) });
+		let sourceMetadata: JsonlSessionMetadata;
+		let entries: SessionTreeEntry[];
+		try {
+			const source = await JsonlSessionStorage.open(env, inputPath);
+			[sourceMetadata, entries] = await Promise.all([source.getMetadata(), source.getEntries()]);
+		} finally {
+			await env.cleanup();
 		}
 
-		const id = options.id ?? header.id ?? createSessionId();
+		const id = options.id ?? sourceMetadata.id ?? createSessionId();
 		const createdAt = createTimestamp();
 		const sessionDir = this.getSessionDir(options.cwd);
 		await fsp.mkdir(sessionDir, { recursive: true });
 		const storage = SqliteSessionStorage.create(this.createSessionFilePath(options.cwd, id, createdAt), {
 			cwd: options.cwd,
 			sessionId: id,
-			parentSessionPath: header.parentSession,
+			parentSessionPath: sourceMetadata.parentSessionPath,
 		});
-		for (const entry of entries) {
-			await storage.appendEntry(entry);
-		}
+		await appendCommittedEntryGroups(storage, entries);
 		return toSession(storage);
 	}
 

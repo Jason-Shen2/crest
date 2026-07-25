@@ -25,6 +25,21 @@ function fakeModel(): Model<any> {
 }
 
 describe("AgentHarnessHost", () => {
+    it("threads the session-context transformer into the harness", async () => {
+        const session = await new InMemorySessionRepo().create({});
+        const transformSessionContext = vi.fn(async ({ context }) => context);
+        const host = buildAgentHarnessHost({
+            session,
+            model: fakeModel(),
+            promptInputs: { cwd: "/first" },
+            transformSessionContext,
+        });
+
+        await host.harness.createTurnPreparationSnapshot("hello");
+
+        expect(transformSessionContext).toHaveBeenCalledTimes(1);
+    });
+
     it("exposes the current cwd after an execution-context update", async () => {
         const session = await new InMemorySessionRepo().create({});
         const host = buildAgentHarnessHost({

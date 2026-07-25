@@ -24,7 +24,7 @@ describe("AgentCommandResult", () => {
 
     it("renders session output as a structured inline info block", () => {
         const result: AgentInlineCommandResult = {
-            command: "session",
+            command: "info",
             status: "success",
             message: [
                 "Session Info",
