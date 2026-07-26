@@ -1,5 +1,5 @@
-import type { AssistantMessage, ImageContent, Model, TextContent, Usage } from "../../../ai";
-import { completeSimple } from "../../../ai";
+import type { AssistantMessage, ImageContent, Model, TextContent, Usage } from "@crest/ai";
+import { completeSimple } from "@crest/ai";
 import type { AgentMessage, ThinkingLevel } from "../../types";
 import {
 	convertToLlm,

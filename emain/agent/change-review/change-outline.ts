@@ -8,7 +8,7 @@ import {
     type Message,
     type Model,
     type SimpleStreamOptions,
-} from "../../ai";
+} from "@crest/ai";
 import type { ChangeOperation, ChangeOperationKind } from "./change-operation";
 
 export interface ChangeOutlineFile {

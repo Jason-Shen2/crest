@@ -7,7 +7,7 @@
 // system prompt (§8), and its own (smaller) model. Mirrors
 // buildAgentHarnessHost but never touches the SQLite session repo. See spec §2, §9.
 
-import type { Api, Model } from "../ai";
+import type { Api, Model } from "@crest/ai";
 import { AgentHarness } from "./harness/agent-harness";
 import type { Session } from "./harness/types";
 import { NodeExecutionEnv } from "./node";

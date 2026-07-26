@@ -24,7 +24,7 @@
 import fs from "fs";
 import path from "path";
 
-import { getWaveDataDir } from "../emain-platform";
+import { getWaveDataDir } from "./emain-platform";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const CACHE_FILE_NAME = "models-dev-cache.json";

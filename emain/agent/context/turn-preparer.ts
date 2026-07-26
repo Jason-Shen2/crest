@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { UserMessage } from "../../ai";
+import type { UserMessage } from "@crest/ai";
 import { createTransactionManifestData, sha256CanonicalJson } from "../harness/session/entry-transaction";
 import { uuidv7 } from "../harness/session/uuid";
 import type { SessionAppendOptions, SessionTreeEntry } from "../harness/types";

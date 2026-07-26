@@ -33,7 +33,7 @@ vi.mock("electron", () => ({
     webUtils: { getPathForFile: vi.fn() },
 }));
 
-vi.mock("./ai", () => ({ getModel: vi.fn() }));
+vi.mock("@crest/ai", () => ({ getModel: vi.fn() }));
 vi.mock("./agent/change-review/change-outline", () => ({
     extractChangeOperationsFromMessages: vi.fn(() => []),
     generateChangeOutline: vi.fn(),
@@ -84,7 +84,7 @@ import { Session } from "./agent/harness/session/session";
 import { SqliteSessionRepo } from "./agent/harness/session/sqlite-repo";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir, openPaneSession } from "./agent/sessions";
 import type { AgentMessage } from "./agent/types";
-import { getModel } from "./ai";
+import { getModel } from "@crest/ai";
 
 function user(text: string): AgentMessage {
     return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;

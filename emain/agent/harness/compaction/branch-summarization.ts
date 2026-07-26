@@ -1,5 +1,5 @@
-import type { Model } from "../../../ai";
-import { completeSimple } from "../../../ai";
+import type { Model } from "@crest/ai";
+import { completeSimple } from "@crest/ai";
 import type { AgentMessage } from "../../types";
 import {
 	convertToLlm,

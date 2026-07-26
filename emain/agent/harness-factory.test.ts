@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { Model } from "../ai";
+import type { Model } from "@crest/ai";
 import { InMemorySessionRepo } from "./harness/session/memory-repo";
 import type { ToolCallEvent } from "./harness/types";
 import type { ToolCallHook } from "./permissions";

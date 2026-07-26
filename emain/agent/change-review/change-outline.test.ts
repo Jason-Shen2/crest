@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AssistantMessage, Model, ToolResultMessage } from "../../ai";
+import type { AssistantMessage, Model, ToolResultMessage } from "@crest/ai";
 import type { ChangeOperation } from "./change-operation";
 import {
     buildChangeOutlinePrompt,

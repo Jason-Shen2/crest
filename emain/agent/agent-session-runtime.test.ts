@@ -10,8 +10,8 @@ import {
     registerApiProvider,
     resetApiProviders,
     type UserMessage,
-} from "../ai";
-import { AssistantMessageEventStream } from "../ai/utils/event-stream";
+} from "@crest/ai";
+import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
 import type { ContextProjectionReport } from "./context/types";
 import { AgentSessionRuntime, buildPersistedTurnsFromSessionEntries } from "./agent-session-runtime";
 import { buildAgentHarnessHost, type AgentHarnessHost } from "./harness-factory";

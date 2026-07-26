@@ -10,7 +10,7 @@ import {
 	streamSimple,
 	type ToolResultMessage,
 	validateToolArguments,
-} from "../ai";
+} from "@crest/ai";
 import type {
 	AgentContext,
 	AgentEvent,

@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent } from "../../ai";
+import type { ImageContent, Message, TextContent } from "@crest/ai";
 import type { AgentMessage } from "../types";
 
 export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:

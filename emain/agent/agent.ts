@@ -7,7 +7,7 @@ import {
 	type TextContent,
 	type ThinkingBudgets,
 	type Transport,
-} from "../ai";
+} from "@crest/ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop";
 import type {
 	AfterToolCallContext,

@@ -58,7 +58,7 @@ import {
 import { ElectronWshClient, initElectronWshClient } from "./emain-wsh";
 import { getLaunchSettings } from "./launchsettings";
 import { configureAutoUpdater, updater } from "./updater";
-import { initModelsDevOverlay } from "./ai/models-dev-overlay";
+import { initModelsDevOverlay } from "./models-dev-overlay";
 
 const electronApp = electron.app;
 

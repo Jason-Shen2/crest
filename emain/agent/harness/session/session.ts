@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from "../../../ai";
+import type { ImageContent, TextContent } from "@crest/ai";
 import type { AgentMessage } from "../../types";
 import { createBranchSummaryMessage, createCompactionSummaryMessage, createCustomMessage } from "../messages";
 import type {

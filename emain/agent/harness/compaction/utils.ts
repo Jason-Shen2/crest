@@ -1,4 +1,4 @@
-import type { Message } from "../../../ai";
+import type { Message } from "@crest/ai";
 import type { AgentMessage } from "../../types";
 
 /** File paths touched by a session branch or compaction range. */

@@ -13,8 +13,8 @@ import {
     registerApiProvider,
     resetApiProviders,
     type SimpleStreamOptions,
-} from "../../ai";
-import { AssistantMessageEventStream } from "../../ai/utils/event-stream";
+} from "@crest/ai";
+import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
 import type { AgentMessage, AgentTool } from "../types";
 import { AgentHarness } from "./agent-harness";
 import { InMemorySessionRepo } from "./session/memory-repo";

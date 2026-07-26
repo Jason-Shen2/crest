@@ -10,8 +10,8 @@
 // registry, so we hand-build the Model shape the same way the live
 // catalog path does (openai-completions api, baseUrl override).
 
-import type { Api, Model } from "../../ai";
-import { getModel } from "../../ai";
+import type { Api, Model } from "@crest/ai";
+import { getModel } from "@crest/ai";
 
 export interface ProviderConfig {
     id: string;

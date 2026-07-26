@@ -112,8 +112,8 @@ import { loadAgentSkills } from "./agent/skills-loader";
 import { getDefaultTools } from "./agent/tools";
 import { createSpawnCliAgentTool } from "./agent/tools/spawn-cli-agent";
 import type { AgentMessage, ThinkingLevel } from "./agent/types";
-import type { Api, ImageContent, Message, Model } from "./ai";
-import { getModel } from "./ai";
+import type { Api, ImageContent, Message, Model } from "@crest/ai";
+import { getModel } from "@crest/ai";
 import { getSecret } from "./aiconfig/secrets";
 import { readAIUserConfig } from "./aiconfig/user-config";
 

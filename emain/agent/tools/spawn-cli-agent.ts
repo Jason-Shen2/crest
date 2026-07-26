@@ -7,7 +7,7 @@
 // (decision 5), §7.
 
 import { type Static, Type } from "typebox";
-import type { Api, Model } from "../../ai";
+import type { Api, Model } from "@crest/ai";
 import { buildCliSubagentHarness } from "../cli-subagent-factory";
 import type { CliSubagentHarness } from "../cli-subagent-factory";
 import type { Session } from "../harness/types";

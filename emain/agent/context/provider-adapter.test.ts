@@ -3,36 +3,36 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../ai/providers/anthropic", () => ({
+vi.mock("@crest/ai/providers/anthropic", () => ({
     buildAnthropicPayload: vi.fn(() => ({ providerPayload: "anthropic" })),
     countAnthropicPayload: vi.fn(async () => 41),
     getAnthropicReasoningOptions: vi.fn((_model, reasoning) => ({
         thinkingEnabled: reasoning !== "off",
     })),
 }));
-vi.mock("../../ai/providers/openai-responses", () => ({
+vi.mock("@crest/ai/providers/openai-responses", () => ({
     buildOpenAIResponsesPayload: vi.fn(() => ({ providerPayload: "openai" })),
     countOpenAIResponsesPayload: vi.fn(async () => 42),
     getOpenAIResponsesReasoningOptions: vi.fn((_model, reasoning) => ({
         reasoningEffort: reasoning === "off" ? undefined : reasoning,
     })),
 }));
-vi.mock("../../ai/providers/google", () => ({
+vi.mock("@crest/ai/providers/google", () => ({
     buildGooglePayload: vi.fn(() => ({ providerPayload: "google" })),
     countGooglePayload: vi.fn(async () => 43),
     getGoogleReasoningOptions: vi.fn((_model, reasoning) => ({
         thinking: { enabled: reasoning !== "off" },
     })),
 }));
-vi.mock("../../ai/env-api-keys", () => ({
+vi.mock("@crest/ai/env-api-keys", () => ({
     getEnvApiKey: vi.fn(),
 }));
 
-import type { Api, Model } from "../../ai";
-import { getEnvApiKey } from "../../ai/env-api-keys";
-import { countAnthropicPayload } from "../../ai/providers/anthropic";
-import { countGooglePayload } from "../../ai/providers/google";
-import { countOpenAIResponsesPayload } from "../../ai/providers/openai-responses";
+import type { Api, Model } from "@crest/ai";
+import { getEnvApiKey } from "@crest/ai/env-api-keys";
+import { countAnthropicPayload } from "@crest/ai/providers/anthropic";
+import { countGooglePayload } from "@crest/ai/providers/google";
+import { countOpenAIResponsesPayload } from "@crest/ai/providers/openai-responses";
 import { createContextProviderAdapter } from "./provider-adapter";
 
 function model(api: Api, provider: string, id = "model"): Model<Api> {

@@ -26,7 +26,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { getModel } from "../ai";
+import { getModel } from "@crest/ai";
 import { JsonlSessionRepo } from "./harness/session/jsonl-repo";
 import { NodeExecutionEnv } from "./node";
 import { buildAgentHarnessHost } from "./harness-factory";

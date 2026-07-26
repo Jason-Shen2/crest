@@ -1,4 +1,4 @@
-import type { Api, ImageContent, Model, SimpleStreamOptions, TextContent, Transport, UserMessage } from "../../ai";
+import type { Api, ImageContent, Model, SimpleStreamOptions, TextContent, Transport, UserMessage } from "@crest/ai";
 import type { AgentEvent, AgentMessage, AgentTool, QueueMode, ThinkingLevel } from "../index";
 import type { ContextProjectionReport } from "../context/types";
 import type { Session } from "./session/session";

@@ -9,7 +9,7 @@ import type {
 	TextContent,
 	Tool,
 	ToolResultMessage,
-} from "../ai";
+} from "@crest/ai";
 import type { Static, TSchema } from "typebox";
 
 /**

@@ -32,7 +32,7 @@
 //
 // See docs/agent-rendering-architecture.md.
 
-import type { Api, ImageContent, Model } from "../ai";
+import type { Api, ImageContent, Model } from "@crest/ai";
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import { filterTreeForDisplay } from "./commands/session-views";

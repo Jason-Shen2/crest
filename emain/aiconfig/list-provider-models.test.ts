@@ -3,11 +3,11 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../ai/models", () => ({
+vi.mock("@crest/ai/models", () => ({
     getModels: vi.fn(() => []),
     getSupportedThinkingLevels: vi.fn(() => []),
 }));
-vi.mock("../ai/models-dev-overlay", () => ({ getCapabilityOverlay: vi.fn() }));
+vi.mock("../models-dev-overlay", () => ({ getCapabilityOverlay: vi.fn() }));
 
 import { APIType_AnthropicMessages, listProviderModels } from "./list-provider-models";
 

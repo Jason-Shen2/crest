@@ -1,5 +1,5 @@
 {
-    "include": ["frontend/**/*", "emain/**/*"],
+    "include": ["frontend/**/*", "emain/**/*", "packages/**/*"],
     "exclude": ["node_modules"],
     "compilerOptions": {
         "target": "es2022",

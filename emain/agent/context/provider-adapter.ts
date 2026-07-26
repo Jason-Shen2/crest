@@ -1,19 +1,19 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Api, Context, Message, Model } from "../../ai";
-import { getEnvApiKey } from "../../ai/env-api-keys";
+import type { Api, Context, Message, Model } from "@crest/ai";
+import { getEnvApiKey } from "@crest/ai/env-api-keys";
 import {
     buildAnthropicPayload,
     countAnthropicPayload,
     getAnthropicReasoningOptions,
-} from "../../ai/providers/anthropic";
-import { buildGooglePayload, countGooglePayload, getGoogleReasoningOptions } from "../../ai/providers/google";
+} from "@crest/ai/providers/anthropic";
+import { buildGooglePayload, countGooglePayload, getGoogleReasoningOptions } from "@crest/ai/providers/google";
 import {
     buildOpenAIResponsesPayload,
     countOpenAIResponsesPayload,
     getOpenAIResponsesReasoningOptions,
-} from "../../ai/providers/openai-responses";
+} from "@crest/ai/providers/openai-responses";
 import type { AgentHarnessStreamOptions } from "../harness/types";
 import type { AgentTool, ThinkingLevel } from "../types";
 import type { ContextProviderRequest, ContextTokenCounter } from "./projector";

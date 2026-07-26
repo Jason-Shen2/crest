@@ -10,9 +10,9 @@
 //   - anthropic-messages (Anthropic, header + x-api-key)
 //   - google-gemini (?key=... query string, displayName/inputTokenLimit shape)
 
-import { getModels, getSupportedThinkingLevels } from "../ai/models";
-import { getCapabilityOverlay } from "../ai/models-dev-overlay";
-import type { Api, Model } from "../ai/types";
+import { getModels, getSupportedThinkingLevels } from "@crest/ai/models";
+import { getCapabilityOverlay } from "../models-dev-overlay";
+import type { Api, Model } from "@crest/ai/types";
 import { getSecret } from "./secrets";
 
 const REQUEST_TIMEOUT_MS = 15_000;

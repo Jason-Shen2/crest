@@ -5,7 +5,7 @@ import {
 	streamSimple,
 	type TextContent,
 	type UserMessage,
-} from "../../ai";
+} from "@crest/ai";
 import { runAgentLoop } from "../agent-loop";
 import type {
 	AgentContext,

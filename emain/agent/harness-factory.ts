@@ -11,7 +11,7 @@
 // IPC layer (task #9) holds a Map<sessionPath, AgentHarnessHost> and uses
 // it directly without wrapping further.
 
-import type { Api, Model } from "../ai";
+import type { Api, Model } from "@crest/ai";
 import { AgentHarness } from "./harness/agent-harness";
 import type {
     Session,

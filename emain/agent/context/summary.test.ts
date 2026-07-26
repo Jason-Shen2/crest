@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AssistantMessage, Model } from "../../ai";
+import type { AssistantMessage, Model } from "@crest/ai";
 import { ContextDraftRegistry } from "./draft-registry";
 import { generateContextSummary, summarizeContextDraft, type ContextSummaryCompletion } from "./summary";
 import type { ContextArtifactDraft, ContextSnapshotMessage } from "./types";
