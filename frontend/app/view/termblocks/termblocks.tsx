@@ -4,21 +4,21 @@
 // TermBlocksViewModel — compatibility shim.  The block registry still
 // resolves view type "termblocks" through this model so existing
 // block.meta.view fields round-trip; rendering is delegated entirely to
-// the engine in frontend/app/term/.  The legacy in-file implementation
-// (2.7k lines of xterm.js + agent timeline + snackbar variants + …) was
-// removed in this commit — see git history if you need to revive any of
+// the pooled xterm engine in frontend/app/xterm/.  The legacy in-file
+// implementation (2.7k lines of xterm.js + agent timeline + snackbar
+// variants + …) was removed — see git history if you need to revive any of
 // it.
 //
 // The model intentionally exposes a *minimal* public surface: blockId so
 // the adapter can address the right outer block, and termFontSizeAtom so
 // the view picks up runtime font-size overrides.  Everything else the old
 // model owned (block list, output cache, wps subscriptions, polling, alt-
-// screen state, agent chat) has migrated into TerminalModel in
-// frontend/app/term/terminal-model.ts.
+// screen state, agent chat) lives in frontend/app/xterm/xterm-session.ts
+// and its renderer pool.
 
-import { TerminalView } from "@/app/term/render/terminal-view";
 import { getBlockMetaKeyAtom, getSettingsKeyAtom } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
+import { XtermView } from "@/app/xterm/xterm-view";
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
 
@@ -63,10 +63,10 @@ export class TermBlocksViewModel implements ViewModel {
 
 // TerminalViewAdapter — bridge from the registry's
 // ViewComponentProps<TermBlocksViewModel> shape to the engine-side
-// TerminalView, pulling just the two pieces of state the view needs.
+// XtermView, pulling just the two pieces of state the view needs.
 const TerminalViewAdapter: React.FC<{ model: TermBlocksViewModel }> = ({ model }) => {
     const fontSize = useAtomValue(model.termFontSizeAtom);
     const focusRequest = useAtomValue(model.focusRequestAtom);
-    return <TerminalView outerBlockId={model.blockId} fontSize={fontSize} focusRequest={focusRequest} />;
+    return <XtermView outerBlockId={model.blockId} fontSize={fontSize} focusRequest={focusRequest} />;
 };
 TerminalViewAdapter.displayName = "TerminalViewAdapter";

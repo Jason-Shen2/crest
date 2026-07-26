@@ -1,18 +1,26 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// AgentViewModel — the "agent" block form.  Same TerminalModel engine as the
-// pure-terminal "term"/"termblocks" forms, but mounts the agent surface
-// (chat host / session selector / composer) via WorkspaceAgentSurface.
+// AgentViewModel — the "agent" block form.  Mounts the agent surface (chat
+// host / session selector / composer) via WorkspaceAgentSurface.  The agent
+// view has never rendered terminal content; it previously mounted the old
+// TerminalView purely as a chrome/TerminalModel host, so with that engine
+// replaced by frontend/app/xterm/ this file hosts the surface directly.
+// WorkspaceAgentSurface still takes a TerminalModel (its notificationAtom
+// contract) until the engine-deletion step rewires it to XtermPaneModel —
+// see docs/terax-terminal-port.md §四 P1.6/P1.7.
 // Created explicitly by the launcher's Agent widget and as the
 // default block in new tabs.  See docs/superpowers/specs/2026-07-07-block-dual-form-split-design.md.
 
+import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { globalStore } from "@/app/store/jotaiStore";
-import { WorkspaceAgentSurface } from "@/app/term/render/agent-surface";
-import { TerminalView } from "@/app/term/render/terminal-view";
-import { getBlockMetaKeyAtom, getSettingsKeyAtom } from "@/store/global";
+import { WorkspaceAgentSurface, type AgentSurfaceContext } from "@/app/term/render/agent-surface";
+import { TerminalNotification } from "@/app/term/render/terminal-notification";
+import { TerminalModel } from "@/app/term/terminal-model";
+import { getBlockMetaKeyAtom, getSettingsKeyAtom, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
+import { useEffect, useMemo } from "react";
 
 export class AgentViewModel implements ViewModel {
     readonly viewType = "agent";
@@ -47,24 +55,47 @@ export class AgentViewModel implements ViewModel {
 }
 
 const AgentViewAdapter: React.FC<{ model: AgentViewModel }> = ({ model }) => {
-    const fontSize = useAtomValue(model.termFontSizeAtom);
-    const focusRequest = useAtomValue(model.focusRequestAtom);
-    return <AgentSurfaceHost blockId={model.blockId} fontSize={fontSize} focusRequest={focusRequest} />;
+    return <AgentSurfaceHost blockId={model.blockId} />;
 };
 AgentViewAdapter.displayName = "AgentViewAdapter";
 
-const AgentSurfaceHost: React.FC<{ blockId: string; fontSize: number; focusRequest: number }> = ({
-    blockId,
-    fontSize,
-    focusRequest,
-}) => {
+// The old TerminalView shell ignored fontSize/focusRequest for agent blocks
+// (the agent surface replaced the terminal content and input bar entirely),
+// so the host doesn't take them.
+const AgentSurfaceHost: React.FC<{ blockId: string }> = ({ blockId }) => {
+    const model = useMemo(() => new TerminalModel(blockId), [blockId]);
+    useEffect(() => {
+        return () => model.dispose();
+    }, [model]);
+
+    const notification = useAtomValue(model.notificationAtom);
+    useEffect(() => {
+        if (!notification) return;
+        const id = setTimeout(() => {
+            globalStore.set(model.notificationAtom, "");
+        }, 3500);
+        return () => clearTimeout(id);
+    }, [notification, model]);
+
+    const workspaceDir = useAtomValue(workspaceDirAtom);
+    const commandHistory = useAtomValue(model.commandHistoryAtom);
+    const connectionName = useOrefMetaKeyAtom(WOS.makeORef("block", blockId), "connection") ?? "";
+    const context = useMemo<AgentSurfaceContext>(
+        () => ({
+            workspaceDir,
+            liveGitBranch: undefined,
+            recentCmds: commandHistory.slice(-10),
+            liveConnection: connectionName || "",
+            inAltScreen: false,
+        }),
+        [workspaceDir, commandHistory, connectionName]
+    );
+
     return (
-        <TerminalView
-            outerBlockId={blockId}
-            fontSize={fontSize}
-            focusRequest={focusRequest}
-            agentSurfaceComponent={WorkspaceAgentSurface}
-        />
+        <div className="relative flex h-full w-full flex-col bg-panel">
+            <WorkspaceAgentSurface outerBlockId={blockId} model={model} context={context} />
+            {notification && <TerminalNotification message={notification} />}
+        </div>
     );
 };
 AgentSurfaceHost.displayName = "AgentSurfaceHost";

@@ -8,8 +8,8 @@ vi.mock("@/app/block/block", () => ({
     SubBlock: () => null,
 }));
 
-vi.mock("@/app/term/render/terminal-view", () => ({
-    TerminalView: () => null,
+vi.mock("@/app/xterm/xterm-view", () => ({
+    XtermView: () => null,
 }));
 
 import { TermBlocksViewModel } from "@/app/view/termblocks/termblocks";

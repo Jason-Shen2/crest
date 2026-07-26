@@ -16,8 +16,8 @@ vi.mock("@/app/store/services", () => ({
     },
 }));
 
-vi.mock("@/app/term/render/terminal-view", () => ({
-    TerminalView: ({ outerBlockId }: { outerBlockId: string }) => <div data-terminal-view={outerBlockId} />,
+vi.mock("@/app/xterm/xterm-view", () => ({
+    XtermView: ({ outerBlockId }: { outerBlockId: string }) => <div data-terminal-view={outerBlockId} />,
 }));
 
 import { RightTerminalModel } from "./right-terminal";

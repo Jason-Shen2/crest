@@ -4,7 +4,7 @@
 import { Icon } from "@/app/icon/Icon";
 import { globalStore } from "@/app/store/jotaiStore";
 import { ObjectService } from "@/app/store/services";
-import { TerminalView } from "@/app/term/render/terminal-view";
+import { XtermView } from "@/app/xterm/xterm-view";
 import { getSettingsKeyAtom } from "@/store/global";
 import { fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
@@ -129,7 +129,7 @@ export function RightTerminal({ cwd }: RightTerminalProps) {
 
     return (
         <div className="flex h-full min-h-0 flex-col bg-panel">
-            <TerminalView outerBlockId={blockId} fontSize={fontSize} />
+            <XtermView outerBlockId={blockId} fontSize={fontSize} />
         </div>
     );
 }

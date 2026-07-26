@@ -3,9 +3,9 @@
 //
 // TermViewModel — compatibility shim for the "term" view type.  The block
 // registry still resolves `view: "term"` to this class so existing
-// block.meta values round-trip; rendering is delegated to the engine in
-// frontend/app/term/ via the TerminalView component, the same engine that
-// powers the "termblocks" view type.
+// block.meta values round-trip; rendering is delegated to the pooled xterm
+// engine in frontend/app/xterm/ via the XtermView component, the same engine
+// that powers the "termblocks" view type.
 //
 // The legacy implementation lived in this file plus a dozen siblings
 // (term.tsx / termwrap.ts / termutil.ts / term-agent.tsx / …, ~5k LOC
@@ -30,11 +30,11 @@
 
 import { SubBlock } from "@/app/block/block";
 import type { BlockNodeModel } from "@/app/block/blocktypes";
-import { TerminalView } from "@/app/term/render/terminal-view";
 import { globalStore } from "@/app/store/jotaiStore";
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { XtermView } from "@/app/xterm/xterm-view";
 import {
     atoms,
     getBlockMetaKeyAtom,
@@ -160,8 +160,8 @@ export class TermViewModel implements ViewModel {
 }
 
 // TermViewAdapter — bridges the registry's `ViewComponentProps<TermViewModel>`
-// shape into the engine-side TerminalView.  Adds the "term"-view-only
-// integrations on top:
+// shape into the engine-side XtermView (the pooled xterm engine in
+// frontend/app/xterm/).  Adds the "term"-view-only integrations on top:
 //
 //   - `term:mode = "vdom"` + `term:vdomblockid`     → full-pane VDom replace
 //   - `term:vdomtoolbarblockid`                     → VDom subblock as toolbar strip
@@ -194,7 +194,7 @@ const TermViewAdapter: React.FC<{ model: TermViewModel }> = ({ model }) => {
     ) : undefined;
 
     return (
-        <TerminalView
+        <XtermView
             outerBlockId={blockId}
             fontSize={fontSize}
             focusRequest={focusRequest}
