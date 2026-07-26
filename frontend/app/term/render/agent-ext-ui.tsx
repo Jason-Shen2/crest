@@ -14,22 +14,51 @@ import type { PiExtUiRequest, PiExtUiState } from "@/app/store/use-pi-chat";
 import { Markdown } from "@/app/element/markdown";
 import { COMMAND_INLINE_FRAME_CLASSNAME, CommandInlineFrame } from "@/app/view/cmdblock/command-inline-frame";
 import { cn } from "@/util/util";
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import type {
     RenderedExtensionEntryNode,
+    WidgetEventDispatchResult,
     WidgetNode,
 } from "../../../../emain/agent/extensions/pi-gui/crest/widget-tree";
+import { normalizeMarkdownPartialClosingFence } from "../../../../emain/agent/extensions/pi-gui/crest/markdown-normalize";
+
+export type AgentWidgetEventHandler = (
+    event: AgentWidgetEvent
+) => Promise<WidgetEventDispatchResult> | void;
+
+export function forwardAgentWidgetEvent(
+    api: { respondWidgetEvent: AgentWidgetEventHandler } | null,
+    event: AgentWidgetEvent
+): ReturnType<AgentWidgetEventHandler> {
+    return api?.respondWidgetEvent(event);
+}
 
 export interface AgentExtUiPanelProps {
     extUi: PiExtUiState;
     respondExtUi: (requestId: string, result: unknown) => void;
-    respondWidgetEvent?: (event: AgentWidgetEvent) => void;
+    respondWidgetEvent?: AgentWidgetEventHandler;
     /** Composer anchor so outside-click dismissal ignores clicks on the input. */
     anchorRef?: RefObject<HTMLElement | null>;
 }
 
 const WidgetPaddingUnitPx = 8;
 const WidgetPaddingMaxUnits = 64;
+const WidgetEventFallbackPrefix =
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+let widgetEventFallbackCounter = 0;
+
+export function createWidgetEventIdGenerator(options: {
+    randomUUID?: () => string;
+} = {}): () => string {
+    const hasInjectedUuid = Object.prototype.hasOwnProperty.call(options, "randomUUID");
+    const randomUUID = hasInjectedUuid
+        ? options.randomUUID
+        : globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+    return () => randomUUID?.() ??
+        `${WidgetEventFallbackPrefix}-${++widgetEventFallbackCounter}`;
+}
+
+const makeWidgetEventId = createWidgetEventIdGenerator();
 
 function clampWidgetPadding(value = 0): number {
     if (!Number.isFinite(value)) return 0;
@@ -47,24 +76,38 @@ export function widgetSelectEvent(nodeid: string, index: number): AgentWidgetEve
     return { nodeid, type: "select", payload: { index } };
 }
 
-export function widgetInputChangeEvent(nodeid: string, value: string): AgentWidgetEvent {
-    return { nodeid, type: "change", payload: { value } };
+export function widgetInputChangeEvent(
+    nodeid: string,
+    value: string,
+    selectionstart: number,
+    selectionend: number,
+    eventid?: string
+): AgentWidgetEvent {
+    return {
+        nodeid,
+        type: "change",
+        ...(eventid == null ? {} : { eventid }),
+        payload: { value, selectionstart, selectionend },
+    };
 }
 
-export function widgetInputSubmitEvent(nodeid: string): AgentWidgetEvent {
-    return { nodeid, type: "submit" };
+export function widgetInputSubmitEvent(
+    nodeid: string,
+    value: string,
+    selectionstart: number,
+    selectionend: number,
+    eventid?: string
+): AgentWidgetEvent {
+    return {
+        nodeid,
+        type: "submit",
+        ...(eventid == null ? {} : { eventid }),
+        payload: { value, selectionstart, selectionend },
+    };
 }
 
-export function widgetInputCancelEvent(nodeid: string): AgentWidgetEvent {
-    return { nodeid, type: "cancel" };
-}
-
-export function widgetValueChangeEvent(nodeid: string, id: string, value: string): AgentWidgetEvent {
-    return { nodeid, type: "change", payload: { id, value } };
-}
-
-export function widgetInputRendererSyncKey(nodeid: string, value: string): string {
-    return `${nodeid}:${value}`;
+export function widgetInputCancelEvent(nodeid: string, eventid?: string): AgentWidgetEvent {
+    return { nodeid, type: "cancel", ...(eventid == null ? {} : { eventid }) };
 }
 
 export function widgetCancelEvent(nodeid: string): AgentWidgetEvent {
@@ -98,9 +141,36 @@ export function keyDataForWidgetTerminal(key: string): string {
     }
 }
 
+export function editorKeyboardEventMatchesBinding(
+    event: Pick<
+        React.KeyboardEvent<HTMLTextAreaElement>,
+        "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey"
+    >,
+    bindings: string[]
+): boolean {
+    const eventKey = event.key.toLowerCase();
+    if (eventKey !== "enter" && eventKey !== "return") return false;
+
+    return bindings.some((binding) => {
+        const parts = binding.toLowerCase().split("+");
+        const key = parts.pop();
+        if (key !== "enter" && key !== "return") return false;
+        const modifiers = new Set(parts);
+        if ([...modifiers].some((modifier) => !["alt", "ctrl", "shift", "super"].includes(modifier))) {
+            return false;
+        }
+        return (
+            modifiers.has("alt") === event.altKey &&
+            modifiers.has("ctrl") === event.ctrlKey &&
+            modifiers.has("shift") === event.shiftKey &&
+            modifiers.has("super") === event.metaKey
+        );
+    });
+}
+
 export function notifyCustomWidgetCancel(
     request: PiExtUiRequest,
-    respondWidgetEvent?: (event: AgentWidgetEvent) => void
+    respondWidgetEvent?: AgentWidgetEventHandler
 ): void {
     if (request.kind !== "custom") return;
     respondWidgetEvent?.(widgetCancelEvent(request.widget.id));
@@ -140,7 +210,7 @@ const AgentExtUiStatusWidgets = memo(
         renderedEntries: RenderedExtensionEntryNode[];
         header?: WidgetNode;
         footer?: WidgetNode;
-        respondWidgetEvent?: (event: AgentWidgetEvent) => void;
+        respondWidgetEvent?: AgentWidgetEventHandler;
     }) => {
         const statusEntries = Object.entries(statuses);
         const widgetEntries = Object.entries(widgets);
@@ -354,7 +424,7 @@ function ExtUiEditorPrompt({
     );
 }
 
-function WidgetTreeRenderer({ node, onEvent }: { node: WidgetNode; onEvent?: (event: AgentWidgetEvent) => void }) {
+function WidgetTreeRenderer({ node, onEvent }: { node: WidgetNode; onEvent?: AgentWidgetEventHandler }) {
     if (node.kind === "text") {
         return (
             <div
@@ -383,83 +453,21 @@ function WidgetTreeRenderer({ node, onEvent }: { node: WidgetNode; onEvent?: (ev
         return <div style={{ height: `${Math.max(1, node.lines) * 8}px` }} aria-hidden="true" />;
     }
     if (node.kind === "selectlist") {
-        const selectedIndex =
-            node.items.length === 0 ? -1 : Math.max(0, Math.min(node.selectedindex, node.items.length - 1));
-        const activeOptionId = selectedIndex >= 0 ? `${node.id}-option-${selectedIndex}` : undefined;
-        return (
-            <div className="flex flex-col gap-2 p-1">
-                <div
-                    role="listbox"
-                    tabIndex={node.focused ? 0 : -1}
-                    aria-activedescendant={activeOptionId}
-                    aria-label={`Select list ${node.id}`}
-                    onKeyDown={(event) => {
-                        const data = keyDataForWidgetTerminal(event.key);
-                        if (!data) return;
-                        event.preventDefault();
-                        onEvent?.(widgetKeyEvent(node.id, data));
-                    }}
-                    className="flex flex-col gap-px outline-none focus:ring-1 focus:ring-accent/60"
-                >
-                    {node.items.map((item, index) => (
-                        <div
-                            key={`${item.value}-${index}`}
-                            id={`${node.id}-option-${index}`}
-                            role="option"
-                            aria-selected={index === selectedIndex}
-                            onClick={() => onEvent?.(widgetSelectEvent(node.id, index))}
-                            className={cn(
-                                "cursor-pointer rounded-xl px-2.5 py-2 text-left text-[13px]",
-                                index === selectedIndex ? "bg-accent/15 text-foreground" : "text-foreground/80"
-                            )}
-                        >
-                            <div className="font-medium">{item.label}</div>
-                            {item.description && (
-                                <div className="text-[12px] text-secondary/75">{item.description}</div>
-                            )}
-                        </div>
-                    ))}
-                </div>
-                <div className="flex justify-end">
-                    <button
-                        type="button"
-                        onClick={() => onEvent?.(widgetCancelEvent(node.id))}
-                        className="cursor-pointer rounded-lg border border-white/[0.1] px-3 py-1.5 text-[12px] text-secondary/85 transition-colors hover:bg-white/[0.06] hover:text-foreground"
-                    >
-                        Cancel
-                    </button>
-                </div>
-            </div>
-        );
+        return <WidgetSelectListRenderer key={node.id} node={node} onEvent={onEvent} />;
     }
     if (node.kind === "settingslist") {
         return (
-            <WidgetSettingsListRenderer node={node} onEvent={onEvent} />
+            <WidgetSettingsListRenderer key={node.id} node={node} onEvent={onEvent} />
         );
     }
     if (node.kind === "input") {
-        return (
-            <WidgetInputRenderer
-                key={widgetInputRendererSyncKey(node.id, node.value)}
-                id={node.id}
-                initialValue={node.value}
-                onEvent={onEvent}
-            />
-        );
+        return <WidgetInputRenderer key={node.id} node={node} onEvent={onEvent} />;
     }
     if (node.kind === "markdown") {
         return <WidgetMarkdownRenderer source={node.source} paddingx={node.paddingx} paddingy={node.paddingy} />;
     }
     if (node.kind === "editor") {
-        return (
-            <WidgetEditorRenderer
-                key={widgetInputRendererSyncKey(node.id, node.value)}
-                id={node.id}
-                initialValue={node.value}
-                paddingx={node.paddingx}
-                onEvent={onEvent}
-            />
-        );
+        return <WidgetEditorRenderer key={node.id} node={node} onEvent={onEvent} />;
     }
     if (node.kind === "image") {
         return (
@@ -594,11 +602,148 @@ function WidgetTreeRenderer({ node, onEvent }: { node: WidgetNode; onEvent?: (ev
     return null;
 }
 
-function nextCyclicValue(values: string[], currentValue: string, direction: 1 | -1): string {
-    if (values.length === 0) return currentValue;
-    const currentIndex = values.indexOf(currentValue);
-    const startIndex = currentIndex >= 0 ? currentIndex : 0;
-    return values[(startIndex + direction + values.length) % values.length] ?? currentValue;
+function WidgetSelectListRenderer({
+    node,
+    onEvent,
+}: {
+    node: Extract<WidgetNode, { kind: "selectlist" }>;
+    onEvent?: AgentWidgetEventHandler;
+}) {
+    const [filter, setFilter] = useState(node.filter ?? "");
+    const composingRef = useRef(false);
+    const focusedWithinRef = useRef(false);
+    const dirtyRef = useRef(false);
+    const localFilterRef = useRef(node.filter ?? "");
+    const latestSnapshotFilterRef = useRef(node.filter ?? "");
+    const lastDispatchedFilterRef = useRef(node.filter ?? "");
+    const reconcileFilter = (value: string) => {
+        dirtyRef.current = false;
+        localFilterRef.current = value;
+        lastDispatchedFilterRef.current = value;
+        setFilter(value);
+    };
+    useEffect(() => {
+        const nextFilter = node.filter ?? "";
+        latestSnapshotFilterRef.current = nextFilter;
+        if (composingRef.current) return;
+        if (nextFilter === localFilterRef.current) {
+            dirtyRef.current = false;
+            lastDispatchedFilterRef.current = nextFilter;
+            return;
+        }
+        if (dirtyRef.current) return;
+        reconcileFilter(nextFilter);
+    }, [node]);
+    const dispatchFilter = (value: string) => {
+        if (value === lastDispatchedFilterRef.current) return;
+        lastDispatchedFilterRef.current = value;
+        onEvent?.({ nodeid: node.id, type: "change", payload: { value } });
+    };
+    const dispatchSemanticKey = (event: React.KeyboardEvent<HTMLElement>) => {
+        if (composingRef.current) return;
+        const data =
+            event.key === "ArrowUp"
+                ? "\x1b[A"
+                : event.key === "ArrowDown"
+                  ? "\x1b[B"
+                  : event.key === "Enter"
+                    ? "\n"
+                    : event.key === "Escape"
+                      ? "\x1b"
+                      : "";
+        if (!data) return;
+        event.preventDefault();
+        onEvent?.(widgetKeyEvent(node.id, data));
+    };
+    const visibleItems = node.items.slice(node.visiblestart, node.visibleend);
+    const activeOptionId = node.nomatch ? undefined : `${node.id}-option-${node.selectedindex}`;
+    return (
+        <div
+            className="flex flex-col gap-2 p-1"
+            onFocusCapture={(event) => {
+                if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+                focusedWithinRef.current = true;
+                onEvent?.({ nodeid: node.id, type: "focus", payload: { focused: true } });
+            }}
+            onBlurCapture={(event) => {
+                if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+                focusedWithinRef.current = false;
+                if (!composingRef.current) {
+                    reconcileFilter(latestSnapshotFilterRef.current);
+                }
+                onEvent?.({ nodeid: node.id, type: "focus", payload: { focused: false } });
+            }}
+        >
+            <input
+                type="search"
+                aria-label={`Filter ${node.id}`}
+                value={filter}
+                onChange={(event) => {
+                    const value = event.target.value;
+                    dirtyRef.current = true;
+                    localFilterRef.current = value;
+                    setFilter(value);
+                    if (!composingRef.current) dispatchFilter(value);
+                }}
+                onCompositionStart={() => {
+                    composingRef.current = true;
+                }}
+                onCompositionEnd={(event) => {
+                    composingRef.current = false;
+                    dispatchFilter(event.currentTarget.value);
+                }}
+                onKeyDown={dispatchSemanticKey}
+                className="w-full rounded-lg border border-white/[0.12] bg-black/25 px-3 py-2 font-mono text-[12px] text-foreground outline-none focus:border-accent/70"
+            />
+            <div
+                role="listbox"
+                tabIndex={node.focused ? 0 : -1}
+                aria-activedescendant={activeOptionId}
+                aria-label={`Select list ${node.id}`}
+                onKeyDown={dispatchSemanticKey}
+                className="flex flex-col gap-px outline-none focus:ring-1 focus:ring-accent/60"
+            >
+                {node.nomatch ? (
+                    <div role="status" className="px-2.5 py-2 text-[12px] text-secondary/75">
+                        No matching options
+                    </div>
+                ) : (
+                    visibleItems.map((item, localIndex) => {
+                        const index = node.visiblestart + localIndex;
+                        return (
+                            <div
+                                key={`${item.value}-${index}`}
+                                id={`${node.id}-option-${index}`}
+                                role="option"
+                                aria-selected={index === node.selectedindex}
+                                onClick={() => onEvent?.(widgetSelectEvent(node.id, index))}
+                                className={cn(
+                                    "cursor-pointer rounded-xl px-2.5 py-2 text-left text-[13px]",
+                                    index === node.selectedindex
+                                        ? "bg-accent/15 text-foreground"
+                                        : "text-foreground/80"
+                                )}
+                            >
+                                <div className="font-medium">{item.label}</div>
+                                {item.description && (
+                                    <div className="text-[12px] text-secondary/75">{item.description}</div>
+                                )}
+                            </div>
+                        );
+                    })
+                )}
+            </div>
+            <div className="flex justify-end">
+                <button
+                    type="button"
+                    onClick={() => onEvent?.(widgetCancelEvent(node.id))}
+                    className="cursor-pointer rounded-lg border border-white/[0.1] px-3 py-1.5 text-[12px] text-secondary/85 transition-colors hover:bg-white/[0.06] hover:text-foreground"
+                >
+                    Cancel
+                </button>
+            </div>
+        </div>
+    );
 }
 
 function WidgetSettingsListRenderer({
@@ -606,85 +751,236 @@ function WidgetSettingsListRenderer({
     onEvent,
 }: {
     node: Extract<WidgetNode, { kind: "settingslist" }>;
-    onEvent?: (event: AgentWidgetEvent) => void;
+    onEvent?: AgentWidgetEventHandler;
 }) {
-    const [activeIndex, setActiveIndex] = useState(node.selectedindex);
-    useEffect(() => {
-        setActiveIndex(node.selectedindex);
-    }, [node.id, node.selectedindex]);
-    const selectedIndex =
-        node.items.length === 0 ? -1 : Math.max(0, Math.min(activeIndex, node.items.length - 1));
-    const activeOptionId = selectedIndex >= 0 ? `${node.id}-option-${selectedIndex}` : undefined;
-    const activeItem = selectedIndex >= 0 ? node.items[selectedIndex] : undefined;
-    const changeActiveValue = (direction: 1 | -1) => {
-        if (!activeItem?.values?.length) return;
-        onEvent?.(widgetValueChangeEvent(node.id, activeItem.id, nextCyclicValue(activeItem.values, activeItem.currentvalue, direction)));
+    const [filter, setFilter] = useState(node.filter ?? "");
+    const composingRef = useRef(false);
+    const dirtyRef = useRef(false);
+    const localFilterRef = useRef(node.filter ?? "");
+    const latestSnapshotFilterRef = useRef(node.filter ?? "");
+    const lastDispatchedFilterRef = useRef(node.filter ?? "");
+    const parentRootRef = useRef<HTMLDivElement>(null);
+    const submenuRootRef = useRef<HTMLDivElement>(null);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+    const listboxRef = useRef<HTMLDivElement>(null);
+    const previousSubmenuIdRef = useRef<string | undefined>(undefined);
+    const restoreEligibleRef = useRef(false);
+    const focusWithinRef = useRef(false);
+    const submenuId = node.submenu?.id;
+    const reconcileFilter = (value: string) => {
+        dirtyRef.current = false;
+        localFilterRef.current = value;
+        lastDispatchedFilterRef.current = value;
+        setFilter(value);
     };
-    return (
-        <div className="flex flex-col gap-2 p-1">
+    useEffect(() => {
+        const nextFilter = node.filter ?? "";
+        latestSnapshotFilterRef.current = nextFilter;
+        if (composingRef.current) return;
+        if (nextFilter === localFilterRef.current) {
+            dirtyRef.current = false;
+            lastDispatchedFilterRef.current = nextFilter;
+            return;
+        }
+        if (dirtyRef.current) return;
+        reconcileFilter(nextFilter);
+    }, [node]);
+    useLayoutEffect(() => {
+        const previousSubmenuId = previousSubmenuIdRef.current;
+        const submenuAppearing = Boolean(submenuId && submenuId !== previousSubmenuId);
+        const submenuClosing = Boolean(!submenuId && previousSubmenuId);
+        previousSubmenuIdRef.current = submenuId;
+
+        if (submenuAppearing) {
+            composingRef.current = false;
+            reconcileFilter(node.filter ?? "");
+            const shouldHandoff =
+                focusWithinRef.current && document.activeElement === document.body;
+            restoreEligibleRef.current = shouldHandoff;
+            if (!shouldHandoff) return;
+            submenuRootRef.current
+                ?.querySelector<HTMLElement>(
+                    'input, textarea, button, [tabindex]:not([tabindex="-1"])'
+                )
+                ?.focus();
+            return;
+        }
+        if (submenuClosing) {
+            const shouldRestore =
+                restoreEligibleRef.current &&
+                focusWithinRef.current &&
+                document.activeElement === document.body;
+            restoreEligibleRef.current = false;
+            if (shouldRestore && node.focused) {
+                (node.searchenabled ? searchInputRef.current : listboxRef.current)?.focus();
+            }
+        }
+    }, [
+        node.focused,
+        node.filter,
+        node.searchenabled,
+        submenuId,
+    ]);
+
+    const dispatchFilter = (value: string) => {
+        if (value === lastDispatchedFilterRef.current) return;
+        lastDispatchedFilterRef.current = value;
+        onEvent?.({ nodeid: node.id, type: "change", payload: { filter: value } });
+    };
+    const dispatchSemanticKey = (event: React.KeyboardEvent<HTMLElement>, filterControl = false) => {
+        if (composingRef.current) return;
+        if (filterControl && (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === " ")) return;
+
+        if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+            event.preventDefault();
+            onEvent?.({
+                nodeid: node.id,
+                type: "cycle",
+                payload: { direction: event.key === "ArrowRight" ? 1 : -1 },
+            });
+            return;
+        }
+        if (event.key === "Enter" || event.key === " ") {
+            if (node.nomatch) return;
+            event.preventDefault();
+            onEvent?.({ nodeid: node.id, type: "submit" });
+            return;
+        }
+        if (event.key === "Escape") {
+            event.preventDefault();
+            onEvent?.(widgetCancelEvent(node.id));
+            return;
+        }
+        const data =
+            event.key === "ArrowUp"
+                ? "\x1b[A"
+                : event.key === "ArrowDown"
+                  ? "\x1b[B"
+                  : "";
+        if (!data) return;
+        event.preventDefault();
+        onEvent?.(widgetKeyEvent(node.id, data));
+    };
+    const visibleItems = node.items.slice(node.visiblestart, node.visibleend);
+    const activeOptionId = node.nomatch ? undefined : `${node.id}-option-${node.selectedindex}`;
+
+    if (node.submenu) {
+        return (
             <div
+                ref={submenuRootRef}
+                onFocusCapture={() => {
+                    focusWithinRef.current = true;
+                }}
+                onBlurCapture={(event) => {
+                    if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+                    focusWithinRef.current = false;
+                    restoreEligibleRef.current = false;
+                }}
+            >
+                <WidgetTreeRenderer node={node.submenu} onEvent={onEvent} />
+            </div>
+        );
+    }
+
+    return (
+        <div
+            ref={parentRootRef}
+            className="flex flex-col gap-2 p-1"
+            onFocusCapture={(event) => {
+                if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+                focusWithinRef.current = true;
+                onEvent?.({ nodeid: node.id, type: "focus", payload: { focused: true } });
+            }}
+            onBlurCapture={(event) => {
+                if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+                focusWithinRef.current = false;
+                if (!composingRef.current) {
+                    reconcileFilter(latestSnapshotFilterRef.current);
+                }
+                onEvent?.({ nodeid: node.id, type: "focus", payload: { focused: false } });
+            }}
+        >
+            {node.searchenabled && (
+                <input
+                    ref={searchInputRef}
+                    type="search"
+                    aria-label={`Filter ${node.id}`}
+                    value={filter}
+                    onChange={(event) => {
+                        const value = event.target.value;
+                        dirtyRef.current = true;
+                        localFilterRef.current = value;
+                        setFilter(value);
+                        if (!composingRef.current) dispatchFilter(value);
+                    }}
+                    onCompositionStart={() => {
+                        composingRef.current = true;
+                    }}
+                    onCompositionEnd={(event) => {
+                        composingRef.current = false;
+                        dispatchFilter(event.currentTarget.value);
+                    }}
+                    onKeyDown={(event) => dispatchSemanticKey(event, true)}
+                    className="w-full rounded-lg border border-white/[0.12] bg-black/25 px-3 py-2 font-mono text-[12px] text-foreground outline-none focus:border-accent/70"
+                />
+            )}
+            <div
+                ref={listboxRef}
                 role="listbox"
-                tabIndex={0}
+                tabIndex={node.focused ? 0 : -1}
                 aria-activedescendant={activeOptionId}
                 aria-label={`Settings list ${node.id}`}
-                onKeyDown={(event) => {
-                    if (event.key === "ArrowRight") {
-                        event.preventDefault();
-                        changeActiveValue(1);
-                        return;
-                    }
-                    if (event.key === "ArrowLeft") {
-                        event.preventDefault();
-                        changeActiveValue(-1);
-                        return;
-                    }
-                    if (event.key === "Enter") {
-                        event.preventDefault();
-                        onEvent?.({ nodeid: node.id, type: "submit" });
-                        return;
-                    }
-                    if (event.key === "Escape") {
-                        event.preventDefault();
-                        onEvent?.(widgetCancelEvent(node.id));
-                        return;
-                    }
-                    const data = keyDataForWidgetTerminal(event.key);
-                    if (!data) return;
-                    event.preventDefault();
-                    onEvent?.(widgetKeyEvent(node.id, data));
-                }}
+                onKeyDown={dispatchSemanticKey}
                 className="flex flex-col gap-px outline-none focus:ring-1 focus:ring-accent/60"
             >
-                {node.items.map((item, index) => {
-                    return (
-                        <div
-                            key={item.id}
-                            id={`${node.id}-option-${index}`}
-                            role="option"
-                            aria-selected={index === selectedIndex}
-                            onClick={() => {
-                                setActiveIndex(index);
-                                onEvent?.(widgetSelectEvent(node.id, index));
-                            }}
-                            className={cn(
-                                "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-2.5 py-2 text-[13px]",
-                                index === selectedIndex ? "bg-accent/15 text-foreground" : "text-foreground/80"
-                            )}
-                        >
-                            <div>
-                                <div className="font-medium">{item.label}</div>
-                                {item.description && (
-                                    <div className="text-[12px] text-secondary/75">{item.description}</div>
+                {node.nomatch ? (
+                    <div role="status" className="px-2.5 py-2 text-[12px] text-secondary/75">
+                        No matching settings
+                    </div>
+                ) : (
+                    visibleItems.map((item, localIndex) => {
+                        const index = node.visiblestart + localIndex;
+                        return (
+                            <div
+                                key={item.id}
+                                id={`${node.id}-option-${index}`}
+                                role="option"
+                                aria-selected={index === node.selectedindex}
+                                onClick={() => onEvent?.(widgetSelectEvent(node.id, index))}
+                                onDoubleClick={() =>
+                                    onEvent?.({ nodeid: node.id, type: "submit", payload: { index } })
+                                }
+                                className={cn(
+                                    "grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl px-2.5 py-2 text-[13px]",
+                                    index === node.selectedindex
+                                        ? "bg-accent/15 text-foreground"
+                                        : "text-foreground/80"
                                 )}
+                            >
+                                <div>
+                                    <div className="font-medium">{item.label}</div>
+                                    {item.description && (
+                                        <div className="text-[12px] text-secondary/75">{item.description}</div>
+                                    )}
+                                </div>
+                                <span className="min-w-12 text-center font-mono text-[12px] text-secondary/85">
+                                    {item.currentvalue}
+                                </span>
                             </div>
-                            <span className="min-w-12 text-center font-mono text-[12px] text-secondary/85">
-                                {item.currentvalue}
-                            </span>
-                        </div>
-                    );
-                })}
+                        );
+                    })
+                )}
             </div>
             <div className="px-2 text-[11px] text-secondary/70">Use Left/Right to change, Enter to activate, Escape to cancel.</div>
+            <div className="flex justify-end">
+                <button
+                    type="button"
+                    onClick={() => onEvent?.(widgetCancelEvent(node.id))}
+                    className="cursor-pointer rounded-lg border border-white/[0.1] px-3 py-1.5 text-[12px] text-secondary/85 transition-colors hover:bg-white/[0.06] hover:text-foreground"
+                >
+                    Cancel
+                </button>
+            </div>
         </div>
     );
 }
@@ -696,7 +992,7 @@ function WidgetMarkdownRenderer({ source, paddingx, paddingy }: { source: string
             style={widgetPaddingStyle(paddingx, paddingy)}
         >
             <Markdown
-                text={source}
+                text={normalizeMarkdownPartialClosingFence(source)}
                 className="agent-ext-markdown text-[13px] leading-relaxed text-foreground/90"
                 scrollable={false}
             />
@@ -705,59 +1001,242 @@ function WidgetMarkdownRenderer({ source, paddingx, paddingy }: { source: string
 }
 
 function WidgetEditorRenderer({
-    id,
-    initialValue,
-    paddingx,
+    node,
     onEvent,
 }: {
-    id: string;
-    initialValue: string;
-    paddingx: number;
-    onEvent?: (event: AgentWidgetEvent) => void;
+    node: Extract<WidgetNode, { kind: "editor" }>;
+    onEvent?: AgentWidgetEventHandler;
 }) {
-    const [value, setValue] = useState(initialValue);
-    useEffect(() => {
-        setValue(initialValue);
-    }, [id, initialValue]);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const composingRef = useRef(false);
+    const dirtyRef = useRef(false);
+    const nextOrderRef = useRef(0);
+    const pendingRef = useRef(new Map<string, OrderedWidgetEditTuple>());
+    const authoritativeRef = useRef<OrderedWidgetEditTuple>({
+        value: node.value,
+        selectionstart: node.selectionstart,
+        selectionend: node.selectionend,
+        order: 0,
+    });
+    const lastSentRef = useRef<OrderedWidgetEditTuple>(authoritativeRef.current);
+    const selectionRef = useRef({ start: node.selectionstart, end: node.selectionend });
+    const pendingSelectionRef = useRef<{ start: number; end: number } | undefined>(undefined);
+    const initialSelectionRef = useRef({ start: node.selectionstart, end: node.selectionend });
+    const [value, setValue] = useState(node.value);
+    const recomputeLastSent = () => {
+        const pending = newestOrderedWidgetEdit(pendingRef.current.values());
+        lastSentRef.current = newestOrderedWidgetEdit([authoritativeRef.current, ...(pending ? [pending] : [])])!;
+        dirtyRef.current = pendingRef.current.size > 0;
+    };
+    const removePendingEvent = (eventid: string, accepted = false) => {
+        const tuple = pendingRef.current.get(eventid);
+        if (!tuple) return;
+        pendingRef.current.delete(eventid);
+        if (accepted && tuple.order > authoritativeRef.current.order) authoritativeRef.current = tuple;
+        recomputeLastSent();
+    };
+    const dispatchPendingEvent = (event: AgentWidgetEvent, tuple?: OrderedWidgetEditTuple) => {
+        if (!onEvent || !event.eventid) return;
+        try {
+            const result = onEvent(event) as Promise<WidgetEventDispatchResult> | undefined;
+            if (result == null) {
+                removePendingEvent(event.eventid);
+                return;
+            }
+            void result.then((outcome) => {
+                if (!outcome.handled) {
+                    removePendingEvent(event.eventid!);
+                } else if (!outcome.published) {
+                    removePendingEvent(event.eventid!, tuple != null);
+                }
+            }).catch(() => {
+                removePendingEvent(event.eventid!);
+            });
+        } catch {
+            removePendingEvent(event.eventid);
+        }
+    };
+    const readControl = () => {
+        const textarea = textareaRef.current;
+        if (!textarea) return undefined;
+        const control = {
+            value: textarea.value,
+            selectionstart: textarea.selectionStart ?? selectionRef.current.start,
+            selectionend: textarea.selectionEnd ?? selectionRef.current.end,
+        };
+        selectionRef.current = { start: control.selectionstart, end: control.selectionend };
+        return control;
+    };
+    const dispatchChange = () => {
+        const control = readControl();
+        if (!control) return;
+        const lastSent = lastSentRef.current;
+        if (
+            control.value === lastSent.value &&
+            control.selectionstart === lastSent.selectionstart &&
+            control.selectionend === lastSent.selectionend
+        ) {
+            return;
+        }
+        if (!onEvent) return;
+        const eventid = makeWidgetEventId();
+        const pending = { ...control, order: ++nextOrderRef.current };
+        pendingRef.current.set(eventid, pending);
+        lastSentRef.current = pending;
+        dirtyRef.current = true;
+        dispatchPendingEvent(
+            widgetInputChangeEvent(
+                node.id,
+                control.value,
+                control.selectionstart,
+                control.selectionend,
+                eventid
+            ),
+            pending
+        );
+    };
+    const dispatchSubmit = () => {
+        const control = readControl();
+        if (!control || !onEvent) return;
+        const eventid = makeWidgetEventId();
+        const pending = { ...control, order: ++nextOrderRef.current };
+        pendingRef.current.set(eventid, pending);
+        lastSentRef.current = pending;
+        dirtyRef.current = true;
+        dispatchPendingEvent(
+            widgetInputSubmitEvent(
+                node.id,
+                control.value,
+                control.selectionstart,
+                control.selectionend,
+                eventid
+            ),
+            pending
+        );
+    };
+    const dispatchFocus = (focused: boolean) => {
+        if (!onEvent) return;
+        const eventid = makeWidgetEventId();
+        dispatchPendingEvent({
+            nodeid: node.id,
+            type: "focus",
+            eventid,
+            payload: { focused },
+        });
+    };
+    useLayoutEffect(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        const initialSelection = initialSelectionRef.current;
+        textarea.setSelectionRange(initialSelection.start, initialSelection.end);
+        selectionRef.current = {
+            start: textarea.selectionStart ?? 0,
+            end: textarea.selectionEnd ?? 0,
+        };
+        initialSelectionRef.current = {
+            start: textarea.selectionStart ?? 0,
+            end: textarea.selectionEnd ?? 0,
+        };
+    }, []);
+    useLayoutEffect(() => {
+        const textarea = textareaRef.current;
+        if (!textarea || composingRef.current) return;
+        let snapshotOrder: number;
+        if (node.ackid != null) {
+            const acknowledged = pendingRef.current.get(node.ackid);
+            if (!acknowledged) {
+                if (dirtyRef.current) return;
+                snapshotOrder = ++nextOrderRef.current;
+            } else {
+                snapshotOrder = acknowledged.order;
+                for (const [eventid, pending] of pendingRef.current) {
+                    if (pending.order <= snapshotOrder) pendingRef.current.delete(eventid);
+                }
+                recomputeLastSent();
+                if (snapshotOrder < authoritativeRef.current.order) {
+                    const authoritative = authoritativeRef.current;
+                    pendingSelectionRef.current = {
+                        start: authoritative.selectionstart,
+                        end: authoritative.selectionend,
+                    };
+                    textarea.value = authoritative.value;
+                    setValue(authoritative.value);
+                    return;
+                }
+            }
+        } else if (dirtyRef.current) {
+            return;
+        } else {
+            snapshotOrder = ++nextOrderRef.current;
+        }
+        authoritativeRef.current = {
+            value: node.value,
+            selectionstart: node.selectionstart,
+            selectionend: node.selectionend,
+            order: snapshotOrder,
+        };
+        recomputeLastSent();
+        if (dirtyRef.current) return;
+        if (textarea.value === node.value) {
+            textarea.setSelectionRange(node.selectionstart, node.selectionend);
+            selectionRef.current = { start: textarea.selectionStart ?? 0, end: textarea.selectionEnd ?? 0 };
+            return;
+        }
+        pendingSelectionRef.current = { start: node.selectionstart, end: node.selectionend };
+        textarea.value = node.value;
+        setValue(node.value);
+    }, [node]);
+    useLayoutEffect(() => {
+        const textarea = textareaRef.current;
+        const selection = pendingSelectionRef.current;
+        if (!textarea || !selection) return;
+        pendingSelectionRef.current = undefined;
+        textarea.setSelectionRange(selection.start, selection.end);
+        selectionRef.current = selection;
+    }, [value]);
     return (
         <form
             className="flex flex-col gap-2"
             onSubmit={(event) => {
                 event.preventDefault();
-                onEvent?.({ nodeid: id, type: "submit" });
+                if (composingRef.current) return;
+                dispatchSubmit();
             }}
         >
             <textarea
-                aria-label={`Editor ${id}`}
+                ref={textareaRef}
+                aria-label={`Editor ${node.id}`}
                 value={value}
                 rows={6}
                 onChange={(event) => {
                     const nextValue = event.target.value;
                     setValue(nextValue);
-                    onEvent?.({ nodeid: id, type: "change", payload: { value: nextValue } });
+                    if (!composingRef.current) dispatchChange();
                 }}
+                onCompositionStart={() => {
+                    composingRef.current = true;
+                }}
+                onCompositionEnd={(event) => {
+                    composingRef.current = false;
+                    setValue(event.currentTarget.value);
+                    dispatchChange();
+                }}
+                onSelect={() => {
+                    if (!composingRef.current) dispatchChange();
+                }}
+                onFocus={() => dispatchFocus(true)}
+                onBlur={() => dispatchFocus(false)}
                 onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                        event.preventDefault();
-                        onEvent?.(widgetCancelEvent(id));
-                        return;
-                    }
-                    const data = keyDataForWidgetTerminal(event.key);
-                    if (!data || event.key.length === 1) return;
+                    if (composingRef.current) return;
+                    if (editorKeyboardEventMatchesBinding(event, node.newlinekeys)) return;
+                    if (!editorKeyboardEventMatchesBinding(event, node.submitkeys)) return;
                     event.preventDefault();
-                    onEvent?.(widgetKeyEvent(id, data));
+                    dispatchSubmit();
                 }}
-                style={widgetPaddingStyle(paddingx, 0)}
+                style={widgetPaddingStyle(node.paddingx, 0)}
                 className="max-h-[320px] min-h-[120px] w-full resize-y rounded-xl border border-white/[0.12] bg-black/25 font-mono text-[13px] leading-relaxed text-foreground outline-none focus:border-accent/70"
             />
-            <div className="flex justify-end gap-2">
-                <button
-                    type="button"
-                    onClick={() => onEvent?.(widgetCancelEvent(id))}
-                    className="cursor-pointer rounded-lg border border-white/[0.1] px-3 py-1.5 text-[12px] text-secondary/85 transition-colors hover:bg-white/[0.06] hover:text-foreground"
-                >
-                    Cancel
-                </button>
+            <div className="flex justify-end">
                 <button
                     type="submit"
                     className="cursor-pointer rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-black transition-opacity hover:opacity-90"
@@ -769,52 +1248,265 @@ function WidgetEditorRenderer({
     );
 }
 
+interface OrderedWidgetEditTuple {
+    value: string;
+    selectionstart: number;
+    selectionend: number;
+    order: number;
+}
+
+function newestOrderedWidgetEdit(
+    edits: Iterable<OrderedWidgetEditTuple>
+): OrderedWidgetEditTuple | undefined {
+    let newest: OrderedWidgetEditTuple | undefined;
+    for (const edit of edits) {
+        if (!newest || edit.order > newest.order) newest = edit;
+    }
+    return newest;
+}
+
 function WidgetInputRenderer({
-    id,
-    initialValue,
+    node,
     onEvent,
 }: {
-    id: string;
-    initialValue: string;
-    onEvent?: (event: AgentWidgetEvent) => void;
+    node: Extract<WidgetNode, { kind: "input" }>;
+    onEvent?: AgentWidgetEventHandler;
 }) {
-    const [value, setValue] = useState(initialValue);
-    useEffect(() => {
-        setValue(initialValue);
-    }, [id, initialValue]);
+    const inputRef = useRef<HTMLInputElement>(null);
+    const composingRef = useRef(false);
+    const dirtyRef = useRef(false);
+    const nextOrderRef = useRef(0);
+    const pendingRef = useRef(new Map<string, OrderedWidgetEditTuple>());
+    const authoritativeRef = useRef<OrderedWidgetEditTuple>({
+        value: node.value,
+        selectionstart: node.selectionstart,
+        selectionend: node.selectionend,
+        order: 0,
+    });
+    const lastSentRef = useRef<OrderedWidgetEditTuple>(authoritativeRef.current);
+    const selectionRef = useRef({ start: node.selectionstart, end: node.selectionend });
+    const pendingSelectionRef = useRef<{ start: number; end: number } | undefined>(undefined);
+    const initialSelectionRef = useRef({ start: node.selectionstart, end: node.selectionend });
+    const [value, setValue] = useState(node.value);
+    const recomputeLastSent = () => {
+        const pending = newestOrderedWidgetEdit(pendingRef.current.values());
+        lastSentRef.current = newestOrderedWidgetEdit([authoritativeRef.current, ...(pending ? [pending] : [])])!;
+        dirtyRef.current = pendingRef.current.size > 0;
+    };
+    const removePendingEvent = (eventid: string, accepted = false) => {
+        const tuple = pendingRef.current.get(eventid);
+        if (!tuple) return;
+        pendingRef.current.delete(eventid);
+        if (accepted && tuple.order > authoritativeRef.current.order) authoritativeRef.current = tuple;
+        recomputeLastSent();
+    };
+    const dispatchPendingEvent = (event: AgentWidgetEvent, tuple?: OrderedWidgetEditTuple) => {
+        if (!onEvent || !event.eventid) return;
+        try {
+            const result = onEvent(event) as Promise<WidgetEventDispatchResult> | undefined;
+            if (result == null) {
+                removePendingEvent(event.eventid);
+                return;
+            }
+            void result.then((outcome) => {
+                if (!outcome.handled) {
+                    removePendingEvent(event.eventid!);
+                } else if (!outcome.published) {
+                    removePendingEvent(event.eventid!, tuple != null);
+                }
+            }).catch(() => {
+                removePendingEvent(event.eventid!);
+            });
+        } catch {
+            removePendingEvent(event.eventid);
+        }
+    };
+    const readControl = () => {
+        const input = inputRef.current;
+        if (!input) return undefined;
+        const control = {
+            value: input.value,
+            selectionstart: input.selectionStart ?? selectionRef.current.start,
+            selectionend: input.selectionEnd ?? selectionRef.current.end,
+        };
+        selectionRef.current = { start: control.selectionstart, end: control.selectionend };
+        return control;
+    };
+    const dispatchChange = () => {
+        const control = readControl();
+        if (!control) return;
+        const lastSent = lastSentRef.current;
+        if (
+            control.value === lastSent.value &&
+            control.selectionstart === lastSent.selectionstart &&
+            control.selectionend === lastSent.selectionend
+        ) {
+            return;
+        }
+        if (!onEvent) return;
+        const eventid = makeWidgetEventId();
+        const pending = { ...control, order: ++nextOrderRef.current };
+        pendingRef.current.set(eventid, pending);
+        lastSentRef.current = pending;
+        dirtyRef.current = true;
+        dispatchPendingEvent(
+            widgetInputChangeEvent(
+                node.id,
+                control.value,
+                control.selectionstart,
+                control.selectionend,
+                eventid
+            ),
+            pending
+        );
+    };
+    const dispatchSubmit = () => {
+        const control = readControl();
+        if (!control) return;
+        if (!onEvent) return;
+        const eventid = makeWidgetEventId();
+        const pending = { ...control, order: ++nextOrderRef.current };
+        pendingRef.current.set(eventid, pending);
+        lastSentRef.current = pending;
+        dirtyRef.current = true;
+        dispatchPendingEvent(
+            widgetInputSubmitEvent(
+                node.id,
+                control.value,
+                control.selectionstart,
+                control.selectionend,
+                eventid
+            ),
+            pending
+        );
+    };
+    const dispatchEvent = (type: "cancel" | "focus", payload?: unknown) => {
+        if (!onEvent) return;
+        const eventid = makeWidgetEventId();
+        dispatchPendingEvent({
+            nodeid: node.id,
+            type,
+            eventid,
+            ...(payload == null ? {} : { payload }),
+        });
+    };
+    useLayoutEffect(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        const initialSelection = initialSelectionRef.current;
+        input.setSelectionRange(initialSelection.start, initialSelection.end);
+        selectionRef.current = {
+            start: input.selectionStart ?? 0,
+            end: input.selectionEnd ?? 0,
+        };
+        initialSelectionRef.current = { start: input.selectionStart ?? 0, end: input.selectionEnd ?? 0 };
+    }, []);
+    useLayoutEffect(() => {
+        const input = inputRef.current;
+        if (!input || composingRef.current) return;
+        let snapshotOrder: number;
+        if (node.ackid != null) {
+            const acknowledged = pendingRef.current.get(node.ackid);
+            if (!acknowledged) {
+                if (dirtyRef.current) return;
+                snapshotOrder = ++nextOrderRef.current;
+            } else {
+                snapshotOrder = acknowledged.order;
+                for (const [eventid, pending] of pendingRef.current) {
+                    if (pending.order <= snapshotOrder) pendingRef.current.delete(eventid);
+                }
+                recomputeLastSent();
+                if (snapshotOrder < authoritativeRef.current.order) {
+                    const authoritative = authoritativeRef.current;
+                    pendingSelectionRef.current = {
+                        start: authoritative.selectionstart,
+                        end: authoritative.selectionend,
+                    };
+                    input.value = authoritative.value;
+                    setValue(authoritative.value);
+                    return;
+                }
+            }
+        } else if (dirtyRef.current) {
+            return;
+        } else {
+            snapshotOrder = ++nextOrderRef.current;
+        }
+        authoritativeRef.current = {
+            value: node.value,
+            selectionstart: node.selectionstart,
+            selectionend: node.selectionend,
+            order: snapshotOrder,
+        };
+        recomputeLastSent();
+        if (dirtyRef.current) return;
+        if (input.value === node.value) {
+            input.setSelectionRange(node.selectionstart, node.selectionend);
+            selectionRef.current = { start: input.selectionStart ?? 0, end: input.selectionEnd ?? 0 };
+            return;
+        }
+        pendingSelectionRef.current = { start: node.selectionstart, end: node.selectionend };
+        input.value = node.value;
+        setValue(node.value);
+    }, [node]);
+    useLayoutEffect(() => {
+        const input = inputRef.current;
+        const selection = pendingSelectionRef.current;
+        if (!input || !selection) return;
+        pendingSelectionRef.current = undefined;
+        input.setSelectionRange(selection.start, selection.end);
+        selectionRef.current = selection;
+    }, [value]);
     return (
         <form
             className="flex flex-col gap-2"
             onSubmit={(event) => {
                 event.preventDefault();
-                onEvent?.(widgetInputSubmitEvent(id));
+                dispatchSubmit();
             }}
         >
             <input
+                ref={inputRef}
                 role="textbox"
-                aria-label={`Input ${id}`}
+                aria-label={`Input ${node.id}`}
                 value={value}
                 onChange={(event) => {
                     const nextValue = event.target.value;
                     setValue(nextValue);
-                    onEvent?.(widgetInputChangeEvent(id, nextValue));
+                    if (!composingRef.current) dispatchChange();
+                }}
+                onCompositionStart={() => {
+                    composingRef.current = true;
+                }}
+                onCompositionEnd={(event) => {
+                    composingRef.current = false;
+                    setValue(event.currentTarget.value);
+                    dispatchChange();
+                }}
+                onSelect={dispatchChange}
+                onFocus={() => {
+                    dispatchEvent("focus", { focused: true });
+                }}
+                onBlur={() => {
+                    dispatchEvent("focus", { focused: false });
                 }}
                 onKeyDown={(event) => {
+                    if (composingRef.current) return;
                     if (event.key === "Enter") {
                         event.preventDefault();
-                        onEvent?.(widgetInputSubmitEvent(id));
+                        dispatchSubmit();
                         return;
                     }
                     if (event.key !== "Escape") return;
                     event.preventDefault();
-                    onEvent?.(widgetInputCancelEvent(id));
+                    dispatchEvent("cancel");
                 }}
                 className="w-full rounded-lg border border-white/[0.12] bg-black/25 px-3 py-2 font-mono text-[13px] text-foreground outline-none focus:border-accent/70"
             />
             <div className="flex justify-end gap-2">
                 <button
                     type="button"
-                    onClick={() => onEvent?.(widgetInputCancelEvent(id))}
+                    onClick={() => dispatchEvent("cancel")}
                     className="cursor-pointer rounded-lg border border-white/[0.1] px-3 py-1.5 text-[12px] text-secondary/85 transition-colors hover:bg-white/[0.06] hover:text-foreground"
                 >
                     Cancel
@@ -835,7 +1527,7 @@ function ExtUiCustomPrompt({
     respondWidgetEvent,
 }: {
     request: Extract<PiExtUiRequest, { kind: "custom" }>;
-    respondWidgetEvent?: (event: AgentWidgetEvent) => void;
+    respondWidgetEvent?: AgentWidgetEventHandler;
 }) {
     return (
         <div className="px-2 py-2">
@@ -852,7 +1544,7 @@ function ExtUiPrompt({
 }: {
     request: PiExtUiRequest;
     respondExtUi: (requestId: string, result: unknown) => void;
-    respondWidgetEvent?: (event: AgentWidgetEvent) => void;
+    respondWidgetEvent?: AgentWidgetEventHandler;
     anchorRef?: RefObject<HTMLElement | null>;
 }) {
     // Guard against a double-answer: dismissal + click can both fire.

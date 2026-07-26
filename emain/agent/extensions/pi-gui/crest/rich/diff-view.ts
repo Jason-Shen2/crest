@@ -3,6 +3,7 @@
 
 import type { Component } from "../../src/tui";
 import type { DiffHunk, WidgetDiffViewNode } from "../widget-tree";
+import { CrestRichComponentKind } from "./contract";
 
 export interface DiffViewOptions {
     filename?: string;
@@ -10,6 +11,7 @@ export interface DiffViewOptions {
 }
 
 export class DiffView implements Component {
+    readonly [CrestRichComponentKind] = "diffview";
     readonly widgetKind = "diffview";
     readonly filename: string | undefined;
     readonly hunks: DiffHunk[];

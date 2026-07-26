@@ -111,7 +111,10 @@ import { loadAgentSkills } from "./agent/skills-loader";
 import { getDefaultTools } from "./agent/tools";
 import { createSpawnCliAgentTool } from "./agent/tools/spawn-cli-agent";
 import type { AgentMessage, ThinkingLevel } from "./agent/types";
-import type { RenderedExtensionEntryNode } from "./agent/extensions/pi-gui/crest/widget-tree";
+import type {
+    RenderedExtensionEntryNode,
+    WidgetEventDispatchResult,
+} from "./agent/extensions/pi-gui/crest/widget-tree";
 import type { Api, Message, Model } from "./ai";
 import { getModel } from "./ai";
 import { getSecret } from "./aiconfig/secrets";
@@ -1524,13 +1527,24 @@ export async function respondUiForIpc(
     runtimeRegistry.get(canonicalPath)?.respondUi(id, result);
 }
 
-export async function respondWidgetEventForIpc(sessionPath: unknown, event: unknown): Promise<boolean> {
-    const canonicalPath = await validateSessionPath(sessionPath);
-    const widgetEvent = event as WidgetEvent | undefined;
-    if (!widgetEvent || typeof widgetEvent.nodeid !== "string" || typeof widgetEvent.type !== "string") {
-        throw new Error("Invalid widget event");
-    }
-    return runtimeRegistry.get(canonicalPath)?.respondWidgetEvent(widgetEvent) ?? false;
+export async function respondWidgetEventForIpc(
+    sessionPath: unknown,
+    event: unknown
+): Promise<WidgetEventDispatchResult> {
+    const operationKey =
+        typeof sessionPath === "string" ? path.resolve(sessionPath) : `invalid-widget-session:${typeof sessionPath}`;
+    return await serializeSessionOperation(operationKey, async () => {
+        const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
+        const canonicalPath = await validateSessionPath(rendererPath);
+        const widgetEvent = event as WidgetEvent | undefined;
+        if (!widgetEvent || typeof widgetEvent.nodeid !== "string" || typeof widgetEvent.type !== "string") {
+            throw new Error("Invalid widget event");
+        }
+        return runtimeRegistry.get(canonicalPath)?.respondWidgetEvent(widgetEvent) ?? {
+            handled: false,
+            published: false,
+        };
+    });
 }
 
 export async function subscribeAgentSessionForIpc(sender: electron.WebContents, sessionPath: unknown): Promise<void> {
@@ -1728,7 +1742,7 @@ export function registerAgentIpcHandlers(): void {
 
     electron.ipcMain.handle(
         "agent:widget-event",
-        async (_event, sessionPath: string, event: unknown): Promise<boolean> => {
+        async (_event, sessionPath: string, event: unknown): Promise<WidgetEventDispatchResult> => {
             return await respondWidgetEventForIpc(sessionPath, event);
         }
     );

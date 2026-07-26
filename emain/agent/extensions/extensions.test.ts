@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
@@ -23,11 +24,15 @@ import {
 } from "./index";
 import { createExtensionLifecycleHost, extensionToGraphNode } from "./lifecycle";
 import { CancellableLoader } from "./pi-gui/src/components/cancellable-loader";
+import { Editor } from "./pi-gui/src/components/editor";
 import { Loader } from "./pi-gui/src/components/loader";
 import { SelectList, type SelectListTheme } from "./pi-gui/src/components/select-list";
+import { SettingsList, type SettingsListTheme } from "./pi-gui/src/components/settings-list";
 import { Input } from "./pi-gui/src/components/input";
 import { Text } from "./pi-gui/src/components/text";
 import { Box } from "./pi-gui/src/components/box";
+import type { Component, TUI } from "./pi-gui/src/tui";
+import { componentToWidget } from "./pi-gui/crest/walker";
 import type { ExtensionUiHost, ExtUiRequest } from "./index";
 import {
 	ExtensionBehaviorRequirementStatuses,
@@ -59,6 +64,26 @@ const TestSelectListTheme: SelectListTheme = {
 	scrollInfo: (text) => text,
 	noMatch: (text) => text,
 };
+
+const TestSettingsListTheme: SettingsListTheme = {
+	label: (text) => text,
+	value: (text) => text,
+	description: (text) => text,
+	cursor: "> ",
+	hint: (text) => text,
+};
+
+function makeExtensionUiHost(overrides: Partial<ExtensionUiHost> = {}): ExtensionUiHost {
+	return {
+		notify: () => {},
+		setStatus: () => {},
+		setWidget: () => {},
+		setHeader: () => {},
+		setFooter: () => {},
+		requestUi: async () => undefined,
+		...overrides,
+	};
+}
 
 function writeExtension(dir: string, name: string, source: string): void {
 	mkdirSync(dir, { recursive: true });
@@ -412,16 +437,7 @@ describe("Pi extension compatibility matrix", () => {
 		const plannedComponents = matrix.filter((item) => item.certification === "planned");
 
 		expect(matrix.every((item) => item.behaviorRequirements.length > 0)).toBe(true);
-		expect(plannedComponents.map((item) => item.id)).toEqual([
-			"box",
-			"select-list",
-			"settings-list",
-			"input",
-			"markdown",
-			"editor",
-			"loader",
-		]);
-		expect(plannedComponents.every((item) => item.notes.includes("M2"))).toBe(true);
+		expect(plannedComponents.map((item) => item.id)).toEqual([]);
 		expect(plannedComponents.every((item) => JSON.stringify(item.behavior) === JSON.stringify(item.plannedBehavior))).toBe(
 			true
 		);
@@ -453,6 +469,7 @@ describe("Pi extension compatibility matrix", () => {
 			"text-editing",
 			"cursor-selection",
 			"submit",
+			"selection-ime-clipboard",
 			"cancel",
 		]);
 		expect(requirementsById.get("loader")).toEqual(["state-snapshot", "animation", "cancel"]);
@@ -460,22 +477,182 @@ describe("Pi extension compatibility matrix", () => {
 		expect(matrix.flatMap((item) => item.behaviorRequirements).every((req) => req.requirement && req.evidence.length > 0)).toBe(
 			true
 		);
-		expect(byId.get("select-list")?.behavior).toEqual(["keyboard-navigation", "filtering", "scrolling", "focus"]);
-		expect(byId.get("select-list")?.plannedBehavior).toEqual(["keyboard-navigation", "filtering", "scrolling", "focus"]);
-		expect(byId.get("input")?.behavior).toEqual(["text-editing", "selection-ime-clipboard"]);
-		expect(byId.get("input")?.plannedBehavior).toEqual(["text-editing", "selection-ime-clipboard"]);
-		expect(byId.get("settings-list")?.behavior).toEqual(["keyboard-navigation", "search", "submenu", "layout-parity"]);
-		expect(byId.get("settings-list")?.plannedBehavior).toEqual(["keyboard-navigation", "search", "submenu", "layout-parity"]);
-		expect(byId.get("editor")?.behavior).toEqual(["cancel", "cursor-selection-parity", "selection-ime-clipboard"]);
-		expect(byId.get("editor")?.plannedBehavior).toEqual(["cancel", "cursor-selection-parity", "selection-ime-clipboard"]);
-		expect(byId.get("loader")?.behavior).toEqual(["animation-cadence"]);
-		expect(byId.get("loader")?.plannedBehavior).toEqual(["animation-cadence"]);
+		expect(byId.get("select-list")?.behavior).toBeUndefined();
+		expect(byId.get("select-list")?.plannedBehavior ?? []).toEqual([]);
+		expect(byId.get("input")?.behavior).toBeUndefined();
+		expect(byId.get("input")?.plannedBehavior ?? []).toEqual([]);
+		expect(byId.get("settings-list")?.behavior).toBeUndefined();
+		expect(byId.get("settings-list")?.plannedBehavior ?? []).toEqual([]);
+		expect(byId.get("editor")?.behavior).toBeUndefined();
+		expect(byId.get("editor")?.plannedBehavior ?? []).toEqual([]);
+		expect(byId.get("loader")?.behavior).toBeUndefined();
+		expect(byId.get("loader")?.plannedBehavior ?? []).toEqual([]);
 		expect(byId.get("custom-component")?.plannedBehavior).toEqual(["terminal-surface-fallback"]);
 		expect(byId.get("text")?.plannedBehavior).toBeUndefined();
 		expect(byId.get("text")?.behavior).toBeUndefined();
 		expect(byId.get("text")?.certification).toBe("passing");
-		expect(byId.get("select-list")?.certification).toBe("planned");
+		expect(byId.get("select-list")?.certification).toBe("passing");
 		expect(byId.get("custom-component")?.certification).toBe("unsupported");
+	});
+
+	it("records M2.1A adapter evidence without overstating behavior certification", async () => {
+		const { PiTuiComponentCompatibilityMatrix } = await import("./compatibility");
+		const standard = PiTuiComponentCompatibilityMatrix.filter((item) => item.id !== "custom-component");
+
+		for (const item of standard) {
+			expect(item.notes).toContain("public adapter contract");
+			expect(
+				item.behaviorRequirements.some((entry) =>
+					entry.evidence.includes("pi-gui/crest/walker.test.ts:adapter-contract")
+				)
+			).toBe(true);
+		}
+
+		expect(PiTuiComponentCompatibilityMatrix.find((item) => item.id === "input")?.certification).toBe("passing");
+		expect(PiTuiComponentCompatibilityMatrix.find((item) => item.id === "editor")?.certification).toBe("passing");
+		expect(PiTuiComponentCompatibilityMatrix.find((item) => item.id === "loader")?.certification).toBe("passing");
+	});
+
+	it("closes the M2.1C behavior compatibility matrix and shares one standard blocker predicate", async () => {
+		const { PiTuiComponentCompatibilityMatrix, isStandardComponentCertificationBlocker } = await import(
+			"./compatibility"
+		);
+
+		const cases: Array<{ label: string; item: ExtensionComponentCompatibilityItem; blocker: boolean }> = [
+			{
+				label: "standard + certification planned",
+				item: {
+					id: "text",
+					label: "Text",
+					status: "native-gui",
+					notes: "",
+					certification: "planned",
+					behaviorRequirements: [],
+				},
+				blocker: true,
+			},
+			{
+				label: "standard + certification unsupported",
+				item: {
+					id: "text",
+					label: "Text",
+					status: "native-gui",
+					notes: "",
+					certification: "unsupported",
+					behaviorRequirements: [],
+				},
+				blocker: true,
+			},
+			{
+				label: "standard + non-empty plannedBehavior",
+				item: {
+					id: "text",
+					label: "Text",
+					status: "native-gui",
+					notes: "",
+					certification: "passing",
+					plannedBehavior: ["something"],
+					behaviorRequirements: [],
+				},
+				blocker: true,
+			},
+			{
+				label: "standard + requirement status planned",
+				item: {
+					id: "text",
+					label: "Text",
+					status: "native-gui",
+					notes: "",
+					certification: "passing",
+					behaviorRequirements: [
+						{ id: "req", label: "req", requirement: "req", status: "planned", evidence: ["e"] },
+					],
+				},
+				blocker: true,
+			},
+			{
+				label: "standard + requirement status partial",
+				item: {
+					id: "text",
+					label: "Text",
+					status: "native-gui",
+					notes: "",
+					certification: "passing",
+					behaviorRequirements: [
+						{ id: "req", label: "req", requirement: "req", status: "partial", evidence: ["e"] },
+					],
+				},
+				blocker: true,
+			},
+			{
+				label: "standard + passing + empty plannedBehavior + covered/not-applicable",
+				item: {
+					id: "text",
+					label: "Text",
+					status: "native-gui",
+					notes: "",
+					certification: "passing",
+					plannedBehavior: [],
+					behaviorRequirements: [
+						{ id: "a", label: "a", requirement: "a", status: "covered", evidence: ["e"] },
+						{ id: "b", label: "b", requirement: "b", status: "not-applicable", evidence: ["e"] },
+					],
+				},
+				blocker: false,
+			},
+			{
+				label: "custom-component with terminal-surface-fallback",
+				item: {
+					id: "custom-component",
+					label: "Custom Component",
+					status: "unsupported",
+					notes: "",
+					certification: "unsupported",
+					plannedBehavior: ["terminal-surface-fallback"],
+					behaviorRequirements: [
+						{ id: "terminal-surface-fallback", label: "t", requirement: "t", status: "planned", evidence: ["e"] },
+					],
+				},
+				blocker: false,
+			},
+		];
+
+		for (const testCase of cases) {
+			expect(isStandardComponentCertificationBlocker(testCase.item), testCase.label).toBe(testCase.blocker);
+		}
+
+		const standard = PiTuiComponentCompatibilityMatrix.filter((item) => item.id !== "custom-component");
+		for (const item of standard) {
+			expect(item.certification).toBe("passing");
+			expect(item.plannedBehavior ?? []).toEqual([]);
+			expect(
+				item.behaviorRequirements.every(
+					(requirement) => requirement.status === "covered" || requirement.status === "not-applicable"
+				)
+			).toBe(true);
+			expect(isStandardComponentCertificationBlocker(item)).toBe(false);
+		}
+
+		const editor = PiTuiComponentCompatibilityMatrix.find((item) => item.id === "editor");
+		expect(editor?.behaviorRequirements.find((item) => item.id === "cancel")).toMatchObject({
+			status: "not-applicable",
+		});
+
+		expect(PiTuiComponentCompatibilityMatrix.find((item) => item.id === "custom-component")).toMatchObject({
+			certification: "unsupported",
+			plannedBehavior: ["terminal-surface-fallback"],
+		});
+		expect(
+			isStandardComponentCertificationBlocker(
+				PiTuiComponentCompatibilityMatrix.find((item) => item.id === "custom-component")!
+			)
+		).toBe(false);
+		expect(PiTuiComponentCompatibilityMatrix.some(isStandardComponentCertificationBlocker)).toBe(false);
+
+		const editorText = JSON.stringify(editor);
+		expect(editorText).not.toContain("autocomplete");
+		expect(editorText).not.toContain("history");
+		expect(editorText).not.toContain("large-paste");
 	});
 });
 
@@ -586,12 +763,13 @@ describe("loadAgentExtensions", () => {
 			extDir,
 			"rich-ext.ts",
 			`
-				import { Chart, DiffView, RichTable } from "@earendil-works/pi-tui";
+				import { Chart, CrestRichComponentKind, DiffView, RichTable } from "@earendil-works/pi-tui";
 				export default (pi) => {
 					const table = new RichTable({ columns: [{ key: "name", label: "Name" }], rows: [{ name: "pi-gui" }] });
 					const diff = new DiffView({ hunks: [{ header: "@@ -1 +1 @@", lines: [{ type: "add", text: "+new" }] }] });
 					const chart = new Chart({ charttype: "bar", series: [{ name: "coverage", points: [{ label: "Text", value: 1 }] }] });
-					pi.registerFlag("rich-alias", { type: "string", default: [table, diff, chart].map((c) => c.render(40).join("\\n")).join("|") });
+					const markers = [table, diff, chart].map((component) => component[CrestRichComponentKind]).join(",");
+					pi.registerFlag("rich-alias", { type: "string", default: markers + "|" + [table, diff, chart].map((c) => c.render(40).join("\\n")).join("|") });
 				};
 			`
 		);
@@ -599,6 +777,7 @@ describe("loadAgentExtensions", () => {
 		const result = await loadAgentExtensions({ cwd, configHome: join(root, "cfg") });
 
 		expect(result.errors).toEqual([]);
+		expect(result.extensions[0].flags.get("rich-alias")?.default).toContain("richtable,diffview,chart");
 		expect(result.extensions[0].flags.get("rich-alias")?.default).toContain("pi-gui");
 	});
 
@@ -699,7 +878,7 @@ describe("loadAgentExtensions", () => {
 		if (request?.kind !== "custom") throw new Error("expected custom request");
 		expect(request.widget).toMatchObject({ kind: "terminal", lines: ["count:0"] });
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "key", payload: { data: "x" } })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "key", payload: { data: "x" } })).toMatchObject({ handled: true });
 		await expect(handlerPromise).resolves.toBe("count:1");
 		expect(updates).toEqual([
 			expect.objectContaining({
@@ -1076,18 +1255,24 @@ describe("extension renderers", () => {
 		expect(listWidget.kind).toBe("selectlist");
 		expect(inputWidget.kind).toBe("input");
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: listWidget.id, type: "select", payload: { index: 1 } })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: listWidget.id, type: "select", payload: { index: 1 } })).toMatchObject({ handled: true });
 		expect(nestedWidget.kind).toBe("box");
 		expect(nestedWidget.children[1]).toMatchObject({ kind: "text", text: "Selected: Input" });
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: inputWidget.id, type: "change", payload: { value: "typed" } })).toBe(
-			true
-		);
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: inputWidget.id, type: "submit" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: inputWidget.id,
+			type: "change",
+			payload: { value: "typed", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: inputWidget.id,
+			type: "submit",
+			payload: { value: "typed", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: true });
 		expect(nestedWidget.kind).toBe("box");
 		expect(nestedWidget.children[1]).toMatchObject({ kind: "text", text: "Submitted: typed" });
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: inputWidget.id, type: "cancel" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: inputWidget.id, type: "cancel" })).toMatchObject({ handled: true });
 		expect(nestedWidget.kind).toBe("box");
 		expect(nestedWidget.children[1]).toMatchObject({ kind: "text", text: "Cancelled" });
 	});
@@ -1450,6 +1635,1031 @@ describe("wireExtensionHooks observation events", () => {
 });
 
 describe("createExtensionContext ctx surface", () => {
+	it("publishes an initial root only after its complete widget-component revision validates", () => {
+		const uiBridge = createExtensionUiBridge();
+		const updates: WidgetNode[] = [];
+		const root = new Box(0, 0);
+		const input = new Input();
+		root.addChild(input);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+
+		const registration = uiBridge.registerWidgetRoot(widget, root, undefined, {
+			update: (next) => updates.push(next),
+		});
+
+		expect(registration).toBeDefined();
+		expect(updates).toEqual([widget]);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.children[0].id,
+			type: "change",
+			payload: { value: "ready", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: true });
+	});
+
+	it("rejects an invalid initial root without publishing any candidate target", () => {
+		const uiBridge = createExtensionUiBridge();
+		const update = vi.fn();
+		const root = new Box(0, 0);
+		const first = new Input();
+		const second = new Input();
+		root.addChild(first);
+		root.addChild(second);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const invalid = {
+			...widget,
+			children: [widget.children[0], { ...widget.children[1], id: widget.children[0].id }],
+		};
+
+		const registration = uiBridge.registerWidgetRoot(invalid, root, undefined, { update });
+
+		expect(registration).toBeUndefined();
+		expect(update).not.toHaveBeenCalled();
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: invalid.children[0].id,
+			type: "change",
+			payload: { value: "leak", selectionstart: 4, selectionend: 4 },
+		})).toMatchObject({ handled: false });
+		expect(first.getValue()).toBe("");
+		expect(second.getValue()).toBe("");
+	});
+
+	it("disposes every unique Bridge-owned factory component when initial candidate validation fails", () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const child = new Loader(tui, (text) => text, (text) => text, "child", { frames: ["-"] });
+		const childStop = vi.spyOn(child, "stop");
+		const root = new Box(0, 0);
+		root.addChild(child);
+		root.addChild(child);
+		const rootInvalidate = vi.spyOn(root, "invalidate");
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const invalid = { ...widget, children: [{ ...widget.children[0], kind: "text" as const, text: "bad", paddingx: 0, paddingy: 0 }] };
+
+		expect(uiBridge.registerWidgetRoot(invalid, root, undefined, { ownership: "bridge-factory" })).toBeUndefined();
+		expect(childStop).toHaveBeenCalledTimes(1);
+		expect(rootInvalidate).not.toHaveBeenCalled();
+	});
+
+	it("does not dispose caller-owned external components when initial candidate validation fails", () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const child = new Loader(tui, (text) => text, (text) => text, "child", { frames: ["-"] });
+		const childStop = vi.spyOn(child, "stop");
+		const root = new Box(0, 0);
+		root.addChild(child);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const invalid = { ...widget, children: [] };
+
+		expect(uiBridge.registerWidgetRoot(invalid, root, undefined, { ownership: "caller-external" })).toBeUndefined();
+		expect(childStop).not.toHaveBeenCalled();
+	});
+
+	it("contains initial serialization failure in the transaction and disposes the Bridge-owned candidate", () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const root = new Loader(tui, (text) => text, (text) => text, "initial", { frames: ["-"] });
+		const stop = vi.spyOn(root, "stop");
+		const update = vi.fn();
+
+		const registration = uiBridge.registerWidgetRoot(
+			() => {
+				throw new Error("initial serialize failed");
+			},
+			root,
+			undefined,
+			{ ownership: "bridge-factory", update },
+		);
+
+		expect(registration).toBeUndefined();
+		expect(stop).toHaveBeenCalledTimes(1);
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("exposes Box children through a stable public copy", () => {
+		const root = new Box(0, 0);
+		const input = new Input();
+		root.addChild(input);
+
+		const children = root.getChildren();
+		children.pop();
+
+		expect(children).toEqual([]);
+		expect(root.getChildren()).toEqual([input]);
+	});
+
+	it("precollects composite Box children before full serialization failure", () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const child = new Loader(tui, (text) => text, (text) => text, "child", { frames: ["-"] });
+		const stop = vi.spyOn(child, "stop");
+		const root = new Box(0, 0);
+		root.addChild(child);
+		const update = vi.fn();
+		vi.spyOn(root, "getSnapshot").mockImplementation(() => {
+			throw new Error("box snapshot failed");
+		});
+
+		const registration = uiBridge.registerWidgetRoot(
+			() => componentToWidget(root, { width: 80 }),
+			root,
+			undefined,
+			{ update, ownership: "bridge-factory" },
+		);
+
+		expect(registration).toBeUndefined();
+		expect(stop).toHaveBeenCalledTimes(1);
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("atomically replaces a persistent root only after the replacement revision validates", () => {
+		const uiBridge = createExtensionUiBridge();
+		const published: WidgetNode[] = [];
+		const first = new Input();
+		const firstWidget = componentToWidget(first, { width: 80 });
+		const firstRegistration = uiBridge.registerWidgetRoot(firstWidget, first, undefined, {
+			update: (widget) => published.push(widget),
+		});
+		if (!firstRegistration) throw new Error("expected first registration");
+		const replacement = new Input();
+		replacement.setValue("replacement");
+		const replacementWidget = componentToWidget(replacement, { width: 80 });
+
+		const replacementRegistration = uiBridge.registerWidgetRoot(replacementWidget, replacement, undefined, {
+			update: (widget) => published.push(widget),
+			replace: firstRegistration,
+		});
+
+		expect(replacementRegistration).toBeDefined();
+		expect(published).toEqual([firstWidget, replacementWidget]);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: firstWidget.id,
+			type: "change",
+			payload: { value: "stale", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: false });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: replacementWidget.id,
+			type: "change",
+			payload: { value: "live", selectionstart: 4, selectionend: 4 },
+		})).toMatchObject({ handled: true });
+		firstRegistration.unregister();
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: replacementWidget.id,
+			type: "change",
+			payload: { value: "still-live", selectionstart: 10, selectionend: 10 },
+		})).toMatchObject({ handled: true });
+	});
+
+	it("contains replacement serialization failure and retains the previous root", () => {
+		const uiBridge = createExtensionUiBridge();
+		const first = new Input();
+		const firstWidget = componentToWidget(first, { width: 80 });
+		const firstRegistration = uiBridge.registerWidgetRoot(firstWidget, first);
+		if (!firstRegistration) throw new Error("expected first registration");
+		const tui = { requestRender: () => {} } as any;
+		const replacement = new Loader(tui, (text) => text, (text) => text, "replacement", { frames: ["-"] });
+		const stop = vi.spyOn(replacement, "stop");
+
+		const rejected = uiBridge.registerWidgetRoot(
+			() => {
+				throw new Error("replacement serialize failed");
+			},
+			replacement,
+			undefined,
+			{ ownership: "bridge-factory", replace: firstRegistration },
+		);
+
+		expect(rejected).toBeUndefined();
+		expect(stop).toHaveBeenCalledTimes(1);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: firstWidget.id,
+			type: "change",
+			payload: { value: "retained", selectionstart: 8, selectionend: 8 },
+		})).toMatchObject({ handled: true });
+	});
+
+	it.each(["widget", "header", "footer"] as const)(
+		"retains the previous %s host value when a persistent replacement collides",
+		(surface) => {
+			const uiBridge = createExtensionUiBridge();
+			const published: WidgetNode[] = [];
+			const host = makeExtensionUiHost({
+				setWidget: (_key, value) => {
+					if (value && !Array.isArray(value)) published.push(value);
+				},
+				setHeader: (value) => {
+					if (value) published.push(value);
+				},
+				setFooter: (value) => {
+					if (value) published.push(value);
+				},
+			});
+			uiBridge.attach(host);
+			const ctx = createExtensionContext(() => "/work", uiBridge);
+			const first = new Input();
+			if (surface === "widget") ctx.ui.setWidget("key", first);
+			else if (surface === "header") ctx.ui.setHeader(first);
+			else ctx.ui.setFooter(first);
+			const firstWidget = published.at(-1);
+			if (!firstWidget) throw new Error("expected first publication");
+			const collision = new Input();
+			const collisionWidget = componentToWidget(collision, { width: 80 });
+			const collisionRegistration = uiBridge.registerWidgetRoot(
+				{ ...collisionWidget, id: firstWidget.id },
+				collision,
+			);
+			expect(collisionRegistration).toBeUndefined();
+
+			const rejected = new Input();
+			const rejectedWidget = componentToWidget(rejected, { width: 80 });
+			const blocker = new Input();
+			expect(uiBridge.registerWidgetRoot({ ...componentToWidget(blocker, { width: 80 }), id: rejectedWidget.id }, blocker))
+				.toBeDefined();
+			if (surface === "widget") ctx.ui.setWidget("key", rejected);
+			else if (surface === "header") ctx.ui.setHeader(rejected);
+			else ctx.ui.setFooter(rejected);
+
+			expect(published).toEqual([firstWidget]);
+			expect(uiBridge.dispatchWidgetEvent({
+				nodeid: firstWidget.id,
+				type: "change",
+				payload: { value: "retained", selectionstart: 8, selectionend: 8 },
+			})).toMatchObject({ handled: true });
+		},
+	);
+
+	it("retains the previous persistent root and rejects caller-owned external replacement components on validation failure", () => {
+		const uiBridge = createExtensionUiBridge();
+		const published: WidgetNode[] = [];
+		const first = new Input();
+		const firstWidget = componentToWidget(first, { width: 80 });
+		const firstRegistration = uiBridge.registerWidgetRoot(firstWidget, first, undefined, {
+			update: (widget) => published.push(widget),
+		});
+		if (!firstRegistration) throw new Error("expected first registration");
+		const replacement = new Box(0, 0);
+		const replacementChild = new Input();
+		replacement.addChild(replacementChild);
+		const replacementWidget = componentToWidget(replacement, { width: 80 });
+		if (replacementWidget.kind !== "box") throw new Error("expected box widget");
+
+		const rejected = uiBridge.registerWidgetRoot(
+			{ ...replacementWidget, children: [] },
+			replacement,
+			undefined,
+			{ update: (widget) => published.push(widget), replace: firstRegistration, ownership: "caller-external" },
+		);
+
+		expect(rejected).toBeUndefined();
+		expect(published).toEqual([firstWidget]);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: firstWidget.id,
+			type: "change",
+			payload: { value: "retained", selectionstart: 8, selectionend: 8 },
+		})).toMatchObject({ handled: true });
+		expect(replacementChild.getValue()).toBe("");
+	});
+
+	it("disposes rejected Bridge-owned factory replacement components while retaining the previous root", () => {
+		const uiBridge = createExtensionUiBridge();
+		const first = new Input();
+		const firstWidget = componentToWidget(first, { width: 80 });
+		const firstRegistration = uiBridge.registerWidgetRoot(firstWidget, first);
+		if (!firstRegistration) throw new Error("expected first registration");
+		const tui = { requestRender: () => {} } as any;
+		const replacementChild = new Loader(tui, (text) => text, (text) => text, "replacement", { frames: ["-"] });
+		const stop = vi.spyOn(replacementChild, "stop");
+		const replacement = new Box(0, 0);
+		replacement.addChild(replacementChild);
+		const replacementWidget = componentToWidget(replacement, { width: 80 });
+		if (replacementWidget.kind !== "box") throw new Error("expected box widget");
+
+		expect(uiBridge.registerWidgetRoot(
+			{ ...replacementWidget, children: [] },
+			replacement,
+			undefined,
+			{ replace: firstRegistration, ownership: "bridge-factory" },
+		)).toBeUndefined();
+		expect(stop).toHaveBeenCalledTimes(1);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: firstWidget.id,
+			type: "change",
+			payload: { value: "retained", selectionstart: 8, selectionend: 8 },
+		})).toMatchObject({ handled: true });
+	});
+
+	it("disposes removed published components after replacement regardless of candidate origin", () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const oldChild = new Loader(tui, (text) => text, (text) => text, "old", { frames: ["-"] });
+		const oldStop = vi.spyOn(oldChild, "stop");
+		const oldRoot = new Box(0, 0);
+		oldRoot.addChild(oldChild);
+		const oldWidget = componentToWidget(oldRoot, { width: 80 });
+		const oldRegistration = uiBridge.registerWidgetRoot(oldWidget, oldRoot, undefined, {
+			ownership: "caller-external",
+		});
+		if (!oldRegistration) throw new Error("expected old registration");
+		const replacement = new Input();
+		const replacementWidget = componentToWidget(replacement, { width: 80 });
+
+		expect(uiBridge.registerWidgetRoot(replacementWidget, replacement, undefined, {
+			replace: oldRegistration,
+			ownership: "caller-external",
+		})).toBeDefined();
+		expect(oldStop).toHaveBeenCalledTimes(1);
+	});
+
+	it("disposes all published unique components once on unregister regardless of candidate origin", () => {
+		for (const ownership of ["bridge-factory", "caller-external"] as const) {
+			const uiBridge = createExtensionUiBridge();
+			const tui = { requestRender: () => {} } as any;
+			const child = new Loader(tui, (text) => text, (text) => text, ownership, { frames: ["-"] });
+			const stop = vi.spyOn(child, "stop");
+			const root = new Box(0, 0);
+			root.addChild(child);
+			const registration = uiBridge.registerWidgetRoot(componentToWidget(root, { width: 80 }), root, undefined, {
+				ownership,
+			});
+			if (!registration) throw new Error("expected registration");
+
+			registration.unregister();
+			registration.unregister();
+
+			expect(stop).toHaveBeenCalledTimes(1);
+		}
+	});
+
+	it("uses explicit Component disposal when an adapter has no custom disposer", () => {
+		const uiBridge = createExtensionUiBridge();
+		const dispose = vi.fn();
+		const text = Object.assign(new Text("explicit"), { dispose });
+		const registration = uiBridge.registerWidgetRoot(componentToWidget(text, { width: 80 }), text);
+		if (!registration) throw new Error("expected registration");
+
+		registration.unregister();
+		registration.unregister();
+
+		expect(dispose).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects a second root for a published component even when its widget id differs", () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const shared = new CancellableLoader(tui, (text) => text, (text) => text, "shared", { frames: ["-"] });
+		const stop = vi.spyOn(shared, "stop");
+		const onAbort = vi.fn();
+		shared.onAbort = onAbort;
+		const firstWidget = componentToWidget(shared, { width: 80 });
+		const rejectedUpdate = vi.fn();
+		expect(uiBridge.registerWidgetRoot(firstWidget, shared)).toBeDefined();
+		expect(uiBridge.registerWidgetRoot({ ...firstWidget, id: `${firstWidget.id}-second` }, shared, undefined, {
+			update: rejectedUpdate,
+		})).toBeUndefined();
+		expect(rejectedUpdate).not.toHaveBeenCalled();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: firstWidget.id, type: "cancel" })).toMatchObject({ handled: true });
+		expect(onAbort).toHaveBeenCalledTimes(1);
+
+		uiBridge.dispose();
+		uiBridge.dispose();
+
+		expect(stop).toHaveBeenCalledTimes(1);
+	});
+
+	it("invalidates the registered root exactly once after a handled child mutation and before snapshot", () => {
+		const uiBridge = createExtensionUiBridge();
+		const order: string[] = [];
+		const root = new Box(0, 0);
+		const input = new Input();
+		root.addChild(input);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const originalInvalidate = root.invalidate.bind(root);
+		const invalidate = vi.spyOn(root, "invalidate").mockImplementation(() => {
+			order.push(`invalidate:${input.getValue()}`);
+			originalInvalidate();
+		});
+		const registration = uiBridge.registerWidgetRoot(widget, root, undefined, {
+			update: (next) => {
+				if (next.kind !== "box" || next.children[0].kind !== "input") throw new Error("expected nested input");
+				order.push(`update:${next.children[0].value}`);
+			},
+		});
+		if (!registration) throw new Error("expected registration");
+		order.length = 0;
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.children[0].id,
+			type: "change",
+			payload: { value: "next", selectionstart: 4, selectionend: 4 },
+		})).toMatchObject({ handled: true });
+
+		expect(order).toEqual(["invalidate:next", "update:next"]);
+		expect(invalidate).toHaveBeenCalledTimes(1);
+	});
+
+	it("contains handled root invalidation errors and retains the previous revision", () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const loader = new Loader(tui, (text) => text, (text) => text, "retained", { frames: ["-"] });
+		const stop = vi.spyOn(loader, "stop");
+		const input = new Input();
+		const root = new Box(0, 0);
+		root.addChild(input);
+		root.addChild(loader);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const update = vi.fn();
+		expect(uiBridge.registerWidgetRoot(widget, root, undefined, { update })).toBeDefined();
+		update.mockClear();
+		const originalInvalidate = root.invalidate.bind(root);
+		vi.spyOn(root, "invalidate").mockImplementation(() => {
+			throw new Error("handled invalidate failed");
+		});
+
+		expect(() => {
+			expect(uiBridge.dispatchWidgetEvent({
+				nodeid: widget.children[0].id,
+				type: "change",
+				eventid: "renderer-a:failed-refresh",
+				payload: { value: "first", selectionstart: 5, selectionend: 5 },
+			})).toEqual({ handled: true, published: false });
+		}).not.toThrow();
+		expect(update).not.toHaveBeenCalled();
+		expect(stop).not.toHaveBeenCalled();
+		expect(input.getSnapshot()).toMatchObject({
+			value: "first",
+			selectionStart: 5,
+			selectionEnd: 5,
+		});
+
+		vi.mocked(root.invalidate).mockImplementation(originalInvalidate);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.children[0].id,
+			type: "change",
+			eventid: "renderer-a:successful-refresh",
+			payload: { value: "second", selectionstart: 6, selectionend: 6 },
+		})).toEqual({ handled: true, published: true });
+		expect(update).toHaveBeenCalledTimes(1);
+		const published = update.mock.calls[0][0] as WidgetNode;
+		if (published.kind !== "box") throw new Error("expected published box widget");
+		expect((published.children[0] as any).ackid).toBe("renderer-a:successful-refresh");
+		expect(input.getSnapshot()).toMatchObject({ value: "second", selectionStart: 6, selectionEnd: 6 });
+		expect(stop).not.toHaveBeenCalled();
+	});
+
+	it("returns an unhandled unpublished result for invalid and stale widget events", () => {
+		const uiBridge = createExtensionUiBridge();
+		const input = new Input();
+		const widget = componentToWidget(input, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, input);
+		if (!registration) throw new Error("expected Input registration");
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "change",
+			eventid: "",
+			payload: { value: "invalid", selectionstart: 7, selectionend: 7 },
+		})).toEqual({ handled: false, published: false });
+		registration.unregister();
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "change",
+			eventid: "stale-event",
+			payload: { value: "stale", selectionstart: 5, selectionend: 5 },
+		})).toEqual({ handled: false, published: false });
+	});
+
+	it("applies an Input selection-only change and replays it in the acknowledged snapshot", () => {
+		const uiBridge = createExtensionUiBridge();
+		const input = new Input();
+		input.applyGuiEdit("abcdef", 6, 6);
+		const updates: WidgetNode[] = [];
+		const widget = componentToWidget(input, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, input, undefined, {
+			update: (next) => updates.push(next),
+		});
+		if (!registration) throw new Error("expected Input registration");
+		updates.length = 0;
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "change",
+			eventid: "selection-only-event",
+			payload: { value: "abcdef", selectionstart: 1, selectionend: 4 },
+		})).toMatchObject({ handled: true });
+
+		expect(input.getSnapshot()).toMatchObject({
+			value: "abcdef",
+			cursor: 4,
+			selectionStart: 1,
+			selectionEnd: 4,
+		});
+		expect(updates).toEqual([
+			expect.objectContaining({
+				kind: "input",
+				ackid: "selection-only-event",
+				value: "abcdef",
+				selectionstart: 1,
+				selectionend: 4,
+			}),
+		]);
+	});
+
+	it("contains scheduled root invalidation errors and retains the previous revision", async () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const loader = new Loader(tui, (text) => text, (text) => text, "retained", { frames: ["-"] });
+		const stop = vi.spyOn(loader, "stop");
+		const input = new Input();
+		const root = new Box(0, 0);
+		root.addChild(input);
+		root.addChild(loader);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const update = vi.fn();
+		expect(uiBridge.registerWidgetRoot(widget, root, undefined, { update })).toBeDefined();
+		update.mockClear();
+		const originalInvalidate = root.invalidate.bind(root);
+		vi.spyOn(root, "invalidate").mockImplementation(() => {
+			throw new Error("scheduled invalidate failed");
+		});
+
+		expect(uiBridge.requestWidgetRender(root)).toBe(true);
+		await Promise.resolve();
+		expect(update).not.toHaveBeenCalled();
+		expect(stop).not.toHaveBeenCalled();
+
+		vi.mocked(root.invalidate).mockImplementation(originalInvalidate);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.children[0].id,
+			type: "change",
+			payload: { value: "retained", selectionstart: 8, selectionend: 8 },
+		})).toMatchObject({ handled: true });
+		expect(update).toHaveBeenCalledTimes(1);
+		expect(stop).not.toHaveBeenCalled();
+	});
+
+	it("does not invalidate or publish for invalid payloads, unhandled events, or stale ids", () => {
+		const uiBridge = createExtensionUiBridge();
+		const root = new Box(0, 0);
+		const input = new Input();
+		root.addChild(input);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const invalidate = vi.spyOn(root, "invalidate");
+		const update = vi.fn();
+		const registration = uiBridge.registerWidgetRoot(widget, root, undefined, { update });
+		if (!registration) throw new Error("expected registration");
+		invalidate.mockClear();
+		update.mockClear();
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.children[0].id,
+			type: "change",
+			payload: { value: "bad", selectionstart: 4, selectionend: 3 },
+		})).toMatchObject({ handled: false });
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.children[0].id, type: "unknown" })).toMatchObject({ handled: false });
+		registration.unregister();
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.children[0].id,
+			type: "change",
+			payload: { value: "stale", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: false });
+		expect(invalidate).not.toHaveBeenCalled();
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("rejects invalid child pairing without publishing partial targets", () => {
+		const makeRoot = () => {
+			const root = new Box(0, 0);
+			root.addChild(new Input());
+			return root;
+		};
+		const cases: Array<(widget: WidgetNode) => WidgetNode> = [
+			(widget) => ({ ...(widget as Extract<WidgetNode, { kind: "box" | "container" }>), children: [] }),
+			(widget) => ({
+				...(widget as Extract<WidgetNode, { kind: "box" | "container" }>),
+				children: [
+					...(widget as Extract<WidgetNode, { kind: "box" | "container" }>).children,
+					{ kind: "text", id: "extra", text: "extra", paddingx: 0, paddingy: 0 },
+				],
+			}),
+			(widget) => ({
+				...(widget as Extract<WidgetNode, { kind: "box" | "container" }>),
+				children: [{
+					kind: "text",
+					id: (widget as Extract<WidgetNode, { kind: "box" | "container" }>).children[0].id,
+					text: "wrong kind",
+					paddingx: 0,
+					paddingy: 0,
+				}],
+			}),
+		];
+
+		for (const mutate of cases) {
+			const uiBridge = createExtensionUiBridge();
+			const root = makeRoot();
+			const widget = componentToWidget(root, { width: 80 });
+			expect(uiBridge.registerWidgetRoot(mutate(widget), root)).toBeUndefined();
+			uiBridge.dispose();
+		}
+	});
+
+	it("publishes and removes dynamic submenu targets in the same authoritative root revision", () => {
+		const uiBridge = createExtensionUiBridge();
+		const updates: WidgetNode[] = [];
+		const tui = { requestRender: () => {} } as any;
+		let closeSubmenu: (value?: string) => void = () => {};
+		const submenu = new CancellableLoader(
+			tui,
+			(text) => text,
+			(text) => text,
+			"Choose",
+			{ frames: ["-"] },
+		);
+		submenu.onAbort = () => closeSubmenu();
+		const submenuDispose = vi.spyOn(submenu, "dispose");
+		const settings = new SettingsList(
+			[{ id: "mode", label: "Mode", currentValue: "one", submenu: (_value, done) => {
+				closeSubmenu = done;
+				return submenu;
+			} }],
+			2,
+			TestSettingsListTheme,
+			() => {},
+			() => {},
+		);
+		const rootWidget = componentToWidget(settings, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(rootWidget, settings, undefined, {
+			update: (widget) => updates.push(widget),
+		});
+		if (!registration) throw new Error("expected registration");
+		updates.length = 0;
+		const submenuWidget = componentToWidget(submenu, { width: 80 });
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: submenuWidget.id, type: "cancel" })).toMatchObject({ handled: false });
+
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: rootWidget.id, type: "submit", payload: { index: 0 } })).toMatchObject({ handled: true });
+		expect(updates.at(-1)).toMatchObject({ kind: "settingslist", submenu: { id: submenuWidget.id } });
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: submenuWidget.id, type: "cancel" })).toMatchObject({ handled: true });
+		expect(updates.at(-1)).toMatchObject({ kind: "settingslist", selectedindex: 0 });
+		expect((updates.at(-1) as Extract<WidgetNode, { kind: "settingslist" }>).submenu).toBeUndefined();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: submenuWidget.id, type: "cancel" })).toMatchObject({ handled: false });
+		expect(submenuDispose).toHaveBeenCalledTimes(1);
+	});
+
+	it("retains scheduled external components when reconciliation fails even after factory registration", async () => {
+		const uiBridge = createExtensionUiBridge();
+		const updates: WidgetNode[] = [];
+		const tui = { requestRender: () => {} } as any;
+		const rejectedChild = new Loader(tui, (text) => text, (text) => text, "new", { frames: ["-"] });
+		const rejectedStop = vi.spyOn(rejectedChild, "stop");
+		const list = new SelectList([{ value: "one", label: "One" }], 1, TestSelectListTheme);
+		list.onCancel = () => {};
+		const root = new Box(0, 0);
+		root.addChild(list);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const registration = uiBridge.registerWidgetRoot(widget, root, undefined, {
+			update: (next) => updates.push(next),
+			ownership: "bridge-factory",
+		});
+		if (!registration) throw new Error("expected registration");
+		updates.length = 0;
+
+		root.addChild(rejectedChild);
+		root.addChild(rejectedChild);
+		expect(uiBridge.requestWidgetRender(root)).toBe(true);
+		await Promise.resolve();
+
+		expect(updates).toEqual([]);
+		expect(rejectedStop).not.toHaveBeenCalled();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.children[0].id, type: "cancel" })).toEqual({
+			handled: true,
+			published: false,
+		});
+	});
+
+	it("retains caller-owned unpublished components when scheduled reconciliation fails", async () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const rejectedChild = new Loader(tui, (text) => text, (text) => text, "caller", { frames: ["-"] });
+		const rejectedStop = vi.spyOn(rejectedChild, "stop");
+		const input = new Input();
+		input.onEscape = () => {};
+		const root = new Box(0, 0);
+		root.addChild(input);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		expect(uiBridge.registerWidgetRoot(widget, root)).toBeDefined();
+
+		root.addChild(rejectedChild);
+		root.addChild(rejectedChild);
+		expect(uiBridge.requestWidgetRender(root)).toBe(true);
+		await Promise.resolve();
+
+		expect(rejectedStop).not.toHaveBeenCalled();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.children[0].id, type: "cancel" })).toEqual({
+			handled: true,
+			published: false,
+		});
+	});
+
+	it("disposes transaction-created submenu components when an external root handled reconciliation fails", () => {
+		const uiBridge = createExtensionUiBridge();
+		const tui = { requestRender: () => {} } as any;
+		const rejectedChild = new Loader(tui, (text) => text, (text) => text, "handled", { frames: ["-"] });
+		const rejectedStop = vi.spyOn(rejectedChild, "stop");
+		const list = new SelectList([{ value: "one", label: "One" }], 1, TestSelectListTheme);
+		const root = new Box(0, 0);
+		root.addChild(list);
+		list.onSelect = () => {
+			root.addChild(rejectedChild);
+			root.addChild(rejectedChild);
+		};
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		expect(uiBridge.registerWidgetRoot(widget, root, undefined, { ownership: "caller-external" })).toBeDefined();
+
+		expect(uiBridge.dispatchWidgetEvent(
+			{ nodeid: widget.children[0].id, type: "select", payload: { index: 0 } },
+		)).toEqual({ handled: true, published: false });
+
+		expect(rejectedStop).toHaveBeenCalledTimes(1);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.children[0].id, type: "select", payload: { index: 0 } })).toEqual({
+			handled: true,
+			published: false,
+		});
+	});
+
+	it("contains refresh child collection failure and retains the previous revision", async () => {
+		const uiBridge = createExtensionUiBridge();
+		const root = new Box(0, 0);
+		const input = new Input();
+		input.onEscape = () => {};
+		root.addChild(input);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const update = vi.fn();
+		expect(uiBridge.registerWidgetRoot(widget, root, undefined, {
+			update,
+			ownership: "bridge-factory",
+		})).toBeDefined();
+		update.mockClear();
+		vi.spyOn(root, "getSnapshot").mockImplementation(() => {
+			throw new Error("refresh children failed");
+		});
+
+		expect(uiBridge.requestWidgetRender(root)).toBe(true);
+		await Promise.resolve();
+
+		expect(update).not.toHaveBeenCalled();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.children[0].id, type: "cancel" })).toEqual({
+			handled: true,
+			published: false,
+		});
+	});
+
+	it("absorbs handled candidate disposal errors and retains the previous revision", () => {
+		const uiBridge = createExtensionUiBridge();
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const tui = { requestRender: () => {} } as any;
+		const rejected = new Loader(tui, (text) => text, (text) => text, "rejected", { frames: ["-"] });
+		const error = new Error("rejected cleanup failed");
+		vi.spyOn(rejected, "stop").mockImplementation(() => {
+			throw error;
+		});
+		const list = new SelectList([{ value: "one", label: "One" }], 1, TestSelectListTheme);
+		list.onSelect = () => {
+			root.addChild(rejected);
+			root.addChild(rejected);
+		};
+		list.onCancel = () => {};
+		const root = new Box(0, 0);
+		root.addChild(list);
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const update = vi.fn();
+		expect(uiBridge.registerWidgetRoot(widget, root, undefined, {
+			update,
+			ownership: "caller-external",
+		})).toBeDefined();
+		update.mockClear();
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.children[0].id,
+			type: "select",
+			payload: { index: 0 },
+		})).toEqual({ handled: true, published: false });
+
+		expect(update).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalledWith("[extension-ui] widget dispose failed:", error);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.children[0].id, type: "cancel" })).toEqual({
+			handled: true,
+			published: false,
+		});
+		errorSpy.mockRestore();
+	});
+
+	it("coalesces TUI render requests through the registered root revision", async () => {
+		const uiBridge = createExtensionUiBridge();
+		const root = new Input();
+		const widget = componentToWidget(root, { width: 80 });
+		const invalidate = vi.spyOn(root, "invalidate");
+		const update = vi.fn();
+		expect(uiBridge.registerWidgetRoot(widget, root, undefined, { update })).toBeDefined();
+		invalidate.mockClear();
+		update.mockClear();
+
+		expect(uiBridge.requestWidgetRender(root)).toBe(true);
+		expect(uiBridge.requestWidgetRender(root)).toBe(true);
+		expect(uiBridge.requestWidgetRender(root)).toBe(true);
+		expect(update).not.toHaveBeenCalled();
+
+		await Promise.resolve();
+
+		expect(invalidate).toHaveBeenCalledTimes(1);
+		expect(update).toHaveBeenCalledTimes(1);
+	});
+
+	it("publishes live Loader frames through asynchronous root revisions", async () => {
+		vi.useFakeTimers();
+		try {
+			const uiBridge = createExtensionUiBridge();
+			const target: { component?: Loader } = {};
+			const tui = {
+				requestRender: () => {
+					if (target.component) uiBridge.requestWidgetRender(target.component);
+				},
+			} as unknown as TUI;
+			const loader = new Loader(tui, (text) => text, (text) => text, "Working", {
+				frames: ["a", "b", "c"],
+				intervalMs: 10,
+			});
+			target.component = loader;
+			const updates: WidgetNode[] = [];
+			const registration = uiBridge.registerWidgetRoot(
+				componentToWidget(loader, { width: 80 }),
+				loader,
+				undefined,
+				{ update: (widget) => updates.push(widget), ownership: "bridge-factory" },
+			);
+			if (!registration) throw new Error("expected Loader registration");
+			updates.length = 0;
+
+			vi.advanceTimersByTime(10);
+			expect(updates).toEqual([]);
+			await Promise.resolve();
+			expect(updates).toHaveLength(1);
+			expect(updates[0]).toMatchObject({ kind: "loader", frame: "b" });
+
+			vi.advanceTimersByTime(20);
+			expect(updates).toHaveLength(1);
+			await Promise.resolve();
+			expect(updates).toHaveLength(2);
+			expect(updates[1]).toMatchObject({ kind: "loader", frame: "a" });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("disposes Loader variants on unregister and bridge disposal without allowing animation restart", async () => {
+		vi.useFakeTimers();
+		try {
+			for (const LoaderType of [Loader, CancellableLoader] as const) {
+				for (const cleanup of ["unregister", "dispose"] as const) {
+				const uiBridge = createExtensionUiBridge();
+				const target: { component?: Loader } = {};
+				const requestRender = vi.fn(() => {
+					if (target.component) uiBridge.requestWidgetRender(target.component);
+				});
+				const tui = {
+					requestRender,
+				} as unknown as TUI;
+				const loader = new LoaderType(tui, (text) => text, (text) => text, cleanup, {
+					frames: ["a", "b"],
+					intervalMs: 10,
+				});
+				target.component = loader;
+				const dispose = vi.spyOn(loader, "dispose");
+				const update = vi.fn();
+				const registration = uiBridge.registerWidgetRoot(
+					componentToWidget(loader, { width: 80 }),
+					loader,
+					undefined,
+					{ update, ownership: "bridge-factory" },
+				);
+				if (!registration) throw new Error("expected Loader registration");
+				update.mockClear();
+
+				vi.advanceTimersByTime(10);
+				if (cleanup === "unregister") {
+					registration.unregister();
+					registration.unregister();
+				} else {
+					uiBridge.dispose();
+					uiBridge.dispose();
+				}
+				await Promise.resolve();
+				vi.advanceTimersByTime(30);
+				await Promise.resolve();
+
+				expect(dispose).toHaveBeenCalledTimes(1);
+				expect(update).not.toHaveBeenCalled();
+				expect(vi.getTimerCount()).toBe(0);
+				requestRender.mockClear();
+				loader.start();
+				loader.setIndicator({ frames: ["x", "y"], intervalMs: 5 });
+				vi.advanceTimersByTime(20);
+				expect(vi.getTimerCount()).toBe(0);
+				expect(requestRender).not.toHaveBeenCalled();
+				}
+			}
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps plain Loader cancel unhandled and aborts CancellableLoader once without future revisions", async () => {
+		vi.useFakeTimers();
+		try {
+			const uiBridge = createExtensionUiBridge();
+			const plain = new Loader(
+				{ requestRender: () => {} } as unknown as TUI,
+				(text) => text,
+				(text) => text,
+				"Plain",
+				{ frames: ["only"] },
+			);
+			const plainWidget = componentToWidget(plain, { width: 80 });
+			expect(uiBridge.registerWidgetRoot(plainWidget, plain)).toBeDefined();
+			expect(uiBridge.dispatchWidgetEvent({ nodeid: plainWidget.id, type: "cancel" })).toEqual({
+				handled: false,
+				published: false,
+			});
+
+			const target: { component?: CancellableLoader } = {};
+			const tui = {
+				requestRender: () => {
+					if (target.component) uiBridge.requestWidgetRender(target.component);
+				},
+			} as unknown as TUI;
+			const loader = new CancellableLoader(tui, (text) => text, (text) => text, "Abortable", {
+				frames: ["a", "b"],
+				intervalMs: 10,
+			});
+			target.component = loader;
+			const onAbort = vi.fn();
+			loader.onAbort = onAbort;
+			const updates: WidgetNode[] = [];
+			const widget = componentToWidget(loader, { width: 80 });
+			expect(uiBridge.registerWidgetRoot(widget, loader, undefined, {
+				update: (next) => updates.push(next),
+			})).toBeDefined();
+			updates.length = 0;
+
+			expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toMatchObject({
+				handled: true,
+				published: true,
+			});
+			expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toMatchObject({
+				handled: true,
+				published: true,
+			});
+			expect(onAbort).toHaveBeenCalledTimes(1);
+			expect(updates[0]).toMatchObject({ kind: "loader", aborted: true });
+			updates.length = 0;
+
+			vi.advanceTimersByTime(30);
+			await Promise.resolve();
+			expect(updates).toEqual([]);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("cancels queued root work on unregister and bridge disposal", async () => {
+		for (const cleanup of ["unregister", "dispose"] as const) {
+			const uiBridge = createExtensionUiBridge();
+			const root = new Input();
+			const update = vi.fn();
+			const registration = uiBridge.registerWidgetRoot(componentToWidget(root, { width: 80 }), root, undefined, { update });
+			if (!registration) throw new Error("expected registration");
+			update.mockClear();
+			expect(uiBridge.requestWidgetRender(root)).toBe(true);
+			if (cleanup === "unregister") registration.unregister();
+			else uiBridge.dispose();
+
+			await Promise.resolve();
+
+			expect(update).not.toHaveBeenCalled();
+		}
+	});
+
 	it("disposes bridge widget targets once and makes stale registrations inert", () => {
 		const uiBridge = createExtensionUiBridge();
 		const host: ExtensionUiHost = {
@@ -1471,80 +2681,61 @@ describe("createExtensionContext ctx surface", () => {
 			frame: "-",
 			cancellable: false,
 		};
-		const unregister = uiBridge.registerWidgetRoot(widget, loader);
+		const registration = uiBridge.registerWidgetRoot(widget, loader);
+		if (!registration) throw new Error("expected registration");
 
 		uiBridge.dispose();
 		uiBridge.dispose();
 
 		expect(stop).toHaveBeenCalledTimes(1);
 		expect(uiBridge.host).toBeUndefined();
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "submit" })).toBe(false);
-		expect(() => unregister()).not.toThrow();
-		const staleUnregister = uiBridge.registerWidgetRoot(widget, loader);
-		expect(() => staleUnregister()).not.toThrow();
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "submit" })).toBe(false);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "submit" })).toMatchObject({ handled: false });
+		expect(() => registration.unregister()).not.toThrow();
+		expect(uiBridge.registerWidgetRoot(widget, loader)).toBeUndefined();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "submit" })).toMatchObject({ handled: false });
 	});
 
-	it("disposes a component registered for both root and child only once", () => {
+	it("rejects and disposes a repeated Bridge-owned Box adapter child only once", () => {
 		const uiBridge = createExtensionUiBridge();
 		const tui = { requestRender: () => {} } as any;
-		const loader = new Loader(tui, (text) => text, (text) => text, "Shared", { frames: ["-"] });
-		const stop = vi.spyOn(loader, "stop");
-		(loader as unknown as { children: Loader[] }).children = [loader];
-		const child: WidgetNode = {
-			kind: "loader",
-			id: "loader-child",
-			label: "Shared",
-			frame: "-",
-			cancellable: false,
-		};
-		const root: WidgetNode = {
-			kind: "box",
-			id: "loader-container",
-			paddingx: 0,
-			paddingy: 0,
-			children: [child],
-		};
-		uiBridge.registerWidgetRoot(root, loader);
+		const loader = new CancellableLoader(tui, (text) => text, (text) => text, "Shared", { frames: ["-"] });
+		const dispose = vi.spyOn(loader, "dispose");
+		const box = new Box(0, 0);
+		box.addChild(loader);
+		box.addChild(loader);
+		const root = componentToWidget(box, { width: 80 });
+		if (root.kind !== "box") throw new Error("expected box widget");
+		expect(root.children[0].id).toBe(root.children[1].id);
+		const registration = uiBridge.registerWidgetRoot(root, box, undefined, { ownership: "bridge-factory" });
 
+		expect(registration).toBeUndefined();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: root.children[1].id, type: "cancel" })).toMatchObject({ handled: false });
+		uiBridge.dispose();
 		uiBridge.dispose();
 
-		expect(stop).toHaveBeenCalledTimes(1);
+		expect(dispose).toHaveBeenCalledTimes(1);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: root.children[0].id, type: "cancel" })).toMatchObject({ handled: false });
 	});
 
-	it("unregisters shared component mappings before disposing the component once", () => {
+	it("rejects repeated caller-owned Box adapter child mappings without disposal", () => {
 		const uiBridge = createExtensionUiBridge();
 		const tui = { requestRender: () => {} } as any;
-		const loader = new Loader(tui, (text) => text, (text) => text, "Shared", { frames: ["-"] });
-		(loader as unknown as { children: Loader[] }).children = [loader];
-		const child: WidgetNode = {
-			kind: "loader",
-			id: "shared-child",
-			label: "Shared",
-			frame: "-",
-			cancellable: false,
-		};
-		const root: WidgetNode = {
-			kind: "box",
-			id: "shared-root",
-			paddingx: 0,
-			paddingy: 0,
-			children: [child],
-		};
-		const staleDispatches: boolean[] = [];
-		const originalStop = loader.stop.bind(loader);
-		const stop = vi.spyOn(loader, "stop").mockImplementation(() => {
-			staleDispatches.push(uiBridge.dispatchWidgetEvent({ nodeid: child.id, type: "submit" }));
-			originalStop();
-		});
-		const unregister = uiBridge.registerWidgetRoot(root, loader);
+		const loader = new CancellableLoader(tui, (text) => text, (text) => text, "Shared", { frames: ["-"] });
+		const box = new Box(0, 0);
+		box.addChild(loader);
+		box.addChild(loader);
+		const root = componentToWidget(box, { width: 80 });
+		if (root.kind !== "box") throw new Error("expected box widget");
+		const childId = root.children[0].id;
+		expect(root.children[1].id).toBe(childId);
+		const dispose = vi.spyOn(loader, "dispose");
+		const registration = uiBridge.registerWidgetRoot(root, box, undefined, { ownership: "caller-external" });
 
-		unregister();
+		expect(registration).toBeUndefined();
 
-		expect(stop).toHaveBeenCalledTimes(1);
-		expect(staleDispatches).toEqual([false]);
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: root.id, type: "submit" })).toBe(false);
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: child.id, type: "submit" })).toBe(false);
+		expect(dispose).not.toHaveBeenCalled();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: root.id, type: "submit" })).toMatchObject({ handled: false });
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: childId, type: "cancel" })).toMatchObject({ handled: false });
 	});
 
 	it("continues normal unregister after a widget disposer throws", () => {
@@ -1561,36 +2752,18 @@ describe("createExtensionContext ctx surface", () => {
 		const box = new Box(0, 0);
 		box.addChild(first);
 		box.addChild(second);
-		const firstWidget: WidgetNode = {
-			kind: "loader",
-			id: "throwing-first",
-			label: "First",
-			frame: "-",
-			cancellable: false,
-		};
-		const secondWidget: WidgetNode = {
-			kind: "loader",
-			id: "throwing-second",
-			label: "Second",
-			frame: "-",
-			cancellable: false,
-		};
-		const root: WidgetNode = {
-			kind: "box",
-			id: "throwing-root",
-			paddingx: 0,
-			paddingy: 0,
-			children: [firstWidget, secondWidget],
-		};
-		const unregister = uiBridge.registerWidgetRoot(root, box);
+		const root = componentToWidget(box, { width: 80 });
+		if (root.kind !== "box") throw new Error("expected box widget");
+		const registration = uiBridge.registerWidgetRoot(root, box);
+		if (!registration) throw new Error("expected registration");
 
-		expect(() => unregister()).not.toThrow();
+		expect(() => registration.unregister()).not.toThrow();
 
 		expect(firstStop).toHaveBeenCalledTimes(1);
 		expect(secondStop).toHaveBeenCalledTimes(1);
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: root.id, type: "submit" })).toBe(false);
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: firstWidget.id, type: "submit" })).toBe(false);
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: secondWidget.id, type: "submit" })).toBe(false);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: root.id, type: "submit" })).toMatchObject({ handled: false });
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: root.children[0].id, type: "submit" })).toMatchObject({ handled: false });
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: root.children[1].id, type: "submit" })).toMatchObject({ handled: false });
 		expect(errorSpy).toHaveBeenCalledWith("[extension-ui] widget dispose failed:", error);
 		errorSpy.mockRestore();
 	});
@@ -1695,6 +2868,24 @@ describe("createExtensionContext ctx surface", () => {
 		]);
 	});
 
+	it("contains custom serialization failure and disposes the Bridge-owned candidate", async () => {
+		const uiBridge = createExtensionUiBridge();
+		const requestUi = vi.fn(async () => undefined);
+		uiBridge.attach(makeExtensionUiHost({ requestUi }));
+		const ctx = createExtensionContext(() => "/work", uiBridge);
+		const tui = { requestRender: () => {} } as any;
+		const loader = new Loader(tui, (text) => text, (text) => text, "custom", { frames: ["-"] });
+		vi.spyOn(loader, "getSnapshot").mockImplementation(() => {
+			throw new Error("custom serialize failed");
+		});
+		const stop = vi.spyOn(loader, "stop");
+
+		await expect(ctx.ui.custom(() => loader)).resolves.toBeUndefined();
+
+		expect(requestUi).not.toHaveBeenCalled();
+		expect(stop).toHaveBeenCalledTimes(1);
+	});
+
 	it("lets custom UI factories resolve via done", async () => {
 		const uiBridge = createExtensionUiBridge();
 		const uiHost: ExtensionUiHost = {
@@ -1759,6 +2950,7 @@ describe("createExtensionContext ctx surface", () => {
 
 		count = 1;
 		requestRender?.();
+		await Promise.resolve();
 
 		expect(requests[0]).toMatchObject({ kind: "custom" });
 		expect(updates).toEqual([
@@ -1805,10 +2997,276 @@ describe("createExtensionContext ctx surface", () => {
 		expect(request?.kind).toBe("custom");
 		if (request?.kind !== "custom") throw new Error("expected custom request");
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "select", payload: { index: 1 } })).toBe(
-			true
-		);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "select", payload: { index: 1 } })).toMatchObject({ handled: true });
 		await expect(customPromise).resolves.toBe("b");
+	});
+
+	it("keeps SelectList navigation, filter, focus, and activation authoritative through root revisions", () => {
+		const uiBridge = createExtensionUiBridge();
+		const updates: WidgetNode[] = [];
+		const calls: string[] = [];
+		const list = new SelectList(
+			[
+				{ value: "alpha", label: "Alpha" },
+				{ value: "Beta", label: "Beta" },
+				{ value: "bravo", label: "Bravo" },
+				{ value: "charlie", label: "Charlie" },
+			],
+			2,
+			TestSelectListTheme,
+		);
+		list.onSelectionChange = (item) => calls.push(`change:${item.value}`);
+		list.onSelect = (item) => calls.push(`select:${item.value}`);
+		list.onCancel = () => calls.push("cancel");
+		const widget = componentToWidget(list, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, list, undefined, {
+			update: (next) => updates.push(next),
+		});
+		if (!registration) throw new Error("expected SelectList registration");
+		updates.length = 0;
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "focus",
+			payload: { focused: true },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "change",
+			payload: { value: "B" },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "key",
+			payload: { data: "\x1b[B" },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "select",
+			payload: { index: 0 },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toMatchObject({ handled: true });
+
+		expect(updates).toHaveLength(5);
+		expect(updates[2]).toMatchObject({
+			kind: "selectlist",
+			focused: true,
+			filter: "B",
+			selectedindex: 1,
+			visiblestart: 0,
+			visibleend: 2,
+			nomatch: false,
+		});
+		expect(updates.at(-1)).toMatchObject({
+			kind: "selectlist",
+			selectedindex: 0,
+		});
+		expect(calls).toEqual(["change:bravo", "change:Beta", "select:Beta", "cancel"]);
+	});
+
+	it("routes SettingsList cycle and dynamic submenu completion through authoritative root revisions", () => {
+		const uiBridge = createExtensionUiBridge();
+		const updates: WidgetNode[] = [];
+		const calls: string[] = [];
+		const submenus: SelectList[] = [];
+		const settings = new SettingsList(
+			[
+				{ id: "mode", label: "Mode", currentValue: "fast", values: ["fast", "safe"] },
+				{
+					id: "theme",
+					label: "Theme",
+					currentValue: "dark",
+					submenu: (_value, done) => {
+						const submenu = new SelectList(
+							[
+								{ value: "dark", label: "Dark" },
+								{ value: "light", label: "Light" },
+							],
+							2,
+							TestSelectListTheme,
+						);
+						submenu.onSelect = (item) => done(item.value);
+						submenu.onCancel = () => done();
+						submenus.push(submenu);
+						return submenu;
+					},
+				},
+			],
+			2,
+			TestSettingsListTheme,
+			(id, value) => calls.push(`change:${id}:${value}`),
+			() => calls.push("cancel"),
+			{ enableSearch: true },
+		);
+		const widget = componentToWidget(settings, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, settings, undefined, {
+			update: (next) => updates.push(next),
+		});
+		if (!registration) throw new Error("expected SettingsList registration");
+		updates.length = 0;
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "cycle",
+			payload: { direction: 1 },
+		})).toMatchObject({ handled: true });
+		expect(updates.at(-1)).toMatchObject({
+			kind: "settingslist",
+			items: [
+				expect.objectContaining({ id: "mode", currentvalue: "safe" }),
+				expect.objectContaining({ id: "theme", currentvalue: "dark" }),
+			],
+		});
+		const updatesAfterCycle = updates.length;
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "cycle",
+			payload: { direction: 0 },
+		})).toMatchObject({ handled: false });
+		expect(updates).toHaveLength(updatesAfterCycle);
+		expect(calls).toEqual(["change:mode:safe"]);
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "select",
+			payload: { index: 1 },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "submit",
+			payload: { index: 1 },
+		})).toMatchObject({ handled: true });
+		const opened = updates.at(-1) as Extract<WidgetNode, { kind: "settingslist" }>;
+		const firstSubmenuId = opened.submenu?.id;
+		expect(firstSubmenuId).toBeTypeOf("string");
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toMatchObject({ handled: false });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: firstSubmenuId!,
+			type: "focus",
+			payload: { focused: true },
+		})).toMatchObject({ handled: true });
+		expect(updates.at(-1)).toMatchObject({
+			kind: "settingslist",
+			submenu: {
+				id: firstSubmenuId,
+				focused: true,
+			},
+		});
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: firstSubmenuId!,
+			type: "select",
+			payload: { index: 1 },
+		})).toMatchObject({ handled: true });
+		expect(updates.at(-1)).toMatchObject({
+			kind: "settingslist",
+			selectedindex: 1,
+			items: [
+				expect.objectContaining({ id: "mode", currentvalue: "safe" }),
+				expect.objectContaining({ id: "theme", currentvalue: "light" }),
+			],
+		});
+		expect((updates.at(-1) as Extract<WidgetNode, { kind: "settingslist" }>).submenu).toBeUndefined();
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: firstSubmenuId!,
+			type: "select",
+			payload: { index: 0 },
+		})).toMatchObject({ handled: false });
+
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "submit" })).toMatchObject({ handled: true });
+		const reopened = updates.at(-1) as Extract<WidgetNode, { kind: "settingslist" }>;
+		const secondSubmenuId = reopened.submenu?.id;
+		expect(secondSubmenuId).toBeTypeOf("string");
+		expect(secondSubmenuId).not.toBe(firstSubmenuId);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: secondSubmenuId!, type: "cancel" })).toMatchObject({ handled: true });
+		expect(updates.at(-1)).toMatchObject({ kind: "settingslist", selectedindex: 1 });
+		expect((updates.at(-1) as Extract<WidgetNode, { kind: "settingslist" }>).submenu).toBeUndefined();
+		expect(calls).toEqual(["change:mode:safe", "change:theme:light"]);
+
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toMatchObject({ handled: true });
+		expect(calls).toEqual(["change:mode:safe", "change:theme:light", "cancel"]);
+		expect(submenus).toHaveLength(2);
+	});
+
+	it("continues SettingsList root refresh after a synchronous returned disposer throws", () => {
+		const uiBridge = createExtensionUiBridge();
+		const updates: WidgetNode[] = [];
+		const dispose = vi.fn(() => {
+			throw new Error("returned dispose failed");
+		});
+		const reopened = new SelectList(
+			[
+				{ value: "light", label: "Light" },
+				{ value: "dark", label: "Dark" },
+			],
+			2,
+			TestSelectListTheme,
+		);
+		let factoryCalls = 0;
+		let settings: SettingsList;
+		settings = new SettingsList(
+			[{
+				id: "theme",
+				label: "Theme",
+				currentValue: "dark",
+				submenu: (_value, done) => {
+					factoryCalls++;
+					if (factoryCalls === 1) {
+						done("light");
+						return {
+							render: () => [],
+							invalidate: () => {},
+							dispose,
+						};
+					}
+					return reopened;
+				},
+			}],
+			1,
+			TestSettingsListTheme,
+			() => {
+				expect(settings.getSnapshot()).toMatchObject({
+					submenu: undefined,
+					items: [expect.objectContaining({ currentValue: "light" })],
+				});
+				expect(settings.activateSelected()).toBe(true);
+			},
+			() => {},
+		);
+		const widget = componentToWidget(settings, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, settings, undefined, {
+			update: (next) => updates.push(next),
+		});
+		if (!registration) throw new Error("expected SettingsList registration");
+		updates.length = 0;
+
+		expect(() => uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "submit",
+		})).not.toThrow();
+
+		expect(dispose).toHaveBeenCalledTimes(1);
+		expect(updates).toHaveLength(1);
+		const refreshed = updates[0] as Extract<WidgetNode, { kind: "settingslist" }>;
+		expect(refreshed).toMatchObject({
+			kind: "settingslist",
+			items: [expect.objectContaining({ currentvalue: "light" })],
+			submenu: {
+				kind: "selectlist",
+				items: [
+					expect.objectContaining({ value: "light" }),
+					expect.objectContaining({ value: "dark" }),
+				],
+			},
+		});
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: refreshed.submenu!.id,
+			type: "focus",
+			payload: { focused: true },
+		})).toMatchObject({ handled: true });
+		expect(updates.at(-1)).toMatchObject({
+			submenu: { id: refreshed.submenu!.id, focused: true },
+		});
 	});
 
 	it("routes input widget submit events back to the live custom component", async () => {
@@ -1839,11 +3297,232 @@ describe("createExtensionContext ctx surface", () => {
 		expect(request?.kind).toBe("custom");
 		if (request?.kind !== "custom") throw new Error("expected custom request");
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "change", payload: { value: "final" } })).toBe(
-			true
-		);
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "submit" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: request.widget.id,
+			type: "change",
+			payload: { value: "final", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: request.widget.id,
+			type: "submit",
+			payload: { value: "final", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: true });
 		await expect(customPromise).resolves.toBe("final");
+	});
+
+	it("dispatches complete Input changes and submit in FIFO order", () => {
+		const uiBridge = createExtensionUiBridge();
+		const input = new Input();
+		const observed: string[] = [];
+		input.onSubmit = (value) => observed.push(`submit:${value}`);
+		const widget = componentToWidget(input, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, input, undefined, {
+			update: (next) => {
+				if (next.kind === "input") observed.push(`snapshot:${next.value}`);
+			},
+		});
+		if (!registration) throw new Error("expected Input registration");
+		observed.length = 0;
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "change",
+			payload: { value: "first", selectionstart: 1, selectionend: 3 },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "change",
+			payload: { value: "second", selectionstart: 6, selectionend: 6 },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "submit",
+			payload: { value: "second", selectionstart: 2, selectionend: 4 },
+		})).toMatchObject({ handled: true });
+
+		expect(observed).toEqual([
+			"snapshot:first",
+			"snapshot:second",
+			"submit:second",
+			"snapshot:second",
+		]);
+		expect(input.getSnapshot()).toMatchObject({
+			value: "second",
+			selectionStart: 2,
+			selectionEnd: 4,
+		});
+	});
+
+	it("publishes handled eventid as ackid only on the target node without polluting siblings", () => {
+		const uiBridge = createExtensionUiBridge();
+		const root = new Box(0, 0);
+		const input = new Input();
+		const sibling = new Input();
+		root.addChild(input);
+		root.addChild(sibling);
+		const updates: WidgetNode[] = [];
+		const widget = componentToWidget(root, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, root, undefined, {
+			update: (next) => updates.push(next),
+		});
+		if (!registration) throw new Error("expected Input root registration");
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const inputWidget = widget.children[0];
+		updates.length = 0;
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: inputWidget.id,
+			type: "change",
+			eventid: "renderer-a:event-7",
+			payload: { value: "accepted", selectionstart: 8, selectionend: 8 },
+		} as any)).toMatchObject({ handled: true });
+
+		expect(updates).toHaveLength(1);
+		const published = updates[0];
+		if (published.kind !== "box") throw new Error("expected published box widget");
+		expect((published as any).ackid).toBeUndefined();
+		expect((published.children[0] as any).ackid).toBe("renderer-a:event-7");
+		expect((published.children[1] as any).ackid).toBeUndefined();
+	});
+
+	it("publishes and acknowledges an accepted disabled Editor submit", () => {
+		const uiBridge = createExtensionUiBridge();
+		const editor = new Editor(
+			{ requestRender: () => {}, terminal: { rows: 24 } } as any,
+			{ borderColor: (text) => text, selectList: TestSelectListTheme },
+		);
+		editor.disableSubmit = true;
+		const submit = vi.fn();
+		editor.onSubmit = submit;
+		const updates: WidgetNode[] = [];
+		const widget = componentToWidget(editor, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, editor, undefined, {
+			update: (next) => updates.push(next),
+		});
+		if (!registration) throw new Error("expected Editor registration");
+		updates.length = 0;
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "submit",
+			eventid: "renderer-a:disabled-editor",
+			payload: { value: "accepted", selectionstart: 2, selectionend: 6 },
+		})).toEqual({ handled: true, published: true });
+
+		expect(updates).toHaveLength(1);
+		expect(updates[0]).toMatchObject({
+			kind: "editor",
+			value: "accepted",
+			selectionstart: 2,
+			selectionend: 6,
+			ackid: "renderer-a:disabled-editor",
+		});
+		expect(submit).not.toHaveBeenCalled();
+	});
+
+	it("does not attach ackid to initial or scheduled widget publications", async () => {
+		const uiBridge = createExtensionUiBridge();
+		const input = new Input();
+		const updates: WidgetNode[] = [];
+		const registration = uiBridge.registerWidgetRoot(
+			componentToWidget(input, { width: 80 }),
+			input,
+			undefined,
+			{ update: (next) => updates.push(next) },
+		);
+		if (!registration) throw new Error("expected Input registration");
+
+		expect((updates[0] as any).ackid).toBeUndefined();
+		input.setValue("scheduled");
+		expect(uiBridge.requestWidgetRender(input)).toBe(true);
+		await Promise.resolve();
+
+		expect(updates).toHaveLength(2);
+		expect(updates[1]).toMatchObject({ kind: "input", value: "scheduled" });
+		expect((updates[1] as any).ackid).toBeUndefined();
+	});
+
+	it("acks a handled dynamic target without marking its newly published sibling", () => {
+		const uiBridge = createExtensionUiBridge();
+		const root = new Box(0, 0);
+		const input = new Input();
+		root.addChild(input);
+		input.onSubmit = () => root.addChild(new Input());
+		const updates: WidgetNode[] = [];
+		const widget = componentToWidget(root, { width: 80 });
+		if (widget.kind !== "box") throw new Error("expected box widget");
+		const registration = uiBridge.registerWidgetRoot(widget, root, undefined, {
+			update: (next) => updates.push(next),
+		});
+		if (!registration) throw new Error("expected dynamic root registration");
+		updates.length = 0;
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.children[0].id,
+			type: "submit",
+			eventid: "renderer-a:dynamic",
+			payload: { value: "done", selectionstart: 4, selectionend: 4 },
+		} as any)).toMatchObject({ handled: true });
+
+		const published = updates[0];
+		if (published.kind !== "box") throw new Error("expected published box widget");
+		expect(published.children).toHaveLength(2);
+		expect((published.children[0] as any).ackid).toBe("renderer-a:dynamic");
+		expect((published.children[1] as any).ackid).toBeUndefined();
+	});
+
+	it("rejects empty, whitespace, non-string, and oversized eventids without mutation or publication", () => {
+		const uiBridge = createExtensionUiBridge();
+		const input = new Input();
+		const update = vi.fn();
+		const widget = componentToWidget(input, { width: 80 });
+		const registration = uiBridge.registerWidgetRoot(widget, input, undefined, { update });
+		if (!registration) throw new Error("expected Input registration");
+		update.mockClear();
+
+		for (const eventid of ["", "   ", 1, "x".repeat(257)]) {
+			expect(uiBridge.dispatchWidgetEvent({
+				nodeid: widget.id,
+				type: "change",
+				eventid,
+				payload: { value: "invalid", selectionstart: 7, selectionend: 7 },
+			} as any)).toMatchObject({ handled: false });
+		}
+		expect(input.getValue()).toBe("");
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("rejects a stale Input target between complete edits", () => {
+		const uiBridge = createExtensionUiBridge();
+		const input = new Input();
+		const submit = vi.fn();
+		input.onSubmit = submit;
+		const widget = componentToWidget(input, { width: 80 });
+		const update = vi.fn();
+		const registration = uiBridge.registerWidgetRoot(widget, input, undefined, { update });
+		if (!registration) throw new Error("expected Input registration");
+		update.mockClear();
+
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "change",
+			payload: { value: "accepted", selectionstart: 8, selectionend: 8 },
+		})).toMatchObject({ handled: true });
+		registration.unregister();
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "change",
+			payload: { value: "stale", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: false });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: widget.id,
+			type: "submit",
+			payload: { value: "stale", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: false });
+
+		expect(input.getValue()).toBe("accepted");
+		expect(submit).not.toHaveBeenCalled();
+		expect(update).toHaveBeenCalledTimes(1);
 	});
 
 	it("routes input widget cancel events back to the live custom component", async () => {
@@ -1873,38 +3552,76 @@ describe("createExtensionContext ctx surface", () => {
 		expect(request?.kind).toBe("custom");
 		if (request?.kind !== "custom") throw new Error("expected custom request");
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "cancel" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "cancel" })).toMatchObject({ handled: true });
 		await expect(customPromise).resolves.toBe("cancelled");
 	});
 
-	it("closes custom input widgets with done(undefined) when cancel has no callback", async () => {
+	it("never falls back standard adapter cancel to root done when the adapter returns unhandled", () => {
 		const uiBridge = createExtensionUiBridge();
-		const requests: ExtUiRequest[] = [];
-		const uiHost: ExtensionUiHost = {
-			notify: () => {},
-			setStatus: () => {},
-			setWidget: () => {},
-			setHeader: () => {},
-			setFooter: () => {},
-			requestUi: async (request) => {
-				requests.push(request);
-				return new Promise(() => {});
+		const editor = new Editor(
+			{ requestRender: () => {} } as any,
+			{
+				borderColor: (text) => text,
+				selectList: TestSelectListTheme,
 			},
-		};
-		uiBridge.attach(uiHost);
-		const ctx = createExtensionContext(() => "/work", uiBridge);
-		const customPromise = ctx.ui.custom(() => new Input());
+		);
+		const invalidate = vi.spyOn(editor, "invalidate");
+		const done = vi.fn();
+		const update = vi.fn();
+		const widget = componentToWidget(editor, { width: 80 });
+		uiBridge.registerWidgetRoot(widget, editor, done, { update });
+		update.mockClear();
 
-		await Promise.resolve();
-		const request = requests[0];
-		expect(request?.kind).toBe("custom");
-		if (request?.kind !== "custom") throw new Error("expected custom request");
-
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "cancel" })).toBe(true);
-		await expect(customPromise).resolves.toBeUndefined();
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toMatchObject({ handled: false });
+		expect(done).not.toHaveBeenCalled();
+		expect(invalidate).not.toHaveBeenCalled();
+		expect(update).not.toHaveBeenCalled();
 	});
 
-	it("routes nested child widget events back to the matching live component", async () => {
+	it("passes unknown widget payloads through the bridge without degrading them to undefined", () => {
+		const uiBridge = createExtensionUiBridge();
+		const input = new Input();
+		const escape = vi.fn();
+		const invalidate = vi.spyOn(input, "invalidate");
+		const update = vi.fn();
+		input.onEscape = escape;
+		const widget = componentToWidget(input, { width: 80 });
+		uiBridge.registerWidgetRoot(widget, input, undefined, { update });
+		update.mockClear();
+
+		for (const payload of [null, [], "payload"]) {
+			expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel", payload })).toMatchObject({ handled: false });
+		}
+		expect(escape).not.toHaveBeenCalled();
+		expect(invalidate).not.toHaveBeenCalled();
+		expect(update).not.toHaveBeenCalled();
+
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel", payload: undefined })).toMatchObject({ handled: true });
+		expect(escape).toHaveBeenCalledOnce();
+		expect(invalidate).toHaveBeenCalledOnce();
+		expect(update).toHaveBeenCalledOnce();
+	});
+
+	it("keeps cancel fallback only for adapterless terminal fallback targets", () => {
+		const uiBridge = createExtensionUiBridge();
+		const done = vi.fn();
+		const update = vi.fn();
+		const component: Component = {
+			render: () => ["terminal fallback"],
+			invalidate: vi.fn(),
+		};
+		const widget: WidgetNode = { kind: "terminal", id: "terminal-fallback", lines: ["terminal fallback"] };
+		uiBridge.registerWidgetRoot(widget, component, done, { update });
+		update.mockClear();
+
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toMatchObject({ handled: true });
+		expect(done).toHaveBeenCalledOnce();
+		expect(done).toHaveBeenCalledWith(undefined);
+		expect(component.invalidate).toHaveBeenCalledOnce();
+		expect(update).toHaveBeenCalledOnce();
+	});
+
+	it("registers nested targets through adapter children", async () => {
 		const uiBridge = createExtensionUiBridge();
 		const requests: ExtUiRequest[] = [];
 		const uiHost: ExtensionUiHost = {
@@ -1922,6 +3639,7 @@ describe("createExtensionContext ctx surface", () => {
 		const ctx = createExtensionContext(() => "/work", uiBridge);
 		const customPromise = ctx.ui.custom((_tui, _theme, _keys, done) => {
 			const box = new Box(0, 0);
+			box.addChild(new Text("first", 0, 0));
 			const input = new Input();
 			input.setValue("nested");
 			input.onSubmit = (value) => done(value);
@@ -1935,11 +3653,34 @@ describe("createExtensionContext ctx surface", () => {
 		if (request?.kind !== "custom") throw new Error("expected custom request");
 		expect(request.widget.kind).toBe("box");
 		if (request.widget.kind !== "box") throw new Error("expected box widget");
-		const child = request.widget.children[0];
+		const child = request.widget.children[1];
 		expect(child.kind).toBe("input");
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: child.id, type: "submit" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: child.id,
+			type: "submit",
+			payload: { value: "nested", selectionstart: 6, selectionend: 6 },
+		})).toMatchObject({ handled: true });
 		await expect(customPromise).resolves.toBe("nested");
+	});
+
+	it("rejects standard events for unmarked lookalikes", () => {
+		const uiBridge = createExtensionUiBridge();
+		const calls: string[] = [];
+		const lookalike = {
+			constructor: { name: "Input" },
+			setValue: (value: string) => calls.push(`change:${value}`),
+			getValue: () => "value",
+			onSubmit: (value: string) => calls.push(`submit:${value}`),
+			render: () => ["fallback"],
+			invalidate: () => {},
+		} as unknown as Component;
+		const widget: WidgetNode = { kind: "terminal", id: "lookalike", lines: ["fallback"] };
+		uiBridge.registerWidgetRoot(widget, lookalike);
+
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "change", payload: { value: "next" } })).toMatchObject({ handled: false });
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "submit" })).toMatchObject({ handled: false });
+		expect(calls).toEqual([]);
 	});
 
 	it("routes terminal fallback key events through handleInput and emits the rerendered widget", async () => {
@@ -1979,7 +3720,7 @@ describe("createExtensionContext ctx surface", () => {
 		if (request?.kind !== "custom") throw new Error("expected custom request");
 		expect(request.widget).toMatchObject({ kind: "terminal", lines: ["count:0"] });
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "key", payload: { data: "x" } })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "key", payload: { data: "x" } })).toMatchObject({ handled: true });
 
 		expect(updates).toEqual([
 			expect.objectContaining({
@@ -1988,6 +3729,58 @@ describe("createExtensionContext ctx surface", () => {
 				lines: ["count:1"],
 			}),
 		]);
+	});
+
+	it("closes unknown terminal widgets with done(undefined) on cancel", () => {
+		const uiBridge = createExtensionUiBridge();
+		const done = vi.fn();
+		const component = {
+			render: () => ["fallback"],
+			invalidate: () => {},
+		} as Component;
+		const widget = componentToWidget(component, { width: 80 });
+		expect(widget.kind).toBe("terminal");
+		uiBridge.registerWidgetRoot(widget, component, done);
+
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toMatchObject({ handled: true });
+		expect(done).toHaveBeenCalledOnce();
+		expect(done).toHaveBeenCalledWith(undefined);
+	});
+
+	it("keeps Editor cancel outside the standard component and root done contracts", () => {
+		const uiBridge = createExtensionUiBridge();
+		const done = vi.fn();
+		const update = vi.fn();
+		const editor = new Editor(
+			{ requestRender: vi.fn(), terminal: { rows: 24 } } as any,
+			{ borderColor: (text) => text, selectList: TestSelectListTheme },
+		);
+		const widget = componentToWidget(editor, { width: 80 });
+		uiBridge.registerWidgetRoot(widget, editor, done, { update });
+		update.mockClear();
+
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: widget.id, type: "cancel" })).toEqual({
+			handled: false,
+			published: false,
+		});
+		expect(done).not.toHaveBeenCalled();
+		expect(update).not.toHaveBeenCalled();
+	});
+
+	it("keeps bridge traversal and standard event dispatch adapter-owned", async () => {
+		const source = await readFile(new URL("./bridge.ts", import.meta.url), "utf8");
+		const childrenSource = source.slice(
+			source.indexOf("function getComponentChildren"),
+			source.indexOf("function getWidgetChildren")
+		);
+		const dispatchStart = source.indexOf("function dispatchWidgetEventToComponent");
+		const dispatchSource = source.slice(dispatchStart, source.indexOf("/**", dispatchStart));
+
+		expect(childrenSource).toContain("getPiGuiAdapter");
+		expect(childrenSource).not.toContain("children?: unknown");
+		expect(dispatchSource).not.toMatch(
+			/setSelectedIndex\?|getSelectedItem\?|setValue\?|getValue\?|onSubmit\?|onSelect\?|onCancel\?/
+		);
 	});
 
 	it("routes cancellable loader cancel events back to onAbort", async () => {
@@ -2019,11 +3812,12 @@ describe("createExtensionContext ctx surface", () => {
 		if (request?.kind !== "custom") throw new Error("expected custom request");
 		expect(request.widget).toMatchObject({ kind: "loader", cancellable: true });
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "cancel" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: request.widget.id, type: "cancel" })).toMatchObject({ handled: true });
 		await expect(customPromise).resolves.toBe("aborted");
 	});
 
 	it("disposes custom Loader widgets when the custom request unregisters", async () => {
+		vi.useFakeTimers();
 		const uiBridge = createExtensionUiBridge();
 		const requests: ExtUiRequest[] = [];
 		const uiHost: ExtensionUiHost = {
@@ -2039,13 +3833,21 @@ describe("createExtensionContext ctx surface", () => {
 		};
 		uiBridge.attach(uiHost);
 		const ctx = createExtensionContext(() => "/work", uiBridge);
-		const tui = { requestRender: () => {} } as any;
+		const requestRender = vi.fn();
+		const tui = { requestRender } as any;
 		const loader = new Loader(tui, (text) => text, (text) => text, "Working", { frames: ["-", "\\"] });
-		const stop = vi.spyOn(loader, "stop");
+		const dispose = vi.spyOn(loader, "dispose");
 
 		await expect(ctx.ui.custom(() => loader)).resolves.toBe("closed");
 		expect(requests[0]).toMatchObject({ kind: "custom", widget: expect.objectContaining({ kind: "loader" }) });
-		expect(stop).toHaveBeenCalled();
+		expect(dispose).toHaveBeenCalledTimes(1);
+		requestRender.mockClear();
+		loader.start();
+		loader.setIndicator({ frames: ["x", "y"], intervalMs: 5 });
+		vi.advanceTimersByTime(20);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(requestRender).not.toHaveBeenCalled();
+		vi.useRealTimers();
 	});
 
 	it("disposes persistent Loader widgets when replaced or cleared", () => {
@@ -2148,7 +3950,11 @@ describe("createExtensionContext ctx surface", () => {
 		const child = widget.children[0];
 		expect(child.kind).toBe("input");
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: child.id, type: "submit" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: child.id,
+			type: "submit",
+			payload: { value: "persistent", selectionstart: 10, selectionend: 10 },
+		})).toMatchObject({ handled: true });
 		expect(submitted).toBe("persistent");
 	});
 
@@ -2196,22 +4002,28 @@ describe("createExtensionContext ctx surface", () => {
 		expect(listWidget.kind).toBe("selectlist");
 		expect(inputWidget.kind).toBe("input");
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: inputWidget.id, type: "change", payload: { value: "final" } })).toBe(
-			true
-		);
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: inputWidget.id, type: "submit" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: inputWidget.id,
+			type: "change",
+			payload: { value: "final", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: true });
+		expect(uiBridge.dispatchWidgetEvent({
+			nodeid: inputWidget.id,
+			type: "submit",
+			payload: { value: "final", selectionstart: 5, selectionend: 5 },
+		})).toMatchObject({ handled: true });
 		const afterSubmit = widgets.at(-1);
 		expect(afterSubmit?.kind).toBe("box");
 		if (!afterSubmit || afterSubmit.kind !== "box") throw new Error("expected box widget after submit");
 		expect(afterSubmit.children[0]).toMatchObject({ kind: "text", text: "Submitted: final" });
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: listWidget.id, type: "select", payload: { index: 1 } })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: listWidget.id, type: "select", payload: { index: 1 } })).toMatchObject({ handled: true });
 		const afterSelect = widgets.at(-1);
 		expect(afterSelect?.kind).toBe("box");
 		if (!afterSelect || afterSelect.kind !== "box") throw new Error("expected box widget after select");
 		expect(afterSelect.children[0]).toMatchObject({ kind: "text", text: "Selected: Input" });
 
-		expect(uiBridge.dispatchWidgetEvent({ nodeid: inputWidget.id, type: "cancel" })).toBe(true);
+		expect(uiBridge.dispatchWidgetEvent({ nodeid: inputWidget.id, type: "cancel" })).toMatchObject({ handled: true });
 		const afterCancel = widgets.at(-1);
 		expect(afterCancel?.kind).toBe("box");
 		if (!afterCancel || afterCancel.kind !== "box") throw new Error("expected box widget after cancel");

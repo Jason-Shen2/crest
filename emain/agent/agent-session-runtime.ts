@@ -40,7 +40,10 @@ import type { AgentCommandExecutionResult } from "./commands/types";
 import { createCommandContext } from "./extensions";
 import type { ExtensionCommandHost, ExtensionUiBridge, ExtUiRequest, WidgetEvent } from "./extensions";
 import { unregisterExtensionLifecycleHost } from "./extensions/lifecycle";
-import type { WidgetNode } from "./extensions/pi-gui/crest/widget-tree";
+import type {
+    WidgetEventDispatchResult,
+    WidgetNode,
+} from "./extensions/pi-gui/crest/widget-tree";
 import type { AgentAuthResolver, AgentHarnessHost } from "./harness-factory";
 import type { AgentHarnessEvent, SessionTreeEntry } from "./harness/types";
 import type { ToolCallHook } from "./permissions";
@@ -143,7 +146,22 @@ function makeEmptyExtensionUiSnapshot(): ExtensionUiSnapshot {
 }
 
 function cloneWidgetNode(widget: WidgetNode): WidgetNode {
-    return structuredClone(widget);
+    const clone = structuredClone(widget);
+    stripWidgetAckIds(clone);
+    return clone;
+}
+
+function stripWidgetAckIds(widget: WidgetNode): void {
+    delete widget.ackid;
+    switch (widget.kind) {
+        case "box":
+        case "container":
+            for (const child of widget.children) stripWidgetAckIds(child);
+            return;
+        case "settingslist":
+            if (widget.submenu) stripWidgetAckIds(widget.submenu);
+            return;
+    }
 }
 
 function cloneExtensionUiSnapshot(snapshot: ExtensionUiSnapshot): ExtensionUiSnapshot {
@@ -893,8 +911,11 @@ export class AgentSessionRuntime {
         return true;
     }
 
-    respondWidgetEvent(event: WidgetEvent): boolean {
-        return this.extensionUiBridge?.dispatchWidgetEvent(event) ?? false;
+    respondWidgetEvent(event: WidgetEvent): WidgetEventDispatchResult {
+        return this.extensionUiBridge?.dispatchWidgetEvent(event) ?? {
+            handled: false,
+            published: false,
+        };
     }
 
     private terminatePendingUiRequests(reason: ExtensionUiTerminationReason): void {

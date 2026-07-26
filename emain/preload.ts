@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { contextBridge, ipcRenderer, Rectangle, webUtils, WebviewTag } from "electron";
+import type { WidgetEventDispatchResult } from "./agent/extensions/pi-gui/crest/widget-tree";
 
 // Single shared dispatcher for directory-watch events (main fans them out here).
 const dirWatchCallbacks = new Map<string, Set<(eventType: string, filename: string) => void>>();
@@ -172,7 +173,7 @@ contextBridge.exposeInMainWorld("api", {
         abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
         respondUi: (sessionPath: string, requestId: string, result: unknown) =>
             ipcRenderer.invoke("agent:ui-response", sessionPath, requestId, result),
-        respondWidgetEvent: (sessionPath: string, event: unknown) =>
+        respondWidgetEvent: (sessionPath: string, event: unknown): Promise<WidgetEventDispatchResult> =>
             ipcRenderer.invoke("agent:widget-event", sessionPath, event),
         subscribe: (
             sessionPath: string,

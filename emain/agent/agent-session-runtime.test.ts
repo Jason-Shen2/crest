@@ -16,10 +16,15 @@ import {
     buildPersistedTurnsFromSessionEntries,
     AgentSessionRuntime,
     ExtensionUiRequestTerminatedError,
+    type AgentSessionRuntimeEvent,
 } from "./agent-session-runtime";
 import type { AgentMessage, ThinkingLevel } from "./types";
 import type { SessionTreeEntry } from "./harness/types";
+import { componentToWidget } from "./extensions/pi-gui/crest/walker";
+import { Box } from "./extensions/pi-gui/src/components/box";
 import { Input } from "./extensions/pi-gui/src/components/input";
+import { Loader } from "./extensions/pi-gui/src/components/loader";
+import { SelectList } from "./extensions/pi-gui/src/components/select-list";
 import type { WidgetBoxNode, WidgetNode } from "./extensions/pi-gui/crest/widget-tree";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
@@ -982,6 +987,66 @@ describe("AgentSessionRuntime — extension UI snapshot", () => {
         });
     });
 
+    it("keeps ackid on live deltas but strips it recursively from stored, replay, and reload UI", () => {
+        const fake = makeFakeHarness();
+        const initial: WidgetNode = {
+            kind: "box",
+            id: "root",
+            ackid: "initial-root",
+            paddingx: 0,
+            paddingy: 0,
+            children: [
+                {
+                    kind: "container",
+                    id: "nested",
+                    ackid: "initial-container",
+                    paddingx: 0,
+                    paddingy: 0,
+                    children: [
+                        {
+                            kind: "input",
+                            id: "input",
+                            ackid: "initial-input",
+                            value: "initial",
+                            cursor: 7,
+                            focused: false,
+                            selectionstart: 7,
+                            selectionend: 7,
+                        },
+                    ],
+                },
+            ],
+        };
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], {
+            initialExtensionUi: {
+                statuses: {},
+                widgets: {},
+                widgetnodes: { result: initial },
+                header: initial,
+                footer: initial,
+            },
+        });
+        const liveEvents: AgentSessionRuntimeEvent[] = [];
+        owner.subscribe((event) => liveEvents.push(event));
+        const live: WidgetNode = structuredClone(initial);
+        live.ackid = "live-root";
+        if (live.kind !== "box" || live.children[0].kind !== "container") {
+            throw new Error("expected nested live widget");
+        }
+        live.children[0].ackid = "live-container";
+        live.children[0].children[0].ackid = "live-input";
+
+        owner.setWidget("result", live);
+
+        expect(liveEvents.at(-1)).toEqual({ type: "ext_ui_widget", key: "result", widget: live });
+        const stored = owner.getSessionState().extensionUi.widgetnodes.result;
+        const reload = owner.getReloadState().ui.widgetnodes.result;
+        expect(JSON.stringify(stored)).not.toContain("ackid");
+        expect(JSON.stringify(reload)).not.toContain("ackid");
+        expect(JSON.stringify(owner.getSessionState().extensionUi.header)).not.toContain("ackid");
+        expect(JSON.stringify(owner.getSessionState().extensionUi.footer)).not.toContain("ackid");
+    });
+
     it("clears recoverable UI values", () => {
         const fake = makeFakeHarness();
         const owner = new AgentSessionRuntime("/s", fake.pane);
@@ -1207,7 +1272,10 @@ describe("AgentSessionRuntime — subscriber fan-out", () => {
         await Promise.all([confirmRejection, customRejection]);
         expect(widgetId).not.toBe("");
         expect(owner.resolveCustomWidget(widgetId, "late")).toBe(false);
-        expect(owner.respondWidgetEvent({ nodeid: widgetId, type: "submit" })).toBe(false);
+        expect(owner.respondWidgetEvent({ nodeid: widgetId, type: "submit" })).toEqual({
+            handled: false,
+            published: false,
+        });
         expect(done).not.toHaveBeenCalled();
     });
 
@@ -1306,7 +1374,11 @@ describe("AgentSessionRuntime — subscriber fan-out", () => {
         expect(request?.request.kind).toBe("custom");
         if (!request || request.request.kind !== "custom") throw new Error("expected custom request");
 
-        expect(owner.respondWidgetEvent({ nodeid: request.request.widget.id, type: "submit" })).toBe(true);
+        expect(owner.respondWidgetEvent({
+            nodeid: request.request.widget.id,
+            type: "submit",
+            payload: { value: "ready", selectionstart: 5, selectionend: 5 },
+        })).toMatchObject({ handled: true });
 
         await expect(customPromise).resolves.toBe("ready");
         expect(seen).toContainEqual({ type: "ext_ui_resolved", requestId: request.requestId });
@@ -1317,8 +1389,48 @@ describe("AgentSessionRuntime — subscriber fan-out", () => {
             value: "stale",
             cursor: 5,
             focused: false,
+            selectionstart: 5,
+            selectionend: 5,
         });
         expect(seen.filter((event) => (event as { type?: string }).type === "ext_ui_request_update")).toEqual([]);
+    });
+
+    it("disposes transaction-created components after runtime dispatch on an external root fails reconciliation", () => {
+        const fake = makeFakeHarness();
+        const uiBridge = createExtensionUiBridge();
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { extensionUiBridge: uiBridge });
+        uiBridge.attach(owner);
+        const tui = { requestRender: () => {} } as any;
+        const rejected = new Loader(tui, (text) => text, (text) => text, "rejected", { frames: ["-"] });
+        const stop = vi.spyOn(rejected, "stop");
+        const list = new SelectList(
+            [{ value: "one", label: "One" }],
+            1,
+            {
+                selectedPrefix: (text) => text,
+                selectedText: (text) => text,
+                description: (text) => text,
+                scrollInfo: (text) => text,
+                noMatch: (text) => text,
+            },
+        );
+        const root = new Box(0, 0);
+        root.addChild(list);
+        list.onSelect = () => {
+            root.addChild(rejected);
+            root.addChild(rejected);
+        };
+        const widget = componentToWidget(root, { width: 80 });
+        if (widget.kind !== "box") throw new Error("expected box widget");
+        expect(uiBridge.registerWidgetRoot(widget, root, undefined, { ownership: "caller-external" })).toBeDefined();
+
+        expect(owner.respondWidgetEvent({
+            nodeid: widget.children[0].id,
+            type: "select",
+            payload: { index: 0 },
+        })).toEqual({ handled: true, published: false });
+
+        expect(stop).toHaveBeenCalledTimes(1);
     });
 
     it("dispose() detaches the harness subscription and aborts", async () => {

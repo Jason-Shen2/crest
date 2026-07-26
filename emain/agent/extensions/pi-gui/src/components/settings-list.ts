@@ -31,11 +31,19 @@ export interface SettingsListOptions {
 	enableSearch?: boolean;
 }
 
+export type SettingsListSnapshotItem = Omit<SettingItem, "submenu">;
+
 export interface SettingsListSnapshot {
-	items: SettingItem[];
+	items: SettingsListSnapshotItem[];
 	selectedIndex: number;
 	maxVisible: number;
+	searchEnabled: boolean;
+	focused: boolean;
+	visibleStart: number;
+	visibleEnd: number;
+	noMatch: boolean;
 	filter?: string;
+	submenu?: Component;
 }
 
 export function isValidSettingsIndex(index: number): boolean {
@@ -53,10 +61,12 @@ export class SettingsList implements Component {
 	private onCancel: () => void;
 	private searchInput?: Input;
 	private searchEnabled: boolean;
+	private focused = false;
 
 	// Submenu state
 	private submenuComponent: Component | null = null;
 	private submenuItemIndex: number | null = null;
+	private submenuSession: object | null = null;
 
 	constructor(
 		items: SettingItem[],
@@ -88,17 +98,56 @@ export class SettingsList implements Component {
 
 	getSnapshot(): SettingsListSnapshot {
 		const filter = this.searchInput?.getValue();
+		const displayItems = this.getDisplayItems();
+		const { start, end } = this.getVisibleRange(displayItems);
 		return {
-			items: [...(this.searchEnabled ? this.filteredItems : this.items)],
+			items: displayItems.map((item) => ({
+				id: item.id,
+				label: item.label,
+				description: item.description,
+				currentValue: item.currentValue,
+				values: item.values ? [...item.values] : undefined,
+			})),
 			selectedIndex: this.selectedIndex,
 			maxVisible: this.maxVisible,
+			searchEnabled: this.searchEnabled,
+			focused: this.focused,
+			visibleStart: start,
+			visibleEnd: end,
+			noMatch: displayItems.length === 0,
 			filter: filter || undefined,
+			submenu: this.submenuComponent ?? undefined,
 		};
+	}
+
+	setFocused(focused: boolean): boolean {
+		if (typeof focused !== "boolean") return false;
+		this.focused = focused;
+		this.searchInput?.setFocused(focused);
+		return true;
+	}
+
+	setFilter(filter: string): boolean {
+		if (typeof filter !== "string" || !this.searchEnabled || !this.searchInput) return false;
+		this.searchInput.setValue(filter);
+		this.applyFilter(filter);
+		return true;
+	}
+
+	getChildren(): readonly Component[] {
+		return this.submenuComponent ? [this.submenuComponent] : [];
+	}
+
+	activateIndex(index: number): boolean {
+		const displayItems = this.getDisplayItems();
+		if (!isValidSettingsIndex(index) || index < 0 || index >= displayItems.length) return false;
+		this.selectedIndex = index;
+		return this.activateItem();
 	}
 
 	setSelectedIndex(index: number): boolean {
 		if (!isValidSettingsIndex(index)) return false;
-		const displayItems = this.searchEnabled ? this.filteredItems : this.items;
+		const displayItems = this.getDisplayItems();
 		if (displayItems.length === 0) {
 			this.selectedIndex = 0;
 			return true;
@@ -108,7 +157,7 @@ export class SettingsList implements Component {
 	}
 
 	getSelectedItem(): SettingItem | undefined {
-		const displayItems = this.searchEnabled ? this.filteredItems : this.items;
+		const displayItems = this.getDisplayItems();
 		return displayItems[this.selectedIndex];
 	}
 
@@ -123,6 +172,25 @@ export class SettingsList implements Component {
 
 	activateSelected(): boolean {
 		return this.activateItem();
+	}
+
+	cycleSelected(direction: 1 | -1): boolean {
+		if (direction !== 1 && direction !== -1) return false;
+		const item = this.getSelectedItem();
+		if (!item?.values?.length) return false;
+
+		const currentIndex = item.values.indexOf(item.currentValue);
+		const nextIndex =
+			currentIndex < 0
+				? direction === 1
+					? 0
+					: item.values.length - 1
+				: (currentIndex + direction + item.values.length) % item.values.length;
+		const newValue = item.values[nextIndex];
+		if (newValue == null) return false;
+		item.currentValue = newValue;
+		this.onChange(item.id, newValue);
+		return true;
 	}
 
 	cancel(): void {
@@ -166,11 +234,7 @@ export class SettingsList implements Component {
 		}
 
 		// Calculate visible range with scrolling
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), displayItems.length - this.maxVisible),
-		);
-		const endIndex = Math.min(startIndex + this.maxVisible, displayItems.length);
+		const { start: startIndex, end: endIndex } = this.getVisibleRange(displayItems);
 
 		// Calculate max label width for alignment
 		const maxLabelWidth = Math.min(30, Math.max(...this.items.map((item) => visibleWidth(item.label))));
@@ -230,7 +294,7 @@ export class SettingsList implements Component {
 
 		// Main list input handling
 		const kb = getKeybindings();
-		const displayItems = this.searchEnabled ? this.filteredItems : this.items;
+		const displayItems = this.getDisplayItems();
 		if (kb.matches(data, "tui.select.up")) {
 			if (displayItems.length === 0) return;
 			this.selectedIndex = this.selectedIndex === 0 ? displayItems.length - 1 : this.selectedIndex - 1;
@@ -256,40 +320,68 @@ export class SettingsList implements Component {
 		if (!item) return false;
 
 		if (item.submenu) {
-			// Open submenu, passing current value so it can pre-select correctly
 			this.submenuItemIndex = this.selectedIndex;
-			this.submenuComponent = item.submenu(item.currentValue, (selectedValue?: string) => {
-				if (selectedValue !== undefined) {
-					item.currentValue = selectedValue;
-					this.onChange(item.id, selectedValue);
-				}
-				this.closeSubmenu();
+			const session = {};
+			this.submenuSession = session;
+			let constructing = true;
+			let settled = false;
+			let completionValue: string | undefined;
+			const submenu = item.submenu(item.currentValue, (selectedValue?: string) => {
+				if (settled) return;
+				settled = true;
+				completionValue = selectedValue;
+				if (!constructing) this.completeSubmenu(session, item, selectedValue);
 			});
+			constructing = false;
+			if (!settled) {
+				this.submenuComponent = submenu;
+			} else {
+				this.safeDispose(submenu);
+				this.completeSubmenu(session, item, completionValue);
+			}
 		} else if (item.values && item.values.length > 0) {
-			// Cycle through values
-			const currentIndex = item.values.indexOf(item.currentValue);
-			const nextIndex = (currentIndex + 1) % item.values.length;
-			const newValue = item.values[nextIndex];
-			item.currentValue = newValue;
-			this.onChange(item.id, newValue);
+			return this.cycleSelected(1);
 		} else {
 			return false;
 		}
 		return true;
 	}
 
-	private closeSubmenu(): void {
+	private completeSubmenu(session: object, item: SettingItem, selectedValue?: string): void {
+		if (this.submenuSession !== session) return;
+		if (selectedValue !== undefined) item.currentValue = selectedValue;
 		this.submenuComponent = null;
-		// Restore selection to the item that opened the submenu
 		if (this.submenuItemIndex !== null) {
 			this.selectedIndex = this.submenuItemIndex;
 			this.submenuItemIndex = null;
+		}
+		this.submenuSession = null;
+		if (selectedValue !== undefined) this.onChange(item.id, selectedValue);
+	}
+
+	private safeDispose(component: Component): void {
+		try {
+			component.dispose?.();
+		} catch {
+			// Disposal must not break completion or callback delivery.
 		}
 	}
 
 	private applyFilter(query: string): void {
 		this.filteredItems = fuzzyFilter(this.items, query, (item) => item.label);
 		this.selectedIndex = 0;
+	}
+
+	private getDisplayItems(): SettingItem[] {
+		return this.searchEnabled ? this.filteredItems : this.items;
+	}
+
+	private getVisibleRange(displayItems: SettingItem[]): { start: number; end: number } {
+		const start = Math.max(
+			0,
+			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), displayItems.length - this.maxVisible),
+		);
+		return { start, end: Math.min(start + this.maxVisible, displayItems.length) };
 	}
 
 	private addHintLine(lines: string[], width: number): void {

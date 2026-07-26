@@ -27,6 +27,7 @@ import type { AppNotification } from "@/app/notifications/notifications-model";
 import { ToastModel } from "@/app/notifications/toast-model";
 import type {
     RenderedExtensionEntryNode,
+    WidgetEventDispatchResult,
     WidgetNode,
 } from "../../../emain/agent/extensions/pi-gui/crest/widget-tree";
 
@@ -221,7 +222,7 @@ export interface UsePiChatReturn {
     /** Answer the active ctx.ui prompt (confirm/select/input). */
     respondExtUi: (requestId: string, result: unknown) => void;
     /** Deliver a widget interaction from renderer to the live ctx.ui surface. */
-    respondWidgetEvent: (event: AgentWidgetEvent) => void;
+    respondWidgetEvent: (event: AgentWidgetEvent) => Promise<WidgetEventDispatchResult>;
 }
 
 interface AgentApiSurface {
@@ -230,7 +231,10 @@ interface AgentApiSurface {
     send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
     abort: (sessionPath: string) => void;
     respondUi: (sessionPath: string, requestId: string, result: unknown) => Promise<void>;
-    respondWidgetEvent: (sessionPath: string, event: AgentWidgetEvent) => Promise<boolean>;
+    respondWidgetEvent: (
+        sessionPath: string,
+        event: AgentWidgetEvent
+    ) => Promise<WidgetEventDispatchResult>;
     subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
 }
 
@@ -684,11 +688,13 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         void api.respondUi(sessionPath, requestId, result);
     }, []);
 
-    const respondWidgetEvent = useCallback((event: AgentWidgetEvent): void => {
+    const respondWidgetEvent = useCallback(async (
+        event: AgentWidgetEvent
+    ): Promise<WidgetEventDispatchResult> => {
         const api = getAgentApi();
         const sessionPath = resolveAbortSessionPath(sessionMetadataRef.current, activeSessionPathRef.current);
-        if (!api || !sessionPath) return;
-        void api.respondWidgetEvent(sessionPath, event);
+        if (!api || !sessionPath) return { handled: false, published: false };
+        return await api.respondWidgetEvent(sessionPath, event);
     }, []);
 
     return useMemo(

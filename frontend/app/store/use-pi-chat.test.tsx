@@ -463,6 +463,51 @@ describe("reducePiExtUiEvent", () => {
 });
 
 describe("usePiChat session replay", () => {
+    it("returns the widget event handled promise from the agent API", async () => {
+        const respondWidgetEvent = vi.fn(async () => ({ handled: true, published: false }));
+        const subscribe = vi.fn(() => () => {});
+        (window as unknown as { api: unknown }).api = {
+            agent: {
+                subscribe,
+                respondWidgetEvent,
+            },
+        };
+        let latest: ReturnType<typeof usePiChat>;
+        const container = document.createElement("div");
+        const root = createRoot(container);
+
+        function TestComponent() {
+            latest = usePiChat({
+                initialSession: { path: "/tmp/session.jsonl" } as AgentSessionMeta,
+                paneContext: { cwd: "/tmp" },
+                modelSelection: { provider: "test", model: "test" },
+            });
+            return null;
+        }
+
+        try {
+            await act(async () => {
+                root.render(<TestComponent />);
+                await Promise.resolve();
+            });
+            const event: AgentWidgetEvent = {
+                nodeid: "input",
+                type: "change",
+                eventid: "event-1",
+                payload: { value: "next", selectionstart: 4, selectionend: 4 },
+            };
+
+            await expect(latest.respondWidgetEvent(event)).resolves.toEqual({
+                handled: true,
+                published: false,
+            });
+            expect(respondWidgetEvent).toHaveBeenCalledWith("/tmp/session.jsonl", event);
+        } finally {
+            await act(async () => root.unmount());
+            delete (window as unknown as { api?: unknown }).api;
+        }
+    });
+
     it("uses subscribe as the only replay channel so a late pull cannot roll state back", async () => {
         const getSessionState = vi.fn(() => new Promise<never>(() => {}));
         let subscriptionCallback: (event: unknown) => void = () => {};

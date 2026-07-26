@@ -11,11 +11,17 @@ export {
 // Components
 export { Box } from "./components/box.ts";
 export { CancellableLoader } from "./components/cancellable-loader.ts";
-export { Editor, type EditorOptions, type EditorTheme } from "./components/editor.ts";
+export {
+	Editor,
+	type EditorGuiSubmitResult,
+	type EditorOptions,
+	type EditorTheme,
+} from "./components/editor.ts";
 export { Image, type ImageOptions, type ImageTheme } from "./components/image.ts";
 export { Input } from "./components/input.ts";
 export { Loader, type LoaderIndicatorOptions } from "./components/loader.ts";
 export { type DefaultTextStyle, Markdown, type MarkdownOptions, type MarkdownTheme } from "./components/markdown.ts";
+export { normalizeMarkdownPartialClosingFence } from "../crest/markdown-normalize.ts";
 export {
 	type SelectItem,
 	SelectList,
@@ -113,5 +119,11 @@ export {
 // Utilities
 export { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "./utils.ts";
 export { Chart, type ChartOptions } from "../crest/rich/chart";
+export {
+	CrestRichComponentKind,
+	type CrestRichComponent,
+	type CrestRichWidgetNode,
+	isCrestRichComponent,
+} from "../crest/rich/contract";
 export { DiffView, type DiffViewOptions } from "../crest/rich/diff-view";
 export { RichTable, type RichTableOptions } from "../crest/rich/rich-table";

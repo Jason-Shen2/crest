@@ -29,7 +29,11 @@ import {
     type AgentSelectorRequest,
 } from "./agent-chat-host";
 import { AgentCommandResultList } from "./agent-command-result";
-import { AgentExtUiPanel, hasAgentExtUiContent } from "./agent-ext-ui";
+import {
+    AgentExtUiPanel,
+    forwardAgentWidgetEvent,
+    hasAgentExtUiContent,
+} from "./agent-ext-ui";
 import { AgentFlagsPanel, useAgentExtensionShortcuts } from "./agent-ext-controls";
 import { AssistantRuntimeProvider, Thread, useAui, useCrestAssistantRuntime } from "./assistant-ui";
 import type { CrestContextUsage } from "./assistant-ui/context-display";
@@ -334,7 +338,7 @@ export function WorkspaceAgentSurface({ outerBlockId, model, context }: Workspac
         agentApiRef.current?.respondExtUi(requestId, result);
     }, []);
     const onAgentWidgetEvent = useCallback((event: AgentWidgetEvent) => {
-        agentApiRef.current?.respondWidgetEvent(event);
+        return forwardAgentWidgetEvent(agentApiRef.current, event);
     }, []);
     const onAgentCommandResult = useCallback((result: AgentInlineCommandResult) => {
         if (shouldRefreshAgentExtensionControls(result)) {

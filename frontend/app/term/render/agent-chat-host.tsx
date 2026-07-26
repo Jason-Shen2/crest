@@ -46,8 +46,6 @@ export interface AgentChatHostProps {
     onReady?: (api: AgentChatHostApi) => void;
     /** Changes when extension discovery must rerun after an explicit reload. */
     extensionRefreshToken?: number;
-    /** Called when usePiChat adopts a different canonical session. */
-    onSessionPathChange?: (sessionPath: string | undefined) => void;
     /** Called on every turns change so WorkspaceAgentSurface can feed assistant-ui. */
     onTurnsChange?: (turns: PiTurn[]) => void;
     /**
@@ -364,7 +362,6 @@ export function AgentChatHost({
     selectionError,
     onReady,
     extensionRefreshToken,
-    onSessionPathChange,
     onTurnsChange,
     onStateChange,
     onExtUiChange,
@@ -430,11 +427,6 @@ export function AgentChatHost({
 
     const onReadyRef = useRef(onReady);
     onReadyRef.current = onReady;
-    const onSessionPathChangeRef = useRef(onSessionPathChange);
-    onSessionPathChangeRef.current = onSessionPathChange;
-    useEffect(() => {
-        onSessionPathChangeRef.current?.(chat.sessionMetadata?.path);
-    }, [chat.sessionMetadata?.path]);
     // Surface live status + pending queue to the parent (the activity bar).
     const onStateChangeRef = useRef(onStateChange);
     onStateChangeRef.current = onStateChange;

@@ -3,6 +3,7 @@
 
 import type { Component } from "../../src/tui";
 import type { ChartSeries, ChartType, WidgetChartNode } from "../widget-tree";
+import { CrestRichComponentKind } from "./contract";
 
 export interface ChartOptions {
     charttype: ChartType;
@@ -10,6 +11,7 @@ export interface ChartOptions {
 }
 
 export class Chart implements Component {
+    readonly [CrestRichComponentKind] = "chart";
     readonly widgetKind = "chart";
     readonly charttype: ChartType;
     readonly series: ChartSeries[];

@@ -97,7 +97,7 @@ const previewElectronApi: ElectronApi = {
         send: () => Promise.reject(new Error("agent not available in preview env")),
         abort: () => {},
         respondUi: () => Promise.resolve(),
-        respondWidgetEvent: () => Promise.resolve(false),
+        respondWidgetEvent: () => Promise.resolve({ handled: false, published: false }),
         subscribe: () => () => {},
     },
 };

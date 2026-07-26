@@ -4,6 +4,12 @@
 export interface WidgetBase {
     kind: string;
     id: string;
+    ackid?: string;
+}
+
+export interface WidgetEventDispatchResult {
+    handled: boolean;
+    published: boolean;
 }
 
 export interface SelectItemNode {
@@ -38,6 +44,9 @@ export interface WidgetSelectListNode extends WidgetBase {
     maxvisible: number;
     focused: boolean;
     filter?: string;
+    visiblestart: number;
+    visibleend: number;
+    nomatch: boolean;
 }
 
 export interface WidgetSettingsListNode extends WidgetBase {
@@ -45,6 +54,13 @@ export interface WidgetSettingsListNode extends WidgetBase {
     items: Array<{ id: string; label: string; description?: string; currentvalue: string; values?: string[] }>;
     selectedindex: number;
     maxvisible: number;
+    searchenabled: boolean;
+    focused: boolean;
+    filter?: string;
+    visiblestart: number;
+    visibleend: number;
+    nomatch: boolean;
+    submenu?: WidgetNode;
 }
 
 export interface WidgetInputNode extends WidgetBase {
@@ -52,6 +68,8 @@ export interface WidgetInputNode extends WidgetBase {
     value: string;
     cursor: number;
     focused: boolean;
+    selectionstart: number;
+    selectionend: number;
 }
 
 export interface WidgetMarkdownNode extends WidgetBase {
@@ -69,6 +87,10 @@ export interface WidgetEditorNode extends WidgetBase {
     cursorcol: number;
     focused: boolean;
     paddingx: number;
+    selectionstart: number;
+    selectionend: number;
+    submitkeys: string[];
+    newlinekeys: string[];
 }
 
 export interface WidgetImageNode extends WidgetBase {

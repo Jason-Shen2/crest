@@ -45,6 +45,9 @@ export interface SelectListSnapshot {
 	items: SelectItem[];
 	selectedIndex: number;
 	maxVisible: number;
+	visibleStart: number;
+	visibleEnd: number;
+	noMatch: boolean;
 	focused: boolean;
 	filter?: string;
 }
@@ -85,11 +88,31 @@ export class SelectList implements Component {
 		return true;
 	}
 
+	setFocused(focused: boolean): boolean {
+		if (typeof focused !== "boolean") return false;
+		this.focused = focused;
+		return true;
+	}
+
+	selectAndActivate(index: number): boolean {
+		if (!isValidSelectIndex(index) || index < 0 || index >= this.filteredItems.length) return false;
+		const item = this.filteredItems[index];
+		const changed = index !== this.selectedIndex;
+		this.selectedIndex = index;
+		if (changed) this.notifySelectionChange();
+		this.onSelect?.(item);
+		return true;
+	}
+
 	getSnapshot(): SelectListSnapshot {
+		const { start, end } = this.getVisibleRange();
 		return {
-			items: [...this.filteredItems],
+			items: this.filteredItems.map((item) => ({ ...item })),
 			selectedIndex: this.selectedIndex,
 			maxVisible: this.maxVisible,
+			visibleStart: start,
+			visibleEnd: end,
+			noMatch: this.filteredItems.length === 0,
 			focused: this.focused,
 			filter: this.filter,
 		};
@@ -111,11 +134,7 @@ export class SelectList implements Component {
 		const primaryColumnWidth = this.getPrimaryColumnWidth();
 
 		// Calculate visible range with scrolling
-		const startIndex = Math.max(
-			0,
-			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
-		);
-		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredItems.length);
+		const { start: startIndex, end: endIndex } = this.getVisibleRange();
 
 		// Render visible items
 		for (let i = startIndex; i < endIndex; i++) {
@@ -139,6 +158,13 @@ export class SelectList implements Component {
 
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
+		if (
+			this.filteredItems.length === 0 &&
+			(kb.matches(keyData, "tui.select.up") || kb.matches(keyData, "tui.select.down"))
+		) {
+			this.selectedIndex = 0;
+			return;
+		}
 		// Up arrow - wrap to bottom when at top
 		if (kb.matches(keyData, "tui.select.up")) {
 			this.selectedIndex = this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
@@ -210,6 +236,14 @@ export class SelectList implements Component {
 		}, 0);
 
 		return clamp(widestPrimary, min, max);
+	}
+
+	private getVisibleRange(): { start: number; end: number } {
+		const start = Math.max(
+			0,
+			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
+		);
+		return { start, end: Math.min(start + this.maxVisible, this.filteredItems.length) };
 	}
 
 	private getPrimaryColumnBounds(): { min: number; max: number } {

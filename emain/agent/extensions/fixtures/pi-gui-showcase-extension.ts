@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ExtensionAPI } from "../types";
+import { Chart, DiffView, RichTable } from "@earendil-works/pi-tui";
 import { Box } from "../pi-gui/src/components/box";
-import { Chart } from "../pi-gui/crest/rich/chart";
-import { DiffView } from "../pi-gui/crest/rich/diff-view";
 import { Editor, type EditorTheme } from "../pi-gui/src/components/editor";
 import { Image } from "../pi-gui/src/components/image";
 import { Input } from "../pi-gui/src/components/input";
 import { Loader } from "../pi-gui/src/components/loader";
 import { Markdown, type MarkdownTheme } from "../pi-gui/src/components/markdown";
-import { RichTable } from "../pi-gui/crest/rich/rich-table";
 import { SelectList, type SelectListTheme } from "../pi-gui/src/components/select-list";
 import { SettingsList, type SettingsListTheme } from "../pi-gui/src/components/settings-list";
 import { Text } from "../pi-gui/src/components/text";

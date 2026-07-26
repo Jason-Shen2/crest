@@ -37,6 +37,10 @@ export class Box implements Component {
 		return { children: [...this.children], paddingX: this.paddingX, paddingY: this.paddingY };
 	}
 
+	getChildren(): Component[] {
+		return [...this.children];
+	}
+
 	addChild(component: Component): void {
 		this.children.push(component);
 		this.invalidateCache();

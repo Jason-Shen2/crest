@@ -12,7 +12,7 @@ import {
 	type ExtensionUiHost,
 	type WidgetEvent,
 } from "./index";
-import { PiTuiComponentCompatibilityMatrix } from "./compatibility";
+import { isStandardComponentCertificationBlocker, PiTuiComponentCompatibilityMatrix } from "./compatibility";
 import type { WidgetNode } from "./pi-gui/crest/widget-tree";
 
 export type PiOfficialExampleCertificationStatus = "passed" | "failed" | "unsupported";
@@ -96,8 +96,16 @@ export const PiOfficialExampleFixtures: PiOfficialExampleFixture[] = [
 			{
 				label: "submitting edited input updates the visible status",
 				events: [
-					{ targetKind: "input", type: "change", payload: { value: "final answer" } },
-					{ targetKind: "input", type: "submit" },
+					{
+						targetKind: "input",
+						type: "change",
+						payload: { value: "final answer", selectionstart: 12, selectionend: 12 },
+					},
+					{
+						targetKind: "input",
+						type: "submit",
+						payload: { value: "final answer", selectionstart: 12, selectionend: 12 },
+					},
 				],
 				expectedText: "Submitted: final answer",
 			},
@@ -168,8 +176,16 @@ export const PiOfficialExampleFixtures: PiOfficialExampleFixture[] = [
 			{
 				label: "submitting showcase input records a visible submitted result",
 				events: [
-					{ targetKind: "input", type: "change", payload: { value: "certified value" } },
-					{ targetKind: "input", type: "submit" },
+					{
+						targetKind: "input",
+						type: "change",
+						payload: { value: "certified value", selectionstart: 15, selectionend: 15 },
+					},
+					{
+						targetKind: "input",
+						type: "submit",
+						payload: { value: "certified value", selectionstart: 15, selectionend: 15 },
+					},
 				],
 				expectedText: "Submitted: certified value",
 			},
@@ -333,7 +349,7 @@ function unsupportedReasons(componentKinds: string[]): string[] {
 			continue;
 		}
 		const item = PiTuiComponentCompatibilityMatrix.find((item) => widgetKindCompatibilityId(kind) === item.id);
-		if (item?.certification === "planned") {
+		if (item && isStandardComponentCertificationBlocker(item)) {
 			const blockers = item.plannedBehavior?.join(", ") || item.behaviorRequirements.map((requirement) => requirement.id).join(", ");
 			reasons.push(`planned component certification blocker: ${item.label} (${blockers})`);
 		}
@@ -455,12 +471,12 @@ async function runFixture(
 					errors.push(`missing visible behavior target: ${event.targetId ?? event.targetLabel ?? event.targetKind ?? "unknown"}`);
 					continue;
 				}
-				const handled = uiBridge.dispatchWidgetEvent({
+				const result = uiBridge.dispatchWidgetEvent({
 					nodeid: target.id,
 					type: event.type,
 					payload: event.payload,
 				});
-				if (!handled) {
+				if (!result.handled) {
 					errors.push(`unhandled visible behavior event: ${behavior.label}`);
 				}
 			}
@@ -521,4 +537,57 @@ export async function runPiOfficialExamplesCertification(
 		componentKinds,
 		results,
 	};
+}
+
+export interface M21CBehaviorClosureGateResult {
+	gateStatus: "passed" | "failed";
+	report: PiOfficialExampleCertificationReport;
+}
+
+const TerminalSurfaceReason = "terminal fallback widget requires M3 terminal surface certification";
+const M21CRequiredPassedFixtureIds = new Set(["select-input", "markdown-layout", "official-interactive"]);
+const M21CRequiredUnsupportedFixtureIds = new Set(["official-custom-unsupported", "pi-gui-showcase"]);
+
+/**
+ * The M2.1C behavior-closure milestone gate. `gateStatus` is a milestone-only
+ * signal that is `passed` solely for the exact accepted aggregate; it is never
+ * added to the generic report, and this evaluation never mutates or overwrites
+ * the nested generic report or its `status`.
+ */
+export function evaluateM21CBehaviorClosureGate(
+	report: PiOfficialExampleCertificationReport
+): M21CBehaviorClosureGateResult {
+	return { gateStatus: isM21CBehaviorClosureGatePassed(report) ? "passed" : "failed", report };
+}
+
+function isM21CBehaviorClosureGatePassed(report: PiOfficialExampleCertificationReport): boolean {
+	if (report.status !== "failed") return false;
+	if (report.total !== 5 || report.passed !== 3 || report.unsupported !== 2 || report.failed !== 0) return false;
+	if (report.results.length !== 5) return false;
+
+	const ids = new Set(report.results.map((result) => result.id));
+	if (ids.size !== 5) return false;
+	for (const id of M21CRequiredPassedFixtureIds) {
+		if (!ids.has(id)) return false;
+	}
+	for (const id of M21CRequiredUnsupportedFixtureIds) {
+		if (!ids.has(id)) return false;
+	}
+
+	for (const result of report.results) {
+		if (result.errors.length > 0) return false;
+		if (M21CRequiredPassedFixtureIds.has(result.id)) {
+			if (result.status !== "passed" || result.unsupportedReasons.length > 0) return false;
+			continue;
+		}
+		if (M21CRequiredUnsupportedFixtureIds.has(result.id)) {
+			if (result.status !== "unsupported") return false;
+			if (result.unsupportedReasons.length !== 1 || result.unsupportedReasons[0] !== TerminalSurfaceReason) return false;
+			continue;
+		}
+		return false;
+	}
+
+	if (PiTuiComponentCompatibilityMatrix.some(isStandardComponentCertificationBlocker)) return false;
+	return true;
 }

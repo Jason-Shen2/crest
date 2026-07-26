@@ -3,6 +3,7 @@
 
 import type { WaveEnv } from "@/app/waveenv/waveenv";
 import { type Placement } from "@floating-ui/react";
+import type { WidgetEventDispatchResult } from "../../emain/agent/extensions/pi-gui/crest/widget-tree";
 import type * as jotai from "jotai";
 import type * as rxjs from "rxjs";
 
@@ -81,6 +82,7 @@ declare global {
     type AgentWidgetEvent = {
         nodeid: string;
         type: string;
+        eventid?: string;
         payload?: unknown;
     };
 
@@ -197,7 +199,10 @@ declare global {
             /** Answer a pending ctx.ui request (confirm/select/input). agent:ui-response */
             respondUi: (sessionPath: string, requestId: string, result: unknown) => Promise<void>;
             /** Deliver a renderer widget event to a live ctx.ui.custom surface. agent:widget-event */
-            respondWidgetEvent: (sessionPath: string, event: AgentWidgetEvent) => Promise<boolean>;
+            respondWidgetEvent: (
+                sessionPath: string,
+                event: AgentWidgetEvent
+            ) => Promise<WidgetEventDispatchResult>;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
             subscribe: (
                 sessionPath: string,

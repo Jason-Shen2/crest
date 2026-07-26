@@ -3,6 +3,7 @@
 
 import type { Component } from "../../src/tui";
 import type { RichTableColumn, RichTableRow, WidgetRichTableNode } from "../widget-tree";
+import { CrestRichComponentKind } from "./contract";
 
 export interface RichTableOptions {
     columns: RichTableColumn[];
@@ -11,6 +12,7 @@ export interface RichTableOptions {
 }
 
 export class RichTable implements Component {
+    readonly [CrestRichComponentKind] = "richtable";
     readonly widgetKind = "richtable";
     readonly columns: RichTableColumn[];
     readonly rows: RichTableRow[];

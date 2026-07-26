@@ -1,13 +1,19 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Component } from "../src/tui";
+import { hasPiGuiComponentKind, type Component, type PiGuiComponentKind } from "../src/tui";
+import { Box } from "../src/components/box";
 import { CancellableLoader } from "../src/components/cancellable-loader";
 import { Editor } from "../src/components/editor";
+import { Image } from "../src/components/image";
 import { Input } from "../src/components/input";
 import { Loader } from "../src/components/loader";
+import { Markdown } from "../src/components/markdown";
 import { isValidSelectIndex, SelectList } from "../src/components/select-list";
 import { isValidSettingsIndex, SettingsList } from "../src/components/settings-list";
+import { Spacer } from "../src/components/spacer";
+import { Text } from "../src/components/text";
+import { TruncatedText } from "../src/components/truncated-text";
 import type {
     WidgetEditorNode,
     WidgetInputNode,
@@ -26,8 +32,9 @@ export interface SnapshotContext {
 
 export interface WidgetEvent {
     nodeid: string;
-    type: "select" | "change" | "submit" | "cancel" | "key";
-    payload?: Record<string, unknown>;
+    type: "select" | "change" | "submit" | "cancel" | "key" | "focus" | "cycle";
+    eventid?: string;
+    payload?: unknown;
 }
 
 export interface DispatchContext {
@@ -39,147 +46,125 @@ export interface DispatchResult {
 }
 
 export interface PiGuiAdapter<TComponent extends Component = Component> {
-    kind: string;
-    matches(component: Component): component is TComponent;
-    snapshot(component: TComponent, context: SnapshotContext): WidgetNode;
-    dispatch(component: TComponent, event: WidgetEvent, context: DispatchContext): DispatchResult;
-    dispose?(component: TComponent): void;
+    readonly kind: PiGuiComponentKind;
+    readonly matches: (component: Component) => component is TComponent;
+    readonly snapshot: (component: TComponent, context: SnapshotContext) => WidgetNode;
+    readonly dispatch: (component: TComponent, event: WidgetEvent, context: DispatchContext) => DispatchResult;
+    readonly children?: (component: TComponent) => readonly Component[];
+    readonly dispose?: (component: TComponent) => void;
 }
 
-const AdapterKinds = ["text", "box", "spacer", "selectlist", "settingslist", "input", "markdown", "editor", "image", "loader", "truncatedtext"];
-
-function placeholderMatches(_component: Component): _component is Component {
-    return false;
+function payloadRecord(event: WidgetEvent): Record<string, unknown> | undefined {
+    if (event.payload === undefined) return {};
+    if (event.payload === null || typeof event.payload !== "object" || Array.isArray(event.payload)) return undefined;
+    const prototype = Object.getPrototypeOf(event.payload);
+    if (prototype !== null && Object.getPrototypeOf(prototype) !== null) return undefined;
+    return event.payload as Record<string, unknown>;
 }
 
-function payloadRecord(event: WidgetEvent): Record<string, unknown> {
-    return event.payload ?? {};
+function completeEditPayload(event: WidgetEvent): {
+    value: string;
+    selectionstart: number;
+    selectionend: number;
+} | undefined {
+    const payload = payloadRecord(event);
+    if (typeof payload.value !== "string") return undefined;
+    if (!Number.isInteger(payload.selectionstart) || !Number.isInteger(payload.selectionend)) return undefined;
+    const selectionstart = payload.selectionstart as number;
+    const selectionend = payload.selectionend as number;
+    if (selectionstart < 0 || selectionstart > selectionend || selectionend > payload.value.length) return undefined;
+    return { value: payload.value, selectionstart, selectionend };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value != null;
-}
+const TextAdapter: PiGuiAdapter<Text> = {
+    kind: "text",
+    matches: (component): component is Text => hasPiGuiComponentKind(component, "text"),
+    snapshot(component, context) {
+        const value = component.getSnapshot();
+        return { kind: "text", id: context.makeId(component, "text"), text: value.text, paddingx: value.paddingX, paddingy: value.paddingY };
+    },
+    dispatch: () => ({ handled: false }),
+};
 
-function hasFunction(record: Record<string, unknown>, key: string): boolean {
-    return typeof record[key] === "function";
-}
+const BoxAdapter: PiGuiAdapter<Box> = {
+    kind: "box",
+    matches: (component): component is Box => hasPiGuiComponentKind(component, "box"),
+    snapshot(component, context) {
+        const value = component.getSnapshot();
+        return {
+            kind: "box",
+            id: context.makeId(component, "box"),
+            paddingx: value.paddingX,
+            paddingy: value.paddingY,
+            children: value.children.map(context.snapshot),
+        };
+    },
+    children: (component) => component.getChildren(),
+    dispatch: () => ({ handled: false }),
+};
 
-function readSnapshot(record: Record<string, unknown>): unknown {
-    try {
-        return (record.getSnapshot as () => unknown)();
-    } catch {
-        return undefined;
-    }
-}
+const SpacerAdapter: PiGuiAdapter<Spacer> = {
+    kind: "spacer",
+    matches: (component): component is Spacer => hasPiGuiComponentKind(component, "spacer"),
+    snapshot(component, context) {
+        return { kind: "spacer", id: context.makeId(component, "spacer"), lines: component.getSnapshot().lines };
+    },
+    dispatch: () => ({ handled: false }),
+};
 
-function isInputLike(component: Component): component is Input {
-    if (component instanceof Input) return true;
-    const record = component as unknown as Record<string, unknown>;
-    if (
-        !hasFunction(record, "getSnapshot") ||
-        !hasFunction(record, "setValue") ||
-        !hasFunction(record, "getValue") ||
-        !hasFunction(record, "handleInput")
-    ) {
-        return false;
-    }
-    const snapshot = readSnapshot(record);
-    return (
-        isRecord(snapshot) &&
-        typeof snapshot.value === "string" &&
-        typeof snapshot.cursor === "number" &&
-        typeof snapshot.focused === "boolean"
-    );
-}
+const MarkdownAdapter: PiGuiAdapter<Markdown> = {
+    kind: "markdown",
+    matches: (component): component is Markdown => hasPiGuiComponentKind(component, "markdown"),
+    snapshot(component, context) {
+        const value = component.getSnapshot();
+        return {
+            kind: "markdown",
+            id: context.makeId(component, "markdown"),
+            source: value.source,
+            paddingx: value.paddingX,
+            paddingy: value.paddingY,
+        };
+    },
+    dispatch: () => ({ handled: false }),
+};
 
-function isSelectListLike(component: Component): component is SelectList {
-    if (component instanceof SelectList) return true;
-    const record = component as unknown as Record<string, unknown>;
-    if (
-        !hasFunction(record, "getSnapshot") ||
-        !hasFunction(record, "setSelectedIndex") ||
-        !hasFunction(record, "getSelectedItem") ||
-        !hasFunction(record, "setFilter") ||
-        !hasFunction(record, "handleInput")
-    ) {
-        return false;
-    }
-    const snapshot = readSnapshot(record);
-    return (
-        isRecord(snapshot) &&
-        Array.isArray(snapshot.items) &&
-        typeof snapshot.selectedIndex === "number" &&
-        typeof snapshot.maxVisible === "number" &&
-        typeof snapshot.focused === "boolean"
-    );
-}
+const ImageAdapter: PiGuiAdapter<Image> = {
+    kind: "image",
+    matches: (component): component is Image => hasPiGuiComponentKind(component, "image"),
+    snapshot(component, context) {
+        const value = component.getSnapshot();
+        return {
+            kind: "image",
+            id: context.makeId(component, "image"),
+            src: `data:${value.mimeType};base64,${value.base64Data}`,
+            mimetype: value.mimeType,
+            filename: value.filename,
+            widthpx: value.widthPx,
+            heightpx: value.heightPx,
+        };
+    },
+    dispatch: () => ({ handled: false }),
+};
 
-function isSettingsListLike(component: Component): component is SettingsList {
-    if (component instanceof SettingsList) return true;
-    const record = component as unknown as Record<string, unknown>;
-    if (
-        !hasFunction(record, "getSnapshot") ||
-        !hasFunction(record, "setSelectedIndex") ||
-        !hasFunction(record, "setItemValue") ||
-        !hasFunction(record, "activateSelected") ||
-        !hasFunction(record, "cancel") ||
-        !hasFunction(record, "handleInput")
-    ) {
-        return false;
-    }
-    const snapshot = readSnapshot(record);
-    return (
-        isRecord(snapshot) &&
-        Array.isArray(snapshot.items) &&
-        typeof snapshot.selectedIndex === "number" &&
-        typeof snapshot.maxVisible === "number"
-    );
-}
-
-function isEditorLike(component: Component): component is Editor {
-    if (component instanceof Editor) return true;
-    const record = component as unknown as Record<string, unknown>;
-    if (
-        !hasFunction(record, "getSnapshot") ||
-        !hasFunction(record, "setText") ||
-        !hasFunction(record, "getText") ||
-        !hasFunction(record, "handleInput")
-    ) {
-        return false;
-    }
-    const snapshot = readSnapshot(record);
-    return (
-        isRecord(snapshot) &&
-        typeof snapshot.value === "string" &&
-        Array.isArray(snapshot.lines) &&
-        typeof snapshot.cursorLine === "number" &&
-        typeof snapshot.cursorCol === "number" &&
-        typeof snapshot.focused === "boolean" &&
-        typeof snapshot.paddingX === "number"
-    );
-}
-
-function isLoaderLike(component: Component): component is Loader {
-    if (component instanceof Loader) return true;
-    const record = component as unknown as Record<string, unknown>;
-    if (!hasFunction(record, "getSnapshot") || !hasFunction(record, "stop")) {
-        return false;
-    }
-    const snapshot = readSnapshot(record);
-    return isRecord(snapshot) && typeof snapshot.label === "string" && typeof snapshot.frame === "string";
-}
-
-function isCancellableLoaderLike(component: Component): boolean {
-    if (component instanceof CancellableLoader) return true;
-    const record = component as unknown as Record<string, unknown>;
-    return typeof record.aborted === "boolean" && hasFunction(record, "handleInput");
-}
+const TruncatedTextAdapter: PiGuiAdapter<TruncatedText> = {
+    kind: "truncatedtext",
+    matches: (component): component is TruncatedText => hasPiGuiComponentKind(component, "truncatedtext"),
+    snapshot(component, context) {
+        const value = component.getSnapshot();
+        return {
+            kind: "truncatedtext",
+            id: context.makeId(component, "truncatedtext"),
+            text: value.text,
+            paddingx: value.paddingX,
+            paddingy: value.paddingY,
+        };
+    },
+    dispatch: () => ({ handled: false }),
+};
 
 const SelectListAdapter: PiGuiAdapter<SelectList> = {
     kind: "selectlist",
-    matches(component): component is SelectList {
-        return isSelectListLike(component);
-    },
+    matches: (component): component is SelectList => hasPiGuiComponentKind(component, "selectlist"),
     snapshot(component, context): WidgetSelectListNode {
         const snapshot = component.getSnapshot();
         return {
@@ -190,19 +175,17 @@ const SelectListAdapter: PiGuiAdapter<SelectList> = {
             maxvisible: snapshot.maxVisible,
             focused: snapshot.focused,
             filter: snapshot.filter,
+            visiblestart: snapshot.visibleStart,
+            visibleend: snapshot.visibleEnd,
+            nomatch: snapshot.noMatch,
         };
     },
     dispatch(component, event): DispatchResult {
+        const payload = payloadRecord(event);
+        if (!payload) return { handled: false };
         if (event.type === "select") {
-            const payload = payloadRecord(event);
-            if (typeof payload.index === "number") {
-                if (!isValidSelectIndex(payload.index)) return { handled: false };
-                component.setSelectedIndex(payload.index);
-            }
-            const item = component.getSelectedItem();
-            if (!item || !component.onSelect) return { handled: false };
-            component.onSelect(item);
-            return { handled: true };
+            if (typeof payload.index !== "number" || !isValidSelectIndex(payload.index)) return { handled: false };
+            return { handled: component.selectAndActivate(payload.index) };
         }
         if (event.type === "cancel") {
             if (!component.onCancel) return { handled: false };
@@ -210,13 +193,15 @@ const SelectListAdapter: PiGuiAdapter<SelectList> = {
             return { handled: true };
         }
         if (event.type === "change") {
-            const payload = payloadRecord(event);
             if (typeof payload.value !== "string") return { handled: false };
             component.setFilter(payload.value);
             return { handled: true };
         }
+        if (event.type === "focus") {
+            if (typeof payload.focused !== "boolean") return { handled: false };
+            return { handled: component.setFocused(payload.focused) };
+        }
         if (event.type === "key") {
-            const payload = payloadRecord(event);
             if (typeof payload.data !== "string") return { handled: false };
             component.handleInput(payload.data);
             return { handled: true };
@@ -227,9 +212,7 @@ const SelectListAdapter: PiGuiAdapter<SelectList> = {
 
 const SettingsListAdapter: PiGuiAdapter<SettingsList> = {
     kind: "settingslist",
-    matches(component): component is SettingsList {
-        return isSettingsListLike(component);
-    },
+    matches: (component): component is SettingsList => hasPiGuiComponentKind(component, "settingslist"),
     snapshot(component, context): WidgetSettingsListNode {
         const snapshot = component.getSnapshot();
         return {
@@ -244,33 +227,47 @@ const SettingsListAdapter: PiGuiAdapter<SettingsList> = {
             })),
             selectedindex: snapshot.selectedIndex,
             maxvisible: snapshot.maxVisible,
+            searchenabled: snapshot.searchEnabled,
+            focused: snapshot.focused,
+            filter: snapshot.filter,
+            visiblestart: snapshot.visibleStart,
+            visibleend: snapshot.visibleEnd,
+            nomatch: snapshot.noMatch,
+            submenu: snapshot.submenu ? context.snapshot(snapshot.submenu) : undefined,
         };
     },
+    children: (component) => component.getChildren(),
     dispatch(component, event): DispatchResult {
+        const payload = payloadRecord(event);
+        if (!payload) return { handled: false };
         if (event.type === "select") {
-            const payload = payloadRecord(event);
             if (typeof payload.index !== "number" || !isValidSettingsIndex(payload.index)) return { handled: false };
+            if (payload.index < 0 || payload.index >= component.getSnapshot().items.length) return { handled: false };
             return { handled: component.setSelectedIndex(payload.index) };
         }
         if (event.type === "change") {
-            const payload = payloadRecord(event);
-            if (typeof payload.value !== "string") return { handled: false };
-            if (typeof payload.id === "string") {
-                return { handled: component.setItemValue(payload.id, payload.value) };
-            }
-            const item = component.getSelectedItem();
-            if (!item) return { handled: false };
-            return { handled: component.setItemValue(item.id, payload.value) };
+            if (typeof payload.filter !== "string") return { handled: false };
+            return { handled: component.setFilter(payload.filter) };
+        }
+        if (event.type === "cycle") {
+            if (payload.direction !== 1 && payload.direction !== -1) return { handled: false };
+            return { handled: component.cycleSelected(payload.direction) };
         }
         if (event.type === "submit") {
-            return { handled: component.activateSelected() };
+            if (event.payload === undefined) return { handled: component.activateSelected() };
+            if (typeof payload.index !== "number" || !isValidSettingsIndex(payload.index)) return { handled: false };
+            return { handled: component.activateIndex(payload.index) };
         }
         if (event.type === "cancel") {
+            if (component.getChildren().length > 0) return { handled: false };
             component.cancel();
             return { handled: true };
         }
+        if (event.type === "focus") {
+            if (typeof payload.focused !== "boolean") return { handled: false };
+            return { handled: component.setFocused(payload.focused) };
+        }
         if (event.type === "key") {
-            const payload = payloadRecord(event);
             if (typeof payload.data !== "string") return { handled: false };
             component.handleInput(payload.data);
             return { handled: true };
@@ -281,9 +278,7 @@ const SettingsListAdapter: PiGuiAdapter<SettingsList> = {
 
 const InputAdapter: PiGuiAdapter<Input> = {
     kind: "input",
-    matches(component): component is Input {
-        return isInputLike(component);
-    },
+    matches: (component): component is Input => hasPiGuiComponentKind(component, "input"),
     snapshot(component, context): WidgetInputNode {
         const snapshot = component.getSnapshot();
         return {
@@ -292,27 +287,31 @@ const InputAdapter: PiGuiAdapter<Input> = {
             value: snapshot.value,
             cursor: snapshot.cursor,
             focused: snapshot.focused,
+            selectionstart: snapshot.selectionStart,
+            selectionend: snapshot.selectionEnd,
         };
     },
     dispatch(component, event): DispatchResult {
+        const payload = payloadRecord(event);
+        if (!payload) return { handled: false };
         if (event.type === "change") {
-            const payload = payloadRecord(event);
-            if (typeof payload.value !== "string") return { handled: false };
-            component.setValue(payload.value);
-            return { handled: true };
+            const edit = completeEditPayload(event);
+            if (!edit) return { handled: false };
+            return { handled: component.applyGuiEdit(edit.value, edit.selectionstart, edit.selectionend) };
         }
         if (event.type === "submit") {
-            if (!component.onSubmit) return { handled: false };
-            component.onSubmit(component.getValue());
-            return { handled: true };
+            const edit = completeEditPayload(event);
+            if (!edit) return { handled: false };
+            return { handled: component.submitGuiValue(edit.value, edit.selectionstart, edit.selectionend) };
         }
         if (event.type === "cancel") {
-            if (!component.onEscape) return { handled: false };
-            component.onEscape();
-            return { handled: true };
+            return { handled: component.escape() };
+        }
+        if (event.type === "focus") {
+            if (typeof payload.focused !== "boolean") return { handled: false };
+            return { handled: component.setFocused(payload.focused) };
         }
         if (event.type === "key") {
-            const payload = payloadRecord(event);
             if (typeof payload.data !== "string") return { handled: false };
             component.handleInput(payload.data);
             return { handled: true };
@@ -323,9 +322,7 @@ const InputAdapter: PiGuiAdapter<Input> = {
 
 const EditorAdapter: PiGuiAdapter<Editor> = {
     kind: "editor",
-    matches(component): component is Editor {
-        return isEditorLike(component);
-    },
+    matches: (component): component is Editor => hasPiGuiComponentKind(component, "editor"),
     snapshot(component, context): WidgetEditorNode {
         const snapshot = component.getSnapshot();
         return {
@@ -337,22 +334,31 @@ const EditorAdapter: PiGuiAdapter<Editor> = {
             cursorcol: snapshot.cursorCol,
             focused: snapshot.focused,
             paddingx: snapshot.paddingX,
+            selectionstart: snapshot.selectionStart,
+            selectionend: snapshot.selectionEnd,
+            submitkeys: [...snapshot.submitKeys],
+            newlinekeys: [...snapshot.newLineKeys],
         };
     },
     dispatch(component, event): DispatchResult {
+        const payload = payloadRecord(event);
+        if (!payload) return { handled: false };
         if (event.type === "change") {
-            const payload = payloadRecord(event);
-            if (typeof payload.value !== "string") return { handled: false };
-            component.setText(payload.value);
-            return { handled: true };
+            const edit = completeEditPayload(event);
+            if (!edit) return { handled: false };
+            return { handled: component.applyGuiEdit(edit.value, edit.selectionstart, edit.selectionend) };
         }
         if (event.type === "submit") {
-            if (!component.onSubmit) return { handled: false };
-            component.onSubmit(component.getText());
-            return { handled: true };
+            const edit = completeEditPayload(event);
+            if (!edit) return { handled: false };
+            const outcome = component.submitGuiValue(edit.value, edit.selectionstart, edit.selectionend);
+            return { handled: outcome.accepted };
+        }
+        if (event.type === "focus") {
+            if (typeof payload.focused !== "boolean") return { handled: false };
+            return { handled: component.setFocused(payload.focused) };
         }
         if (event.type === "key") {
-            const payload = payloadRecord(event);
             if (typeof payload.data !== "string") return { handled: false };
             component.handleInput(payload.data);
             return { handled: true };
@@ -361,53 +367,60 @@ const EditorAdapter: PiGuiAdapter<Editor> = {
     },
 };
 
-const LoaderAdapter: PiGuiAdapter<Loader> = {
-    kind: "loader",
-    matches(component): component is Loader {
-        return isLoaderLike(component);
-    },
-    snapshot(component, context): WidgetLoaderNode {
-        const snapshot = component.getSnapshot();
-        const cancellable = isCancellableLoaderLike(component);
-        return {
-            kind: "loader",
-            id: context.makeId(component, "loader"),
-            label: snapshot.label,
-            frame: snapshot.frame,
-            cancellable,
-            aborted: cancellable ? Boolean((component as unknown as { aborted?: unknown }).aborted) : undefined,
-        };
-    },
-    dispatch(component, event): DispatchResult {
-        if (event.type !== "cancel" || !isCancellableLoaderLike(component)) return { handled: false };
-        (component as unknown as { handleInput(data: string): void }).handleInput("\x1b");
-        return { handled: true };
-    },
-    dispose(component): void {
-        component.stop();
-    },
-};
-
-const AdapterByKind: Record<string, PiGuiAdapter> = {
-    selectlist: SelectListAdapter,
-    settingslist: SettingsListAdapter,
-    input: InputAdapter,
-    editor: EditorAdapter,
-    loader: LoaderAdapter,
-};
-
-export function getPiGuiAdapter(component: Component): PiGuiAdapter | undefined {
-    return getPiGuiAdapters().find((adapter) => adapter.matches(component));
+function loaderNode(component: Loader, context: SnapshotContext): WidgetLoaderNode {
+    const value = component.getSnapshot();
+    return {
+        kind: "loader",
+        id: context.makeId(component, "loader"),
+        label: value.label,
+        frame: value.frame,
+        cancellable: value.cancellable,
+        aborted: value.aborted,
+    };
 }
 
-export function getPiGuiAdapters(): PiGuiAdapter[] {
-    return AdapterKinds.map((kind) => ({
-        ...AdapterByKind[kind],
-        kind,
-        matches: AdapterByKind[kind]?.matches ?? placeholderMatches,
-        snapshot: AdapterByKind[kind]?.snapshot ?? (() => {
-            throw new Error(`adapter ${kind} is not wired yet`);
-        }),
-        dispatch: AdapterByKind[kind]?.dispatch ?? (() => ({ handled: false })),
-    }));
+const LoaderAdapter: PiGuiAdapter<Loader> = {
+    kind: "loader",
+    matches: (component): component is Loader => hasPiGuiComponentKind(component, "loader"),
+    snapshot: loaderNode,
+    dispatch: () => ({ handled: false }),
+    dispose: (component) => component.dispose(),
+};
+
+const CancellableLoaderAdapter: PiGuiAdapter<CancellableLoader> = {
+    kind: "cancellableloader",
+    matches: (component): component is CancellableLoader => hasPiGuiComponentKind(component, "cancellableloader"),
+    snapshot: loaderNode,
+    dispatch(component, event) {
+        if (!payloadRecord(event)) return { handled: false };
+        if (event.type !== "cancel") return { handled: false };
+        component.cancel();
+        return { handled: true };
+    },
+    dispose: (component) => component.dispose(),
+};
+
+const PiGuiAdapters: readonly PiGuiAdapter[] = Object.freeze(
+    [
+        TextAdapter,
+        BoxAdapter,
+        SpacerAdapter,
+        SelectListAdapter,
+        SettingsListAdapter,
+        InputAdapter,
+        MarkdownAdapter,
+        EditorAdapter,
+        ImageAdapter,
+        LoaderAdapter,
+        CancellableLoaderAdapter,
+        TruncatedTextAdapter,
+    ].map((adapter) => Object.freeze(adapter))
+);
+
+export function getPiGuiAdapter(component: Component): PiGuiAdapter | undefined {
+    return PiGuiAdapters.find((adapter) => adapter.matches(component));
+}
+
+export function getPiGuiAdapters(): readonly PiGuiAdapter[] {
+    return PiGuiAdapters;
 }

@@ -41,7 +41,11 @@ import type {
 import type { AgentMessage, AgentTool } from "../types";
 import { getPiGuiAdapter, type WidgetEvent as PiGuiWidgetEvent } from "./pi-gui/crest/adapters";
 import { componentToWidget } from "./pi-gui/crest/walker";
-import type { RenderedExtensionEntryNode, WidgetNode } from "./pi-gui/crest/widget-tree";
+import type {
+	RenderedExtensionEntryNode,
+	WidgetEventDispatchResult,
+	WidgetNode,
+} from "./pi-gui/crest/widget-tree";
 import type { Component } from "./pi-gui/src/tui";
 import type {
 	Extension,
@@ -75,16 +79,41 @@ type ExtensionCustomFactory = (
 export interface WidgetEvent {
 	nodeid: string;
 	type: string;
+	eventid?: string;
 	payload?: unknown;
 }
 
 interface WidgetTarget {
 	component: Component;
-	rootComponent: Component;
-	done?: (result?: unknown) => void;
-	width: number;
-	update?: (widget: WidgetNode) => void;
+	root: RootRegistration;
 }
+
+export type WidgetComponentOwnership = "bridge-factory" | "caller-external";
+
+export interface WidgetRootRegistration {
+	unregister(): void;
+}
+
+interface RootRevision {
+	widget: WidgetNode;
+	targets: Map<string, WidgetTarget>;
+	components: Set<Component>;
+}
+
+interface RootRegistration {
+	rootComponent: Component;
+	width: number;
+	done?: (result?: unknown) => void;
+	update?: (widget: WidgetNode) => void;
+	revision: RootRevision;
+	scheduled: boolean;
+	disposed: boolean;
+	handle: WidgetRootRegistration;
+}
+
+type BuildRevisionResult =
+	| { ok: true; revision: RootRevision }
+	| { ok: false; error: Error; components: Set<Component> };
 
 function customWidth(options: unknown): number {
 	if (!options || typeof options !== "object") return 80;
@@ -129,14 +158,6 @@ function serializeUiValue(value: unknown, options?: unknown): string[] | WidgetN
 	return undefined;
 }
 
-function componentFromUiValue(value: unknown): Component | undefined {
-	if (isComponent(value)) return value;
-	if (typeof value === "function") {
-		return (value as ExtensionCustomFactory)(undefined, undefined, undefined, () => {});
-	}
-	return undefined;
-}
-
 /**
  * Late-bound holder for the UI host. buildAgentHarnessHost creates the extension
  * context (and thus wires ctx.ui) BEFORE the AgentSessionRuntime owner exists, so
@@ -147,19 +168,168 @@ export interface ExtensionUiBridge {
 	attach(host: ExtensionUiHost): void;
 	readonly host: ExtensionUiHost | undefined;
 	registerWidgetRoot(
-		widget: WidgetNode,
+		widget: WidgetNode | (() => WidgetNode),
 		component: Component,
 		done?: (result?: unknown) => void,
-		options?: { width?: number; update?: (widget: WidgetNode) => void }
-	): () => void;
-	dispatchWidgetEvent(event: WidgetEvent): boolean;
+		options?: {
+			width?: number;
+			update?: (widget: WidgetNode) => void;
+			replace?: WidgetRootRegistration;
+			ownership?: WidgetComponentOwnership;
+		}
+	): WidgetRootRegistration | undefined;
+	dispatchWidgetEvent(event: WidgetEvent): WidgetEventDispatchResult;
+	requestWidgetRender(component: Component): boolean;
 	dispose(): void;
 }
 
 export function createExtensionUiBridge(): ExtensionUiBridge {
 	let host: ExtensionUiHost | undefined;
 	let disposed = false;
-	const targets = new Map<string, WidgetTarget>();
+	let publishedTargets = new Map<string, WidgetTarget>();
+	const roots = new Map<Component, RootRegistration>();
+	let publishedRootsByComponent = new Map<Component, RootRegistration>();
+
+	function allPublishedComponents(excluding?: RootRegistration): Set<Component> {
+		const components = new Set<Component>();
+		for (const root of roots.values()) {
+			if (root === excluding || root.disposed) continue;
+			for (const component of root.revision.components) components.add(component);
+		}
+		return components;
+	}
+
+	function rebuildPublishedRootsByComponent(): Map<Component, RootRegistration> {
+		const next = new Map<Component, RootRegistration>();
+		for (const root of roots.values()) {
+			if (root.disposed) continue;
+			for (const component of root.revision.components) next.set(component, root);
+		}
+		return next;
+	}
+
+	function buildRevision(
+		widget: WidgetNode,
+		rootComponent: Component,
+		root: RootRegistration,
+		collectedComponents: ReadonlySet<Component>,
+		excluding?: RootRegistration,
+	): BuildRevisionResult {
+		const components = new Set(collectedComponents);
+		const targets = new Map<string, WidgetTarget>();
+		const excludedIds = excluding ? new Set(excluding.revision.targets.keys()) : new Set<string>();
+		try {
+			for (const component of components) {
+				const publishedRoot = publishedRootsByComponent.get(component);
+				if (publishedRoot && publishedRoot !== excluding) {
+					throw new Error("component already published by another root");
+				}
+			}
+			const visit = (currentWidget: WidgetNode, component: Component): void => {
+				if (targets.has(currentWidget.id)) throw new Error(`duplicate widget id: ${currentWidget.id}`);
+				const published = publishedTargets.get(currentWidget.id);
+				if (published && !excludedIds.has(currentWidget.id)) {
+					throw new Error(`widget id already published: ${currentWidget.id}`);
+				}
+				targets.set(currentWidget.id, { component, root });
+				const widgetChildren = serializedWidgetChildren(currentWidget);
+				const componentChildren = getComponentChildren(component);
+				if (widgetChildren.length !== componentChildren.length) {
+					throw new Error(`widget/component child count mismatch for ${currentWidget.id}`);
+				}
+				for (let index = 0; index < widgetChildren.length; index++) {
+					const childWidget = widgetChildren[index];
+					const childComponent = componentChildren[index];
+					const snapshot = componentToWidget(childComponent, { width: root.width });
+					if (snapshot.id !== childWidget.id || snapshot.kind !== childWidget.kind) {
+						throw new Error(`widget/component child mismatch for ${childWidget.id}`);
+					}
+					visit(childWidget, childComponent);
+				}
+			};
+			visit(widget, rootComponent);
+			return { ok: true, revision: { widget, targets, components } };
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error : new Error(String(error)), components };
+		}
+	}
+
+	function disposeRejectedCandidate(
+		ownership: WidgetComponentOwnership,
+		candidateComponents: ReadonlySet<Component>,
+		publishedComponents: ReadonlySet<Component>,
+	): void {
+		if (ownership !== "bridge-factory") return;
+		disposeUniqueComponents([...candidateComponents].filter((component) => !publishedComponents.has(component)));
+	}
+
+	function publishRootRevision(root: RootRegistration, candidate: RootRevision): boolean {
+		if (root.disposed || disposed) return false;
+		const oldRevision = root.revision;
+		const nextTargets = new Map(publishedTargets);
+		for (const id of oldRevision.targets.keys()) {
+			if (nextTargets.get(id)?.root === root) nextTargets.delete(id);
+		}
+		for (const [id, target] of candidate.targets) nextTargets.set(id, target);
+		root.revision = candidate;
+		publishedTargets = nextTargets;
+		publishedRootsByComponent = rebuildPublishedRootsByComponent();
+		const retained = allPublishedComponents();
+		disposeUniqueComponents([...oldRevision.components].filter((component) => !retained.has(component)));
+		root.update?.(candidate.widget);
+		return true;
+	}
+
+	function refreshRoot(
+		root: RootRegistration,
+		transactionOrigin: WidgetComponentOwnership,
+		ack?: { nodeid: string; eventid: string },
+	): boolean {
+		if (root.disposed || disposed) return false;
+		let collectedComponents: Set<Component> | undefined;
+		let widget: WidgetNode;
+		try {
+			root.rootComponent.invalidate();
+			collectedComponents = collectComponentTree(root.rootComponent);
+			widget = componentToWidget(root.rootComponent, { width: root.width });
+			if (ack) widget = widgetWithTargetAck(widget, ack.nodeid, ack.eventid);
+		} catch {
+			if (collectedComponents) {
+				disposeRejectedCandidate(
+					transactionOrigin,
+					collectedComponents,
+					root.revision.components,
+				);
+			}
+			return false;
+		}
+		const candidate = buildRevision(widget, root.rootComponent, root, collectedComponents, root);
+		if (candidate.ok === false) {
+			disposeRejectedCandidate(
+				transactionOrigin,
+				candidate.components,
+				root.revision.components,
+			);
+			return false;
+		}
+		return publishRootRevision(root, candidate.revision);
+	}
+
+	function unregisterRoot(root: RootRegistration): void {
+		if (root.disposed) return;
+		root.disposed = true;
+		root.scheduled = false;
+		const nextTargets = new Map(publishedTargets);
+		for (const id of root.revision.targets.keys()) {
+			if (nextTargets.get(id)?.root === root) nextTargets.delete(id);
+		}
+		publishedTargets = nextTargets;
+		roots.delete(root.rootComponent);
+		publishedRootsByComponent = rebuildPublishedRootsByComponent();
+		const retained = allPublishedComponents();
+		disposeUniqueComponents([...root.revision.components].filter((component) => !retained.has(component)));
+	}
+
 	return {
 		attach(next: ExtensionUiHost) {
 			if (disposed) return;
@@ -169,170 +339,218 @@ export function createExtensionUiBridge(): ExtensionUiBridge {
 			return host;
 		},
 		registerWidgetRoot(widget, component, done, options) {
-			if (disposed) return () => {};
-			const ids = registerWidgetSubtree(targets, widget, component, {
+			if (disposed) return undefined;
+			const ownership = options?.ownership ?? "caller-external";
+			const replacement = options?.replace
+				? [...roots.values()].find((candidate) => candidate.handle === options.replace)
+				: undefined;
+			if (options?.replace && (!replacement || replacement.disposed)) {
+				disposeRejectedCandidate(ownership, collectComponentTree(component), allPublishedComponents());
+				return undefined;
+			}
+			const collectedComponents = collectComponentTree(component);
+			let serializedWidget: WidgetNode;
+			try {
+				serializedWidget = typeof widget === "function" ? widget() : widget;
+			} catch {
+				disposeRejectedCandidate(ownership, collectedComponents, allPublishedComponents());
+				return undefined;
+			}
+			const root = {} as RootRegistration;
+			const handle: WidgetRootRegistration = { unregister: () => unregisterRoot(root) };
+			Object.assign(root, {
 				rootComponent: component,
-				done,
 				width: options?.width ?? 80,
+				done,
 				update: options?.update,
+				revision: { widget: serializedWidget, targets: new Map(), components: new Set() },
+				scheduled: false,
+				disposed: false,
+				handle,
 			});
-			return () => {
-				const registeredTargets: WidgetTarget[] = [];
-				for (const id of ids) {
-					const target = targets.get(id);
-					if (target) registeredTargets.push(target);
-					targets.delete(id);
+			const candidate = buildRevision(serializedWidget, component, root, collectedComponents, replacement);
+			if (candidate.ok === false) {
+				disposeRejectedCandidate(ownership, candidate.components, allPublishedComponents());
+				return undefined;
+			}
+			if (replacement) {
+				replacement.disposed = true;
+				replacement.scheduled = false;
+				roots.delete(replacement.rootComponent);
+			}
+			root.revision = candidate.revision;
+			roots.set(component, root);
+			const nextTargets = new Map(publishedTargets);
+			if (replacement) {
+				for (const id of replacement.revision.targets.keys()) {
+					if (nextTargets.get(id)?.root === replacement) nextTargets.delete(id);
 				}
-				disposeUniqueWidgetTargets(registeredTargets);
-			};
+			}
+			for (const [id, target] of root.revision.targets) nextTargets.set(id, target);
+			publishedTargets = nextTargets;
+			publishedRootsByComponent = rebuildPublishedRootsByComponent();
+			options?.update?.(serializedWidget);
+			if (replacement) {
+				const retained = allPublishedComponents();
+				disposeUniqueComponents(
+					[...replacement.revision.components].filter((candidateComponent) => !retained.has(candidateComponent)),
+				);
+			}
+			return handle;
 		},
 		dispatchWidgetEvent(event: WidgetEvent) {
-			const target = targets.get(event.nodeid);
-			if (!target) return false;
-			return dispatchWidgetEventToComponent(target, event);
+			if (event.eventid != null && !isValidWidgetEventId(event.eventid)) {
+				return { handled: false, published: false };
+			}
+			const target = publishedTargets.get(event.nodeid);
+			if (!target) return { handled: false, published: false };
+			if (!dispatchWidgetEventToComponent(target, event)) {
+				return { handled: false, published: false };
+			}
+			target.root.scheduled = false;
+			return {
+				handled: true,
+				published: refreshRoot(
+				target.root,
+				"bridge-factory",
+				event.eventid ? { nodeid: event.nodeid, eventid: event.eventid } : undefined,
+				),
+			};
+		},
+		requestWidgetRender(component: Component) {
+			const root = publishedRootsByComponent.get(component);
+			if (!root || root.disposed || disposed) return false;
+			if (root.scheduled) return true;
+			root.scheduled = true;
+			queueMicrotask(() => {
+				if (!root.scheduled || root.disposed || disposed) return;
+				root.scheduled = false;
+				refreshRoot(root, "caller-external");
+			});
+			return true;
 		},
 		dispose() {
 			if (disposed) return;
 			disposed = true;
 			host = undefined;
-			const registeredTargets = [...targets.values()];
-			targets.clear();
-			disposeUniqueWidgetTargets(registeredTargets);
+			const components = allPublishedComponents();
+			for (const root of roots.values()) {
+				root.disposed = true;
+				root.scheduled = false;
+			}
+			roots.clear();
+			publishedTargets = new Map();
+			publishedRootsByComponent = new Map();
+			disposeUniqueComponents(components);
 		},
 	};
 }
 
-function disposeUniqueWidgetTargets(targets: Iterable<WidgetTarget>): void {
-	const uniqueTargets = new Map<Component, WidgetTarget>();
-	for (const target of targets) {
-		uniqueTargets.set(target.component, target);
-	}
-	for (const target of uniqueTargets.values()) {
+function disposeUniqueComponents(components: Iterable<Component>): void {
+	for (const component of new Set(components)) {
 		try {
-			disposeWidgetTarget(target);
+			const adapterDispose = getPiGuiAdapter(component)?.dispose;
+			if (adapterDispose) {
+				adapterDispose(component);
+			} else {
+				component.dispose?.();
+			}
 		} catch (err) {
 			console.error("[extension-ui] widget dispose failed:", err);
 		}
 	}
 }
 
-function disposeWidgetTarget(target: WidgetTarget): void {
-	const adapter = getPiGuiAdapter(target.component);
-	adapter?.dispose?.(target.component);
+function getComponentChildren(component: Component): readonly Component[] {
+	const adapter = getPiGuiAdapter(component);
+	return adapter?.children?.(component) ?? [];
 }
 
-function getComponentChildren(component: Component): Component[] {
-	const children = (component as unknown as { children?: unknown }).children;
-	return Array.isArray(children) ? (children as Component[]) : [];
-}
-
-function getWidgetChildren(widget: WidgetNode): WidgetNode[] {
-	return "children" in widget && Array.isArray(widget.children) ? widget.children : [];
-}
-
-function registerWidgetSubtree(
-	targets: Map<string, WidgetTarget>,
-	widget: WidgetNode,
-	component: Component,
-	options: Omit<WidgetTarget, "component">
-): string[] {
-	const ids = [widget.id];
-	targets.set(widget.id, { ...options, component });
-	const childWidgets = getWidgetChildren(widget);
-	const childComponents = getComponentChildren(component);
-	for (let i = 0; i < childWidgets.length && i < childComponents.length; i++) {
-		ids.push(...registerWidgetSubtree(targets, childWidgets[i], childComponents[i], options));
+function collectComponentTree(root: Component): Set<Component> {
+	const components = new Set<Component>();
+	try {
+		collectComponentTreeInto(root, components);
+	} catch {
+		// Rejection cleanup is best-effort and must not replace the original failure.
 	}
-	return ids;
+	return components;
 }
 
-function rerenderWidgetTarget(target: WidgetTarget): void {
-	target.rootComponent.invalidate();
-	target.update?.(componentToWidget(target.rootComponent, { width: target.width }));
+function collectComponentTreeInto(root: Component, components: Set<Component>): void {
+	const visit = (component: Component): void => {
+		if (components.has(component)) return;
+		components.add(component);
+		for (const child of getComponentChildren(component)) visit(child);
+	};
+	visit(root);
+}
+
+function serializedWidgetChildren(widget: WidgetNode): readonly WidgetNode[] {
+	switch (widget.kind) {
+		case "box":
+		case "container":
+			return widget.children;
+		case "settingslist":
+			return widget.submenu ? [widget.submenu] : [];
+		default:
+			return [];
+	}
+}
+
+function isValidWidgetEventId(eventid: unknown): eventid is string {
+	return typeof eventid === "string" && eventid.trim().length > 0 && eventid.length <= 256;
+}
+
+function widgetWithTargetAck(widget: WidgetNode, nodeid: string, ackid: string): WidgetNode {
+	if (widget.id === nodeid) return { ...widget, ackid };
+	switch (widget.kind) {
+		case "box":
+			return {
+				...widget,
+				children: widget.children.map((child) => widgetWithTargetAck(child, nodeid, ackid)),
+			};
+		case "container":
+			return {
+				...widget,
+				children: widget.children.map((child) => widgetWithTargetAck(child, nodeid, ackid)),
+			};
+		case "settingslist":
+			return {
+				...widget,
+				submenu: widget.submenu ? widgetWithTargetAck(widget.submenu, nodeid, ackid) : undefined,
+			};
+		default:
+			return widget;
+	}
 }
 
 function dispatchWidgetEventToComponent(target: WidgetTarget, event: WidgetEvent): boolean {
 	const adapter = getPiGuiAdapter(target.component);
 	if (adapter) {
-		const payload = event.payload != null && typeof event.payload === "object" && !Array.isArray(event.payload)
-			? (event.payload as Record<string, unknown>)
-			: undefined;
 		const result = adapter.dispatch(
 			target.component,
-			{ nodeid: event.nodeid, type: event.type as PiGuiWidgetEvent["type"], payload },
-			{ snapshot: (component) => componentToWidget(component, { width: target.width }) }
+			{
+				nodeid: event.nodeid,
+				type: event.type as PiGuiWidgetEvent["type"],
+				eventid: event.eventid,
+				payload: event.payload,
+			},
+			{ snapshot: (component) => componentToWidget(component, { width: target.root.width }) }
 		);
-		if (result.handled) {
-			rerenderWidgetTarget(target);
-			return true;
-		}
-		if (event.type === "cancel" && target.done) {
-			target.done(undefined);
-			rerenderWidgetTarget(target);
-			return true;
-		}
-		return false;
+		if (!result.handled) return false;
+		return true;
 	}
 
-	const component = target.component as Component & {
-		setSelectedIndex?: (index: number) => void;
-		getSelectedItem?: () => unknown;
-		onSelect?: (item: unknown) => void;
-		onCancel?: () => void;
-		setValue?: (value: string) => void;
-		getValue?: () => string;
-		onSubmit?: (value: string) => void;
-		onEscape?: () => void;
-	};
-	if (event.type === "change") {
-		const payload = event.payload as { value?: unknown } | undefined;
-		if (typeof payload?.value !== "string" || !component.setValue) return false;
-		component.setValue(payload.value);
-		rerenderWidgetTarget(target);
-		return true;
-	}
-	if (event.type === "submit") {
-		if (component.onSubmit && component.getValue) {
-			component.onSubmit(component.getValue());
-			rerenderWidgetTarget(target);
-			return true;
-		}
-		return false;
-	}
-	if (event.type === "select") {
-		const payload = event.payload as { index?: unknown } | undefined;
-		if (typeof payload?.index === "number" && component.setSelectedIndex) {
-			component.setSelectedIndex(payload.index);
-		}
-		const item = component.getSelectedItem?.();
-		if (item != null && component.onSelect) {
-			component.onSelect(item);
-			rerenderWidgetTarget(target);
-			return true;
-		}
-		return false;
-	}
 	if (event.type === "cancel") {
-		if (component.onEscape) {
-			component.onEscape();
-		} else if (component.onCancel) {
-			component.onCancel();
-		} else if (typeof component.handleInput === "function") {
-			component.handleInput("\x1b");
-		} else {
-			target.done?.(undefined);
-		}
-		rerenderWidgetTarget(target);
+		target.root.done?.(undefined);
 		return true;
 	}
-	if (event.type === "key") {
-		const payload = event.payload as { data?: unknown } | undefined;
-		if (typeof payload?.data !== "string" || typeof component.handleInput !== "function") return false;
-		component.handleInput(payload.data);
-		rerenderWidgetTarget(target);
-		return true;
-	}
-	return false;
+	if (event.type !== "key") return false;
+
+	const payload = event.payload as { data?: unknown } | undefined;
+	if (typeof payload?.data !== "string" || typeof target.component.handleInput !== "function") return false;
+	target.component.handleInput(payload.data);
+	return true;
 }
 
 /**
@@ -349,9 +567,23 @@ export function createExtensionContext(
 	uiBridge?: ExtensionUiBridge,
 	host?: ExtensionContextHost,
 ): ExtensionContext {
-	const persistentWidgetUnregisters = new Map<string, () => void>();
-	let headerUnregister: (() => void) | undefined;
-	let footerUnregister: (() => void) | undefined;
+	const persistentWidgetRegistrations = new Map<string, WidgetRootRegistration>();
+	let headerRegistration: WidgetRootRegistration | undefined;
+	let footerRegistration: WidgetRootRegistration | undefined;
+	const makePersistentComponent = (
+		value: unknown,
+	): { component: Component; ownership: WidgetComponentOwnership } | undefined => {
+		if (isComponent(value)) return { component: value, ownership: "caller-external" };
+		if (typeof value !== "function" || !uiBridge) return undefined;
+		const target: { component?: Component } = {};
+		const tui = {
+			requestRender: () => {
+				if (target.component) uiBridge.requestWidgetRender(target.component);
+			},
+		};
+		target.component = (value as ExtensionCustomFactory)(tui, {}, {}, () => {});
+		return { component: target.component, ownership: "bridge-factory" };
+	};
 	const ui: ExtensionUI = {
 		notify: (message, level) => {
 			const host = uiBridge?.host;
@@ -368,59 +600,75 @@ export function createExtensionContext(
 		setWidget: (key, value) => {
 			const host = uiBridge?.host;
 			if (!host) return;
-			persistentWidgetUnregisters.get(key)?.();
-			persistentWidgetUnregisters.delete(key);
-			const component = componentFromUiValue(value);
-			if (!component) {
+			const current = persistentWidgetRegistrations.get(key);
+			const candidate = makePersistentComponent(value);
+			if (!candidate) {
+				current?.unregister();
+				persistentWidgetRegistrations.delete(key);
 				host.setWidget(key, serializeUiValue(value));
 				return;
 			}
 			const width = 80;
-			const widget = componentToWidget(component, { width });
-			persistentWidgetUnregisters.set(
-				key,
-				uiBridge.registerWidgetRoot(widget, component, undefined, {
+			const registration = uiBridge.registerWidgetRoot(
+				() => componentToWidget(candidate.component, { width }),
+				candidate.component,
+				undefined,
+				{
 					width,
 					update: (updatedWidget) => host.setWidget(key, updatedWidget),
-				})
+					replace: current,
+					ownership: candidate.ownership,
+				},
 			);
-			host.setWidget(key, widget);
+			if (registration) persistentWidgetRegistrations.set(key, registration);
 		},
 		setFooter: (value) => {
 			const host = uiBridge?.host;
 			if (!host) return;
-			footerUnregister?.();
-			footerUnregister = undefined;
-			const component = componentFromUiValue(value);
-			if (!component) {
+			const candidate = makePersistentComponent(value);
+			if (!candidate) {
+				footerRegistration?.unregister();
+				footerRegistration = undefined;
 				host.setFooter(serializeUiValue(value) as WidgetNode | undefined);
 				return;
 			}
 			const width = 80;
-			const widget = componentToWidget(component, { width });
-			footerUnregister = uiBridge.registerWidgetRoot(widget, component, undefined, {
-				width,
-				update: (updatedWidget) => host.setFooter(updatedWidget),
-			});
-			host.setFooter(widget);
+			const registration = uiBridge.registerWidgetRoot(
+				() => componentToWidget(candidate.component, { width }),
+				candidate.component,
+				undefined,
+				{
+					width,
+					update: (updatedWidget) => host.setFooter(updatedWidget),
+					replace: footerRegistration,
+					ownership: candidate.ownership,
+				},
+			);
+			if (registration) footerRegistration = registration;
 		},
 		setHeader: (value) => {
 			const host = uiBridge?.host;
 			if (!host) return;
-			headerUnregister?.();
-			headerUnregister = undefined;
-			const component = componentFromUiValue(value);
-			if (!component) {
+			const candidate = makePersistentComponent(value);
+			if (!candidate) {
+				headerRegistration?.unregister();
+				headerRegistration = undefined;
 				host.setHeader(serializeUiValue(value) as WidgetNode | undefined);
 				return;
 			}
 			const width = 80;
-			const widget = componentToWidget(component, { width });
-			headerUnregister = uiBridge.registerWidgetRoot(widget, component, undefined, {
-				width,
-				update: (updatedWidget) => host.setHeader(updatedWidget),
-			});
-			host.setHeader(widget);
+			const registration = uiBridge.registerWidgetRoot(
+				() => componentToWidget(candidate.component, { width }),
+				candidate.component,
+				undefined,
+				{
+					width,
+					update: (updatedWidget) => host.setHeader(updatedWidget),
+					replace: headerRegistration,
+					ownership: candidate.ownership,
+				},
+			);
+			if (registration) headerRegistration = registration;
 		},
 		// No host attached → auto-accept confirms, decline pickers (headless).
 		confirm: async (title, message) => {
@@ -453,8 +701,7 @@ export function createExtensionContext(
 			const width = customWidth(options);
 			const tui = {
 				requestRender: () => {
-						if (!target.component) return;
-						host.updateCustomWidget?.(componentToWidget(target.component, { width }));
+					if (target.component) uiBridge.requestWidgetRender(target.component);
 				},
 			};
 			const done = (result?: unknown) => {
@@ -466,20 +713,33 @@ export function createExtensionContext(
 				resolveDone(result);
 			};
 				target.component = (factory as ExtensionCustomFactory)(tui, {}, {}, done);
-				const widget = componentToWidget(target.component, { width });
+			let initialPublished = false;
+			let widget: WidgetNode | undefined;
+			const registration = uiBridge.registerWidgetRoot(() => {
+				widget = componentToWidget(target.component!, { width });
 				target.widgetId = widget.id;
-				const unregister = uiBridge.registerWidgetRoot(widget, target.component, done, {
+				return widget;
+			}, target.component, done, {
 				width,
-				update: (updatedWidget) => host.updateCustomWidget?.(updatedWidget),
+				update: (updatedWidget) => {
+					if (initialPublished) host.updateCustomWidget?.(updatedWidget);
+				},
+				ownership: "bridge-factory",
 			});
+			if (!registration) return undefined;
+			if (!widget) {
+				registration.unregister();
+				return undefined;
+			}
+			initialPublished = true;
 			if (doneCalled) {
-				unregister();
+				registration.unregister();
 				return doneValue as T;
 			}
 			try {
 				return (await Promise.race([donePromise, host.requestUi({ kind: "custom", widget, options })])) as T;
 			} finally {
-				unregister();
+				registration.unregister();
 			}
 		},
 		editor: async (title, prefill) => {

@@ -820,9 +820,30 @@ describe("agent-ipc command helpers", () => {
         expect(bridges).toHaveLength(1);
         const oldOwner = bridges[0].host;
         if (!(oldOwner instanceof AgentSessionRuntime)) throw new Error("expected initial pane owner");
-        const widget = { kind: "terminal" as const, id: "result", lines: ["done"] };
+        const liveWidget = {
+            kind: "box" as const,
+            id: "result",
+            ackid: "reload-root-ack",
+            paddingx: 0,
+            paddingy: 0,
+            children: [
+                {
+                    kind: "terminal" as const,
+                    id: "result-output",
+                    ackid: "reload-child-ack",
+                    lines: ["done"],
+                },
+            ],
+        };
+        const widget = {
+            kind: "box" as const,
+            id: "result",
+            paddingx: 0,
+            paddingy: 0,
+            children: [{ kind: "terminal" as const, id: "result-output", lines: ["done"] }],
+        };
         oldOwner.setStatus("build", "Running");
-        oldOwner.setWidget("result", widget);
+        oldOwner.setWidget("result", liveWidget);
         oldOwner.setFlagValue("keep", false);
         oldOwner.setFlagValue("changed", "old");
         oldOwner.setFlagValue("removed", false);
@@ -1798,12 +1819,37 @@ describe("agent-ipc command helpers", () => {
             }
         );
 
-        const widget = { kind: "text" as const, id: "result", text: "Done", paddingx: 0, paddingy: 0 };
+        const liveWidget = {
+            kind: "box" as const,
+            id: "result",
+            ackid: "late-root-ack",
+            paddingx: 0,
+            paddingy: 0,
+            children: [
+                {
+                    kind: "text" as const,
+                    id: "result-text",
+                    ackid: "late-child-ack",
+                    text: "Done",
+                    paddingx: 0,
+                    paddingy: 0,
+                },
+            ],
+        };
+        const widget = {
+            kind: "box" as const,
+            id: "result",
+            paddingx: 0,
+            paddingy: 0,
+            children: [
+                { kind: "text" as const, id: "result-text", text: "Done", paddingx: 0, paddingy: 0 },
+            ],
+        };
         const header = { kind: "text" as const, id: "header", text: "Header", paddingx: 0, paddingy: 0 };
         const footer = { kind: "text" as const, id: "footer", text: "Footer", paddingx: 0, paddingy: 0 };
         const owner = extensionUiBridge!.host!;
         owner.setStatus("build", "Running");
-        owner.setWidget("result", widget);
+        owner.setWidget("result", liveWidget);
         owner.setHeader(header);
         owner.setFooter(footer);
         const dir = path.dirname(metadata.path);
@@ -2408,5 +2454,140 @@ describe("agent-ipc command helpers", () => {
         await respondWidgetEventForIpc(metadata.path, { nodeid: "node-1", type: "select", payload: { index: 0 } });
 
         expect(dispatchWidgetEvent).toHaveBeenCalledWith({ nodeid: "node-1", type: "select", payload: { index: 0 } });
+    });
+
+    it("serializes delayed widget-event validation by invocation order", async () => {
+        const { aliasMetadata, owner } = await createAliasedExtensionOwner();
+        const order: number[] = [];
+        vi.spyOn(owner, "respondWidgetEvent").mockImplementation((event) => {
+            order.push((event.payload as { index: number }).index);
+            return { handled: true, published: true };
+        });
+        const firstValidation = deferred<string>();
+        const originalRealpath = fs.realpath.bind(fs);
+        let rendererPathValidations = 0;
+        const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (filePath) => {
+            if (filePath === aliasMetadata.path) {
+                rendererPathValidations += 1;
+                if (rendererPathValidations === 1) return await firstValidation.promise;
+            }
+            return await originalRealpath(filePath);
+        });
+
+        const first = respondWidgetEventForIpc(aliasMetadata.path, {
+            nodeid: "list",
+            type: "select",
+            payload: { index: 1 },
+        });
+        const second = respondWidgetEventForIpc(aliasMetadata.path, {
+            nodeid: "list",
+            type: "select",
+            payload: { index: 2 },
+        });
+        await vi.waitFor(() => expect(rendererPathValidations).toBeGreaterThanOrEqual(1));
+        await Promise.resolve();
+        const validationsBeforeFirstRelease = rendererPathValidations;
+        const orderBeforeFirstValidation = [...order];
+
+        firstValidation.resolve(owner.path);
+        await Promise.all([first, second]);
+        realpathSpy.mockRestore();
+
+        expect(validationsBeforeFirstRelease).toBe(1);
+        expect(orderBeforeFirstValidation).toEqual([]);
+        expect(order).toEqual([1, 2]);
+    });
+
+    it("dispatches a widget change before its following blur for one renderer session path", async () => {
+        const { aliasMetadata, owner } = await createAliasedExtensionOwner();
+        const order: string[] = [];
+        vi.spyOn(owner, "respondWidgetEvent").mockImplementation((event) => {
+            order.push(event.type);
+            return { handled: true, published: true };
+        });
+        const changeValidation = deferred<string>();
+        const originalRealpath = fs.realpath.bind(fs);
+        let rendererPathValidations = 0;
+        const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (filePath) => {
+            if (filePath === aliasMetadata.path) {
+                rendererPathValidations += 1;
+                if (rendererPathValidations === 1) return await changeValidation.promise;
+            }
+            return await originalRealpath(filePath);
+        });
+
+        const change = respondWidgetEventForIpc(aliasMetadata.path, {
+            nodeid: "list",
+            type: "change",
+            payload: { value: "query" },
+        });
+        const blur = respondWidgetEventForIpc(aliasMetadata.path, {
+            nodeid: "list",
+            type: "focus",
+            payload: { focused: false },
+        });
+        await vi.waitFor(() => expect(rendererPathValidations).toBeGreaterThanOrEqual(1));
+        await Promise.resolve();
+
+        changeValidation.resolve(owner.path);
+        await Promise.all([change, blur]);
+        realpathSpy.mockRestore();
+
+        expect(order).toEqual(["change", "focus"]);
+    });
+
+    it("continues the widget-event queue after a prior operation fails", async () => {
+        const { aliasMetadata, owner } = await createAliasedExtensionOwner();
+        const dispatch = vi.spyOn(owner, "respondWidgetEvent").mockReturnValue({
+            handled: true,
+            published: false,
+        });
+
+        const invalid = respondWidgetEventForIpc(aliasMetadata.path, undefined);
+        const validEvent = { nodeid: "list", type: "focus", payload: { focused: false } };
+        const valid = respondWidgetEventForIpc(aliasMetadata.path, validEvent);
+
+        await expect(invalid).rejects.toThrow("Invalid widget event");
+        await expect(valid).resolves.toEqual({ handled: true, published: false });
+        expect(dispatch).toHaveBeenCalledOnce();
+        expect(dispatch).toHaveBeenCalledWith(validEvent);
+    });
+
+    it("does not block widget events for a different renderer session path", async () => {
+        const firstOwner = await createAliasedExtensionOwner();
+        const secondOwner = await createAliasedExtensionOwner();
+        const firstDispatch = vi.spyOn(firstOwner.owner, "respondWidgetEvent").mockReturnValue({
+            handled: true,
+            published: true,
+        });
+        const secondDispatch = vi.spyOn(secondOwner.owner, "respondWidgetEvent").mockReturnValue({
+            handled: true,
+            published: true,
+        });
+        const firstValidation = deferred<string>();
+        const originalRealpath = fs.realpath.bind(fs);
+        const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (filePath) => {
+            if (filePath === firstOwner.aliasMetadata.path) return await firstValidation.promise;
+            return await originalRealpath(filePath);
+        });
+
+        const blocked = respondWidgetEventForIpc(firstOwner.aliasMetadata.path, {
+            nodeid: "first",
+            type: "focus",
+            payload: { focused: false },
+        });
+        const independent = respondWidgetEventForIpc(secondOwner.aliasMetadata.path, {
+            nodeid: "second",
+            type: "focus",
+            payload: { focused: false },
+        });
+
+        await expect(independent).resolves.toEqual({ handled: true, published: true });
+        expect(secondDispatch).toHaveBeenCalledOnce();
+        expect(firstDispatch).not.toHaveBeenCalled();
+
+        firstValidation.resolve(firstOwner.owner.path);
+        await expect(blocked).resolves.toEqual({ handled: true, published: true });
+        realpathSpy.mockRestore();
     });
 });

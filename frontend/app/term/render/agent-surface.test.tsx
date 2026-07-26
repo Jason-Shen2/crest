@@ -106,6 +106,9 @@ describe("Agent surface context", () => {
         expect(context).not.toContain("fontSize:");
         expect(context).not.toContain("commandHistory:");
         expect(context).not.toContain("onModeChange:");
+        expect(source).toMatch(
+            /onAgentWidgetEvent[\s\S]*?return forwardAgentWidgetEvent\(agentApiRef\.current, event\)/
+        );
     });
 });
 

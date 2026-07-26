@@ -555,6 +555,23 @@ Status: focused and expanded lifecycle suites pass; this closes the M2.1B UI lif
 - Task 1-6 files have zero TypeScript diagnostics: `emain/agent/agent-session-runtime.ts`, `emain/agent/agent-session-runtime.test.ts`, `emain/agent/extensions/bridge.ts`, `emain/agent/extensions/extensions.test.ts`, `emain/agent-ipc.ts`, `emain/agent-ipc.test.ts`, `frontend/app/store/use-pi-chat.ts`, and `frontend/app/store/use-pi-chat.test.tsx`.
 - Remaining diagnostics belong to the previously documented repo-wide baseline groups outside the M2.1B Task 1-6 file set.
 
+### M2.1A Adapter Closure: 2026-07-20
+
+Status: adapter contract closed; mature component behavior and full M2 certification remain incomplete.
+
+- Every standard vendored component publishes a stable global-symbol kind and a public semantic snapshot.
+- Every standard component resolves through a concrete `PiGuiAdapter`; standard serialization no longer uses private fields, method-shape matching, or `constructor.name`.
+- Nested `Box` targets are discovered through adapter-owned child enumeration.
+- Standard `change`, `submit`, and `select` events cannot reach unmarked lookalikes.
+- Unknown custom components retain debug terminal rendering and key input pending M3.
+- M2.1C behavior blockers remain recorded in the component matrix.
+- Focused suite: 2 files, 165 tests passed.
+- Certification and renderer regression: 3 files, 23 tests passed.
+- Expanded suite: 14 files, 389 tests passed.
+- Source invariants: 1 file, 53 selected tests passed with 31 skipped.
+- TypeScript reporting gate: exited `2` with 70 existing diagnostics across 28 files; Task 1-7 changed files produced 0 diagnostics and no new failure group.
+- Diff scope: `git diff --check` exited `0`; dirty files remain within the Task 1-7 plan scope; `observation-timeline.tsx` was ignored and not touched.
+
 ### Architecture Rebase Verification: 2026-07-20
 
 - Rebasing onto the Runtime/Registry architecture preserves `AgentRuntimeRegistry` as the only live runtime owner; the old `sessionCache` was not restored.
@@ -579,3 +596,25 @@ Status: focused and expanded lifecycle suites pass; this closes the M2.1B UI lif
 - Final Node 22 Agent/Extension/Workspace gate passed: 19 test files, 364 tests.
 - Changed-scope ESLint passed with zero warnings.
 - Changed-scope TypeScript diagnostics are empty. Repo-wide TypeScript still exits `2` only for the previously documented baseline groups outside this integration scope.
+
+### M2.1C Behavior Closure: 2026-07-21
+
+Status: standard-component behavior closure verified against automated event/state coverage; M3 terminal fallback remains unfinished.
+
+- Authority boundary is hybrid: the browser owns native DOM editing/undo/clipboard/IME, Pi owns semantic state via authoritative snapshots and acknowledgements, and the certification matrix owns the aggregate behavior gate. These three authorities do not overlap.
+- Standard components expose public complete-edit/focus/selection methods; the renderer maps raw DOM UTF-16 offsets to normalized UTF-16 offsets before dispatching, so selection metadata stays consistent across snapshot echoes.
+- Adapter registration invariants hold: initial registration is atomic; a failed replacement retains the prior widget; factory/external ownership is rejection-only; the published lifecycle is uniform across components; root invalidation runs in order; dynamic target revision is honored; and child pairing is explicit.
+- A standard adapter's `cancel` never falls through to the root `done`; the adapterless terminal fallback path is unchanged and still closes unknown terminal widgets with `done(undefined)`.
+- SelectList, SettingsList, Input, Editor, Box, Markdown, Loader, and CancellableLoader each reach behavior closure through their focused tests.
+- Editor `cancel` is `not-applicable`: no standard Editor cancel control is rendered and no Editor cancel event is emitted; outer editor-request dismissal is kept separate from the standard Editor component.
+- The matrix closure statement is exact: `evaluateM21CBehaviorClosureGate` uses a shared blocker predicate over the standard component matrix and fails if any matrix row is a blocker, independent of forged fixture counts.
+- The certification aggregate has exactly five unique fixture ids with fixed statuses, `results.length === 5`, and empty `unsupportedReasons` for passed fixtures; forged `5/3/2/0` aggregates that violate identity/reasons still fail the gate.
+- The Input fixture uses complete `change`/`submit` payloads (value plus `selectionstart`/`selectionend`), migrated away from partial payloads; multi-instance behavior targets by stable label rather than latest target kind.
+- The generic report contract stays free of `gateStatus` and carries generic `status: failed` for unsupported fixtures; the milestone gate reports `gateStatus: passed` only through the separate evaluator.
+- Observed counts (Node v22.23.1):
+  - Focused behavior gate: 4 files, 373 tests passed, exit `0`.
+  - Certification gate: 2 files, 20 tests passed, exit `0`.
+  - Expanded M1/M2 regression gate: 15 files, 601 tests passed, exit `0`.
+  - Source/scope invariants (filtered): 2 files, 42 selected tests passed with 182 skipped, exit `0`; `git diff --check` exit `0`; no generated file, package dependency, or M3 terminal implementation changed; both terminal fixtures still contain their terminal node; all pre-existing dirty files remain; no commit created.
+- TypeScript reporting gate exited `2` with 73 diagnostics across 31 files, all within the previously documented repo-wide baseline (e.g. `Client`/`WaveObj` drift, `ai-resolver`, preview mocks, gitdiff, themes). Every Task 1-9 implementation/test file produced 0 diagnostics and no new diagnostic group; the only changed files with diagnostics (`emain/agent-ipc.ts`, `frontend/app/term/render/agent-surface.tsx`) are outside Task 1-9 scope and belong to the existing baseline.
+- JSDOM evidence boundary: the automated tests cover event wiring and state reconciliation only. They do not cover real browser undo, OS clipboard, IME candidate behavior, grapheme navigation, visual caret, or layout. M3 terminal fallback is NOT marked complete.

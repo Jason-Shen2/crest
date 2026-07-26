@@ -85,6 +85,9 @@ export interface Component {
 	 * Called when theme changes or when component needs to re-render from scratch.
 	 */
 	invalidate(): void;
+
+	/** Release timers, subscriptions, or other resources owned by this component. */
+	dispose?(): void;
 }
 
 export const PiGuiComponentKind = Symbol.for("crest.pi-gui.component-kind");

@@ -4,20 +4,72 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { runPiOfficialExamplesCertification, type PiOfficialExampleFixture } from "../certification.ts";
+import {
+	evaluateM21CBehaviorClosureGate,
+	PiOfficialExampleFixtures,
+	runPiOfficialExamplesCertification,
+	type PiOfficialExampleFixture,
+} from "../certification.ts";
+
+const TerminalReason = "terminal fallback widget requires M3 terminal surface certification";
+const RequiredFixtureIds = [
+	"select-input",
+	"markdown-layout",
+	"official-interactive",
+	"official-custom-unsupported",
+	"pi-gui-showcase",
+];
 
 describe("Pi official examples certification", () => {
-	it("certifies planned official examples with source-compatible fixtures and visible behavior assertions", async () => {
+	it("uses complete Input fixture payloads for change and submit", () => {
+		const fixtures = PiOfficialExampleFixtures.filter((fixture) =>
+			["select-input", "pi-gui-showcase"].includes(fixture.id)
+		);
+		let inspectedEvents = 0;
+
+		for (const fixture of fixtures) {
+			let latestChange: Record<string, unknown> | undefined;
+			for (const behavior of fixture.visibleBehaviors ?? []) {
+				for (const event of behavior.events) {
+					if (event.targetKind !== "input" || (event.type !== "change" && event.type !== "submit")) continue;
+					const payload = event.payload as Record<string, unknown>;
+					expect(payload).toEqual({
+						value: expect.any(String),
+						selectionstart: expect.any(Number),
+						selectionend: expect.any(Number),
+					});
+					expect(Number.isInteger(payload.selectionstart)).toBe(true);
+					expect(Number.isInteger(payload.selectionend)).toBe(true);
+					expect(payload.selectionstart).toBeLessThanOrEqual(payload.selectionend as number);
+					expect(payload.selectionend).toBeLessThanOrEqual((payload.value as string).length);
+					if (event.type === "change") {
+						latestChange = payload;
+					} else {
+						expect(payload).toEqual(latestChange);
+					}
+					inspectedEvents++;
+				}
+			}
+		}
+
+		expect(inspectedEvents).toBe(4);
+	});
+
+	it("certifies the five behavior-closed official examples and jiti-loaded rich semantic widgets", async () => {
 		const report = await runPiOfficialExamplesCertification({
 			cwd: process.cwd(),
 			configHome: join(process.cwd(), ".tmp", "pi-official-examples-certification"),
 		});
+		const gate = evaluateM21CBehaviorClosureGate(report);
+
+		expect(PiOfficialExampleFixtures.map((fixture) => fixture.id)).toEqual(RequiredFixtureIds);
 
 		expect(report.status).toBe("failed");
 		expect(report).toMatchObject({
+			status: "failed",
 			total: 5,
-			passed: 0,
-			unsupported: 5,
+			passed: 3,
+			unsupported: 2,
 			failed: 0,
 			componentKinds: [
 				"box",
@@ -38,23 +90,31 @@ describe("Pi official examples certification", () => {
 				"truncatedtext",
 			],
 		});
-		expect(report.results.map((result) => result.id)).toEqual([
-			"select-input",
-			"markdown-layout",
-			"official-interactive",
-			"official-custom-unsupported",
-			"pi-gui-showcase",
-		]);
+		expect(gate.gateStatus).toBe("passed");
+		expect(report.results).toHaveLength(5);
+		expect(new Set(report.results.map((result) => result.id))).toEqual(new Set(RequiredFixtureIds));
+
+		const statusById = new Map(report.results.map((result) => [result.id, result.status]));
+		expect(statusById.get("select-input")).toBe("passed");
+		expect(statusById.get("markdown-layout")).toBe("passed");
+		expect(statusById.get("official-interactive")).toBe("passed");
+		expect(statusById.get("official-custom-unsupported")).toBe("unsupported");
+		expect(statusById.get("pi-gui-showcase")).toBe("unsupported");
+
+		for (const result of report.results) {
+			if (result.status === "passed") {
+				expect(result.unsupportedReasons).toEqual([]);
+			}
+			if (result.status === "unsupported") {
+				expect(result.unsupportedReasons).toEqual([TerminalReason]);
+			}
+		}
 
 		const selectInput = report.results.find((result) => result.id === "select-input");
 		expect(selectInput).toMatchObject({
-			status: "unsupported",
+			status: "passed",
 			componentKinds: ["box", "input", "selectlist", "text"],
-			unsupportedReasons: expect.arrayContaining([
-				expect.stringContaining("planned component certification blocker: Box"),
-				expect.stringContaining("planned component certification blocker: SelectList"),
-				expect.stringContaining("planned component certification blocker: Input"),
-			]),
+			unsupportedReasons: [],
 			visibleAssertions: [
 				{ label: "visible text: Select Input Example", status: "passed", actualText: expect.stringContaining("Select Input Example") },
 				{ label: "visible text: Interaction: ready", status: "passed", actualText: expect.stringContaining("Interaction: ready") },
@@ -81,12 +141,9 @@ describe("Pi official examples certification", () => {
 
 		const markdownLayout = report.results.find((result) => result.id === "markdown-layout");
 		expect(markdownLayout).toMatchObject({
-			status: "unsupported",
+			status: "passed",
 			componentKinds: ["box", "markdown", "spacer", "text", "truncatedtext"],
-			unsupportedReasons: expect.arrayContaining([
-				expect.stringContaining("planned component certification blocker: Box"),
-				expect.stringContaining("planned component certification blocker: Markdown"),
-			]),
+			unsupportedReasons: [],
 			visibleAssertions: [
 				{ label: "visible text: Markdown Layout Example", status: "passed", actualText: expect.stringContaining("Markdown Layout Example") },
 				{ label: "visible text: # Official Markdown Layout", status: "passed", actualText: expect.stringContaining("# Official Markdown Layout") },
@@ -97,7 +154,7 @@ describe("Pi official examples certification", () => {
 
 		const interactive = report.results.find((result) => result.id === "official-interactive");
 		expect(interactive).toMatchObject({
-			status: "unsupported",
+			status: "passed",
 			componentKinds: [
 				"box",
 				"cancellable-loader",
@@ -109,14 +166,7 @@ describe("Pi official examples certification", () => {
 				"settingslist",
 				"text",
 			],
-			unsupportedReasons: expect.arrayContaining([
-				expect.stringContaining("planned component certification blocker: Box"),
-				expect.stringContaining("planned component certification blocker: Editor"),
-				expect.stringContaining("planned component certification blocker: Input"),
-				expect.stringContaining("planned component certification blocker: Loader"),
-				expect.stringContaining("planned component certification blocker: SelectList"),
-				expect.stringContaining("planned component certification blocker: SettingsList"),
-			]),
+			unsupportedReasons: [],
 			errors: [],
 		});
 
@@ -124,7 +174,7 @@ describe("Pi official examples certification", () => {
 		expect(custom).toMatchObject({
 			status: "unsupported",
 			componentKinds: ["terminal"],
-			unsupportedReasons: ["terminal fallback widget requires M3 terminal surface certification"],
+			unsupportedReasons: [TerminalReason],
 			visibleAssertions: [
 				{
 					label: "hidden text after close: custom upstream tui surface",
@@ -136,6 +186,11 @@ describe("Pi official examples certification", () => {
 		});
 
 		const showcase = report.results.find((result) => result.id === "pi-gui-showcase");
+		expect(showcase?.componentKinds.filter((kind) => ["richtable", "diffview", "chart"].includes(kind))).toEqual([
+			"chart",
+			"diffview",
+			"richtable",
+		]);
 		expect(showcase).toMatchObject({
 			status: "unsupported",
 			componentKinds: [
@@ -154,6 +209,7 @@ describe("Pi official examples certification", () => {
 				"text",
 				"truncatedtext",
 			],
+			unsupportedReasons: [TerminalReason],
 			visibleAssertions: expect.arrayContaining([
 				expect.objectContaining({ label: "visible text: Pi GUI Showcase", status: "passed" }),
 				expect.objectContaining({
@@ -200,8 +256,9 @@ describe("Pi official examples certification", () => {
 		});
 
 		const result = report.results[0];
-		expect(result.status).toBe("unsupported");
+		expect(result.status).toBe("passed");
 		expect(result.errors).toEqual([]);
+		expect(result.unsupportedReasons).toEqual([]);
 		expect(result.visibleAssertions).toContainEqual(
 			expect.objectContaining({
 				label: "selecting second list by stable label does not hit the first list",

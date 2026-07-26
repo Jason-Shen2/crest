@@ -18,10 +18,63 @@ interface InputState {
 	cursor: number;
 }
 
+export interface GuiSelection {
+	selectionStart: number;
+	selectionEnd: number;
+}
+
+export interface NormalizedGuiEdit extends GuiSelection {
+	value: string;
+}
+
+export function normalizeGuiTextWithSelection(
+	rawValue: string,
+	rawSelectionStart: number,
+	rawSelectionEnd: number,
+	mode: "single-line" | "multi-line",
+): NormalizedGuiEdit | undefined {
+	if (!Number.isInteger(rawSelectionStart) || !Number.isInteger(rawSelectionEnd)) return undefined;
+	if (rawSelectionStart < 0 || rawSelectionStart > rawSelectionEnd || rawSelectionEnd > rawValue.length) {
+		return undefined;
+	}
+
+	const boundaries = new Array<number>(rawValue.length + 1);
+	boundaries[0] = 0;
+	let value = "";
+	let rawIndex = 0;
+	while (rawIndex < rawValue.length) {
+		const character = rawValue[rawIndex];
+		if (character === "\r" && rawValue[rawIndex + 1] === "\n") {
+			if (mode === "multi-line") value += "\n";
+			boundaries[rawIndex + 1] = value.length;
+			boundaries[rawIndex + 2] = value.length;
+			rawIndex += 2;
+			continue;
+		}
+		if (character === "\r" || character === "\n") {
+			if (mode === "multi-line") value += "\n";
+		} else if (character === "\t") {
+			value += "    ";
+		} else {
+			value += character;
+		}
+		boundaries[rawIndex + 1] = value.length;
+		rawIndex++;
+	}
+
+	return {
+		value,
+		selectionStart: boundaries[rawSelectionStart],
+		selectionEnd: boundaries[rawSelectionEnd],
+	};
+}
+
 export interface InputSnapshot {
 	value: string;
 	cursor: number;
 	focused: boolean;
+	selectionStart: number;
+	selectionEnd: number;
 }
 
 /**
@@ -31,6 +84,8 @@ export class Input implements Component, Focusable {
 	readonly [PiGuiComponentKind]: PiGuiComponentKind = "input";
 	private value: string = "";
 	private cursor: number = 0; // Cursor position in the value
+	private selectionStart: number = 0;
+	private selectionEnd: number = 0;
 	public onSubmit?: (value: string) => void;
 	public onEscape?: () => void;
 
@@ -55,6 +110,8 @@ export class Input implements Component, Focusable {
 	setValue(value: string): void {
 		this.value = value;
 		this.cursor = Math.min(this.cursor, value.length);
+		this.selectionStart = Math.min(this.selectionStart, value.length);
+		this.selectionEnd = Math.min(this.selectionEnd, value.length);
 	}
 
 	getSnapshot(): InputSnapshot {
@@ -62,10 +119,50 @@ export class Input implements Component, Focusable {
 			value: this.value,
 			cursor: this.cursor,
 			focused: this.focused,
+			selectionStart: this.selectionStart,
+			selectionEnd: this.selectionEnd,
 		};
 	}
 
+	applyGuiEdit(value: string, selectionStart: number, selectionEnd: number): boolean {
+		const edit = normalizeGuiTextWithSelection(value, selectionStart, selectionEnd, "single-line");
+		if (!edit) return false;
+		this.value = edit.value;
+		this.cursor = edit.selectionEnd;
+		this.selectionStart = edit.selectionStart;
+		this.selectionEnd = edit.selectionEnd;
+		return true;
+	}
+
+	submitGuiValue(value: string, selectionStart: number, selectionEnd: number): boolean {
+		if (!this.applyGuiEdit(value, selectionStart, selectionEnd)) return false;
+		this.onSubmit?.(this.value);
+		return true;
+	}
+
+	escape(): boolean {
+		if (!this.onEscape) return false;
+		this.onEscape();
+		return true;
+	}
+
+	setFocused(focused: boolean): boolean {
+		if (typeof focused !== "boolean") return false;
+		this.focused = focused;
+		return true;
+	}
+
 	handleInput(data: string): void {
+		const valueBefore = this.value;
+		const cursorBefore = this.cursor;
+		this.handleInputInternal(data);
+		if (this.value !== valueBefore || this.cursor !== cursorBefore) {
+			this.selectionStart = this.cursor;
+			this.selectionEnd = this.cursor;
+		}
+	}
+
+	private handleInputInternal(data: string): void {
 		// Handle bracketed paste mode
 		// Start of paste: \x1b[200~
 		// End of paste: \x1b[201~
