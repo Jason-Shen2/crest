@@ -15,10 +15,10 @@ function readCssVar(style: CSSStyleDeclaration, name: string): string {
     return style.getPropertyValue(name).trim() || undefined;
 }
 
-// Builds the xterm ITheme from the same CSS custom properties the DOM
-// renderer resolves through frontend/app/term/render/color.ts, so xterm
-// output and the rest of the terminal chrome stay on one palette. The
-// cursor uses --color-accent to match cursor-overlay.tsx.
+// Builds the xterm ITheme from the same CSS custom properties the rest of
+// the app themes with (--ansi-* from theme-model.ts), so xterm output and
+// the rest of the terminal chrome stay on one palette. The cursor uses
+// --color-accent, matching the old engine's cursor overlay.
 export function buildTerminalTheme(): ITheme {
     const style = getComputedStyle(document.documentElement);
     return {

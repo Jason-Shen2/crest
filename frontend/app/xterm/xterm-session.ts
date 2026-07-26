@@ -41,6 +41,13 @@ import {
 const TermFileName = "term";
 const ShellStatusDone = "done";
 const HiddenReleaseDelayMs = 300;
+// Cursor marker interpolated into the screen text at the cursor position.
+// Mirrors Warp's CURSOR_MARKER — the exact string is part of the pty_read
+// contract with emain (emain/agent/tools/pty-read.ts renders it verbatim).
+const CursorMarker = "<|cursor|>";
+// Row window cap for non-alt-screen snapshots; alt-screen reads the full
+// buffer. Same 1000-row cap as the old engine's SCREEN_SNAPSHOT_MAX_ROWS.
+const ScreenSnapshotMaxRows = 1000;
 const AnsiRe =
     /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[78=>]|\x1bc|\x1b[NOP\]X^_]/g;
 
@@ -204,6 +211,122 @@ export function getSessionBuffer(blockId: string, maxLines = 200): string {
 
 function stripAnsi(text: string): string {
     return text.replace(AnsiRe, "");
+}
+
+// PtyScreenSnapshot — renderer→emain payload for the CLI subagent's
+// pty_read screen branch. Field names are the wire contract mirrored in
+// emain/emain-web.ts; keep them in sync.
+export type PtyScreenSnapshot = {
+    grid_contents: string;
+    cursor: string;
+    is_alt_screen_active: boolean;
+    block_id: string;
+};
+
+// Ports the old engine's serializeGridForInput contract (terminal-model.ts,
+// deleted in P1.7): rows windowed to maxRowCount centered on the cursor
+// (null = full buffer, used for alt-screen), the cursor marker interpolated
+// at the cursor cell, per-line trailing-whitespace trim, and trailing blank
+// lines dropped ("" when the whole window is blank).
+function serializeTermScreenForInput(term: Terminal, maxRowCount: number | null): string {
+    const buf = term.buffer.active;
+    const cursorRow = (buf.baseY ?? 0) + (buf.cursorY ?? 0);
+    const cursorCol = buf.cursorX ?? 0;
+    const maxContentRow = Math.max(buf.length - 1, 0);
+    let startRow: number;
+    let endRow: number;
+    if (maxRowCount != null) {
+        endRow = Math.min(maxContentRow, cursorRow + Math.floor(maxRowCount / 2));
+        startRow = Math.max(endRow - maxRowCount, 0);
+    } else {
+        startRow = 0;
+        endRow = maxContentRow;
+    }
+    const lines: string[] = [];
+    let lastNonblank = -1;
+    for (let r = startRow; r <= endRow; r++) {
+        const line = buf.getLine(r);
+        let s: string;
+        if (line == null) {
+            s = r === cursorRow ? CursorMarker : "";
+        } else if (r === cursorRow) {
+            // translateToString's column args are buffer cells, so wide
+            // (CJK) glyphs before the cursor can't skew the marker position.
+            s = line.translateToString(false, 0, cursorCol) + CursorMarker + line.translateToString(false, cursorCol);
+        } else {
+            s = line.translateToString(false);
+        }
+        const trimmed = s.replace(/\s+$/g, "");
+        if (trimmed.length > 0) lastNonblank = lines.length;
+        lines.push(trimmed);
+    }
+    if (lastNonblank < 0) return "";
+    return lines.slice(0, lastNonblank + 1).join("\n");
+}
+
+// Non-destructive DormantRing read: drain() clears the ring, but the bytes
+// still owe a replay to the next slot bind, so the snapshot must only peek.
+function peekRingText(ring: DormantRing): string {
+    const last = ring.blocks.length - 1;
+    let total = 0;
+    for (let i = ring.head; i <= last; i++) {
+        total += i === last ? ring.tailLen : ring.blocks[i].length;
+    }
+    if (total === 0) return "";
+    const merged = new Uint8Array(total);
+    let off = 0;
+    for (let i = ring.head; i <= last; i++) {
+        const len = i === last ? ring.tailLen : ring.blocks[i].length;
+        merged.set(ring.blocks[i].subarray(0, len), off);
+        off += len;
+    }
+    return stripAnsi(new TextDecoder().decode(merged));
+}
+
+// Slotless fallback: the exact cursor cell is unknowable without a live
+// grid, so the marker lands at the end of the last non-blank line (the
+// prompt position for an idle shell).
+function snapshotFallbackContents(s: XtermSession): string | null {
+    const text = s.snapshot != null ? stripAnsi(s.snapshot) : peekRingText(s.dormantRing);
+    if (!text) return null;
+    const lines = text.split(/\r?\n/).map((l) => l.replace(/\s+$/g, ""));
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    if (lines.length === 0) return null;
+    const tail = lines.slice(-ScreenSnapshotMaxRows);
+    tail[tail.length - 1] += CursorMarker;
+    return tail.join("\n");
+}
+
+// getPtyScreenSnapshot — resolve a block's current screen for the CLI
+// subagent's pty_read screen branch (window.getPtyScreenSnapshot in
+// wave.ts; emain reaches it via executeJavaScript, see emain-web.ts
+// webPtyScreenSnapshot). Returns null when there is nothing to snapshot
+// so emain degrades to the transcript tail.
+export function getPtyScreenSnapshot(blockId: string): PtyScreenSnapshot | null {
+    const s = sessions.get(blockId);
+    if (!s) return null;
+    const slot = getLiveSlotForLeaf(s.leafId);
+    if (slot) {
+        const isAlt = slot.term.buffer.active.type === "alternate";
+        return {
+            grid_contents: serializeTermScreenForInput(slot.term, isAlt ? null : ScreenSnapshotMaxRows),
+            cursor: CursorMarker,
+            is_alt_screen_active: isAlt,
+            block_id: blockId,
+        };
+    }
+    const contents = snapshotFallbackContents(s);
+    if (contents == null) return null;
+    return {
+        grid_contents: contents,
+        cursor: CursorMarker,
+        is_alt_screen_active: s.altScreenAtRelease,
+        block_id: blockId,
+    };
+}
+
+export function getSessionScreenSnapshot(blockId: string): string | null {
+    return getPtyScreenSnapshot(blockId)?.grid_contents ?? null;
 }
 
 function sessionBusy(s: XtermSession): boolean {

@@ -18,6 +18,8 @@
 
 import { getBlockMetaKeyAtom, getSettingsKeyAtom } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
+import { disposeXtermPaneModel } from "@/app/xterm/xterm-pane-model";
+import { disposeSession } from "@/app/xterm/xterm-session";
 import { XtermView } from "@/app/xterm/xterm-view";
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
@@ -58,6 +60,8 @@ export class TermBlocksViewModel implements ViewModel {
 
     dispose(): void {
         this.disposed = true;
+        disposeSession(this.blockId);
+        disposeXtermPaneModel(this.blockId);
     }
 }
 

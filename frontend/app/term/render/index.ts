@@ -1,20 +1,13 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Public API of the React render layer.
+// Public API of the React render layer.  The cell-grid renderer exports
+// (GridElement / BlockElement / TerminalView / selection / key-bindings /
+// …) were deleted with the old engine (docs/terax-terminal-port.md §四
+// P1.7); terminal rendering lives in frontend/app/xterm/ now.
 
-export { CellRun } from "./cell-run";
-export { GridElement } from "./grid-element";
-export type { GridElementProps } from "./grid-element";
-export { BlockElement } from "./block-element";
-export type { BlockElementProps } from "./block-element";
-export { BlockListElement } from "./block-list-element";
-export type { BlockListElementProps } from "./block-list-element";
-export { FindBar } from "./find-bar";
-export { SelectionLayer } from "./selection-layer";
-export type { Selection, SelectionMode, BlockSelectionSlice } from "./selection";
-export { computeBlockSlice, expand, extractTextFromSlice, pixelToCell } from "./selection";
-export { keyEventToBytes } from "./key-bindings";
-export { TerminalView } from "./terminal-view";
-export type { TerminalViewProps } from "./terminal-view";
-export { resolveColor } from "./color";
+export { AgentChatHost } from "./agent-chat-host";
+export type { AgentChatHostApi, AgentChatHostProps, AgentSelectorRequest } from "./agent-chat-host";
+export { WorkspaceAgentSurface } from "./agent-surface";
+export type { AgentSurfaceContext, WorkspaceAgentSurfaceProps } from "./agent-surface";
+export { TerminalNotification } from "./terminal-notification";

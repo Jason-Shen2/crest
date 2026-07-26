@@ -6,8 +6,6 @@
 // the agent surface writes user-facing messages into `notificationAtom`, and
 // focus requests funnel through `focusRequestAtom`. Everything else the old
 // TerminalModel owned lives in xterm-session.ts / renderer-pool.ts now.
-// agent-surface / assistant-ui keep reading TerminalModel until the engine
-// deletion step rewires them here.
 
 import { globalStore } from "@/app/store/jotaiStore";
 import * as jotai from "jotai";

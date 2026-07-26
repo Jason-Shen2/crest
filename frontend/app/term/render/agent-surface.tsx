@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // WorkspaceAgentSurface owns the renderer-side Agent conversation UI.
-// TerminalView remains the shared chrome/TerminalModel host; this component
-// receives only the workspace and live execution context the Agent consumes.
+// The hosting view supplies the per-block XtermPaneModel (its
+// notificationAtom is the only model contract consumed here) plus the
+// workspace and live execution context the Agent consumes.
 
 import { CATALOG } from "@/app/store/ai-catalog";
 import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
@@ -22,11 +23,11 @@ import { ObjectService } from "@/app/store/services";
 import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
+import type { XtermPaneModel } from "@/app/xterm/xterm-pane-model";
 import { useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { useAuiState } from "@assistant-ui/react";
 import { useAtomValue } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { TerminalModel } from "../terminal-model";
 import {
     AgentChatHost,
     type AgentChatHostApi,
@@ -47,7 +48,7 @@ import { canonicalComposerPayloadFromState, CanonicalComposerSubmissionLease } f
 
 export interface WorkspaceAgentSurfaceProps {
     outerBlockId: string;
-    model: TerminalModel;
+    model: XtermPaneModel;
     context: AgentSurfaceContext;
 }
 

@@ -5,13 +5,13 @@
 
 import type { ContextReferenceRendererState } from "@/app/store/context-references";
 import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
+import type { XtermPaneModel } from "@/app/xterm/xterm-pane-model";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { atom } from "jotai";
 import { readFileSync } from "node:fs";
 import { useEffect } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TerminalModel } from "../terminal-model";
 import type { AgentChatHostApi, AgentChatHostProps, AgentHostState } from "./agent-chat-host";
 import type { ContextReferenceBarProps, ThreadProps } from "./assistant-ui";
 import { createCrestAssistantRuntimeAdapter, type CrestAssistantRuntimeBridge } from "./assistant-ui/runtime-bridge";
@@ -244,17 +244,15 @@ describe("Agent surface context", () => {
     });
 });
 
-type AgentSurfaceModel = Pick<TerminalModel, "revisionAtom" | "notificationAtom" | "submitInput">;
+type AgentSurfaceModel = Pick<XtermPaneModel, "notificationAtom">;
 
 function fakeModel(): AgentSurfaceModel {
     return {
-        revisionAtom: atom(1),
         notificationAtom: atom(""),
-        submitInput: vi.fn().mockResolvedValue(undefined),
     };
 }
 
-const model = fakeModel() as TerminalModel;
+const model = fakeModel() as XtermPaneModel;
 
 const context: AgentSurfaceContext = {
     workspaceDir: "/x",
@@ -265,7 +263,7 @@ const context: AgentSurfaceContext = {
 
 describe("WorkspaceAgentSurface", () => {
     it("persists selector success messages in the terminal notification atom", () => {
-        const model = fakeModel() as TerminalModel;
+        const model = fakeModel() as XtermPaneModel;
         captured.globalSet.mockClear();
         renderToStaticMarkup(<WorkspaceAgentSurface outerBlockId="outer" model={model} context={context} />);
 
@@ -376,7 +374,7 @@ describe("WorkspaceAgentSurface", () => {
     });
 
     it("renders the full assistant-ui surface without the legacy activity bar", () => {
-        const model = fakeModel() as TerminalModel;
+        const model = fakeModel() as XtermPaneModel;
         const html = renderToStaticMarkup(
             <WorkspaceAgentSurface outerBlockId="outer" model={model} context={context} />
         );
@@ -720,5 +718,4 @@ describe("agent context guidance", () => {
     ] as const)("provides specific guidance for %s", (reason, expected) => {
         expect(agentContextSendGuidance(reason)).toMatch(expected);
     });
-
 });

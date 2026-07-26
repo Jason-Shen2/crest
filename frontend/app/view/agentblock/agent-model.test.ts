@@ -7,11 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/app/term/render/agent-surface", () => ({ WorkspaceAgentSurface: () => null }));
-vi.mock("@/app/term/terminal-model", () => ({
-    TerminalModel: class {
-        dispose() {}
-    },
-}));
+vi.mock("@/app/xterm/xterm-session", () => ({ disposeSession: vi.fn() }));
 vi.mock("@/app/fileexplorer/file-explorer-atoms", () => ({ workspaceDirAtom: null }));
 
 import { AgentViewModel } from "./agent-model";

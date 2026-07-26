@@ -4,11 +4,13 @@
 import { Icon } from "@/app/icon/Icon";
 import { globalStore } from "@/app/store/jotaiStore";
 import { ObjectService } from "@/app/store/services";
+import { disposeXtermPaneModel } from "@/app/xterm/xterm-pane-model";
+import { disposeSession } from "@/app/xterm/xterm-session";
 import { XtermView } from "@/app/xterm/xterm-view";
 import { getSettingsKeyAtom } from "@/store/global";
 import { fireAndForget } from "@/util/util";
-import { useAtomValue } from "jotai";
 import * as jotai from "jotai";
+import { useAtomValue } from "jotai";
 import { useEffect } from "react";
 
 type RightTerminalProps = {
@@ -68,6 +70,8 @@ export class RightTerminalModel {
         globalStore.set(this.blockIdAtom, "");
         globalStore.set(this.errorAtom, "");
         if (!blockId) return;
+        disposeSession(blockId);
+        disposeXtermPaneModel(blockId);
         fireAndForget(() => ObjectService.DeleteBlock(blockId));
     }
 

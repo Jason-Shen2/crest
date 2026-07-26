@@ -3,8 +3,9 @@
 //
 // _pty-screen.ts — renderer screen-snapshot seam for pty_read's screen
 // branch. The subagent command block is a top-level term block, so its
-// grid lives in the tab's renderer TerminalModel; we resolve the tab's
-// webContents from the block id and query it via webPtyScreenSnapshot.
+// screen lives in the tab's renderer xterm session registry; we resolve
+// the tab's webContents from the block id and query it via
+// webPtyScreenSnapshot.
 // Throws when the renderer has no live snapshot so pty_read degrades to
 // the transcript tail (spec §3a fallback). Mirrors Warp's
 // LongRunningCommandSnapshot.

@@ -34,14 +34,10 @@ import { globalStore } from "@/app/store/jotaiStore";
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { disposeXtermPaneModel } from "@/app/xterm/xterm-pane-model";
+import { disposeSession } from "@/app/xterm/xterm-session";
 import { XtermView } from "@/app/xterm/xterm-view";
-import {
-    atoms,
-    getBlockMetaKeyAtom,
-    getBlockTermDurableAtom,
-    getSettingsKeyAtom,
-    WOS,
-} from "@/store/global";
+import { atoms, getBlockMetaKeyAtom, getBlockTermDurableAtom, getSettingsKeyAtom, WOS } from "@/store/global";
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
 import * as React from "react";
@@ -50,8 +46,8 @@ import * as React from "react";
 // (tabrpcclient.ts builds a context payload by reading these) treat empty
 // values as "no shell integration data yet" and skip the field — which is
 // the right behavior until the new engine surfaces equivalents via the
-// block lifecycle.  A future revision can read from TerminalModel's
-// active block to populate these for real.
+// block lifecycle.  A future revision can read from the xterm session's
+// shell-integration state to populate these for real.
 const PlaceholderShellIntegrationAtom = jotai.atom("none");
 const PlaceholderLastCommandAtom = jotai.atom("");
 
@@ -120,8 +116,8 @@ export class TermViewModel implements ViewModel {
     // forceRestartController — kept as-is from the legacy model.  The
     // RPC sequence (Destroy then Resync with `forcerestart: true`) is the
     // shell-controller contract; rebuilding it on the new engine would
-    // be redundant.  The new TerminalModel inside the rendered view
-    // handles its own ControllerResync at mount.
+    // be redundant.  The xterm session inside the rendered view stays
+    // subscribed and picks up the restarted controller's stream.
     async forceRestartController(): Promise<void> {
         if (this.disposed) return;
         try {
@@ -156,6 +152,8 @@ export class TermViewModel implements ViewModel {
 
     dispose(): void {
         this.disposed = true;
+        disposeSession(this.blockId);
+        disposeXtermPaneModel(this.blockId);
     }
 }
 
@@ -174,9 +172,9 @@ const TermViewAdapter: React.FC<{ model: TermViewModel }> = ({ model }) => {
     const blockId = model.blockId;
     const termMode = useAtomValue(getBlockMetaKeyAtom(blockId, "term:mode")) as string | undefined;
     const vdomBlockId = useAtomValue(getBlockMetaKeyAtom(blockId, "term:vdomblockid")) as string | undefined;
-    const vdomToolbarBlockId = useAtomValue(
-        getBlockMetaKeyAtom(blockId, "term:vdomtoolbarblockid")
-    ) as string | undefined;
+    const vdomToolbarBlockId = useAtomValue(getBlockMetaKeyAtom(blockId, "term:vdomtoolbarblockid")) as
+        | string
+        | undefined;
 
     const replaceContent =
         termMode === "vdom" && vdomBlockId ? (
@@ -185,11 +183,7 @@ const TermViewAdapter: React.FC<{ model: TermViewModel }> = ({ model }) => {
 
     const topSlot = vdomToolbarBlockId ? (
         <div className="shrink-0 border-b border-fg-overlay-2">
-            <VDomSubBlock
-                parentBlockId={blockId}
-                vdomBlockId={vdomToolbarBlockId}
-                metaKey="term:vdomtoolbarblockid"
-            />
+            <VDomSubBlock parentBlockId={blockId} vdomBlockId={vdomToolbarBlockId} metaKey="term:vdomtoolbarblockid" />
         </div>
     ) : undefined;
 

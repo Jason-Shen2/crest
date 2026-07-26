@@ -3,12 +3,9 @@
 
 import { App } from "@/app/app";
 import { loadMonaco } from "@/app/monaco/monaco-env";
-import { EdgeFlowEmbedder, setEmbedder } from "@/app/term/nld";
-import { getPtyScreenSnapshot } from "@/app/term/terminal-model";
+import { initAIUserConfig } from "@/app/store/ai-user-config";
 import { loadBadges } from "@/app/store/badge";
 import { GlobalModel } from "@/app/store/global-model";
-import { ThemeModel } from "@/app/theme/theme-model";
-import { initAIUserConfig } from "@/app/store/ai-user-config";
 import {
     globalRefocus,
     registerBuilderGlobalKeys,
@@ -20,6 +17,9 @@ import { modalsModel } from "@/app/store/modalmodel";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { makeBuilderRouteId, makeTabRouteId } from "@/app/store/wshrouter";
 import { initWshrpc, TabRpcClient } from "@/app/store/wshrpcutil";
+import { EdgeFlowEmbedder, setEmbedder } from "@/app/term/nld";
+import { ThemeModel } from "@/app/theme/theme-model";
+import { getPtyScreenSnapshot } from "@/app/xterm/xterm-session";
 import { BuilderApp } from "@/builder/builder-app";
 import { getLayoutModelForStaticTab } from "@/layout/index";
 import { countersClear, countersPrint } from "@/store/counters";
