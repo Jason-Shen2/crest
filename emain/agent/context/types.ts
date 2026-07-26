@@ -1,12 +1,26 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-export type ContextSourceKind = "turn" | "session";
-export type ContextDeliveryScope = "message" | "conversation";
-export type ContextRepresentation = "full" | "summary";
-export type ContextRenderedRepresentation = ContextRepresentation | "attention";
+import type {
+    ContextCountAccuracy,
+    ContextDeliveryScope,
+    ContextProjectionItemReport,
+    ContextProjectionReport,
+    ContextRenderedRepresentation,
+    ContextRepresentation,
+    ContextSourceKind,
+} from "@crest/agent/harness/types";
+export type {
+    ContextCountAccuracy,
+    ContextDeliveryScope,
+    ContextProjectionItemReport,
+    ContextProjectionReport,
+    ContextRenderedRepresentation,
+    ContextRepresentation,
+    ContextSourceKind,
+};
+
 export type ContextBudgetStatus = "fits" | "references_over_budget" | "base_over_budget" | "counter_unavailable";
-export type ContextCountAccuracy = "exact" | "conservative_upper_bound" | "estimated";
 
 export interface ContextReferenceConfig {
     enabled: boolean;
@@ -103,38 +117,6 @@ export interface ContextBudgetResult {
     maxReferenceTokens?: number;
     excessTokens: number;
     items: ContextBudgetItem[];
-}
-
-export interface ContextProjectionItemReport {
-    attachmentEntryId: string;
-    artifactEntryId?: string;
-    sourceKind?: ContextSourceKind;
-    sourceSessionId?: string;
-    sourceSessionTitle?: string;
-    sourceTurnId?: string;
-    sourcePreview?: string;
-    deliveryScope: ContextDeliveryScope;
-    requestedRepresentation?: ContextRepresentation;
-    renderedRepresentation: ContextRenderedRepresentation;
-    advisoryTokens: number;
-    reason: "selected" | "already_present";
-}
-
-export interface ContextProjectionReport {
-    schemaVersion: 1;
-    transactionId: string;
-    targetTurnId: string;
-    createdAt: string;
-    contextWindow: number;
-    effectiveOutputReserve: number;
-    inputLimit: number;
-    baseInputTokens: number;
-    finalInputTokens: number;
-    referenceTokens: number;
-    countAccuracy: ContextCountAccuracy;
-    maxReferenceTokens?: number;
-    overlaySha256: string;
-    items: ContextProjectionItemReport[];
 }
 
 export interface ContextJournalDiagnostic {

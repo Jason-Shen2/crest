@@ -4,8 +4,8 @@
 import {
     filterCommittedTransactionEntries,
     SessionTransactionManifestCustomType,
-} from "../harness/session/entry-transaction";
-import type { SessionTreeEntry } from "../harness/types";
+} from "@crest/agent/harness/session/entry-transaction";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import type { ContextArtifact, ContextJournalAttachment, ContextJournalDiagnostic, ContextJournalState } from "./types";
 import { decodeContextArtifact, decodeContextAttachmentData, decodeContextProjectionReport } from "./validation";
 

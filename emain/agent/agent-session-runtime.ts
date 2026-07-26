@@ -45,10 +45,10 @@ import type {
     AgentHarnessTurnPreparation,
     AgentHarnessTurnPreparationInput,
     SessionTreeEntry,
-} from "./harness/types";
-import { AgentHarnessTerminalPreparationError } from "./harness/types";
+} from "@crest/agent/harness/types";
+import { AgentHarnessTerminalPreparationError } from "@crest/agent/harness/types";
 import type { ToolCallHook } from "./permissions";
-import type { AgentMessage, ThinkingLevel } from "./types";
+import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
 
 export type AgentSessionRuntimeStatus = "idle" | "streaming" | "error";
 export type AgentTurnStatus = "streaming" | "done" | "error";

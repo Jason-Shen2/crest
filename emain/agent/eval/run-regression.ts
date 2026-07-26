@@ -25,12 +25,12 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { AgentHarness } from "../harness/agent-harness";
-import { JsonlSessionRepo } from "../harness/session/jsonl-repo";
-import { NodeExecutionEnv } from "../node";
+import { AgentHarness } from "@crest/agent/harness/agent-harness";
+import { JsonlSessionRepo } from "@crest/agent/harness/session/jsonl-repo";
+import { NodeExecutionEnv } from "@crest/agent/node";
 import { buildSystemPrompt } from "../build-system-prompt";
 import { getDefaultTools } from "../tools";
-import type { AgentEvent } from "../types";
+import type { AgentEvent } from "@crest/agent/types";
 import { apiKeyFor, PROVIDERS, resolveModelId, type ProviderConfig } from "./providers";
 import { SCENARIOS, type RunCapture, type Scenario } from "./scenarios";
 

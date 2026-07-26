@@ -5,9 +5,9 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { createTransactionManifestData } from "../harness/session/entry-transaction";
-import { buildSessionContext } from "../harness/session/session";
-import type { SessionTreeEntry } from "../harness/types";
+import { createTransactionManifestData } from "@crest/agent/harness/session/entry-transaction";
+import { buildSessionContext } from "@crest/agent/harness/session/session";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { decorateContextHistory } from "./history";
 
 function sha256(value: string): string {

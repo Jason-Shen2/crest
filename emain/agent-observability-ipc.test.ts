@@ -10,7 +10,7 @@ import {
     registerAgentObservabilityIpcHandlers,
     TraceEventCoalescer,
 } from "./agent-observability-ipc";
-import type { AgentHarness } from "./agent/harness/agent-harness";
+import type { AgentHarness } from "@crest/agent/harness/agent-harness";
 import { TraceBuilder } from "./agent/observability/trace-builder";
 import type { TraceDetail } from "./agent/observability/types";
 

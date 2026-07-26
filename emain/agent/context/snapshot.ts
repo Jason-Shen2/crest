@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 
-import type { JsonlSessionMetadata, SessionTreeEntry } from "../harness/types";
+import type { JsonlSessionMetadata, SessionTreeEntry } from "@crest/agent/harness/types";
 import type {
     ContextArtifact,
     ContextArtifactDraft,

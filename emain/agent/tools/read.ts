@@ -17,7 +17,7 @@ import { access as fsAccess, readFile as fsReadFile } from "node:fs/promises";
 import { type Static, Type } from "typebox";
 
 import type { ImageContent, TextContent } from "@crest/ai";
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import { processImage } from "./_image";
 import { detectSupportedImageMimeTypeFromFile } from "./_mime";
 import { resolveReadPathAsync } from "./_paths";

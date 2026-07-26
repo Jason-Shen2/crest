@@ -8,7 +8,7 @@
 // ReadShellCommandOutput / LongRunningCommandSnapshot. See spec §3, §6.2.
 
 import { type Static, Type } from "typebox";
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import { getCmdBlockTail } from "./_pty-rpc";
 import { getScreenSnapshot } from "./_pty-screen";
 

@@ -87,14 +87,14 @@ import { createContextTurnPreparation, type ContextTurnDraftAttachmentInput } fr
 import type { ContextBudgetResult, ContextReferenceConfig, ContextRepresentation } from "./agent/context/types";
 import { ContextReferenceError } from "./agent/context/types";
 import { buildAgentHarnessHost } from "./agent/harness-factory";
-import { convertToLlm } from "./agent/harness/messages";
-import { InMemorySessionRepo } from "./agent/harness/session/memory-repo";
+import { convertToLlm } from "@crest/agent/harness/messages";
+import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
 import type {
     AgentHarnessTurnPreparation,
     AgentHarnessTurnPreparationInput,
     JsonlSessionMetadata,
     SessionDetailInfo,
-} from "./agent/harness/types";
+} from "@crest/agent/harness/types";
 import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
 import { loadProjectContextFiles } from "./agent/resource-loader";
 import {
@@ -111,7 +111,7 @@ import {
 import { loadAgentSkills } from "./agent/skills-loader";
 import { getDefaultTools } from "./agent/tools";
 import { createSpawnCliAgentTool } from "./agent/tools/spawn-cli-agent";
-import type { AgentMessage, ThinkingLevel } from "./agent/types";
+import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
 import type { Api, ImageContent, Message, Model } from "@crest/ai";
 import { getModel } from "@crest/ai";
 import { getSecret } from "./aiconfig/secrets";

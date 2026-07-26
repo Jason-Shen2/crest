@@ -30,7 +30,7 @@
 //     per-pattern matching in this file when actually needed, without
 //     resurrecting the full posture machinery.
 
-import type { ToolCallEvent, ToolCallResult } from "./harness/types";
+import type { ToolCallEvent, ToolCallResult } from "@crest/agent/harness/types";
 
 export interface PermissionsConfig {
     /**

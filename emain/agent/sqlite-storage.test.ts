@@ -10,15 +10,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { JsonlSessionRepo } from "./jsonl-repo";
-import { makeCommittedContextTransaction } from "./context-transaction-fixture";
-import { foldContextJournal } from "../../context/journal";
-import { SqliteSessionRepo } from "./sqlite-repo";
-import { SqliteSessionStorage } from "./sqlite-storage";
-import { SqliteDb } from "./sqlite-driver";
-import type { AgentMessage } from "../../types";
-import type { JsonlSessionMetadata, SessionTreeEntry } from "../types";
-import { NodeExecutionEnv } from "../../node";
+import { JsonlSessionRepo } from "@crest/agent/harness/session/jsonl-repo";
+import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
+import { foldContextJournal } from "./context/journal";
+import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
+import { SqliteSessionStorage } from "@crest/agent/harness/session/sqlite-storage";
+import { SqliteDb } from "@crest/agent/harness/session/sqlite-driver";
+import type { AgentMessage } from "@crest/agent/types";
+import type { JsonlSessionMetadata, SessionTreeEntry } from "@crest/agent/harness/types";
+import { NodeExecutionEnv } from "@crest/agent/node";
 
 function user(text: string): AgentMessage {
 	return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;

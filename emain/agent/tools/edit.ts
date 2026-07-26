@@ -13,7 +13,7 @@ import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } 
 import { type Static, Type } from "typebox";
 
 import { type ChangeOperation, makeToolChangeOperation } from "../change-review/change-operation";
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import {
     applyEditsToNormalizedContent,
     detectLineEnding,

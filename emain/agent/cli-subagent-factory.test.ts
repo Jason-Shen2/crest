@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 // module load under vitest. Mock it away, matching the pty-*/_pty-rpc tests.
 vi.mock("../emain-wsh", () => ({ ElectronWshClient: {} }));
 
-import { InMemorySessionRepo } from "./harness/session/memory-repo";
+import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
 import { buildCliSubagentHarness, CLI_SUBAGENT_TOOL_NAMES } from "./cli-subagent-factory";
 
 describe("buildCliSubagentHarness", () => {

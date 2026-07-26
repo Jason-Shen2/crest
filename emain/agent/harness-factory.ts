@@ -12,7 +12,7 @@
 // it directly without wrapping further.
 
 import type { Api, Model } from "@crest/ai";
-import { AgentHarness } from "./harness/agent-harness";
+import { AgentHarness } from "@crest/agent/harness/agent-harness";
 import type {
     Session,
     SessionContext,
@@ -20,11 +20,11 @@ import type {
     Skill,
     ToolCallEvent,
     ToolCallResult,
-} from "./harness/types";
-import { NodeExecutionEnv } from "./node";
+} from "@crest/agent/harness/types";
+import { NodeExecutionEnv } from "@crest/agent/node";
 import type { ToolCallHook } from "./permissions";
 import type { ProjectContextFile } from "./resource-loader";
-import type { AgentTool, ThinkingLevel } from "./types";
+import type { AgentTool, ThinkingLevel } from "@crest/agent/types";
 import { buildSystemPrompt, type SystemPromptInputs } from "./build-system-prompt";
 
 export type AgentAuthResolver = (

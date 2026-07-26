@@ -3,8 +3,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { createTransactionManifestData } from "../harness/session/entry-transaction";
-import type { SessionTreeEntry } from "../harness/types";
+import { createTransactionManifestData } from "@crest/agent/harness/session/entry-transaction";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { ContextCustomTypes, foldContextJournal, isContextCustomEntry } from "./journal";
 
 const Hash = "a".repeat(64);

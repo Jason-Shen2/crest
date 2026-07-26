@@ -15,15 +15,15 @@ import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
 import type { ContextProjectionReport } from "./context/types";
 import { AgentSessionRuntime, buildPersistedTurnsFromSessionEntries } from "./agent-session-runtime";
 import { buildAgentHarnessHost, type AgentHarnessHost } from "./harness-factory";
-import { InMemorySessionRepo } from "./harness/session/memory-repo";
-import { makeCommittedContextTransaction } from "./harness/session/context-transaction-fixture";
+import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
+import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import type {
     AgentHarnessPromptOptions,
     AgentHarnessTurnPreparation,
     AgentHarnessTurnPreparationInput,
     SessionTreeEntry,
-} from "./harness/types";
-import type { AgentMessage, ThinkingLevel } from "./types";
+} from "@crest/agent/harness/types";
+import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
 // test drive the event stream via emit(). Mirrors the only surface

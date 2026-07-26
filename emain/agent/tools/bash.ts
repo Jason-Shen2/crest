@@ -18,7 +18,7 @@ import { access as fsAccess } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { type Static, Type } from "typebox";
 
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import { waitForChildProcess } from "./_child-process";
 import { OutputAccumulator } from "./_output-accumulator";
 import {

@@ -15,7 +15,7 @@
 // long-lived session runtime can resolve relative paths against its current
 // execution context without rebuilding the Harness.
 
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import { createBashTool } from "./bash";
 import { createEditTool } from "./edit";
 import { createFindTool } from "./find";

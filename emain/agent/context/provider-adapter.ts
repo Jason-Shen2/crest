@@ -14,8 +14,8 @@ import {
     countOpenAIResponsesPayload,
     getOpenAIResponsesReasoningOptions,
 } from "@crest/ai/providers/openai-responses";
-import type { AgentHarnessStreamOptions } from "../harness/types";
-import type { AgentTool, ThinkingLevel } from "../types";
+import type { AgentHarnessStreamOptions } from "@crest/agent/harness/types";
+import type { AgentTool, ThinkingLevel } from "@crest/agent/types";
 import type { ContextProviderRequest, ContextTokenCounter } from "./projector";
 
 export interface ContextProviderAdapter {

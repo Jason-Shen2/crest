@@ -8,7 +8,7 @@
 
 import { Type, type Static } from "typebox";
 
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 
 const NAME = "web_fetch";
 const DEFAULT_TIMEOUT_MS = 30_000;

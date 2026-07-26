@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { SessionTreeEntry } from "../harness/types";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { isContextCustomEntry } from "../context/journal";
 import type { AgentForkPointView, AgentReferencePointView, AgentTreeEntryView } from "./types";
 

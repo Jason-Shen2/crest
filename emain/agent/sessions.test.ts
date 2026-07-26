@@ -9,9 +9,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { SqliteSessionRepo } from "./harness/session/sqlite-repo";
-import { createTransactionManifestData } from "./harness/session/entry-transaction";
-import { makeCommittedContextTransaction } from "./harness/session/context-transaction-fixture";
+import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
+import { createTransactionManifestData } from "@crest/agent/harness/session/entry-transaction";
+import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import { buildSystemPrompt } from "./build-system-prompt";
 import {
     _setSessionsRepoForTests,
@@ -24,8 +24,8 @@ import {
     openPaneSession,
     openPaneSessionByPath,
 } from "./sessions";
-import type { AgentMessage } from "./types";
-import type { SessionTreeEntry } from "./harness/types";
+import type { AgentMessage } from "@crest/agent/types";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
 
 function user(text: string): AgentMessage {
     return { role: "user", content: [{ type: "text", text }] } as unknown as AgentMessage;

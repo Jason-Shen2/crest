@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ToolCallEvent } from "./harness/types";
+import type { ToolCallEvent } from "@crest/agent/harness/types";
 import { buildPermissionsHook, isBenchMode } from "./permissions";
 
 function fakeToolCall(toolName: string): ToolCallEvent {

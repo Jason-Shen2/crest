@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 
 import { completeSimple, type AssistantMessage, type Context, type Model, type SimpleStreamOptions } from "@crest/ai";
-import { err, ok, type Result } from "../harness/types";
+import { err, ok, type Result } from "@crest/agent/harness/types";
 import { ContextDraftRegistry } from "./draft-registry";
 import type { ContextGeneratedSummary, ContextSnapshotBlock, ContextSnapshotMessage } from "./types";
 

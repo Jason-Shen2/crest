@@ -11,7 +11,7 @@ import {
     isHiddenTreeEntry,
     previewSessionEntry,
 } from "./session-views";
-import type { SessionTreeEntry } from "../harness/types";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { ContextCustomTypes } from "../context/journal";
 
 function userMsg(id: string, parentId: string | null, text: string): SessionTreeEntry {

@@ -14,9 +14,9 @@
 
 import { join } from "node:path";
 
-import { loadSkills } from "./harness/skills";
-import type { Skill } from "./harness/types";
-import { NodeExecutionEnv } from "./node";
+import { loadSkills } from "@crest/agent/harness/skills";
+import type { Skill } from "@crest/agent/harness/types";
+import { NodeExecutionEnv } from "@crest/agent/node";
 import { defaultConfigHome } from "./sessions";
 
 /** Project-local config dir name (mirrors pi's `.pi`). */

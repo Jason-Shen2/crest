@@ -10,7 +10,7 @@
 import * as path from "node:path";
 import { type Static, Type } from "typebox";
 
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import { pathExists, resolveToCwd } from "./_paths";
 import { enumerateFiles } from "./_search";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./_truncate";

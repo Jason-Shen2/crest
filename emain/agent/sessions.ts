@@ -17,8 +17,8 @@
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { SqliteSessionRepo } from "./harness/session/sqlite-repo";
-import type { JsonlSessionMetadata, Session, SessionDetailInfo } from "./harness/types";
+import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
+import type { JsonlSessionMetadata, Session, SessionDetailInfo } from "@crest/agent/harness/types";
 
 // AgentSessionMeta from Go-generated TS types (frontend/types/gotypes.d.ts)
 // is structurally a subset of pi's JsonlSessionMetadata. Field names
@@ -161,4 +161,4 @@ export async function listAllSessionDetails(limit?: number): Promise<SessionDeta
     return getSessionsRepo().listDetails({ limit });
 }
 
-export type { JsonlSessionMetadata, Session, SessionDetailInfo } from "./harness/types";
+export type { JsonlSessionMetadata, Session, SessionDetailInfo } from "@crest/agent/harness/types";

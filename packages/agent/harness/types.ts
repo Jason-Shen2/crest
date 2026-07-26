@@ -1,6 +1,5 @@
 import type { Api, ImageContent, Model, SimpleStreamOptions, TextContent, Transport, UserMessage } from "@crest/ai";
 import type { AgentEvent, AgentMessage, AgentTool, QueueMode, ThinkingLevel } from "../index";
-import type { ContextProjectionReport } from "../context/types";
 import type { Session } from "./session/session";
 
 /** Result of a fallible operation. Expected failures are returned as `ok: false` instead of thrown.
@@ -666,6 +665,49 @@ export interface ResourcesUpdateEvent<
 	type: "resources_update";
 	resources: AgentHarnessResources<TSkill, TPromptTemplate>;
 	previousResources: AgentHarnessResources<TSkill, TPromptTemplate>;
+}
+
+/** Crest-local extension vs upstream pi: cross-session context projection-report types.
+ *
+ * Defined here rather than in coding-agent's context layer so the dependency direction
+ * stays coding-agent → agent; @crest/coding-agent's context/types re-exports them.
+ */
+export type ContextSourceKind = "turn" | "session";
+export type ContextDeliveryScope = "message" | "conversation";
+export type ContextRepresentation = "full" | "summary";
+export type ContextRenderedRepresentation = ContextRepresentation | "attention";
+export type ContextCountAccuracy = "exact" | "conservative_upper_bound" | "estimated";
+
+export interface ContextProjectionItemReport {
+	attachmentEntryId: string;
+	artifactEntryId?: string;
+	sourceKind?: ContextSourceKind;
+	sourceSessionId?: string;
+	sourceSessionTitle?: string;
+	sourceTurnId?: string;
+	sourcePreview?: string;
+	deliveryScope: ContextDeliveryScope;
+	requestedRepresentation?: ContextRepresentation;
+	renderedRepresentation: ContextRenderedRepresentation;
+	advisoryTokens: number;
+	reason: "selected" | "already_present";
+}
+
+export interface ContextProjectionReport {
+	schemaVersion: 1;
+	transactionId: string;
+	targetTurnId: string;
+	createdAt: string;
+	contextWindow: number;
+	effectiveOutputReserve: number;
+	inputLimit: number;
+	baseInputTokens: number;
+	finalInputTokens: number;
+	referenceTokens: number;
+	countAccuracy: ContextCountAccuracy;
+	maxReferenceTokens?: number;
+	overlaySha256: string;
+	items: ContextProjectionItemReport[];
 }
 
 export interface ContextProjectionEvent {

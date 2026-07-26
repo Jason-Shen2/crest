@@ -7,7 +7,7 @@
 // (crates/ai/src/agent/action/mod.rs#L779-L822). See spec §6.1.
 
 import { type Static, Type } from "typebox";
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import { sendControllerInput } from "./_pty-rpc";
 
 const ptyWriteSchema = Type.Object({

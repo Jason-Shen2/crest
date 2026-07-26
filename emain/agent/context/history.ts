@@ -1,8 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { SessionContext, SessionTreeEntry } from "../harness/types";
-import type { AgentMessage } from "../types";
+import type { SessionContext, SessionTreeEntry } from "@crest/agent/harness/types";
+import type { AgentMessage } from "@crest/agent/types";
 import { foldContextJournal } from "./journal";
 import { serializeContextValue, validateAndProjectContext, type ContextRenderedItem } from "./projector";
 

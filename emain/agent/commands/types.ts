@@ -8,7 +8,7 @@ import type {
     ContextRepresentation,
     ContextSourceKind,
 } from "../context/types";
-import type { JsonlSessionMetadata } from "../harness/types";
+import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
 
 export type AgentCommandSource = "builtin" | "skill" | "prompt";
 

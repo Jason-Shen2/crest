@@ -39,7 +39,7 @@ vi.mock("./agent/change-review/change-outline", () => ({
     generateChangeOutline: vi.fn(),
 }));
 vi.mock("./agent/harness-factory", () => ({ buildAgentHarnessHost: vi.fn() }));
-vi.mock("./agent/index", () => ({}));
+vi.mock("@crest/agent", () => ({}));
 vi.mock("./agent/permissions", () => ({
     buildPermissionsHook: vi.fn(),
     isBenchMode: vi.fn(() => false),
@@ -79,11 +79,11 @@ import { AgentSessionRuntime } from "./agent/agent-session-runtime";
 import { foldContextJournal } from "./agent/context/journal";
 import { ContextReferenceError } from "./agent/context/types";
 import { buildAgentHarnessHost } from "./agent/harness-factory";
-import { makeCommittedContextTransaction } from "./agent/harness/session/context-transaction-fixture";
-import { Session } from "./agent/harness/session/session";
-import { SqliteSessionRepo } from "./agent/harness/session/sqlite-repo";
+import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
+import { Session } from "@crest/agent/harness/session/session";
+import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir, openPaneSession } from "./agent/sessions";
-import type { AgentMessage } from "./agent/types";
+import type { AgentMessage } from "@crest/agent/types";
 import { getModel } from "@crest/ai";
 
 function user(text: string): AgentMessage {

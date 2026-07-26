@@ -8,13 +8,13 @@
 // buildAgentHarnessHost but never touches the SQLite session repo. See spec §2, §9.
 
 import type { Api, Model } from "@crest/ai";
-import { AgentHarness } from "./harness/agent-harness";
-import type { Session } from "./harness/types";
-import { NodeExecutionEnv } from "./node";
+import { AgentHarness } from "@crest/agent/harness/agent-harness";
+import type { Session } from "@crest/agent/harness/types";
+import { NodeExecutionEnv } from "@crest/agent/node";
 import { createPtyReadTool } from "./tools/pty-read";
 import { createPtyTransferTool } from "./tools/pty-transfer";
 import { createPtyWriteTool } from "./tools/pty-write";
-import type { AgentTool } from "./types";
+import type { AgentTool } from "@crest/agent/types";
 
 export const CLI_SUBAGENT_TOOL_NAMES = ["pty_write", "pty_read", "pty_transfer_to_user"] as const;
 

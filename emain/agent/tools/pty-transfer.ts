@@ -7,7 +7,7 @@
 // user. Mirrors Warp's TransferShellCommandControlToUser. See spec §6.
 
 import { type Static, Type } from "typebox";
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 
 const ptyTransferSchema = Type.Object({
     block_id: Type.Optional(

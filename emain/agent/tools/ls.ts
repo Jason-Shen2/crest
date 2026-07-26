@@ -14,7 +14,7 @@ import { readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import nodePath from "node:path";
 import { type Static, Type } from "typebox";
 
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import { pathExists, resolveToCwd } from "./_paths";
 import { DEFAULT_MAX_BYTES, formatSize, truncateHead, type TruncationResult } from "./_truncate";
 

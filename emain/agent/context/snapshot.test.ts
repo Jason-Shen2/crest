@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { JsonlSessionMetadata, SessionTreeEntry } from "../harness/types";
+import type { JsonlSessionMetadata, SessionTreeEntry } from "@crest/agent/harness/types";
 import { captureContextArtifactDraft, getModelVisibleMessageEntryIds } from "./snapshot";
 import { ContextReferenceError } from "./types";
 

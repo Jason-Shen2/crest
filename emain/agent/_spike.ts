@@ -27,8 +27,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { getModel } from "@crest/ai";
-import { JsonlSessionRepo } from "./harness/session/jsonl-repo";
-import { NodeExecutionEnv } from "./node";
+import { JsonlSessionRepo } from "@crest/agent/harness/session/jsonl-repo";
+import { NodeExecutionEnv } from "@crest/agent/node";
 import { buildAgentHarnessHost } from "./harness-factory";
 import { _setSessionsRepoForTests, createPaneSession } from "./sessions";
 

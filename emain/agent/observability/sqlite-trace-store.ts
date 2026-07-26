@@ -5,7 +5,7 @@ import { mkdirSync } from "node:fs";
 import * as path from "node:path";
 
 import { defaultConfigHome } from "../sessions";
-import { SqliteDb } from "../harness/session/sqlite-driver";
+import { SqliteDb } from "@crest/agent/harness/session/sqlite-driver";
 import { TraceStoreSchemaSql } from "./trace-store-schema";
 import {
     observationFromRow,

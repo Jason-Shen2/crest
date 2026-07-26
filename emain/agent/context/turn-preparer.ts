@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { UserMessage } from "@crest/ai";
-import { createTransactionManifestData, sha256CanonicalJson } from "../harness/session/entry-transaction";
-import { uuidv7 } from "../harness/session/uuid";
-import type { SessionAppendOptions, SessionTreeEntry } from "../harness/types";
-import { SessionError } from "../harness/types";
-import type { AgentMessage } from "../types";
+import { createTransactionManifestData, sha256CanonicalJson } from "@crest/agent/harness/session/entry-transaction";
+import { uuidv7 } from "@crest/agent/harness/session/uuid";
+import type { SessionAppendOptions, SessionTreeEntry } from "@crest/agent/harness/types";
+import { SessionError } from "@crest/agent/harness/types";
+import type { AgentMessage } from "@crest/agent/types";
 import { ContextDraftRegistry, withContextDrafts } from "./draft-registry";
 import { appendHistoricalReference, renderHistoricalReference } from "./history";
 import { ContextCustomTypes } from "./journal";

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import type { UserMessage } from "@crest/ai";
-import type { SessionTreeEntry } from "../harness/types";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { ContextDraftRegistry } from "./draft-registry";
 import { createContextTurnPreparation, type ContextTurnPreparationInput } from "./turn-preparer";
 import type { ContextArtifact, ContextArtifactDraft } from "./types";

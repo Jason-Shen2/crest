@@ -14,8 +14,8 @@
 // (crest is not the pi CLI). crest's pane state (git branch / remote
 // connection / recent commands) is appended as an extra section.
 
-import { formatSkillsForSystemPrompt } from "./harness/system-prompt";
-import type { Skill } from "./harness/types";
+import { formatSkillsForSystemPrompt } from "@crest/agent/harness/system-prompt";
+import type { Skill } from "@crest/agent/harness/types";
 
 export interface SystemPromptInputs {
     /** Pane's current working directory (absolute path). */

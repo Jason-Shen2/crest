@@ -12,7 +12,7 @@ import { dirname } from "node:path";
 import { type Static, Type } from "typebox";
 
 import { type ChangeOperation, type ChangeOperationKind, makeToolChangeOperation } from "../change-review/change-operation";
-import type { AgentTool } from "../types";
+import type { AgentTool } from "@crest/agent/types";
 import { generateUnifiedPatch } from "./_edit-diff";
 import { withFileMutationQueue } from "./_file-mutation-queue";
 import { resolveToCwd } from "./_paths";
