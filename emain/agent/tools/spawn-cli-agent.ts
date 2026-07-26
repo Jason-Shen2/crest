@@ -8,11 +8,12 @@
 
 import { type Static, Type } from "typebox";
 import type { Api, Model } from "../../ai";
-import { buildCliSubagentHarness } from "../cli-subagent-factory";
+import type { AgentExecutionContext } from "../agent-execution-context";
+import type { AgentSessionRuntime } from "../agent-session-runtime";
 import type { CliSubagentHarness } from "../cli-subagent-factory";
+import { buildCliSubagentHarness } from "../cli-subagent-factory";
 import type { Session } from "../harness/types";
 import type { AgentTool } from "../types";
-import { startAgentCommandBlock, stopBlock } from "./_pty-rpc";
 
 function extractText(message: unknown): string {
     const content = (message as { content?: Array<{ type: string; text?: string }> })?.content ?? [];
@@ -26,7 +27,7 @@ function extractText(message: unknown): string {
 export async function runSubagentToCompletion(
     sub: CliSubagentHarness,
     task: string,
-    opts: { signal?: AbortSignal } = {},
+    opts: { signal?: AbortSignal } = {}
 ): Promise<string> {
     if (opts.signal?.aborted) {
         await sub.harness.abort();
@@ -56,17 +57,17 @@ const spawnSchema = Type.Object({
 export type SpawnCliAgentInput = Static<typeof spawnSchema>;
 
 export interface SpawnCliAgentDetails {
-    blockId: string;
+    commandId: string;
 }
 
 export interface SpawnCliAgentDeps {
-    /** The main agent's own terminal pane block id — used to resolve the tab the new run block is created on. */
-    parentBlockId: string;
+    runtime: AgentSessionRuntime;
     getModel: () => Model<Api>;
+    getExecutionContext: (cwd: string) => AgentExecutionContext;
     /** Mint an ephemeral in-memory session for the subagent. */
     createSession: () => Promise<Session>;
     getApiKeyAndHeaders?: (
-        model: Model<Api>,
+        model: Model<Api>
     ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
 }
 
@@ -91,32 +92,28 @@ export function createSpawnCliAgentTool(deps: SpawnCliAgentDeps): AgentTool<type
         label: "spawn cli agent",
         description:
             "Delegate a long-running or interactive shell command to a CLI subagent. " +
-            "Provide a natural-language task and the initial command; the parent starts it in a terminal block, " +
+            "Provide a natural-language task and the initial command; the parent starts it in a hosted PTY, " +
             "then the subagent watches/interacts and returns a natural-language summary. " +
             "Use this instead of bash when the command will not exit on its own.",
         promptSnippet: "Delegate long-running / interactive commands to a CLI subagent.",
         parameters: spawnSchema,
         async execute(_toolCallId, params, signal) {
-            const blockId = await startAgentCommandBlock(deps.parentBlockId, params.cwd, params.initial_command);
-            // The command block is now live. On success we leave it running (the
-            // delegated command — e.g. a dev server — is often meant to stay up for
-            // the user). On any failure/abort path we must tear it down so a
-            // delegated command can never be orphaned; runSubagentToCompletion owns
-            // aborting the harness itself when the signal fires.
+            const context = deps.getExecutionContext(params.cwd);
+            const { port } = await deps.runtime.startHostedCommand(params.initial_command, context);
             try {
                 const session = await deps.createSession();
                 const sub = buildCliSubagentHarness({
                     session,
                     model: deps.getModel(),
-                    blockId,
+                    command: port,
                     cwd: params.cwd,
                     initialCommand: params.initial_command,
                     getApiKeyAndHeaders: deps.getApiKeyAndHeaders,
                 });
                 const summary = await runSubagentToCompletion(sub, buildStartedCliSubagentTask(params), { signal });
-                return { content: [{ type: "text", text: summary }], details: { blockId } };
+                return { content: [{ type: "text", text: summary }], details: { commandId: port.commandId } };
             } catch (err) {
-                await stopBlock(blockId);
+                await port.stop();
                 throw err;
             }
         },

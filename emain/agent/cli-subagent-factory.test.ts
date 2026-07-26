@@ -1,19 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 
-// The PTY tools transitively import emain-wsh (→ electron), which crashes at
-// module load under vitest. Mock it away, matching the pty-*/_pty-rpc tests.
-vi.mock("../emain-wsh", () => ({ ElectronWshClient: {} }));
-
-import { InMemorySessionRepo } from "./harness/session/memory-repo";
+import type { AgentPtyCommandPort } from "./agent-pty-host";
 import { buildCliSubagentHarness, CLI_SUBAGENT_TOOL_NAMES } from "./cli-subagent-factory";
+import { InMemorySessionRepo } from "./harness/session/memory-repo";
+
+function makeCommand(): AgentPtyCommandPort {
+    return {
+        commandId: "cmd1",
+        read: vi.fn() as any,
+        write: vi.fn(async () => {}),
+        resize: vi.fn(),
+        requestUserInput: vi.fn(),
+        stop: vi.fn(async () => {}),
+    };
+}
 
 describe("buildCliSubagentHarness", () => {
-    it("mounts exactly the three PTY tools bound to the blockId", async () => {
+    it("mounts exactly the three PTY tools bound to the command", async () => {
         const session = await new InMemorySessionRepo().create();
         const sub = buildCliSubagentHarness({
             session,
             model: { id: "test-model" } as any,
-            blockId: "blk1",
+            command: makeCommand(),
             cwd: "/tmp",
             initialCommand: "pi",
         });
@@ -26,7 +34,7 @@ describe("buildCliSubagentHarness", () => {
         const sub = buildCliSubagentHarness({
             session,
             model: { id: "test-model" } as any,
-            blockId: "blk1",
+            command: makeCommand(),
             cwd: "/tmp",
             initialCommand: "pi",
         });

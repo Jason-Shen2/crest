@@ -58,6 +58,9 @@ func EnsureInitialData() (bool, error) {
 	}
 	log.Printf("clientid: %s\n", client.OID)
 	wstore.SetClientId(client.OID)
+	if err := AdoptLegacyWorkspaceTabDomains(ctx); err != nil {
+		return firstLaunch, fmt.Errorf("error adopting legacy workspace tab domains: %w", err)
+	}
 	// Space = Project: discard any dev-era workspaces that were created
 	// before every Space was bound to a directory. Log and continue on
 	// error so a migration failure never blocks boot.

@@ -18,20 +18,28 @@ ipcRenderer.on("dir-changed", (_event, path: string, eventType: string, filename
 });
 
 // Agent event fan-out — mirrors the dir-watch pattern. Main emits
-// "agent:event" with {sessionPath, event}; we route to per-sessionPath
-// callbacks the renderer registered via api.agent.subscribe().
+// "agent:event" with {workspaceId, generation, sessionPath, event}; route by
+// Workspace identity as well as path so a renderer generation cannot consume
+// stale subscription events.
 const agentEventCallbacks = new Map<string, Set<(event: unknown) => void>>();
-ipcRenderer.on("agent:event", (_event, payload: { sessionPath: string; event: unknown }) => {
-    const cbs = agentEventCallbacks.get(payload.sessionPath);
-    if (!cbs) return;
-    for (const cb of cbs) {
-        try {
-            cb(payload.event);
-        } catch (e) {
-            console.error("agent:event callback error", e);
+function getAgentCallbackKey(context: unknown, sessionPath: string): string {
+    const identity = context as { workspaceId?: unknown; generation?: unknown };
+    return JSON.stringify([identity.workspaceId, identity.generation, sessionPath]);
+}
+ipcRenderer.on(
+    "agent:event",
+    (_event, payload: { workspaceId: string; generation: number; sessionPath: string; event: unknown }) => {
+        const cbs = agentEventCallbacks.get(getAgentCallbackKey(payload, payload.sessionPath));
+        if (!cbs) return;
+        for (const cb of cbs) {
+            try {
+                cb(payload.event);
+            } catch (e) {
+                console.error("agent:event callback error", e);
+            }
         }
     }
-});
+);
 
 const agentObservabilityCallbacks = new Map<string, Set<(event: unknown) => void>>();
 ipcRenderer.on(
@@ -49,7 +57,6 @@ ipcRenderer.on(
         }
     }
 );
-
 type AgentIpcEnvelope<T> =
     | { ok: true; value: T }
     | {
@@ -59,8 +66,8 @@ type AgentIpcEnvelope<T> =
               | { kind: "generic"; message: string };
       };
 
-async function invokeAgentContext<T>(channel: string, input: unknown): Promise<T> {
-    const envelope = (await ipcRenderer.invoke(channel, input)) as AgentIpcEnvelope<T>;
+async function invokeAgentContext<T>(channel: string, context: unknown, input: unknown): Promise<T> {
+    const envelope = (await ipcRenderer.invoke(channel, context, input)) as AgentIpcEnvelope<T>;
     if (envelope?.ok === true) return envelope.value;
     if (envelope?.ok === false) {
         const error = new Error(envelope.error.message);
@@ -119,19 +126,53 @@ contextBridge.exposeInMainWorld("api", {
     installAppUpdate: () => ipcRenderer.send("install-app-update"),
     onMenuItemAbout: (callback) => ipcRenderer.on("menu-item-about", callback),
     updateWindowControlsOverlay: (rect) => ipcRenderer.send("update-window-controls-overlay", rect),
-    onReinjectKey: (callback) => ipcRenderer.on("reinject-key", (_event, waveEvent) => callback(waveEvent)),
+    onReinjectKey: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, waveEvent: WaveKeyboardEvent) => callback(waveEvent);
+        ipcRenderer.on("reinject-key", listener);
+        return () => ipcRenderer.removeListener("reinject-key", listener);
+    },
     setWebviewFocus: (focused: number) => ipcRenderer.send("webview-focus", focused),
     registerGlobalWebviewKeys: (keys) => ipcRenderer.send("register-global-webview-keys", keys),
-    onControlShiftStateUpdate: (callback) =>
-        ipcRenderer.on("control-shift-state-update", (_event, state) => callback(state)),
+    onControlShiftStateUpdate: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, state: boolean) => callback(state);
+        ipcRenderer.on("control-shift-state-update", listener);
+        return () => ipcRenderer.removeListener("control-shift-state-update", listener);
+    },
     createWorkspace: (dir: string) => ipcRenderer.send("create-workspace", dir),
     selectDirectory: () => ipcRenderer.invoke("select-directory"),
+    selectFile: () => ipcRenderer.invoke("select-file"),
     switchWorkspace: (workspaceId) => ipcRenderer.send("switch-workspace", workspaceId),
     deleteWorkspace: (workspaceId) => ipcRenderer.send("delete-workspace", workspaceId),
-    setActiveTab: (tabId) => ipcRenderer.send("set-active-tab", tabId),
-    createTab: () => ipcRenderer.send("create-tab"),
-    closeTab: (workspaceId, tabId, confirmClose) => ipcRenderer.invoke("close-tab", workspaceId, tabId, confirmClose),
-    setWindowInitStatus: (status) => ipcRenderer.send("set-window-init-status", status),
+    setWindowInitStatus: (status, workspaceReady) => ipcRenderer.send("set-window-init-status", status, workspaceReady),
+    onWorkspaceInit: (callback) => ipcRenderer.on("workspace-init", (_event, initOpts) => callback(initOpts)),
+    onWorkspaceInitFatal: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, status: WorkspaceReadyStatus) => callback(status);
+        ipcRenderer.on("workspace-init-fatal", listener);
+        return () => ipcRenderer.removeListener("workspace-init-fatal", listener);
+    },
+    sendWorkspaceCommand: (command) => ipcRenderer.send("workspace-command", command),
+    setWorkspaceSurface: (surface) => ipcRenderer.send("workspace-surface", surface),
+    onTerminalSurfaceStatus: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, status: TerminalSurfaceStatus) => callback(status);
+        ipcRenderer.on("terminal-surface-status", listener);
+        return () => ipcRenderer.removeListener("terminal-surface-status", listener);
+    },
+    onWorkspaceCommand: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, command: WorkspaceCommand) => callback(command);
+        ipcRenderer.on("workspace-command", listener);
+        return () => ipcRenderer.removeListener("workspace-command", listener);
+    },
+    onWorkspaceCloseRequest: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, request: WorkspaceCloseRequest) => callback(request);
+        ipcRenderer.on("workspace-close-request", listener);
+        return () => ipcRenderer.removeListener("workspace-close-request", listener);
+    },
+    respondWorkspaceClose: (response) => ipcRenderer.send("workspace-close-response", response),
+    onWorkspaceCloseFinalize: (callback) => {
+        const listener = (_event: Electron.IpcRendererEvent, finalize: WorkspaceCloseFinalize) => callback(finalize);
+        ipcRenderer.on("workspace-close-finalize", listener);
+        return () => ipcRenderer.removeListener("workspace-close-finalize", listener);
+    },
     onWaveInit: (callback) => ipcRenderer.on("wave-init", (_event, initOpts) => callback(initOpts)),
     onBuilderInit: (callback) => ipcRenderer.on("builder-init", (_event, initOpts) => callback(initOpts)),
     sendLog: (log) => ipcRenderer.send("fe-log", log),
@@ -189,44 +230,69 @@ contextBridge.exposeInMainWorld("api", {
     // ─── Agent runtime (Electron main agent loop) ────────────────────
     // See docs/agent-runtime-architecture.md §2 + emain/agent-ipc.ts.
     agent: {
-        createSession: (cwd: string) => ipcRenderer.invoke("agent:create-session", cwd),
-        listSessionsForCwd: (cwd: string) => ipcRenderer.invoke("agent:list-sessions-for-cwd", cwd),
-        listSessionDetailsForCwd: (cwd: string, limit?: number) =>
-            ipcRenderer.invoke("agent:list-session-details-for-cwd", cwd, limit),
-        listAllSessionDetails: (limit?: number) => ipcRenderer.invoke("agent:list-all-session-details", limit),
-        listCommands: () => ipcRenderer.invoke("agent:list-commands"),
-        getSessionState: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:get-session-state", sessionMetadata),
-        listTree: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:list-tree", sessionMetadata),
-        listForkPoints: (sessionMetadata: unknown) => ipcRenderer.invoke("agent:list-fork-points", sessionMetadata),
-        navigateTree: (input: unknown) => ipcRenderer.invoke("agent:navigate-tree", input),
-        forkSession: (input: unknown) => ipcRenderer.invoke("agent:fork-session", input),
-        cloneSession: (input: unknown) => ipcRenderer.invoke("agent:clone-session", input),
-        runCommand: (input: unknown) => ipcRenderer.invoke("agent:run-command", input),
-        prepareContextDraft: (input: unknown) => invokeAgentContext("agent:prepare-context-draft", input),
-        summarizeContextDraft: (input: unknown) => invokeAgentContext("agent:summarize-context-draft", input),
-        discardContextDraft: (input: unknown) => invokeAgentContext("agent:discard-context-draft", input),
-        listReferencePoints: (input: unknown) => invokeAgentContext("agent:list-reference-points", input),
-        listContextState: (input: unknown) => invokeAgentContext("agent:list-context-state", input),
-        send: (opts: unknown) => invokeAgentContext("agent:send", opts),
-        abort: (sessionPath: string) => ipcRenderer.send("agent:abort", sessionPath),
-        subscribe: (sessionPath: string, callback: (event: unknown) => void): (() => void) => {
-            let entry = agentEventCallbacks.get(sessionPath);
+        createSession: (context: unknown) => ipcRenderer.invoke("agent:create-session", context),
+        listSessions: (context: unknown) => ipcRenderer.invoke("agent:list-sessions", context),
+        listSessionDetails: (context: unknown, limit?: number) =>
+            ipcRenderer.invoke("agent:list-session-details", context, limit),
+        listCommands: (context: unknown) => ipcRenderer.invoke("agent:list-commands", context),
+        getSessionState: (context: unknown, sessionMetadata: unknown) =>
+            ipcRenderer.invoke("agent:get-session-state", context, sessionMetadata),
+        listTree: (context: unknown, sessionMetadata: unknown) =>
+            ipcRenderer.invoke("agent:list-tree", context, sessionMetadata),
+        listForkPoints: (context: unknown, sessionMetadata: unknown) =>
+            ipcRenderer.invoke("agent:list-fork-points", context, sessionMetadata),
+        navigateTree: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:navigate-tree", context, input),
+        forkSession: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:fork-session", context, input),
+        cloneSession: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:clone-session", context, input),
+        runCommand: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:run-command", context, input),
+        commandRead: (context: unknown, sessionMetadata: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:command-read", context, sessionMetadata, input),
+        commandWrite: (context: unknown, sessionMetadata: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:command-write", context, sessionMetadata, input),
+        commandResize: (context: unknown, sessionMetadata: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:command-resize", context, sessionMetadata, input),
+        commandStop: (context: unknown, sessionMetadata: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:command-stop", context, sessionMetadata, input),
+        renameSession: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:rename-session", context, input),
+        archiveSession: (context: unknown, sessionMetadata: unknown) =>
+            ipcRenderer.invoke("agent:archive-session", context, sessionMetadata),
+        deleteSession: (context: unknown, sessionMetadata: unknown) =>
+            ipcRenderer.invoke("agent:delete-session", context, sessionMetadata),
+        prepareContextDraft: (context: unknown, input: unknown) =>
+            invokeAgentContext("agent:prepare-context-draft", context, input),
+        summarizeContextDraft: (context: unknown, input: unknown) =>
+            invokeAgentContext("agent:summarize-context-draft", context, input),
+        discardContextDraft: (context: unknown, input: unknown) =>
+            invokeAgentContext("agent:discard-context-draft", context, input),
+        listReferencePoints: (context: unknown, input: unknown) =>
+            invokeAgentContext("agent:list-reference-points", context, input),
+        listContextState: (context: unknown, input: unknown) =>
+            invokeAgentContext("agent:list-context-state", context, input),
+        send: (context: unknown, opts: unknown) => invokeAgentContext("agent:send", context, opts),
+        abort: (context: unknown, sessionPath: string) => ipcRenderer.invoke("agent:abort", context, sessionPath),
+        subscribe: (context: unknown, sessionPath: string, callback: (event: unknown) => void): (() => void) => {
+            const key = getAgentCallbackKey(context, sessionPath);
+            let entry = agentEventCallbacks.get(key);
             const isNew = !entry;
             if (!entry) {
                 entry = new Set();
-                agentEventCallbacks.set(sessionPath, entry);
+                agentEventCallbacks.set(key, entry);
             }
             entry.add(callback);
             if (isNew) {
-                ipcRenderer.send("agent:subscribe", sessionPath);
+                void ipcRenderer
+                    .invoke("agent:subscribe", context, sessionPath)
+                    .catch((err) => console.error("agent:subscribe failed", err));
             }
             return () => {
-                const cur = agentEventCallbacks.get(sessionPath);
+                const cur = agentEventCallbacks.get(key);
                 if (!cur) return;
                 cur.delete(callback);
                 if (cur.size === 0) {
-                    agentEventCallbacks.delete(sessionPath);
-                    ipcRenderer.send("agent:unsubscribe", sessionPath);
+                    agentEventCallbacks.delete(key);
+                    void ipcRenderer
+                        .invoke("agent:unsubscribe", context, sessionPath)
+                        .catch((err) => console.error("agent:unsubscribe failed", err));
                 }
             };
         },

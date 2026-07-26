@@ -13,6 +13,7 @@ import {
 } from "../ai";
 import { AssistantMessageEventStream } from "../ai/utils/event-stream";
 import type { ContextProjectionReport } from "./context/types";
+import type { AgentPtyCommandPort, AgentPtyHost, AgentPtySnapshot } from "./agent-pty-host";
 import { AgentSessionRuntime, buildPersistedTurnsFromSessionEntries } from "./agent-session-runtime";
 import { buildAgentHarnessHost, type AgentHarnessHost } from "./harness-factory";
 import { InMemorySessionRepo } from "./harness/session/memory-repo";
@@ -43,6 +44,7 @@ function makeFakeHarness() {
     let promptResult: (options?: unknown) => Promise<unknown> = () => new Promise(() => {}); // pending forever by default
     let navigateTreeResult: () => Promise<unknown> = () => Promise.resolve({ cancelled: false });
     const session = {
+        close: vi.fn(),
         getEntries: vi.fn().mockResolvedValue([]),
         getBranch: vi.fn().mockResolvedValue([]),
         getLeafId: vi.fn().mockResolvedValue(null),
@@ -1112,6 +1114,124 @@ describe("AgentSessionRuntime — status tracking", () => {
         fake.emit({ type: "agent_end", messages: [assistant("", "error", "rate limited")] });
         state = owner.getSessionState();
         expect(state.status).toBe("error");
+    });
+});
+
+describe("AgentSessionRuntime — hosted PTYs", () => {
+    function makeSnapshot(overrides: Partial<AgentPtySnapshot> = {}): AgentPtySnapshot {
+        return {
+            commandId: "cmd1",
+            command: "npm run dev",
+            cwd: "/tmp",
+            tail: "ready",
+            screen: {
+                rows: [{ text: "ready", cells: [] }],
+                cursor: { row: 0, col: 5, visible: true, shape: "block", blink: false },
+                isAltScreenActive: false,
+            },
+            running: true,
+            cols: 80,
+            rows: 24,
+            needsUserInput: false,
+            ...overrides,
+        };
+    }
+
+    function makeHost(snapshot = makeSnapshot()) {
+        const port: AgentPtyCommandPort = {
+            commandId: snapshot.commandId,
+            read: vi.fn(() => snapshot),
+            write: vi.fn(async () => {}),
+            resize: vi.fn(),
+            requestUserInput: vi.fn(),
+            stop: vi.fn(async () => {}),
+        };
+        return {
+            port,
+            host: {
+                start: vi.fn(async () => snapshot),
+                read: vi.fn(() => snapshot),
+                write: vi.fn(async () => {}),
+                resize: vi.fn(),
+                requestUserInput: vi.fn(),
+                stop: vi.fn(async () => {}),
+                getCommandPort: vi.fn(() => port),
+                snapshots: vi.fn(() => [snapshot]),
+                hasRunningCommands: vi.fn(() => snapshot.running),
+                dispose: vi.fn(async () => {}),
+            } as unknown as AgentPtyHost,
+        };
+    }
+
+    it("includes owned PTY snapshots in session state and subscriber events", async () => {
+        const fake = makeFakeHarness();
+        const { host } = makeHost();
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { ptyHost: host } as any);
+        const listener = vi.fn();
+        owner.subscribe(listener);
+
+        await owner.startHostedCommand("npm run dev", {
+            workspaceId: "w1",
+            workspaceDir: "/tmp",
+            connection: "",
+            environment: {},
+            recentCmds: [],
+        });
+
+        expect(owner.getSessionState().commands).toEqual([expect.objectContaining({ commandId: "cmd1" })]);
+        expect(listener).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: "session_state",
+                commands: [expect.objectContaining({ commandId: "cmd1" })],
+            })
+        );
+    });
+
+    it("is running while any hosted command is alive and dispose awaits PTY cleanup", async () => {
+        const fake = makeFakeHarness();
+        const { host } = makeHost();
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { ptyHost: host } as any);
+
+        expect(owner.isRunning()).toBe(true);
+        await owner.dispose();
+
+        expect(host.dispose).toHaveBeenCalledOnce();
+    });
+
+    it("closes the owned session after abort and PTY cleanup settle", async () => {
+        const fake = makeFakeHarness();
+        const order: string[] = [];
+        const close = vi.fn(() => order.push("close"));
+        (fake.pane.session as unknown as { close: () => void }).close = close;
+        vi.spyOn(fake.pane.harness, "abort").mockImplementation(async () => {
+            order.push("abort");
+            return {} as never;
+        });
+        const { host } = makeHost();
+        vi.mocked(host.dispose).mockImplementation(async () => {
+            order.push("pty");
+        });
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { ptyHost: host } as any);
+
+        await owner.dispose();
+
+        expect(close).toHaveBeenCalledOnce();
+        expect(order.at(-1)).toBe("close");
+    });
+
+    it("retries owned session close when dispose is called after a close failure", async () => {
+        const fake = makeFakeHarness();
+        const failure = new Error("close failed");
+        const close = vi.fn().mockImplementationOnce(() => {
+            throw failure;
+        });
+        (fake.pane.session as unknown as { close: () => void }).close = close;
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], []);
+
+        await expect(owner.dispose()).rejects.toBe(failure);
+        await expect(owner.dispose()).resolves.toBeUndefined();
+
+        expect(close).toHaveBeenCalledTimes(2);
     });
 });
 

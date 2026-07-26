@@ -108,6 +108,25 @@ export async function openPaneSessionByPath(sessionPath: string): Promise<Sessio
     return getSessionsRepo().openPath(sessionPath);
 }
 
+export async function renamePaneSession(sessionMetadata: JsonlSessionMetadata, name: string): Promise<void> {
+    await getSessionsRepo().rename(sessionMetadata, name);
+}
+
+export async function archivePaneSession(sessionMetadata: JsonlSessionMetadata): Promise<JsonlSessionMetadata> {
+    return await getSessionsRepo().archive(sessionMetadata);
+}
+
+export async function stageDeletePaneSession(sessionMetadata: JsonlSessionMetadata): Promise<JsonlSessionMetadata> {
+    return await getSessionsRepo().stageDelete(sessionMetadata);
+}
+
+export async function restoreMovedPaneSession(
+    movedSessionMetadata: JsonlSessionMetadata,
+    originalPath: string
+): Promise<void> {
+    await getSessionsRepo().restoreMovedSession(movedSessionMetadata, originalPath);
+}
+
 export async function forkPaneSession(
     sourceMetadata: JsonlSessionMetadata,
     options: ForkPaneSessionOptions = {}

@@ -24,6 +24,10 @@ function makeTabRouteId(tabId: string): string {
     return `tab:${tabId}`;
 }
 
+function makeWorkspaceRouteId(workspaceId: string): string {
+    return `workspace:${workspaceId}`;
+}
+
 function makeBuilderRouteId(builderId: string): string {
     return `builder:${builderId}`;
 }
@@ -157,4 +161,4 @@ class WshRouter {
     }
 }
 
-export { makeBuilderRouteId, makeFeBlockRouteId, makeTabRouteId, WshRouter };
+export { makeBuilderRouteId, makeFeBlockRouteId, makeTabRouteId, makeWorkspaceRouteId, WshRouter };

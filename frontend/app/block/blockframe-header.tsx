@@ -19,7 +19,7 @@ import {
     WOS,
 } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
-import { uxCloseBlock } from "@/app/store/keymodel";
+import { uxCloseBlock } from "@/app/store/tab-actions";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
 import { Icon } from "@/app/icon/Icon";

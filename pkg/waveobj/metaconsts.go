@@ -102,10 +102,8 @@ const (
 
 	MetaKey_WorkspaceDir                     = "workspace:dir"
 
-	MetaKey_LayoutVTabBarWidth               = "layout:vtabbarwidth"
+	MetaKey_LayoutLeftPanel                  = "layout:leftpanel"
 	MetaKey_LayoutWidgetsVisible             = "layout:widgetsvisible"
-	MetaKey_LayoutFileExplorerVisible        = "layout:fileexplorervisible"
-	MetaKey_LayoutFileExplorerWidth          = "layout:fileexplorerwidth"
 
 	MetaKey_TermClear                        = "term:*"
 	MetaKey_TermFontSize                     = "term:fontsize"

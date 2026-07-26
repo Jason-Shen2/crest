@@ -4,7 +4,7 @@
 import * as jotai from "jotai";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { GitReviewSidebar } from "./git-panel";
+import { GitReviewSidebar, openCodeReviewGitDiff } from "./git-panel";
 
 const mockGitPanel = vi.hoisted(() => {
     const state = {
@@ -83,6 +83,7 @@ vi.mock("./git-model", async () => {
         loadingFilesAtom: jotaiActual.atom(new Set()),
         loadingAtom: jotaiActual.atom(false),
         errorAtom: jotaiActual.atom(null),
+        cwdAtom: jotaiActual.atom("/repo"),
         diffModeAtom: jotaiActual.atom("Head"),
         selectedFileAtom: jotaiActual.atom(null),
         fileSidebarCollapsedAtom: jotaiActual.atom(false),
@@ -124,6 +125,10 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
     };
 });
 
+vi.mock("@/app/workspace/top-tab-controller-context", () => ({
+    useWorkspaceTopTabController: () => ({ openGitDiff: vi.fn() }),
+}));
+
 describe("GitReviewSidebar right panel integration", () => {
     beforeEach(() => {
         const store = jotai.getDefaultStore();
@@ -140,6 +145,18 @@ describe("GitReviewSidebar right panel integration", () => {
             magnified: false,
         });
         vi.clearAllMocks();
+    });
+
+    it("opens a selected Code Review file through the Top Tab controller", () => {
+        const controller = { openGitDiff: vi.fn() };
+
+        openCodeReviewGitDiff(controller, "/repo", { path: "src/app.ts" }, "Head");
+
+        expect(controller.openGitDiff).toHaveBeenCalledWith({
+            repoRoot: "/repo",
+            path: "src/app.ts",
+            mode: "-",
+        });
     });
 
     it("does not render duplicate maximize or close buttons inside the code review header", () => {

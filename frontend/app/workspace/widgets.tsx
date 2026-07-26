@@ -3,6 +3,7 @@
 
 import { Tooltip } from "@/app/element/tooltip";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { sendWorkspaceCommand } from "@/app/store/workspace-command-client";
 import { useWaveEnv, WaveEnv, WaveEnvSubset } from "@/app/waveenv/waveenv";
 import { shouldIncludeWidgetForWorkspace } from "@/app/workspace/widgetfilter";
 import { modalsModel } from "@/store/modalmodel";
@@ -57,6 +58,33 @@ type WidgetPropsType = {
 
 async function handleWidgetSelect(widget: WidgetConfigType, env: WidgetsEnv) {
     const blockDef = widget.blockdef;
+    const view = blockDef?.meta?.view;
+    if (view === "web" && typeof blockDef.meta.url === "string") {
+        sendWorkspaceCommand({ type: "open-url", url: blockDef.meta.url });
+        return;
+    }
+    if (view === "preview" && typeof blockDef.meta.file === "string") {
+        sendWorkspaceCommand({ type: "open-preview", path: blockDef.meta.file });
+        return;
+    }
+    if (view === "codeeditor" && typeof blockDef.meta.file === "string") {
+        sendWorkspaceCommand({ type: "open-file", path: blockDef.meta.file });
+        return;
+    }
+    if (
+        view === "gitdiff" &&
+        typeof blockDef.meta["gitdiff:repo"] === "string" &&
+        typeof blockDef.meta["gitdiff:path"] === "string"
+    ) {
+        sendWorkspaceCommand({
+            type: "open-git-diff",
+            repoRoot: blockDef.meta["gitdiff:repo"],
+            path: blockDef.meta["gitdiff:path"],
+            mode: blockDef.meta["gitdiff:mode"] === "+" ? "+" : "-",
+            originalPath: blockDef.meta["gitdiff:originalpath"] as string,
+        });
+        return;
+    }
     env.createBlock(blockDef, widget.magnified);
 }
 

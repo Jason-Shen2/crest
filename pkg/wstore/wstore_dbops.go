@@ -273,11 +273,7 @@ func DBSelectMap[T waveobj.WaveObj](ctx context.Context, ids []string) (map[stri
 
 func DBDelete(ctx context.Context, otype string, id string) error {
 	err := WithTx(ctx, func(tx *TxWrap) error {
-		table := tableNameFromOType(otype)
-		query := fmt.Sprintf("DELETE FROM %s WHERE oid = ?", table)
-		tx.Exec(query, id)
-		waveobj.ContextAddUpdate(ctx, waveobj.WaveObjUpdate{UpdateType: waveobj.UpdateType_Delete, OType: otype, OID: id})
-		return nil
+		return DBDeleteInTxNoSideEffects(tx, otype, id)
 	})
 	if err != nil {
 		return err
@@ -295,6 +291,14 @@ func DBDelete(ctx context.Context, otype string, id string) error {
 			log.Printf("error deleting filestore zone (after deleting block): %v", err)
 		}
 	}()
+	return nil
+}
+
+func DBDeleteInTxNoSideEffects(tx *TxWrap, otype string, id string) error {
+	table := tableNameFromOType(otype)
+	query := fmt.Sprintf("DELETE FROM %s WHERE oid = ?", table)
+	tx.Exec(query, id)
+	waveobj.ContextAddUpdate(tx.Context(), waveobj.WaveObjUpdate{UpdateType: waveobj.UpdateType_Delete, OType: otype, OID: id})
 	return nil
 }
 

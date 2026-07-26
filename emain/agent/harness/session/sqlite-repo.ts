@@ -227,7 +227,66 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 	}
 
 	async delete(metadata: JsonlSessionMetadata): Promise<void> {
-		await fsp.rm(metadata.path, { force: true });
+		await this.stageDelete(metadata);
+	}
+
+	async stageDelete(metadata: JsonlSessionMetadata): Promise<JsonlSessionMetadata> {
+		return await this.moveToHiddenDirectory(metadata, ".trash");
+	}
+
+	async restoreMovedSession(metadata: JsonlSessionMetadata, originalPath: string): Promise<void> {
+		if (!(await pathExists(metadata.path))) {
+			throw new SessionError("not_found", `Session not found: ${metadata.path}`);
+		}
+		if (await pathExists(originalPath)) {
+			throw new SessionError("invalid_session", `Restore target already exists: ${originalPath}`);
+		}
+		await fsp.mkdir(path.dirname(originalPath), { recursive: true });
+		await fsp.rename(metadata.path, originalPath);
+		const movedDirectory = path.dirname(metadata.path);
+		if ([".archive", ".trash"].includes(path.basename(path.dirname(movedDirectory)))) {
+			try {
+				await fsp.rmdir(movedDirectory);
+			} catch {}
+		}
+	}
+
+	async rename(metadata: JsonlSessionMetadata, name: string): Promise<void> {
+		const session = await this.open(metadata);
+		try {
+			await session.appendSessionName(name);
+		} finally {
+			session.close();
+		}
+	}
+
+	async archive(metadata: JsonlSessionMetadata): Promise<JsonlSessionMetadata> {
+		return await this.moveToHiddenDirectory(metadata, ".archive");
+	}
+
+	private async moveToHiddenDirectory(
+		metadata: JsonlSessionMetadata,
+		directoryName: ".archive" | ".trash"
+	): Promise<JsonlSessionMetadata> {
+		if (!(await pathExists(metadata.path))) {
+			throw new SessionError("not_found", `Session not found: ${metadata.path}`);
+		}
+		const targetDir = path.join(path.dirname(metadata.path), directoryName);
+		await fsp.mkdir(targetDir, { recursive: true });
+		const uniqueDir = await fsp.mkdtemp(path.join(targetDir, `${path.basename(metadata.path)}-`));
+		const targetPath = path.join(uniqueDir, path.basename(metadata.path));
+		try {
+			await fsp.rename(metadata.path, targetPath);
+		} catch (error) {
+			try {
+				await fsp.rmdir(uniqueDir);
+			} catch {}
+			throw error;
+		}
+		return {
+			...metadata,
+			path: targetPath,
+		};
 	}
 
 	async fork(
@@ -235,7 +294,12 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 		options: JsonlSessionCreateOptions & { entryId?: string; position?: "before" | "at"; id?: string },
 	): Promise<Session<JsonlSessionMetadata>> {
 		const source = await this.open(sourceMetadata);
-		const forkedEntries = await getEntriesToFork(source.getStorage(), options);
+		let forkedEntries: SessionTreeEntry[];
+		try {
+			forkedEntries = await getEntriesToFork(source.getStorage(), options);
+		} finally {
+			source.close();
+		}
 		const id = options.id ?? createSessionId();
 		const createdAt = createTimestamp();
 		const sessionDir = this.getSessionDir(options.cwd);
@@ -245,8 +309,13 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 			sessionId: id,
 			parentSessionPath: options.parentSessionPath ?? sourceMetadata.path,
 		});
-		await appendCommittedEntryGroups(storage, forkedEntries);
-		return toSession(storage);
+		try {
+			await appendCommittedEntryGroups(storage, forkedEntries);
+			return toSession(storage);
+		} catch (error) {
+			storage.close();
+			throw error;
+		}
 	}
 
 	/**
@@ -305,8 +374,13 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 			sessionId: id,
 			parentSessionPath: sourceMetadata.parentSessionPath,
 		});
-		await appendCommittedEntryGroups(storage, entries);
-		return toSession(storage);
+		try {
+			await appendCommittedEntryGroups(storage, entries);
+			return toSession(storage);
+		} catch (error) {
+			storage.close();
+			throw error;
+		}
 	}
 
 	private async listSessionDirs(): Promise<string[]> {

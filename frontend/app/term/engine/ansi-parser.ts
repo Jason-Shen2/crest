@@ -104,6 +104,10 @@ export class AnsiParser {
         }
     }
 
+    flush(): void {
+        this.flushText();
+    }
+
     // reset — clear all in-flight state.  Useful when switching the active
     // block / handler in the middle of a sequence (rare but possible during
     // wps event re-ordering).

@@ -5,18 +5,16 @@
 // TerminalModel for this outer block, mounts the block list, and the input
 // bar.  Replaces the old `TermBlocksView` from view/termblocks/termblocks.tsx.
 
-import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { Icon } from "@/app/icon/Icon";
 import { globalStore } from "@/app/store/jotaiStore";
 import { CmdBlockInput } from "@/app/view/cmdblock/cmdblock-input";
 import { getApi, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import { cn } from "@/util/util";
 import { useAtomValue } from "jotai";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContextChipModel } from "../contextchip/chip-model";
 import { NLDModel } from "../nld";
 import { TerminalModel } from "../terminal-model";
-import type { AgentSurfaceContext } from "./agent-surface";
 import { BlockListElement } from "./block-list-element";
 import { FindBar } from "./find-bar";
 import { keyEventToBytes } from "./key-bindings";
@@ -39,14 +37,6 @@ export interface TerminalViewProps {
     // for `term:mode = "vdom"` where the whole pane becomes a single
     // VDom subblock instead of a shell.
     replaceContent?: React.ReactNode;
-    // Agent view passes its workspace-scoped surface. Pure terminal views omit it.
-    agentSurfaceComponent?: ComponentType<AgentSurfaceComponentProps>;
-}
-
-export interface AgentSurfaceComponentProps {
-    outerBlockId: string;
-    model: TerminalModel;
-    context: AgentSurfaceContext;
 }
 
 const BlockOutputHorizontalPaddingPx = 24;
@@ -155,7 +145,6 @@ export const TerminalView = memo(
         topSlot,
         overlaySlot,
         replaceContent,
-        agentSurfaceComponent: AgentSurfaceComponent,
     }: TerminalViewProps) => {
         const model = useTerminalModel(outerBlockId);
         const loading = useAtomValue(model.loadingAtom);
@@ -335,13 +324,6 @@ export const TerminalView = memo(
         const isRunning = liveBlock?.state === "running";
         const inAltScreen = terminalInputState.kind !== "input-editor";
 
-        // Project (Space) dir — anchors agent session context so all
-        // conversations in this Space group under the same sessions/{cwd}/.
-        const workspaceDir = useAtomValue(workspaceDirAtom);
-        // Recent commands feed the agent input's history affordances.
-        const recentCmds = useMemo(() => commandHistory.slice(-10), [commandHistory]);
-        // Connection string ("" = local) forwarded to the agent surface.
-        const liveConnection = connectionName || "";
         const rootRef = useRef<HTMLDivElement>(null);
 
         useEffect(() => {
@@ -624,13 +606,6 @@ export const TerminalView = memo(
             );
         }
 
-        const agentSurfaceContext: AgentSurfaceContext = {
-            workspaceDir,
-            liveGitBranch: liveBlock?.gitBranch ?? chipValues.gitBranch,
-            recentCmds,
-            liveConnection,
-            inAltScreen,
-        };
         const blocks = model.getBlocks().all();
         const blockCount = blocks.length;
         const hasRenderableTerminalBlocks = blocks.some(isRenderableTerminalBlock);
@@ -699,11 +674,7 @@ export const TerminalView = memo(
                         {error}
                     </div>
                 )}
-                {AgentSurfaceComponent ? (
-                    <AgentSurfaceComponent outerBlockId={outerBlockId} model={model} context={agentSurfaceContext} />
-                ) : (
-                    renderTerminalContent()
-                )}
+                {renderTerminalContent()}
                 {overlaySlot}
                 {notification && <TerminalNotification message={notification} />}
             </>

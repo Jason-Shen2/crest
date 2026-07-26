@@ -1116,12 +1116,6 @@ export class RpcApiType {
         return client.wshRpcCall("updatetabname", { args: [arg1, arg2] }, opts);
     }
 
-    // command "updateworkspacetabids" [call]
-    UpdateWorkspaceTabIdsCommand(client: WshClient, arg1: string, arg2: string[], opts?: RpcOpts): Promise<void> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "updateworkspacetabids", { args: [arg1, arg2] }, opts);
-        return client.wshRpcCall("updateworkspacetabids", { args: [arg1, arg2] }, opts);
-    }
-
     // command "vdomasyncinitiation" [call]
     VDomAsyncInitiationCommand(client: WshClient, data: VDomAsyncInitiationRequest, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "vdomasyncinitiation", data, opts);
@@ -1182,10 +1176,40 @@ export class RpcApiType {
         return client.wshRpcCall("webselector", data, opts);
     }
 
+    // command "workspacecloseterminal" [call]
+    WorkspaceCloseTerminalCommand(client: WshClient, data: WorkspaceTerminalData, opts?: RpcOpts): Promise<WorkspaceTerminalCheckpoint> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "workspacecloseterminal", data, opts);
+        return client.wshRpcCall("workspacecloseterminal", data, opts);
+    }
+
+    // command "workspacecreateterminal" [call]
+    WorkspaceCreateTerminalCommand(client: WshClient, data: WorkspaceCreateTerminalData, opts?: RpcOpts): Promise<WorkspaceTerminalCheckpoint> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "workspacecreateterminal", data, opts);
+        return client.wshRpcCall("workspacecreateterminal", data, opts);
+    }
+
     // command "workspacelist" [call]
     WorkspaceListCommand(client: WshClient, opts?: RpcOpts): Promise<WorkspaceInfoData[]> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "workspacelist", null, opts);
         return client.wshRpcCall("workspacelist", null, opts);
+    }
+
+    // command "workspacerenameterminal" [call]
+    WorkspaceRenameTerminalCommand(client: WshClient, data: WorkspaceRenameTerminalData, opts?: RpcOpts): Promise<void> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "workspacerenameterminal", data, opts);
+        return client.wshRpcCall("workspacerenameterminal", data, opts);
+    }
+
+    // command "workspacereorderterminals" [call]
+    WorkspaceReorderTerminalsCommand(client: WshClient, data: WorkspaceReorderTerminalsData, opts?: RpcOpts): Promise<WorkspaceTerminalCheckpoint> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "workspacereorderterminals", data, opts);
+        return client.wshRpcCall("workspacereorderterminals", data, opts);
+    }
+
+    // command "workspacesaveagentstate" [call]
+    WorkspaceSaveAgentStateCommand(client: WshClient, data: WorkspaceSaveAgentStateData, opts?: RpcOpts): Promise<WorkspaceAgentCheckpoint> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "workspacesaveagentstate", data, opts);
+        return client.wshRpcCall("workspacesaveagentstate", data, opts);
     }
 
     // command "writeappfile" [call]

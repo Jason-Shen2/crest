@@ -5,7 +5,15 @@ import { ClientService, ObjectService, WindowService, WorkspaceService } from "@
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { fireAndForget } from "@/util/util";
-import { BaseWindow, BaseWindowConstructorOptions, dialog, globalShortcut, ipcMain, screen, webContents } from "electron";
+import {
+    BaseWindow,
+    BaseWindowConstructorOptions,
+    dialog,
+    globalShortcut,
+    ipcMain,
+    screen,
+    webContents,
+} from "electron";
 import { globalEvents } from "emain/emain-events";
 import path from "path";
 import { debounce } from "throttle-debounce";
@@ -18,8 +26,31 @@ import {
 } from "./emain-activity";
 import { log } from "./emain-log";
 import { getElectronAppBasePath, isDev, unamePlatform } from "./emain-platform";
-import { getOrCreateWebViewForTab, getWaveTabViewByWebContentsId, WaveTabView } from "./emain-tabview";
+import { guardApplicationClose } from "./emain-quit-coordinator";
+import { resolveWaveRendererKind } from "./emain-renderer-identity";
+import { getOrCreateWebViewForTab, getWaveTabViewByWebContentsId, setWaveTabView, WaveTabView } from "./emain-tabview";
+import { TerminalRendererKindMismatchError, TerminalSurfaceController } from "./emain-terminal-surface";
 import { delay, ensureBoundsAreVisible, waveKeyToElectronKey } from "./emain-util";
+import { resolveWaveWindowByWebContentsId } from "./emain-window-sender";
+import { WorkspaceCloseHandshake } from "./emain-workspace-close-handshake";
+import {
+    applyWorkspaceSurface,
+    isWorkspaceSurfaceState,
+    makeTerminalMembershipValidator,
+    prepareWorkspaceSurface,
+} from "./emain-workspace-surface";
+import { runWorkspaceSwitchTransaction } from "./emain-workspace-switch-transaction";
+import {
+    getOrCreateWorkspaceView,
+    getWorkspaceViewByWebContentsId,
+    makeIdempotentWorkspaceViewCleanup,
+    positionWorkspaceView,
+    removeWorkspaceView,
+    runClosedWindowWorkspaceCleanup,
+    sendCurrentWorkspaceInit,
+    waitForWorkspaceViewInitialization,
+    WorkspaceView,
+} from "./emain-workspaceview";
 import { ElectronWshClient } from "./emain-wsh";
 import { updater } from "./updater";
 
@@ -121,27 +152,20 @@ async function getClientId() {
     return cachedClientId;
 }
 
-type WindowActionQueueEntry =
-    | {
-          op: "switchtab";
-          tabId: string;
-          setInBackend: boolean;
-          primaryStartupTab?: boolean;
-      }
-    | {
-          op: "createtab";
-      }
-    | {
-          op: "closetab";
-          tabId: string;
-      }
-    | {
-          op: "switchworkspace";
-          workspaceId: string;
-      };
+type WindowActionQueueEntry = {
+    op: "switchworkspace";
+    workspaceId: string;
+};
 
 function isNonEmptyUnsavedWorkspace(workspace: Workspace): boolean {
-    return !workspace.name && !workspace.icon && workspace.tabids?.length > 1;
+    return (
+        !workspace.name &&
+        !workspace.icon &&
+        ((workspace.contentstate.toptabs?.length ?? 0) > 0 ||
+            (workspace.terminaltabids?.length ?? 0) > 0 ||
+            workspace.agentstate?.activesession != null ||
+            workspace.agentstate?.selection != null)
+    );
 }
 
 export class WaveBrowserWindow extends BaseWindow {
@@ -149,9 +173,18 @@ export class WaveBrowserWindow extends BaseWindow {
     workspaceId: string;
     allLoadedTabViews: Map<string, WaveTabView>;
     activeTabView: WaveTabView;
+    workspaceView: WorkspaceView;
+    workspaceSurface: WorkspaceSurfaceState;
+    workspaceSurfaceRevision: number;
+    terminalSurfaceController: TerminalSurfaceController;
+    terminalMembership = makeTerminalMembershipValidator((workspaceId, terminalTabId) =>
+        WorkspaceService.ValidateWorkspaceTerminalTab(workspaceId, terminalTabId)
+    );
     private canClose: boolean;
     private deleteAllowed: boolean;
     private actionQueue: WindowActionQueueEntry[];
+    private cleanupChildViews: () => void;
+    workspaceCloseHandshake: WorkspaceCloseHandshake;
 
     constructor(waveWindow: WaveWindow, fullConfig: FullConfigType, opts: WindowOpts) {
         const settings = fullConfig?.settings;
@@ -227,7 +260,59 @@ export class WaveBrowserWindow extends BaseWindow {
         this.actionQueue = [];
         this.waveWindowId = waveWindow.oid;
         this.workspaceId = waveWindow.workspaceid;
+        this.workspaceSurface = {
+            kind: "agent",
+            workspaceId: this.workspaceId,
+            generation: 1,
+            revision: 1,
+            bounds: { x: 0, y: 0, width: 0, height: 0 },
+        };
+        this.workspaceSurfaceRevision = 0;
         this.allLoadedTabViews = new Map<string, WaveTabView>();
+        const workspaceInit: WorkspaceInitOpts = {
+            clientId: "",
+            windowId: this.waveWindowId,
+            workspaceId: this.workspaceId,
+            generation: 0,
+        };
+        this.workspaceView = getOrCreateWorkspaceView(this.waveWindowId, {
+            init: workspaceInit,
+            fullConfig,
+        });
+        positionWorkspaceView(this.workspaceView, this.getContentBounds());
+        this.contentView.addChildView(this.workspaceView);
+        this.terminalSurfaceController = new TerminalSurfaceController({
+            getCurrentIdentity: () => this.workspaceView.initOpts,
+            getView: (terminalTabId) => this.allLoadedTabViews.get(terminalTabId),
+            createView: async (terminalTabId) => {
+                const [view] = await getOrCreateWebViewForTab(this.waveWindowId, terminalTabId);
+                return view;
+            },
+            registerView: (view) => this.registerTerminalSurfaceView(view as WaveTabView),
+            disposeView: (view) => this.disposeTerminalSurfaceView(view as WaveTabView),
+            isTerminalView: (view) => (view as WaveTabView).savedInitOpts?.rendererKind === "terminal",
+            initializeView: (view) => this.initializeTab(view as WaveTabView, false, "terminal"),
+            getViews: () => this.allLoadedTabViews.values(),
+            showView: (view, bounds) => {
+                const tabView = view as WaveTabView;
+                if (this.activeTabView && this.activeTabView !== tabView) {
+                    this.activeTabView.isActiveTab = false;
+                }
+                tabView.isActiveTab = true;
+                this.activeTabView = tabView;
+                tabView.positionTabOnScreen(bounds);
+            },
+            hideView: (view) => {
+                const tabView = view as WaveTabView;
+                tabView.isActiveTab = false;
+                tabView.positionTabOffScreen(this.getContentBounds());
+            },
+            raiseView: (view) => this.contentView.addChildView(view as WaveTabView),
+            focusTerminal: (view) => this.focusTerminalView(view as WaveTabView),
+            focusWorkspace: () => this.focusWorkspaceView(),
+            emitStatus: (status) => this.sendTerminalSurfaceStatus(status),
+        });
+        this.cleanupChildViews = makeIdempotentWorkspaceViewCleanup(() => this.removeAllChildViews(true));
         const winBoundsPoller = setInterval(() => {
             if (this.isDestroyed()) {
                 clearInterval(winBoundsPoller);
@@ -247,7 +332,8 @@ export class WaveBrowserWindow extends BaseWindow {
             if (this.isDestroyed()) {
                 return;
             }
-            this.activeTabView?.positionTabOnScreen(this.getContentBounds());
+            positionWorkspaceView(this.workspaceView, this.getContentBounds());
+            this.finalizePositioning();
         });
         this.on(
             // @ts-expect-error -- "move" event with debounce handler not in Electron type definitions
@@ -260,14 +346,16 @@ export class WaveBrowserWindow extends BaseWindow {
             }
             console.log("enter-full-screen event", this.getContentBounds());
             this.broadcastFullScreenState(true);
-            this.activeTabView?.positionTabOnScreen(this.getContentBounds());
+            positionWorkspaceView(this.workspaceView, this.getContentBounds());
+            this.finalizePositioning();
         });
         this.on("leave-full-screen", async () => {
             if (this.isDestroyed()) {
                 return;
             }
             this.broadcastFullScreenState(false);
-            this.activeTabView?.positionTabOnScreen(this.getContentBounds());
+            positionWorkspaceView(this.workspaceView, this.getContentBounds());
+            this.finalizePositioning();
         });
         this.on("focus", () => {
             if (this.isDestroyed()) {
@@ -300,33 +388,47 @@ export class WaveBrowserWindow extends BaseWindow {
             }
             e.preventDefault();
             fireAndForget(async () => {
-                const numWindows = waveWindowMap.size;
-                const fullConfig = await RpcApi.GetFullConfigCommand(ElectronWshClient);
-                if (numWindows > 1 || !fullConfig.settings["window:savelastwindow"]) {
-                    if (fullConfig.settings["window:confirmclose"]) {
-                        const workspace = await WorkspaceService.GetWorkspace(this.workspaceId);
-                        if (isNonEmptyUnsavedWorkspace(workspace)) {
-                            const choice = dialog.showMessageBoxSync(this, {
-                                type: "question",
-                                buttons: ["Cancel", "Close Window"],
-                                title: "Confirm",
-                                message:
-                                    "Window has unsaved tabs, closing window will delete existing tabs.\n\nContinue?",
-                            });
-                            if (choice === 0) {
-                                return;
+                if (!(await this.requestWorkspaceClose("window"))) {
+                    return;
+                }
+                try {
+                    const numWindows = waveWindowMap.size;
+                    const fullConfig = await RpcApi.GetFullConfigCommand(ElectronWshClient);
+                    if (numWindows > 1 || !fullConfig.settings["window:savelastwindow"]) {
+                        if (fullConfig.settings["window:confirmclose"]) {
+                            const workspace = await WorkspaceService.GetWorkspace(this.workspaceId);
+                            if (isNonEmptyUnsavedWorkspace(workspace)) {
+                                const choice = dialog.showMessageBoxSync(this, {
+                                    type: "question",
+                                    buttons: ["Cancel", "Close Window"],
+                                    title: "Confirm",
+                                    message:
+                                        "Window has unsaved tabs, closing window will delete existing tabs.\n\nContinue?",
+                                });
+                                if (choice === 0) {
+                                    this.finalizeWorkspaceClose(false);
+                                    return;
+                                }
                             }
                         }
+                        this.deleteAllowed = true;
                     }
-                    this.deleteAllowed = true;
+                    this.finalizeWorkspaceClose(true);
+                    this.canClose = true;
+                    this.close();
+                } catch {
+                    this.finalizeWorkspaceClose(false);
                 }
-                this.canClose = true;
-                this.close();
             });
         });
         this.on("closed", () => {
             console.log("win 'closed' handler fired", this.waveWindowId);
-            if (getGlobalIsQuitting() || updater?.status == "installing") {
+            const continueNormalClose = runClosedWindowWorkspaceCleanup({
+                isQuitting: getGlobalIsQuitting(),
+                isUpdaterInstalling: updater?.status == "installing",
+                cleanup: this.cleanupChildViews,
+            });
+            if (!continueNormalClose) {
                 console.log("win quitting or updating", this.waveWindowId);
                 return;
             }
@@ -338,7 +440,6 @@ export class WaveBrowserWindow extends BaseWindow {
             if (quakeWindow == this) {
                 quakeWindow = null;
             }
-            this.removeAllChildViews();
             if (getGlobalIsRelaunching()) {
                 console.log("win relaunching", this.waveWindowId);
                 this.destroy();
@@ -371,13 +472,98 @@ export class WaveBrowserWindow extends BaseWindow {
         }
     }
 
-    private removeAllChildViews() {
+    private removeAllChildViews(includeWorkspace = false) {
         for (const tabView of this.allLoadedTabViews.values()) {
             if (!this.isDestroyed()) {
                 this.contentView.removeChildView(tabView);
             }
             tabView?.destroy();
         }
+        if (includeWorkspace) {
+            if (!this.isDestroyed()) {
+                this.contentView.removeChildView(this.workspaceView);
+            }
+            removeWorkspaceView(this.waveWindowId);
+        }
+    }
+
+    async initializeWorkspaceView(opts: { waitForWorkspaceReady: boolean }) {
+        const clientId = await getClientId();
+        this.workspaceView.updateWorkspace(clientId, this.workspaceId);
+        this.workspaceSurfaceRevision = 0;
+        this.terminalMembership.clear();
+        this.terminalSurfaceController.reset();
+        const readiness = await waitForWorkspaceViewInitialization(this.workspaceView, {
+            ...opts,
+            onInitReady: () => sendCurrentWorkspaceInit(this.workspaceView),
+        });
+        if (!readiness.initReady) {
+            console.log("workspace init timed out", this.waveWindowId);
+        } else if (opts.waitForWorkspaceReady && !readiness.workspaceReady) {
+            console.log("workspace ready timed out", this.waveWindowId);
+        }
+        return readiness;
+    }
+
+    focusTerminalView(tabView: WaveTabView) {
+        tabView.webContents.focus();
+        for (const delayMs of [10, 30]) {
+            setTimeout(() => {
+                if (
+                    !tabView.webContents?.isDestroyed() &&
+                    this.activeTabView === tabView &&
+                    !tabView.webContents.isFocused()
+                ) {
+                    tabView.webContents.focus();
+                }
+            }, delayMs);
+        }
+    }
+
+    focusWorkspaceView() {
+        if (this.activeTabView) {
+            this.activeTabView.isActiveTab = false;
+            this.activeTabView = null;
+        }
+        if (!this.workspaceView.webContents.isDestroyed()) {
+            this.workspaceView.webContents.focus();
+        }
+    }
+
+    sendTerminalSurfaceStatus(status: TerminalSurfaceStatus) {
+        const identity = this.workspaceView.initOpts;
+        if (
+            this.isDestroyed() ||
+            this.workspaceView.webContents.isDestroyed() ||
+            status.workspaceid !== identity.workspaceId ||
+            status.generation !== identity.generation
+        ) {
+            return;
+        }
+        this.workspaceView.webContents.send("terminal-surface-status", status);
+    }
+
+    disposeTerminalSurfaceView(tabView: WaveTabView) {
+        const replacement = this.allLoadedTabViews.get(tabView.waveTabId);
+        if (this.allLoadedTabViews.get(tabView.waveTabId) === tabView) {
+            this.allLoadedTabViews.delete(tabView.waveTabId);
+        }
+        try {
+            this.contentView.removeChildView(tabView);
+        } catch {
+            // The view may have completed creation without ever being attached.
+        }
+        if (!tabView.isDestroyed) {
+            tabView.destroy();
+        }
+        if (replacement && replacement !== tabView) {
+            setWaveTabView(replacement.waveTabId, replacement);
+        }
+    }
+
+    registerTerminalSurfaceView(tabView: WaveTabView) {
+        this.allLoadedTabViews.set(tabView.waveTabId, tabView);
+        setWaveTabView(tabView.waveTabId, tabView);
     }
 
     async switchWorkspace(workspaceId: string) {
@@ -403,25 +589,26 @@ export class WaveBrowserWindow extends BaseWindow {
         await this._queueActionInternal({ op: "switchworkspace", workspaceId });
     }
 
-    async setActiveTab(tabId: string, setInBackend: boolean, primaryStartupTab = false) {
-        console.log(
-            "setActiveTab",
-            tabId,
-            this.waveWindowId,
-            this.workspaceId,
-            setInBackend,
-            primaryStartupTab ? "(primary startup)" : ""
-        );
-        await this._queueActionInternal({ op: "switchtab", tabId, setInBackend, primaryStartupTab });
-    }
-
-    private async initializeTab(tabView: WaveTabView, primaryStartupTab: boolean) {
+    private async initializeTab(
+        tabView: WaveTabView,
+        primaryStartupTab: boolean,
+        requiredRendererKind?: WaveInitOpts["rendererKind"]
+    ) {
         const clientId = await getClientId();
+        const rendererKind = await resolveWaveRendererKind(
+            this.workspaceId,
+            tabView.waveTabId,
+            WorkspaceService.ValidateWorkspaceTerminalTab
+        );
+        if (requiredRendererKind && rendererKind !== requiredRendererKind) {
+            throw new TerminalRendererKindMismatchError(rendererKind);
+        }
         const initOpts: WaveInitOpts = {
             tabId: tabView.waveTabId,
             clientId: clientId,
             windowId: this.waveWindowId,
             activate: true,
+            rendererKind,
         };
         if (primaryStartupTab) {
             initOpts.primaryTabStartup = true;
@@ -439,8 +626,7 @@ export class WaveBrowserWindow extends BaseWindow {
         tabView.savedInitOpts.activate = false;
         delete tabView.savedInitOpts.primaryTabStartup;
         await this.awaitWithDevTimeout(tabView.initPromise, "initPromise", tabView.waveTabId);
-        const winBounds = this.getContentBounds();
-        tabView.setBounds({ x: 0, y: 0, width: winBounds.width, height: winBounds.height });
+        tabView.positionTabOffScreen(this.getContentBounds());
         this.contentView.addChildView(tabView);
         const startTime = Date.now();
         console.log(
@@ -479,53 +665,52 @@ export class WaveBrowserWindow extends BaseWindow {
         }
     }
 
-    private async setTabViewIntoWindow(tabView: WaveTabView, tabInitialized: boolean, primaryStartupTab = false) {
-        if (this.activeTabView == tabView) {
-            return;
-        }
-        const oldActiveView = this.activeTabView;
-        tabView.isActiveTab = true;
-        if (oldActiveView != null) {
-            oldActiveView.isActiveTab = false;
-        }
-        this.activeTabView = tabView;
-        this.allLoadedTabViews.set(tabView.waveTabId, tabView);
-        if (!tabInitialized) {
-            console.log("initializing a new tab", primaryStartupTab ? "(primary startup)" : "");
-            await this.initializeTab(tabView, primaryStartupTab);
-            this.finalizePositioning();
-        } else {
-            console.log("reusing an existing tab, calling wave-init", tabView.waveTabId);
-            tabView.webContents.send("wave-init", tabView.savedInitOpts); // reinit
-            this.finalizePositioning();
-        }
-
-        // something is causing the new tab to lose focus so it requires manual refocusing
-        tabView.webContents.focus();
-        setTimeout(() => {
-            if (tabView.webContents && this.activeTabView == tabView && !tabView.webContents.isFocused()) {
-                tabView.webContents.focus();
-            }
-        }, 10);
-        setTimeout(() => {
-            if (tabView.webContents && this.activeTabView == tabView && !tabView.webContents.isFocused()) {
-                tabView.webContents.focus();
-            }
-        }, 30);
-    }
-
     private finalizePositioning() {
         if (this.isDestroyed()) {
             return;
         }
-        const curBounds = this.getContentBounds();
-        this.activeTabView?.positionTabOnScreen(curBounds);
-        for (const tabView of this.allLoadedTabViews.values()) {
-            if (tabView == this.activeTabView) {
-                continue;
-            }
-            tabView?.positionTabOffScreen(curBounds);
+        applyWorkspaceSurface(
+            {
+                workspaceView: this.workspaceView,
+                activeTabView: this.activeTabView,
+                allLoadedTabViews: this.allLoadedTabViews,
+                bringToFront: (view) => this.contentView.addChildView(view as WaveTabView),
+            },
+            this.workspaceSurface,
+            this.getContentBounds()
+        );
+    }
+
+    async setWorkspaceSurface(surface: WorkspaceSurfaceState) {
+        const windowBounds = this.getContentBounds();
+        const prepared = await prepareWorkspaceSurface({
+            surface,
+            getCurrentIdentity: () => this.workspaceView.initOpts,
+            getLastRevision: () => this.workspaceSurfaceRevision,
+            zoomFactor: this.workspaceView.webContents.getZoomFactor?.() ?? 1,
+            windowBounds,
+            validateTerminalTab: (_workspaceId, terminalTabId) =>
+                this.terminalMembership.validate(this.workspaceView.initOpts, terminalTabId),
+        });
+        if (!prepared || prepared.revision <= this.workspaceSurfaceRevision) {
+            return;
         }
+        this.workspaceSurface = prepared.surface;
+        this.workspaceSurfaceRevision = prepared.revision;
+        await this.terminalSurfaceController.request(this.workspaceSurface);
+    }
+
+    requestWorkspaceClose(reason: WorkspaceCloseRequest["reason"]): Promise<boolean> {
+        this.workspaceCloseHandshake ??= new WorkspaceCloseHandshake(() => this.workspaceView?.webContents);
+        return this.workspaceCloseHandshake.request(reason);
+    }
+
+    resolveWorkspaceClose(senderId: number, response: WorkspaceCloseResponse): void {
+        this.workspaceCloseHandshake?.respond(senderId, response);
+    }
+
+    finalizeWorkspaceClose(commit: boolean): boolean {
+        return this.workspaceCloseHandshake?.finalize(commit) ?? false;
     }
 
     // Broadcasts fullscreen state to all loaded tab views. Each tab's renderer
@@ -537,14 +722,6 @@ export class WaveBrowserWindow extends BaseWindow {
                 tabView.webContents.send("fullscreen-change", isFullScreen);
             }
         }
-    }
-
-    async queueCreateTab() {
-        await this._queueActionInternal({ op: "createtab" });
-    }
-
-    async queueCloseTab(tabId: string) {
-        await this._queueActionInternal({ op: "closetab", tabId });
     }
 
     private async _queueActionInternal(entry: WindowActionQueueEntry) {
@@ -559,12 +736,6 @@ export class WaveBrowserWindow extends BaseWindow {
         }
     }
 
-    private removeTabViewLater(tabId: string, delayMs: number) {
-        setTimeout(() => {
-            this.removeTabView(tabId, false);
-        }, delayMs);
-    }
-
     // the queue and this function are used to serialize operations that update the window contents view
     // processActionQueue will replace [1] if it is already set
     // we don't mess with [0] because it is "in process"
@@ -576,64 +747,50 @@ export class WaveBrowserWindow extends BaseWindow {
                     break;
                 }
                 const entry = this.actionQueue[0];
-                let tabId: string = null;
-                // have to use "===" here to get the typechecker to work :/
                 switch (entry.op) {
-                    case "createtab":
-                        tabId = await WorkspaceService.CreateTab(this.workspaceId, null, true);
-                        break;
-                    case "switchtab":
-                        tabId = entry.tabId;
-                        if (this.activeTabView?.waveTabId == tabId) {
-                            continue;
-                        }
-                        if (entry.setInBackend) {
-                            await WorkspaceService.SetActiveTab(this.workspaceId, tabId);
-                        }
-                        break;
-                    case "closetab": {
-                        tabId = entry.tabId;
-                        const rtn = await WorkspaceService.CloseTab(this.workspaceId, tabId, true);
-                        if (rtn == null) {
-                            console.log(
-                                "[error] closeTab: no return value",
-                                tabId,
-                                this.workspaceId,
-                                this.waveWindowId
-                            );
-                            return;
-                        }
-                        this.removeTabViewLater(tabId, 1000);
-                        if (rtn.closewindow) {
-                            this.close();
-                            return;
-                        }
-                        if (!rtn.newactivetabid) {
-                            return;
-                        }
-                        tabId = rtn.newactivetabid;
-                        break;
-                    }
                     case "switchworkspace": {
-                        const newWs = await WindowService.SwitchWorkspace(this.waveWindowId, entry.workspaceId);
-                        if (!newWs) {
+                        if (!(await this.requestWorkspaceClose("workspace"))) {
                             return;
                         }
-                        console.log("processActionQueue switchworkspace newWs", newWs);
-                        this.removeAllChildViews();
-                        console.log("destroyed all tabs", this.waveWindowId);
-                        this.workspaceId = entry.workspaceId;
-                        this.allLoadedTabViews = new Map();
-                        tabId = newWs.activetabid;
+                        await runWorkspaceSwitchTransaction({
+                            oldWorkspaceId: this.workspaceId,
+                            newWorkspaceId: entry.workspaceId,
+                            switchBackend: async (workspaceId) =>
+                                Boolean(await WindowService.SwitchWorkspace(this.waveWindowId, workspaceId)),
+                            getBackendWorkspaceId: async () =>
+                                (await WindowService.GetWindow(this.waveWindowId)).workspaceid,
+                            initialize: async (workspaceId) => {
+                                this.workspaceId = workspaceId;
+                                const readiness = await this.initializeWorkspaceView({ waitForWorkspaceReady: true });
+                                return readiness.initReady && readiness.workspaceReady;
+                            },
+                            commitOldView: () => {
+                                this.terminalSurfaceController.reset();
+                                this.removeAllChildViews();
+                                this.allLoadedTabViews = new Map();
+                            },
+                            finalizePreparedClose: (commit) => this.finalizeWorkspaceClose(commit),
+                            enterFatal: (error, authoritativeWorkspaceId) => {
+                                if (authoritativeWorkspaceId) {
+                                    this.workspaceId = authoritativeWorkspaceId;
+                                    this.workspaceView.updateWorkspace(
+                                        this.workspaceView.initOpts.clientId,
+                                        authoritativeWorkspaceId
+                                    );
+                                }
+                                console.error("workspace switch entered fatal state", error);
+                                if (!this.workspaceView.webContents.isDestroyed()) {
+                                    this.workspaceView.webContents.send(
+                                        "workspace-init-fatal",
+                                        this.workspaceView.initOpts
+                                    );
+                                }
+                            },
+                        });
                         break;
                     }
                 }
-                if (tabId == null) {
-                    return;
-                }
-                const [tabView, tabInitialized] = await getOrCreateWebViewForTab(this.waveWindowId, tabId);
-                const primaryStartupTabFlag = entry.op === "switchtab" ? (entry.primaryStartupTab ?? false) : false;
-                await this.setTabViewIntoWindow(tabView, tabInitialized, primaryStartupTabFlag);
+                return;
             } catch (e) {
                 console.log("error caught in processActionQueue", e);
             } finally {
@@ -677,6 +834,8 @@ export class WaveBrowserWindow extends BaseWindow {
     destroy() {
         console.log("destroy win", this.waveWindowId);
         this.deleteAllowed = true;
+        this.terminalSurfaceController.destroy();
+        this.cleanupChildViews();
         super.destroy();
     }
 }
@@ -690,14 +849,12 @@ export function getWaveWindowByTabId(tabId: string): WaveBrowserWindow {
 }
 
 export function getWaveWindowByWebContentsId(webContentsId: number): WaveBrowserWindow {
-    if (webContentsId == null) {
-        return null;
-    }
-    const tabView = getWaveTabViewByWebContentsId(webContentsId);
-    if (tabView == null) {
-        return null;
-    }
-    return getWaveWindowByTabId(tabView.waveTabId);
+    return resolveWaveWindowByWebContentsId(webContentsId, {
+        getWaveTabViewByWebContentsId,
+        getWorkspaceViewByWebContentsId,
+        getWaveWindowByTabId,
+        getWaveWindowById,
+    });
 }
 
 export function getWaveWindowById(windowId: string): WaveBrowserWindow {
@@ -748,27 +905,16 @@ export async function createBrowserWindow(
     }
     console.log("createBrowserWindow", waveWindow.oid, workspace.oid, workspace);
     const bwin = new WaveBrowserWindow(waveWindow, fullConfig, opts);
-
-    if (workspace.activetabid) {
-        await bwin.setActiveTab(workspace.activetabid, false, opts.isPrimaryStartupWindow ?? false);
-    }
+    await bwin.initializeWorkspaceView({ waitForWorkspaceReady: true });
     return bwin;
 }
 
-ipcMain.on("set-active-tab", async (event, tabId) => {
-    const ww = getWaveWindowByWebContentsId(event.sender.id);
-    console.log("set-active-tab", tabId, ww?.waveWindowId);
-    await ww?.setActiveTab(tabId, true);
-});
-
-ipcMain.on("create-tab", async (event, _opts) => {
-    const senderWc = event.sender;
-    const ww = getWaveWindowByWebContentsId(senderWc.id);
-    if (ww != null) {
-        await ww.queueCreateTab();
+ipcMain.on("workspace-surface", async (event, surface: unknown) => {
+    const sourceWorkspaceView = getWorkspaceViewByWebContentsId(event.sender.id);
+    if (!sourceWorkspaceView || !isWorkspaceSurfaceState(surface)) {
+        return;
     }
-    event.returnValue = true;
-    return null;
+    await getWaveWindowById(sourceWorkspaceView.waveWindowId)?.setWorkspaceSurface(surface);
 });
 
 ipcMain.on("set-waveai-open", (event, isOpen: boolean) => {
@@ -776,29 +922,6 @@ ipcMain.on("set-waveai-open", (event, isOpen: boolean) => {
     if (tabView) {
         tabView.isWaveAIOpen = isOpen;
     }
-});
-
-ipcMain.handle("close-tab", async (event, workspaceId: string, tabId: string, confirmClose: boolean) => {
-    const ww = getWaveWindowByWorkspaceId(workspaceId);
-    if (ww == null) {
-        console.log(`close-tab: no window found for workspace ws=${workspaceId} tab=${tabId}`);
-        return false;
-    }
-    if (confirmClose) {
-        const choice = dialog.showMessageBoxSync(ww, {
-            type: "question",
-            defaultId: 1, // Enter activates "Close Tab"
-            cancelId: 0, // Esc activates "Cancel"
-            buttons: ["Cancel", "Close Tab"],
-            title: "Confirm",
-            message: "Are you sure you want to close this tab?",
-        });
-        if (choice === 0) {
-            return false;
-        }
-    }
-    await ww.queueCloseTab(tabId);
-    return true;
 });
 
 ipcMain.on("switch-workspace", (event, workspaceId) => {
@@ -900,7 +1023,11 @@ export async function createNewWaveWindow() {
     newBrowserWindow.show();
 }
 
-export async function relaunchBrowserWindows() {
+export async function relaunchBrowserWindows(): Promise<void> {
+    await guardApplicationClose("quit", relaunchBrowserWindowsAfterApproval);
+}
+
+async function relaunchBrowserWindowsAfterApproval(): Promise<void> {
     console.log("relaunchBrowserWindows");
     setGlobalIsRelaunching(true);
     const windows = getAllWaveWindows();

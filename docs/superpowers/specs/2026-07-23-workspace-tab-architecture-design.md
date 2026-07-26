@@ -1,6 +1,6 @@
 # Workspace 与 Tab 架构重构设计
 
-- 状态：已确认，进入分阶段实施
+- 状态：Phase 1 complete；Phase 2 automated implementation complete、runtime smoke pending；Phase 3 implemented；Phase 4A File/Preview/Git Diff automated implementation complete、runtime smoke pending，Browser Top Tab deferred
 - 日期：2026-07-23
 - 适用范围：Workspace、Agent、Terminal Tab、Top Tab、持久化与 renderer 生命周期
 
@@ -30,6 +30,8 @@ Terminal Tab 继续使用 Wave Tab、LayoutState、Block、controller、WPS/RPC 
 - 不保留 hidden Agent Tab 或 backing Agent Block。
 - 不保留新旧激活模型的兼容镜像。
 - 开发环境使用新 schema；旧本地 workspace 数据可重建。
+
+Workspace 使用持久化的 `tabdomainversion` 区分新旧数据域。版本 0 表示 legacy，可继续执行旧 starter Tab 自愈；版本 1 表示新架构，即使 `terminaltabids` 为空也不得创建 legacy Tab。所有新 Workspace 在窗口自愈和 onboarding 前写入版本 1。
 
 ## 2. 被取代的设计
 
@@ -154,19 +156,19 @@ Workspace Renderer 先加入 window content view；活动 Terminal Renderer 后�
 Workspace Renderer 初始化参数只包含 workspace/window 身份：
 
 ```ts
-interface WorkspaceRendererInit {
+interface WorkspaceInitOpts {
     clientId: string;
     windowId: string;
     workspaceId: string;
+    generation: number;
 }
 ```
 
 Workspace Renderer 不接收 `tabId`，也不创建 `staticTabId`。
 
-Workspace Renderer 使用 workspace/window scoped route，例如：
+Workspace Renderer 使用 workspace-scoped route：
 
 ```text
-window:<windowId>
 workspace:<workspaceId>
 ```
 
@@ -258,7 +260,7 @@ Terminal Renderer 位于 Workspace Renderer 之上时，Workspace DOM 不能直�
 
 ### 7.1 领域约束
 
-Wave Tab 从本设计开始只表示 Terminal 容器。
+由新 Terminal domain/API 创建并管理的 Wave Tab 只表示 Terminal 容器；历史混合 Wave Tab 保留为 legacy，等待后续阶段删除。
 
 允许：
 
@@ -378,8 +380,6 @@ Terminal 模式直接复用并专门化现有 `VTabBar` 实现，而不是另写
 - new、select、rename、close；
 - 拖拽排序和自动滚动；
 - context menu；
-- Tabs/Panes 显示模式；
-- Pane detail sidecar。
 
 替换：
 
@@ -388,6 +388,8 @@ Terminal 模式直接复用并专门化现有 `VTabBar` 实现，而不是另写
 - select/close/reorder 改为 Terminal 专属命令；
 - 删除 File、Browser、Diff、Agent 类型探测和跨类型逻辑；
 - 解除对旧 renderer `WaveEnv` 和 `env.electron.setActiveTab` 的依赖。
+
+Phase 2 首版仅提供 Terminal Tab 薄投影，不提供 Tabs/Panes 显示模式或 Pane detail sidecar。多 Pane、split、focus 和 magnify 能力继续由中央 Terminal Renderer 的 Layout 持有，不在左侧列表重复建模。
 
 点击 Terminal 行时：
 
@@ -545,7 +547,7 @@ File Tab 以 normalized absolute path 去重。
 - 首次激活时读取文件并创建 Monaco model；
 - 切走时保存 Monaco view state；
 - Monaco model 和 dirty buffer 由 workspace-level editor registry 持有；
-- React editor component 可卸载；
+- File editor 在当前 Workspace renderer session 首次激活后保留到 Tab close；重启只恢复 descriptor 和最后选择，不恢复 editor DOM。
 - 再次激活时恢复 model 和 view state；
 - 关闭 dirty 文件必须经过 Save / Discard / Cancel guard；
 - app close 同样检查 dirty 文件。
@@ -597,7 +599,7 @@ activeContent = { kind: "agent" };
 
 ### 10.2 UI 生命周期
 
-`AgentContent` 首次激活后保持挂载，切走时隐藏。
+`AgentContent` 首次激活后保持挂载，切走时由 `AgentContentSlot` 外层容器切换激活状态；`AgentContent` 根组件不接收 `visible` prop。
 
 保持挂载用于保留：
 
@@ -631,7 +633,7 @@ AgentContent
 
 切换到 File、Browser 或 Terminal：
 
-- `AgentContent` 可以 unsubscribe 当前可见流；
+- `AgentContentSlot` wrapper 负责隐藏和取消交互；
 - running session 继续执行；
 - canonical session event 继续写入 runtime/repository；
 - 返回 Agent 后通过 snapshot + subscription 恢复 UI。
@@ -835,6 +837,8 @@ Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦
 - Terminal cold `wave-ready` 时间；
 - renderer/WebContentsView 数量；
 - 1/5/10 个 File 或 Browser Tab 下的 RSS；
+
+以上长期 p50/p95、RSS 指标和 Electron manual smoke 均为 pending；当前自动化 tracing 与单元测试不构成这些验收项已完成的声明。
 - nested webview 创建和 LRU eviction 次数；
 - Terminal bounds update 到首个合成帧的时间；
 - focus retry、空白帧和 guest reload 事件。
@@ -867,7 +871,7 @@ Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦
 - `LeftPanelState.mode` 只有 `files`、`sessions`、`terminals` 之一。
 - TopBar 的 Files、Agent、Terminal 按钮能打开、切换和收起同一个左侧 Panel。
 - 三种左侧模式共享宽度，并从 workspace layout metadata 恢复。
-- `TerminalTabList` 保留搜索、拖拽排序、Tabs/Panes 模式和 Pane detail sidecar。
+- `TerminalTabList` 保留搜索、拖拽排序和 Terminal Tab 操作，不渲染 Pane detail sidecar。
 - `TerminalTabList` 不读取非 Terminal Tab，也不调用旧 `setActiveTab`。
 - Agent 固定入口不进入 Top Tab 排序/关闭。
 - File path 去重。
@@ -917,15 +921,26 @@ Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦
 
 ### Phase 1：Workspace Renderer 与当前内容模型
 
+状态：complete。
+
 - 新增 `WorkspaceRenderer` 和 `WorkspaceApp`；
 - 新增 `ActiveContent`、Top Tab model 和 snapshot 持久化；
 - Workspace 接管 TopBar、左右面板、全局 UI；
 - 暂时用 Terminal 占位区域验证 Workspace 生命周期；
 - 建立 window-level WorkspaceCommandRouter。
 
+实际实现名称：
+
+- checkpoint RPC：`WorkspaceService.SaveWorkspaceCheckpoint(SaveWorkspaceCheckpointData)`；
+- Workspace route：`makeWorkspaceRouteId(workspaceId)`，生成 `workspace:<workspaceId>`；
+- renderer 初始化：preload `onWorkspaceInit` 接收 `workspace-init`，前端入口为 `initWorkspace`；
+- renderer 初始化参数：`WorkspaceInitOpts`，使用 `generation` 隔离过期 ready/init 状态。
+
 验收：Agent/File/Browser 的轻量 mock 可在同一 Workspace 内切换，Workspace Renderer ID 不变。
 
 ### Phase 2：Terminal Renderer
+
+自动化实现与边界验证已完成；需按本文验收项完成 Electron runtime smoke 后再标记 Phase 2 complete。
 
 - 拆出 `TerminalApp`；
 - `WaveTabView` 收敛为 Terminal-only；
@@ -939,6 +954,7 @@ Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦
 
 ### Phase 3：Agent 完全去 Tab/Block 化
 
+- 当前状态：已实现。Agent 由 Workspace renderer 固定承载，session/model 状态归 `WorkspaceAgentModel` 与 Workspace `agentstate/agentrevision` 管理；legacy `view:"agent"` Tab/Block 创建、注册、探测和默认入口已 hard cut。
 - 将固定 Agent UI 移入 Workspace；
 - 完成 AgentContent 与 RuntimeRegistry 接线；
 - 新增 workspace-level AgentExecutionContext；
@@ -949,13 +965,12 @@ Terminal Renderer 的 10ms/30ms focus retry 不再承担 workspace chrome 的焦
 
 ### Phase 4：Top Tab 生产化与旧路径删除
 
-- File、Browser、Preview、Git Diff 迁入 Top Tab model；
-- 实现 Monaco model/view-state owner；
-- 实现 Browser LRU；
-- 重写 File Explorer、Browser、Diff 打开入口；
-- 删除旧 TabBar 类型 probe、非 Terminal `CreateTabWithBlock`、旧 open helper；
-- 删除旧 schema、兼容 fallback 和混合 Tab 路径；
-- 补齐性能 tracing 与回归测试。
+- 当前状态：File、Preview、Git Diff 已迁入生产 Top Tab model，并完成自动化 cutover gate；Electron runtime smoke 仍待人工验收。
+- File 已使用 Workspace-owned Monaco model/view-state owner；持久化只包含路径、顺序和选择，不包含 dirty buffer 或 view state。
+- Preview 与 Git Diff 使用 active-only 可重建 runtime，切离时卸载，重新激活时重载。
+- File Explorer、Preview 和 Diff 打开入口已改走 Workspace Top Tab controller；旧非 Terminal Wave Tab/Block/LayoutState 路径已删除。
+- development-only tracing 已覆盖 `top-tab-open`、`top-tab-activate`、`top-tab-first-content` 与 `workspace-checkpoint-error`，仅记录 kind、opaque ID 和 duration。
+- Browser Top Tab 与 Browser LRU 延后；URL launcher 继续打开右侧 Browser tool，不创建 Top Tab 或 Wave Tab。本文中的长期 Browser Top Tab/LRU 要求尚未完成。
 
 验收：主内容区不存在任何非 Terminal Wave Tab，重启恢复和资源上限符合本设计。
 

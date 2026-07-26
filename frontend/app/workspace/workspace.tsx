@@ -3,25 +3,23 @@
 
 import { ErrorBoundary } from "@/app/element/errorboundary";
 import { CenteredDiv } from "@/app/element/quickelems";
-import { FileExplorer } from "@/app/fileexplorer/file-explorer";
-import { AgentSessionsPanel } from "@/app/term/render/assistant-ui/agent-sessions-panel";
 import { ModalsRenderer } from "@/app/modals/modalsrenderer";
 import { NotificationToastStacker } from "@/app/notifications/notification-toast";
 import { NotificationsModel } from "@/app/notifications/notifications-model";
 import { StatusBar } from "@/app/statusbar/status-bar";
 import { FocusManager } from "@/app/store/focusManager";
 import { TabContent } from "@/app/tab/tabcontent";
-import { VTabBar } from "@/app/tab/vtabbar";
 import { TopBar } from "@/app/topbar/topbar";
 import { ResizeHandle } from "@/app/workspace/resize-handle";
 import { RightToolPanel, RightToolPanelMagnifiedOverlay } from "@/app/workspace/right-tool-panel";
 import { MinRightToolPanelWidth } from "@/app/workspace/right-tool-panel-state";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
-import { atoms, getSettingsKeyAtom, WOS } from "@/store/global";
+import { WorkspaceLeftPanel } from "@/app/workspace/workspace-left-panel";
+import { atoms } from "@/store/global";
 import { isMacOS } from "@/util/platformutil";
 import { useAtomValue } from "jotai";
-import type { PointerEvent } from "react";
-import { memo, useCallback, useEffect, useRef } from "react";
+import type { PointerEvent, ReactNode } from "react";
+import { memo, useCallback, useEffect } from "react";
 
 const RightToolPanelRootSelector = '[data-right-tool-panel-root="true"]';
 
@@ -38,21 +36,14 @@ export function shouldClearRightToolPanelFocusForTarget(target: EventTarget | nu
 }
 
 // Workspace layout — warp parity (see app/src/workspace/view.rs:19448
-// `render_panels`).  Left panels are absolute-px widths in a flex row;
-// when hidden they're absent from the row entirely (no collapse animation,
+// `render_panels`). The left panel has an absolute-px width in a flex row;
+// when hidden it's absent from the row entirely (no collapse animation,
 // no defaultSize negotiation).  The center "content" column is flex-1
 // so it absorbs all remaining space — warp uses `Shrinkable::new(1.0, ...)`
 // on the terminal_view for the same purpose (view.rs:19503).
-const WorkspaceElem = memo(() => {
+const WorkspaceElem = memo(({ terminalList }: { terminalList?: ReactNode }) => {
     const workspaceLayoutModel = WorkspaceLayoutModel.getInstance();
     const tabId = useAtomValue(atoms.staticTabId);
-    const tab = useAtomValue(WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tabId)));
-    const agentBlockId = tab?.blockids?.[0] ?? "";
-    const agentBlock = useAtomValue(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", agentBlockId)));
-    const agentSessionId =
-        agentBlock?.meta?.view === "agent" && agentBlock.meta["agent:session"]?.path
-            ? agentBlock.meta["agent:session"].path
-            : undefined;
     const ws = useAtomValue(atoms.workspace);
 
     useEffect(() => {
@@ -61,76 +52,34 @@ const WorkspaceElem = memo(() => {
         NotificationsModel.getInstance().ensureSubscribed();
     }, []);
 
-    const tabBarPosition = useAtomValue(getSettingsKeyAtom("app:tabbar")) ?? "top";
-    const showLeftTabBar = tabBarPosition === "left";
-    const vtabVisible = useAtomValue(workspaceLayoutModel.vtabVisibleAtom);
-    const fileExplorerVisible = useAtomValue(workspaceLayoutModel.fileExplorerVisibleAtom);
-    const sessionsPanelVisible = useAtomValue(workspaceLayoutModel.sessionsPanelVisibleAtom);
-    const agentTabId = useAtomValue(workspaceLayoutModel.agentTabIdAtom);
-    const leftPanelVisible = fileExplorerVisible || sessionsPanelVisible;
-    const vtabWidth = useAtomValue(workspaceLayoutModel.vtabWidthAtom);
-    const fileExplorerWidth = useAtomValue(workspaceLayoutModel.fileExplorerWidthAtom);
+    const hydratedLeftPanel = useAtomValue(workspaceLayoutModel.leftPanelAtom);
+    const leftPanel = workspaceLayoutModel.getLeftPanelStateForWorkspace(ws.oid, hydratedLeftPanel);
     const hydratedRightToolPanelState = useAtomValue(workspaceLayoutModel.rightToolPanelAtom);
     const rightToolPanelState = workspaceLayoutModel.getRightToolPanelStateForWorkspace(
         ws.oid,
         hydratedRightToolPanelState
     );
 
-    // VTab visibility derives from the tabbar-position setting — same
-    // semantics as the legacy model.  Setting persists at the app level;
-    // we mirror it into our visibility atom so the toolbar toggle (which
-    // also flips this atom) stays in sync.
     useEffect(() => {
-        workspaceLayoutModel.setVTabVisible(showLeftTabBar);
-    }, [showLeftTabBar, workspaceLayoutModel]);
-
-    useEffect(() => {
+        workspaceLayoutModel.hydrateLeftPanelFromWorkspace();
         workspaceLayoutModel.hydrateRightToolPanelFromWorkspace();
     }, [workspaceLayoutModel, ws.oid]);
 
-    const lastObservedActiveTabIdRef = useRef("");
-    useEffect(() => {
-        const activeTabId = ws.activetabid ?? "";
-        if (!activeTabId || lastObservedActiveTabIdRef.current === activeTabId) return;
-        lastObservedActiveTabIdRef.current = activeTabId;
-        if (activeTabId !== tabId) return;
-        if (activeTabId === agentTabId) {
-            workspaceLayoutModel.setSessionsPanelVisible(true);
-            return;
-        }
-        workspaceLayoutModel.setFileExplorerVisible(true);
-    }, [ws.activetabid, tabId, agentTabId, workspaceLayoutModel]);
-
-    // ResizeHandle reads `maxFn()` on every pointermove so a window
-    // resize mid-drag updates the bound (warp's `with_bounds_callback`).
-    // Each closure also captures the *other* panel's visibility/width so
-    // shrinking the FE doesn't let the VTab steal the budget.
-    // Sessions panel and FileExplorer share the same slot (mutually exclusive),
-    // so we treat them as one "left panel" for width calculations.
-    const vtabMaxFn = useCallback(
-        () => workspaceLayoutModel.getVTabMaxWidth(window.innerWidth, leftPanelVisible, fileExplorerWidth),
-        [workspaceLayoutModel, leftPanelVisible, fileExplorerWidth]
+    const leftPanelMaxFn = useCallback(
+        () => workspaceLayoutModel.getLeftPanelMaxWidth(window.innerWidth),
+        [workspaceLayoutModel]
     );
-    const fileExplorerMaxFn = useCallback(
-        () => workspaceLayoutModel.getFileExplorerMaxWidth(window.innerWidth, vtabVisible, vtabWidth),
-        [workspaceLayoutModel, vtabVisible, vtabWidth]
+    const onLeftPanelResize = useCallback(
+        (px: number) => workspaceLayoutModel.previewLeftPanelWidth(px),
+        [workspaceLayoutModel]
     );
-
-    const onVTabResize = useCallback((px: number) => workspaceLayoutModel.setVTabWidth(px), [workspaceLayoutModel]);
-    const onFileExplorerResize = useCallback(
-        (px: number) => workspaceLayoutModel.setFileExplorerWidth(px),
+    const onLeftPanelResizeEnd = useCallback(
+        (px: number) => workspaceLayoutModel.setLeftPanelWidth(px),
         [workspaceLayoutModel]
     );
     const rightToolPanelMaxFn = useCallback(
-        () =>
-            workspaceLayoutModel.getRightToolPanelMaxWidth(
-                window.innerWidth,
-                vtabVisible,
-                vtabWidth,
-                leftPanelVisible,
-                fileExplorerWidth
-            ),
-        [workspaceLayoutModel, vtabVisible, vtabWidth, leftPanelVisible, fileExplorerWidth]
+        () => workspaceLayoutModel.getRightToolPanelMaxWidth(window.innerWidth, leftPanel.visible, leftPanel.width),
+        [workspaceLayoutModel, leftPanel.visible, leftPanel.width]
     );
     const onRightToolPanelResize = useCallback(
         (px: number) => workspaceLayoutModel.previewRightToolPanelWidth(px),
@@ -144,20 +93,14 @@ const WorkspaceElem = memo(() => {
         () => workspaceLayoutModel.setRightToolPanelMagnified(!rightToolPanelState.magnified),
         [workspaceLayoutModel, rightToolPanelState.magnified]
     );
-    const onRightToolPanelFocus = useCallback(
-        () => {
-            FocusManager.getInstance().requestRightToolPanelFocus();
-            workspaceLayoutModel.setRightToolPanelFocused(true);
-        },
-        [workspaceLayoutModel]
-    );
-    const onMainWorkspaceFocus = useCallback(
-        () => {
-            FocusManager.getInstance().requestNodeFocus();
-            workspaceLayoutModel.setRightToolPanelFocused(false);
-        },
-        [workspaceLayoutModel]
-    );
+    const onRightToolPanelFocus = useCallback(() => {
+        FocusManager.getInstance().requestRightToolPanelFocus();
+        workspaceLayoutModel.setRightToolPanelFocused(true);
+    }, [workspaceLayoutModel]);
+    const onMainWorkspaceFocus = useCallback(() => {
+        FocusManager.getInstance().requestNodeFocus();
+        workspaceLayoutModel.setRightToolPanelFocused(false);
+    }, [workspaceLayoutModel]);
     const onWorkspaceChromePointerDownCapture = useCallback(
         (event: PointerEvent<HTMLDivElement>) => {
             if (!shouldClearRightToolPanelFocusForTarget(event.target)) return;
@@ -177,41 +120,23 @@ const WorkspaceElem = memo(() => {
             className="flex flex-col w-full flex-grow overflow-hidden"
             onPointerDownCapture={onWorkspaceChromePointerDownCapture}
         >
-            <TopBar
-                workspace={ws}
-                showTabs={!showLeftTabBar}
-                onPointerDownCapture={onWorkspaceChromePointerDownCapture}
-            />
+            <TopBar workspace={ws} onPointerDownCapture={onWorkspaceChromePointerDownCapture} />
             <div className="relative flex flex-row flex-grow overflow-hidden min-h-0">
-                {/* Left panel 1: vertical tab bar.  Absent from the
-                        flex row when hidden — warp pattern (view.rs:19466
-                        `if vertical_tabs_active { add child }`). */}
-                {vtabVisible && showLeftTabBar && (
+                {leftPanel.visible && (
                     <>
-                        <div className="shrink-0 h-full overflow-hidden" style={{ width: `${vtabWidth}px` }}>
-                            <VTabBar workspace={ws} />
+                        <div className="shrink-0 h-full overflow-hidden" style={{ width: `${leftPanel.width}px` }}>
+                            <WorkspaceLeftPanel
+                                mode={leftPanel.mode}
+                                terminalList={terminalList}
+                                layoutModel={workspaceLayoutModel}
+                            />
                         </div>
                         <ResizeHandle
-                            width={vtabWidth}
-                            min={workspaceLayoutModel.getVTabMinWidth()}
-                            maxFn={vtabMaxFn}
-                            onResize={onVTabResize}
-                            side="right"
-                        />
-                    </>
-                )}
-
-                {/* Left panel 2: sessions or file explorer (mutually exclusive, shared width). */}
-                {leftPanelVisible && (
-                    <>
-                        <div className="shrink-0 h-full overflow-hidden" style={{ width: `${fileExplorerWidth}px` }}>
-                            {tabId !== "" && (sessionsPanelVisible ? <AgentSessionsPanel /> : <FileExplorer />)}
-                        </div>
-                        <ResizeHandle
-                            width={fileExplorerWidth}
-                            min={workspaceLayoutModel.getFileExplorerMinWidth()}
-                            maxFn={fileExplorerMaxFn}
-                            onResize={onFileExplorerResize}
+                            width={leftPanel.width}
+                            min={workspaceLayoutModel.getLeftPanelMinWidth()}
+                            maxFn={leftPanelMaxFn}
+                            onResize={onLeftPanelResize}
+                            onResizeEnd={onLeftPanelResizeEnd}
                             side="right"
                         />
                     </>
@@ -230,7 +155,7 @@ const WorkspaceElem = memo(() => {
                                     <TabContent
                                         key={tabId}
                                         tabId={tabId}
-                                        noTopPadding={showLeftTabBar && isMacOS()}
+                                        noTopPadding={isMacOS()}
                                         onFocusCapture={onMainWorkspaceFocus}
                                     />
                                 </div>
@@ -252,7 +177,7 @@ const WorkspaceElem = memo(() => {
                         ) : null}
                         <RightToolPanel
                             state={rightToolPanelState}
-                            sessionId={agentSessionId}
+                            sessionId={undefined}
                             onOpenTool={(tool) => workspaceLayoutModel.openRightTool(tool)}
                             onSelectTool={(tool) => workspaceLayoutModel.selectRightTool(tool)}
                             onCloseTool={(tool) => workspaceLayoutModel.closeRightTool(tool)}
@@ -262,10 +187,7 @@ const WorkspaceElem = memo(() => {
                         />
                     </>
                 ) : null}
-                <RightToolPanelMagnifiedOverlay
-                    state={rightToolPanelState}
-                    onExit={onRightToolPanelExitMagnified}
-                />
+                <RightToolPanelMagnifiedOverlay state={rightToolPanelState} onExit={onRightToolPanelExitMagnified} />
                 <ModalsRenderer />
             </div>
             <NotificationToastStacker />

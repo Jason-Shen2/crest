@@ -4,12 +4,14 @@
 import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { Icon } from "@/app/icon/Icon";
+import { useWorkspaceTopTabController } from "@/app/workspace/top-tab-controller-context";
 import { cn } from "@/util/util";
 import { useAtom, useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { SourceControlFileEntry, SourceControlModel } from "./source-control-model";
 import { CommitGraphPanel } from "./commit-graph-panel";
+import type { OpenGitDiffTabInput } from "./open-git-diff-tab";
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
@@ -579,6 +581,7 @@ function DiscardDialog({
 
 export const SourceControlPanel = memo(function SourceControlPanel() {
     const model = SourceControlModel.getInstance();
+    const topTabController = useWorkspaceTopTabController();
     const panelState = useAtomValue(model.panelstateAtom);
     const repo = useAtomValue(model.repoAtom);
     const status = useAtomValue(model.statusAtom);
@@ -591,6 +594,15 @@ export const SourceControlPanel = memo(function SourceControlPanel() {
     const selectedPath = useAtomValue(model.selectedpathAtom);
 	const [view, setView] = useAtom(model.viewAtom);
     const focusedCwd = useAtomValue(workspaceDirAtom);
+    const workspaceActions = useMemo(
+        () => ({
+            openGitDiff: (input: OpenGitDiffTabInput) =>
+                void topTabController.openGitDiff({ ...input, originalPath: input.originalPath ?? undefined }),
+        }),
+        [topTabController]
+    );
+
+    useEffect(() => model.bindWorkspaceActions(workspaceActions), [model, workspaceActions]);
 
     useEffect(() => {
         model.syncCwd();

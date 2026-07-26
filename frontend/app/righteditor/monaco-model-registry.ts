@@ -23,6 +23,8 @@ export class MonacoModelRegistry {
         return MonacoModelRegistry.instance;
     }
 
+    constructor() {}
+
     getOrCreateModel(input: ModelInput): monaco.editor.ITextModel {
         loadMonaco();
         const uri = monaco.Uri.parse(input.uri);

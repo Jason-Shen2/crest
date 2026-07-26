@@ -19,6 +19,11 @@ import (
 	"github.com/s-zx/crest/pkg/wps"
 )
 
+const (
+	WorkspaceCheckpointSaveStatusCommitted = "committed"
+	WorkspaceCheckpointSaveStatusConflict  = "conflict"
+)
+
 type RespOrErrorUnion[T any] struct {
 	Response T
 	Error    error
@@ -95,7 +100,6 @@ type WshRpcInterface interface {
 	GetTabCommand(ctx context.Context, tabId string) (*waveobj.Tab, error)
 	UpdateTabNameCommand(ctx context.Context, tabId string, newName string) error
 	ResetTabNameCommand(ctx context.Context, tabId string, resetName string) error
-	UpdateWorkspaceTabIdsCommand(ctx context.Context, workspaceId string, tabIds []string) error
 	GetAllBadgesCommand(ctx context.Context) ([]baseds.BadgeEvent, error)
 	GetCmdBlocksCommand(ctx context.Context, data CommandGetCmdBlocksData) ([]*cbtypes.CmdBlock, error)
 	AppendAgentRunCommand(ctx context.Context, data CommandAppendAgentRunData) (*cbtypes.CmdBlock, error)
@@ -177,6 +181,11 @@ type WshRpcInterface interface {
 
 	WorkspaceListCommand(ctx context.Context) ([]WorkspaceInfoData, error)
 	CreateWorkspaceCommand(ctx context.Context, data CreateWorkspaceData) (string, error)
+	WorkspaceCreateTerminalCommand(ctx context.Context, data WorkspaceCreateTerminalData) (*WorkspaceTerminalCheckpoint, error)
+	WorkspaceRenameTerminalCommand(ctx context.Context, data WorkspaceRenameTerminalData) error
+	WorkspaceCloseTerminalCommand(ctx context.Context, data WorkspaceTerminalData) (*WorkspaceTerminalCheckpoint, error)
+	WorkspaceReorderTerminalsCommand(ctx context.Context, data WorkspaceReorderTerminalsData) (*WorkspaceTerminalCheckpoint, error)
+	WorkspaceSaveAgentStateCommand(ctx context.Context, data WorkspaceSaveAgentStateData) (*WorkspaceAgentCheckpoint, error)
 	GetUpdateChannelCommand(ctx context.Context) (string, error)
 
 	// terminal
@@ -237,6 +246,52 @@ type WshRpcInterface interface {
 	JobControllerDetachJobCommand(ctx context.Context, jobId string) error
 	JobControllerGetAllJobManagerStatusCommand(ctx context.Context) ([]*JobManagerStatusUpdate, error)
 	BlockJobStatusCommand(ctx context.Context, blockId string) (*BlockJobStatusData, error)
+}
+
+type WorkspaceCreateTerminalData struct {
+	WorkspaceId      string `json:"workspaceid"`
+	ExpectedRevision int64  `json:"expectedrevision"`
+	Name             string `json:"name,omitempty"`
+	Connection       string `json:"connection,omitempty"`
+	Cwd              string `json:"cwd,omitempty"`
+}
+
+type WorkspaceRenameTerminalData struct {
+	WorkspaceId   string `json:"workspaceid"`
+	TerminalTabId string `json:"terminaltabid"`
+	Name          string `json:"name"`
+}
+
+type WorkspaceTerminalData struct {
+	WorkspaceId      string `json:"workspaceid"`
+	TerminalTabId    string `json:"terminaltabid"`
+	ExpectedRevision int64  `json:"expectedrevision"`
+}
+
+type WorkspaceReorderTerminalsData struct {
+	WorkspaceId      string   `json:"workspaceid"`
+	TerminalTabIds   []string `json:"terminaltabids"`
+	ExpectedRevision int64    `json:"expectedrevision"`
+}
+
+type WorkspaceTerminalCheckpoint struct {
+	WorkspaceId         string                        `json:"workspaceid"`
+	NavigationRevision  int64                         `json:"navigationrevision"`
+	TerminalTabIds      []string                      `json:"terminaltabids"`
+	ContentState        waveobj.WorkspaceContentState `json:"contentstate"`
+	ActiveTerminalTabId string                        `json:"activeterminaltabid,omitempty"`
+}
+
+type WorkspaceSaveAgentStateData struct {
+	WorkspaceId      string                      `json:"workspaceid"`
+	ExpectedRevision int64                       `json:"expectedrevision"`
+	State            waveobj.WorkspaceAgentState `json:"state"`
+}
+
+type WorkspaceAgentCheckpoint struct {
+	WorkspaceId string                      `json:"workspaceid"`
+	Revision    int64                       `json:"revision"`
+	State       waveobj.WorkspaceAgentState `json:"state"`
 }
 
 // for frontend
@@ -824,6 +879,13 @@ type PathCommandData struct {
 	Open         bool   `json:"open"`
 	OpenExternal bool   `json:"openexternal"`
 	TabId        string `json:"tabid"`
+}
+
+type WorkspaceOpenContentEvent struct {
+	WorkspaceId string `json:"workspaceid"`
+	Kind        string `json:"kind"`
+	Path        string `json:"path"`
+	RequestId   string `json:"requestid"`
 }
 
 type ActivityDisplayType struct {

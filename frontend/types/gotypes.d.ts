@@ -13,6 +13,13 @@ declare global {
         defaultPosture?: string;
     };
 
+    // waveobj.ActiveContent
+    type ActiveContent = {
+        kind: string;
+        terminaltabid?: string;
+        toptabid?: string;
+    };
+
     // wshrpc.ActivityDisplayType
     type ActivityDisplayType = {
         width: number;
@@ -221,12 +228,6 @@ declare global {
         hasoldhistory?: boolean;
         tempoid?: string;
         installid?: string;
-    };
-
-    // workspaceservice.CloseTabRtnType
-    type CloseTabRtnType = {
-        closewindow?: boolean;
-        newactivetabid?: string;
     };
 
     // cbtypes.CmdBlock
@@ -1386,6 +1387,13 @@ declare global {
         blockid: string;
     };
 
+    // waveobj.LeftPanelState
+    type LeftPanelState = {
+        visible: boolean;
+        mode: string;
+        width: number;
+    };
+
     // wconfig.MCPServerConfig
     type MCPServerConfig = {
         command?: string;
@@ -1474,10 +1482,8 @@ declare global {
         "bg:bordercolor"?: string;
         "bg:activebordercolor"?: string;
         "workspace:dir"?: string;
-        "layout:vtabbarwidth"?: number;
+        "layout:leftpanel"?: LeftPanelState;
         "layout:widgetsvisible"?: boolean;
-        "layout:fileexplorervisible"?: boolean;
-        "layout:fileexplorerwidth"?: number;
         "term:*"?: boolean;
         "term:fontsize"?: number;
         "term:fontfamily"?: string;
@@ -1665,6 +1671,27 @@ declare global {
     type RuntimeOpts = {
         termsize?: TermSize;
         winsize?: WinSize;
+    };
+
+    // workspaceservice.SaveWorkspaceAgentStateData
+    type SaveWorkspaceAgentStateData = {
+        workspaceid: string;
+        expectedrevision: number;
+        state: WorkspaceAgentState;
+    };
+
+    // workspaceservice.SaveWorkspaceCheckpointData
+    type SaveWorkspaceCheckpointData = {
+        workspaceid: string;
+        expectedrevision: number;
+        contentstate: WorkspaceContentState;
+        activeterminaltabid?: string;
+    };
+
+    // workspaceservice.SaveWorkspaceCheckpointResult
+    type SaveWorkspaceCheckpointResult = {
+        status: string;
+        checkpoint: WorkspaceCheckpoint;
     };
 
     // wshrpc.SecretMeta
@@ -2016,10 +2043,51 @@ declare global {
         details?: string;
     };
 
+    // workspaceservice.TerminalTabCreateData
+    type TerminalTabCreateData = {
+        workspaceid: string;
+        expectedrevision: number;
+        name?: string;
+        connection?: string;
+        cwd?: string;
+    };
+
+    // workspaceservice.TerminalTabMutationData
+    type TerminalTabMutationData = {
+        workspaceid: string;
+        terminaltabid: string;
+        expectedrevision: number;
+    };
+
+    // workspaceservice.TerminalTabRenameData
+    type TerminalTabRenameData = {
+        workspaceid: string;
+        terminaltabid: string;
+        name: string;
+    };
+
+    // workspaceservice.TerminalTabReorderData
+    type TerminalTabReorderData = {
+        workspaceid: string;
+        terminaltabids: string[];
+        expectedrevision: number;
+    };
+
     // wshrpc.TimeSeriesData
     type TimeSeriesData = {
         ts: number;
         values: {[key: string]: number};
+    };
+
+    // waveobj.TopTabDescriptor
+    type TopTabDescriptor = {
+        id: string;
+        kind: string;
+        path?: string;
+        title: string;
+        reporoot?: string;
+        mode?: string;
+        originalpath?: string;
     };
 
     // waveobj.UIContext
@@ -2432,6 +2500,59 @@ declare global {
         color?: string;
         tabids: string[];
         activetabid: string;
+        tabdomainversion?: number;
+        terminaltabids?: string[];
+        contentstate: WorkspaceContentState;
+        activeterminaltabid?: string;
+        navigationrevision: number;
+        agentstate: WorkspaceAgentState;
+        agentrevision?: number;
+    };
+
+    // wshrpc.WorkspaceAgentCheckpoint
+    type WorkspaceAgentCheckpoint = {
+        workspaceid: string;
+        revision: number;
+        state: WorkspaceAgentState;
+    };
+
+    // waveobj.WorkspaceAgentState
+    type WorkspaceAgentState = {
+        activesession?: AgentSessionMeta;
+        selection?: AgentSelectionMeta;
+        preferredterminaltabid?: string;
+    };
+
+    // workspaceservice.WorkspaceAgentStateCheckpoint
+    type WorkspaceAgentStateCheckpoint = {
+        workspaceid: string;
+        revision: number;
+        state: WorkspaceAgentState;
+    };
+
+    // workspaceservice.WorkspaceCheckpoint
+    type WorkspaceCheckpoint = {
+        workspaceid: string;
+        navigationrevision: number;
+        terminaltabids: string[];
+        contentstate: WorkspaceContentState;
+        activeterminaltabid?: string;
+    };
+
+    // waveobj.WorkspaceContentState
+    type WorkspaceContentState = {
+        activecontent: ActiveContent;
+        toptabs: TopTabDescriptor[];
+        lastactivetoptabid?: string;
+    };
+
+    // wshrpc.WorkspaceCreateTerminalData
+    type WorkspaceCreateTerminalData = {
+        workspaceid: string;
+        expectedrevision: number;
+        name?: string;
+        connection?: string;
+        cwd?: string;
     };
 
     // wshrpc.WorkspaceInfoData
@@ -2444,6 +2565,51 @@ declare global {
     type WorkspaceListEntry = {
         workspaceid: string;
         windowid: string;
+    };
+
+    // wshrpc.WorkspaceOpenContentEvent
+    type WorkspaceOpenContentEvent = {
+        workspaceid: string;
+        kind: string;
+        path: string;
+        requestid: string;
+    };
+
+    // wshrpc.WorkspaceRenameTerminalData
+    type WorkspaceRenameTerminalData = {
+        workspaceid: string;
+        terminaltabid: string;
+        name: string;
+    };
+
+    // wshrpc.WorkspaceReorderTerminalsData
+    type WorkspaceReorderTerminalsData = {
+        workspaceid: string;
+        terminaltabids: string[];
+        expectedrevision: number;
+    };
+
+    // wshrpc.WorkspaceSaveAgentStateData
+    type WorkspaceSaveAgentStateData = {
+        workspaceid: string;
+        expectedrevision: number;
+        state: WorkspaceAgentState;
+    };
+
+    // wshrpc.WorkspaceTerminalCheckpoint
+    type WorkspaceTerminalCheckpoint = {
+        workspaceid: string;
+        navigationrevision: number;
+        terminaltabids: string[];
+        contentstate: WorkspaceContentState;
+        activeterminaltabid?: string;
+    };
+
+    // wshrpc.WorkspaceTerminalData
+    type WorkspaceTerminalData = {
+        workspaceid: string;
+        terminaltabid: string;
+        expectedrevision: number;
     };
 
     // wshrpc.WshServerCommandMeta

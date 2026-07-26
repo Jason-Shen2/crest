@@ -7,31 +7,30 @@ import { setWaveWindowType } from "./windowtype";
 import * as WOS from "./wos";
 
 let atoms!: GlobalAtomsType;
+let globalAtomListenersInitialized = false;
+let reducedMotionQuery: MediaQueryList = null;
+let reducedMotionSystemPreferenceAtomRef: PrimitiveAtom<boolean> = null;
 const blockComponentModelMap = new Map<string, BlockComponentModel>();
 const ConnStatusMapAtom = atom(new Map<string, PrimitiveAtom<ConnStatus>>());
 const orefAtomCache = new Map<string, Map<string, Atom<any>>>();
 
 function initGlobalAtoms(initOpts: GlobalInitOptions) {
+    validateRendererIdentity(initOpts);
     const windowIdAtom = atom(initOpts.windowId) as PrimitiveAtom<string>;
-    const builderIdAtom = atom(initOpts.builderId) as PrimitiveAtom<string>;
+    const builderIdAtom = atom(
+        initOpts.rendererKind === "builder" ? initOpts.builderId : null
+    ) as PrimitiveAtom<string>;
     const builderAppIdAtom = atom<string>(null) as PrimitiveAtom<string>;
-    setWaveWindowType(initOpts.isPreview ? "preview" : initOpts.builderId != null ? "builder" : "tab");
+    setWaveWindowType(initOpts.rendererKind === "terminal" ? "tab" : initOpts.rendererKind);
     const uiContextAtom = atom((get) => {
         const uiContext: UIContext = {
             windowid: initOpts.windowId,
-            activetabid: initOpts.tabId,
+            activetabid: initOpts.rendererKind === "terminal" ? initOpts.tabId : null,
         };
         return uiContext;
     }) as Atom<UIContext>;
 
     const isFullScreenAtom = atom(false) as PrimitiveAtom<boolean>;
-    try {
-        getApi().onFullScreenChange((isFullScreen) => {
-            globalStore.set(isFullScreenAtom, isFullScreen);
-        });
-    } catch (e) {
-        console.log("failed to subscribe to isFullScreen changes", e);
-    }
     try {
         const initial = getApi().getIsFullScreen?.();
         if (typeof initial === "boolean") {
@@ -44,17 +43,19 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
     const zoomFactorAtom = atom(1.0) as PrimitiveAtom<number>;
     try {
         globalStore.set(zoomFactorAtom, getApi().getZoomFactor());
-        getApi().onZoomFactorChange((zoomFactor) => {
-            globalStore.set(zoomFactorAtom, zoomFactor);
-        });
     } catch (e) {
         console.log("failed to initialize zoomFactorAtom", e);
     }
 
-    const workspaceIdAtom: Atom<string> = atom((get) => {
-        const windowData = WOS.getObjectValue<WaveWindow>(WOS.makeORef("window", get(windowIdAtom)), get);
-        return windowData?.workspaceid ?? null;
-    });
+    const workspaceIdAtom: Atom<string> =
+        initOpts.rendererKind === "workspace"
+            ? atom(initOpts.workspaceId)
+            : atom((get) => {
+                  const windowData = WOS.getObjectValue<WaveWindow>(WOS.makeORef("window", get(windowIdAtom)), get);
+                  return windowData?.workspaceid ?? null;
+              });
+    const workspaceGenerationAtom: Atom<number> =
+        initOpts.rendererKind === "workspace" ? atom(initOpts.generation ?? 1) : atom(0);
     const workspaceAtom: Atom<Workspace> = atom((get) => {
         const workspaceId = get(workspaceIdAtom);
         if (workspaceId == null) {
@@ -71,20 +72,18 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
         return fullConfig?.configerrors != null && fullConfig.configerrors.length > 0;
     }) as Atom<boolean>;
     // this is *the* tab that this tabview represents.  it should never change.
-    const staticTabIdAtom: Atom<string> = atom(initOpts.tabId);
+    const staticTabIdAtom: Atom<string> = initOpts.rendererKind === "terminal" ? atom(initOpts.tabId) : null;
     const controlShiftDelayAtom = atom(false);
     const updaterStatusAtom = atom<UpdaterStatus>("up-to-date") as PrimitiveAtom<UpdaterStatus>;
     try {
         globalStore.set(updaterStatusAtom, getApi().getUpdaterStatus());
-        getApi().onUpdaterStatusChange((status) => {
-            globalStore.set(updaterStatusAtom, status);
-        });
     } catch (e) {
         console.log("failed to initialize updaterStatusAtom", e);
     }
 
     const reducedMotionSettingAtom = atom((get) => get(settingsAtom)?.["window:reducedmotion"]);
     const reducedMotionSystemPreferenceAtom = atom(false);
+    reducedMotionSystemPreferenceAtomRef = reducedMotionSystemPreferenceAtom;
 
     // Composite of the prefers-reduced-motion media query and the window:reducedmotion user setting.
     const prefersReducedMotionAtom = atom((get) => {
@@ -93,25 +92,7 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
         return reducedMotionSetting || reducedMotionSystemPreference;
     });
 
-    // Set up a handler for changes to the prefers-reduced-motion media query.
-    if (globalThis.window != null) {
-        const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-        globalStore.set(reducedMotionSystemPreferenceAtom, !reducedMotionQuery || reducedMotionQuery.matches);
-        reducedMotionQuery?.addEventListener("change", () => {
-            globalStore.set(reducedMotionSystemPreferenceAtom, reducedMotionQuery.matches);
-        });
-    }
-
     const documentHasFocusAtom = atom(true) as PrimitiveAtom<boolean>;
-    if (globalThis.window != null) {
-        globalStore.set(documentHasFocusAtom, document.hasFocus());
-        window.addEventListener("focus", () => {
-            globalStore.set(documentHasFocusAtom, true);
-        });
-        window.addEventListener("blur", () => {
-            globalStore.set(documentHasFocusAtom, false);
-        });
-    }
 
     const modalOpen = atom(false);
     const allConnStatusAtom = atom<ConnStatus[]>((get) => {
@@ -126,11 +107,12 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
         builderAppId: builderAppIdAtom,
         uiContext: uiContextAtom,
         workspaceId: workspaceIdAtom,
+        workspaceGeneration: workspaceGenerationAtom,
         workspace: workspaceAtom,
         fullConfigAtom,
         settingsAtom,
         hasConfigErrors,
-        staticTabId: staticTabIdAtom,
+        ...(staticTabIdAtom == null ? {} : { staticTabId: staticTabIdAtom }),
         isFullScreen: isFullScreenAtom,
         zoomFactorAtom,
         controlShiftDelayAtom,
@@ -141,6 +123,77 @@ function initGlobalAtoms(initOpts: GlobalInitOptions) {
         allConnStatus: allConnStatusAtom,
         reinitVersion,
     } as GlobalAtomsType;
+    initializeGlobalAtomListeners();
+    if (globalThis.window != null) {
+        globalStore.set(reducedMotionSystemPreferenceAtom, !reducedMotionQuery || reducedMotionQuery.matches);
+        globalStore.set(documentHasFocusAtom, document.hasFocus());
+    }
+}
+
+function initializeGlobalAtomListeners(): void {
+    if (globalAtomListenersInitialized) {
+        return;
+    }
+    globalAtomListenersInitialized = true;
+    try {
+        getApi().onFullScreenChange((isFullScreen) => {
+            globalStore.set(atoms.isFullScreen, isFullScreen);
+        });
+    } catch (e) {
+        console.log("failed to subscribe to isFullScreen changes", e);
+    }
+    try {
+        getApi().onZoomFactorChange((zoomFactor) => {
+            globalStore.set(atoms.zoomFactorAtom, zoomFactor);
+        });
+    } catch (e) {
+        console.log("failed to subscribe to zoomFactor changes", e);
+    }
+    try {
+        getApi().onUpdaterStatusChange((status) => {
+            globalStore.set(atoms.updaterStatusAtom, status);
+        });
+    } catch (e) {
+        console.log("failed to subscribe to updater status changes", e);
+    }
+    if (globalThis.window == null) {
+        return;
+    }
+    reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    reducedMotionQuery?.addEventListener("change", () => {
+        globalStore.set(reducedMotionSystemPreferenceAtomRef, reducedMotionQuery.matches);
+    });
+    window.addEventListener("focus", () => {
+        globalStore.set(atoms.documentHasFocus, true);
+    });
+    window.addEventListener("blur", () => {
+        globalStore.set(atoms.documentHasFocus, false);
+    });
+}
+
+function validateRendererIdentity(initOpts: GlobalInitOptions) {
+    const rendererKind: string = initOpts.rendererKind;
+    switch (initOpts.rendererKind) {
+        case "workspace":
+            if (!initOpts.workspaceId) {
+                throw new Error("workspace renderer requires workspaceId");
+            }
+            return;
+        case "terminal":
+            if (!initOpts.tabId) {
+                throw new Error("terminal renderer requires tabId");
+            }
+            return;
+        case "builder":
+            if (!initOpts.builderId) {
+                throw new Error("builder renderer requires builderId");
+            }
+            return;
+        case "preview":
+            return;
+        default:
+            throw new Error(`unknown renderer kind: ${rendererKind}`);
+    }
 }
 
 function getAtoms(): GlobalAtomsType {

@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { AgentSelectorRequest } from "@/app/term/render/agent-chat-host";
+import type { AgentSelectorRequest } from "@/app/agent/agent-chat-host";
 import { COMMAND_INLINE_FRAME_CLASSNAME, CommandInlineFrame } from "@/app/view/cmdblock/command-inline-frame";
 import {
     COMMAND_SELECTOR_LIST_MAX_HEIGHT_PX,
@@ -62,6 +62,10 @@ export interface SessionSelectorProps {
     onUserMessage?: (message: string) => void;
     onEditorText?: (text: string) => void;
     referencesEnabled?: boolean;
+}
+
+function isAgentSelectorRequestCurrent(request: AgentSelectorRequest): boolean {
+    return request.isCurrent?.() !== false;
 }
 
 export const COMMAND_SELECTOR_INLINE_CLASSNAME = COMMAND_INLINE_FRAME_CLASSNAME;
@@ -677,11 +681,11 @@ export const SessionSelector = memo(
             const scopeCwd = request.type === "session" && sessionScope === "cwd" ? request.cwd : undefined;
             void loadSelectorEntries(request, scopeCwd)
                 .then((entries) => {
-                    if (cancelled) return;
+                    if (cancelled || !isAgentSelectorRequestCurrent(request)) return;
                     setState({ status: "ready", entries });
                 })
                 .catch((err) => {
-                    if (cancelled) return;
+                    if (cancelled || !isAgentSelectorRequestCurrent(request)) return;
                     const message = err instanceof Error ? err.message : String(err);
                     setState({ status: "error", entries: [], message });
                 });
@@ -715,7 +719,14 @@ export const SessionSelector = memo(
 
         const handlePick = useCallback(
             async (entryId: string) => {
-                if (!request || pickBusyRef.current || referenceBusyRef.current != null) return;
+                if (
+                    !request ||
+                    !isAgentSelectorRequestCurrent(request) ||
+                    pickBusyRef.current ||
+                    referenceBusyRef.current != null
+                ) {
+                    return;
+                }
                 if (request.type === "session" && managerView.type === "sessions") {
                     const sourceEntry = state.entries.find((entry) => entry.id === entryId);
                     if (!sourceEntry?.sessionMetadata) {
@@ -745,7 +756,12 @@ export const SessionSelector = memo(
                 setBusyEntryId(entryId);
                 try {
                     const result = await commitAgentSelectorPick(request, entryId, state.entries);
-                    if (commitRequestId !== commitRequestIdRef.current) return;
+                    if (
+                        commitRequestId !== commitRequestIdRef.current ||
+                        !isAgentSelectorRequestCurrent(request)
+                    ) {
+                        return;
+                    }
                     const editorText = editorTextFromAgentSelectorResult(result);
                     if (editorText != null) {
                         onEditorText?.(editorText);
@@ -753,12 +769,18 @@ export const SessionSelector = memo(
                     onUserMessage?.(successMessage(request.type));
                     onClose();
                 } catch (err) {
-                    if (commitRequestId !== commitRequestIdRef.current) return;
+                    if (
+                        commitRequestId !== commitRequestIdRef.current ||
+                        !isAgentSelectorRequestCurrent(request)
+                    ) {
+                        return;
+                    }
                     const message = err instanceof Error ? err.message : String(err);
                     setState((prev) => ({ status: "error", entries: prev.entries, message }));
                 } finally {
                     if (commitRequestId === commitRequestIdRef.current) {
                         pickBusyRef.current = false;
+                        if (!isAgentSelectorRequestCurrent(request)) return;
                         setBusyEntryId(null);
                     }
                 }

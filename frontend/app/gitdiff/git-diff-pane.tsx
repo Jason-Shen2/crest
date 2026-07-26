@@ -7,9 +7,9 @@ import { getRightEditorLanguage } from "@/app/righteditor/right-editor-language"
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { useAtomValue } from "jotai";
-import { useEffect, useMemo, useState } from "react";
-import type { GitDiffViewModel } from "./git-diff-view-model";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { GitDiffContent, GitDiffMeta, GitDiffMode } from "./git-diff-types";
+import type { GitDiffViewModel } from "./git-diff-view-model";
 
 type GitDiffPaneState = {
     loading: boolean;
@@ -75,28 +75,48 @@ export function normalizeGitDiffContent(result: any): GitDiffContent {
 export function GitDiffPane({ model }: ViewComponentProps<GitDiffViewModel>) {
     const block = useAtomValue(model.blockAtom);
     const meta = useMemo(() => parseGitDiffMeta(block?.meta), [block?.meta]);
+    return <GitDiffContent descriptor={meta} />;
+}
+
+export function GitDiffContent({
+    descriptor,
+    loadContent = loadGitDiffContent,
+}: {
+    descriptor: GitDiffMeta;
+    loadContent?: (input: GitDiffMeta) => Promise<GitDiffContent>;
+}) {
     const [state, setState] = useState<GitDiffPaneState>({ loading: true, content: null, error: null });
+    const [retryGeneration, setRetryGeneration] = useState(0);
+    const requestGeneration = useRef(0);
 
     useEffect(() => {
-        let cancelled = false;
+        const generation = ++requestGeneration.current;
         setState({ loading: true, content: null, error: null });
-        loadGitDiffContent(meta)
+        loadContent(descriptor)
             .then((content) => {
-                if (!cancelled) {
+                if (generation === requestGeneration.current) {
                     setState({ loading: false, content, error: null });
                 }
             })
             .catch((error: any) => {
-                if (!cancelled) {
+                if (generation === requestGeneration.current) {
                     setState({ loading: false, content: null, error: error?.message ?? String(error) });
                 }
             });
         return () => {
-            cancelled = true;
+            requestGeneration.current++;
         };
-    }, [meta.repoRoot, meta.path, meta.mode, meta.originalPath]);
+    }, [descriptor.repoRoot, descriptor.path, descriptor.mode, descriptor.originalPath, loadContent, retryGeneration]);
 
-    return <GitDiffBody loading={state.loading} content={state.content} error={state.error} path={meta.path} />;
+    return (
+        <GitDiffBody
+            loading={state.loading}
+            content={state.content}
+            error={state.error}
+            path={descriptor.path}
+            onRetry={() => setRetryGeneration((generation) => generation + 1)}
+        />
+    );
 }
 
 export function GitDiffBody({
@@ -104,17 +124,37 @@ export function GitDiffBody({
     content = null,
     error = null,
     path = "",
+    onRetry,
 }: {
     loading?: boolean;
     content?: GitDiffContent | null;
     error?: string | null;
     path?: string;
+    onRetry?: () => void;
 }) {
     if (loading) {
-        return <div className="flex h-full items-center justify-center text-xs text-[#a1a1aa]">Loading diff...</div>;
+        return (
+            <div className="flex h-full items-center justify-center text-xs text-[#a1a1aa]" role="status">
+                Loading diff...
+            </div>
+        );
     }
     if (error) {
-        return <div className="p-4 text-xs text-red-300">Failed to load Git diff: {error}</div>;
+        return (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-xs text-red-300" role="alert">
+                <p>Failed to load Git diff: {error}</p>
+                {onRetry ? (
+                    <button
+                        aria-label="Retry Git diff"
+                        className="cursor-pointer rounded px-3 py-1"
+                        type="button"
+                        onClick={onRetry}
+                    >
+                        Retry
+                    </button>
+                ) : null}
+            </div>
+        );
     }
     if (!content) {
         return <div className="p-4 text-xs text-[#a1a1aa]">No diff content.</div>;

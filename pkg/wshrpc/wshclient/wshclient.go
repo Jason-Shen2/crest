@@ -1110,12 +1110,6 @@ func UpdateTabNameCommand(w *wshutil.WshRpc, arg1 string, arg2 string, opts *wsh
 	return err
 }
 
-// command "updateworkspacetabids", wshserver.UpdateWorkspaceTabIdsCommand
-func UpdateWorkspaceTabIdsCommand(w *wshutil.WshRpc, arg1 string, arg2 []string, opts *wshrpc.RpcOpts) error {
-	_, err := sendRpcRequestCallHelper[any](w, "updateworkspacetabids", wshrpc.MultiArg{Args: []any{arg1, arg2}}, opts)
-	return err
-}
-
 // command "vdomasyncinitiation", wshserver.VDomAsyncInitiationCommand
 func VDomAsyncInitiationCommand(w *wshutil.WshRpc, data vdom.VDomAsyncInitiationRequest, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "vdomasyncinitiation", data, opts)
@@ -1174,9 +1168,39 @@ func WebSelectorCommand(w *wshutil.WshRpc, data wshrpc.CommandWebSelectorData, o
 	return resp, err
 }
 
+// command "workspacecloseterminal", wshserver.WorkspaceCloseTerminalCommand
+func WorkspaceCloseTerminalCommand(w *wshutil.WshRpc, data wshrpc.WorkspaceTerminalData, opts *wshrpc.RpcOpts) (*wshrpc.WorkspaceTerminalCheckpoint, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.WorkspaceTerminalCheckpoint](w, "workspacecloseterminal", data, opts)
+	return resp, err
+}
+
+// command "workspacecreateterminal", wshserver.WorkspaceCreateTerminalCommand
+func WorkspaceCreateTerminalCommand(w *wshutil.WshRpc, data wshrpc.WorkspaceCreateTerminalData, opts *wshrpc.RpcOpts) (*wshrpc.WorkspaceTerminalCheckpoint, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.WorkspaceTerminalCheckpoint](w, "workspacecreateterminal", data, opts)
+	return resp, err
+}
+
 // command "workspacelist", wshserver.WorkspaceListCommand
 func WorkspaceListCommand(w *wshutil.WshRpc, opts *wshrpc.RpcOpts) ([]wshrpc.WorkspaceInfoData, error) {
 	resp, err := sendRpcRequestCallHelper[[]wshrpc.WorkspaceInfoData](w, "workspacelist", nil, opts)
+	return resp, err
+}
+
+// command "workspacerenameterminal", wshserver.WorkspaceRenameTerminalCommand
+func WorkspaceRenameTerminalCommand(w *wshutil.WshRpc, data wshrpc.WorkspaceRenameTerminalData, opts *wshrpc.RpcOpts) error {
+	_, err := sendRpcRequestCallHelper[any](w, "workspacerenameterminal", data, opts)
+	return err
+}
+
+// command "workspacereorderterminals", wshserver.WorkspaceReorderTerminalsCommand
+func WorkspaceReorderTerminalsCommand(w *wshutil.WshRpc, data wshrpc.WorkspaceReorderTerminalsData, opts *wshrpc.RpcOpts) (*wshrpc.WorkspaceTerminalCheckpoint, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.WorkspaceTerminalCheckpoint](w, "workspacereorderterminals", data, opts)
+	return resp, err
+}
+
+// command "workspacesaveagentstate", wshserver.WorkspaceSaveAgentStateCommand
+func WorkspaceSaveAgentStateCommand(w *wshutil.WshRpc, data wshrpc.WorkspaceSaveAgentStateData, opts *wshrpc.RpcOpts) (*wshrpc.WorkspaceAgentCheckpoint, error) {
+	resp, err := sendRpcRequestCallHelper[*wshrpc.WorkspaceAgentCheckpoint](w, "workspacesaveagentstate", data, opts)
 	return resp, err
 }
 

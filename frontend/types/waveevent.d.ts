@@ -30,6 +30,7 @@ declare global {
         | "cmdblock:clear"
         | "cmdblock:notify"
         | "agent:notification"
+        | "workspace:open-content"
     ;
 
     type WaveEvent = {
@@ -61,7 +62,8 @@ declare global {
         { event: "cmdblock:altscreen"; data?: CmdBlockAltScreenEvent; } |
         { event: "cmdblock:clear"; data?: CmdBlockClearEvent; } |
         { event: "cmdblock:notify"; data?: CmdBlockNotifyEvent; } |
-        { event: "agent:notification"; data?: AgentNotificationEvent; }
+        { event: "agent:notification"; data?: AgentNotificationEvent; } |
+        { event: "workspace:open-content"; data?: WorkspaceOpenContentEvent; }
     );
 
 }

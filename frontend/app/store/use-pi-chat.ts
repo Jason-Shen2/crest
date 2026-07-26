@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // usePiChat — React hook that consumes the integrated agent runtime
-// via Electron IPC (window.api.agent.*). Replaces the legacy
+// via the injected Workspace Agent runtime client. Replaces the legacy
 // @ai-sdk/react useChat path; see docs/agent-runtime-architecture.md.
 //
 // What the hook gives consumers:
@@ -14,15 +14,15 @@
 //     sessionMetadata, // AgentSessionMeta | undefined (after first send)
 //     send,            // (text, opts?) => Promise<void>
 //     abort,           // () => void
-//   } = usePiChat({ initialSession, paneContext, modelSelection });
+//   } = usePiChat({ client, initialSession, executionContext, modelSelection });
 //
-// Subscribe lifecycle: the hook subscribes via window.api.agent.subscribe
+// Subscribe lifecycle: the hook subscribes through the runtime client
 // only AFTER a session metadata is known (either passed in via
 // initialSession or returned by the first send). Pre-session messages
 // are kept locally and merged in once the subscription starts.
 //
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
     contextSendDisabledReason,
@@ -114,6 +114,8 @@ export interface PiAgentEvent {
     /** queue_update + session_state carry the pending queues (user messages). */
     steer?: PiAgentMessage[];
     followUp?: PiAgentMessage[];
+    /** session_state carries hosted PTY command snapshots. */
+    commands?: AgentPtySnapshot[];
     /** turn_end carries this. */
     toolResults?: PiAgentMessage[];
     /** session_state carries committed context state. */
@@ -145,34 +147,46 @@ export interface UsePiChatModel {
     tokenSecretName?: string;
 }
 
-/** Pane state threaded to the agent for system-prompt composition. */
-export interface UsePiChatPaneContext {
-    cwd: string;
-    gitBranch?: string;
-    recentCmds?: string[];
-    connection?: string;
+export interface UsePiChatActivity {
+    getActive(): boolean;
+    subscribe(listener: (active: boolean) => void): () => void;
 }
 
+const AlwaysActivePiChatActivity: UsePiChatActivity = {
+    getActive: () => true,
+    subscribe: () => () => {},
+};
+
 export interface UsePiChatOptions {
+    client: AgentApiSurface;
     /**
-     * Existing session metadata (e.g. from block.meta["agent:session"]).
-     * Undefined means "no session yet — first send mints one".
+     * Existing session metadata. Undefined means "no session yet — first
+     * send mints one".
      */
     initialSession?: AgentSessionMeta;
     /**
-     * Called once when the runtime returns a new session metadata
-     * (from first send). Consumer typically writes it to block.meta
-     * so subsequent renders pass the same metadata as initialSession.
+     * Presence marks the session as externally controlled. Unlike
+     * initialSession, an empty metadata value explicitly clears the active
+     * session. The wrapper keeps an omitted initial value distinct from a
+     * later authoritative clear after a locally minted session.
      */
-    onSessionMinted?: (meta: AgentSessionMeta) => void;
-    /** Current pane state, sampled per send. */
-    paneContext: UsePiChatPaneContext;
+    controlledSession?: { metadata?: AgentSessionMeta; revision?: number };
+    /**
+     * Workspace execution context sampled per send. It is workspace-scoped;
+     * Agent runtime ownership no longer depends on Terminal Block identity.
+     */
+    executionContext: AgentExecutionContext;
     /** Current model selection, sampled per send. */
     modelSelection: UsePiChatModel;
+    /**
+     * Renderer-local resource lifecycle. Activity changes must not be represented
+     * as hook render state.
+     */
+    activity?: UsePiChatActivity;
+    /** Called when the runtime creates or returns a different active session. */
+    onSessionChange?: (meta: AgentSessionMeta) => void;
     /** Optional tool allowlist; when omitted, main defaults to allowAll. */
     allowedTools?: string[];
-    /** Parent terminal block ID for tool/UI integrations that need pane identity. */
-    blockId?: string;
     /** Renderer control state; main remains authoritative for every mutation and send. */
     contextReferencesEnabled?: boolean;
 }
@@ -245,6 +259,7 @@ export interface UsePiChatReturn {
      * (injected sooner) then followUp. Empty while idle / nothing pending.
      */
     queuedMessages: PiAgentMessage[];
+    commands: AgentPtySnapshot[];
     send: (text: string, options?: UsePiChatSendOptions) => Promise<void>;
     abort: () => void;
     contextState: ContextReferenceRendererState;
@@ -260,8 +275,7 @@ export interface UsePiChatSendOptions {
 }
 
 interface AgentApiSurface {
-    createSession: (cwd: string) => Promise<AgentSessionMeta>;
-    listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
+    createSession: () => Promise<AgentSessionMeta>;
     getSessionState: (sessionMetadata: AgentSessionMeta) => Promise<PiAgentEvent>;
     prepareContextDraft: (input: AgentPrepareContextDraftInput) => Promise<AgentPrepareContextDraftResult>;
     summarizeContextDraft: (input: AgentSummarizeContextDraftInput) => Promise<AgentSummarizeContextDraftResult>;
@@ -269,14 +283,8 @@ interface AgentApiSurface {
     listReferencePoints: (input: AgentListReferencePointsInput) => Promise<AgentReferencePointView[]>;
     listContextState: (input: AgentListContextStateInput) => Promise<AgentContextState>;
     send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
-    abort: (sessionPath: string) => void;
-    subscribe: (sessionPath: string, callback: (event: unknown) => void, opts?: { blockId?: string }) => () => void;
-}
-
-function getAgentApi(): AgentApiSurface | undefined {
-    if (typeof window === "undefined") return undefined;
-    const api = (window as unknown as { api?: { agent?: AgentApiSurface } }).api;
-    return api?.agent;
+    abort: (sessionPath: string) => Promise<void>;
+    subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;
 }
 
 export function resolveAbortSessionPath(
@@ -366,7 +374,7 @@ export function adoptInitialSessionMetadata(
     current: AgentSessionMeta | undefined,
     incoming: AgentSessionMeta | undefined
 ): AgentSessionMeta | undefined {
-    if (!incoming?.path) return current;
+    if (!incoming?.path) return undefined;
     if (current?.path === incoming.path) return current;
     return incoming;
 }
@@ -380,7 +388,8 @@ function applySessionState(
     event: PiAgentEvent,
     setStatus: (status: UsePiChatStatus) => void,
     setErrorMessage: (message: string | undefined) => void,
-    setQueuedMessages: (messages: PiAgentMessage[]) => void
+    setQueuedMessages: (messages: PiAgentMessage[]) => void,
+    setCommands: (commands: AgentPtySnapshot[]) => void
 ): void {
     const stateStatus = event.status as UsePiChatStatus | undefined;
     if (stateStatus) {
@@ -388,6 +397,7 @@ function applySessionState(
         setErrorMessage(stateStatus === "error" ? "agent error" : undefined);
     }
     setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
+    setCommands([...(event.commands ?? [])]);
 }
 
 function getErrorMessage(error: unknown): string {
@@ -434,48 +444,56 @@ function matchesContextRecovery(
 }
 
 export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
+    const activity = opts.activity ?? AlwaysActivePiChatActivity;
+    const initialSessionMetadata =
+        opts.controlledSession != null ? opts.controlledSession.metadata : opts.initialSession;
+    const controlledSessionPath = opts.controlledSession?.metadata?.path;
+    const controlledSessionRevision = opts.controlledSession?.revision ?? 0;
+    const hasControlledSession = opts.controlledSession != null;
     const [messages, setMessages] = useState<PiAgentMessage[]>([]);
     const [turns, setTurns] = useState<PiTurn[]>([]);
     const [status, setStatus] = useState<UsePiChatStatus>("idle");
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
     const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
-    const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(opts.initialSession);
+    const [commands, setCommands] = useState<AgentPtySnapshot[]>([]);
+    const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(initialSessionMetadata);
     const [contextState, setContextState] = useState<ContextReferenceRendererState>(() => ({
-        ...createContextReferenceState(opts.initialSession?.path),
+        ...createContextReferenceState(initialSessionMetadata?.path),
         enabled: opts.contextReferencesEnabled !== false,
     }));
     const [contextSendRecovery, setContextSendRecovery] = useState<ContextSendRecovery | undefined>();
-    const sessionMetadataRef = useRef<AgentSessionMeta | undefined>(opts.initialSession);
-    const activeSessionPathRef = useRef(opts.initialSession?.path ?? "");
+    const sessionMetadataRef = useRef<AgentSessionMeta | undefined>(initialSessionMetadata);
+    const activeSessionPathRef = useRef(initialSessionMetadata?.path ?? "");
     const contextStateRef = useRef(contextState);
-    const sessionMintPromiseRef = useRef<Promise<{ metadata: AgentSessionMeta; acceptedMint: boolean }> | undefined>(
-        undefined
-    );
-    const sessionMintEpochRef = useRef(0);
-    const observedInitialSessionPathRef = useRef(opts.initialSession?.path);
     const sendCaptureSequenceRef = useRef(0);
     const recoverySequenceRef = useRef(0);
     const contextSendRecoveryRecordRef = useRef<ContextSendRecoveryRecord | undefined>(undefined);
-    if (opts.initialSession?.path && opts.initialSession.path !== observedInitialSessionPathRef.current) {
-        observedInitialSessionPathRef.current = opts.initialSession.path;
-        sessionMintEpochRef.current += 1;
-        sessionMetadataRef.current = opts.initialSession;
-        activeSessionPathRef.current = opts.initialSession.path;
-    }
 
     // Refs hold the latest values without re-subscribing.
-    const onSessionMintedRef = useRef(opts.onSessionMinted);
-    const paneContextRef = useRef(opts.paneContext);
+    const onSessionChangeRef = useRef(opts.onSessionChange);
     const modelSelectionRef = useRef(opts.modelSelection);
     const allowedToolsRef = useRef(opts.allowedTools);
-    const blockIdRef = useRef(opts.blockId);
+    const runtimeClientRef = useRef<AgentApiSurface | undefined>(opts.client);
+    const executionContextRef = useRef(opts.executionContext);
+    const subscriptionEpochRef = useRef(0);
+    const requestEpochRef = useRef(0);
+    const controlledSessionBoundaryRef = useRef({
+        controlled: hasControlledSession,
+        path: controlledSessionPath,
+        revision: controlledSessionRevision,
+    });
+    const pendingLocalSessionAckPathRef = useRef("");
+    const createSessionRequestRef = useRef<{
+        epoch: number;
+        promise: Promise<AgentSessionMeta>;
+    }>(undefined);
     useEffect(() => {
-        onSessionMintedRef.current = opts.onSessionMinted;
-        paneContextRef.current = opts.paneContext;
+        onSessionChangeRef.current = opts.onSessionChange;
         modelSelectionRef.current = opts.modelSelection;
         allowedToolsRef.current = opts.allowedTools;
-        blockIdRef.current = opts.blockId;
-    }, [opts.onSessionMinted, opts.paneContext, opts.modelSelection, opts.allowedTools, opts.blockId]);
+        runtimeClientRef.current = opts.client;
+        executionContextRef.current = opts.executionContext;
+    }, [opts.onSessionChange, opts.modelSelection, opts.allowedTools, opts.client, opts.executionContext]);
 
     const dispatchContext = useCallback((action: ContextReferenceAction): ContextReferenceRendererState => {
         const next = reduceContextReferenceState(contextStateRef.current, action);
@@ -499,16 +517,58 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         });
     }, [dispatchContext, opts.contextReferencesEnabled]);
 
-    useEffect(() => {
-        setSessionMetadata((current) => adoptInitialSessionMetadata(current, opts.initialSession));
-    }, [opts.initialSession?.path]);
+    useLayoutEffect(() => {
+        const previousBoundary = controlledSessionBoundaryRef.current;
+        controlledSessionBoundaryRef.current = {
+            controlled: hasControlledSession,
+            path: controlledSessionPath,
+            revision: controlledSessionRevision,
+        };
+        const ownershipChanged = previousBoundary.controlled !== hasControlledSession;
+        const revisionChanged = previousBoundary.revision !== controlledSessionRevision;
+        const isLocalMintAcknowledgement =
+            revisionChanged &&
+            !!controlledSessionPath &&
+            controlledSessionPath === pendingLocalSessionAckPathRef.current &&
+            controlledSessionPath === sessionMetadataRef.current?.path;
+        if (isLocalMintAcknowledgement) {
+            pendingLocalSessionAckPathRef.current = "";
+        }
+        const explicitIdentityChange = revisionChanged && !isLocalMintAcknowledgement;
+        if (ownershipChanged || explicitIdentityChange) {
+            requestEpochRef.current++;
+        }
+        if (!hasControlledSession) return;
+        const next = adoptInitialSessionMetadata(sessionMetadataRef.current, opts.controlledSession?.metadata);
+        const pathChanged = sessionMetadataRef.current?.path !== next?.path;
+        if (!pathChanged && !explicitIdentityChange) return;
+        subscriptionEpochRef.current++;
+        if (pathChanged && !ownershipChanged && !explicitIdentityChange) {
+            requestEpochRef.current++;
+        }
+        sessionMetadataRef.current = next;
+        activeSessionPathRef.current = next?.path ?? "";
+        setMessages([]);
+        setTurns([]);
+        setStatus("idle");
+        setErrorMessage(undefined);
+        setQueuedMessages([]);
+        setCommands([]);
+        setSessionMetadata(next);
+        dispatchContext({ type: "target_changed", targetSessionPath: next?.path });
+        setContextRecovery(undefined);
+    }, [
+        controlledSessionPath,
+        controlledSessionRevision,
+        dispatchContext,
+        hasControlledSession,
+        setContextRecovery,
+    ]);
 
     const sessionPath = sessionMetadata?.path;
     useEffect(() => {
         sessionMetadataRef.current = sessionMetadata;
-        if (sessionMetadata?.path) {
-            activeSessionPathRef.current = sessionMetadata.path;
-        }
+        activeSessionPathRef.current = sessionMetadata?.path ?? "";
     }, [sessionMetadata]);
 
     const ensureSessionResolution = useCallback(async (): Promise<{
@@ -518,95 +578,67 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         if (sessionMetadataRef.current?.path) {
             return { metadata: sessionMetadataRef.current, acceptedMint: false };
         }
-        if (sessionMintPromiseRef.current) {
-            return await sessionMintPromiseRef.current;
-        }
-        const api = getAgentApi();
+        const api = runtimeClientRef.current;
         if (!api) {
-            throw new Error("Electron agent IPC not available (window.api.agent missing)");
+            throw new Error("Workspace Agent runtime client is unavailable");
         }
-        const mintEpoch = ++sessionMintEpochRef.current;
+        const requestEpoch = requestEpochRef.current;
         const mintTarget = contextTargetIdentity(contextStateRef.current);
-        const mintPromise = api.createSession(paneContextRef.current.cwd).then((metadata) => {
-            if (
-                mintEpoch !== sessionMintEpochRef.current ||
-                !matchesContextTarget(contextStateRef.current, mintTarget)
-            ) {
-                const current = sessionMetadataRef.current;
-                if (current?.path) {
-                    dispatchContext({ type: "target_changed", targetSessionPath: current.path });
-                    return { metadata: current, acceptedMint: false };
+        let createRequest = createSessionRequestRef.current;
+        if (!createRequest || createRequest.epoch !== requestEpoch) {
+            createRequest = { epoch: requestEpoch, promise: api.createSession() };
+            createSessionRequestRef.current = createRequest;
+            void createRequest.promise.catch(() => {
+                if (createSessionRequestRef.current === createRequest) {
+                    createSessionRequestRef.current = undefined;
                 }
-                throw new Error("Session changed while a new session was being created");
+            });
+        }
+        const metadata = await createRequest.promise;
+        if (
+            requestEpoch !== requestEpochRef.current ||
+            !matchesContextTarget(contextStateRef.current, mintTarget)
+        ) {
+            const current = sessionMetadataRef.current;
+            if (current?.path) {
+                dispatchContext({ type: "target_changed", targetSessionPath: current.path });
+                return { metadata: current, acceptedMint: false };
             }
+            return { metadata, acceptedMint: false };
+        }
+        if (sessionMetadataRef.current?.path !== metadata.path) {
             sessionMetadataRef.current = metadata;
             activeSessionPathRef.current = metadata.path;
             setSessionMetadata(metadata);
+            pendingLocalSessionAckPathRef.current = metadata.path;
             dispatchContext({ type: "target_changed", targetSessionPath: metadata.path });
-            onSessionMintedRef.current?.(metadata);
-            return { metadata, acceptedMint: true };
-        });
-        sessionMintPromiseRef.current = mintPromise;
-        try {
-            return await mintPromise;
-        } finally {
-            if (sessionMintPromiseRef.current === mintPromise) {
-                sessionMintPromiseRef.current = undefined;
-            }
+            onSessionChangeRef.current?.(metadata);
         }
+        return { metadata, acceptedMint: true };
     }, [dispatchContext]);
-
-    const ensureSession = useCallback(
-        async (): Promise<AgentSessionMeta> => (await ensureSessionResolution()).metadata,
-        [ensureSessionResolution]
-    );
 
     // Subscribe to the session's event stream — only after we have a
     // sessionPath. Pre-session sends are still possible; they mint a
     // session and then the next render this effect picks up.
     useEffect(() => {
         if (!sessionPath) return;
-        const api = getAgentApi();
+        const api = runtimeClientRef.current;
         if (!api) return;
         const targetState = dispatchContext({ type: "target_changed", targetSessionPath: sessionPath });
         setContextRecovery(undefined);
         const targetIdentity = contextTargetIdentity(targetState);
         let cancelled = false;
-        void Promise.resolve()
-            .then(() => api.getSessionState(sessionMetadata))
-            .then((event) => {
-                if (
-                    cancelled ||
-                    sessionMetadataRef.current?.path !== sessionPath ||
-                    !matchesContextTarget(contextStateRef.current, targetIdentity)
-                ) {
-                    return;
-                }
-                setMessages((prev) => reducePiChatEvent(prev, event));
-                setTurns((prev) =>
-                    attachContextReportsToTurns(reducePiTurnsEvent(prev, event), event.contextReports ?? [])
-                );
-                applySessionState(event, setStatus, setErrorMessage, setQueuedMessages);
-                const authoritative = contextStateFromEvent(event);
-                dispatchContext({
-                    type: "authoritative_state_received",
-                    ...targetIdentity,
-                    reports: authoritative.contextReports,
-                });
-            })
-            .catch((err) => {
-                if (cancelled || sessionMetadataRef.current?.path !== sessionPath) return;
-                console.warn("[agent] failed to pull session_state", err);
-            });
-        const unsubscribe = api.subscribe(
-            sessionPath,
-            (raw) => {
-                if (
-                    sessionMetadataRef.current?.path !== sessionPath ||
-                    !matchesContextTarget(contextStateRef.current, targetIdentity)
-                ) {
-                    return;
-                }
+        let unsubscribeSession: (() => void) | undefined;
+        const startSubscription = (): void => {
+            if (unsubscribeSession) return;
+            const epoch = ++subscriptionEpochRef.current;
+            const isCurrentSubscription = (): boolean =>
+                !cancelled &&
+                subscriptionEpochRef.current === epoch &&
+                activeSessionPathRef.current === sessionPath &&
+                matchesContextTarget(contextStateRef.current, targetIdentity);
+            unsubscribeSession = api.subscribe(sessionPath, (raw) => {
+                if (!isCurrentSubscription()) return;
                 const event = raw as PiAgentEvent;
                 setMessages((prev) => reducePiChatEvent(prev, event));
                 const reportMap = { ...contextStateRef.current.reportsByTurn };
@@ -621,7 +653,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 );
                 switch (event.type) {
                     case "session_state": {
-                        applySessionState(event, setStatus, setErrorMessage, setQueuedMessages);
+                        applySessionState(event, setStatus, setErrorMessage, setQueuedMessages, setCommands);
                         const authoritative = contextStateFromEvent(event);
                         dispatchContext({
                             type: "authoritative_state_received",
@@ -659,23 +691,41 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                         break;
                     }
                     case "agent_end":
+                        // The owner may emit agent_end after an error message, but
+                        // its authoritative status remains error until a retry.
+                        setStatus((current) => (current === "error" ? current : "idle"));
+                        break;
                     case "abort":
-                        // Turn finished or was stopped. abort() also clears the
-                        // queues and emits queue_update, so queuedMessages empties
-                        // on its own; here we just settle the status.
                         setStatus("idle");
+                        setErrorMessage(undefined);
                         break;
                     default:
                         break;
                 }
-            },
-            { blockId: blockIdRef.current }
-        );
+            });
+        };
+        const stopSubscription = (): void => {
+            if (!unsubscribeSession) return;
+            subscriptionEpochRef.current++;
+            unsubscribeSession();
+            unsubscribeSession = undefined;
+        };
+        if (activity.getActive()) {
+            startSubscription();
+        }
+        const unsubscribeActivity = activity.subscribe((active) => {
+            if (active) {
+                startSubscription();
+                return;
+            }
+            stopSubscription();
+        });
         return () => {
             cancelled = true;
-            unsubscribe();
+            unsubscribeActivity();
+            stopSubscription();
         };
-    }, [dispatchContext, sessionMetadata, sessionPath, setContextRecovery]);
+    }, [activity, controlledSessionRevision, dispatchContext, sessionPath, setContextRecovery]);
 
     const requireContextEnabled = useCallback((): void => {
         if (!contextStateRef.current.enabled) {
@@ -686,9 +736,9 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const prepareContextDraft = useCallback(
         async (input: UsePiChatPrepareContextInput): Promise<void> => {
             requireContextEnabled();
-            const api = getAgentApi();
+            const api = runtimeClientRef.current;
             if (!api) {
-                throw new Error("Electron agent IPC not available (window.api.agent missing)");
+                throw new Error("Workspace Agent runtime client is unavailable");
             }
             if (input.expectedTarget && !matchesContextTarget(contextStateRef.current, input.expectedTarget)) {
                 throw new Error("Agent session changed while the selector was open.");
@@ -751,9 +801,9 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
 
     const discardContextDraft = useCallback(
         async (draftId: string): Promise<void> => {
-            const api = getAgentApi();
+            const api = runtimeClientRef.current;
             if (!api) {
-                throw new Error("Electron agent IPC not available (window.api.agent missing)");
+                throw new Error("Workspace Agent runtime client is unavailable");
             }
             const target = contextTargetIdentity(contextStateRef.current);
             if (!target.targetSessionPath) return;
@@ -771,9 +821,9 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const summarizeContextDraft = useCallback(
         async (draftId: string): Promise<void> => {
             requireContextEnabled();
-            const api = getAgentApi();
+            const api = runtimeClientRef.current;
             if (!api) {
-                throw new Error("Electron agent IPC not available (window.api.agent missing)");
+                throw new Error("Workspace Agent runtime client is unavailable");
             }
             const target = contextTargetIdentity(contextStateRef.current);
             if (!target.targetSessionPath) return;
@@ -799,9 +849,16 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
 
     const send = useCallback(
         async (text: string, options?: UsePiChatSendOptions, retryRecoveryId?: number): Promise<void> => {
-            const api = getAgentApi();
+            const requestEpoch = requestEpochRef.current;
+            const api = runtimeClientRef.current;
             if (!api) {
-                const message = "Electron agent IPC not available (window.api.agent missing)";
+                const message = "Workspace Agent runtime client is unavailable";
+                setStatus("error");
+                setErrorMessage(message);
+                throw markSendErrorForComposerRestore(new Error(message), text);
+            }
+            if (!executionContextRef.current) {
+                const message = "Workspace Agent execution context is unavailable";
                 setStatus("error");
                 setErrorMessage(message);
                 throw markSendErrorForComposerRestore(new Error(message), text);
@@ -830,14 +887,14 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             setErrorMessage(undefined);
             let sendSessionMetadata: AgentSessionMeta | undefined;
             try {
-                sendSessionMetadata = await ensureSession();
+                sendSessionMetadata = (await ensureSessionResolution()).metadata;
+                if (requestEpoch !== requestEpochRef.current) return;
                 if (!target.targetSessionPath) {
                     target = contextTargetIdentity(contextStateRef.current);
                 }
                 const result = await api.send({
                     sessionMetadata: sendSessionMetadata,
-                    blockId: blockIdRef.current,
-                    cwd: paneContextRef.current.cwd,
+                    context: executionContextRef.current,
                     text,
                     images: options?.images,
                     provider: modelSelectionRef.current.provider,
@@ -845,12 +902,10 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                     reasoning: modelSelectionRef.current.reasoning,
                     token: modelSelectionRef.current.token,
                     tokenSecretName: modelSelectionRef.current.tokenSecretName,
-                    gitBranch: paneContextRef.current.gitBranch,
-                    recentCmds: paneContextRef.current.recentCmds,
-                    connection: paneContextRef.current.connection,
                     allowedTools: allowedToolsRef.current,
                     ...(capture?.attachments.length ? { contextAttachments: capture.attachments } : {}),
                 });
+                if (requestEpoch !== requestEpochRef.current) return;
                 const isCurrentTarget =
                     matchesContextTarget(contextStateRef.current, target) &&
                     sessionMetadataRef.current?.path === sendSessionMetadata.path;
@@ -865,12 +920,14 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 if (sessionMetadataRef.current?.path !== result.sessionMetadata.path) {
                     sessionMetadataRef.current = result.sessionMetadata;
                     setSessionMetadata(result.sessionMetadata);
-                    onSessionMintedRef.current?.(result.sessionMetadata);
+                    pendingLocalSessionAckPathRef.current = result.sessionMetadata.path;
+                    onSessionChangeRef.current?.(result.sessionMetadata);
                 }
                 if (matchingRecoveryId != null && contextSendRecoveryRecordRef.current?.id === matchingRecoveryId) {
                     setContextRecovery(undefined);
                 }
             } catch (error) {
+                if (requestEpoch !== requestEpochRef.current) return;
                 const message = getErrorMessage(error);
                 const isCurrentTarget =
                     matchesContextTarget(contextStateRef.current, target) &&
@@ -899,7 +956,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 throw isCurrentTarget ? markSendErrorForComposerRestore(error, text) : error;
             }
         },
-        [dispatchContext, ensureSession, setContextRecovery]
+        [dispatchContext, ensureSessionResolution, setContextRecovery]
     );
 
     const retryContextSend = useCallback(async (): Promise<void> => {
@@ -916,12 +973,12 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     }, [send, setContextRecovery]);
 
     const abort = useCallback((): void => {
-        const api = getAgentApi();
+        const api = runtimeClientRef.current;
         const abortSessionPath = resolveAbortSessionPath(sessionMetadataRef.current, activeSessionPathRef.current);
         setStatus((current) => getOptimisticAbortStatus(current));
         setQueuedMessages([]);
         if (!api || !abortSessionPath) return;
-        api.abort(abortSessionPath);
+        void api.abort(abortSessionPath);
     }, []);
 
     return useMemo(
@@ -932,6 +989,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             errorMessage,
             sessionMetadata,
             queuedMessages,
+            commands,
             send,
             abort,
             contextState,
@@ -943,6 +1001,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         }),
         [
             abort,
+            commands,
             contextSendRecovery,
             contextState,
             discardContextDraft,

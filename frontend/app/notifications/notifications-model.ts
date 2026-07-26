@@ -343,7 +343,7 @@ export class NotificationsModel {
         if (tabId && tabId !== activeTabId) {
             // Switch to the tab that owns this block, then focus it once the
             // staticTabId atom settles (main-process round-trip).
-            getApi().setActiveTab(tabId);
+            getApi().sendWorkspaceCommand({ type: "activate-terminal", terminalTabId: tabId });
             let tries = 20;
             const poll = () => {
                 if (globalStore.get(atoms.staticTabId) === tabId) {

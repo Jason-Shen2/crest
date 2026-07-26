@@ -1,317 +1,154 @@
-// Copyright 2025, Command Line Inc.
+// Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { App } from "@/app/app";
-import { loadMonaco } from "@/app/monaco/monaco-env";
-import { EdgeFlowEmbedder, setEmbedder } from "@/app/term/nld";
-import { getPtyScreenSnapshot } from "@/app/term/terminal-model";
-import { loadBadges } from "@/app/store/badge";
+import "./renderer-styles";
 import { GlobalModel } from "@/app/store/global-model";
-import { ThemeModel } from "@/app/theme/theme-model";
-import { initAIUserConfig } from "@/app/store/ai-user-config";
-import {
-    globalRefocus,
-    registerBuilderGlobalKeys,
-    registerControlShiftStateUpdateHandler,
-    registerElectronReinjectKeyHandler,
-    registerGlobalKeys,
-} from "@/app/store/keymodel";
-import { modalsModel } from "@/app/store/modalmodel";
+import { WshClient } from "@/app/store/wshclient";
 import { RpcApi } from "@/app/store/wshclientapi";
-import { makeBuilderRouteId, makeTabRouteId } from "@/app/store/wshrouter";
-import { initWshrpc, TabRpcClient } from "@/app/store/wshrpcutil";
-import { BuilderApp } from "@/builder/builder-app";
-import { getLayoutModelForStaticTab } from "@/layout/index";
+import { makeWorkspaceRouteId } from "@/app/store/wshrouter";
+import { initWshrpc, shutdownRendererWshrpc, TabRpcClient } from "@/app/store/wshrpcutil";
+import { ThemeModel } from "@/app/theme/theme-model";
+import { WorkspaceApp } from "@/app/workspace/workspace-app";
+import { WorkspaceInitCoordinator } from "@/app/workspace/workspace-init-coordinator";
+import { WorkspaceModel } from "@/app/workspace/workspace-model";
+import { workspaceModelOptionsFromLoadedWorkspace } from "@/app/workspace/workspace-model-init";
+import { WorkspaceObjectSubscription } from "@/app/workspace/workspace-object-subscription";
+import { teardownWorkspaceRenderer as runWorkspaceRendererTeardown } from "@/app/workspace/workspace-renderer-lifecycle";
 import { countersClear, countersPrint } from "@/store/counters";
-import {
-    atoms,
-    getApi,
-    globalStore,
-    initGlobal,
-    initGlobalWaveEventSubs,
-    loadConnStatus,
-    subscribeToConnEvents,
-} from "@/store/global";
-import { activeTabIdAtom } from "@/store/tab-model";
+import { atoms, getApi, globalStore, initGlobal, loadConnStatus } from "@/store/global";
 import * as WOS from "@/store/wos";
 import { loadFonts } from "@/util/fontutil";
 import { setKeyUtilPlatform } from "@/util/keyutil";
-import { isMacOS, setMacOSVersion } from "@/util/platformutil";
 import { createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 
-const platform = getApi().getPlatform();
-document.title = `Wave Terminal`;
-let savedInitOpts: WaveInitOpts = null;
+const Platform = getApi().getPlatform();
+const WorkspaceInit = new WorkspaceInitCoordinator();
+const WorkspaceSubscription = new WorkspaceObjectSubscription();
+let workspaceRoot: Root = null;
+let activeWorkspaceModel: WorkspaceModel = null;
+let workspaceLifecycleRegistered = false;
 
-(window as any).WOS = WOS;
-(window as any).globalStore = globalStore;
-(window as any).globalAtoms = atoms;
-(window as any).RpcApi = RpcApi;
-(window as any).isFullScreen = false;
-(window as any).countersPrint = countersPrint;
-(window as any).countersClear = countersClear;
-(window as any).getLayoutModelForStaticTab = getLayoutModelForStaticTab;
-(window as any).modalsModel = modalsModel;
-// Screen-snapshot accessor for the CLI subagent's pty_read tool. Emain
-// reaches this via executeJavaScript against the tab's webContents to read
-// a running command block's grid (see emain/emain-web.ts webPtyScreenSnapshot).
-(window as any).getPtyScreenSnapshot = getPtyScreenSnapshot;
-
-function updateZoomFactor(zoomFactor: number) {
-    console.log("update zoomfactor", zoomFactor);
-    document.documentElement.style.setProperty("--zoomfactor", String(zoomFactor));
-    document.documentElement.style.setProperty("--zoomfactor-inv", String(1 / zoomFactor));
+function exposeWorkspaceRuntime(): void {
+    (window as any).WOS = WOS;
+    (window as any).globalStore = globalStore;
+    (window as any).globalAtoms = atoms;
+    (window as any).RpcApi = RpcApi;
+    (window as any).isFullScreen = false;
+    (window as any).countersPrint = countersPrint;
+    (window as any).countersClear = countersClear;
 }
 
-async function initBare() {
-    getApi().sendLog("Init Bare");
-    document.body.style.visibility = "hidden";
-    document.body.style.opacity = "0";
-    document.body.classList.add("is-transparent");
-    getApi().onWaveInit(initWaveWrap);
-    getApi().onBuilderInit(initBuilderWrap);
-    setKeyUtilPlatform(platform);
+function registerWorkspaceLifecycle(): void {
+    if (workspaceLifecycleRegistered) {
+        return;
+    }
+    workspaceLifecycleRegistered = true;
+    window.addEventListener("beforeunload", () => {
+        runWorkspaceRendererTeardown({
+            flush: () => activeWorkspaceModel?.flush() ?? Promise.resolve(),
+            clearSubscriptions: () => WorkspaceSubscription.clear(),
+            shutdownWshrpc: shutdownRendererWshrpc,
+        });
+    });
+}
+
+export function initializeWorkspaceRenderer(initOpts: WorkspaceInitOpts): void {
+    exposeWorkspaceRuntime();
+    registerWorkspaceLifecycle();
+    setKeyUtilPlatform(Platform);
     loadFonts();
-    updateZoomFactor(getApi().getZoomFactor());
-    getApi().onZoomFactorChange((zoomFactor) => {
-        updateZoomFactor(zoomFactor);
-    });
-    document.fonts.ready.then(() => {
-        console.log("Init Bare Done");
-        getApi().setWindowInitStatus("ready");
-    });
-}
-
-document.addEventListener("DOMContentLoaded", initBare);
-
-async function initWaveWrap(initOpts: WaveInitOpts) {
-    try {
-        if (savedInitOpts) {
-            await reinitWave();
-            return;
+    const identity = { workspaceId: initOpts.workspaceId, generation: initOpts.generation };
+    void WorkspaceInit.run(identity, async (isCurrent) => {
+        try {
+            await initializeCurrentWorkspace(initOpts, isCurrent);
+        } catch (error) {
+            if (isCurrent()) {
+                WorkspaceSubscription.clear();
+                getApi().setWindowInitStatus("workspace-init-failed", identity);
+                getApi().sendLog(`Error in initializeWorkspaceRenderer ${error.message}\n${error.stack}`);
+                console.error("Error in initializeWorkspaceRenderer", error);
+            }
+        } finally {
+            if (isCurrent()) {
+                document.body.style.visibility = null;
+                document.body.style.opacity = null;
+                document.body.classList.remove("is-transparent");
+            }
         }
-        savedInitOpts = initOpts;
-        await initWave(initOpts);
-    } catch (e) {
-        getApi().sendLog("Error in initWave " + e.message + "\n" + e.stack);
-        console.error("Error in initWave", e);
-    } finally {
-        document.body.style.visibility = null;
-        document.body.style.opacity = null;
-        document.body.classList.remove("is-transparent");
-    }
+    });
 }
 
-async function reinitWave() {
-    console.log("Reinit Wave");
-    getApi().sendLog("Reinit Wave");
-
-    // We use this hack to prevent a flicker of the previously-hovered tab when this view was last active.
-    document.body.classList.add("nohover");
-    requestAnimationFrame(() =>
-        setTimeout(() => {
-            document.body.classList.remove("nohover");
-        }, 100)
-    );
-
-    await WOS.reloadWaveObject<Client>(WOS.makeORef("client", savedInitOpts.clientId));
-    const waveWindow = await WOS.reloadWaveObject<WaveWindow>(WOS.makeORef("window", savedInitOpts.windowId));
-    const ws = await WOS.reloadWaveObject<Workspace>(WOS.makeORef("workspace", waveWindow.workspaceid));
-    const initialTab = await WOS.reloadWaveObject<Tab>(WOS.makeORef("tab", savedInitOpts.tabId));
-    await WOS.reloadWaveObject<LayoutState>(WOS.makeORef("layout", initialTab.layoutstate));
-    reloadAllWorkspaceTabs(ws);
-    document.title = `Wave Terminal - ${initialTab.name}`; // TODO update with tab name change
-    getApi().setWindowInitStatus("wave-ready");
-    globalStore.set(atoms.reinitVersion, globalStore.get(atoms.reinitVersion) + 1);
-    globalStore.set(atoms.updaterStatusAtom, getApi().getUpdaterStatus());
-    setTimeout(() => {
-        globalRefocus();
-    }, 50);
-}
-
-function reloadAllWorkspaceTabs(ws: Workspace) {
-    if (ws == null || !ws.tabids?.length) {
+async function initializeCurrentWorkspace(initOpts: WorkspaceInitOpts, isCurrent: () => boolean): Promise<void> {
+    if (!isCurrent()) {
         return;
     }
-    ws.tabids?.forEach((tabid) => {
-        WOS.reloadWaveObject<Tab>(WOS.makeORef("tab", tabid));
-    });
-}
-
-function loadAllWorkspaceTabs(ws: Workspace) {
-    if (ws == null || !ws.tabids?.length) {
-        return;
-    }
-    ws.tabids?.forEach((tabid) => {
-        WOS.getObjectValue<Tab>(WOS.makeORef("tab", tabid));
-    });
-}
-
-async function initWave(initOpts: WaveInitOpts) {
-    getApi().sendLog("Init Wave " + JSON.stringify(initOpts));
-    const globalInitOpts: GlobalInitOptions = {
-        tabId: initOpts.tabId,
-        clientId: initOpts.clientId,
-        windowId: initOpts.windowId,
-        platform,
-        environment: "renderer",
-        primaryTabStartup: initOpts.primaryTabStartup,
-    };
-    console.log("Wave Init", globalInitOpts);
-    globalStore.set(activeTabIdAtom, initOpts.tabId);
-    await GlobalModel.getInstance().initialize(globalInitOpts);
-    initGlobal(globalInitOpts);
-    (window as any).globalAtoms = atoms;
-
-    // Init WPS event handlers
-    const globalWS = initWshrpc(makeTabRouteId(initOpts.tabId));
-    (window as any).globalWS = globalWS;
-    (window as any).TabRpcClient = TabRpcClient;
-
-    // ensures client/window/workspace are loaded into the cache before rendering
-    try {
-        await loadConnStatus();
-        await loadBadges();
-        initGlobalWaveEventSubs(initOpts);
-        subscribeToConnEvents();
-        if (isMacOS()) {
-            const macOSVersion = await RpcApi.MacOSVersionCommand(TabRpcClient);
-            setMacOSVersion(macOSVersion);
-        }
-        const [_client, waveWindow, initialTab] = await Promise.all([
-            WOS.loadAndPinWaveObject<Client>(WOS.makeORef("client", initOpts.clientId)),
-            WOS.loadAndPinWaveObject<WaveWindow>(WOS.makeORef("window", initOpts.windowId)),
-            WOS.loadAndPinWaveObject<Tab>(WOS.makeORef("tab", initOpts.tabId)),
-        ]);
-        const [ws, _layoutState] = await Promise.all([
-            WOS.loadAndPinWaveObject<Workspace>(WOS.makeORef("workspace", waveWindow.workspaceid)),
-            WOS.reloadWaveObject<LayoutState>(WOS.makeORef("layout", initialTab.layoutstate)),
-        ]);
-        loadAllWorkspaceTabs(ws);
-        WOS.wpsSubscribeToObject(WOS.makeORef("workspace", waveWindow.workspaceid));
-        document.title = `Wave Terminal - ${initialTab.name}`; // TODO update with tab name change
-    } catch (e) {
-        console.error("Failed initialization error", e);
-        getApi().sendLog("Error in initialization (wave.ts, loading required objects) " + e.message + "\n" + e.stack);
-    }
-    registerGlobalKeys();
-    registerElectronReinjectKeyHandler();
-    registerControlShiftStateUpdateHandler();
-    await loadMonaco();
-    // Fire-and-forget — the embedder warms up in a worker; tier-1
-    // heuristics carry the input bar during the few hundred ms before
-    // tier-2 reports ready.  Probe for the model artifact first: the
-    // ONNX + tokenizer live under /nld-model/ as a built artifact
-    // (gitignored), so in fresh checkouts / preview envs where they
-    // haven't been staged we skip init and stay on StubClassifier.
-    // We verify content-type because dev servers may return 200 OK
-    // with an HTML SPA fallback page for missing paths.
-    // TODO(edgeflow): docs/INTEGRATION_LOG.md 2026-06-27 — see worker-side
-    // workaround for the content-type check rationale.  This HEAD probe is just
-    // an early-exit optimization so we don't even spin up the worker when we
-    // already know the files aren't there.
-    try {
-        const probe = await fetch("/nld-model/tokenizer.json", { method: "HEAD" });
-        const ct = probe.headers.get("content-type") ?? "";
-        if (probe.ok && ct.includes("application/json")) {
-            setEmbedder(new EdgeFlowEmbedder());
-        }
-    } catch {
-        /* network or CSP error — keep StubClassifier, tier-1 still works */
-    }
-    const fullConfig = await RpcApi.GetFullConfigCommand(TabRpcClient);
-    console.log("fullconfig", fullConfig);
-    globalStore.set(atoms.fullConfigAtom, fullConfig);
-    // Hydrate the AI user config atom (ai.json).  Non-blocking — the
-    // picker handles the "loading" state, and a slow / failed RPC
-    // doesn't stall first paint.
-    initAIUserConfig();
-    ThemeModel.getInstance().initialize();
-    console.log("Wave First Render");
-    let firstRenderResolveFn: () => void = null;
-    const firstRenderPromise = new Promise<void>((resolve) => {
-        firstRenderResolveFn = resolve;
-    });
-    const reactElem = createElement(App, { onFirstRender: firstRenderResolveFn }, null);
-    const elem = document.getElementById("main");
-    const root = createRoot(elem);
-    root.render(reactElem);
-    await firstRenderPromise;
-    console.log("Wave First Render Done");
-    getApi().setWindowInitStatus("wave-ready");
-}
-
-async function initBuilderWrap(initOpts: BuilderInitOpts) {
-    try {
-        await initBuilder(initOpts);
-    } catch (e) {
-        getApi().sendLog("Error in initBuilder " + e.message + "\n" + e.stack);
-        console.error("Error in initBuilder", e);
-    } finally {
-        document.body.style.visibility = null;
-        document.body.style.opacity = null;
-        document.body.classList.remove("is-transparent");
-    }
-}
-
-async function initBuilder(initOpts: BuilderInitOpts) {
-    getApi().sendLog("Init Builder " + JSON.stringify(initOpts));
+    WorkspaceSubscription.clear();
     const globalInitOpts: GlobalInitOptions = {
         clientId: initOpts.clientId,
         windowId: initOpts.windowId,
-        platform,
+        workspaceId: initOpts.workspaceId,
+        generation: initOpts.generation,
+        platform: Platform,
         environment: "renderer",
-        builderId: initOpts.builderId,
+        rendererKind: "workspace",
     };
-    console.log("Tsunami Builder Init", globalInitOpts);
     await GlobalModel.getInstance().initialize(globalInitOpts);
+    if (!isCurrent()) {
+        return;
+    }
     initGlobal(globalInitOpts);
     (window as any).globalAtoms = atoms;
 
-    const globalWS = initWshrpc(makeBuilderRouteId(initOpts.builderId));
+    const globalWS = initWshrpc(makeWorkspaceRouteId(initOpts.workspaceId), (routeId) => new WshClient(routeId));
     (window as any).globalWS = globalWS;
     (window as any).TabRpcClient = TabRpcClient;
     await loadConnStatus();
-
-    let appIdToUse: string = null;
-    try {
-        const oref = WOS.makeORef("builder", initOpts.builderId);
-        const rtInfo = await RpcApi.GetRTInfoCommand(TabRpcClient, { oref });
-        if (rtInfo && rtInfo["builder:appid"]) {
-            appIdToUse = rtInfo["builder:appid"];
-        }
-    } catch (e) {
-        console.log("Could not load saved builder appId from rtinfo:", e);
+    if (!isCurrent()) {
+        return;
+    }
+    const [_client, _waveWindow, workspace] = await Promise.all([
+        WOS.loadAndPinWaveObject(WOS.makeORef("client", initOpts.clientId)),
+        WOS.loadAndPinWaveObject<WaveWindow>(WOS.makeORef("window", initOpts.windowId)),
+        WOS.loadAndPinWaveObject<Workspace>(WOS.makeORef("workspace", initOpts.workspaceId)),
+    ]);
+    if (!isCurrent()) {
+        return;
+    }
+    WorkspaceSubscription.replace(WOS.wpsSubscribeToObject(WOS.makeORef("workspace", initOpts.workspaceId)));
+    activeWorkspaceModel = await WorkspaceModel.replaceInstance(
+        workspaceModelOptionsFromLoadedWorkspace(initOpts.windowId, workspace, initOpts.generation)
+    );
+    if (!isCurrent()) {
+        return;
     }
 
-    document.title = appIdToUse ? `WaveApp Builder (${appIdToUse})` : "WaveApp Builder";
-
-    globalStore.set(atoms.builderAppId, appIdToUse);
-
-    const _client = await WOS.loadAndPinWaveObject<Client>(WOS.makeORef("client", initOpts.clientId));
-
-    registerBuilderGlobalKeys();
-    registerElectronReinjectKeyHandler();
-    await loadMonaco();
     const fullConfig = await RpcApi.GetFullConfigCommand(TabRpcClient);
-    console.log("fullconfig", fullConfig);
+    if (!isCurrent()) {
+        return;
+    }
     globalStore.set(atoms.fullConfigAtom, fullConfig);
-    // Hydrate the AI user config atom (ai.json).  Non-blocking — the
-    // picker handles the "loading" state, and a slow / failed RPC
-    // doesn't stall first paint.
-    initAIUserConfig();
     ThemeModel.getInstance().initialize();
+    document.title = workspace.name ? `Wave Terminal - ${workspace.name}` : "Wave Terminal";
 
-    console.log("Tsunami Builder First Render");
-    let firstRenderResolveFn: () => void = null;
-    const firstRenderPromise = new Promise<void>((resolve) => {
-        firstRenderResolveFn = resolve;
+    let firstRenderResolve: () => void = null;
+    const firstRender = new Promise<void>((resolve) => {
+        firstRenderResolve = resolve;
     });
-    const reactElem = createElement(BuilderApp, { initOpts, onFirstRender: firstRenderResolveFn }, null);
-    const elem = document.getElementById("main");
-    const root = createRoot(elem);
-    root.render(reactElem);
-    await firstRenderPromise;
-    console.log("Tsunami Builder First Render Done");
+    workspaceRoot ??= createRoot(document.getElementById("main"));
+    workspaceRoot.render(
+        createElement(WorkspaceApp, {
+            key: `${workspace.oid}:${initOpts.generation}`,
+            init: { windowId: initOpts.windowId, generation: initOpts.generation, workspace },
+            onFirstRender: firstRenderResolve,
+        })
+    );
+    await firstRender;
+    if (!isCurrent()) {
+        return;
+    }
+    getApi().setWindowInitStatus("workspace-ready", {
+        workspaceId: initOpts.workspaceId,
+        generation: initOpts.generation,
+    });
 }

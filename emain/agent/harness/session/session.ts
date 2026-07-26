@@ -85,6 +85,7 @@ export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionCon
 
 export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
 	private storage: SessionStorage<TMetadata>;
+	closed = false;
 
 	constructor(storage: SessionStorage<TMetadata>) {
 		this.storage = storage;
@@ -96,6 +97,12 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
 
 	getStorage(): SessionStorage<TMetadata> {
 		return this.storage;
+	}
+
+	close(): void {
+		if (this.closed) return;
+		this.storage.close?.();
+		this.closed = true;
 	}
 
 	getLeafId(): Promise<string | null> {

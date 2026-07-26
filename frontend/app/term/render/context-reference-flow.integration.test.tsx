@@ -59,14 +59,19 @@ function installApi(overrides: Record<string, unknown> = {}) {
         listContextState: vi.fn(async () => ({ drafts: [], contextReports: [] })),
         ...overrides,
     };
-    Object.defineProperty(window, "api", { configurable: true, value: { agent: api } });
     return api;
 }
 
-function options() {
+function options(client: ReturnType<typeof installApi>) {
     return {
+        client,
         initialSession: session(),
-        paneContext: { cwd: "/workspace" },
+        executionContext: {
+            workspaceId: "workspace",
+            workspaceDir: "/workspace",
+            connection: "",
+            environment: {},
+        },
         modelSelection: { provider: "provider", model: "model" },
     };
 }
@@ -74,7 +79,7 @@ function options() {
 describe("context reference renderer flow", () => {
     it("selects a conversation reference, sends it, and clears the composer chip", async () => {
         const api = installApi();
-        const { result } = renderHook(() => usePiChat(options()));
+        const { result } = renderHook(() => usePiChat(options(api)));
 
         await act(async () => {
             await result.current.prepareContextDraft({
@@ -104,8 +109,8 @@ describe("context reference renderer flow", () => {
         const summary = new Promise<AgentContextDraftView>((resolve) => {
             resolveSummary = resolve;
         });
-        installApi({ summarizeContextDraft: vi.fn(() => summary) });
-        const { result } = renderHook(() => usePiChat(options()));
+        const api = installApi({ summarizeContextDraft: vi.fn(() => summary) });
+        const { result } = renderHook(() => usePiChat(options(api)));
 
         await act(async () => {
             await result.current.prepareContextDraft({

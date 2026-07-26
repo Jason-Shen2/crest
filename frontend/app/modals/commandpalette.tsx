@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getCachedHome, workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
-import { atoms, createBlock, createTab, globalStore, replaceBlock } from "@/app/store/global";
-import { modalsModel } from "@/app/store/modalmodel";
+import { Icon } from "@/app/icon/Icon";
+import { atoms, createBlock, globalStore, replaceBlock } from "@/app/store/global";
 import {
     genericClose,
     handleCmdN,
@@ -13,14 +13,15 @@ import {
     switchBlockInDirection,
     switchTab,
 } from "@/app/store/keymodel";
+import { modalsModel } from "@/app/store/modalmodel";
 import { RpcApi } from "@/app/store/wshclientapi";
+import { sendWorkspaceCommand } from "@/app/store/workspace-command-client";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { ThemeModel } from "@/app/theme/theme-model";
 import { getBuiltinThemes } from "@/app/theme/registry/themes";
+import { ThemeModel } from "@/app/theme/theme-model";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { getLayoutModelForStaticTab, NavigateDirection } from "@/layout/index";
 import { cn, fireAndForget } from "@/util/util";
-import { Icon } from "@/app/icon/Icon";
 import { useAtomValue } from "jotai";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom";
@@ -135,7 +136,7 @@ function buildCommandList(): PaletteCommand[] {
             category: "Create",
             shortcut: ["⌘", "T"],
             icon: "plus-sign",
-            action: () => fireAndForget(createTab),
+            action: () => sendWorkspaceCommand({ type: "new-terminal" }),
         },
         {
             id: "open-launcher",
@@ -206,8 +207,7 @@ function buildCommandList(): PaletteCommand[] {
             shortcut: ["⌘", "B"],
             icon: "sidebar-left",
             action: () => {
-                const model = WorkspaceLayoutModel.getInstance();
-                model.setVTabVisible(!model.getVTabVisible());
+                WorkspaceLayoutModel.getInstance().toggleLeftPanel("files");
             },
         },
         {
@@ -240,7 +240,7 @@ function buildCommandList(): PaletteCommand[] {
             action: genericClose,
         },
         {
-            id: "close-tab",
+            id: "close-active-content",
             label: "Close Tab",
             category: "Actions",
             shortcut: ["⇧", "⌘", "W"],
@@ -454,7 +454,7 @@ const CommandPaletteModal = () => {
         const filePath = suggestion["file:path"];
         if (!filePath) return;
         modalsModel.popModal();
-        fireAndForget(() => createBlock({ meta: { view: "preview", file: filePath } }));
+        sendWorkspaceCommand({ type: "open-preview", path: filePath });
     }, []);
 
     const handleKeyDown = useCallback(
@@ -538,9 +538,7 @@ const CommandPaletteModal = () => {
                                 <span className="command-palette-item-label">
                                     <MatchHighlight text={s.display} matchpos={s.matchpos} />
                                 </span>
-                                {s.subtext && (
-                                    <span className="command-palette-file-subtext">{s.subtext}</span>
-                                )}
+                                {s.subtext && <span className="command-palette-file-subtext">{s.subtext}</span>}
                             </div>
                         ))}
                         {!isSearching && fileResults.length === 0 && (

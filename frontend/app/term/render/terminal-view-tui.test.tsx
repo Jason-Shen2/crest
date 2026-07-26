@@ -159,7 +159,7 @@ vi.mock("../terminal-model", () => ({
     TerminalModel: vi.fn().mockImplementation(() => makeModel()),
 }));
 
-vi.mock("./agent-chat-host", () => ({
+vi.mock("@/app/agent/agent-chat-host", () => ({
     AgentChatHost: () => <div data-testid="agent-chat-host" />,
 }));
 
@@ -649,20 +649,4 @@ describe("TerminalView pure-terminal form", () => {
         expect(html).toContain('data-testid="cmd-input"');
     });
 
-    it("lets the Agent surface replace the terminal content area", () => {
-        testState.modeOverride = {};
-        const html = renderTerminalView({
-            agentSurfaceComponent: () => (
-                <>
-                    <div data-testid="agent-chat-host" />
-                    <div data-testid="agent-command-results" />
-                </>
-            ),
-        });
-
-        expect(html).toContain('data-testid="agent-chat-host"');
-        expect(html).toContain('data-testid="agent-command-results"');
-        expect(html).not.toContain('data-testid="block-list"');
-        expect(html).not.toContain('data-testid="cmd-input"');
-    });
 });

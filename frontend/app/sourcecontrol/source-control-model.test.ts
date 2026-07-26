@@ -19,15 +19,12 @@ vi.mock("@/app/store/wshrpcutil", () => ({
     TabRpcClient: { routeid: "tab" },
 }));
 
-vi.mock("./open-git-diff-tab", () => ({
-    openGitDiffTab: mockOpenGitDiffTab,
-}));
-
 describe("SourceControlModel", () => {
     beforeEach(() => {
         mockOpenGitDiffTab.mockReset();
         mockOpenGitDiffTab.mockResolvedValue({ tabId: "tab-1", created: true });
         const model = SourceControlModel.getInstance();
+        model.bindWorkspaceActions({ openGitDiff: mockOpenGitDiffTab });
         globalStore.set(model.selectedpathAtom, null);
         globalStore.set(model.repoAtom, null);
         globalStore.set(model.viewAtom, "changes");
@@ -41,6 +38,20 @@ describe("SourceControlModel", () => {
         expect(globalStore.get(SourceControlModel.getInstance().viewAtom)).toBe("graph");
 
         globalStore.set(model.viewAtom, "changes");
+    });
+
+    it("does not let workspace A cleanup unbind workspace B actions", () => {
+        const model = SourceControlModel.getInstance();
+        const workspaceA = { openGitDiff: vi.fn() };
+        const workspaceB = { openGitDiff: vi.fn() };
+        const unbindA = model.bindWorkspaceActions(workspaceA);
+        model.bindWorkspaceActions(workspaceB);
+        unbindA();
+        globalStore.set(model.repoAtom, { reporoot: "/repo" } as GitRepoInfo);
+
+        model.selectEntry({ path: "b.ts", unstaged: true, originalpath: null } as SourceControlFileEntry);
+        expect(workspaceA.openGitDiff).not.toHaveBeenCalled();
+        expect(workspaceB.openGitDiff).toHaveBeenCalledOnce();
     });
 
     it("selects an unstaged entry and opens an unstaged git diff tab", () => {

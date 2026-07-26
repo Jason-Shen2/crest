@@ -8,10 +8,15 @@ import * as child_process from "node:child_process";
 import * as path from "path";
 import { PNG } from "pngjs";
 import { Readable } from "stream";
+import { WorkspaceService } from "../frontend/app/store/services";
 import { RpcApi } from "../frontend/app/store/wshclientapi";
 import { getWebServerEndpoint } from "../frontend/util/endpoints";
 import * as keyutil from "../frontend/util/keyutil";
 import { fireAndForget, parseDataUrl } from "../frontend/util/util";
+import { registerAgentIpcHandlers } from "./agent-ipc";
+import { registerAgentObservabilityIpcHandlers } from "./agent-observability-ipc";
+import { resolveAuthenticatedWorkspaceSender } from "./agent/agent-execution-context";
+import { registerAiConfigIpcHandlers } from "./aiconfig-ipc";
 import {
     incrementTermCommandsDurable,
     incrementTermCommandsRemote,
@@ -24,16 +29,30 @@ import { callWithOriginalXdgCurrentDesktopAsync, unamePlatform } from "./emain-p
 import { getWaveTabViewByWebContentsId } from "./emain-tabview";
 import { handleCtrlShiftState } from "./emain-util";
 import { getWaveVersion } from "./emain-wavesrv";
-import { createNewWaveWindow, getWaveWindowByWebContentsId } from "./emain-window";
+import { createNewWaveWindow, getWaveWindowById, getWaveWindowByWebContentsId } from "./emain-window";
+import {
+    routeWorkspaceCloseResponseByWebContentsId,
+    routeWorkspaceCommandByWebContentsId,
+} from "./emain-window-sender";
+import {
+    getWorkspaceViewByWebContentsId,
+    handleWorkspaceRendererInitStatus,
+    sendWorkspaceCommand,
+} from "./emain-workspaceview";
 import { ElectronWshClient } from "./emain-wsh";
-import { registerAgentObservabilityIpcHandlers } from "./agent-observability-ipc";
-import { registerAgentIpcHandlers } from "./agent-ipc";
-import { registerAiConfigIpcHandlers } from "./aiconfig-ipc";
 
 const electronApp = electron.app;
 
+type WindowInitStatus = "ready" | "wave-ready" | "workspace-ready" | "workspace-init-failed";
+
 let webviewFocusId: number = null;
 let webviewKeys: string[] = [];
+
+electron.ipcMain.on("workspace-close-response", (event, response: WorkspaceCloseResponse) => {
+    routeWorkspaceCloseResponseByWebContentsId(event.sender.id, response, {
+        getWaveWindowByWebContentsId,
+    });
+});
 
 export function openBuilderWindow(appId?: string) {
     const normalizedAppId = appId || "";
@@ -198,7 +217,18 @@ function saveImageFileWithNativeDialog(
 export function initIpcHandlers() {
     // Agent runtime IPC (renderer ↔ Electron-main agent loop).
     // See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
-    registerAgentIpcHandlers();
+    registerAgentIpcHandlers({
+        loadWorkspace: (workspaceId) => WorkspaceService.GetWorkspace(workspaceId),
+        saveWorkspaceAgentState: (data) => WorkspaceService.SaveWorkspaceAgentState(data),
+        async resolveWorkspaceSender(senderId) {
+            return await resolveAuthenticatedWorkspaceSender(senderId, {
+                getWorkspaceView: getWorkspaceViewByWebContentsId,
+                getWindow: getWaveWindowById,
+                loadWorkspace: WorkspaceService.GetWorkspace,
+                canonicalizeDirectory: fs.promises.realpath,
+            });
+        },
+    });
     registerAgentObservabilityIpcHandlers();
 
     // AI config / provider /models listing IPC (replaces the Go-side
@@ -422,33 +452,54 @@ export function initIpcHandlers() {
         );
     });
 
-    electron.ipcMain.on("set-window-init-status", (event, status: "ready" | "wave-ready") => {
-        const tabView = getWaveTabViewByWebContentsId(event.sender.id);
-        if (tabView != null && tabView.initResolve != null) {
-            if (status === "ready") {
-                tabView.initResolve();
-                if (tabView.savedInitOpts) {
-                    console.log("savedInitOpts calling wave-init", tabView.waveTabId);
-                    tabView.webContents.send("wave-init", tabView.savedInitOpts);
+    electron.ipcMain.on(
+        "set-window-init-status",
+        (event, status: WindowInitStatus, workspaceReady?: WorkspaceReadyStatus) => {
+            const workspaceView = getWorkspaceViewByWebContentsId(event.sender.id);
+            if (workspaceView != null) {
+                if (status === "ready") {
+                    handleWorkspaceRendererInitStatus(workspaceView, status);
+                } else if (status === "workspace-ready") {
+                    handleWorkspaceRendererInitStatus(workspaceView, status, workspaceReady);
+                } else if (status === "workspace-init-failed") {
+                    handleWorkspaceRendererInitStatus(workspaceView, status, workspaceReady);
                 }
-            } else if (status === "wave-ready") {
-                tabView.waveReadyResolve();
+                return;
             }
-            return;
-        }
-
-        const builderWindow = getBuilderWindowByWebContentsId(event.sender.id);
-        if (builderWindow != null) {
-            if (status === "ready") {
-                if (builderWindow.savedInitOpts) {
-                    console.log("savedInitOpts calling builder-init", builderWindow.savedInitOpts.builderId);
-                    builderWindow.webContents.send("builder-init", builderWindow.savedInitOpts);
+            const tabView = getWaveTabViewByWebContentsId(event.sender.id);
+            if (tabView != null && tabView.initResolve != null) {
+                if (status === "ready") {
+                    tabView.initResolve();
+                    if (tabView.savedInitOpts) {
+                        console.log("savedInitOpts calling wave-init", tabView.waveTabId);
+                        tabView.webContents.send("wave-init", tabView.savedInitOpts);
+                    }
+                } else if (status === "wave-ready") {
+                    tabView.waveReadyResolve();
                 }
+                return;
             }
-            return;
-        }
 
-        console.log("set-window-init-status: no window found for webContentsId", event.sender.id);
+            const builderWindow = getBuilderWindowByWebContentsId(event.sender.id);
+            if (builderWindow != null) {
+                if (status === "ready") {
+                    if (builderWindow.savedInitOpts) {
+                        console.log("savedInitOpts calling builder-init", builderWindow.savedInitOpts.builderId);
+                        builderWindow.webContents.send("builder-init", builderWindow.savedInitOpts);
+                    }
+                }
+                return;
+            }
+
+            console.log("set-window-init-status: no window found for webContentsId", event.sender.id);
+        }
+    );
+
+    electron.ipcMain.on("workspace-command", (event, command: unknown) => {
+        routeWorkspaceCommandByWebContentsId(event.sender.id, command, {
+            getWaveWindowByWebContentsId,
+            sendWorkspaceCommand,
+        });
     });
 
     electron.ipcMain.on("fe-log", (event, logStr: string) => {
@@ -613,6 +664,18 @@ export function initIpcHandlers() {
         const result = await electron.dialog.showOpenDialog(ww, {
             title: "Open Project Folder",
             properties: ["openDirectory", "createDirectory"],
+        });
+        if (result.canceled || result.filePaths.length === 0) {
+            return null;
+        }
+        return result.filePaths[0];
+    });
+
+    electron.ipcMain.handle("select-file", async (event) => {
+        const ww = electron.BrowserWindow.fromWebContents(event.sender);
+        const result = await electron.dialog.showOpenDialog(ww, {
+            title: "Locate File",
+            properties: ["openFile"],
         });
         if (result.canceled || result.filePaths.length === 0) {
             return null;

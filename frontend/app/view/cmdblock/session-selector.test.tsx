@@ -5,9 +5,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentSelectorRequest } from "@/app/term/render/agent-chat-host";
+import type { AgentSelectorRequest } from "@/app/agent/agent-chat-host";
 import { TerminalNotification } from "@/app/term/render/terminal-notification";
 import {
     AgentSelectorPanel,
@@ -25,7 +25,7 @@ import {
 } from "./session-selector";
 
 afterEach(cleanup);
-beforeAll(() => {
+beforeEach(() => {
     HTMLElement.prototype.scrollIntoView = vi.fn();
 });
 
@@ -120,6 +120,16 @@ function PersistentReferenceNotificationHarness({ request }: { request: AgentSel
 }
 
 describe("agent selector popover", () => {
+    function deferred<T>() {
+        let resolve!: (value: T) => void;
+        let reject!: (reason?: unknown) => void;
+        const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+            resolve = resolvePromise;
+            reject = rejectPromise;
+        });
+        return { promise, resolve, reject };
+    }
+
     it("commits tree picks through navigateTree", async () => {
         const navigateTree = vi.fn(async () => ({
             sessionMetadata: { id: "s1", createdAt: "now", cwd: "/repo", path: "/tmp/session.jsonl" },
@@ -590,6 +600,217 @@ describe("agent selector popover", () => {
         expect(html).toContain('data-agent-selector-row="root"');
         expect(html).toContain('data-agent-selector-current="true"');
         expect(html).toContain("focus:outline-none");
+    });
+
+    it("does not commit delayed list results or errors after the selector session becomes stale", async () => {
+        const staleList = deferred<AgentTreeResult>();
+        let current = true;
+        const request = {
+            type: "tree" as const,
+            listTree: vi.fn(() => staleList.promise),
+            navigateTree: vi.fn(),
+            isCurrent: () => current,
+        };
+        const onClose = vi.fn();
+        const view = render(<SessionSelector request={request} onClose={onClose} />);
+
+        current = false;
+        staleList.resolve({
+            entries: [
+                {
+                    id: "old-entry",
+                    type: "message",
+                    preview: "old session entry",
+                    isLeaf: true,
+                    isCurrent: true,
+                },
+            ],
+            leafId: "old-entry",
+        });
+        await act(async () => {
+            await staleList.promise;
+        });
+
+        expect(screen.queryByText("old session entry")).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+
+        const staleError = deferred<AgentTreeResult>();
+        current = true;
+        const errorRequest = {
+            ...request,
+            listTree: vi.fn(() => staleError.promise),
+            isCurrent: () => current,
+        };
+        view.rerender(<SessionSelector request={errorRequest} onClose={onClose} />);
+        current = false;
+        staleError.reject(new Error("old list failed"));
+        await act(async () => {
+            await Promise.allSettled([staleError.promise]);
+        });
+
+        expect(screen.queryByText("old list failed")).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("does not commit delayed navigate results or errors after the selector session becomes stale", async () => {
+        const staleNavigate = deferred<AgentNavigateTreeResult>();
+        let current = true;
+        const onClose = vi.fn();
+        const onUserMessage = vi.fn();
+        const onEditorText = vi.fn();
+        const request = {
+            type: "tree" as const,
+            listTree: vi.fn(async () => ({
+                entries: [
+                    {
+                        id: "entry-a",
+                        type: "message",
+                        preview: "navigate old entry",
+                        isLeaf: true,
+                        isCurrent: true,
+                    },
+                ],
+                leafId: "entry-a",
+            })),
+            navigateTree: vi.fn(() => staleNavigate.promise),
+            isCurrent: () => current,
+        };
+        const view = render(
+            <SessionSelector
+                request={request}
+                onClose={onClose}
+                onUserMessage={onUserMessage}
+                onEditorText={onEditorText}
+            />
+        );
+        await screen.findByText("navigate old entry");
+        fireEvent.click(screen.getByText("navigate old entry"));
+        current = false;
+        staleNavigate.resolve({
+            sessionMetadata: { id: "a", path: "/a", cwd: "/repo", createdAt: "now" },
+            editorText: "old editor text",
+        });
+        await act(async () => {
+            await staleNavigate.promise;
+        });
+
+        expect(onEditorText).not.toHaveBeenCalled();
+        expect(onUserMessage).not.toHaveBeenCalled();
+        expect(onClose).not.toHaveBeenCalled();
+
+        const staleError = deferred<AgentNavigateTreeResult>();
+        current = true;
+        const errorRequest = {
+            ...request,
+            navigateTree: vi.fn(() => staleError.promise),
+            isCurrent: () => current,
+        };
+        view.rerender(
+            <SessionSelector
+                request={errorRequest}
+                onClose={onClose}
+                onUserMessage={onUserMessage}
+                onEditorText={onEditorText}
+            />
+        );
+        await screen.findByText("navigate old entry");
+        fireEvent.click(screen.getByText("navigate old entry"));
+        current = false;
+        staleError.reject(new Error("old navigate failed"));
+        await act(async () => {
+            await Promise.allSettled([staleError.promise]);
+        });
+
+        expect(screen.queryByText("old navigate failed")).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("does not commit delayed fork results or errors after the selector session becomes stale", async () => {
+        const staleFork = deferred<AgentForkSessionResult>();
+        let current = true;
+        const onClose = vi.fn();
+        const onUserMessage = vi.fn();
+        const request = {
+            type: "fork" as const,
+            listForkPoints: vi.fn(async () => [{ entryId: "fork-a", preview: "fork old entry" }]),
+            forkSession: vi.fn(() => staleFork.promise),
+            isCurrent: () => current,
+        };
+        const view = render(
+            <SessionSelector request={request} onClose={onClose} onUserMessage={onUserMessage} />
+        );
+        await screen.findByText("fork old entry");
+        fireEvent.click(screen.getByText("fork old entry"));
+        current = false;
+        staleFork.resolve({
+            sessionMetadata: { id: "fork", path: "/fork", cwd: "/repo", createdAt: "now" },
+        });
+        await act(async () => {
+            await staleFork.promise;
+        });
+
+        expect(onUserMessage).not.toHaveBeenCalled();
+        expect(onClose).not.toHaveBeenCalled();
+
+        const staleError = deferred<AgentForkSessionResult>();
+        current = true;
+        const errorRequest = {
+            ...request,
+            forkSession: vi.fn(() => staleError.promise),
+            isCurrent: () => current,
+        };
+        view.rerender(<SessionSelector request={errorRequest} onClose={onClose} onUserMessage={onUserMessage} />);
+        await screen.findByText("fork old entry");
+        fireEvent.click(screen.getByText("fork old entry"));
+        current = false;
+        staleError.reject(new Error("old fork failed"));
+        await act(async () => {
+            await Promise.allSettled([staleError.promise]);
+        });
+
+        expect(screen.queryByText("old fork failed")).toBeNull();
+        expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("keeps current selector operations fully functional", async () => {
+        const onClose = vi.fn();
+        const onUserMessage = vi.fn();
+        const onEditorText = vi.fn();
+        const request = {
+            type: "tree" as const,
+            listTree: vi.fn(async () => ({
+                entries: [
+                    {
+                        id: "entry-b",
+                        type: "message",
+                        preview: "current entry",
+                        isLeaf: true,
+                        isCurrent: true,
+                    },
+                ],
+                leafId: "entry-b",
+            })),
+            navigateTree: vi.fn(async () => ({
+                sessionMetadata: { id: "b", path: "/b", cwd: "/repo", createdAt: "now" },
+                editorText: "current editor text",
+            })),
+            isCurrent: () => true,
+        };
+        render(
+            <SessionSelector
+                request={request}
+                onClose={onClose}
+                onUserMessage={onUserMessage}
+                onEditorText={onEditorText}
+            />
+        );
+
+        await screen.findByText("current entry");
+        fireEvent.click(screen.getByText("current entry"));
+        await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+
+        expect(onEditorText).toHaveBeenCalledWith("current editor text");
+        expect(onUserMessage).toHaveBeenCalledWith("Navigated agent session tree.");
     });
 
     it("uses the same inline-above-input contract as the model picker", () => {

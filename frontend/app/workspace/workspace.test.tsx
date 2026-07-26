@@ -12,16 +12,9 @@ const mockLayout = vi.hoisted(() => {
     const state = {
         staticTabIdAtom: null as jotai.PrimitiveAtom<string>,
         workspaceAtom: null as jotai.PrimitiveAtom<Workspace>,
-        tabAtom: null as jotai.PrimitiveAtom<Tab>,
-        blockAtom: null as jotai.PrimitiveAtom<Block>,
         isFullScreenAtom: null as jotai.PrimitiveAtom<boolean>,
         tabBarSettingAtom: null as jotai.PrimitiveAtom<string>,
-        vtabVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
-        fileExplorerVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
-        sessionsPanelVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
-        agentTabIdAtom: null as jotai.PrimitiveAtom<string>,
-        vtabWidthAtom: null as jotai.PrimitiveAtom<number>,
-        fileExplorerWidthAtom: null as jotai.PrimitiveAtom<number>,
+        leftPanelAtom: null as jotai.PrimitiveAtom<any>,
         codeReviewVisibleAtom: null as jotai.PrimitiveAtom<boolean>,
         codeReviewWideAtom: null as jotai.PrimitiveAtom<boolean>,
         rightToolPanelAtom: null as jotai.PrimitiveAtom<RightToolPanelState>,
@@ -62,30 +55,6 @@ vi.mock("@/store/global", async () => {
     } as Workspace);
     mockLayout.isFullScreenAtom = jotaiActual.atom(false);
     mockLayout.tabBarSettingAtom = jotaiActual.atom("top");
-    mockLayout.tabAtom = jotaiActual.atom({
-        otype: "tab",
-        oid: "tab-a",
-        version: 1,
-        meta: {},
-        name: "Agent",
-        layoutstate: "",
-        blockids: ["block-a"],
-    } as Tab);
-    mockLayout.blockAtom = jotaiActual.atom({
-        otype: "block",
-        oid: "block-a",
-        version: 1,
-        meta: {
-            view: "agent",
-            "agent:session": {
-                id: "session-a",
-                createdAt: "2026-07-19T10:00:00.000Z",
-                cwd: "/repo",
-                path: "/sessions/current.jsonl",
-            },
-        },
-    } as Block);
-
     return {
         atoms: {
             staticTabId: mockLayout.staticTabIdAtom,
@@ -96,21 +65,12 @@ vi.mock("@/store/global", async () => {
             getHomeDir: () => "/repo",
         }),
         getSettingsKeyAtom: () => mockLayout.tabBarSettingAtom,
-        WOS: {
-            makeORef: (otype: string, oid: string) => `${otype}:${oid}`,
-            getWaveObjectAtom: (oref: string) => (oref.startsWith("tab:") ? mockLayout.tabAtom : mockLayout.blockAtom),
-        },
     };
 });
 
 vi.mock("@/app/workspace/workspace-layout-model", async () => {
     const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
-    mockLayout.vtabVisibleAtom = jotaiActual.atom(false);
-    mockLayout.fileExplorerVisibleAtom = jotaiActual.atom(false);
-    mockLayout.sessionsPanelVisibleAtom = jotaiActual.atom(false);
-    mockLayout.agentTabIdAtom = jotaiActual.atom("");
-    mockLayout.vtabWidthAtom = jotaiActual.atom(248);
-    mockLayout.fileExplorerWidthAtom = jotaiActual.atom(260);
+    mockLayout.leftPanelAtom = jotaiActual.atom({ visible: false, mode: "files", width: 260 });
     mockLayout.codeReviewVisibleAtom = jotaiActual.atom(true);
     mockLayout.codeReviewWideAtom = jotaiActual.atom(false);
     mockLayout.rightToolPanelAtom = jotaiActual.atom({
@@ -120,27 +80,19 @@ vi.mock("@/app/workspace/workspace-layout-model", async () => {
         activeTool: "codeReview",
     });
     mockLayout.model = {
-        vtabVisibleAtom: mockLayout.vtabVisibleAtom,
-        fileExplorerVisibleAtom: mockLayout.fileExplorerVisibleAtom,
-        sessionsPanelVisibleAtom: mockLayout.sessionsPanelVisibleAtom,
-        agentTabIdAtom: mockLayout.agentTabIdAtom,
-        vtabWidthAtom: mockLayout.vtabWidthAtom,
-        fileExplorerWidthAtom: mockLayout.fileExplorerWidthAtom,
+        leftPanelAtom: mockLayout.leftPanelAtom,
         codeReviewVisibleAtom: mockLayout.codeReviewVisibleAtom,
         codeReviewWideAtom: mockLayout.codeReviewWideAtom,
         rightToolPanelAtom: mockLayout.rightToolPanelAtom,
+        getLeftPanelStateForWorkspace: vi.fn((_workspaceId: string, state: any) => state),
         getRightToolPanelStateForWorkspace: vi.fn((_workspaceId: string, state: RightToolPanelState) => state),
+        hydrateLeftPanelFromWorkspace: vi.fn(),
         hydrateRightToolPanelFromWorkspace: vi.fn(),
-        setVTabVisible: vi.fn(),
-        getVTabMinWidth: () => 200,
-        getVTabMaxWidth: () => 360,
-        getFileExplorerMinWidth: () => 180,
-        getFileExplorerMaxWidth: () => 500,
+        getLeftPanelMinWidth: () => 180,
+        getLeftPanelMaxWidth: () => 500,
         getRightToolPanelMaxWidth: () => 840,
-        setFileExplorerVisible: vi.fn(),
-        setSessionsPanelVisible: vi.fn(),
-        setVTabWidth: vi.fn(),
-        setFileExplorerWidth: vi.fn(),
+        previewLeftPanelWidth: vi.fn(),
+        setLeftPanelWidth: vi.fn(),
         previewRightToolPanelWidth: vi.fn(),
         setRightToolPanelVisible: vi.fn(),
         setRightToolPanelWidth: vi.fn(),
@@ -231,10 +183,6 @@ vi.mock("@/app/observability/observability-panel", () => ({
     },
 }));
 
-vi.mock("@/app/tab/tabbar", () => ({
-    TabBar: () => <div>Tab Bar</div>,
-}));
-
 vi.mock("@/app/topbar/topbar", () => ({
     TopBar: (props: { onPointerDownCapture?: React.PointerEventHandler<HTMLDivElement> }) => {
         mockLayout.topBarProps = props;
@@ -251,10 +199,6 @@ vi.mock("@/app/tab/tabcontent", () => ({
         mockLayout.tabContentMock?.(props);
         return <main>Main Tab Content</main>;
     },
-}));
-
-vi.mock("@/app/tab/vtabbar", () => ({
-    VTabBar: () => <div>Vertical Tabs</div>,
 }));
 
 vi.mock("@/app/tab/workspaceswitcher", () => ({
@@ -290,6 +234,9 @@ describe("Workspace right tool panel integration", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         vi.stubGlobal("window", { innerWidth: 1200 });
+        jotai.getDefaultStore().set(mockLayout.staticTabIdAtom, "tab-a");
+        mockLayout.leftPanelAtom = jotai.atom({ visible: false, mode: "files", width: 260 });
+        mockLayout.model.leftPanelAtom = mockLayout.leftPanelAtom;
         mockLayout.rightToolPanelAtom = jotai.atom({
             ...DefaultRightToolPanelState,
             width: 420,
@@ -300,6 +247,7 @@ describe("Workspace right tool panel integration", () => {
         mockLayout.model.getRightToolPanelStateForWorkspace = vi.fn(
             (_workspaceId: string, state: RightToolPanelState) => state
         );
+        mockLayout.model.getLeftPanelStateForWorkspace = vi.fn((_workspaceId: string, state: any) => state);
         jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
             otype: "workspace",
             oid: "ws-a",
@@ -327,7 +275,61 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).not.toContain("data-legacy-resize-handle");
     });
 
-    it("mounts observability with the current agent session scope", () => {
+    it.each([
+        ["files", "File Explorer"],
+        ["sessions", ""],
+        ["terminals", "Terminal List"],
+    ])("renders one left panel slot for %s", (mode, content) => {
+        mockLayout.leftPanelAtom = jotai.atom({ visible: true, mode, width: 280 });
+        mockLayout.model.leftPanelAtom = mockLayout.leftPanelAtom;
+
+        const markup = renderToStaticMarkup(<Workspace terminalList={<div>Terminal List</div>} />);
+
+        expect(markup).toContain("width:280px");
+        if (content) {
+            expect(markup).toContain(content);
+        }
+        expect(markup.match(/aria-label="Resize right"/g) ?? []).toHaveLength(1);
+    });
+
+    it.each([
+        ["files", "File Explorer"],
+        ["sessions", ""],
+        ["terminals", "Terminal List"],
+    ])("keeps the %s left panel mounted without an active tab", (mode, content) => {
+        jotai.getDefaultStore().set(mockLayout.staticTabIdAtom, "");
+        mockLayout.leftPanelAtom = jotai.atom({ visible: true, mode, width: 280 });
+        mockLayout.model.leftPanelAtom = mockLayout.leftPanelAtom;
+
+        const markup = renderToStaticMarkup(<Workspace terminalList={<div>Terminal List</div>} />);
+
+        expect(markup).toContain("width:280px");
+        if (content) {
+            expect(markup).toContain(content);
+        }
+        expect(markup.match(/aria-label="Resize right"/g) ?? []).toHaveLength(1);
+        expect(markup).toContain("No Active Tab");
+    });
+
+    it("does not render or reserve the left panel slot while hidden", () => {
+        const markup = renderToStaticMarkup(<Workspace />);
+
+        expect(markup).not.toContain("File Explorer");
+        expect(markup).not.toContain("Agent Sessions");
+        expect(markup).not.toContain("Terminal List");
+        expect(markup).not.toContain('aria-label="Resize right"');
+    });
+
+    it("does not treat an unknown left panel mode as terminals", () => {
+        mockLayout.leftPanelAtom = jotai.atom({ visible: true, mode: "unknown", width: 280 });
+        mockLayout.model.leftPanelAtom = mockLayout.leftPanelAtom;
+
+        const markup = renderToStaticMarkup(<Workspace />);
+
+        expect(markup).not.toContain("Terminal List");
+    });
+
+    it("does not derive observability session scope from legacy Agent blocks", () => {
         mockLayout.rightToolPanelAtom = jotai.atom({
             ...DefaultRightToolPanelState,
             openedTools: ["observability"],
@@ -339,7 +341,7 @@ describe("Workspace right tool panel integration", () => {
 
         expect(markup).toContain('aria-label="Agent Observability"');
         expect(mockLayout.observabilityProps).toMatchObject({
-            sessionId: "/sessions/current.jsonl",
+            sessionId: undefined,
         });
     });
 
@@ -436,6 +438,28 @@ describe("Workspace right tool panel integration", () => {
         expect(markup).toContain("fa-table-columns");
     });
 
+    it("renders ws-b left panel content and width on the first frame while the singleton still holds ws-a", () => {
+        mockLayout.leftPanelAtom = jotai.atom({ visible: true, mode: "sessions", width: 300 });
+        mockLayout.model.leftPanelAtom = mockLayout.leftPanelAtom;
+        jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
+            otype: "workspace",
+            oid: "ws-b",
+            version: 1,
+            meta: {},
+            tabids: ["tab-b"],
+            activetabid: "tab-b",
+        } as Workspace);
+        mockLayout.model.getLeftPanelStateForWorkspace = vi.fn((workspaceId: string, state: any) =>
+            workspaceId === "ws-b" ? { visible: true, mode: "terminals", width: 340 } : state
+        );
+
+        const markup = renderToStaticMarkup(<Workspace terminalList={<div>Terminal List</div>} />);
+
+        expect(markup).toContain("width:340px");
+        expect(markup).toContain("Terminal List");
+        expect(markup).not.toContain("Agent Sessions");
+    });
+
     it("renders the TopBar right panel button inactive on the first ws-b render when ws-a left it visible", () => {
         jotai.getDefaultStore().set(mockLayout.workspaceAtom, {
             otype: "workspace",
@@ -466,28 +490,17 @@ describe("Workspace right tool panel integration", () => {
     });
 
     it("clamps the right tool resize budget after visible left panels and the main content floor", () => {
-        mockLayout.vtabVisibleAtom = jotai.atom(true);
-        mockLayout.fileExplorerVisibleAtom = jotai.atom(true);
-        mockLayout.vtabWidthAtom = jotai.atom(248);
-        mockLayout.fileExplorerWidthAtom = jotai.atom(260);
-        mockLayout.model.vtabVisibleAtom = mockLayout.vtabVisibleAtom;
-        mockLayout.model.fileExplorerVisibleAtom = mockLayout.fileExplorerVisibleAtom;
-        mockLayout.model.vtabWidthAtom = mockLayout.vtabWidthAtom;
-        mockLayout.model.fileExplorerWidthAtom = mockLayout.fileExplorerWidthAtom;
+        mockLayout.leftPanelAtom = jotai.atom({ visible: true, mode: "files", width: 260 });
+        mockLayout.model.leftPanelAtom = mockLayout.leftPanelAtom;
         mockLayout.model.getRightToolPanelMaxWidth = vi.fn(
-            (
-                windowWidth: number,
-                vtabVisible: boolean,
-                vtabWidth: number,
-                fileExplorerVisible: boolean,
-                fileExplorerWidth: number
-            ) => windowWidth - (vtabVisible ? vtabWidth : 0) - (fileExplorerVisible ? fileExplorerWidth : 0) - 320
+            (windowWidth: number, leftPanelVisible: boolean, leftPanelWidth: number) =>
+                windowWidth - (leftPanelVisible ? leftPanelWidth : 0) - 320
         );
 
         const markup = renderToStaticMarkup(<Workspace />);
 
-        expect(mockLayout.model.getRightToolPanelMaxWidth).toHaveBeenCalledWith(1200, true, 248, true, 260);
-        expect(markup).toContain('aria-label="Resize left" data-max="372"');
+        expect(mockLayout.model.getRightToolPanelMaxWidth).toHaveBeenCalledWith(1200, true, 260);
+        expect(markup).toContain('aria-label="Resize left" data-max="620"');
     });
 
     it("does not render an in-content collapsed toggle when the panel is hidden", () => {
