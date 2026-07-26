@@ -17,12 +17,21 @@ const h = vi.hoisted(() => {
         const writes: (string | Uint8Array)[] = [];
         const oscHandlers = new Map<number, (data: string) => boolean | Promise<boolean>>();
         let bufferListener: (() => void) | null = null;
+        let writeParsedListener: (() => void) | null = null;
         const term: any = {
             cols: 80,
             rows: 24,
             options: {} as Record<string, unknown>,
+            element: null,
             buffer: {
-                active: { type: "normal", length: 0, getLine: (_i: number) => null as any },
+                active: {
+                    type: "normal",
+                    length: 0,
+                    baseY: 0,
+                    cursorY: 0,
+                    viewportY: 0,
+                    getLine: (_i: number) => null as any,
+                },
                 onBufferChange: (cb: () => void) => {
                     bufferListener = cb;
                     return {
@@ -38,7 +47,23 @@ const h = vi.hoisted(() => {
                     return { dispose: () => oscHandlers.delete(code) };
                 },
             },
-            registerMarker: () => ({ isDisposed: false, dispose: () => {} }),
+            registerMarker: () => ({ line: 0, isDisposed: false, dispose: () => {} }),
+            registerDecoration: () => ({ dispose: () => {}, onRender: () => {} }),
+            onWriteParsed: (cb: () => void) => {
+                writeParsedListener = cb;
+                return {
+                    dispose: () => {
+                        writeParsedListener = null;
+                    },
+                };
+            },
+            onScroll: () => ({ dispose: () => {} }),
+            onRender: () => ({ dispose: () => {} }),
+            hasSelection: () => false,
+            selectLines: () => {},
+            clearSelection: () => {},
+            scrollToLine: () => {},
+            focus: () => {},
             write: (data: string | Uint8Array) => writes.push(data),
             clear: () => {},
             reset: () => {},
@@ -51,6 +76,7 @@ const h = vi.hoisted(() => {
             setAltScreen: (active: boolean) => {
                 term.buffer.active.type = active ? "alternate" : "normal";
                 bufferListener?.();
+                writeParsedListener?.();
             },
             searchAddon: {},
         };
@@ -197,13 +223,20 @@ import {
     disposeSession,
     getSessionBlockMode,
     getSessionBuffer,
+    getSessionVisibleBlocks,
+    getSessionWatermarkState,
     interruptSession,
+    readSessionBlockOutput,
     resizeSession,
+    searchSessionBlock,
     sessionCwd,
     sessionLeafId,
+    setSessionInputActivity,
+    setSessionInputFocus,
     setSessionVisibility,
     submitToSession,
     subscribeSessionBlockMode,
+    subscribeSessionBlocks,
     writeToSession,
     type SessionCallbacks,
 } from "./xterm-session";
@@ -764,5 +797,145 @@ describe("detach + dispose", () => {
         disposeSession(blockId);
         handlers.onData(enc("ZOMBIE"));
         expect(joined(slot)).toBe("");
+    });
+});
+
+describe("blocks mode", () => {
+    // BlockDecorations schedules overlay refreshes through rAF; the node test
+    // env has none and no test asserts on frame timing.
+    beforeEach(() => {
+        vi.stubGlobal("requestAnimationFrame", () => 1);
+        vi.stubGlobal("cancelAnimationFrame", () => {});
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    function giveFakeScreen(slot: FakeSlot): void {
+        const screen = { getBoundingClientRect: () => ({ top: 0, height: 240 }) };
+        slot.term.element = {
+            querySelector: () => screen,
+            getBoundingClientRect: () => ({ top: 0 }),
+        };
+    }
+
+    function rowSubFor(blockId: string): any {
+        return h.statusSubs.find((s) => s.eventType === "cmdblock:row" && s.scope === `block:${blockId}`);
+    }
+
+    it("gates xterm stdin at the prompt and hands the grid over while running", async () => {
+        const { blockId, slot } = await attachReady({ blocks: true });
+        expect(slot.term.options.disableStdin).toBe(true);
+
+        slot.emitOsc(133, "C");
+        expect(getSessionBlockMode(blockId)).toBe("running");
+        expect(slot.term.options.disableStdin).toBe(false);
+
+        slot.emitOsc(133, "D;0");
+        expect(getSessionBlockMode(blockId)).toBe("prompt");
+        expect(slot.term.options.disableStdin).toBe(true);
+    });
+
+    it("keeps stdin disabled at the prompt after the shell exits", async () => {
+        const { blockId, slot } = await attachReady({ blocks: true });
+        statusSubFor(blockId).handler({ event: "controllerstatus", data: { shellprocstatus: "done" } });
+        statusSubFor(blockId).handler({ event: "controllerstatus", data: { shellprocstatus: "running" } });
+        expect(slot.term.options.disableStdin).toBe(true);
+    });
+
+    it("notifies mode subscribers that registered before the session existed", async () => {
+        const blockId = newBlockId();
+        const listener = vi.fn();
+        subscribeSessionBlockMode(blockId, listener);
+        attachSession(blockId, fakeContainer(), {}, { blocks: true });
+        setSessionVisibility(blockId, true, true);
+        await flushAsync();
+
+        const slot: FakeSlot = h.pool.slots.get(sessionLeafId(blockId));
+        slot.emitOsc(133, "C");
+        expect(getSessionBlockMode(blockId)).toBe("running");
+        expect(listener).toHaveBeenCalled();
+    });
+
+    it("refocuses the input bar when a command returns to the prompt", async () => {
+        vi.useFakeTimers();
+        const { blockId, slot } = await attachReady({ blocks: true });
+        const focusInput = vi.fn();
+        setSessionInputFocus(blockId, focusInput);
+
+        slot.emitOsc(133, "C");
+        expect(focusInput).not.toHaveBeenCalled();
+        slot.emitOsc(133, "D;0");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(focusInput).toHaveBeenCalledTimes(1);
+    });
+
+    it("exposes finished blocks through the read/search accessors", async () => {
+        const { blockId, slot } = await attachReady({ blocks: true });
+        slot.emitOsc(133, "C");
+        slot.emitOsc(133, "D;0");
+        expect(readSessionBlockOutput(blockId, "b1")).toBe("");
+        expect(readSessionBlockOutput(blockId, "nope")).toBeNull();
+        expect(searchSessionBlock(blockId, "b1", "zzz")).toEqual([]);
+        expect(readSessionBlockOutput("no-such-block", "b1")).toBeNull();
+    });
+
+    it("enriches decorations from cmdblock:row and skips non-shell rows", async () => {
+        const { blockId, slot } = await attachReady({ blocks: true });
+        giveFakeScreen(slot);
+        slot.emitOsc(133, "C");
+        slot.emitOsc(133, "D;0");
+
+        const sub = rowSubFor(blockId);
+        expect(sub).toBeTruthy();
+        sub.handler({
+            event: "cmdblock:row",
+            data: {
+                state: "done",
+                kind: "agent",
+                cmd: "not-a-shell-row",
+                tscmdns: Date.now() * 1e6,
+                tsdonens: Date.now() * 1e6,
+            },
+        });
+        sub.handler({
+            event: "cmdblock:row",
+            data: {
+                state: "done",
+                kind: "shell",
+                cmd: "make build",
+                exitcode: 0,
+                durationms: 250,
+                tscmdns: Date.now() * 1e6,
+                tsdonens: Date.now() * 1e6,
+            },
+        });
+
+        const vis = getSessionVisibleBlocks(blockId);
+        expect(vis.blocks).toHaveLength(1);
+        expect(vis.blocks[0].command).toBe("make build");
+        expect(vis.blocks[0].finishedAt - vis.blocks[0].startedAt).toBe(250);
+    });
+
+    it("does not subscribe to cmdblock:row for plain sessions", async () => {
+        const { blockId } = await attachReady();
+        expect(rowSubFor(blockId)).toBeUndefined();
+    });
+
+    it("drives the watermark visible → hidden (typing) → dead (submit)", async () => {
+        const { blockId } = await attachReady({ blocks: true });
+        expect(getSessionWatermarkState(blockId)).toBe("visible");
+
+        setSessionInputActivity(blockId, true);
+        expect(getSessionWatermarkState(blockId)).toBe("hidden");
+        setSessionInputActivity(blockId, false);
+        expect(getSessionWatermarkState(blockId)).toBe("visible");
+
+        const ping = vi.fn();
+        subscribeSessionBlocks(blockId, ping);
+        submitToSession(blockId, "ls");
+        expect(ping).toHaveBeenCalled();
+        expect(getSessionWatermarkState(blockId)).toBe("dead");
+        expect(getSessionWatermarkState("no-such-block")).toBe("dead");
     });
 });

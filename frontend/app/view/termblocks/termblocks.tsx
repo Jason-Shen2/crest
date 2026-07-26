@@ -71,6 +71,6 @@ export class TermBlocksViewModel implements ViewModel {
 const TerminalViewAdapter: React.FC<{ model: TermBlocksViewModel }> = ({ model }) => {
     const fontSize = useAtomValue(model.termFontSizeAtom);
     const focusRequest = useAtomValue(model.focusRequestAtom);
-    return <XtermView outerBlockId={model.blockId} fontSize={fontSize} focusRequest={focusRequest} />;
+    return <XtermView outerBlockId={model.blockId} fontSize={fontSize} focusRequest={focusRequest} blocks />;
 };
 TerminalViewAdapter.displayName = "TerminalViewAdapter";

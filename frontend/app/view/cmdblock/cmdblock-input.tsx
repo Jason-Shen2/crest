@@ -207,6 +207,17 @@ export function resolveSubmitMode(mode: InputMode, effectiveMode?: "terminal" | 
     return "agent";
 }
 
+// `!` is the agent-side shell escape hatch; in terminal mode it stays literal
+// buffer text (shell history expansion, `!$` etc.) — same mode gate as
+// shouldOpenSlashCommandMenu. Returns the stripped shell payload, "" when the
+// prefix has no command after it, or null when the prefix does not apply.
+export function matchShellPrefix(mode: InputMode, text: string): string | null {
+    if (mode === "terminal") return null;
+    const m = /^\s*!(.*)$/s.exec(text);
+    if (!m) return null;
+    return m[1].replace(/^\s+/, "");
+}
+
 export function shouldShowAgentShellShortcutHint(mode: InputMode, text: string): boolean {
     if (mode !== "agent") return false;
     return text.trim().length > 0;
@@ -825,6 +836,9 @@ interface EditorProps {
     ghost?: string;
     onAcceptGhost?: () => boolean;
     compact?: boolean;
+    // Parent-owned ref to the contentEditable host, so completion/ghost
+    // runs can read the real caret offset instead of assuming end-of-buffer.
+    hostRef?: RefObject<HTMLDivElement>;
 }
 
 const Editor = memo(
@@ -855,13 +869,15 @@ const Editor = memo(
         ghost,
         onAcceptGhost,
         compact,
+        hostRef,
     }: EditorProps) => {
-        const ref = useRef<HTMLDivElement>(null);
+        const localRef = useRef<HTMLDivElement>(null);
+        const ref = hostRef ?? localRef;
 
         useLayoutEffect(() => {
             const el = ref.current;
             if (!el) return;
-            if (el.textContent !== value) {
+            if (getEditorPlainText(el) !== value) {
                 el.textContent = value;
                 // Place caret at end after programmatic value change so a
                 // history pick lets the user keep editing without re-positioning.
@@ -905,7 +921,7 @@ const Editor = memo(
         const flush = useCallback(() => {
             const el = ref.current;
             if (!el) return;
-            syncText(el.textContent ?? "");
+            syncText(getEditorPlainText(el));
         }, [syncText]);
 
         const clearEditor = useCallback(() => {
@@ -1112,7 +1128,40 @@ const Editor = memo(
 );
 Editor.displayName = "Editor";
 
-function getEditorCaretOffset(host: HTMLElement): number | null {
+// contentEditable represents Shift+Enter as <br> (and pasted lines as block
+// elements) that textContent flattens away, silently dropping the user's line
+// breaks. innerText preserves them; the DOM walk below is the fallback for
+// environments without innerText (jsdom). The single trailing "\n" is the
+// caret-placeholder <br> browsers keep for an empty last line, not content.
+export function getEditorPlainText(host: HTMLElement): string {
+    const text = typeof host.innerText === "string" ? host.innerText : editorTextFromDom(host);
+    return text.endsWith("\n") ? text.slice(0, -1) : text;
+}
+
+const TextNodeType = 3;
+const ElementNodeType = 1;
+
+function editorTextFromDom(host: HTMLElement): string {
+    let out = "";
+    const walk = (node: Node, root: boolean) => {
+        if (node.nodeType === TextNodeType) {
+            out += node.textContent ?? "";
+            return;
+        }
+        if (node.nodeType !== ElementNodeType) return;
+        if (node.nodeName === "BR") {
+            out += "\n";
+            return;
+        }
+        const block = node.nodeName === "DIV" || node.nodeName === "P";
+        if (!root && block && out.length > 0 && !out.endsWith("\n")) out += "\n";
+        node.childNodes.forEach((child) => walk(child, false));
+    };
+    walk(host, true);
+    return out;
+}
+
+export function getEditorCaretOffset(host: HTMLElement): number | null {
     const sel = window.getSelection();
     if (!sel?.rangeCount) return null;
     const range = sel.getRangeAt(0);
@@ -1551,7 +1600,7 @@ export const CmdBlockInput = memo(
         // hatch.  When detected, the help row swaps to a shell-mode banner
         // so the user knows ↵ will run as a shell command instead of
         // going to the agent (the new default).
-        const hasShellPrefix = /^\s*!/.test(text);
+        const hasShellPrefix = matchShellPrefix(mode, text) != null;
         // Show the NLD autodetect hint in the top bar only when we're in
         // auto mode and the user has actually typed something — otherwise
         // the kbd hints (HelpRow) remain.  Shell-prefix wins over the
@@ -1652,6 +1701,7 @@ export const CmdBlockInput = memo(
         const [navIndex, setNavIndex] = useState<number | null>(null);
         const draftRef = useRef("");
         const containerRef = useRef<HTMLDivElement>(null);
+        const editorHostRef = useRef<HTMLDivElement>(null);
         const fileInputRef = useRef<HTMLInputElement>(null);
         const [focusRequest, setFocusRequest] = useState(0);
         const requestEditorFocus = useCallback(() => setFocusRequest((prev) => prev + 1), []);
@@ -1731,13 +1781,12 @@ export const CmdBlockInput = memo(
                 submitWith("agent", trimmedTail);
                 return;
             }
-            const shellPrefixMatch = /^\s*!(.*)$/s.exec(trimmedTail);
-            if (shellPrefixMatch) {
+            const shellPayload = matchShellPrefix(mode, trimmedTail);
+            if (shellPayload != null) {
                 // Drop the `!` and any whitespace right after it.  An empty
                 // command after the prefix (`!  ` etc.) is a no-op.
-                const payload = shellPrefixMatch[1].replace(/^\s+/, "");
-                if (!payload) return;
-                submitWith("terminal", payload);
+                if (!shellPayload) return;
+                submitWith("terminal", shellPayload);
                 return;
             }
             submitWith(resolveSubmitMode(mode, effectiveMode), trimmedTail);
@@ -1746,10 +1795,10 @@ export const CmdBlockInput = memo(
         const submitOverride = useCallback(() => {
             const trimmedTail = text.replace(/\s+$/g, "");
             if (!trimmedTail) return;
-            const shellPrefixMatch = /^\s*!(.*)$/s.exec(trimmedTail);
-            const payload = shellPrefixMatch ? shellPrefixMatch[1].replace(/^\s+/, "") : trimmedTail;
+            const shellPayload = matchShellPrefix(mode, trimmedTail);
+            const payload = shellPayload != null ? shellPayload : trimmedTail;
             if (!payload) return;
-            const currentMode = shellPrefixMatch ? "terminal" : resolveSubmitMode(mode, effectiveMode);
+            const currentMode = shellPayload != null ? "terminal" : resolveSubmitMode(mode, effectiveMode);
             submitWith(resolveShortcutOverrideMode(currentMode), payload);
         }, [submitWith, mode, effectiveMode, text]);
 
@@ -1887,13 +1936,20 @@ export const CmdBlockInput = memo(
         // slash / @ menus.  It only opens when those are closed, navigates
         // independently, and accepts by replacing the suggestion's own token
         // span (NOT the whole line).
+        // Real caret position from the editor DOM; end-of-buffer when the
+        // selection is elsewhere (e.g. editor not focused).
+        const editorCaretOrEnd = useCallback((): number => {
+            const el = editorHostRef.current;
+            const caret = el ? getEditorCaretOffset(el) : null;
+            return caret ?? text.length;
+        }, [text]);
+
         const openCompletions = useCallback(async (): Promise<boolean> => {
             // Slash / @ menus take priority; don't compete with them.
             if (slashOpen || atOpen) return false;
-            const cursor = text.length; // single-line caret defaults to end
             const res = await completionRunner.run({
                 buffer: text,
-                cursor,
+                cursor: editorCaretOrEnd(),
                 cwd: cwd ?? "",
                 history,
                 listDir,
@@ -1905,7 +1961,7 @@ export const CmdBlockInput = memo(
             setCompletionResults(res);
             setCompletionIndex(0);
             return true;
-        }, [slashOpen, atOpen, text, cwd, history, listDir, completionRunner]);
+        }, [slashOpen, atOpen, text, cwd, history, listDir, completionRunner, editorCaretOrEnd]);
 
         const recomputeGhost = useCallback(async () => {
             // No ghost while a menu is open, or when buffer is empty/blank.
@@ -1915,7 +1971,7 @@ export const CmdBlockInput = memo(
             }
             const res = await ghostRunner.run({
                 buffer: text,
-                cursor: text.length,
+                cursor: editorCaretOrEnd(),
                 cwd: cwd ?? "",
                 history,
                 listDir,
@@ -1926,7 +1982,7 @@ export const CmdBlockInput = memo(
             } else {
                 setGhost("");
             }
-        }, [text, slashOpen, atOpen, cwd, history, listDir, ghostRunner]);
+        }, [text, slashOpen, atOpen, cwd, history, listDir, ghostRunner, editorCaretOrEnd]);
 
         useEffect(() => {
             const id = setTimeout(() => void recomputeGhost(), 80);
@@ -2178,6 +2234,7 @@ export const CmdBlockInput = memo(
                                 ghost={ghost}
                                 onAcceptGhost={acceptGhost}
                                 compact={isCompactTerminal}
+                                hostRef={editorHostRef}
                             />
                         </div>
                     </div>

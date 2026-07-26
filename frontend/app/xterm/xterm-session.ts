@@ -8,6 +8,8 @@ import { fetchWaveFile } from "@/store/global";
 import type { SearchAddon } from "@xterm/addon-search";
 import type { Terminal } from "@xterm/xterm";
 import { ensureAgentActivityListener, isAgentActive } from "./agent-activity";
+import { BlockDecorations, type BlockMatch, type BlockRowMeta, type VisibleBlocks } from "./block/block-decorations";
+import type { WatermarkState } from "./block/block-watermark";
 import {
     initialModeState,
     modeOf,
@@ -41,6 +43,13 @@ import {
 const TermFileName = "term";
 const ShellStatusDone = "done";
 const HiddenReleaseDelayMs = 300;
+const RowStateDone = "done";
+const RowKindShell = "shell";
+// cmdblock:row events buffered while no BlockDecorations instance exists yet
+// (pre-bind, mid-rebind). Rows older than the age cap can no longer time-align
+// with anything and are dropped instead of being retried every frame.
+const PendingRowsMax = 32;
+const PendingRowMaxAgeMs = 15000;
 // Cursor marker interpolated into the screen text at the cursor position.
 // Mirrors Warp's CURSOR_MARKER — the exact string is part of the pty_read
 // contract with emain (emain/agent/tools/pty-read.ts renders it verbatim).
@@ -54,6 +63,7 @@ const AnsiRe =
 export type SessionCallbacks = {
     onSearchReady?: (addon: SearchAddon) => void;
     onShellExit?: () => void;
+    onShellRestart?: () => void;
     onCwd?: (cwd: string) => void;
 };
 
@@ -81,7 +91,14 @@ type XtermSession = {
     blocks: boolean;
     blockMode: BlockMode;
     modeState: ModeState;
-    blockListeners: Set<() => void>;
+    blockDecorations: BlockDecorations;
+    // Set by the block input bar; called to pull focus back when the xterm
+    // grid steals it at the prompt (e.g. on a click), so typing stays in the bar.
+    inputFocus: () => void;
+    // Live "input has text" flag from the block input bar (gates the watermark).
+    inputActive: boolean;
+    // Go cmdblock:row metadata not yet matched to a decoration entry.
+    pendingRows: BlockRowMeta[];
     // A command was submitted on this session; kills the watermark synchronously,
     // before the shell's OSC 133 C round-trips through the PTY.
     everSubmitted: boolean;
@@ -97,9 +114,37 @@ type XtermSession = {
     restoring: boolean;
     hiddenReleaseTimer: ReturnType<typeof setTimeout>;
     statusUnsub: () => void;
+    rowUnsub: () => void;
 };
 
 const sessions = new Map<string, XtermSession>();
+
+// Mode/viewport listeners live at module scope keyed by blockId (not on the
+// session) so a React useSyncExternalStore subscription made before the attach
+// effect creates the session still receives updates — same reasoning as
+// terax's blockViewportListeners map.
+const blockModeListeners = new Map<string, Set<() => void>>();
+const blockViewportListeners = new Map<string, Set<() => void>>();
+
+function subscribeKeyed(map: Map<string, Set<() => void>>, blockId: string, cb: () => void): () => void {
+    let set = map.get(blockId);
+    if (!set) {
+        set = new Set();
+        map.set(blockId, set);
+    }
+    set.add(cb);
+    return () => {
+        const live = map.get(blockId);
+        live?.delete(cb);
+        if (live && live.size === 0) map.delete(blockId);
+    };
+}
+
+function notifyKeyed(map: Map<string, Set<() => void>>, blockId: string): void {
+    const set = map.get(blockId);
+    if (!set) return;
+    for (const l of set) l();
+}
 
 // renderer-pool's SlotAdapter/LeafBridge seam kept terax's numeric leafId while
 // crest keys sessions by blockId (the leaf IS the block), so each block gets a
@@ -142,6 +187,9 @@ export function submitToSession(blockId: string, text: string): void {
     // Bracketed paste keeps a multiline command atomic; trailing CR runs it.
     const data = text.includes("\n") ? `\x1b[200~${text}\x1b[201~\r` : `${text}\r`;
     void s.pty.write(data);
+    // The watermark reads everSubmitted through the viewport subscription; the
+    // next OSC 133 C is a PTY round-trip away, so notify now.
+    notifyKeyed(blockViewportListeners, blockId);
 }
 
 export function interruptSession(blockId: string): void {
@@ -167,12 +215,76 @@ export function getSessionBlockMode(blockId: string): BlockMode {
 }
 
 export function subscribeSessionBlockMode(blockId: string, cb: () => void): () => void {
+    return subscribeKeyed(blockModeListeners, blockId, cb);
+}
+
+export function subscribeSessionBlocks(blockId: string, cb: () => void): () => void {
+    return subscribeKeyed(blockViewportListeners, blockId, cb);
+}
+
+const EmptyVisibleBlocks: VisibleBlocks = { blocks: [], sticky: null };
+
+export function getSessionVisibleBlocks(blockId: string): VisibleBlocks {
+    return sessions.get(blockId)?.blockDecorations?.visibleBlocks() ?? EmptyVisibleBlocks;
+}
+
+export function readSessionBlockOutput(blockId: string, id: string): string | null {
+    return sessions.get(blockId)?.blockDecorations?.readById(id)?.output ?? null;
+}
+
+export function searchSessionBlock(blockId: string, id: string, query: string): BlockMatch[] {
+    return sessions.get(blockId)?.blockDecorations?.searchBlock(id, query) ?? [];
+}
+
+export function revealSessionBlockMatch(blockId: string, m: BlockMatch): void {
+    sessions.get(blockId)?.blockDecorations?.revealMatch(m);
+}
+
+export function clearSessionBlockSearch(blockId: string): void {
+    sessions.get(blockId)?.blockDecorations?.clearSearch();
+}
+
+export function selectSessionBlockAt(blockId: string, clientY: number): void {
+    sessions.get(blockId)?.blockDecorations?.selectBlockAt(clientY);
+}
+
+export function setSessionInputFocus(blockId: string, fn: (() => void) | null): void {
     const s = sessions.get(blockId);
-    if (!s) return () => {};
-    s.blockListeners.add(cb);
-    return () => {
-        s.blockListeners.delete(cb);
-    };
+    if (s) s.inputFocus = fn;
+}
+
+export function focusSessionInput(blockId: string): void {
+    sessions.get(blockId)?.inputFocus?.();
+}
+
+export function setSessionInputActivity(blockId: string, active: boolean): void {
+    const s = sessions.get(blockId);
+    if (!s || s.inputActive === active) return;
+    s.inputActive = active;
+    notifyKeyed(blockViewportListeners, blockId);
+}
+
+// Watermark gate, ported from terax blockWatermarkState: a block terminal that
+// has never run a command, whose grid is still untouched, and whose input is
+// empty. Synchronous so tab switches, slot rebinds and the Enter-to-OSC-133
+// gap never flash it over real content. "dead" is permanent and lets the
+// component unmount for good. The grid check scans glyphs, not the cursor: the
+// prompt integration prints a blank gap line at spawn, so the cursor sits
+// below row 0 even on a visually empty terminal.
+export function getSessionWatermarkState(blockId: string): WatermarkState {
+    const s = sessions.get(blockId);
+    if (!s || s.disposed) return "dead";
+    if (s.everSubmitted || s.blockDecorations?.hasAnyBlock()) return "dead";
+    if (!s.blockDecorations || s.inputActive) return "hidden";
+    const slot = getSlotForLeaf(s.leafId);
+    if (!slot) return "hidden";
+    const buf = slot.term.buffer.active;
+    if (buf.baseY > 0) return "dead";
+    const rows = Math.min(buf.length, slot.term.rows);
+    for (let i = 0; i < rows; i++) {
+        if (buf.getLine(i)?.translateToString(true)) return "dead";
+    }
+    return "visible";
 }
 
 export function focusSession(blockId: string): void {
@@ -515,8 +627,12 @@ function applyShellStatus(s: XtermSession, exited: boolean): void {
     if (s.disposed || s.shellExited === exited) return;
     s.shellExited = exited;
     const slot = getSlotForLeaf(s.leafId);
-    if (slot) slot.term.options.disableStdin = exited;
-    if (!exited) return;
+    // Blocks mode keeps stdin gated at the prompt regardless of exit state.
+    if (slot) slot.term.options.disableStdin = exited || (s.blocks && s.blockMode === "prompt");
+    if (!exited) {
+        s.callbacks.onShellRestart?.();
+        return;
+    }
     s.commandRunning = false;
     scheduleHiddenRelease(s);
     s.callbacks.onShellExit?.();
@@ -527,10 +643,107 @@ function applyModeEvent(s: XtermSession, event: ModeEvent): void {
     const mode = modeOf(s.modeState);
     if (s.blockMode === mode) return;
     s.blockMode = mode;
-    for (const l of s.blockListeners) l();
+    notifyKeyed(blockModeListeners, s.blockId);
+}
+
+// Blocks-mode counterpart of applyModeEvent, ported from terax's
+// applyBlockMode (useTerminalSession.ts:563-583): at the prompt the xterm grid
+// is read-only — stdin disabled so stray keys can't reach the pty, the helper
+// textarea disabled so a grid click can't flash the xterm cursor or steal
+// focus from the input bar. During running/alt the grid takes over (raw
+// passthrough) and the input bar hides.
+function applySessionBlockMode(s: XtermSession, mode: BlockMode): void {
+    s.blockMode = mode;
+    s.commandRunning = mode !== "prompt";
+    const slot = getSlotForLeaf(s.leafId);
+    if (slot) {
+        const prompt = mode === "prompt";
+        slot.term.options.disableStdin = prompt || s.shellExited;
+        if (slot.term.textarea) slot.term.textarea.disabled = prompt;
+        // Focus moves only while this pane actually holds focus — a parked
+        // hidden slot parsing AI-submitted output must not steal it.
+        if (!prompt) {
+            if (s.visibleNow && s.focusedNow) slot.term.focus();
+        } else if (s.visibleNow && s.focusedNow && s.inputFocus) {
+            const inputFocus = s.inputFocus;
+            setTimeout(inputFocus, 0);
+        }
+    }
+    notifyKeyed(blockModeListeners, s.blockId);
+}
+
+function rowMetaFromCmdBlock(row: CmdBlock): BlockRowMeta {
+    return {
+        cmd: row.cmd,
+        exitCode: row.exitcode,
+        durationMs: row.durationms,
+        startedAt: row.tscmdns != null ? Math.round(row.tscmdns / 1e6) : null,
+        finishedAt: row.tsdonens != null ? Math.round(row.tsdonens / 1e6) : null,
+        running: row.state !== RowStateDone,
+    };
+}
+
+function onSessionRow(s: XtermSession, row: CmdBlock): void {
+    if (s.disposed || row == null) return;
+    if (row.kind != null && row.kind !== RowKindShell) return;
+    const meta = rowMetaFromCmdBlock(row);
+    if (s.blockDecorations?.applyRowMeta(meta)) {
+        notifyKeyed(blockViewportListeners, s.blockId);
+        return;
+    }
+    // Running rows are superseded by their own done row; only done rows are
+    // worth retrying once decorations (re)exist.
+    if (meta.running) return;
+    s.pendingRows.push(meta);
+    if (s.pendingRows.length > PendingRowsMax) s.pendingRows.shift();
+}
+
+function replayPendingRows(s: XtermSession): void {
+    const deco = s.blockDecorations;
+    if (!deco || s.pendingRows.length === 0) return;
+    const cutoff = Date.now() - PendingRowMaxAgeMs;
+    let applied = false;
+    s.pendingRows = s.pendingRows.filter((row) => {
+        if (deco.applyRowMeta(row)) {
+            applied = true;
+            return false;
+        }
+        return (row.finishedAt ?? row.startedAt ?? 0) >= cutoff;
+    });
+    if (applied) notifyKeyed(blockViewportListeners, s.blockId);
+}
+
+function registerSessionBlockOsc(s: XtermSession, term: Terminal): (() => void)[] {
+    const osc52 = registerOsc52ClipboardHandler(term);
+    const deco = new BlockDecorations(term, {
+        onCwd: (next) => {
+            if (s.lastCwd === next) return;
+            s.lastCwd = next;
+            s.callbacks.onCwd?.(next);
+        },
+        onMode: (mode) => applySessionBlockMode(s, mode),
+        onViewport: () => {
+            replayPendingRows(s);
+            notifyKeyed(blockViewportListeners, s.blockId);
+        },
+    });
+    s.blockDecorations = deco;
+    const onGridFocus = () => {
+        if (s.blockMode === "prompt") s.inputFocus?.();
+    };
+    term.textarea?.addEventListener("focus", onGridFocus);
+    return [
+        () => {
+            if (s.blockDecorations === deco) s.blockDecorations = null;
+            osc52();
+            deco.dispose();
+            term.textarea?.removeEventListener("focus", onGridFocus);
+        },
+    ];
 }
 
 function registerSessionOsc(s: XtermSession, term: Terminal): (() => void)[] {
+    if (s.blocks) return registerSessionBlockOsc(s, term);
     // Shared in-command flag — see osc-handlers.ts. The prompt tracker flips it
     // on OSC 133 B/C/D/A; the cwd handler reads it to ignore OSC 7 emitted by
     // untrusted command output (remote SSH, `cat` of an attacker file, etc.).
@@ -581,6 +794,10 @@ function bindSessionToSlot(s: XtermSession): void {
     });
     s.snapshot = null;
     s.hasSlot = true;
+    if (s.blocks) {
+        applySessionBlockMode(s, s.blockMode);
+        replayPendingRows(s);
+    }
     if (s.lastCwd != null) s.callbacks.onCwd?.(s.lastCwd);
 }
 
@@ -618,13 +835,17 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
         blocks,
         blockMode: "prompt",
         modeState: initialModeState(),
-        blockListeners: new Set(),
+        blockDecorations: null,
+        inputFocus: null,
+        inputActive: false,
+        pendingRows: [],
         everSubmitted: false,
         altScreenAtRelease: false,
         commandRunning: false,
         restoring: true,
         hiddenReleaseTimer: null,
         statusUnsub: null,
+        rowUnsub: null,
     };
     sessions.set(blockId, s);
 
@@ -646,6 +867,17 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
             applyShellStatus(s, status.shellprocstatus === ShellStatusDone);
         },
     });
+
+    // Go's Tracker publishes persisted per-command metadata (cmd/exitcode/
+    // durationms) as a sidecar to the raw stream; decorations use it to
+    // enrich the OSC-133 blocks (docs/terax-terminal-port.md §四 P3.1).
+    if (blocks) {
+        s.rowUnsub = waveEventSubscribeSingle({
+            eventType: "cmdblock:row",
+            scope: `block:${blockId}`,
+            handler: (event) => onSessionRow(s, event.data as CmdBlock),
+        });
+    }
 
     void coldRestoreScrollback(s);
     return s;
@@ -683,6 +915,7 @@ export function setSessionVisibility(blockId: string, visible: boolean, focused:
         else if (s.hasSlot) refreshLeafSlot(s.leafId);
         setSlotFocused(s.leafId, focused);
         if (focused && !s.blocks) focusSlot(s.leafId);
+        else if (focused && s.blocks && s.blockMode === "prompt") s.inputFocus?.();
         return;
     }
     if (!s.hasSlot) return;
@@ -708,6 +941,9 @@ export function disposeSession(blockId: string): void {
     s.pty = null;
     s.statusUnsub?.();
     s.statusUnsub = null;
-    s.blockListeners.clear();
+    s.rowUnsub?.();
+    s.rowUnsub = null;
+    s.inputFocus = null;
+    s.pendingRows = [];
     sessions.delete(blockId);
 }
