@@ -34,7 +34,7 @@
 | 1 | Spike: workspace source-import (electron-vite / vitest / tsx) | ✅ done | `a6c41086` | ✅ |
 | 2 | Move `emain/ai` → `packages/ai` (`@crest/ai`) | ✅ done | `2df3b0df` | ✅ |
 | 3 | Move agent-core → `packages/agent` (`@crest/agent`) | ✅ done | `e32d13e4` | ✅ |
-| 4 | Pty family → `emain/agent-tools/`, barrel + factory injection | ⬜ | | |
+| 4 | Pty family → `emain/agent-tools/`, barrel + factory injection | ✅ done | `9c76b1c2` | ✅ |
 | 5 | Rest of `emain/agent` → `packages/coding-agent` | ⬜ | | |
 | 6 | Boundary test, slim config, Electron-free acceptance | ⬜ | | |
 
@@ -94,6 +94,23 @@
   (same vi.mock lesson), and `agent-observability-ipc.test.ts` missing from the plan's
   Step 3.5 file list.
 - Reviews: spec ✅ (first pass), quality ✅ approved (minor pre-existing style debt noted only).
+
+### Task 4 (2026-07-27)
+
+- Pty family (11 files) moved to `emain/agent-tools/`; tools barrel is now Electron-free
+  (spawn-cli-agent re-export dropped); `buildCliSubagentHarness` takes injected
+  `tools: AgentTool[]`. Test-first: factory test proven failing before the interface change.
+- Quality review escalated one Important issue beyond the plan: `blockId`/`initialCommand`
+  became dead fields in `BuildCliSubagentOptions` and the module header was stale — removed
+  now (not deferred), with replacement coverage in spawn-cli-agent.test.ts that
+  mutation-sensitively proves blockId/initialCommand still flow via the tool constructors.
+- `spawn-cli-agent.ts` still imports the factory via temporary relative path
+  `../agent/cli-subagent-factory` — Task 5 rewrites it to `@crest/coding-agent/...`.
+- Operational lesson recorded: the shell can silently reset cwd to the main checkout
+  (which is on an unrelated branch) — every verification command must `cd` into the
+  worktree explicitly; one reviewer also briefly mutated the worktree with a
+  `git checkout <base> -- .` and restored it (verified clean afterwards).
+- Reviews: spec ✅ (first pass), quality ❌→fix→✅ (dead options + stale header).
 
 ## How to resume after an interruption
 
