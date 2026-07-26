@@ -173,6 +173,12 @@ func ControllerDestroyCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOp
 	return err
 }
 
+// command "controllerhasforegroundjob", wshserver.ControllerHasForegroundJobCommand
+func ControllerHasForegroundJobCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (bool, error) {
+	resp, err := sendRpcRequestCallHelper[bool](w, "controllerhasforegroundjob", data, opts)
+	return resp, err
+}
+
 // command "controllerinput", wshserver.ControllerInputCommand
 func ControllerInputCommand(w *wshutil.WshRpc, data wshrpc.CommandBlockInputData, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "controllerinput", data, opts)

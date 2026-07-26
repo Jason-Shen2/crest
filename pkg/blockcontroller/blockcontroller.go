@@ -20,6 +20,7 @@ import (
 	"github.com/s-zx/crest/pkg/jobcontroller"
 	"github.com/s-zx/crest/pkg/remote"
 	"github.com/s-zx/crest/pkg/remote/conncontroller"
+	"github.com/s-zx/crest/pkg/shellexec"
 	"github.com/s-zx/crest/pkg/util/ds"
 	"github.com/s-zx/crest/pkg/util/shellutil"
 	"github.com/s-zx/crest/pkg/wavebase"
@@ -333,6 +334,30 @@ func GetBlockControllerRuntimeStatus(blockId string) *BlockControllerRuntimeStat
 		return nil
 	}
 	return controller.GetRuntimeStatus()
+}
+
+// used by the frontend hibernation heuristics (terax port). false for
+// missing/non-shell controllers, durable (job-manager-owned) shells, and
+// remote connections where the pty fd is not in-process.
+func HasForegroundJob(blockId string) bool {
+	controller := getController(blockId)
+	if controller == nil {
+		return false
+	}
+	sc, ok := controller.(*ShellController)
+	if !ok {
+		return false
+	}
+	var shellProc *shellexec.ShellProc
+	sc.WithLock(func() {
+		if sc.ProcStatus == Status_Running {
+			shellProc = sc.ShellProc
+		}
+	})
+	if shellProc == nil {
+		return false
+	}
+	return shellProc.HasForegroundJob()
 }
 
 func DestroyBlockController(blockId string) {

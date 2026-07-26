@@ -358,6 +358,13 @@ func (ws *WshServer) ControllerAppendOutputCommand(ctx context.Context, data wsh
 	return nil
 }
 
+func (ws *WshServer) ControllerHasForegroundJobCommand(ctx context.Context, blockId string) (bool, error) {
+	if blockId == "" {
+		return false, fmt.Errorf("blockid is required")
+	}
+	return blockcontroller.HasForegroundJob(blockId), nil
+}
+
 func (ws *WshServer) FileCreateCommand(ctx context.Context, data wshrpc.FileData) error {
 	data.Data64 = ""
 	err := wshfs.PutFile(ctx, data)

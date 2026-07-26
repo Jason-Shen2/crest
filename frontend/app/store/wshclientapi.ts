@@ -174,6 +174,12 @@ export class RpcApiType {
         return client.wshRpcCall("controllerdestroy", data, opts);
     }
 
+    // command "controllerhasforegroundjob" [call]
+    ControllerHasForegroundJobCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<boolean> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "controllerhasforegroundjob", data, opts);
+        return client.wshRpcCall("controllerhasforegroundjob", data, opts);
+    }
+
     // command "controllerinput" [call]
     ControllerInputCommand(client: WshClient, data: CommandBlockInputData, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "controllerinput", data, opts);
