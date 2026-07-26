@@ -33,7 +33,7 @@
 | 0 | Branch + worktree + baselines + this doc | ✅ done | (this commit) | ✅ |
 | 1 | Spike: workspace source-import (electron-vite / vitest / tsx) | ✅ done | `a6c41086` | ✅ |
 | 2 | Move `emain/ai` → `packages/ai` (`@crest/ai`) | ✅ done | `2df3b0df` | ✅ |
-| 3 | Move agent-core → `packages/agent` (`@crest/agent`) | ⬜ | | |
+| 3 | Move agent-core → `packages/agent` (`@crest/agent`) | ✅ done | `e32d13e4` | ✅ |
 | 4 | Pty family → `emain/agent-tools/`, barrel + factory injection | ⬜ | | |
 | 5 | Rest of `emain/agent` → `packages/coding-agent` | ⬜ | | |
 | 6 | Boundary test, slim config, Electron-free acceptance | ⬜ | | |
@@ -77,6 +77,23 @@
   boundary test phrased as "added later in this extraction" until Task 6 lands.
 - Reviews: spec ❌→fix→✅ (stale mocks), quality ✅ approved (2 README facts fixed on its
   recommendation).
+
+### Task 3 (2026-07-27)
+
+- `@crest/agent` landed: 32 R100 renames + 2 authorized content edits. All gates zero-delta
+  (69 tsc / 435 tests / same 7 collection failures path-adjusted / build green).
+- **Architectural decision made during execution** (also recorded in the spec's boundary
+  table): the six-unit set was NOT self-contained — commit `712ea282` (cross-session context
+  references) had leaked `ContextProjectionReport` into `harness/types.ts`, and
+  `sqlite-storage.test.ts` imported `context/journal`. Repointing would have created a
+  circular agent ⇄ coding-agent dependency. Resolution: 7-type projection-report closure
+  sunk into `packages/agent/harness/types.ts` (crest-local, documented); coding-agent's
+  `context/types.ts` re-exports them; the cross-layer test relocated to
+  `emain/agent/sqlite-storage.test.ts` (precedent: sessions.test.ts).
+- Two more plan blind spots caught and fixed: `vi.mock("./agent/index")` in agent-ipc.test.ts
+  (same vi.mock lesson), and `agent-observability-ipc.test.ts` missing from the plan's
+  Step 3.5 file list.
+- Reviews: spec ✅ (first pass), quality ✅ approved (minor pre-existing style debt noted only).
 
 ## How to resume after an interruption
 
