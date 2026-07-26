@@ -3,9 +3,7 @@
 
 import { getApi, getBlockComponentModel, getConnStatusAtom, globalStore, WOS } from "@/app/store/global";
 import type { TermViewModel } from "@/app/view/term/term-model";
-import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { getLayoutModelForStaticTab } from "@/layout/index";
-import { base64ToArrayBuffer } from "@/util/util";
 import { RpcResponseHelper, WshClient } from "./wshclient";
 import { RpcApi } from "./wshclientapi";
 
@@ -128,7 +126,9 @@ export class TabClient extends WshClient {
                 if (bcm?.viewModel) {
                     const termViewModel = bcm.viewModel as TermViewModel;
                     if (termViewModel.termRef?.current?.shellIntegrationStatusAtom) {
-                        const shellIntegrationStatus = globalStore.get(termViewModel.termRef.current.shellIntegrationStatusAtom);
+                        const shellIntegrationStatus = globalStore.get(
+                            termViewModel.termRef.current.shellIntegrationStatusAtom
+                        );
                         result.termshellintegrationstatus = shellIntegrationStatus || "";
                     }
                     if (termViewModel.termRef?.current?.lastCommandAtom) {

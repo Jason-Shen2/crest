@@ -34,6 +34,7 @@ import { globalStore } from "@/app/store/jotaiStore";
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
+import { attachCmdRows, detachCmdRows, lastCommandAtom, shellIntegrationSeenAtom } from "@/app/xterm/cmdblock-rows";
 import { disposeXtermPaneModel } from "@/app/xterm/xterm-pane-model";
 import { disposeSession } from "@/app/xterm/xterm-session";
 import { XtermView } from "@/app/xterm/xterm-view";
@@ -41,15 +42,6 @@ import { atoms, getBlockMetaKeyAtom, getBlockTermDurableAtom, getSettingsKeyAtom
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
 import * as React from "react";
-
-// Placeholder atoms returned by the termRef stub.  External readers
-// (tabrpcclient.ts builds a context payload by reading these) treat empty
-// values as "no shell integration data yet" and skip the field — which is
-// the right behavior until the new engine surfaces equivalents via the
-// block lifecycle.  A future revision can read from the xterm session's
-// shell-integration state to populate these for real.
-const PlaceholderShellIntegrationAtom = jotai.atom("none");
-const PlaceholderLastCommandAtom = jotai.atom("");
 
 // Shape compatible with the legacy `TermWrap` ref.  Only the two atom
 // fields actually read externally are present; everything else (terminal
@@ -81,15 +73,11 @@ export class TermViewModel implements ViewModel {
     readonly termConfigedDurable: jotai.Atom<null | boolean>;
 
     // External callers (tabrpcclient.ts) reach through `termRef.current.*`
-    // for context — keep the shape, point the atoms at placeholders.  The
+    // for context — keep the shape, point the atoms at the per-block
+    // cmdblock-rows store (docs/terax-terminal-port.md §四 P2.6).  The
     // object is a plain literal, not a React.RefObject, because no consumer
     // actually mutates `current`.
-    readonly termRef: { current: TermRefStub } = {
-        current: {
-            shellIntegrationStatusAtom: PlaceholderShellIntegrationAtom,
-            lastCommandAtom: PlaceholderLastCommandAtom,
-        },
-    };
+    readonly termRef: { current: TermRefStub };
 
     disposed = false;
 
@@ -107,6 +95,19 @@ export class TermViewModel implements ViewModel {
 
         this.termConfigedDurable = getBlockTermDurableAtom(blockId);
         this.termDurableStatus = jotai.atom(null) as jotai.Atom<BlockJobStatusData | null>;
+
+        // "active"/"none" are free-form for the FocusedBlockData payload —
+        // tabrpcclient passes the string through opaquely (the legacy
+        // engine emitted "ready"/"running-command"; nothing branches on
+        // the specific values).
+        const seenAtom = shellIntegrationSeenAtom(blockId);
+        this.termRef = {
+            current: {
+                shellIntegrationStatusAtom: jotai.atom((get) => (get(seenAtom) ? "active" : "none")),
+                lastCommandAtom: lastCommandAtom(blockId),
+            },
+        };
+        attachCmdRows(blockId);
     }
 
     get viewComponent(): ViewComponent {
@@ -152,6 +153,7 @@ export class TermViewModel implements ViewModel {
 
     dispose(): void {
         this.disposed = true;
+        detachCmdRows(this.blockId);
         disposeSession(this.blockId);
         disposeXtermPaneModel(this.blockId);
     }

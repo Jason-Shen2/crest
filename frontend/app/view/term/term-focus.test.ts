@@ -12,6 +12,16 @@ vi.mock("@/app/xterm/xterm-view", () => ({
     XtermView: () => null,
 }));
 
+vi.mock("@/app/xterm/cmdblock-rows", async () => {
+    const jotai = await import("jotai");
+    return {
+        attachCmdRows: vi.fn(),
+        detachCmdRows: vi.fn(),
+        lastCommandAtom: () => jotai.atom(""),
+        shellIntegrationSeenAtom: () => jotai.atom(false),
+    };
+});
+
 import { TermBlocksViewModel } from "@/app/view/termblocks/termblocks";
 import { TermViewModel } from "./term-model";
 

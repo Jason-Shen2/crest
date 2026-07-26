@@ -15,17 +15,13 @@ import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceAgentSurface, type AgentSurfaceContext } from "@/app/term/render/agent-surface";
 import { TerminalNotification } from "@/app/term/render/terminal-notification";
+import { attachCmdRows, detachCmdRows, recentCommandsAtom } from "@/app/xterm/cmdblock-rows";
 import { disposeXtermPaneModel, getXtermPaneModel } from "@/app/xterm/xterm-pane-model";
 import { disposeSession } from "@/app/xterm/xterm-session";
 import { getBlockMetaKeyAtom, getSettingsKeyAtom, useOrefMetaKeyAtom, WOS } from "@/store/global";
 import * as jotai from "jotai";
 import { useAtomValue } from "jotai";
 import { useEffect, useMemo } from "react";
-
-// TODO(P2.6): re-source recent commands from cmdblock:row events
-// (docs/terax-terminal-port.md §四 P2.6) — the old engine's
-// commandHistoryAtom was deleted with TerminalModel.
-const EmptyRecentCmdsAtom = jotai.atom<string[]>([]);
 
 export class AgentViewModel implements ViewModel {
     readonly viewType = "agent";
@@ -46,6 +42,7 @@ export class AgentViewModel implements ViewModel {
             const fallback = get(settingAtom);
             return typeof fallback === "number" ? fallback : 16;
         });
+        attachCmdRows(blockId);
     }
     get viewComponent(): ViewComponent {
         return AgentViewAdapter as unknown as ViewComponent;
@@ -56,6 +53,7 @@ export class AgentViewModel implements ViewModel {
     }
     dispose(): void {
         this.disposed = true;
+        detachCmdRows(this.blockId);
         disposeSession(this.blockId);
         disposeXtermPaneModel(this.blockId);
     }
@@ -82,13 +80,21 @@ const AgentSurfaceHost: React.FC<{ blockId: string }> = ({ blockId }) => {
     }, [notification, model]);
 
     const workspaceDir = useAtomValue(workspaceDirAtom);
-    const commandHistory = useAtomValue(EmptyRecentCmdsAtom);
+    const commandHistory = useAtomValue(recentCommandsAtom(blockId));
     const connectionName = useOrefMetaKeyAtom(WOS.makeORef("block", blockId), "connection") ?? "";
     const context = useMemo<AgentSurfaceContext>(
         () => ({
             workspaceDir,
+            // liveGitBranch stays unset: ContextChipModel (term/contextchip/
+            // chip-model.ts) computes the branch, but it's per-instance with
+            // no block registry, and nothing constructs it since its host
+            // (the old TerminalView) was deleted — it also needs the
+            // setCwd/onCommandCompleted drivers that view provided.
             liveGitBranch: undefined,
-            recentCmds: commandHistory.slice(-10),
+            // recentCommandsAtom is most-recent-first; downstream
+            // buildSystemPrompt slices from the tail, so hand it the ten
+            // most recent flipped back to oldest-first.
+            recentCmds: commandHistory.slice(0, 10).reverse(),
             liveConnection: connectionName || "",
             inAltScreen: false,
         }),
