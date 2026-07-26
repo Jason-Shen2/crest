@@ -3,17 +3,15 @@
 //
 // cli-subagent-factory.ts — assembles the second AgentHarness that the
 // CLI subagent runs in. Ephemeral in-memory session (decision 4), the
-// three PTY tools bound to one already-started blockId, an independent
-// system prompt (§8), and its own (smaller) model. Mirrors
-// buildAgentHarnessHost but never touches the SQLite session repo. See spec §2, §9.
+// three PTY tools constructed by the Electron host (emain/agent-tools)
+// and injected via `tools`, an independent system prompt (§8), and its
+// own (smaller) model. Mirrors buildAgentHarnessHost but never touches
+// the SQLite session repo. See spec §2, §9.
 
 import type { Api, Model } from "@crest/ai";
 import { AgentHarness } from "@crest/agent/harness/agent-harness";
 import type { Session } from "@crest/agent/harness/types";
 import { NodeExecutionEnv } from "@crest/agent/node";
-import { createPtyReadTool } from "./tools/pty-read";
-import { createPtyTransferTool } from "./tools/pty-transfer";
-import { createPtyWriteTool } from "./tools/pty-write";
 import type { AgentTool } from "@crest/agent/types";
 
 export const CLI_SUBAGENT_TOOL_NAMES = ["pty_write", "pty_read", "pty_transfer_to_user"] as const;
@@ -33,9 +31,9 @@ const CLI_SUBAGENT_SYSTEM_PROMPT = [
 export interface BuildCliSubagentOptions {
     session: Session;
     model: Model<Api>;
-    blockId: string;
     cwd: string;
-    initialCommand: string;
+    /** The three PTY tools, constructed by the Electron host (emain/agent-tools). */
+    tools: AgentTool[];
     getApiKeyAndHeaders?: (
         model: Model<Api>,
     ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
@@ -48,11 +46,7 @@ export interface CliSubagentHarness {
 }
 
 export function buildCliSubagentHarness(opts: BuildCliSubagentOptions): CliSubagentHarness {
-    const tools: AgentTool[] = [
-        createPtyWriteTool(opts.blockId, { initialCommand: opts.initialCommand, cwd: opts.cwd }),
-        createPtyReadTool(opts.blockId),
-        createPtyTransferTool(opts.blockId),
-    ];
+    const tools = opts.tools;
     const env = new NodeExecutionEnv({ cwd: opts.cwd });
     const harness = new AgentHarness({
         env,

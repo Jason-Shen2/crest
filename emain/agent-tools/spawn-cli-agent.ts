@@ -8,11 +8,14 @@
 
 import { type Static, Type } from "typebox";
 import type { Api, Model } from "@crest/ai";
-import { buildCliSubagentHarness } from "../cli-subagent-factory";
-import type { CliSubagentHarness } from "../cli-subagent-factory";
+import { buildCliSubagentHarness } from "../agent/cli-subagent-factory";
+import type { CliSubagentHarness } from "../agent/cli-subagent-factory";
 import type { Session } from "@crest/agent/harness/types";
 import type { AgentTool } from "@crest/agent/types";
 import { startAgentCommandBlock, stopBlock } from "./_pty-rpc";
+import { createPtyReadTool } from "./pty-read";
+import { createPtyTransferTool } from "./pty-transfer";
+import { createPtyWriteTool } from "./pty-write";
 
 function extractText(message: unknown): string {
     const content = (message as { content?: Array<{ type: string; text?: string }> })?.content ?? [];
@@ -108,9 +111,12 @@ export function createSpawnCliAgentTool(deps: SpawnCliAgentDeps): AgentTool<type
                 const sub = buildCliSubagentHarness({
                     session,
                     model: deps.getModel(),
-                    blockId,
                     cwd: params.cwd,
-                    initialCommand: params.initial_command,
+                    tools: [
+                        createPtyWriteTool(blockId, { initialCommand: params.initial_command, cwd: params.cwd }),
+                        createPtyReadTool(blockId),
+                        createPtyTransferTool(blockId),
+                    ],
                     getApiKeyAndHeaders: deps.getApiKeyAndHeaders,
                 });
                 const summary = await runSubagentToCompletion(sub, buildStartedCliSubagentTask(params), { signal });

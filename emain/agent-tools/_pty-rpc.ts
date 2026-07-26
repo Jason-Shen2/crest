@@ -6,7 +6,7 @@
 // testable with a mocked RpcApi. See spec §2.4 decisions 2, 3, 5.
 
 import { RpcApi } from "@/app/store/wshclientapi";
-import { ElectronWshClient } from "../../emain-wsh";
+import { ElectronWshClient } from "../emain-wsh";
 
 /** Write raw bytes to a running block's PTY (ControllerInput → Go SendInput). */
 export async function sendControllerInput(blockId: string, input: string): Promise<void> {

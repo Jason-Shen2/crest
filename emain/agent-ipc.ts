@@ -110,7 +110,7 @@ import {
 } from "./agent/sessions";
 import { loadAgentSkills } from "./agent/skills-loader";
 import { getDefaultTools } from "./agent/tools";
-import { createSpawnCliAgentTool } from "./agent/tools/spawn-cli-agent";
+import { createSpawnCliAgentTool } from "./agent-tools/spawn-cli-agent";
 import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
 import type { Api, ImageContent, Message, Model } from "@crest/ai";
 import { getModel } from "@crest/ai";

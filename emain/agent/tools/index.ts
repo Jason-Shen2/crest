@@ -31,7 +31,6 @@ export { createFindTool } from "./find";
 export { createGrepTool } from "./grep";
 export { createLsTool } from "./ls";
 export { createReadTool } from "./read";
-export { createSpawnCliAgentTool } from "./spawn-cli-agent";
 export { webFetchTool } from "./web-fetch";
 export { createWriteTool } from "./write";
 

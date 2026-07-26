@@ -10,7 +10,7 @@
 // LongRunningCommandSnapshot.
 
 import { RpcApi } from "@/app/store/wshclientapi";
-import { ElectronWshClient } from "../../emain-wsh";
+import { ElectronWshClient } from "../emain-wsh";
 
 export interface ScreenSnapshot {
     grid_contents: string;
@@ -24,8 +24,8 @@ export async function getScreenSnapshot(blockId: string): Promise<ScreenSnapshot
     // emain-platform runs app.setName() at load, which blows up under
     // vitest's node runtime. Deferring the require keeps merely importing
     // this seam (via the tool index) side-effect free for tests.
-    const { webPtyScreenSnapshot } = await import("../../emain-web");
-    const { getWaveTabView } = await import("../../emain-tabview");
+    const { webPtyScreenSnapshot } = await import("../emain-web");
+    const { getWaveTabView } = await import("../emain-tabview");
     // Resolve the tab that owns this command block, then its live renderer.
     const info = await RpcApi.BlockInfoCommand(ElectronWshClient, blockId);
     const tabView = getWaveTabView(info.tabid);

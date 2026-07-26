@@ -19,7 +19,7 @@ vi.mock("@/app/store/wshclientapi", () => ({
         DeleteBlockCommand: (...a: unknown[]) => deleteBlock(...a),
     },
 }));
-vi.mock("../../emain-wsh", () => ({ ElectronWshClient: {} }));
+vi.mock("../emain-wsh", () => ({ ElectronWshClient: {} }));
 
 import { getCmdBlockTail, sendControllerInput, startAgentCommandBlock, stopBlock } from "./_pty-rpc";
 

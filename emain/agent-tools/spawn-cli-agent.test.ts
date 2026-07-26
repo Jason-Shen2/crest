@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("../../emain-wsh", () => ({ ElectronWshClient: {} }));
+vi.mock("../emain-wsh", () => ({ ElectronWshClient: {} }));
 
-import * as factory from "../cli-subagent-factory";
+import * as factory from "../agent/cli-subagent-factory";
 import * as rpc from "./_pty-rpc";
 import { createSpawnCliAgentTool, runSubagentToCompletion } from "./spawn-cli-agent";
 
@@ -80,13 +80,22 @@ describe("createSpawnCliAgentTool", () => {
             cwd: "/tmp",
         });
         expect(rpc.startAgentCommandBlock).toHaveBeenCalledWith("parent", "/tmp", "npm run dev");
-        expect(factory.buildCliSubagentHarness).toHaveBeenCalledWith(
-            expect.objectContaining({
-                blockId: "blk-new",
-                cwd: "/tmp",
-                initialCommand: "npm run dev",
-            }),
-        );
+        expect(factory.buildCliSubagentHarness).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/tmp" }));
+        const passedTools = (factory.buildCliSubagentHarness as any).mock.calls[0][0].tools;
+        expect(passedTools.map((t: { name: string }) => t.name)).toEqual([
+            "pty_write",
+            "pty_read",
+            "pty_transfer_to_user",
+        ]);
+        // blockId and initialCommand reach the subagent through the tool
+        // constructors, not the factory options: pty_write must be bound to the
+        // new block and must know the startup command it may not replay.
+        const sendInput = vi.spyOn(rpc, "sendControllerInput").mockResolvedValue();
+        await passedTools[0].execute("t2", { input: "echo hi", mode: "raw" });
+        expect(sendInput).toHaveBeenCalledWith("blk-new", "echo hi");
+        const replay = await passedTools[0].execute("t3", { input: "npm run dev", mode: "line" });
+        expect(replay.content[0]).toMatchObject({ text: expect.stringContaining("already running") });
+        expect(sendInput).toHaveBeenCalledTimes(1);
         expect(sub.harness.prompt).toHaveBeenCalledWith(expect.stringContaining("already been started"));
         expect(sub.harness.prompt).toHaveBeenCalledWith(expect.stringContaining("Do not type"));
         expect(r.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("3000") });

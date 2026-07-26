@@ -9,12 +9,7 @@ import { createServer, type Server } from "node:http";
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-// index.ts re-exports createSpawnCliAgentTool, whose transitive import chain
-// (spawn-cli-agent → _pty-rpc → emain-wsh) pulls in electron (app.setName).
-// Stub it so this suite still loads without an Electron runtime.
-vi.mock("../../emain-wsh", () => ({ ElectronWshClient: {} }));
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createBashTool } from "./bash";
 import { createEditTool } from "./edit";
