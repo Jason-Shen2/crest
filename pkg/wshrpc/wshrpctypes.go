@@ -99,7 +99,6 @@ type WshRpcInterface interface {
 	UpdateWorkspaceTabIdsCommand(ctx context.Context, workspaceId string, tabIds []string) error
 	GetAllBadgesCommand(ctx context.Context) ([]baseds.BadgeEvent, error)
 	GetCmdBlocksCommand(ctx context.Context, data CommandGetCmdBlocksData) ([]*cbtypes.CmdBlock, error)
-	AppendAgentRunCommand(ctx context.Context, data CommandAppendAgentRunData) (*cbtypes.CmdBlock, error)
 	GetCmdBlockOutputCommand(ctx context.Context, data CommandGetCmdBlockOutputData) (*CmdBlockOutputResponse, error)
 	GetCmdBlockTailCommand(ctx context.Context, data CommandGetCmdBlockTailData) (*CmdBlockTailResponse, error)
 	ReadBlockFileRangeCommand(ctx context.Context, data CommandReadBlockFileRangeData) (*BlockFileRangeResponse, error)
@@ -390,12 +389,6 @@ type CommandGetTempDirData struct {
 type CommandGetCmdBlocksData struct {
 	BlockID string `json:"blockid"`
 	Limit   int    `json:"limit,omitempty"`
-}
-
-type CommandAppendAgentRunData struct {
-	BlockID     string `json:"blockid"`
-	SessionPath string `json:"sessionpath"`
-	UserEntryID string `json:"userentryid"`
 }
 
 type CommandGetCmdBlockOutputData struct {

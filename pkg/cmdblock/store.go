@@ -97,38 +97,6 @@ func MakeDirectCommandStarted(ctx context.Context, blockID string, cmd string, c
 	return cb, nil
 }
 
-func AppendAgentRun(ctx context.Context, blockID string, sessionPath string, userEntryID string) (*CmdBlock, error) {
-	now := time.Now().UnixNano()
-	cb := &CmdBlock{
-		OID:              uuid.NewString(),
-		BlockID:          blockID,
-		Kind:             KindAgent,
-		State:            "static",
-		PromptOffset:     0,
-		TsPromptNs:       now,
-		CreatedAt:        now,
-		AgentSessionPath: &sessionPath,
-		AgentUserEntryID: &userEntryID,
-	}
-	err := wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
-		// Idempotency keyed on the durable identity (userEntryID). A retry
-		// of the same turn must not create a second timeline anchor.
-		if tx.Get(cb, `SELECT * FROM db_cmdblock WHERE blockid = ? AND kind = ? AND agent_user_entry_id = ?`, blockID, KindAgent, userEntryID) {
-			return nil
-		}
-		cb.Seq = tx.GetInt64(`SELECT COALESCE(MAX(seq), 0) + 1 FROM db_cmdblock WHERE blockid = ?`, blockID)
-		tx.Exec(`INSERT INTO db_cmdblock
-			(oid, blockid, seq, kind, state, prompt_offset, ts_prompt_ns, agent_session_path, agent_user_entry_id, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			cb.OID, cb.BlockID, cb.Seq, cb.Kind, cb.State, cb.PromptOffset, cb.TsPromptNs, sessionPath, userEntryID, cb.CreatedAt)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return cb, nil
-}
-
 // MarkCommandSubmitted flips the latest prompt row for this block into
 // "running" with the decoded command string, cwd, and byte offset where
 // stdout is about to begin. Called on OSC 16162;C.

@@ -40,7 +40,6 @@ var WaveEventDataTypes = map[string]reflect.Type{
 	wps.Event_BlockJobStatus:      reflect.TypeOf(wshrpc.BlockJobStatusData{}),
 	wps.Event_Badge:               reflect.TypeOf(baseds.BadgeEvent{}),
 	wps.Event_CmdBlockRow:         reflect.TypeOf((*cbtypes.CmdBlock)(nil)),
-	wps.Event_CmdBlockChunk:       reflect.TypeOf((*cbtypes.CmdBlockChunkEvent)(nil)),
 	wps.Event_CmdBlockAltScreen:   reflect.TypeOf((*cbtypes.CmdBlockAltScreenEvent)(nil)),
 	wps.Event_CmdBlockClear:       reflect.TypeOf((*cbtypes.CmdBlockClearEvent)(nil)),
 	wps.Event_CmdBlockNotify:      reflect.TypeOf((*cbtypes.CmdBlockNotifyEvent)(nil)),

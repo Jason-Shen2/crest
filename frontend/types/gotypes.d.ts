@@ -249,8 +249,6 @@ declare global {
         tscmdns?: number;
         tsdonens?: number;
         agentsessionid?: string;
-        agentsessionpath?: string;
-        agentuserentryid?: string;
         createdat: number;
     };
 
@@ -259,14 +257,6 @@ declare global {
         blockid: string;
         oid?: string;
         enter: boolean;
-    };
-
-    // cbtypes.CmdBlockChunkEvent
-    type CmdBlockChunkEvent = {
-        blockid: string;
-        oid: string;
-        offset: number;
-        data64: string;
     };
 
     // cbtypes.CmdBlockClearEvent
@@ -294,13 +284,6 @@ declare global {
         isrunning: boolean;
         exitcode?: number;
         altscreen: boolean;
-    };
-
-    // wshrpc.CommandAppendAgentRunData
-    type CommandAppendAgentRunData = {
-        blockid: string;
-        sessionpath: string;
-        userentryid: string;
     };
 
     // wshrpc.CommandAuthenticateJobManagerData

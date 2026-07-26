@@ -30,12 +30,6 @@ export class RpcApiType {
         return client.wshRpcCall("aisendmessage", data, opts);
     }
 
-    // command "appendagentrun" [call]
-    AppendAgentRunCommand(client: WshClient, data: CommandAppendAgentRunData, opts?: RpcOpts): Promise<CmdBlock> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "appendagentrun", data, opts);
-        return client.wshRpcCall("appendagentrun", data, opts);
-    }
-
     // command "authenticate" [call]
     AuthenticateCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<CommandAuthenticateRtnData> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "authenticate", data, opts);

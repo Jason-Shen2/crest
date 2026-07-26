@@ -1527,28 +1527,6 @@ func (ws *WshServer) GetCmdBlocksCommand(ctx context.Context, data wshrpc.Comman
 	return cmdblock.GetByBlockID(ctx, data.BlockID, data.Limit)
 }
 
-func (ws *WshServer) AppendAgentRunCommand(ctx context.Context, data wshrpc.CommandAppendAgentRunData) (*cbtypes.CmdBlock, error) {
-	if data.BlockID == "" {
-		return nil, fmt.Errorf("blockid is required")
-	}
-	if data.SessionPath == "" {
-		return nil, fmt.Errorf("sessionpath is required")
-	}
-	if data.UserEntryID == "" {
-		return nil, fmt.Errorf("userentryid is required")
-	}
-	row, err := cmdblock.AppendAgentRun(ctx, data.BlockID, data.SessionPath, data.UserEntryID)
-	if err != nil {
-		return nil, err
-	}
-	wps.Broker.Publish(wps.WaveEvent{
-		Event:  wps.Event_CmdBlockRow,
-		Scopes: []string{"block:" + data.BlockID},
-		Data:   row,
-	})
-	return row, nil
-}
-
 // GetCmdBlockOutputCommand returns the durable per-block output snapshot for a
 // finished command (Warp's blocks.stylized_output model). The frontend reads
 // this on history rehydrate instead of slicing the shared term file, which is

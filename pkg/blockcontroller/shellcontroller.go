@@ -560,9 +560,8 @@ func (bc *ShellController) setupAndStartShellProcess(logCtx context.Context, rc 
 }
 
 // outputCoalescer batches PTY reads so a busy command produces one blockfile
-// append (one Event_BlockFile) + one tracker.OnBytes (one cmdblock:chunk) per
-// flush window instead of one pair per read (aligned with terax session.rs
-// FLUSH_COALESCE).
+// append (one Event_BlockFile) + one tracker.OnBytes per flush window instead
+// of one pair per read (aligned with terax session.rs FLUSH_COALESCE).
 type outputCoalescer struct {
 	lock     sync.Mutex
 	blockId  string
