@@ -120,12 +120,16 @@ _waveterm_si_precmd() {
         uname_info=$(uname -smr 2>/dev/null)
         printf '\033]16162;M;{"shell":"bash","shellversion":"%s","uname":"%s","integration":true}\007' "$BASH_VERSION" "$uname_info"
     else
+        # 133;D/A/C dual-emit: the xterm frontend consumes standard FinalTerm
+        # markers directly; 16162 stays for the Go-side Tracker (see docs/terax-terminal-port.md D4)
         printf '\033]16162;D;{"exitcode":%d}\007' "$_waveterm_si_status"
+        printf '\033]133;D;%d\007' "$_waveterm_si_status"
     fi
     # OSC 7 sent on every prompt - bash has no chpwd hook for directory changes
     _waveterm_si_osc7
     _waveterm_si_emit_env
     printf '\033]16162;A\007'
+    printf '\033]133;A\007'
     _WAVETERM_SI_FIRSTPROMPT=0
 }
 
@@ -144,6 +148,7 @@ _waveterm_si_preexec() {
     else
         printf '\033]16162;C\007'
     fi
+    printf '\033]133;C\007'
 }
 
 # Add our functions to the bash-preexec arrays

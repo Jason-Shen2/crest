@@ -66,10 +66,14 @@ function _waveterm_si_prompt --on-event fish_prompt
         # OSC 7 only sent on first prompt - chpwd hook handles directory changes
         _waveterm_si_osc7
     else
+        # 133;D/A/C dual-emit: the xterm frontend consumes standard FinalTerm
+        # markers directly; 16162 stays for the Go-side Tracker (see docs/terax-terminal-port.md D4)
         printf '\033]16162;D;{"exitcode":%d}\007' $_waveterm_si_status
+        printf '\033]133;D;%d\007' $_waveterm_si_status
     end
     _waveterm_si_emit_env
     printf '\033]16162;A\007'
+    printf '\033]133;A\007'
     set -g _WAVETERM_SI_FIRSTPROMPT 0
 end
 
@@ -88,6 +92,7 @@ function _waveterm_si_preexec --on-event fish_preexec
             printf '\033]16162;C\007'
         end
     end
+    printf '\033]133;C\007'
 end
 
 # Also update on directory change
