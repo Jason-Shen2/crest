@@ -43,16 +43,27 @@ Out of scope:
 
 ```
 packages/
-  ai/            @crest/ai            <- emain/ai            (minus models-dev-overlay.ts)
-  agent/         @crest/agent         <- emain/agent/harness (pi-agent-core copy)
-  coding-agent/  @crest/coding-agent  <- emain/agent rest    (tools, system prompt, sessions,
-                                                              permissions, commands, context,
-                                                              change-review, observability, eval)
+  ai/            @crest/ai            <- emain/ai (minus models-dev-overlay.ts)
+  agent/         @crest/agent         <- emain/agent/{index,node,types,agent,agent-loop,proxy}.ts
+                                          + emain/agent/harness/   (pi-agent-core copy)
+  coding-agent/  @crest/coding-agent  <- emain/agent rest (tools, system prompt, sessions,
+                                                           permissions, commands, context,
+                                                           change-review, observability, eval)
 ```
 
 Dependency direction is strictly one-way: `coding-agent -> agent -> ai`, matching pi-mono.
 Internal file layout of each package mirrors the corresponding pi-mono package so upstream
 sync is a mechanical diff.
+
+**Boundary refinement (planning-stage finding):** the original draft put only `harness/`
+into `packages/agent`. Verification against upstream (pi-reference updated to v0.82.1 on
+2026-07-26) showed `emain/agent/index.ts` is a line-for-line copy of pi's
+`packages/agent/src/index.ts`, and the six top-level units (`index.ts`, `node.ts`,
+`types.ts`, `agent.ts`, `agent-loop.ts`, `proxy.ts`) are pi-agent-core files. Moving
+`harness/` alone would also break: `harness/agent-harness.ts` imports `../agent-loop`. So
+all six move together with `harness/` — this is exactly upstream's `src/` file set, and it
+subsumes the earlier "sink AgentMessage/ThinkingLevel" idea (the whole `types.ts` is
+pi-agent-core and moves as a unit).
 
 ## Boundary Decisions
 
@@ -64,8 +75,8 @@ line that spreads it.
 | `emain/agent/tools/_pty-rpc.ts`, `_pty-screen.ts` (import `ElectronWshClient`, frontend `RpcApi`, lazy `emain-web`/`emain-tabview`) | Stay in Electron land. Move to `emain/agent-tools/` together with `pty-read`, `pty-write`, `pty-transfer`, and `spawn-cli-agent`. These are host-provided tools, injected into coding-agent via the existing tool-injection parameters. |
 | `emain/agent/tools/index.ts:33` static re-export of `spawn-cli-agent` | Delete the re-export. This alone makes `tools/` and `eval/` import-clean. |
 | `cli-subagent-factory.ts` imports three pty tool factories | Change signature to accept the pty tools as an `AgentTool[]` parameter; the file itself is pure and moves into `packages/coding-agent`. |
-| `emain/ai/models-dev-overlay.ts` (transitively Electron- and frontend-coupled via `emain-platform`) | Moves to `emain/models-dev-overlay.ts` (the `emain/ai` directory goes away). It is not exported from the `ai` barrel; its only consumers are `emain/emain.ts` and `emain/aiconfig/`, which repoint. Its own imports of ai internals become `@crest/ai` imports. |
-| Harness upward dependency: `harness/**` imports `AgentMessage`/`ThinkingLevel` from `agent/types.ts` (a layering inversion and a deviation from pi upstream) | Sink the harness-needed types into `packages/agent`; `packages/coding-agent/types.ts` re-exports them, so the ~43 downstream import sites keep their paths. |
+| `emain/ai/models-dev-overlay.ts` (transitively Electron- and frontend-coupled via `emain-platform`) | Moves to `emain/models-dev-overlay.ts` (the `emain/ai` directory goes away). It is not exported from the `ai` barrel; its only consumers are `emain/emain.ts` and `emain/aiconfig/`, which repoint. It imports nothing from ai internals (only `fs`, `path`, `../emain-platform`), so the move is a one-line import fix. |
+| Harness upward dependency: `harness/**` imports `AgentMessage`/`ThinkingLevel` from `agent/types.ts` (a layering inversion and a deviation from pi upstream) | Resolved by the boundary refinement above: `types.ts` moves into `packages/agent` whole, so the harness's `../../types` relative imports keep resolving in-package unchanged. Coding-agent-side relative imports into agent-core files (`../types`, `./harness/...`, `./node`, ...) are rewritten mechanically to `@crest/agent/...` — no re-export shim files. |
 | `agent-event-routing.ts` (zero imports, but semantically IPC payload shaping; sole consumer is `agent-ipc.ts`) | Stays in `emain/`. |
 
 `_spike.ts` (dev script, not in any build graph) moves with `packages/coding-agent`.
