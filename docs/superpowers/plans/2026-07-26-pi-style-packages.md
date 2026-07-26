@@ -229,12 +229,12 @@ Upstream mapping: `pi-mono/packages/ai`. Sync by diffing against
 
 Known deviations from upstream:
 
-- Image generation, Bedrock, Vertex, Azure, Codex, Mistral, Cloudflare, and Faux
+- Image generation, Bedrock, Vertex, Azure, Codex, Mistral, and Faux
   providers are stripped — re-add by copying back from upstream.
 - `models-dev-overlay.ts` is crest-only and lives in `emain/` (Electron-coupled).
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`).
+(enforced by `packages/boundary.test.ts`, added later in this extraction).
 ```
 
 Run: `npm install` (links `node_modules/@crest/ai`).
@@ -361,7 +361,7 @@ Known deviations from upstream:
 - `harness/messages.ts` augments `../types` CustomAgentMessages with crest message kinds.
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`).
+(enforced by `packages/boundary.test.ts`, added later in this extraction).
 ```
 
 Run: `npm install`.
@@ -624,7 +624,7 @@ upstream: v0.82.1). This package deviates from upstream by design:
   Electron-host-provided and lives in `emain/agent-tools/`, injected via factory options.
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`).
+(enforced by `packages/boundary.test.ts`, added later in this extraction).
 ```
 
 Run: `npm install`.

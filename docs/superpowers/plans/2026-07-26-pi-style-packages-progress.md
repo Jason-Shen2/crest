@@ -32,7 +32,7 @@
 | --- | --- | --- | --- | --- |
 | 0 | Branch + worktree + baselines + this doc | ✅ done | (this commit) | ✅ |
 | 1 | Spike: workspace source-import (electron-vite / vitest / tsx) | ✅ done | `a6c41086` | ✅ |
-| 2 | Move `emain/ai` → `packages/ai` (`@crest/ai`) | ⬜ | | |
+| 2 | Move `emain/ai` → `packages/ai` (`@crest/ai`) | ✅ done | `2df3b0df` | ✅ |
 | 3 | Move agent-core → `packages/agent` (`@crest/agent`) | ⬜ | | |
 | 4 | Pty family → `emain/agent-tools/`, barrel + factory injection | ⬜ | | |
 | 5 | Rest of `emain/agent` → `packages/coding-agent` | ⬜ | | |
@@ -62,6 +62,21 @@
   lockfile regen drags in ~4800 lines of unrelated churn. Surgical hand-edit of the entry
   (validated JSON + stable under reinstall) was the right fix.
 - Reviews: spec ❌→fix→✅ (lockfile residue caught and amended in place), quality ✅.
+
+### Task 2 (2026-07-27)
+
+- `@crest/ai` landed: 33 files moved R100 byte-identical, `models-dev-overlay.ts` pulled back
+  to `emain/` (one-line import fix), ~52 import + 8 `vi.mock` specifiers rewritten. All gates
+  zero-delta vs baseline (69 tsc errors, same 7 vitest collection failures, build green,
+  main bundle verified to inline the package).
+- **Lesson for Tasks 3/5: `from "..."`-anchored seds miss `vi.mock()` string specifiers.**
+  6 instances in this task (5 self-caught, 1 caught by spec review as a latent regression
+  masked by a pre-existing collection failure). Also: never reuse `grep -v aiconfig`-style
+  exclusions in verification scans — it blinded the implementer's mock scan to a whole dir.
+- README accuracy matters: Cloudflare provider is NOT stripped (it's live in 3 providers);
+  boundary test phrased as "added later in this extraction" until Task 6 lands.
+- Reviews: spec ❌→fix→✅ (stale mocks), quality ✅ approved (2 README facts fixed on its
+  recommendation).
 
 ## How to resume after an interruption
 
