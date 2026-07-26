@@ -31,7 +31,7 @@
 | Task | Description | Status | Commit(s) | Pushed |
 | --- | --- | --- | --- | --- |
 | 0 | Branch + worktree + baselines + this doc | ✅ done | (this commit) | ✅ |
-| 1 | Spike: workspace source-import (electron-vite / vitest / tsx) | ⬜ | | |
+| 1 | Spike: workspace source-import (electron-vite / vitest / tsx) | ✅ done | `a6c41086` | ✅ |
 | 2 | Move `emain/ai` → `packages/ai` (`@crest/ai`) | ⬜ | | |
 | 3 | Move agent-core → `packages/agent` (`@crest/agent`) | ⬜ | | |
 | 4 | Pty family → `emain/agent-tools/`, barrel + factory injection | ⬜ | | |
@@ -49,6 +49,19 @@
 - pi upstream reference `~/Documents/pi-reference` updated to **v0.82.1** (2026-07-26).
 - Deviation from plan text: plan says "tsc exits 0" — actual baseline is 69 pre-existing
   errors; all task gates interpret this as "no new errors" (same for the 7 vitest files).
+
+### Task 1 (2026-07-27)
+
+- **Spike PASSED on all three paths** — workspace packages exporting raw TS source resolve in
+  vitest, electron-vite main build (`npm run build:dev`, 2382 modules), and tsx. The
+  tsconfig-paths fallback is NOT needed; later tasks proceed with real package.json exports.
+- Gotcha for later tasks: `tsx -e` compiles eval snippets as CJS → top-level `await` fails.
+  Use promise-chain form (plan Task 6.3 already updated).
+- Gotcha: after deleting a workspace dir, `npm install` (and even `--package-lock-only` /
+  fresh `.package-lock.json`) does NOT drop the stale "extraneous" lockfile entry; a full
+  lockfile regen drags in ~4800 lines of unrelated churn. Surgical hand-edit of the entry
+  (validated JSON + stable under reinstall) was the right fix.
+- Reviews: spec ❌→fix→✅ (lockfile residue caught and amended in place), quality ✅.
 
 ## How to resume after an interruption
 

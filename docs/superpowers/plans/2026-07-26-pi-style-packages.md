@@ -746,12 +746,15 @@ to:
 
 ```bash
 npx tsx -e '
-const { getDefaultTools } = await import("@crest/coding-agent/tools");
-const { AgentHarness } = await import("@crest/agent");
-const tools = getDefaultTools(process.cwd());
-console.log("tools:", tools.length, "harness:", typeof AgentHarness);
+Promise.all([import("@crest/coding-agent/tools"), import("@crest/agent")]).then(([t, a]) => {
+    const tools = t.getDefaultTools(process.cwd());
+    console.log("tools:", tools.length, "harness:", typeof a.AgentHarness);
+});
 '
 ```
+
+(Promise-chain form on purpose: `tsx -e` compiles eval snippets as CJS and rejects
+top-level `await` — discovered in the Task 1 spike.)
 
 Expected output: `tools: 8 harness: function` — the agent stack loads and constructs with no Electron process. (Before this change, importing the tools barrel dragged in `emain-wsh` and `@/app/store/wshclientapi` and this could not run.)
 
