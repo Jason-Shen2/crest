@@ -13,4 +13,4 @@ Known deviations from upstream:
 - `models-dev-overlay.ts` is crest-only and lives in `emain/` (Electron-coupled).
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`, added later in this extraction).
+(enforced by `packages/boundary.test.ts`).

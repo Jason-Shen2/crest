@@ -13,4 +13,4 @@ upstream: v0.82.1). This package deviates from upstream by design:
   Electron-host-provided and lives in `emain/agent-tools/`, injected via factory options.
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`, added later in this extraction).
+(enforced by `packages/boundary.test.ts`).

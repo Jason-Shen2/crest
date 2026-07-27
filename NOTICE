@@ -21,12 +21,13 @@ notices in their file headers:
       modules are derived from Langfuse's MIT-licensed Trace Panel.
       See frontend/app/observability/trace-panel/LICENSE.langfuse.
 
-  - emain/agent/  (started from pi-agent-core v0.75.5)
-  - emain/ai/     (started from pi-ai v0.75.5)
+  - packages/agent/        (in-tree fork of pi-agent-core)
+  - packages/ai/           (started from pi-ai v0.75.5)
+  - packages/coding-agent/ (crest counterpart to pi-mono packages/coding-agent)
       Copyright (c) Mario Zechner / earendil-works.
       Source: https://github.com/earendil-works/pi
       Subsequently maintained in-tree as part of crest; see
-      emain/agent/LICENSE.pi for the MIT terms.
+      each package's LICENSE.pi for the MIT terms.
 
 This product includes elkjs under the Eclipse Public License 2.0.
 Source: https://github.com/kieler/elkjs

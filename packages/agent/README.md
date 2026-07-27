@@ -16,4 +16,4 @@ Known deviations from upstream:
 - Crest adds cross-session context projection-report types in `harness/types.ts` (consumed by the coding-agent context layer).
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`, added later in this extraction).
+(enforced by `packages/boundary.test.ts`).
