@@ -5,9 +5,9 @@
 **状态**: **P0-P3 已完成**，P4 大部完成。旧引擎已删除（commit `0f35c73c`）。分阶段进度：
 - ✅ P0 全部（OSC 133 双发、8ms/64KB 合帧、ControllerHasForegroundJob RPC、durable Tracker）
 - ✅ P1 全部（依赖、纯函数移植、pty-bridge、renderer-pool + theme、xterm-session、XtermView/XtermPaneModel、四渲染点切换、旧引擎删除 −10,833 行；tsc/vitest 门禁与基线零差异）
-- ✅ P2.5 pty_read seam、P2.6 上下文换源（liveGitBranch 仍 deferred——ContextChipModel 失去宿主）；P2.2 find-bar、P2.7 视图合并进行中
+- ✅ P2 全部（P2.2 find-bar over SearchAddon、P2.5 pty_read seam、P2.6 上下文换源、P2.7/D9 视图合并 + term:blocks meta 键）。唯一 deferred：liveGitBranch（ContextChipModel 失去宿主，需新 cwd/命令驱动）
 - ✅ P3 全部（decorations + cmdblock:row 增强、BlockOverlay/Watermark、CmdBlockInput 接线 + 三项输入 bug 修复、.bt-match CSS）
-- ✅ P4.2/P4.4（cmdblock:chunk 与 agent 穿插清除，迁移 000017）；P4.3 NLD 惰性化进行中；⬜ P4.1 性能基准
+- ✅ P4.2/P4.3/P4.4/P4.5（cmdblock:chunk 与 agent 穿插清除 + 迁移 000017、NLD 惰性化、文档收尾）；⬜ P4.1 性能基准
 - ⬜ **P1 运行时人工冒烟未做**（bash/vim/中文 IME/池驱逐/冷恢复——需真实 Electron 环境，代码侧门禁已全绿）
 **策略**: 项目处于 POC/MVP 阶段（见 CLAUDE.md"不考虑向后兼容"），**不做双引擎共存、不做灰度开关**——在分支上完成核心替换并通过验收清单后整体合入，回退手段就是 git revert。
 **参考仓库**: `/Users/bytedance/Documents/terax-ai`（Tauri v2 + React，只读参考，Apache-2.0，与 crest 同许可）
