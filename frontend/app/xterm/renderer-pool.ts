@@ -36,7 +36,7 @@ const IsMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigat
 
 export type SlotAdapter = {
     resolveLeaf(leafId: number): LeafBridge | null;
-    evictLeaf(leafId: number): void;
+    evictLeaf(leafId: number, waitForWrites: boolean): void;
     isLeafFocused(leafId: number): boolean;
     isLeafBlocks(leafId: number): boolean;
     isLeafBusy(leafId: number): boolean;
@@ -75,6 +75,10 @@ export type Slot = {
     webglReapTimer: ReturnType<typeof setTimeout> | null;
     slotReapTimer: ReturnType<typeof setTimeout> | null;
     unhideRaf: number | null;
+    pendingWrites: number;
+    writeDrainCallbacks: (() => void)[];
+    drainingLeafId: number | null;
+    disposed: boolean;
     lastCols: number;
     lastRows: number;
     lastW: number;
@@ -83,6 +87,7 @@ export type Slot = {
 };
 
 const slots: Slot[] = [];
+let nextSlotId = 0;
 let recyclerEl: HTMLDivElement | null = null;
 let adapter: SlotAdapter | null = null;
 
@@ -191,6 +196,7 @@ export function applyBackgroundActive(active: boolean): void {
 }
 
 function createSlot(): Slot {
+    const slotId = nextSlotId++;
     const term = new Terminal(termOptions());
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
@@ -202,12 +208,12 @@ function createSlot(): Slot {
 
     const host = document.createElement("div");
     host.style.cssText = "width:100%;height:100%;";
-    host.setAttribute("data-xterm-slot", String(slots.length));
+    host.setAttribute("data-xterm-slot", String(slotId));
     getRecycler().appendChild(host);
     term.open(host);
 
     const slot: Slot = {
-        id: slots.length,
+        id: slotId,
         term,
         fitAddon,
         searchAddon,
@@ -225,6 +231,10 @@ function createSlot(): Slot {
         webglReapTimer: null,
         slotReapTimer: null,
         unhideRaf: null,
+        pendingWrites: 0,
+        writeDrainCallbacks: [],
+        drainingLeafId: null,
+        disposed: false,
         lastCols: term.cols,
         lastRows: term.rows,
         lastW: 0,
@@ -304,6 +314,34 @@ function createSlot(): Slot {
 
 type PickResult = { slot: Slot; previousLeafId: number | null };
 
+export function writeToSlot(slot: Slot, data: string | Uint8Array): void {
+    if (slot.disposed) return;
+    slot.pendingWrites++;
+    let completed = false;
+    const complete = () => {
+        if (completed) return;
+        completed = true;
+        slot.pendingWrites = Math.max(0, slot.pendingWrites - 1);
+        if (slot.pendingWrites !== 0) return;
+        const callbacks = slot.writeDrainCallbacks.splice(0);
+        for (const callback of callbacks) queueMicrotask(callback);
+    };
+    try {
+        slot.term.write(data, complete);
+    } catch (e) {
+        complete();
+        throw e;
+    }
+}
+
+function afterSlotWritesDrain(slot: Slot, callback: () => void): void {
+    if (slot.pendingWrites === 0) {
+        callback();
+        return;
+    }
+    slot.writeDrainCallbacks.push(callback);
+}
+
 function isAltScreen(s: Slot): boolean {
     try {
         return s.term.buffer.active.type === "alternate";
@@ -329,16 +367,17 @@ export function evictionScore(s: Slot): number {
 }
 
 function pickSlotFor(leafId: number): PickResult {
-    const retainedOwn = slots.find((s) => s.currentLeafId === null && s.retainedLeafId === leafId);
+    const available = slots.filter((s) => s.drainingLeafId === null);
+    const retainedOwn = available.find((s) => s.currentLeafId === null && s.retainedLeafId === leafId);
     if (retainedOwn) return { slot: retainedOwn, previousLeafId: null };
 
-    const clean = slots.find((s) => s.currentLeafId === null && s.retainedLeafId === null);
+    const clean = available.find((s) => s.currentLeafId === null && s.retainedLeafId === null);
     if (clean) return { slot: clean, previousLeafId: null };
-    if (slots.length < PoolMaxSize) return { slot: createSlot(), previousLeafId: null };
+    if (available.length < PoolMaxSize) return { slot: createSlot(), previousLeafId: null };
 
     // Retained buffers are cheaper to lose than bound ones: serialize, no evict.
     let retained: Slot | null = null;
-    for (const s of slots) {
+    for (const s of available) {
         if (s.currentLeafId !== null) continue;
         if (!retained || s.lastUsedAt < retained.lastUsedAt) retained = s;
     }
@@ -346,7 +385,7 @@ function pickSlotFor(leafId: number): PickResult {
 
     let best: Slot | null = null;
     let bestScore = Number.POSITIVE_INFINITY;
-    for (const s of slots) {
+    for (const s of available) {
         if (s.currentLeafId === leafId) return { slot: s, previousLeafId: null };
         const score = evictionScore(s);
         if (score < bestScore) {
@@ -383,8 +422,19 @@ export function acquireSlot(params: AcquireParams): Slot {
     }
 
     const pick = pickSlotFor(params.leafId);
+    const displacedLeafId = pick.slot.currentLeafId ?? pick.slot.retainedLeafId;
+    const waitForWrites = displacedLeafId !== null && displacedLeafId !== params.leafId && pick.slot.pendingWrites > 0;
     if (pick.previousLeafId !== null) {
-        adapter?.evictLeaf(pick.previousLeafId);
+        adapter?.evictLeaf(pick.previousLeafId, waitForWrites);
+    } else if (waitForWrites && displacedLeafId !== null) {
+        adapter?.evictLeaf(displacedLeafId, true);
+    }
+    if (waitForWrites && displacedLeafId !== null) {
+        if (pick.slot.currentLeafId !== null) detachSlotFromLeaf(pick.slot, true);
+        retireSlotAfterWrites(pick.slot, displacedLeafId);
+        const replacement = createSlot();
+        bindSlot(replacement, params);
+        return replacement;
     }
     if (pick.slot.currentLeafId !== null && pick.slot.currentLeafId !== params.leafId) {
         detachSlotFromLeaf(pick.slot, false);
@@ -395,6 +445,17 @@ export function acquireSlot(params: AcquireParams): Slot {
     }
     bindSlot(pick.slot, params);
     return pick.slot;
+}
+
+function retireSlotAfterWrites(slot: Slot, leafId: number): void {
+    slot.drainingLeafId = leafId;
+    cancelWebglReap(slot);
+    cancelSlotReap(slot);
+    afterSlotWritesDrain(slot, () => {
+        if (slot.disposed || slot.drainingLeafId !== leafId) return;
+        adapter?.storeSnapshot(leafId, serializeSlot(slot));
+        disposeSlot(slot);
+    });
 }
 
 function discardRetention(slot: Slot): void {
@@ -452,7 +513,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
         slot.oscDisposers = p.registerOsc(slot.term);
         if (p.snapshot) {
             try {
-                slot.term.write(p.snapshot);
+                writeToSlot(slot, p.snapshot);
             } catch (e) {
                 console.warn("[xterm-pool] snapshot replay failed:", e);
             }
@@ -463,13 +524,13 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
             // the TUI redraw from scratch instead.
             p.drainRing(() => {});
         } else {
-            p.drainRing((bytes) => slot.term.write(bytes));
+            p.drainRing((bytes) => writeToSlot(slot, bytes));
         }
         try {
-            slot.term.write("\x1b[?25h");
+            writeToSlot(slot, "\x1b[?25h");
         } catch {}
     } else {
-        p.drainRing((bytes) => slot.term.write(bytes));
+        p.drainRing((bytes) => writeToSlot(slot, bytes));
     }
 
     setupResizeObserver(slot, p);
@@ -712,6 +773,8 @@ function reapIdleSlot(slot: Slot): void {
 }
 
 function disposeSlot(slot: Slot): void {
+    slot.disposed = true;
+    slot.writeDrainCallbacks = [];
     cancelSlotReap(slot);
     cancelWebglReap(slot);
     cancelPendingUnhide(slot);
@@ -969,7 +1032,9 @@ export function refreshLeafSlot(leafId: number): void {
 }
 
 export function disposeLeafSlot(leafId: number): void {
-    const slot = slots.find((s) => s.currentLeafId === leafId || s.retainedLeafId === leafId);
+    const slot = slots.find(
+        (s) => s.currentLeafId === leafId || s.retainedLeafId === leafId || s.drainingLeafId === leafId
+    );
     if (slot) disposeSlot(slot);
 }
 
@@ -982,7 +1047,10 @@ export function discardRetainedSlot(leafId: number): void {
 }
 
 export function getLiveSlotForLeaf(leafId: number): Slot | null {
-    return slots.find((s) => s.currentLeafId === leafId || s.retainedLeafId === leafId) ?? null;
+    return (
+        slots.find((s) => s.drainingLeafId === null && (s.currentLeafId === leafId || s.retainedLeafId === leafId)) ??
+        null
+    );
 }
 
 function isTerminalCopy(e: KeyboardEvent): boolean {

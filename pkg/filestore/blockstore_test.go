@@ -367,6 +367,14 @@ func TestAppend(t *testing.T) {
 	// fmt.Print(GBS.dump())
 	checkFileSize(t, ctx, zoneId, fileName, 11)
 	checkFileData(t, ctx, zoneId, fileName, "hello world")
+	offset, err := WFS.AppendDataWithOffset(ctx, zoneId, fileName, []byte("!"))
+	if err != nil {
+		t.Fatalf("error appending data with offset: %v", err)
+	}
+	if offset != 11 {
+		t.Fatalf("expected append offset 11, got %d", offset)
+	}
+	checkFileData(t, ctx, zoneId, fileName, "hello world!")
 }
 
 func TestWriteFile(t *testing.T) {

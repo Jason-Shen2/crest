@@ -35,8 +35,8 @@ function makeFileSubject(): SubjectWithRef<WSFileEventData> {
     return subject;
 }
 
-function makeFileEvent(fileop: string, data64 = ""): WSFileEventData {
-    return { zoneid: "block-1", filename: "term", fileop, data64 };
+function makeFileEvent(fileop: string, data64 = "", offset = 0): WSFileEventData {
+    return { zoneid: "block-1", filename: "term", fileop, data64, offset } as WSFileEventData;
 }
 
 describe("attachPty", () => {
@@ -59,11 +59,12 @@ describe("attachPty", () => {
 
     it("decodes append events and forwards bytes to onData", () => {
         attachPty("block-1", handlers);
-        fileSubject.next(makeFileEvent("append", stringToBase64("hello")));
+        fileSubject.next(makeFileEvent("append", stringToBase64("hello"), 42));
         expect(handlers.onData).toHaveBeenCalledTimes(1);
         const bytes = handlers.onData.mock.calls[0][0] as Uint8Array;
         expect(bytes).toBeInstanceOf(Uint8Array);
         expect(Array.from(bytes)).toEqual([104, 101, 108, 108, 111]);
+        expect(handlers.onData.mock.calls[0][1]).toBe(42);
         expect(handlers.onTruncate).not.toHaveBeenCalled();
     });
 

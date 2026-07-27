@@ -157,6 +157,7 @@ vi.mock("./renderer-pool", () => ({
     },
     acquireSlot: (params: any) => h.acquireSlot(params),
     releaseSlot: (leafId: number) => h.releaseSlot(leafId),
+    writeToSlot: (slot: any, data: string | Uint8Array) => slot.term.write(data),
     getSlotForLeaf: (leafId: number) => h.pool.slots.get(leafId) ?? null,
     getLiveSlotForLeaf: (leafId: number) => h.pool.slots.get(leafId) ?? h.pool.retained.get(leafId) ?? null,
     isLeafAltScreen: (leafId: number) => {
@@ -381,6 +382,34 @@ describe("attach + cold restore", () => {
         // Post-restore appends flow straight to the live slot.
         handlers.onData(enc("|LIVE"));
         expect(joined(slot)).toBe("FILE|APPEND-1APPEND-2|LIVE");
+    });
+
+    it("skips restore appends already included in the fetched blockfile", async () => {
+        const blockId = newBlockId();
+        let resolveFetch: (v: { data: Uint8Array; fileInfo: any }) => void;
+        h.fetchImpl = () =>
+            new Promise((r) => {
+                resolveFetch = r;
+            });
+        attachSession(blockId, fakeContainer(), {});
+        setSessionVisibility(blockId, true, true);
+        const slot: FakeSlot = h.pool.slots.get(sessionLeafId(blockId));
+        const handlers = h.ptyHandlers.get(blockId);
+
+        const base = "BASE|";
+        const included = "INCLUDED|";
+        const afterSnapshot = "LIVE";
+        handlers.onData(enc(included), base.length);
+        handlers.onData(enc(afterSnapshot), base.length + included.length);
+
+        const snapshot = base + included;
+        resolveFetch!({
+            data: enc(snapshot),
+            fileInfo: { size: snapshot.length },
+        });
+        await flushAsync();
+
+        expect(joined(slot)).toBe(snapshot + afterSnapshot);
     });
 
     it("without a slot, rebuilds the ring as file-then-appends for the next bind", async () => {
@@ -748,6 +777,25 @@ describe("slot adapter", () => {
         const { leafId } = await attachReady();
         h.pool.adapter.evictLeaf(leafId);
         expect(h.pool.releaseCalls).toContain(leafId);
+    });
+
+    it("restores the drained snapshot before bytes received during a pending eviction", async () => {
+        const { blockId, leafId, handlers } = await attachReady();
+        h.pool.adapter.evictLeaf(leafId, true);
+        h.pool.retained.delete(leafId);
+
+        handlers.onData(enc("DURING-EVICTION"));
+        expect(h.pool.slots.has(leafId)).toBe(false);
+
+        h.pool.adapter.storeSnapshot(leafId, {
+            snapshot: "DRAINED|",
+            cols: 80,
+            rows: 24,
+            altScreen: false,
+        });
+        await flushAsync();
+
+        expect(joined(h.pool.slots.get(sessionLeafId(blockId)))).toBe("DRAINED|DURING-EVICTION");
     });
 });
 

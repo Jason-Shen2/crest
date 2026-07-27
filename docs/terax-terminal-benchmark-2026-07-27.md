@@ -94,6 +94,15 @@ handlers. After registering the new leaf handlers before replay, a fresh
 Electron run verified all 8 panes retained their own output and returned to
 `prompt` while cycling through the 5-slot pool.
 
+The final pre-merge review found two additional ordering hazards. Xterm writes
+are asynchronous, so a slot with queued writes now drains into its old pane
+before its final snapshot is stored; the replacement pane temporarily uses an
+overflow slot, and the pool returns to five after the callbacks complete.
+Blockfile append events now also carry the absolute offset captured by the same
+lock as the append, allowing cold restore to remove bytes already included in
+the fetched snapshot without dropping later output. Focused regressions cover
+both races.
+
 ## Functional Electron smoke completed alongside the benchmark
 
 - Prompt startup and controller resync

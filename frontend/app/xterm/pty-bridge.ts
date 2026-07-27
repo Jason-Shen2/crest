@@ -7,7 +7,7 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { base64ToArray, stringToBase64 } from "@/util/util";
 
 export type PtyHandlers = {
-    onData: (bytes: Uint8Array) => void;
+    onData: (bytes: Uint8Array, offset?: number) => void;
     onTruncate?: () => void;
     onShellExit?: () => void;
 };
@@ -24,7 +24,7 @@ export function attachPty(blockId: string, handlers: PtyHandlers): PtySession {
     const fileSubject = getFileSubject(blockId, "term");
     const dataSub = fileSubject.subscribe((event) => {
         if (event.fileop === "append") {
-            handlers.onData(base64ToArray(event.data64));
+            handlers.onData(base64ToArray(event.data64), event.offset);
             return;
         }
         if (event.fileop === "truncate") {

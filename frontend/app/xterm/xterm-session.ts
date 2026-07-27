@@ -38,6 +38,7 @@ import {
     refreshLeafSlot,
     releaseSlot,
     setSlotFocused,
+    writeToSlot,
 } from "./renderer-pool";
 
 const TermFileName = "term";
@@ -91,6 +92,7 @@ type XtermSession = {
     snapshot: string;
     searchQuery: string;
     dormantRing: DormantRing;
+    restoreAppends: Array<{ bytes: Uint8Array; offset?: number }>;
     hasSlot: boolean;
     blocks: boolean;
     blockMode: BlockMode;
@@ -113,9 +115,12 @@ type XtermSession = {
     // OSC 133 C..D window: a foreground process owns the terminal, so the
     // session must keep its live grid while hidden.
     commandRunning: boolean;
-    // Cold restore in flight: appends must ring until the fetched blockfile
-    // replays, even when a live slot is already bound.
+    // Cold restore in flight: appends wait with their absolute file offsets
+    // until the fetched blockfile snapshot can reconcile overlap.
     restoring: boolean;
+    // A stolen slot still has xterm writes queued. New bytes ring until the
+    // old queue drains and its final snapshot is stored.
+    slotEvictionPending: boolean;
     hiddenReleaseTimer: ReturnType<typeof setTimeout>;
     statusUnsub: () => void;
     rowUnsub: () => void;
@@ -624,9 +629,10 @@ configureRendererPool({
             },
         };
     },
-    evictLeaf(leafId) {
+    evictLeaf(leafId, waitForWrites) {
         const s = sessionForLeaf(leafId);
         if (!s) return;
+        s.slotEvictionPending = waitForWrites;
         unbindSessionFromSlot(s);
     },
     isLeafFocused(leafId) {
@@ -650,53 +656,76 @@ configureRendererPool({
         if (out.cols > 0) s.cols = out.cols;
         if (out.rows > 0) s.rows = out.rows;
         s.altScreenAtRelease = out.altScreen;
+        if (!s.slotEvictionPending) return;
+        s.slotEvictionPending = false;
+        if (!s.container || s.disposed || s.hasSlot) return;
+        if (s.visibleNow) {
+            bindSessionToSlot(s);
+            return;
+        }
+        if (sessionBusy(s)) {
+            bindSessionToSlot(s);
+            parkLeafSlot(s.leafId);
+        }
     },
 });
 
-function deliverPtyBytes(s: XtermSession, bytes: Uint8Array): void {
+function deliverPtyBytes(s: XtermSession, bytes: Uint8Array, offset?: number): void {
     if (s.disposed) return;
     // Cold restore in flight: even a live slot must not see appends before the
-    // fetched blockfile replays, so everything rings until then.
+    // fetched blockfile replays, so retain bytes plus offsets until then.
     if (s.restoring) {
-        s.dormantRing.push(bytes);
+        s.restoreAppends.push({ bytes, offset });
         return;
     }
     // Retained slots keep parsing live (render paused); the ring is only for
     // leaves whose buffer was stolen or never bound.
     const slot = getLiveSlotForLeaf(s.leafId);
-    if (slot) slot.term.write(bytes);
+    if (slot) writeToSlot(slot, bytes);
     else s.dormantRing.push(bytes);
 }
 
 // Cold-restore ordering (docs/terax-terminal-port.md §五 risk 3): the pty
 // subscription is live BEFORE this fetch starts, and every append that lands
-// while it is in flight rings behind the restoring flag. Replaying the fetched
-// file first and draining the ring after guarantees no append is lost; an
-// append the backend also folded into the fetched file may replay twice, which
-// the doc accepts over byte-offset reconciliation (the bug class that froze
-// the old engine).
+// while it is in flight waits behind the restoring flag. The backend publishes
+// each append's absolute start offset; comparing it with the snapshot's size
+// removes bytes already present in the fetch while preserving later suffixes.
 async function coldRestoreScrollback(s: XtermSession): Promise<void> {
     let data: Uint8Array = null;
+    let snapshotEndOffset: number | null = null;
     try {
         const file = await fetchWaveFile(s.blockId, TermFileName);
         data = file.data;
+        snapshotEndOffset = Number.isFinite(file.fileInfo?.size) ? file.fileInfo.size : null;
     } catch (e) {
         console.warn("[xterm-session] scrollback fetch failed for block", s.blockId, e);
     }
     if (s.disposed) return;
     s.restoring = false;
+    const restoreAppends = s.restoreAppends;
+    s.restoreAppends = [];
+    const replayAppends = (write: (bytes: Uint8Array) => void) => {
+        for (const append of restoreAppends) {
+            let bytes = append.bytes;
+            if (snapshotEndOffset != null && append.offset != null) {
+                const included = Math.max(0, Math.min(bytes.length, snapshotEndOffset - append.offset));
+                bytes = bytes.subarray(included);
+            }
+            if (bytes.length > 0) write(bytes);
+        }
+    };
     const slot = getLiveSlotForLeaf(s.leafId);
     if (slot) {
-        if (data != null && data.length > 0) slot.term.write(data);
-        s.dormantRing.drain((bytes) => slot.term.write(bytes));
+        if (data != null && data.length > 0) writeToSlot(slot, data);
+        replayAppends((bytes) => writeToSlot(slot, bytes));
         return;
     }
-    if (data == null || data.length === 0) return;
+    if ((data == null || data.length === 0) && restoreAppends.length === 0) return;
     // No slot yet: rebuild the ring with the file first so the next bind
     // replays history before the appends that raced in during the fetch.
     const ring = new DormantRing();
-    ring.push(data);
-    s.dormantRing.drain((bytes) => ring.push(bytes));
+    if (data != null && data.length > 0) ring.push(data);
+    replayAppends((bytes) => ring.push(bytes));
     s.dormantRing = ring;
 }
 
@@ -858,7 +887,7 @@ function registerSessionOsc(s: XtermSession, term: Terminal): (() => void)[] {
 }
 
 function bindSessionToSlot(s: XtermSession): void {
-    if (!s.container) return;
+    if (!s.container || s.slotEvictionPending) return;
     const altScreen = s.altScreenAtRelease;
     s.altScreenAtRelease = false;
     acquireSlot({
@@ -918,6 +947,7 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
         snapshot: null,
         searchQuery: null,
         dormantRing: new DormantRing(),
+        restoreAppends: [],
         hasSlot: false,
         blocks,
         blockMode: "prompt",
@@ -930,6 +960,7 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
         altScreenAtRelease: false,
         commandRunning: false,
         restoring: true,
+        slotEvictionPending: false,
         hiddenReleaseTimer: null,
         statusUnsub: null,
         rowUnsub: null,
@@ -939,7 +970,7 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
     // Subscribe before asking the backend to start/resume the controller so
     // the first prompt bytes cannot race past the file subject.
     s.pty = attachPty(blockId, {
-        onData: (bytes) => deliverPtyBytes(s, bytes),
+        onData: (bytes, offset) => deliverPtyBytes(s, bytes, offset),
         onTruncate: () => handleTruncate(s),
         onShellExit: () => applyShellStatus(s, true),
     });
@@ -1046,5 +1077,6 @@ export function disposeSession(blockId: string): void {
     s.rowUnsub = null;
     s.inputFocus = null;
     s.pendingRows = [];
+    s.restoreAppends = [];
     sessions.delete(blockId);
 }

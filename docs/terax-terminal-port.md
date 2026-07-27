@@ -235,16 +235,16 @@ terax 终端模块共约 6.5k LOC（含测试）。逐文件处置：
 
 ## 五、风险与缓解
 
-| 风险                                                                                  | 面    | 缓解                                                                                                                                                                 |
-| ------------------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1 是不可回头点，替换期间分支上终端不可用                                             | 流程  | P1 全程在分支进行，验收清单全绿才合 main；main 上始终有可用终端。回退 = git revert 合入提交                                                                          |
-| base64+JSON websocket 吃掉 terax 二进制 IPC 的性能优势                                | 传输  | P0 合帧先把事件率降一个量级；xterm.write 有内部写队列。基准不达标再加 ws 二进制帧（P0.5 已 spike）                                                                   |
-| `Event_BlockFile` append 与 `fetchWaveFile` 全量拉取之间的衔接竞态                    | 恢复  | 先订阅→ring 缓冲→拉全量→回放→drain（terax dormant drain 同款顺序）；以"订阅时序 + 全量替换"为准，不做字节 offset 对账（**规避了旧引擎 offset 冻结 bug 的整个类别**） |
-| 池驱逐时 serialize 快照丢高频输出                                                     | 池    | terax 已处理（释放前 flush + retained-slot 优先）；照搬其顺序，移植其测试                                                                                            |
-| decorations 与 cmdblock:row 的 oid 对齐错位（乱序/重连）                              | 块 UX | decoration 以前端 OSC 133 marker 为准（自足），row 元数据仅做增强；不匹配时优雅降级                                                                                  |
-| Electron 下 WebGL context 上限/GPU 进程崩溃                                           | 渲染  | terax 的 context-loss 恢复 + DOM 渲染器回退已覆盖；`disableHardwareAcceleration` 场景验证一次                                                                        |
-| agent-surface / assistant-ui 对 TerminalModel 的残留引用导致 P1 删除时 tsc 大面积飘红 | 删除  | 先落 XtermPaneModel 承接 notificationAtom 等窄契约、改完引用再删引擎（P1.6 在 P1.7 之前是硬顺序）                                                                    |
-| tsunami 子项目已 pin `@xterm/xterm ^6.0.0`                                            | 依赖  | 根 package.json 用同版本段，避免 lockfile 分叉                                                                                                                       |
+| 风险                                                                                  | 面    | 缓解                                                                                                                                |
+| ------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| P1 是不可回头点，替换期间分支上终端不可用                                             | 流程  | P1 全程在分支进行，验收清单全绿才合 main；main 上始终有可用终端。回退 = git revert 合入提交                                         |
+| base64+JSON websocket 吃掉 terax 二进制 IPC 的性能优势                                | 传输  | P0 合帧先把事件率降一个量级；xterm.write 有内部写队列。基准不达标再加 ws 二进制帧（P0.5 已 spike）                                  |
+| `Event_BlockFile` append 与 `fetchWaveFile` 全量拉取之间的衔接竞态                    | 恢复  | 先订阅→暂存 append→拉全量；append 事件携带锁内取得的绝对起始 offset，以 fetch 返回的文件 size 去掉已包含前缀，再按序回放剩余后缀    |
+| 池驱逐时 serialize 快照丢高频输出或串到新 pane                                        | 池    | 所有 xterm 写入计数；有排队写时旧 slot 进入 draining、临时创建 overflow slot，写回调全部完成后才序列化并销毁旧 slot，池恢复到上限 5 |
+| decorations 与 cmdblock:row 的 oid 对齐错位（乱序/重连）                              | 块 UX | decoration 以前端 OSC 133 marker 为准（自足），row 元数据仅做增强；不匹配时优雅降级                                                 |
+| Electron 下 WebGL context 上限/GPU 进程崩溃                                           | 渲染  | terax 的 context-loss 恢复 + DOM 渲染器回退已覆盖；`disableHardwareAcceleration` 场景验证一次                                       |
+| agent-surface / assistant-ui 对 TerminalModel 的残留引用导致 P1 删除时 tsc 大面积飘红 | 删除  | 先落 XtermPaneModel 承接 notificationAtom 等窄契约、改完引用再删引擎（P1.6 在 P1.7 之前是硬顺序）                                   |
+| tsunami 子项目已 pin `@xterm/xterm ^6.0.0`                                            | 依赖  | 根 package.json 用同版本段，避免 lockfile 分叉                                                                                      |
 
 ---
 
@@ -302,6 +302,8 @@ prompt/输出完整；场景 3 的配置 scrollback + viewport 必须连续无 g
 | D13 | 帧预算按刷新周期校准                                      | 30 个 rAF 间隔的中位数 + 2.5ms 调度容差；兼容 60/120Hz，避免 16.7ms 量化误杀                                                                                               | 固定 16.7ms——60Hz 正常帧也会因调度抖动失败               |
 | D14 | scrollback 验收按配置窗口连续                             | 保持 legacy 一致的 50,000 产品上限；验证 scrollback + viewport 尾窗无 gap                                                                                                  | 为单个基准把产品上限提到 100,000——引入未评估内存成本     |
 | D15 | 后台成本用同构建可见/parked A/B                           | 旧引擎删除前没有 CPU 原始样本；用 parked 状态、layout 降幅、数据/提示符恢复作为可复现守门                                                                                  | 从不同历史 commit 拼一个不可比的“legacy baseline”        |
+| D16 | slot 有待解析写入时先 draining，再驱逐                    | `Terminal.write` 异步排队且 `reset()` 不清队列；直接复用会把旧 pane 字节解析进新 pane。短暂 overflow 后等待 write callback，保留最终快照且不突破稳定态 5-slot 上限         | 同步 reset/rebind——无法隔离 xterm 内部 WriteBuffer       |
+| D17 | blockfile append 事件携带绝对起始 offset                  | 后端先落文件再发事件，冷恢复 fetch 可能已包含同时收到的 append；锁内取得 offset 后可精确裁掉重叠前缀，同时保留 fetch 之后的后缀                                            | 无 offset 全量 replay——控制序列和普通输出都可能重复      |
 
 ---
 
@@ -324,9 +326,9 @@ prompt/输出完整；场景 3 的配置 scrollback + viewport 必须连续无 g
 - **DormantRing** — 无 slot 会话的 PTY 字节环形缓冲（1MiB，丢最旧，LF 边界续）。
 - **Kick** — +1 行再恢复的 resize 抖动，强迫 TUI 全量重绘（内核抑制同尺寸 SIGWINCH）。
 - **blockDecorations** — 用 xterm marker + decoration API 把 OSC 133 命令边界渲染成覆盖层块 UI。
-- **Event_BlockFile** — Go 侧每次 append `term` blockfile 时发布的 wps 事件，携带 base64 数据；本方案的前端数据源。
+- **Event_BlockFile** — Go 侧每次 append `term` blockfile 时发布的 wps 事件，携带 base64 数据和锁内取得的绝对起始 offset；本方案的前端数据源。
 - **XtermPaneModel** — 替代 TerminalModel 的薄模型，只承载 notificationAtom / focus / session 注册表等存活契约。
 
 ---
 
-_文档版本 1.2 — 直接重构版（去灰度）+ D10-D12 拍板，无未决依赖。执行时按阶段更新状态表。_
+_文档版本 1.3 — 直接重构版（去灰度）+ D10-D17 拍板，无未决依赖。执行时按阶段更新状态表。_
