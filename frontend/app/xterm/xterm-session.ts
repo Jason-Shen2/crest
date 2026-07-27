@@ -746,6 +746,7 @@ function handleTruncate(s: XtermSession): void {
     const hasWriteBarrier = beginLeafWriteBarrier(s.leafId, (slot) => {
         if (s.disposed || s.restoreGeneration !== restoreGeneration) return;
         slot.term.clear();
+        slot.tuiWheel?.resetTerminal();
         slot.term.reset();
         endLeafWriteBarrier(slot, s.leafId);
         s.truncatePending = false;

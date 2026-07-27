@@ -7,8 +7,9 @@ import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { type FontWeight, Terminal } from "@xterm/xterm";
+import { Terminal, type FontWeight } from "@xterm/xterm";
 import { shouldCursorBlink } from "./cursor-blink";
+import { installFullscreenTuiWheel, type FullscreenTuiWheelBinding } from "./fullscreen-tui-wheel";
 import { terminalDeleteSequence, terminalLineNavigationSequence, terminalWordNavigationSequence } from "./keymap";
 import { readTerminalClipboard, writeTerminalClipboard } from "./terminal-clipboard";
 import {
@@ -68,6 +69,7 @@ export type Slot = {
     // only if another leaf steals the slot.
     retainedLeafId: number | null;
     parked: boolean;
+    tuiWheel: FullscreenTuiWheelBinding | null;
     oscDisposers: (() => void)[];
     observer: ResizeObserver | null;
     fitTimer: ReturnType<typeof setTimeout> | null;
@@ -227,6 +229,7 @@ function createSlot(): Slot {
         currentLeafId: null,
         retainedLeafId: null,
         parked: false,
+        tuiWheel: null,
         oscDisposers: [],
         observer: null,
         fitTimer: null,
@@ -246,6 +249,10 @@ function createSlot(): Slot {
         lastH: 0,
         lastUsedAt: 0,
     };
+    slot.tuiWheel = installFullscreenTuiWheel(
+        term,
+        () => slot.currentLeafId !== null && !slot.parked && !slot.disposed
+    );
 
     term.attachCustomKeyEventHandler((event) => {
         // During IME composition the browser is assembling a multi-keystroke
@@ -559,6 +566,7 @@ function discardRetention(slot: Slot): void {
 }
 
 function bindSlot(slot: Slot, p: AcquireParams): void {
+    slot.tuiWheel?.cancelGesture();
     const fast = slot.retainedLeafId === p.leafId;
     const stale = !slot.webglAddon || slot.parked || performance.now() - slot.lastUsedAt > SlotStaleMs;
     const hadWebgl = !!slot.webglAddon;
@@ -594,6 +602,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
         slot.oscDisposers = [];
 
         slot.term.clear();
+        slot.tuiWheel?.resetTerminal();
         slot.term.reset();
 
         if (p.cols > 0 && p.rows > 0 && (slot.term.cols !== p.cols || slot.term.rows !== p.rows)) {
@@ -688,6 +697,7 @@ function cancelPendingUnhide(slot: Slot): void {
 }
 
 function rewireSlot(slot: Slot, p: AcquireParams): void {
+    slot.tuiWheel?.cancelGesture();
     slot.lastUsedAt = performance.now();
     unparkSlotHost(slot);
     if (slot.host.parentNode !== p.container) {
@@ -777,6 +787,7 @@ function serializeSlot(slot: Slot): SerializeOutput {
 }
 
 function detachSlotFromLeaf(slot: Slot, retain: boolean): void {
+    slot.tuiWheel?.cancelGesture();
     if (retain && slot.currentLeafId !== null) {
         slot.retainedLeafId = slot.currentLeafId;
         parkSlotHost(slot);
@@ -808,6 +819,7 @@ function detachSlotFromLeaf(slot: Slot, retain: boolean): void {
 // buffer keeps parsing writes; visibility:hidden would not (geometry remains).
 function parkSlotHost(slot: Slot): void {
     if (slot.parked) return;
+    slot.tuiWheel?.cancelGesture();
     slot.parked = true;
     slot.host.style.display = "none";
 }
@@ -883,6 +895,8 @@ function disposeSlot(slot: Slot): void {
     }
     slot.oscDisposers = [];
     disposeSlotWebgl(slot);
+    slot.tuiWheel?.dispose();
+    slot.tuiWheel = null;
     try {
         slot.term.dispose();
     } catch (e) {
@@ -1139,6 +1153,7 @@ export function discardRetainedSlot(leafId: number): void {
     if (!slot) return;
     discardRetention(slot);
     slot.term.clear();
+    slot.tuiWheel?.resetTerminal();
     slot.term.reset();
 }
 

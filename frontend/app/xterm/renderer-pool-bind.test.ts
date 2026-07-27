@@ -10,6 +10,8 @@ const h = vi.hoisted(() => ({
     deferWrites: false,
     evicted: [] as number[],
     snapshots: [] as Array<{ leafId: number; snapshot: string | null }>,
+    rafCallbacks: new Map<number, FrameRequestCallback>(),
+    nextRaf: 1,
 }));
 
 vi.mock("@/store/global", () => ({
@@ -32,12 +34,48 @@ vi.mock("@xterm/xterm", () => ({
         rows = 24;
         options: Record<string, unknown>;
         buffer = { active: { type: "normal", length: 0 } };
-        parser = { registerOscHandler: () => ({ dispose: () => {} }) };
+        modes = { mouseTrackingMode: "vt200" as const };
+        element = document.createElement("div");
+        csiHandlers = new Map<string, (params: (number | number[])[]) => boolean | Promise<boolean>>();
+        escHandlers = new Map<string, () => boolean | Promise<boolean>>();
+        parser = {
+            registerOscHandler: () => ({ dispose: () => {} }),
+            registerCsiHandler: (
+                id: { prefix?: string; final: string },
+                callback: (params: (number | number[])[]) => boolean | Promise<boolean>
+            ) => {
+                const key = `${id.prefix ?? ""}${id.final}`;
+                this.csiHandlers.set(key, callback);
+                return { dispose: () => this.csiHandlers.delete(key) };
+            },
+            registerEscHandler: (id: { final: string }, callback: () => boolean | Promise<boolean>) => {
+                this.escHandlers.set(id.final, callback);
+                return { dispose: () => this.escHandlers.delete(id.final) };
+            },
+        };
         writes: string[] = [];
+        inputs: Array<[string, boolean | undefined]> = [];
         pendingWrites: Array<() => void> = [];
+        wheelHandler: ((event: WheelEvent) => boolean) | null = null;
+        disposed = false;
 
         constructor(options: Record<string, unknown>) {
             this.options = options;
+            const screen = document.createElement("div");
+            screen.className = "xterm-screen";
+            screen.getBoundingClientRect = () =>
+                ({
+                    left: 0,
+                    top: 0,
+                    width: 800,
+                    height: 480,
+                    right: 800,
+                    bottom: 480,
+                    x: 0,
+                    y: 0,
+                    toJSON: () => ({}),
+                }) as DOMRect;
+            this.element.appendChild(screen);
         }
 
         loadAddon(addon: { activate?: (term: unknown) => void }) {
@@ -45,8 +83,14 @@ vi.mock("@xterm/xterm", () => ({
         }
         open() {}
         attachCustomKeyEventHandler() {}
+        attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean) {
+            this.wheelHandler = handler;
+        }
         onData() {
             return { dispose: () => {} };
+        }
+        input(data: string, wasUserInput?: boolean) {
+            this.inputs.push([data, wasUserInput]);
         }
         clear() {}
         reset() {
@@ -71,7 +115,9 @@ vi.mock("@xterm/xterm", () => ({
         }
         focus() {}
         refresh() {}
-        dispose() {}
+        dispose() {
+            this.disposed = true;
+        }
     },
 }));
 
@@ -107,6 +153,7 @@ import {
     acquireSlot,
     beginLeafWriteBarrier,
     configureRendererPool,
+    discardRetainedSlot,
     disposeLeafSlot,
     endLeafWriteBarrier,
     getSlotForLeaf,
@@ -126,8 +173,14 @@ describe("renderer slot replay", () => {
                 disconnect() {}
             }
         );
-        vi.stubGlobal("requestAnimationFrame", () => 1);
-        vi.stubGlobal("cancelAnimationFrame", () => {});
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+            const id = h.nextRaf++;
+            h.rafCallbacks.set(id, callback);
+            return id;
+        });
+        vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+            h.rafCallbacks.delete(id);
+        });
     });
 
     beforeEach(() => {
@@ -135,6 +188,8 @@ describe("renderer slot replay", () => {
         h.evicted.length = 0;
         h.snapshots.length = 0;
         h.deferWrites = false;
+        h.rafCallbacks.clear();
+        h.nextRaf = 1;
         configureRendererPool({
             resolveLeaf: () => null,
             evictLeaf: (leafId) => {
@@ -186,6 +241,164 @@ describe("renderer slot replay", () => {
         });
 
         expect(h.events.slice(0, 4)).toEqual(["register", "write:snapshot", "drain", "write:bytes"]);
+    });
+
+    it("installs fullscreen TUI wheel handling on an active slot", () => {
+        const slot = acquireSlot({
+            leafId: 1,
+            container: document.body.appendChild(document.createElement("div")),
+            snapshot: null,
+            altScreen: false,
+            drainRing: () => {},
+            shellExited: false,
+            searchQuery: null,
+            cols: 80,
+            rows: 24,
+            registerOsc: () => [],
+            onSearchReady: () => {},
+        }) as Slot & {
+            term: Slot["term"] & {
+                csiHandlers: Map<string, (params: (number | number[])[]) => boolean>;
+                inputs: Array<[string, boolean | undefined]>;
+                wheelHandler: (event: WheelEvent) => boolean;
+            };
+        };
+        slot.term.csiHandlers.get("?h")?.([1006]);
+
+        expect(
+            slot.term.wheelHandler({
+                deltaMode: 0,
+                deltaX: 0,
+                deltaY: 20,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                clientX: 45,
+                clientY: 45,
+                timeStamp: 1,
+            } as WheelEvent)
+        ).toBe(false);
+
+        const wheelFrameId = Math.max(...h.rafCallbacks.keys());
+        const wheelFrame = h.rafCallbacks.get(wheelFrameId);
+        h.rafCallbacks.delete(wheelFrameId);
+        wheelFrame?.(16);
+        expect(slot.term.inputs).toEqual([["\x1b[<65;5;3M", false]]);
+    });
+
+    it("cancels pending TUI wheel input when a slot is released", () => {
+        const slot = acquireSlot({
+            leafId: 1,
+            container: document.body.appendChild(document.createElement("div")),
+            snapshot: null,
+            altScreen: false,
+            drainRing: () => {},
+            shellExited: false,
+            searchQuery: null,
+            cols: 80,
+            rows: 24,
+            registerOsc: () => [],
+            onSearchReady: () => {},
+        }) as Slot & {
+            term: Slot["term"] & {
+                csiHandlers: Map<string, (params: (number | number[])[]) => boolean>;
+                inputs: Array<[string, boolean | undefined]>;
+                wheelHandler: (event: WheelEvent) => boolean;
+            };
+        };
+        slot.term.csiHandlers.get("?h")?.([1006]);
+        slot.term.wheelHandler({
+            deltaMode: 0,
+            deltaX: 0,
+            deltaY: 20,
+            ctrlKey: false,
+            shiftKey: false,
+            altKey: false,
+            clientX: 45,
+            clientY: 45,
+            timeStamp: 1,
+        } as WheelEvent);
+
+        releaseSlot(1);
+        for (const [id, callback] of [...h.rafCallbacks]) {
+            h.rafCallbacks.delete(id);
+            callback(16);
+        }
+
+        expect(slot.term.inputs).toEqual([]);
+    });
+
+    it("resets TUI mouse encoding before a retained slot is reused", () => {
+        const acquire = (leafId: number) =>
+            acquireSlot({
+                leafId,
+                container: document.body.appendChild(document.createElement("div")),
+                snapshot: null,
+                altScreen: false,
+                drainRing: () => {},
+                shellExited: false,
+                searchQuery: null,
+                cols: 80,
+                rows: 24,
+                registerOsc: () => [],
+                onSearchReady: () => {},
+            }) as Slot & {
+                term: Slot["term"] & {
+                    csiHandlers: Map<string, (params: (number | number[])[]) => boolean>;
+                    wheelHandler: (event: WheelEvent) => boolean;
+                };
+            };
+        const first = acquire(1);
+        first.term.csiHandlers.get("?h")?.([1006]);
+
+        releaseSlot(1);
+        discardRetainedSlot(1);
+        const reused = acquire(2);
+
+        expect(reused).toBe(first);
+        expect(
+            reused.term.wheelHandler({
+                deltaMode: 0,
+                deltaX: 0,
+                deltaY: 20,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                clientX: 45,
+                clientY: 45,
+                timeStamp: 500,
+            } as WheelEvent)
+        ).toBe(true);
+    });
+
+    it("disposes TUI parser observers with the slot", () => {
+        const slot = acquireSlot({
+            leafId: 1,
+            container: document.body.appendChild(document.createElement("div")),
+            snapshot: null,
+            altScreen: false,
+            drainRing: () => {},
+            shellExited: false,
+            searchQuery: null,
+            cols: 80,
+            rows: 24,
+            registerOsc: () => [],
+            onSearchReady: () => {},
+        }) as Slot & {
+            term: Slot["term"] & {
+                csiHandlers: Map<string, (params: (number | number[])[]) => boolean>;
+                escHandlers: Map<string, () => boolean>;
+                disposed: boolean;
+            };
+        };
+        expect(slot.term.csiHandlers.size).toBe(2);
+        expect(slot.term.escHandlers.size).toBe(1);
+
+        disposeLeafSlot(1);
+
+        expect(slot.term.csiHandlers.size).toBe(0);
+        expect(slot.term.escHandlers.size).toBe(0);
+        expect(slot.term.disposed).toBe(true);
     });
 
     it("does not reset and reuse a slot until the evicted leaf's queued writes have parsed", async () => {
