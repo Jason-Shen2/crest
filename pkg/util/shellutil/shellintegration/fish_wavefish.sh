@@ -10,6 +10,7 @@ set -e WAVETERM_SWAPTOKEN
 wsh completion fish | source
 
 set -g _WAVETERM_SI_FIRSTPROMPT 1
+set -g _WAVETERM_SI_BLOCK_SEEN 0
 
 # shell integration
 function _waveterm_si_blocked
@@ -57,9 +58,29 @@ function _waveterm_si_emit_env
     printf '\033]133;P;%s\007' "$parts"
 end
 
-function _waveterm_si_prompt --on-event fish_prompt
+function _waveterm_si_restore_status
+    return $argv[1]
+end
+
+if functions -q fish_prompt
+    functions -c fish_prompt _waveterm_si_user_prompt
+end
+if test -n "$WAVETERM_BLOCKS"
+    function fish_right_prompt
+    end
+    function fish_greeting
+    end
+end
+
+function fish_prompt
     set -l _waveterm_si_status $status
-    _waveterm_si_blocked; and return
+    if _waveterm_si_blocked
+        _waveterm_si_restore_status $_waveterm_si_status
+        if functions -q _waveterm_si_user_prompt
+            _waveterm_si_user_prompt
+        end
+        return
+    end
     if test $_WAVETERM_SI_FIRSTPROMPT -eq 1
         set -l uname_info (uname -smr 2>/dev/null)
         printf '\033]16162;M;{"shell":"fish","shellversion":"%s","uname":"%s","integration":true}\007' $FISH_VERSION "$uname_info"
@@ -75,11 +96,29 @@ function _waveterm_si_prompt --on-event fish_prompt
     printf '\033]16162;A\007'
     printf '\033]133;A\007'
     set -g _WAVETERM_SI_FIRSTPROMPT 0
+    if test -n "$WAVETERM_BLOCKS"
+        if test $_WAVETERM_SI_BLOCK_SEEN -eq 1
+            printf '\n\n'
+        else
+            printf '\n'
+        end
+        printf '\033]133;B\007'
+        return
+    end
+    _waveterm_si_restore_status $_waveterm_si_status
+    if functions -q _waveterm_si_user_prompt
+        _waveterm_si_user_prompt
+    else
+        printf '%s > ' (prompt_pwd)
+    end
+    printf '\033]133;B\007'
 end
 
 function _waveterm_si_preexec --on-event fish_preexec
     _waveterm_si_blocked; and return
+    set -g _WAVETERM_SI_BLOCK_SEEN 1
     set -l cmd (string join -- ' ' $argv)
+    set -l marker_cmd (string replace -ra '[\x00-\x1f\x7f]' ' ' -- "$cmd")
     set -l cmd_length (string length -- "$cmd")
     if test $cmd_length -gt 8192
         set -l cmd64 (printf '# command too large (%d bytes)' $cmd_length | base64 2>/dev/null | string replace -a '\n' '' | string replace -a '\r' '')
@@ -92,7 +131,7 @@ function _waveterm_si_preexec --on-event fish_preexec
             printf '\033]16162;C\007'
         end
     end
-    printf '\033]133;C\007'
+    printf '\033]133;C;%s\007' (string sub -l 256 -- "$marker_cmd")
 end
 
 # Also update on directory change

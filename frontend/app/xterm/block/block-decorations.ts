@@ -11,12 +11,6 @@ import type { BlockMeta } from "./types";
 const OkRuler = "#5fb3b3";
 const FailRuler = "#e5706b";
 const MaxBlocks = 1000;
-// Loose wall-clock window for aligning a Go cmdblock:row with an OSC-133
-// entry. There is no shared id between the two streams (row oid vs frontend
-// marker), so time alignment is the seam; replayed scrollback re-parses
-// markers at replay time and simply never matches (docs/terax-terminal-port.md
-// §五 "decorations 与 cmdblock:row 的 oid 对齐错位").
-const RowMatchWindowMs = 5000;
 
 type Entry = {
     id: string;
@@ -67,17 +61,6 @@ export type VisibleBlocks = {
 };
 
 export type BlockMatch = { line: number; col: number; len: number };
-
-// Normalized cmdblock:row metadata (Go Tracker sidecar). Timestamps are ms
-// epoch; `running` rows may only enrich the live block's command.
-export type BlockRowMeta = {
-    cmd?: string;
-    exitCode?: number;
-    durationMs?: number;
-    startedAt?: number;
-    finishedAt?: number;
-    running?: boolean;
-};
 
 export type BlockDecorationsOptions = {
     onCwd?: (cwd: string) => void;
@@ -250,63 +233,6 @@ export class BlockDecorations {
 
     hasAnyBlock(): boolean {
         return this.entries.length > 0 || this.live !== null;
-    }
-
-    // Go-side row metadata is richer than the frontend OSC parse (cmd captured
-    // from the prompt region, exit/duration persisted), so its cmd wins on a
-    // match; exitCode only fills a hole to avoid flipping a badge the OSC 133 D
-    // already rendered. Returns true when a matching block was updated;
-    // unmatched rows degrade silently per the port doc.
-    applyRowMeta(row: BlockRowMeta): boolean {
-        if (row.running) {
-            const lb = this.live;
-            if (!lb || row.startedAt == null) return false;
-            if (Math.abs(lb.startedAt - row.startedAt) > RowMatchWindowMs) return false;
-            if (!row.cmd || lb.command === row.cmd) return false;
-            lb.command = row.cmd;
-            this.scheduleViewport();
-            return true;
-        }
-        const e = this.closestEntryByTime(row.startedAt, row.finishedAt);
-        if (!e) return false;
-        let changed = false;
-        if (row.cmd && row.cmd !== e.command) {
-            e.command = row.cmd;
-            changed = true;
-        }
-        if (row.exitCode != null && e.exitCode == null) {
-            e.exitCode = row.exitCode;
-            changed = true;
-        }
-        if (row.durationMs != null && row.durationMs > 0) {
-            const finishedAt = e.startedAt + row.durationMs;
-            if (finishedAt !== e.finishedAt) {
-                e.finishedAt = finishedAt;
-                changed = true;
-            }
-        }
-        if (changed) this.scheduleViewport();
-        return changed;
-    }
-
-    // Newest-first with a strict compare so a wall-clock tie (several entries
-    // finishing in the same millisecond) resolves to the most recent entry.
-    closestEntryByTime(startedAt?: number, finishedAt?: number): Entry | null {
-        if (startedAt == null && finishedAt == null) return null;
-        let best: Entry | null = null;
-        let bestDelta = RowMatchWindowMs + 1;
-        for (let i = this.entries.length - 1; i >= 0; i--) {
-            const e = this.entries[i];
-            const delta = Math.min(
-                startedAt != null ? Math.abs(e.startedAt - startedAt) : Infinity,
-                finishedAt != null ? Math.abs(e.finishedAt - finishedAt) : Infinity
-            );
-            if (delta < bestDelta) {
-                bestDelta = delta;
-                best = e;
-            }
-        }
-        return best;
     }
 
     visibleBlocks(): VisibleBlocks {

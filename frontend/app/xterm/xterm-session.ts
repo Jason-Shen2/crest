@@ -8,7 +8,7 @@ import { atoms, fetchWaveFile, globalStore } from "@/store/global";
 import type { ISearchOptions, SearchAddon } from "@xterm/addon-search";
 import type { Terminal } from "@xterm/xterm";
 import { ensureAgentActivityListener, isAgentActive } from "./agent-activity";
-import { BlockDecorations, type BlockMatch, type BlockRowMeta, type VisibleBlocks } from "./block/block-decorations";
+import { BlockDecorations, type BlockMatch, type VisibleBlocks } from "./block/block-decorations";
 import type { WatermarkState } from "./block/block-watermark";
 import {
     initialModeState,
@@ -46,13 +46,6 @@ import {
 const TermFileName = "term";
 const ShellStatusDone = "done";
 const HiddenReleaseDelayMs = 300;
-const RowStateDone = "done";
-const RowKindShell = "shell";
-// cmdblock:row events buffered while no BlockDecorations instance exists yet
-// (pre-bind, mid-rebind). Rows older than the age cap can no longer time-align
-// with anything and are dropped instead of being retried every frame.
-const PendingRowsMax = 32;
-const PendingRowMaxAgeMs = 15000;
 // Cursor marker interpolated into the screen text at the cursor position.
 // Mirrors Warp's CURSOR_MARKER — the exact string is part of the pty_read
 // contract with emain (emain/agent/tools/pty-read.ts renders it verbatim).
@@ -105,8 +98,6 @@ type XtermSession = {
     inputFocus: () => void;
     // Live "input has text" flag from the block input bar (gates the watermark).
     inputActive: boolean;
-    // Go cmdblock:row metadata not yet matched to a decoration entry.
-    pendingRows: BlockRowMeta[];
     // A command was submitted on this session; kills the watermark synchronously,
     // before the shell's OSC 133 C round-trips through the PTY.
     everSubmitted: boolean;
@@ -131,7 +122,6 @@ type XtermSession = {
     slotEvictionGeneration: number | null;
     hiddenReleaseTimer: ReturnType<typeof setTimeout>;
     statusUnsub: () => void;
-    rowUnsub: () => void;
 };
 
 const sessions = new Map<string, XtermSession>();
@@ -816,47 +806,6 @@ function applySessionBlockMode(s: XtermSession, mode: BlockMode): void {
     notifyKeyed(blockModeListeners, s.blockId);
 }
 
-function rowMetaFromCmdBlock(row: CmdBlock): BlockRowMeta {
-    return {
-        cmd: row.cmd,
-        exitCode: row.exitcode,
-        durationMs: row.durationms,
-        startedAt: row.tscmdns != null ? Math.round(row.tscmdns / 1e6) : null,
-        finishedAt: row.tsdonens != null ? Math.round(row.tsdonens / 1e6) : null,
-        running: row.state !== RowStateDone,
-    };
-}
-
-function onSessionRow(s: XtermSession, row: CmdBlock): void {
-    if (s.disposed || row == null) return;
-    if (row.kind != null && row.kind !== RowKindShell) return;
-    const meta = rowMetaFromCmdBlock(row);
-    if (s.blockDecorations?.applyRowMeta(meta)) {
-        notifyKeyed(blockViewportListeners, s.blockId);
-        return;
-    }
-    // Running rows are superseded by their own done row; only done rows are
-    // worth retrying once decorations (re)exist.
-    if (meta.running) return;
-    s.pendingRows.push(meta);
-    if (s.pendingRows.length > PendingRowsMax) s.pendingRows.shift();
-}
-
-function replayPendingRows(s: XtermSession): void {
-    const deco = s.blockDecorations;
-    if (!deco || s.pendingRows.length === 0) return;
-    const cutoff = Date.now() - PendingRowMaxAgeMs;
-    let applied = false;
-    s.pendingRows = s.pendingRows.filter((row) => {
-        if (deco.applyRowMeta(row)) {
-            applied = true;
-            return false;
-        }
-        return (row.finishedAt ?? row.startedAt ?? 0) >= cutoff;
-    });
-    if (applied) notifyKeyed(blockViewportListeners, s.blockId);
-}
-
 function registerSessionBlockOsc(s: XtermSession, term: Terminal): (() => void)[] {
     const osc52 = registerOsc52ClipboardHandler(term);
     const deco = new BlockDecorations(term, {
@@ -867,7 +816,6 @@ function registerSessionBlockOsc(s: XtermSession, term: Terminal): (() => void)[
         },
         onMode: (mode) => applySessionBlockMode(s, mode),
         onViewport: () => {
-            replayPendingRows(s);
             notifyKeyed(blockViewportListeners, s.blockId);
         },
     });
@@ -940,7 +888,6 @@ function bindSessionToSlot(s: XtermSession): void {
     s.hasSlot = true;
     if (s.blocks) {
         applySessionBlockMode(s, s.blockMode);
-        replayPendingRows(s);
     }
     if (s.lastCwd != null) s.callbacks.onCwd?.(s.lastCwd);
 }
@@ -983,7 +930,6 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
         blockDecorations: null,
         inputFocus: null,
         inputActive: false,
-        pendingRows: [],
         everSubmitted: false,
         altScreenAtRelease: false,
         commandRunning: false,
@@ -994,7 +940,6 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
         slotEvictionGeneration: null,
         hiddenReleaseTimer: null,
         statusUnsub: null,
-        rowUnsub: null,
     };
     sessions.set(blockId, s);
 
@@ -1030,17 +975,6 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
             applyShellStatus(s, status.shellprocstatus === ShellStatusDone);
         },
     });
-
-    // Go's Tracker publishes persisted per-command metadata (cmd/exitcode/
-    // durationms) as a sidecar to the raw stream; decorations use it to
-    // enrich the OSC-133 blocks (docs/terax-terminal-port.md §四 P3.1).
-    if (blocks) {
-        s.rowUnsub = waveEventSubscribeSingle({
-            eventType: "cmdblock:row",
-            scope: `block:${blockId}`,
-            handler: (event) => onSessionRow(s, event.data as CmdBlock),
-        });
-    }
 
     void coldRestoreScrollback(s);
     return s;
@@ -1104,10 +1038,7 @@ export function disposeSession(blockId: string): void {
     s.pty = null;
     s.statusUnsub?.();
     s.statusUnsub = null;
-    s.rowUnsub?.();
-    s.rowUnsub = null;
     s.inputFocus = null;
-    s.pendingRows = [];
     s.restoreAppends = [];
     sessions.delete(blockId);
 }

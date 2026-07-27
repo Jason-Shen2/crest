@@ -7,7 +7,7 @@
 - ✅ P0 全部（OSC 133 双发、8ms/64KB 合帧、ControllerHasForegroundJob RPC、durable Tracker）
 - ✅ P1 全部（依赖、纯函数移植、pty-bridge、renderer-pool + theme、xterm-session、XtermView/XtermPaneModel、四渲染点切换、旧引擎删除 −10,833 行；tsc/vitest 门禁与基线零差异）
 - ✅ P2 全部（P2.2 find-bar over SearchAddon、P2.5 pty_read seam、P2.6 上下文换源、P2.7/D9 视图合并 + term:blocks meta 键）。唯一 deferred：liveGitBranch（ContextChipModel 失去宿主，需新 cwd/命令驱动）
-- ✅ P3 全部（decorations + cmdblock:row 增强、BlockOverlay/Watermark、CmdBlockInput 接线 + 三项输入 bug 修复、.bt-match CSS）
+- ✅ P3 全部（原生 OSC 133 decorations、BlockOverlay/Watermark、CmdBlockInput 接线 + 三项输入 bug 修复、.bt-match CSS）
 - ✅ P4 全部（性能场景 1–6、cmdblock:chunk 与 agent 穿插清除、迁移 000017、NLD 惰性化、文档收尾；结果见 `docs/terax-terminal-benchmark-2026-07-27.md`）
 - ✅ **P1/P2/P3 Electron 专项冒烟完成**（prompt/输入输出/历史/ETX/less+vim alt-screen/Cmd+F/exit overlay/多行提交/WebGL 重输出滚动/8 pane/池驱逐恢复/提示符与 raw-mode composition/renderer reload 冷回放均已验；原生 macOS IME 候选窗保留为可选手测）
 
@@ -15,6 +15,8 @@
 **参考仓库**: `/Users/bytedance/Documents/terax-ai`（Tauri v2 + React，只读参考，Apache-2.0，与 crest 同许可）
 **被替换并删除**: `frontend/app/term/engine/`、`frontend/app/term/render/` 的渲染层、`terminal-model.ts`（约 16.8k LOC 非测试 + 6k 测试）
 **前置阅读**: `docs/term-engine-migration.md`（旧引擎架构与决策日志；其 Phase 表已过期——Track A/D 实际已完成）
+
+**2026-07-27 分块纠偏**: 初次移植只双发了 OSC 133 A/C/D，漏掉 Terax 的 block-mode shell 布局协议（B marker、隐藏原生 prompt、首块一行/后续块两行间距、C 携带命令）。现已按 Terax 原实现补齐。decorations 不再订阅 `cmdblock:row` 并按 5 秒时间窗猜配；16162/row 仅保留给后端持久化和上下文。
 
 ---
 
@@ -90,7 +92,7 @@ terax 终端模块共约 6.5k LOC（含测试）。逐文件处置：
 | `lib/osc-handlers.ts` (+test)           | 146  | `frontend/app/xterm/osc-handlers.ts`            | 纯 xterm API。OSC 7 cwd（带 inCommand 防伪造）、OSC 52 剪贴板（1MiB 上限 + base64 校验）、OSC 133 → 模式机事件                                                                                                                                                             |
 | `lib/terminalClipboard.ts` (+test)      | —    | `frontend/app/xterm/terminal-clipboard.ts`      | Tauri clipboard → navigator.clipboard / Electron                                                                                                                                                                                                                           |
 | `lib/keymap.ts` (+test)                 | —    | `frontend/app/xterm/keymap.ts`                  | 纯函数（word/line 导航序列、删除序列）                                                                                                                                                                                                                                     |
-| `block/lib/blockDecorations.ts` (+test) | 548  | `frontend/app/xterm/block/block-decorations.ts` | 纯 xterm marker/decoration API。上限 1000 块。改动点：块元数据来源可选接入 cmdblock:row 事件（拿 Go 侧持久化的 cmd/exitcode/duration，比纯前端 OSC 解析更丰富）                                                                                                            |
+| `block/lib/blockDecorations.ts` (+test) | 548  | `frontend/app/xterm/block/block-decorations.ts` | 纯 xterm marker/decoration API。上限 1000 块；命令和退出码直接来自 OSC 133 C/D，保持 Terax 原始生命周期。                                                                                                                                                              |
 | `block/BlockOverlay.tsx`                | 388  | `frontend/app/xterm/block/block-overlay.tsx`    | UI 库替换：hugeicons → crest UIcon；dropdown → crest 组件；`useChatStore`（AI 按钮）→ crest agent 派发（对齐现 BlockElement 的 onAskAI）；Tauri homeDir → `getApi()`                                                                                                       |
 | `block/BlockWatermark.tsx`              | 102  | 同上目录                                        | 同类 UI 替换                                                                                                                                                                                                                                                               |
 | `lib/agentActivity.ts`                  | —    | `frontend/app/xterm/agent-activity.ts`          | OSC 777 agent 活跃信号 → 否决休眠。crest 侧信号源改为 pi-agent 状态 atom                                                                                                                                                                                                   |
@@ -216,7 +218,7 @@ terax 终端模块共约 6.5k LOC（含测试）。逐文件处置：
 
 ### P3 — 块 UX：decorations + 输入栏接线（约 1 周）
 
-1. **blockDecorations 移植**：OSC 133 marker 驱动，上限 1000。数据增强：订阅 `cmdblock:row`（已有事件）把 Go 侧持久化的 `cmd`/`exitcode`/`durationms` 挂到对应 decoration（按时序宽松对齐 oid ↔ marker，不匹配时降级为纯 marker 块）。
+1. **blockDecorations 移植**：OSC 133 marker 驱动，上限 1000。命令由 shell integration 随 C marker 发送，退出码由 D marker 发送；不混入异步 `cmdblock:row`，避免跨流时序误配。
 2. **BlockOverlay 移植 + 视觉对齐**：exit 徽章、per-command 复制（`readBlock` 从 buffer 范围提取）、Ask AI（接现 agent 派发路径）、块内搜索、重跑、块间跳转导航（对齐原 selectPreviousBlock/selectNextBlock 快捷键）。
 3. **CmdBlockInput 接线**：模式机 `prompt` → 显示 CmdBlockInput（现组件原样，completion/NLD/contextchip 全保留）；`running`/`alt` → 隐藏输入栏、raw 直通（**带 pane focus 门控**）。提交路径 = bracketed paste 包裹 + CR（对齐 terax `useTerminalSession.ts:161-171`）。
 4. **顺手修输入栏存量 bug**（与移植正交但同一片代码）：多行提取用 `innerText` 替代 `textContent`；`!` 前缀按模式门控；补全接真实 caret（`getEditorCaretOffset` 已存在）。
@@ -241,7 +243,7 @@ terax 终端模块共约 6.5k LOC（含测试）。逐文件处置：
 | base64+JSON websocket 吃掉 terax 二进制 IPC 的性能优势                                | 传输  | P0 合帧先把事件率降一个量级；xterm.write 有内部写队列。基准不达标再加 ws 二进制帧（P0.5 已 spike）                                  |
 | `Event_BlockFile` append 与 `fetchWaveFile` 全量拉取之间的衔接竞态                    | 恢复  | 先订阅→暂存 append→拉全量；append 事件携带锁内取得的绝对起始 offset，以 fetch 返回的文件 size 去掉已包含前缀，再按序回放剩余后缀    |
 | 池驱逐时 serialize 快照丢高频输出或串到新 pane                                        | 池    | 所有 xterm 写入计数；有排队写时旧 slot 进入 draining、临时创建 overflow slot，写回调全部完成后才序列化并销毁旧 slot，池恢复到上限 5 |
-| decorations 与 cmdblock:row 的 oid 对齐错位（乱序/重连）                              | 块 UX | decoration 以前端 OSC 133 marker 为准（自足），row 元数据仅做增强；不匹配时优雅降级                                                 |
+| shell marker 与 cmdblock:row 跨流乱序导致命令串块                                    | 块 UX | decoration 完全以原始 PTY 内的 OSC 133 C/D 为准；cmdblock row 不再参与 decoration 关联                                                |
 | Electron 下 WebGL context 上限/GPU 进程崩溃                                           | 渲染  | terax 的 context-loss 恢复 + DOM 渲染器回退已覆盖；`disableHardwareAcceleration` 场景验证一次                                       |
 | agent-surface / assistant-ui 对 TerminalModel 的残留引用导致 P1 删除时 tsc 大面积飘红 | 删除  | 先落 XtermPaneModel 承接 notificationAtom 等窄契约、改完引用再删引擎（P1.6 在 P1.7 之前是硬顺序）                                   |
 | tsunami 子项目已 pin `@xterm/xterm ^6.0.0`                                            | 依赖  | 根 package.json 用同版本段，避免 lockfile 分叉                                                                                      |

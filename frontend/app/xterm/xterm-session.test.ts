@@ -1007,10 +1007,6 @@ describe("blocks mode", () => {
         };
     }
 
-    function rowSubFor(blockId: string): any {
-        return h.statusSubs.find((s) => s.eventType === "cmdblock:row" && s.scope === `block:${blockId}`);
-    }
-
     it("gates xterm stdin at the prompt and hands the grid over while running", async () => {
         const { blockId, slot } = await attachReady({ blocks: true });
         expect(slot.term.options.disableStdin).toBe(true);
@@ -1068,46 +1064,20 @@ describe("blocks mode", () => {
         expect(readSessionBlockOutput("no-such-block", "b1")).toBeNull();
     });
 
-    it("enriches decorations from cmdblock:row and skips non-shell rows", async () => {
+    it("uses the OSC command for consecutive blocks without subscribing to cmdblock rows", async () => {
         const { blockId, slot } = await attachReady({ blocks: true });
         giveFakeScreen(slot);
-        slot.emitOsc(133, "C");
+        slot.emitOsc(133, "C;first");
         slot.emitOsc(133, "D;0");
+        slot.emitOsc(133, "C;second");
+        slot.emitOsc(133, "D;1");
 
-        const sub = rowSubFor(blockId);
-        expect(sub).toBeTruthy();
-        sub.handler({
-            event: "cmdblock:row",
-            data: {
-                state: "done",
-                kind: "agent",
-                cmd: "not-a-shell-row",
-                tscmdns: Date.now() * 1e6,
-                tsdonens: Date.now() * 1e6,
-            },
-        });
-        sub.handler({
-            event: "cmdblock:row",
-            data: {
-                state: "done",
-                kind: "shell",
-                cmd: "make build",
-                exitcode: 0,
-                durationms: 250,
-                tscmdns: Date.now() * 1e6,
-                tsdonens: Date.now() * 1e6,
-            },
-        });
-
+        expect(
+            h.statusSubs.find((s) => s.eventType === "cmdblock:row" && s.scope === `block:${blockId}`)
+        ).toBeUndefined();
         const vis = getSessionVisibleBlocks(blockId);
-        expect(vis.blocks).toHaveLength(1);
-        expect(vis.blocks[0].command).toBe("make build");
-        expect(vis.blocks[0].finishedAt - vis.blocks[0].startedAt).toBe(250);
-    });
-
-    it("does not subscribe to cmdblock:row for plain sessions", async () => {
-        const { blockId } = await attachReady();
-        expect(rowSubFor(blockId)).toBeUndefined();
+        expect(vis.blocks.map((block) => block.command)).toEqual(["first", "second"]);
+        expect(vis.blocks.map((block) => block.exitCode)).toEqual([0, 1]);
     });
 
     it("drives the watermark visible → hidden (typing) → dead (submit)", async () => {
