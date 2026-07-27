@@ -17,7 +17,6 @@ import { modalsModel } from "@/app/store/modalmodel";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { makeBuilderRouteId, makeTabRouteId } from "@/app/store/wshrouter";
 import { initWshrpc, TabRpcClient } from "@/app/store/wshrpcutil";
-import { EdgeFlowEmbedder, setEmbedder } from "@/app/term/nld";
 import { ThemeModel } from "@/app/theme/theme-model";
 import { getPtyScreenSnapshot } from "@/app/xterm/xterm-session";
 import { BuilderApp } from "@/builder/builder-app";
@@ -199,27 +198,7 @@ async function initWave(initOpts: WaveInitOpts) {
     registerElectronReinjectKeyHandler();
     registerControlShiftStateUpdateHandler();
     await loadMonaco();
-    // Fire-and-forget — the embedder warms up in a worker; tier-1
-    // heuristics carry the input bar during the few hundred ms before
-    // tier-2 reports ready.  Probe for the model artifact first: the
-    // ONNX + tokenizer live under /nld-model/ as a built artifact
-    // (gitignored), so in fresh checkouts / preview envs where they
-    // haven't been staged we skip init and stay on StubClassifier.
-    // We verify content-type because dev servers may return 200 OK
-    // with an HTML SPA fallback page for missing paths.
-    // TODO(edgeflow): docs/INTEGRATION_LOG.md 2026-06-27 — see worker-side
-    // workaround for the content-type check rationale.  This HEAD probe is just
-    // an early-exit optimization so we don't even spin up the worker when we
-    // already know the files aren't there.
-    try {
-        const probe = await fetch("/nld-model/tokenizer.json", { method: "HEAD" });
-        const ct = probe.headers.get("content-type") ?? "";
-        if (probe.ok && ct.includes("application/json")) {
-            setEmbedder(new EdgeFlowEmbedder());
-        }
-    } catch {
-        /* network or CSP error — keep StubClassifier, tier-1 still works */
-    }
+    // NLD tier-2 warm-up is lazy per D11 (docs/terax-terminal-port.md) — see ensureEmbedderWarm() in @/app/term/nld.
     const fullConfig = await RpcApi.GetFullConfigCommand(TabRpcClient);
     console.log("fullconfig", fullConfig);
     globalStore.set(atoms.fullConfigAtom, fullConfig);

@@ -9,7 +9,7 @@
 // locally — the worker keeps running but its result is discarded.
 
 import { globalStore } from "@/app/store/jotaiStore";
-import { embedderReadyAtom } from "./embedder";
+import { embedderReadyAtom, setClassifier } from "./embedder";
 import ClassifierWorker from "./embedder.worker?worker";
 import type { NldClassifier } from "./types";
 
@@ -147,3 +147,41 @@ export class EdgeFlowNldClassifier implements NldClassifier {
 
 // Back-compat alias for in-flight rename.
 export { EdgeFlowNldClassifier as EdgeFlowEmbedder };
+
+let warmupPromise: Promise<void> = null;
+
+// Lazy tier-2 warm-up (D11, docs/terax-terminal-port.md): startup no
+// longer loads the ONNX artifacts — the first real NLD consumer kicks
+// this off instead.  Idempotent and single-flight: concurrent callers
+// share one promise, and the promise never rejects.
+//
+// Fire-and-forget — the embedder warms up in a worker; tier-1
+// heuristics carry the input bar during the few hundred ms before
+// tier-2 reports ready.  Probe for the model artifact first: the
+// ONNX + tokenizer live under /nld-model/ as a built artifact
+// (gitignored), so in fresh checkouts / preview envs where they
+// haven't been staged we skip init and stay on StubClassifier.
+// We verify content-type because dev servers may return 200 OK
+// with an HTML SPA fallback page for missing paths.
+// TODO(edgeflow): docs/INTEGRATION_LOG.md 2026-06-27 — see worker-side
+// workaround for the content-type check rationale.  This HEAD probe is just
+// an early-exit optimization so we don't even spin up the worker when we
+// already know the files aren't there.
+export function ensureEmbedderWarm(): Promise<void> {
+    if (warmupPromise == null) {
+        warmupPromise = warmEmbedder();
+    }
+    return warmupPromise;
+}
+
+async function warmEmbedder(): Promise<void> {
+    try {
+        const probe = await fetch("/nld-model/tokenizer.json", { method: "HEAD" });
+        const ct = probe.headers.get("content-type") ?? "";
+        if (probe.ok && ct.includes("application/json")) {
+            setClassifier(new EdgeFlowNldClassifier());
+        }
+    } catch {
+        /* network or CSP error — keep StubClassifier, tier-1 still works */
+    }
+}

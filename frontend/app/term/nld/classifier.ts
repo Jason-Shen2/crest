@@ -41,11 +41,19 @@ export interface ClassifierDeps {
 
 export class Classifier {
     private readonly tier1: Tier1Classifier;
-    private readonly nld: NldClassifier;
+    private readonly injectedNld: NldClassifier;
 
     constructor(deps: ClassifierDeps = {}) {
         this.tier1 = deps.tier1 ?? new HeuristicTier1();
-        this.nld = deps.classifier ?? getClassifier();
+        this.injectedNld = deps.classifier;
+    }
+
+    // Resolved per call rather than cached at construction: with lazy
+    // warm-up (D11) the EdgeFlow classifier replaces the Stub in the
+    // registry after Classifier instances may already exist, and a
+    // construction-time snapshot would pin them to the Stub forever.
+    private get nld(): NldClassifier {
+        return this.injectedNld ?? getClassifier();
     }
 
     async classify(
