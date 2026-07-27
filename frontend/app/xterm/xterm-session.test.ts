@@ -9,7 +9,7 @@ type FakeSlot = {
     oscHandlers: Map<number, (data: string) => boolean | Promise<boolean>>;
     emitOsc: (code: number, data: string) => void;
     setAltScreen: (active: boolean) => void;
-    searchAddon: object;
+    searchAddon: { calls: any[][]; findNext: any; findPrevious: any; clearDecorations: any };
 };
 
 const h = vi.hoisted(() => {
@@ -68,6 +68,7 @@ const h = vi.hoisted(() => {
             clear: () => {},
             reset: () => {},
         };
+        const searchCalls: any[][] = [];
         return {
             term,
             writes,
@@ -78,7 +79,18 @@ const h = vi.hoisted(() => {
                 bufferListener?.();
                 writeParsedListener?.();
             },
-            searchAddon: {},
+            searchAddon: {
+                calls: searchCalls,
+                findNext: (term2: string, opts: any) => {
+                    searchCalls.push(["findNext", term2, opts]);
+                    return true;
+                },
+                findPrevious: (term2: string, opts: any) => {
+                    searchCalls.push(["findPrevious", term2, opts]);
+                    return true;
+                },
+                clearDecorations: () => searchCalls.push(["clearDecorations"]),
+            },
         };
     }
 
@@ -219,8 +231,12 @@ vi.mock("@/app/store/wshrpcutil", () => ({
 import { markAgentActive, markAgentInactive } from "./agent-activity";
 import {
     attachSession,
+    clearSessionFind,
     detachSession,
     disposeSession,
+    findInSession,
+    findNextInSession,
+    findPreviousInSession,
     getSessionBlockMode,
     getSessionBuffer,
     getSessionVisibleBlocks,
@@ -797,6 +813,62 @@ describe("detach + dispose", () => {
         disposeSession(blockId);
         handlers.onData(enc("ZOMBIE"));
         expect(joined(slot)).toBe("");
+    });
+});
+
+describe("find accessors", () => {
+    it("delegates to the bound slot's SearchAddon with decorations", async () => {
+        const { blockId, slot } = await attachReady();
+        findInSession(blockId, "err", { caseSensitive: true });
+        let call = slot.searchAddon.calls.at(-1);
+        expect(call[0]).toBe("findNext");
+        expect(call[1]).toBe("err");
+        expect(call[2].incremental).toBe(true);
+        expect(call[2].caseSensitive).toBe(true);
+        expect(call[2].decorations).toBeTruthy();
+
+        findNextInSession(blockId, "err", { regex: true });
+        call = slot.searchAddon.calls.at(-1);
+        expect(call[0]).toBe("findNext");
+        expect(call[2].incremental).toBeUndefined();
+        expect(call[2].regex).toBe(true);
+
+        findPreviousInSession(blockId, "err");
+        expect(slot.searchAddon.calls.at(-1)[0]).toBe("findPrevious");
+
+        findInSession(blockId, "");
+        expect(slot.searchAddon.calls.at(-1)).toEqual(["clearDecorations"]);
+
+        clearSessionFind(blockId);
+        expect(slot.searchAddon.calls.at(-1)).toEqual(["clearDecorations"]);
+    });
+
+    it("no-ops while dormant but records the query for the next bind", async () => {
+        const { blockId } = await attachReady({ visible: false });
+        expect(h.pool.acquireCalls.length).toBe(0);
+
+        findInSession(blockId, "boot");
+        findNextInSession(blockId, "boot");
+        findPreviousInSession(blockId, "boot");
+        expect(h.pool.acquireCalls.length).toBe(0);
+
+        setSessionVisibility(blockId, true, true);
+        expect(h.pool.acquireCalls.at(-1).searchQuery).toBe("boot");
+    });
+
+    it("clearSessionFind while dormant drops the recorded query", async () => {
+        const { blockId } = await attachReady({ visible: false });
+        findInSession(blockId, "boot");
+        clearSessionFind(blockId);
+        setSessionVisibility(blockId, true, true);
+        expect(h.pool.acquireCalls.at(-1).searchQuery).toBeNull();
+    });
+
+    it("ignores unknown blocks", () => {
+        findInSession("no-such-block", "x");
+        findNextInSession("no-such-block", "x");
+        findPreviousInSession("no-such-block", "x");
+        clearSessionFind("no-such-block");
     });
 });
 

@@ -17,11 +17,13 @@ import { globalStore } from "@/app/store/jotaiStore";
 import { TerminalNotification } from "@/app/term/render/terminal-notification";
 import { CmdBlockInput } from "@/app/view/cmdblock/cmdblock-input";
 import { cn } from "@/util/util";
+import type { SearchAddon } from "@xterm/addon-search";
 import { useAtomValue } from "jotai";
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { BlockMatch } from "./block/block-decorations";
 import { BlockOverlay } from "./block/block-overlay";
 import { BlockWatermark } from "./block/block-watermark";
+import { FindBar } from "./find-bar";
 import { getXtermPaneModel } from "./xterm-pane-model";
 import {
     attachSession,
@@ -78,6 +80,15 @@ function forwardedKeyBytes(e: React.KeyboardEvent<HTMLDivElement>): string {
     return null;
 }
 
+// Cmd+F, plus Ctrl+Shift+F for non-Mac keyboards (plain Ctrl+F must stay
+// readline forward-char, mirroring the pool's Ctrl+Shift copy/paste chords).
+function isFindShortcut(e: React.KeyboardEvent<HTMLDivElement>): boolean {
+    if (e.altKey) return false;
+    if (e.key !== "f" && e.key !== "F") return false;
+    if (e.metaKey && !e.ctrlKey) return true;
+    return e.ctrlKey && e.shiftKey && !e.metaKey;
+}
+
 export const XtermView = memo(
     ({
         outerBlockId,
@@ -109,6 +120,9 @@ export const XtermView = memo(
         const [cwd, setCwd] = useState<string>(null);
         const [shellExited, setShellExited] = useState(false);
         const [inputFocusRequest, setInputFocusRequest] = useState(0);
+        const [findOpen, setFindOpen] = useState(false);
+        const [findFocusSeq, setFindFocusSeq] = useState(0);
+        const [searchAddon, setSearchAddon] = useState<SearchAddon>(null);
 
         useEffect(() => {
             if (!notification) return;
@@ -126,6 +140,7 @@ export const XtermView = memo(
                 onCwd: (next) => setCwd(next),
                 onShellExit: () => setShellExited(true),
                 onShellRestart: () => setShellExited(false),
+                onSearchReady: (addon) => setSearchAddon(addon),
             };
             attachSession(outerBlockId, host, callbacks, { blocks });
             // IntersectionObserver covers both scroll-out and ancestor
@@ -148,6 +163,7 @@ export const XtermView = memo(
                 visibleRef.current = false;
                 setSessionVisibility(outerBlockId, false, false);
                 detachSession(outerBlockId);
+                setSearchAddon(null);
             };
         }, [outerBlockId, hasReplace, blocks]);
 
@@ -166,6 +182,22 @@ export const XtermView = memo(
             }
             focusSession(outerBlockId);
         }, [focusRequest, paneFocusRequest, outerBlockId, hasReplace, blocks]);
+
+        // Capture phase so the chord is stolen before xterm's textarea or the
+        // input bar's editor sees it, from anywhere inside the pane.
+        const onPaneKeyDownCapture = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+            if (!isFindShortcut(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setFindOpen(true);
+            setFindFocusSeq((n) => n + 1);
+        }, []);
+
+        const onFindClose = useCallback(() => {
+            setFindOpen(false);
+            if (blocks && getSessionBlockMode(outerBlockId) === "prompt") focusSessionInput(outerBlockId);
+            else focusSession(outerBlockId);
+        }, [blocks, outerBlockId]);
 
         const onHostFocus = useCallback(() => {
             if (focusedRef.current) return;
@@ -276,7 +308,7 @@ export const XtermView = memo(
         }
 
         return (
-            <div className="relative flex h-full w-full flex-col bg-panel">
+            <div className="relative flex h-full w-full flex-col bg-panel" onKeyDownCapture={onPaneKeyDownCapture}>
                 {topSlot}
                 <div className="relative min-h-0 w-full flex-1">
                     <div
@@ -303,6 +335,14 @@ export const XtermView = memo(
                             onRunAgain={onRunAgain}
                             onRestoreFocus={onRestoreFocus}
                             onAskAI={onAskAI}
+                        />
+                    )}
+                    {findOpen && (
+                        <FindBar
+                            blockId={outerBlockId}
+                            addon={searchAddon}
+                            focusSeq={findFocusSeq}
+                            onClose={onFindClose}
                         />
                     )}
                 </div>

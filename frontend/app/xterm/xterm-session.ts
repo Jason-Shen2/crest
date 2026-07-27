@@ -5,7 +5,7 @@ import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { fetchWaveFile } from "@/store/global";
-import type { SearchAddon } from "@xterm/addon-search";
+import type { ISearchOptions, SearchAddon } from "@xterm/addon-search";
 import type { Terminal } from "@xterm/xterm";
 import { ensureAgentActivityListener, isAgentActive } from "./agent-activity";
 import { BlockDecorations, type BlockMatch, type BlockRowMeta, type VisibleBlocks } from "./block/block-decorations";
@@ -57,6 +57,10 @@ const CursorMarker = "<|cursor|>";
 // Row window cap for non-alt-screen snapshots; alt-screen reads the full
 // buffer. Same 1000-row cap as the old engine's SCREEN_SNAPSHOT_MAX_ROWS.
 const ScreenSnapshotMaxRows = 1000;
+// Fallbacks for the find-decoration colors when the CSS vars are unreadable
+// (headless test env); values mirror tailwindsetup.css --color-term-*.
+const FindMatchBackgroundFallback = "#76a7fa";
+const FindActiveMatchFallback = "#19aad8";
 const AnsiRe =
     /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[78=>]|\x1bc|\x1b[NOP\]X^_]/g;
 
@@ -296,6 +300,89 @@ export function focusSession(blockId: string): void {
 export function setSessionSearchQuery(blockId: string, query: string): void {
     const s = sessions.get(blockId);
     if (s) s.searchQuery = query;
+}
+
+export type SessionFindOptions = {
+    caseSensitive?: boolean;
+    regex?: boolean;
+};
+
+// Mirrors terax's TERM_DECORATIONS (SearchInline.tsx) but sourced from the
+// crest palette so match highlights track the selection/accent CSS vars.
+function findDecorations(): ISearchOptions["decorations"] {
+    let selection: string;
+    let accent: string;
+    if (typeof document !== "undefined") {
+        const style = getComputedStyle(document.documentElement);
+        selection = style.getPropertyValue("--color-term-selection").trim();
+        accent = style.getPropertyValue("--color-term-accent").trim();
+    }
+    return {
+        matchBackground: selection || FindMatchBackgroundFallback,
+        matchOverviewRuler: accent || FindActiveMatchFallback,
+        activeMatchBackground: accent || FindActiveMatchFallback,
+        activeMatchColorOverviewRuler: accent || FindActiveMatchFallback,
+    };
+}
+
+function findSearchOptions(opts: SessionFindOptions): ISearchOptions {
+    return {
+        caseSensitive: opts.caseSensitive,
+        regex: opts.regex,
+        decorations: findDecorations(),
+    };
+}
+
+// Find accessors delegate to the bound slot's SearchAddon and no-op while the
+// session is dormant (no slot, or only a retained one). The query is always
+// recorded on the session so the next bind replays the highlight
+// (bindSlot's searchQuery param).
+export function findInSession(blockId: string, query: string, opts: SessionFindOptions = {}): void {
+    const s = sessions.get(blockId);
+    if (!s) return;
+    s.searchQuery = query || null;
+    const slot = getSlotForLeaf(s.leafId);
+    if (!slot) return;
+    try {
+        if (!query) {
+            slot.searchAddon.clearDecorations();
+            return;
+        }
+        slot.searchAddon.findNext(query, { ...findSearchOptions(opts), incremental: true });
+    } catch {}
+}
+
+export function findNextInSession(blockId: string, query: string, opts: SessionFindOptions = {}): void {
+    const s = sessions.get(blockId);
+    if (!s || !query) return;
+    s.searchQuery = query;
+    const slot = getSlotForLeaf(s.leafId);
+    if (!slot) return;
+    try {
+        slot.searchAddon.findNext(query, findSearchOptions(opts));
+    } catch {}
+}
+
+export function findPreviousInSession(blockId: string, query: string, opts: SessionFindOptions = {}): void {
+    const s = sessions.get(blockId);
+    if (!s || !query) return;
+    s.searchQuery = query;
+    const slot = getSlotForLeaf(s.leafId);
+    if (!slot) return;
+    try {
+        slot.searchAddon.findPrevious(query, findSearchOptions(opts));
+    } catch {}
+}
+
+export function clearSessionFind(blockId: string): void {
+    const s = sessions.get(blockId);
+    if (!s) return;
+    s.searchQuery = null;
+    const slot = getSlotForLeaf(s.leafId);
+    if (!slot) return;
+    try {
+        slot.searchAddon.clearDecorations();
+    } catch {}
 }
 
 export function getSessionBuffer(blockId: string, maxLines = 200): string {

@@ -14,6 +14,9 @@ const h = vi.hoisted(() => {
         submitCalls: [] as [string, string][],
         interruptCalls: [] as string[],
         inputActivity: [] as boolean[],
+        clearFindCalls: [] as string[],
+        focusCalls: [] as string[],
+        focusInputCalls: [] as string[],
         setMode(next: string) {
             state.mode = next;
             for (const l of [...listeners]) l();
@@ -25,6 +28,9 @@ const h = vi.hoisted(() => {
             state.submitCalls.length = 0;
             state.interruptCalls.length = 0;
             state.inputActivity.length = 0;
+            state.clearFindCalls.length = 0;
+            state.focusCalls.length = 0;
+            state.focusInputCalls.length = 0;
         },
     };
     return state;
@@ -33,8 +39,8 @@ const h = vi.hoisted(() => {
 vi.mock("./xterm-session", () => ({
     attachSession: (blockId: string, _host: any, _cbs: any, opts: any) => h.attachCalls.push({ blockId, opts }),
     detachSession: () => {},
-    focusSession: () => {},
-    focusSessionInput: () => {},
+    focusSession: (blockId: string) => h.focusCalls.push(blockId),
+    focusSessionInput: (blockId: string) => h.focusInputCalls.push(blockId),
     setSessionVisibility: () => {},
     setSessionInputFocus: () => {},
     setSessionInputActivity: (_blockId: string, active: boolean) => h.inputActivity.push(active),
@@ -54,6 +60,10 @@ vi.mock("./xterm-session", () => ({
     submitToSession: (blockId: string, text: string) => h.submitCalls.push([blockId, text]),
     interruptSession: (blockId: string) => h.interruptCalls.push(blockId),
     writeToSession: () => true,
+    findInSession: () => {},
+    findNextInSession: () => {},
+    findPreviousInSession: () => {},
+    clearSessionFind: (blockId: string) => h.clearFindCalls.push(blockId),
 }));
 
 vi.mock("@/app/view/cmdblock/cmdblock-input", () => ({
@@ -154,5 +164,61 @@ describe("XtermView blocks mode", () => {
         expect(screen.queryByTestId("xterm-input-bar")).toBeNull();
         expect(screen.queryByTestId("block-overlay")).toBeNull();
         expect(screen.queryByTestId("block-watermark")).toBeNull();
+    });
+});
+
+describe("XtermView find bar", () => {
+    function openFindBar(): void {
+        fireEvent.keyDown(screen.getByTestId("xterm-host"), { key: "f", metaKey: true });
+    }
+
+    it("stays hidden until the find shortcut", () => {
+        render(<XtermView outerBlockId="blk-1" />);
+        expect(screen.queryByTestId("xterm-find-bar")).toBeNull();
+    });
+
+    it("opens on Cmd+F and focuses the input", () => {
+        render(<XtermView outerBlockId="blk-1" />);
+        openFindBar();
+        expect(screen.getByTestId("xterm-find-bar")).toBeTruthy();
+        expect(document.activeElement).toBe(screen.getByPlaceholderText("Find in terminal"));
+    });
+
+    it("opens on Ctrl+Shift+F for non-Mac keyboards", () => {
+        render(<XtermView outerBlockId="blk-1" />);
+        fireEvent.keyDown(screen.getByTestId("xterm-host"), { key: "F", ctrlKey: true, shiftKey: true });
+        expect(screen.getByTestId("xterm-find-bar")).toBeTruthy();
+    });
+
+    it("refocuses the input when Cmd+F fires while already open", () => {
+        render(<XtermView outerBlockId="blk-1" />);
+        openFindBar();
+        (document.activeElement as HTMLElement).blur();
+        openFindBar();
+        expect(document.activeElement).toBe(screen.getByPlaceholderText("Find in terminal"));
+    });
+
+    it("closes on Escape, clears the search, and returns focus to the terminal", () => {
+        render(<XtermView outerBlockId="blk-1" />);
+        openFindBar();
+        fireEvent.keyDown(screen.getByPlaceholderText("Find in terminal"), { key: "Escape" });
+        expect(screen.queryByTestId("xterm-find-bar")).toBeNull();
+        expect(h.clearFindCalls).toEqual(["blk-1"]);
+        expect(h.focusCalls).toContain("blk-1");
+    });
+
+    it("returns focus to the input bar when closed at a blocks-mode prompt", () => {
+        render(<XtermView outerBlockId="blk-1" blocks />);
+        openFindBar();
+        fireEvent.keyDown(screen.getByPlaceholderText("Find in terminal"), { key: "Escape" });
+        expect(h.focusInputCalls).toContain("blk-1");
+        expect(h.focusCalls).toEqual([]);
+    });
+
+    it("closes from the close button", () => {
+        render(<XtermView outerBlockId="blk-1" />);
+        openFindBar();
+        fireEvent.click(screen.getByLabelText("Close find (Esc)"));
+        expect(screen.queryByTestId("xterm-find-bar")).toBeNull();
     });
 });
