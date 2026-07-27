@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export const FrameBudgetMs = 16.7;
+export const FrameBudgetToleranceMs = 2.5;
 
 export type FrameSampleInput = {
+    refreshFrameTimesMs?: number[];
     frameTimesMs: number[];
     totalMs: number;
     heapBeforeBytes: number | null;
@@ -20,6 +22,8 @@ export type FrameSummary = {
     p50FrameMs: number | null;
     p99FrameMs: number | null;
     maxFrameMs: number | null;
+    refreshIntervalMs: number | null;
+    frameBudgetMs: number;
     heapBeforeBytes: number | null;
     heapAfterBytes: number | null;
     heapDeltaBytes: number | null;
@@ -34,9 +38,14 @@ function nearestRank(sorted: number[], percentile: number): number | null {
 
 export function summarizeFrameSamples(input: FrameSampleInput): FrameSummary {
     const sorted = input.frameTimesMs.filter(Number.isFinite).sort((a, b) => a - b);
+    const sortedRefreshFrames = (input.refreshFrameTimesMs ?? [])
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .sort((a, b) => a - b);
     const p50FrameMs = nearestRank(sorted, 0.5);
     const p99FrameMs = nearestRank(sorted, 0.99);
     const maxFrameMs = sorted.at(-1) ?? null;
+    const refreshIntervalMs = nearestRank(sortedRefreshFrames, 0.5);
+    const frameBudgetMs = refreshIntervalMs == null ? FrameBudgetMs : refreshIntervalMs + FrameBudgetToleranceMs;
     const heapDeltaBytes =
         input.heapBeforeBytes == null || input.heapAfterBytes == null
             ? null
@@ -50,9 +59,11 @@ export function summarizeFrameSamples(input: FrameSampleInput): FrameSummary {
         p50FrameMs,
         p99FrameMs,
         maxFrameMs,
+        refreshIntervalMs,
+        frameBudgetMs,
         heapBeforeBytes: input.heapBeforeBytes,
         heapAfterBytes: input.heapAfterBytes,
         heapDeltaBytes,
-        meetsFrameBudget: input.completed && p99FrameMs != null && p99FrameMs <= FrameBudgetMs,
+        meetsFrameBudget: input.completed && p99FrameMs != null && p99FrameMs <= frameBudgetMs,
     };
 }

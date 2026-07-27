@@ -30,6 +30,32 @@ function heapBytes(): number | null {
     return (performance as ChromiumPerformance).memory?.usedJSHeapSize ?? null;
 }
 
+function sampleRefreshFrames(sampleCount = 30, timeoutMs = 2_000): Promise<number[]> {
+    return new Promise((resolve) => {
+        const frameTimesMs: number[] = [];
+        let lastFrame: number | null = null;
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            resolve(frameTimesMs);
+        };
+        const sample = (timestamp: number) => {
+            if (settled) return;
+            if (lastFrame != null) frameTimesMs.push(timestamp - lastFrame);
+            lastFrame = timestamp;
+            if (frameTimesMs.length >= sampleCount) {
+                finish();
+            } else {
+                requestAnimationFrame(sample);
+            }
+        };
+        const timer = window.setTimeout(finish, timeoutMs);
+        requestAnimationFrame(sample);
+    });
+}
+
 function waitForPrompt(blockId: string, timeoutMs: number): Promise<void> {
     if (getSessionBlockMode(blockId) === "prompt") return Promise.resolve();
     return new Promise((resolve, reject) => {
@@ -85,6 +111,7 @@ function waitForCommand(blockId: string, timeoutMs: number): Promise<{ completed
 export async function runCommandBenchmark(options: CommandBenchmarkOptions): Promise<CommandBenchmarkResult> {
     const timeoutMs = options.timeoutMs ?? 180_000;
     await waitForPrompt(options.blockId, Math.min(timeoutMs, 10_000));
+    const refreshFrameTimesMs = await sampleRefreshFrames();
 
     const slotsBefore = poolSlotStats();
     const heapBeforeBytes = heapBytes();
@@ -119,6 +146,7 @@ export async function runCommandBenchmark(options: CommandBenchmarkOptions): Pro
         slotsBefore,
         slotsAfter: poolSlotStats(),
         ...summarizeFrameSamples({
+            refreshFrameTimesMs,
             frameTimesMs,
             totalMs,
             heapBeforeBytes,

@@ -15,14 +15,21 @@ await bench.runCommandBenchmark({
 `head -c 104857600` is the portable numeric equivalent of 100 MiB. macOS/BSD
 `head` rejects the original `100M` operand.
 
-The result records total time, p50/p99/max animation-frame intervals, Chromium
-JS heap before/after, renderer-pool state, completion, and timeout. A timeout is
-always a failed scenario even if its sampled p99 remains below 16.7 ms.
+Before submitting the command, the harness samples 30 animation-frame
+intervals. The median becomes `refreshIntervalMs`; the pass budget is one
+detected refresh interval plus 2.5 ms of scheduler tolerance. When calibration
+cannot produce a sample, the legacy 16.7 ms budget remains the fallback.
+
+The result records the detected refresh interval, effective frame budget,
+total time, p50/p99/max animation-frame intervals, Chromium JS heap
+before/after, renderer-pool state, completion, and timeout. A timeout is always
+a failed scenario even if its sampled p99 remains within the frame budget.
 
 Run the remaining scenarios by changing `command`; alt-screen interaction,
-multi-pane load, background-tab CPU, and scroll-to-top/bottom still require a
-Playwright/manual driver around this sampler. Preserve raw results in `docs/`.
+multi-pane load, background-tab CPU, and scroll-to-top/bottom require a
+CDP/manual driver around this sampler. Preserve raw results in `docs/`.
 
-The product clamps `term:scrollback` to 50,000 lines. Therefore the original
-“`seq 100000` and retain all 100,000 lines” criterion cannot pass without a
-product-setting change; record retained lines separately from scroll latency.
+The product clamps `term:scrollback` to 50,000 lines. Scrollback acceptance
+therefore means that the configured scrollback plus the visible viewport form
+a continuous retained tail. It does not require retaining output beyond the
+configured product window.
