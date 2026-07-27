@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/s-zx/crest/pkg/blocklogger"
+	"github.com/s-zx/crest/pkg/cmdblock"
 	"github.com/s-zx/crest/pkg/filestore"
 	"github.com/s-zx/crest/pkg/panichandler"
 	"github.com/s-zx/crest/pkg/remote/conncontroller"
@@ -772,7 +773,7 @@ func StartJob(ctx context.Context, params StartJobParams) (string, error) {
 }
 
 func doWFSAppend(ctx context.Context, oref waveobj.ORef, fileName string, data []byte) error {
-	err := filestore.WFS.AppendData(ctx, oref.OID, fileName, data)
+	offset, err := filestore.WFS.AppendDataWithOffset(ctx, oref.OID, fileName, data)
 	if err != nil {
 		return err
 	}
@@ -786,6 +787,7 @@ func doWFSAppend(ctx context.Context, oref waveobj.ORef, fileName string, data [
 			FileName: fileName,
 			FileOp:   wps.FileOp_Append,
 			Data64:   base64.StdEncoding.EncodeToString(data),
+			Offset:   offset,
 		},
 	})
 	return nil
@@ -811,6 +813,24 @@ func handleAppendJobFile(ctx context.Context, jobId string, fileName string, dat
 	return nil
 }
 
+// makeJobTracker builds a cmdblock Tracker against the job's attached block so
+// the durable path publishes the same cmdblock:row/chunk/altscreen/clear events
+// as the normal shell path. A fresh tracker per output loop (including
+// reconnects) is fine: parser offsets are relative to the first byte each
+// tracker sees, and the frontend anchors on the first offset it receives per
+// oid.
+func makeJobTracker(ctx context.Context, jobId string) *cmdblock.Tracker {
+	job, err := wstore.DBGet[*waveobj.Job](ctx, jobId)
+	if err != nil {
+		log.Printf("[job:%s] error getting job for cmdblock tracker: %v", jobId, err)
+		return nil
+	}
+	if job == nil || job.AttachedBlockId == "" {
+		return nil
+	}
+	return cmdblock.MakeTracker(job.AttachedBlockId)
+}
+
 func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *streamclient.Reader) {
 	defer reader.Close()
 	defer func() {
@@ -818,6 +838,7 @@ func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *s
 	}()
 
 	log.Printf("[job:%s] [stream:%s] output loop started", jobId, streamId)
+	tracker := makeJobTracker(ctx, jobId)
 	buf := make([]byte, 4096)
 	for {
 		n, err := reader.Read(buf)
@@ -830,6 +851,12 @@ func runOutputLoop(ctx context.Context, jobId string, streamId string, reader *s
 			appendErr := handleAppendJobFile(ctx, jobId, JobOutputFileName, buf[:n])
 			if appendErr != nil {
 				log.Printf("[job:%s] error appending data to WaveFS: %v", jobId, appendErr)
+			}
+			if tracker != nil {
+				// Feed bytes regardless of append error so tracker stream
+				// offsets stay in sync with the raw job stream (mirrors the
+				// shellcontroller pty-read loop).
+				tracker.OnBytes(ctx, buf[:n])
 			}
 		}
 

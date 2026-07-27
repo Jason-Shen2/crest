@@ -5,15 +5,9 @@
 // should import from this file rather than reaching into individual
 // implementation files.
 
-export type {
-    ClassifierContext,
-    InputClassification,
-    NldClassifier,
-    Tier1Classifier,
-    Tier2Classifier,
-} from "./types";
+export type { ClassifierContext, InputClassification, NldClassifier, Tier1Classifier, Tier2Classifier } from "./types";
 
-export { classificationToMode, NEUTRAL_CLASSIFICATION, EMPTY_CONTEXT } from "./types";
+export { EMPTY_CONTEXT, NEUTRAL_CLASSIFICATION, classificationToMode } from "./types";
 
 export { Classifier } from "./classifier";
 export { HeuristicTier1 } from "./heuristic-tier1";
@@ -21,13 +15,13 @@ export { NLDModel } from "./nld-model";
 export type { DetectionStatus } from "./nld-model";
 
 export {
+    StubClassifier,
+    StubEmbedder,
     embedderReadyAtom,
     getClassifier,
-    setClassifier,
-    StubClassifier,
     // Back-compat aliases — to be removed once external imports are updated.
     getEmbedder,
+    setClassifier,
     setEmbedder,
-    StubEmbedder,
 } from "./embedder";
-export { EdgeFlowNldClassifier, EdgeFlowEmbedder } from "./embedder-edgeflow";
+export { EdgeFlowEmbedder, EdgeFlowNldClassifier, ensureEmbedderWarm } from "./embedder-edgeflow";

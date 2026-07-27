@@ -82,7 +82,8 @@ export type PtyScreenSnapshot = {
 
 // webPtyScreenSnapshot — ask the renderer for a running command block's
 // current screen. The block is a top-level term block (not a webview), so
-// its grid lives in the tab's app-world TerminalModel; we reach it via the
+// its screen lives in the tab's app-world xterm session registry
+// (frontend/app/xterm/xterm-session.ts); we reach it via the
 // window.getPtyScreenSnapshot accessor (frontend/wave.ts) rather than the
 // webview-oriented getWebContentsByBlockId path. Used by the CLI subagent's
 // pty_read screen branch (spec §3, §6.2).

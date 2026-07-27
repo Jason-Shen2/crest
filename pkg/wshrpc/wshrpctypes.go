@@ -59,6 +59,7 @@ type WshRpcInterface interface {
 	ControllerDestroyCommand(ctx context.Context, blockId string) error
 	ControllerResyncCommand(ctx context.Context, data CommandControllerResyncData) error
 	ControllerAppendOutputCommand(ctx context.Context, data CommandControllerAppendOutputData) error
+	ControllerHasForegroundJobCommand(ctx context.Context, blockId string) (bool, error)
 	ResolveIdsCommand(ctx context.Context, data CommandResolveIdsData) (CommandResolveIdsRtnData, error)
 	CreateBlockCommand(ctx context.Context, data CommandCreateBlockData) (waveobj.ORef, error)
 	CreateSubBlockCommand(ctx context.Context, data CommandCreateSubBlockData) (waveobj.ORef, error)
@@ -102,7 +103,6 @@ type WshRpcInterface interface {
 	ResetTabNameCommand(ctx context.Context, tabId string, resetName string) error
 	GetAllBadgesCommand(ctx context.Context) ([]baseds.BadgeEvent, error)
 	GetCmdBlocksCommand(ctx context.Context, data CommandGetCmdBlocksData) ([]*cbtypes.CmdBlock, error)
-	AppendAgentRunCommand(ctx context.Context, data CommandAppendAgentRunData) (*cbtypes.CmdBlock, error)
 	GetCmdBlockOutputCommand(ctx context.Context, data CommandGetCmdBlockOutputData) (*CmdBlockOutputResponse, error)
 	GetCmdBlockTailCommand(ctx context.Context, data CommandGetCmdBlockTailData) (*CmdBlockTailResponse, error)
 	ReadBlockFileRangeCommand(ctx context.Context, data CommandReadBlockFileRangeData) (*BlockFileRangeResponse, error)
@@ -444,12 +444,6 @@ type CommandGetTempDirData struct {
 type CommandGetCmdBlocksData struct {
 	BlockID string `json:"blockid"`
 	Limit   int    `json:"limit,omitempty"`
-}
-
-type CommandAppendAgentRunData struct {
-	BlockID     string `json:"blockid"`
-	SessionPath string `json:"sessionpath"`
-	UserEntryID string `json:"userentryid"`
 }
 
 type CommandGetCmdBlockOutputData struct {

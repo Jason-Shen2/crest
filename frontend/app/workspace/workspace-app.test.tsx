@@ -109,6 +109,9 @@ vi.mock("@/app/store/wshclientapi", async () => {
             WorkspaceReorderTerminalsCommand: terminalRpc.reorder,
             FileReadCommand: vi.fn().mockResolvedValue({ info: {}, data64: "" }),
             FileWriteCommand: vi.fn().mockResolvedValue(undefined),
+            GetCmdBlocksCommand: vi.fn().mockResolvedValue([]),
+            EventSubCommand: vi.fn(),
+            EventUnsubCommand: vi.fn(),
         },
     };
 });
@@ -208,10 +211,6 @@ vi.mock("@/app/topbar/topbar", async () => {
         },
     };
 });
-
-vi.mock("@/app/statusbar/status-bar", () => ({
-    StatusBar: () => <footer>Workspace status</footer>,
-}));
 
 vi.mock("@/app/modals/modalsrenderer", () => ({
     ModalsRenderer: () => <div>Workspace modals</div>,
@@ -404,6 +403,7 @@ beforeEach(() => {
         closeTab: electronApi.closeTab,
         setWorkspaceSurface: electronApi.setWorkspaceSurface,
         getHomeDir: electronApi.getHomeDir,
+        getEnv: vi.fn(() => "test.invalid"),
         agent: {
             createSession: vi.fn(),
             listSessions: vi.fn(),
@@ -425,6 +425,13 @@ beforeEach(() => {
             subscribe: vi.fn(),
         },
     };
+    vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+            ok: true,
+            json: vi.fn().mockResolvedValue({ data: null }),
+        })
+    );
 });
 
 describe("WorkspaceApp", () => {

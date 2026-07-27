@@ -20,6 +20,7 @@ import (
 	"github.com/s-zx/crest/pkg/jobcontroller"
 	"github.com/s-zx/crest/pkg/remote"
 	"github.com/s-zx/crest/pkg/remote/conncontroller"
+	"github.com/s-zx/crest/pkg/shellexec"
 	"github.com/s-zx/crest/pkg/util/ds"
 	"github.com/s-zx/crest/pkg/util/shellutil"
 	"github.com/s-zx/crest/pkg/wavebase"
@@ -335,6 +336,30 @@ func GetBlockControllerRuntimeStatus(blockId string) *BlockControllerRuntimeStat
 	return controller.GetRuntimeStatus()
 }
 
+// used by the frontend hibernation heuristics (terax port). false for
+// missing/non-shell controllers, durable (job-manager-owned) shells, and
+// remote connections where the pty fd is not in-process.
+func HasForegroundJob(blockId string) bool {
+	controller := getController(blockId)
+	if controller == nil {
+		return false
+	}
+	sc, ok := controller.(*ShellController)
+	if !ok {
+		return false
+	}
+	var shellProc *shellexec.ShellProc
+	sc.WithLock(func() {
+		if sc.ProcStatus == Status_Running {
+			shellProc = sc.ShellProc
+		}
+	})
+	if shellProc == nil {
+		return false
+	}
+	return shellProc.HasForegroundJob()
+}
+
 func DestroyBlockController(blockId string) {
 	controller := getController(blockId)
 	if controller == nil {
@@ -438,7 +463,7 @@ func getTermSize(bdata *waveobj.Block) waveobj.TermSize {
 func HandleAppendBlockFile(blockId string, blockFile string, data []byte) error {
 	ctx, cancelFn := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancelFn()
-	err := filestore.WFS.AppendData(ctx, blockId, blockFile, data)
+	offset, err := filestore.WFS.AppendDataWithOffset(ctx, blockId, blockFile, data)
 	if err != nil {
 		return fmt.Errorf("error appending to blockfile: %w", err)
 	}
@@ -452,6 +477,7 @@ func HandleAppendBlockFile(blockId string, blockFile string, data []byte) error 
 			FileName: blockFile,
 			FileOp:   wps.FileOp_Append,
 			Data64:   base64.StdEncoding.EncodeToString(data),
+			Offset:   offset,
 		},
 	})
 	return nil
@@ -540,6 +566,9 @@ func makeSwapToken(ctx context.Context, logCtx context.Context, blockId string, 
 	token.Env["WAVETERM_BLOCKID"] = blockId
 	token.Env["WAVETERM_VERSION"] = wavebase.WaveVersion
 	token.Env["WAVETERM"] = "1"
+	if blockMeta.GetBool(waveobj.MetaKey_TermBlocks, true) {
+		token.Env["WAVETERM_BLOCKS"] = "1"
+	}
 	tabId, err := wstore.DBFindTabForBlockId(ctx, blockId)
 	if err != nil {
 		log.Printf("error finding tab for block: %v\n", err)

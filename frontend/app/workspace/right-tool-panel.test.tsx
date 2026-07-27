@@ -371,12 +371,12 @@ describe("RightToolPanel parts", () => {
         expect(markup).toContain('tabindex="-1"');
         expect(markup).toContain('aria-hidden="true"');
         expect(markup).toContain('data-menu-surface="trae"');
-        expect(markup).toContain("right-0");
+        expect(markup).toContain("left-0");
         expect(markup).toContain("top-8");
         expect(markup).toContain("w-44");
         expect(markup).toContain("p-1");
         expect(markup).toContain("text-xs");
-        expect(markup).not.toContain("absolute left-0");
+        expect(markup).not.toContain("absolute right-0");
         expect(markup).not.toContain("top-9");
         expect(markup).not.toContain("w-52");
         expect(markup).not.toContain("p-1.5");

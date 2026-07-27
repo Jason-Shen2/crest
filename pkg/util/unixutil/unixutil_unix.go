@@ -23,6 +23,16 @@ func GetProcessGroupId(pid int) (int, error) {
 	return pgid, nil
 }
 
+// works on the pty master fd as well: returns the foreground process group
+// of the associated slave side (tcgetpgrp semantics)
+func GetTtyForegroundProcessGroup(fd int) (int, error) {
+	pgid, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP)
+	if err != nil {
+		return 0, err
+	}
+	return pgid, nil
+}
+
 func ParseSignal(sigName string) os.Signal {
 	sigName = strings.TrimSpace(sigName)
 	sigName = strings.ToUpper(sigName)

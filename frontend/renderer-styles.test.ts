@@ -28,6 +28,7 @@ describe("renderer global styles", () => {
         }
 
         expect(staticImports(StylesModulePath)).toEqual([
+            "@xterm/xterm/css/xterm.css",
             "overlayscrollbars/overlayscrollbars.css",
             "./app/app.scss",
             "./tailwindsetup.css",

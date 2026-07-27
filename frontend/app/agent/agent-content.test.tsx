@@ -18,6 +18,10 @@ const hostProps = vi.hoisted(() => ({
     submitError: "",
 }));
 
+const selectorProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
 vi.mock("./agent-chat-host", () => ({
     AgentChatHost: (props: any) => {
         hostProps.latest = props;
@@ -37,6 +41,13 @@ vi.mock("./agent-chat-host", () => ({
             });
         }
         return <div data-testid="agent-chat-host" />;
+    },
+}));
+
+vi.mock("@/app/view/cmdblock/session-selector", () => ({
+    SessionSelector: (props: any) => {
+        selectorProps.latest = props;
+        return null;
     },
 }));
 
@@ -71,6 +82,8 @@ afterEach(async () => {
     hostProps.simulateMissingSessionSelectorError = false;
     hostProps.submitResult = true;
     hostProps.submitError = "";
+    selectorProps.latest = null;
+    vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
@@ -126,6 +139,45 @@ describe("AgentContent", () => {
 
         expect(globalStore.get(model.errorAtom)).toBe("");
         expect(screen.getByRole("alert").textContent).toContain("Agent is still starting");
+    });
+
+    it("restarts an identical selector success notification without disturbing errors", () => {
+        vi.useFakeTimers();
+        const model = makeModel();
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{
+                        workspaceId: "workspace-1",
+                        workspaceDir: "/repo",
+                        connection: "",
+                        environment: {},
+                    }}
+                />
+            </Provider>
+        );
+
+        act(() => {
+            hostProps.latest.onUserError("real failure");
+            selectorProps.latest.onUserMessage("Reference added");
+        });
+
+        expect(screen.getByRole("alert").textContent).toContain("real failure");
+        expect(screen.getByRole("status").textContent).toContain("Reference added");
+
+        act(() => vi.advanceTimersByTime(3_000));
+        act(() => selectorProps.latest.onUserMessage("Reference added"));
+        act(() => vi.advanceTimersByTime(1_500));
+
+        expect(screen.getByRole("status").textContent).toContain("Reference added");
+        expect(screen.getByRole("alert").textContent).toContain("real failure");
+
+        act(() => vi.advanceTimersByTime(2_500));
+
+        expect(screen.getByRole("alert").textContent).toContain("real failure");
+        expect(screen.queryByRole("status")).toBeNull();
     });
 
     it.each([

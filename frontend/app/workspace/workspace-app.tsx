@@ -8,7 +8,6 @@ import { WorkspaceNotificationToastStacker } from "@/app/notifications/notificat
 import { ToastModel } from "@/app/notifications/toast-model";
 import { MonacoModelRegistry } from "@/app/righteditor/monaco-model-registry";
 import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
-import { StatusBar } from "@/app/statusbar/status-bar";
 import { getApi, getOrefMetaKeyAtom } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
 import { registerWorkspaceKeyLifecycle } from "@/app/store/keymodel";
@@ -32,7 +31,7 @@ import { makeWorkspaceTopTabController, type WorkspaceTopTabController } from ".
 import { WorkspaceTopTabControllerContext } from "./top-tab-controller-context";
 import { WorkspaceTopTabRuntimeRegistry } from "./top-tab-runtime-registry";
 import { TopTabStrip } from "./top-tab-strip";
-import { buildWorkspaceAgentExecutionContext } from "./workspace-agent-context";
+import { buildWorkspaceAgentExecutionContext, useWorkspaceAgentTerminalContext } from "./workspace-agent-context";
 import { WorkspaceAgentModel } from "./workspace-agent-model";
 import { WorkspaceAgentSync } from "./workspace-agent-sync";
 import { WorkspaceCommandRouter } from "./workspace-command-router";
@@ -251,6 +250,7 @@ function WorkspaceAppInner({
         if (!agentApi) return undefined;
         return new AgentRuntimeClient(agentApi, { workspaceId: workspace.oid, generation });
     });
+    const terminalAgentContext = useWorkspaceAgentTerminalContext(activeTerminalTabId);
     const agentExecutionContext = useMemo(
         () =>
             buildWorkspaceAgentExecutionContext({
@@ -258,8 +258,10 @@ function WorkspaceAppInner({
                 generation,
                 workspaceDir,
                 preferredTerminalTabId: activeTerminalTabId,
+                connection: terminalAgentContext.connection,
+                recentCmds: terminalAgentContext.recentCmds,
             }),
-        [activeTerminalTabId, generation, workspace.oid, workspaceDir]
+        [activeTerminalTabId, generation, terminalAgentContext, workspace.oid, workspaceDir]
     );
     const [agentModel] = useState(() =>
         WorkspaceAgentModel.getInstance({
@@ -453,7 +455,6 @@ function WorkspaceAppInner({
                     />
                     <WorkspaceRightPanelHost agentModel={agentModel} />
                 </div>
-                <StatusBar />
                 <ModalsRenderer />
                 <TopTabCloseDialog controller={closeDialogController} />
                 <WorkspaceNotificationToastStacker />

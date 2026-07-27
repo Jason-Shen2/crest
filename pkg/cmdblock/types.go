@@ -15,5 +15,4 @@ const (
 	StateDone    = cbtypes.StateDone
 
 	KindShell = cbtypes.KindShell
-	KindAgent = cbtypes.KindAgent
 )

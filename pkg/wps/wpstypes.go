@@ -33,7 +33,6 @@ const (
 	Event_BlockJobStatus       = "block:jobstatus"        // type: wshrpc.BlockJobStatusData
 	Event_Badge                = "badge"                  // type: baseds.BadgeEvent
 	Event_CmdBlockRow          = "cmdblock:row"           // type: *cbtypes.CmdBlock
-	Event_CmdBlockChunk        = "cmdblock:chunk"         // type: *cbtypes.CmdBlockChunkEvent
 	Event_CmdBlockAltScreen    = "cmdblock:altscreen"     // type: *cbtypes.CmdBlockAltScreenEvent
 	Event_CmdBlockClear        = "cmdblock:clear"         // type: *cbtypes.CmdBlockClearEvent
 	Event_CmdBlockNotify       = "cmdblock:notify"        // type: *cbtypes.CmdBlockNotifyEvent
@@ -60,7 +59,6 @@ var AllEvents []string = []string{
 	Event_BlockJobStatus,
 	Event_Badge,
 	Event_CmdBlockRow,
-	Event_CmdBlockChunk,
 	Event_CmdBlockAltScreen,
 	Event_CmdBlockClear,
 	Event_CmdBlockNotify,
@@ -99,6 +97,7 @@ type WSFileEventData struct {
 	FileName string `json:"filename"`
 	FileOp   string `json:"fileop"`
 	Data64   string `json:"data64"`
+	Offset   int64  `json:"offset"`
 }
 
 type AgentNotificationEvent struct {

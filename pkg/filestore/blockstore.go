@@ -262,12 +262,22 @@ func (s *FileStore) WriteAt(ctx context.Context, zoneId string, name string, off
 }
 
 func (s *FileStore) AppendData(ctx context.Context, zoneId string, name string, data []byte) error {
-	return withLock(s, zoneId, name, func(entry *CacheEntry) error {
+	_, err := s.AppendDataWithOffset(ctx, zoneId, name, data)
+	return err
+}
+
+// AppendDataWithOffset appends data and returns its absolute start offset.
+// The offset is captured under the same file lock as the append so event
+// consumers can reconcile a concurrent snapshot without guessing.
+func (s *FileStore) AppendDataWithOffset(ctx context.Context, zoneId string, name string, data []byte) (int64, error) {
+	var offset int64
+	err := withLock(s, zoneId, name, func(entry *CacheEntry) error {
 		err := entry.loadFileIntoCache(ctx)
 		if err != nil {
 			return err
 		}
-		partMap := entry.File.computePartMap(entry.File.Size, int64(len(data)))
+		offset = entry.File.Size
+		partMap := entry.File.computePartMap(offset, int64(len(data)))
 		incompleteParts := incompletePartsFromMap(partMap)
 		if len(incompleteParts) > 0 {
 			err = entry.loadDataPartsIntoCache(ctx, incompleteParts)
@@ -275,9 +285,10 @@ func (s *FileStore) AppendData(ctx context.Context, zoneId string, name string, 
 				return err
 			}
 		}
-		entry.writeAt(entry.File.Size, data, false)
+		entry.writeAt(offset, data, false)
 		return nil
 	})
+	return offset, err
 }
 
 func metaIncrement(file *WaveFile, key string, amount int) int {

@@ -155,10 +155,6 @@ vi.mock("@/app/notifications/notifications-panel", () => ({
     NotificationsPanel: () => <div>Notifications Panel</div>,
 }));
 
-vi.mock("@/app/statusbar/status-bar", () => ({
-    StatusBar: () => <footer>Status Bar</footer>,
-}));
-
 vi.mock("@/app/github/github-model", () => ({
     GitHubModel: {
         getInstance: () => ({

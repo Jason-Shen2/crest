@@ -1,5 +1,11 @@
 # Terminal Engine Migration — warp-style command-block renderer
 
+> **⚠️ SUPERSEDED (2026-07-27).** The custom cell-grid engine this document
+> describes was **deleted** in commit `0f35c73c` and replaced by the
+> terax-ported xterm.js stack. See **`docs/terax-terminal-port.md`** for the
+> current architecture and decision log. This file is kept for historical
+> context only — its phase tables and file inventory no longer match the tree.
+
 **Target:** Replace xterm.js-based terminal rendering with a self-contained,
 warp-aligned cell-grid engine.
 **Code root:** `frontend/app/term/`

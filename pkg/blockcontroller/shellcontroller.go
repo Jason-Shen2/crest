@@ -49,6 +49,12 @@ const (
 	LocalConnVariant_GitBash = "gitbash"
 )
 
+const (
+	CoalesceWindow   = 8 * time.Millisecond
+	CoalesceMaxBytes = 64 * 1024
+	ReadBufSize      = 16384
+)
+
 type ShellController struct {
 	Lock *sync.Mutex
 
@@ -553,6 +559,64 @@ func (bc *ShellController) setupAndStartShellProcess(logCtx context.Context, rc 
 	return shellProc, nil
 }
 
+// outputCoalescer batches PTY reads so a busy command produces one blockfile
+// append (one Event_BlockFile) + one tracker.OnBytes per flush window instead
+// of one pair per read (aligned with terax session.rs FLUSH_COALESCE).
+type outputCoalescer struct {
+	lock     sync.Mutex
+	blockId  string
+	tracker  *cmdblock.Tracker
+	buf      []byte
+	timerSet bool
+}
+
+func makeOutputCoalescer(blockId string, tracker *cmdblock.Tracker) *outputCoalescer {
+	return &outputCoalescer{
+		blockId: blockId,
+		tracker: tracker,
+		buf:     make([]byte, 0, CoalesceMaxBytes),
+	}
+}
+
+func (c *outputCoalescer) OnRead(data []byte) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.buf = append(c.buf, data...)
+	if len(c.buf) >= CoalesceMaxBytes {
+		c.flush_nolock()
+		return
+	}
+	if !c.timerSet {
+		c.timerSet = true
+		time.AfterFunc(CoalesceWindow, c.Flush)
+	}
+}
+
+func (c *outputCoalescer) Flush() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.flush_nolock()
+}
+
+// flush_nolock performs the blockfile append and tracker feed while holding
+// the lock so that flushes triggered by the timer and by the read loop cannot
+// interleave — blockfile order must match the raw PTY stream order. A timer
+// firing after a size-triggered flush just finds an empty buffer and no-ops.
+func (c *outputCoalescer) flush_nolock() {
+	c.timerSet = false
+	if len(c.buf) == 0 {
+		return
+	}
+	appendErr := HandleAppendBlockFile(c.blockId, wavebase.BlockFile_Term, c.buf)
+	if appendErr != nil {
+		log.Printf("error appending to blockfile: %v\n", appendErr)
+	}
+	// Always feed bytes to tracker regardless of append error so that
+	// tracker stream offsets stay in sync with the raw PTY stream.
+	c.tracker.OnBytes(context.Background(), c.buf)
+	c.buf = c.buf[:0]
+}
+
 func (bc *ShellController) manageRunningShellProcess(shellProc *shellexec.ShellProc, rc *RunShellOpts, blockMeta waveobj.MetaMapType) error {
 	shellInputCh := make(chan *BlockInputUnion, 32)
 	bc.ShellInputCh = shellInputCh
@@ -586,7 +650,7 @@ func (bc *ShellController) manageRunningShellProcess(shellProc *shellexec.ShellP
 			time.Sleep(100 * time.Millisecond)
 			close(shellInputCh) // don't use bc.ShellInputCh (it's nil)
 		}()
-		buf := make([]byte, 4096)
+		buf := make([]byte, ReadBufSize)
 		tracker = cmdblock.MakeTracker(bc.BlockId)
 		if bc.ControllerType == BlockController_Cmd {
 			cmd := blockMeta.GetString(waveobj.MetaKey_Cmd, "")
@@ -597,16 +661,11 @@ func (bc *ShellController) manageRunningShellProcess(shellProc *shellexec.ShellP
 				}
 			}
 		}
+		coalescer := makeOutputCoalescer(bc.BlockId, tracker)
 		for {
 			nr, err := shellProc.Cmd.Read(buf)
 			if nr > 0 {
-				appendErr := HandleAppendBlockFile(bc.BlockId, wavebase.BlockFile_Term, buf[:nr])
-				if appendErr != nil {
-					log.Printf("error appending to blockfile: %v\n", appendErr)
-				}
-				// Always feed bytes to tracker regardless of append error so that
-				// tracker stream offsets stay in sync with the raw PTY stream.
-				tracker.OnBytes(context.Background(), buf[:nr])
+				coalescer.OnRead(buf[:nr])
 			}
 			if err == io.EOF {
 				break
@@ -616,6 +675,9 @@ func (bc *ShellController) manageRunningShellProcess(shellProc *shellexec.ShellP
 				break
 			}
 		}
+		// runs before the deferred FinishRunningCommand, so tail bytes reach
+		// the tracker before the command is finalized
+		coalescer.Flush()
 	}()
 	go func() {
 		// handles input from the shellInputCh, sent to pty

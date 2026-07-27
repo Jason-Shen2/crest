@@ -406,6 +406,13 @@ func (ws *WshServer) ControllerAppendOutputCommand(ctx context.Context, data wsh
 	return nil
 }
 
+func (ws *WshServer) ControllerHasForegroundJobCommand(ctx context.Context, blockId string) (bool, error) {
+	if blockId == "" {
+		return false, fmt.Errorf("blockid is required")
+	}
+	return blockcontroller.HasForegroundJob(blockId), nil
+}
+
 func (ws *WshServer) FileCreateCommand(ctx context.Context, data wshrpc.FileData) error {
 	data.Data64 = ""
 	err := wshfs.PutFile(ctx, data)
@@ -1574,28 +1581,6 @@ func (ws *WshServer) GetCmdBlocksCommand(ctx context.Context, data wshrpc.Comman
 		return nil, fmt.Errorf("blockid is required")
 	}
 	return cmdblock.GetByBlockID(ctx, data.BlockID, data.Limit)
-}
-
-func (ws *WshServer) AppendAgentRunCommand(ctx context.Context, data wshrpc.CommandAppendAgentRunData) (*cbtypes.CmdBlock, error) {
-	if data.BlockID == "" {
-		return nil, fmt.Errorf("blockid is required")
-	}
-	if data.SessionPath == "" {
-		return nil, fmt.Errorf("sessionpath is required")
-	}
-	if data.UserEntryID == "" {
-		return nil, fmt.Errorf("userentryid is required")
-	}
-	row, err := cmdblock.AppendAgentRun(ctx, data.BlockID, data.SessionPath, data.UserEntryID)
-	if err != nil {
-		return nil, err
-	}
-	wps.Broker.Publish(wps.WaveEvent{
-		Event:  wps.Event_CmdBlockRow,
-		Scopes: []string{"block:" + data.BlockID},
-		Data:   row,
-	})
-	return row, nil
 }
 
 // GetCmdBlockOutputCommand returns the durable per-block output snapshot for a

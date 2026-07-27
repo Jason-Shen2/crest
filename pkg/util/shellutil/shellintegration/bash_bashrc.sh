@@ -54,6 +54,8 @@ if [ -z "${bash_preexec_imported:-}" ]; then
 fi
 
 _WAVETERM_SI_FIRSTPROMPT=1
+_WAVETERM_SI_BLOCK_SEEN=
+_WAVETERM_SI_PS1_INJECTED=
 
 # Wave Terminal Shell Integration
 _waveterm_si_blocked() {
@@ -120,19 +122,37 @@ _waveterm_si_precmd() {
         uname_info=$(uname -smr 2>/dev/null)
         printf '\033]16162;M;{"shell":"bash","shellversion":"%s","uname":"%s","integration":true}\007' "$BASH_VERSION" "$uname_info"
     else
+        # 133;D/A/C dual-emit: the xterm frontend consumes standard FinalTerm
+        # markers directly; 16162 stays for the Go-side Tracker (see docs/terax-terminal-port.md D4)
         printf '\033]16162;D;{"exitcode":%d}\007' "$_waveterm_si_status"
+        printf '\033]133;D;%d\007' "$_waveterm_si_status"
     fi
     # OSC 7 sent on every prompt - bash has no chpwd hook for directory changes
     _waveterm_si_osc7
     _waveterm_si_emit_env
+    if [ -n "$WAVETERM_BLOCKS" ]; then
+        if [ -n "$_WAVETERM_SI_BLOCK_SEEN" ]; then
+            PS1='\n\n\[\033]133;B\007\]'
+        else
+            PS1='\n\[\033]133;B\007\]'
+        fi
+    elif [ -z "$_WAVETERM_SI_PS1_INJECTED" ]; then
+        PS1='\[\033]133;B\007\]'"$PS1"
+        _WAVETERM_SI_PS1_INJECTED=1
+    fi
     printf '\033]16162;A\007'
+    printf '\033]133;A\007'
     _WAVETERM_SI_FIRSTPROMPT=0
 }
 
 _waveterm_si_preexec() {
     _waveterm_si_blocked && return
-    
+    _WAVETERM_SI_BLOCK_SEEN=1
     local cmd="$1"
+    local marker_cmd="${1//$'\n'/ }"
+    marker_cmd="${marker_cmd//$'\r'/ }"
+    marker_cmd="${marker_cmd//$'\a'/ }"
+    marker_cmd="${marker_cmd//$'\033'/ }"
     local cmd_length=${#cmd}
     if [ "$cmd_length" -gt 8192 ]; then
         cmd=$(printf '# command too large (%d bytes)' "$cmd_length")
@@ -144,6 +164,7 @@ _waveterm_si_preexec() {
     else
         printf '\033]16162;C\007'
     fi
+    printf '\033]133;C;%.256s\007' "$marker_cmd"
 }
 
 # Add our functions to the bash-preexec arrays

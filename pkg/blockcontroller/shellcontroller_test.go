@@ -85,6 +85,22 @@ func TestCmdControllerResyncCreatesCmdBlockRow(t *testing.T) {
 	}
 }
 
+func TestMakeSwapTokenSetsBlocksModeByDefault(t *testing.T) {
+	ctx := setupShellControllerTest(t)
+
+	defaultToken := makeSwapToken(ctx, ctx, "block-direct-resync", waveobj.MetaMapType{}, "", "zsh")
+	if defaultToken.Env["WAVETERM_BLOCKS"] != "1" {
+		t.Fatalf("default WAVETERM_BLOCKS = %q, want 1", defaultToken.Env["WAVETERM_BLOCKS"])
+	}
+
+	disabledToken := makeSwapToken(ctx, ctx, "block-direct-resync", waveobj.MetaMapType{
+		waveobj.MetaKey_TermBlocks: false,
+	}, "", "zsh")
+	if _, ok := disabledToken.Env["WAVETERM_BLOCKS"]; ok {
+		t.Fatalf("disabled token unexpectedly contains WAVETERM_BLOCKS")
+	}
+}
+
 func waitForCmdBlockRows(t *testing.T, ctx context.Context, blockID string) []*cmdblock.CmdBlock {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

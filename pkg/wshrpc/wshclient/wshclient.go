@@ -29,12 +29,6 @@ func AiSendMessageCommand(w *wshutil.WshRpc, data wshrpc.AiMessageData, opts *ws
 	return err
 }
 
-// command "appendagentrun", wshserver.AppendAgentRunCommand
-func AppendAgentRunCommand(w *wshutil.WshRpc, data wshrpc.CommandAppendAgentRunData, opts *wshrpc.RpcOpts) (*cbtypes.CmdBlock, error) {
-	resp, err := sendRpcRequestCallHelper[*cbtypes.CmdBlock](w, "appendagentrun", data, opts)
-	return resp, err
-}
-
 // command "authenticate", wshserver.AuthenticateCommand
 func AuthenticateCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (wshrpc.CommandAuthenticateRtnData, error) {
 	resp, err := sendRpcRequestCallHelper[wshrpc.CommandAuthenticateRtnData](w, "authenticate", data, opts)
@@ -171,6 +165,12 @@ func ControllerAppendOutputCommand(w *wshutil.WshRpc, data wshrpc.CommandControl
 func ControllerDestroyCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) error {
 	_, err := sendRpcRequestCallHelper[any](w, "controllerdestroy", data, opts)
 	return err
+}
+
+// command "controllerhasforegroundjob", wshserver.ControllerHasForegroundJobCommand
+func ControllerHasForegroundJobCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (bool, error) {
+	resp, err := sendRpcRequestCallHelper[bool](w, "controllerhasforegroundjob", data, opts)
+	return resp, err
 }
 
 // command "controllerinput", wshserver.ControllerInputCommand

@@ -21,6 +21,7 @@ if ($PSStyle.FileInfo.Directory -eq "`e[44;1m") {
 }
 
 $Global:_WAVETERM_SI_FIRSTPROMPT = $true
+$Global:_WAVETERM_SI_BLOCK_SEEN = $false
 
 # shell integration
 function Global:_waveterm_si_blocked {
@@ -81,29 +82,76 @@ function Global:_waveterm_si_emit_env {
 }
 
 function Global:_waveterm_si_prompt {
+    param([int]$LastExitCode)
     if (_waveterm_si_blocked) { return }
-    
+
     if ($Global:_WAVETERM_SI_FIRSTPROMPT) {
-		# not sending uname
-		       $shellversion = $PSVersionTable.PSVersion.ToString()
-		       Write-Host -NoNewline "`e]16162;M;{`"shell`":`"pwsh`",`"shellversion`":`"$shellversion`",`"integration`":false}`a"
+        $shellversion = $PSVersionTable.PSVersion.ToString()
+        Write-Host -NoNewline "`e]16162;M;{`"shell`":`"pwsh`",`"shellversion`":`"$shellversion`",`"integration`":true}`a"
         $Global:_WAVETERM_SI_FIRSTPROMPT = $false
+    } else {
+        Write-Host -NoNewline "`e]16162;D;{`"exitcode`":$LastExitCode}`a"
+        Write-Host -NoNewline "`e]133;D;$LastExitCode`a"
     }
-    
+
     _waveterm_si_osc7
     _waveterm_si_emit_env
+    Write-Host -NoNewline "`e]16162;A`a"
+    Write-Host -NoNewline "`e]133;A`a"
 }
 
-# Add the OSC 7 call to the prompt function
-if (Test-Path Function:\prompt) {
+if (Test-Path Function:prompt) {
     $global:_waveterm_original_prompt = $function:prompt
-    function Global:prompt {
-        _waveterm_si_prompt
-        & $global:_waveterm_original_prompt
+}
+
+function Global:_waveterm_si_install_readline {
+    if ($Global:_WAVETERM_SI_READLINE_DONE) { return }
+    if (-not (Test-Path Function:PSConsoleHostReadLine)) { return }
+    $Global:_WAVETERM_SI_READLINE_DONE = $true
+    Copy-Item Function:PSConsoleHostReadLine Function:Global:_waveterm_original_readline -Force
+    function Global:PSConsoleHostReadLine {
+        try {
+            $line = _waveterm_original_readline
+        } catch {
+            Copy-Item Function:_waveterm_original_readline Function:Global:PSConsoleHostReadLine -Force
+            return ''
+        }
+        if ($line -is [string] -and $line.Trim().Length -gt 0) {
+            $Global:_WAVETERM_SI_BLOCK_SEEN = $true
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($line)
+            $cmd64 = [Convert]::ToBase64String($bytes)
+            $markerCmd = $line -replace '[\x00-\x1F\x7F]', ' '
+            if ($markerCmd.Length -gt 256) { $markerCmd = $markerCmd.Substring(0, 256) }
+            Write-Host -NoNewline "`e]16162;C;{`"cmd64`":`"$cmd64`"}`a"
+            Write-Host -NoNewline "`e]133;C;$markerCmd`a"
+        }
+        $line
     }
-} else {
-    function Global:prompt {
-        _waveterm_si_prompt
+}
+
+function Global:prompt {
+    _waveterm_si_install_readline
+    $lastExitCode = $Global:LASTEXITCODE
+    if ($null -eq $lastExitCode) { $lastExitCode = if ($?) { 0 } else { 1 } }
+
+    if (_waveterm_si_blocked) {
+        if ($global:_waveterm_original_prompt) {
+            return & $global:_waveterm_original_prompt
+        }
+        return "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
+    }
+
+    _waveterm_si_prompt $lastExitCode
+    $Global:LASTEXITCODE = $lastExitCode
+    if ($env:WAVETERM_BLOCKS) {
+        $gap = if ($Global:_WAVETERM_SI_BLOCK_SEEN) { "`n`n" } else { "`n" }
+        return "$gap`e]133;B`a"
+    }
+
+    $original = if ($global:_waveterm_original_prompt) {
+        & $global:_waveterm_original_prompt
+    } else {
         "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
     }
+    "$original`e]133;B`a"
 }

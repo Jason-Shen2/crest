@@ -73,13 +73,11 @@ vi.mock("./agent-tools/spawn-cli-agent", () => ({
 vi.mock("./aiconfig/secrets", () => ({ getSecret: vi.fn() }));
 vi.mock("../frontend/app/store/wshclientapi", () => ({
     RpcApi: {
-        AppendAgentRunCommand: vi.fn(),
         GetCmdBlocksCommand: vi.fn(() => Promise.resolve([])),
     },
 }));
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
-import { RpcApi } from "../frontend/app/store/wshclientapi";
 import {
     _resetAgentIpcForTests,
     abortAgentSessionForIpc,
@@ -665,7 +663,7 @@ describe("agent-ipc command helpers", () => {
         expect(sender.send).not.toHaveBeenCalled();
     });
 
-    it("agent:send returns the committed turn id without writing a legacy marker", async () => {
+    it("agent:send returns the turn id committed by the configured runtime", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-send");
         // Stub the harness build so ensureAgentRuntime constructs a real
         // AgentSessionRuntime without a live model/provider.
@@ -704,7 +702,6 @@ describe("agent-ipc command helpers", () => {
             })
         );
         expect(result.turnId).toBe("entry-xyz");
-        expect(vi.mocked(RpcApi.AppendAgentRunCommand)).not.toHaveBeenCalled();
         sendConfiguredSpy.mockRestore();
     });
 

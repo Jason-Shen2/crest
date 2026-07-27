@@ -24,6 +24,8 @@ if [[ "$HISTFILE" == "$WAVETERM_ZDOTDIR/.zsh_history" ]]; then
 fi
 
 typeset -g _WAVETERM_SI_FIRSTPRECMD=1
+typeset -g _WAVETERM_SI_BLOCK_SEEN=0
+typeset -g _WAVETERM_SI_PS1_INJECTED=0
 
 # shell integration
 _waveterm_si_blocked() {
@@ -118,8 +120,11 @@ _waveterm_si_precmd() {
   local _waveterm_si_status=$?
   _waveterm_si_blocked && return
   # D;status for previous command (skip before first prompt)
+  # 133;D/A/C dual-emit: the xterm frontend consumes standard FinalTerm
+  # markers directly; 16162 stays for the Go-side Tracker (see docs/terax-terminal-port.md D4)
   if (( !_WAVETERM_SI_FIRSTPRECMD )); then
     printf '\033]16162;D;{"exitcode":%d}\007' "$_waveterm_si_status"
+    printf '\033]133;D;%d\007' "$_waveterm_si_status"
   else
     local uname_info=$(uname -smr 2>/dev/null)
     local omz=false
@@ -132,13 +137,26 @@ _waveterm_si_precmd() {
   # Context-chip data — emitted every prompt so the chips track branch /
   # diff / venv changes mid-session.
   _waveterm_si_emit_env
+  if [[ -n "$WAVETERM_BLOCKS" ]]; then
+    if (( _WAVETERM_SI_BLOCK_SEEN )); then
+      PS1=$'\n\n%{\033]133;B\007%}'
+    else
+      PS1=$'\n%{\033]133;B\007%}'
+    fi
+  elif (( !_WAVETERM_SI_PS1_INJECTED )); then
+    PS1=$'%{\033]133;B\007%}'"$PS1"
+    _WAVETERM_SI_PS1_INJECTED=1
+  fi
   printf '\033]16162;A\007'
+  printf '\033]133;A\007'
   _WAVETERM_SI_FIRSTPRECMD=0
 }
 
 _waveterm_si_preexec() {
   _waveterm_si_blocked && return
+  _WAVETERM_SI_BLOCK_SEEN=1
   local cmd="$1"
+  local marker_cmd="${1//[[:cntrl:]]/ }"
   local cmd_length=${#cmd}
   if [ "$cmd_length" -gt 8192 ]; then
     cmd=$(printf '# command too large (%d bytes)' "$cmd_length")
@@ -150,6 +168,7 @@ _waveterm_si_preexec() {
   else
     printf '\033]16162;C\007'
   fi
+  printf '\033]133;C;%s\007' "${marker_cmd[1,256]}"
 }
 
 typeset -g WAVETERM_SI_INPUTEMPTY=1

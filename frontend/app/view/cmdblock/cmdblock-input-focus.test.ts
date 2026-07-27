@@ -6,6 +6,7 @@ import {
     findSlashCommandAction,
     getAgentShellShortcutModifierKey,
     makeSlashCommandsFromAgentRegistry,
+    matchShellPrefix,
     resolveEditorBeforeInputAction,
     resolveEditorEnterAction,
     resolveEditorMacNavigationAction,
@@ -125,6 +126,32 @@ describe("resolveSubmitMode", () => {
         expect(resolveSubmitMode("auto", "agent")).toBe("agent");
         expect(resolveSubmitMode("auto", "terminal")).toBe("terminal");
         expect(resolveSubmitMode("auto")).toBe("agent");
+    });
+});
+
+describe("matchShellPrefix", () => {
+    it("strips the prefix in agent-capable modes", () => {
+        expect(matchShellPrefix("agent", "!ls -al")).toBe("ls -al");
+        expect(matchShellPrefix("auto", "  !  git status")).toBe("git status");
+    });
+
+    it("keeps `!` literal in terminal mode (shell history expansion)", () => {
+        expect(matchShellPrefix("terminal", "!ls")).toBeNull();
+        expect(matchShellPrefix("terminal", "!!")).toBeNull();
+    });
+
+    it("returns an empty payload for a bare prefix so callers can no-op", () => {
+        expect(matchShellPrefix("agent", "!")).toBe("");
+        expect(matchShellPrefix("agent", "!   ")).toBe("");
+    });
+
+    it("does not fire without a leading prefix", () => {
+        expect(matchShellPrefix("agent", "echo hi!")).toBeNull();
+        expect(matchShellPrefix("agent", "explain this")).toBeNull();
+    });
+
+    it("preserves newlines in a multiline shell payload", () => {
+        expect(matchShellPrefix("agent", "!for f in *; do\necho $f\ndone")).toBe("for f in *; do\necho $f\ndone");
     });
 });
 

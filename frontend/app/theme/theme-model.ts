@@ -501,8 +501,8 @@ function computeVars(t: ResolvedTheme): Record<string, string> {
     vars["--color-sidebar-border"] = toRgbCss(withOpacity(t.foreground, 10));
     vars["--color-sidebar-ring"] = toRgbCss(t.accent);
 
-    // ANSI palette — feeds --ansi-* used by the renderer's
-    // resolveColor() in frontend/app/term/render/color.ts.
+    // ANSI palette — feeds --ansi-* consumed by the xterm theme builder
+    // (frontend/app/xterm/terminal-theme.ts).
     vars["--ansi-black"] = toRgbCss(t.ansi.black);
     vars["--ansi-red"] = toRgbCss(t.ansi.red);
     vars["--ansi-green"] = toRgbCss(t.ansi.green);

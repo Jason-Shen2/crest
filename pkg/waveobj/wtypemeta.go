@@ -134,6 +134,7 @@ type MetaTSType struct {
 	TermBellIndicator       *bool    `json:"term:bellindicator,omitempty"`
 	TermOsc52               string   `json:"term:osc52,omitempty"`
 	TermDurable             *bool    `json:"term:durable,omitempty"`
+	TermBlocks              *bool    `json:"term:blocks,omitempty"` // default true; false disables cmd-block decorations (D9)
 
 	WebZoom          float64 `json:"web:zoom,omitempty"`
 	WebHideNav       *bool   `json:"web:hidenav,omitempty"`

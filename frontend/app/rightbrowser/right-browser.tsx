@@ -960,10 +960,10 @@ export const RightBrowser = memo(function RightBrowser() {
                             <button
                                 type="button"
                                 aria-label="Close menu"
-                                className="fixed inset-0 z-40 cursor-default border-0 bg-transparent p-0"
+                                className="fixed inset-0 z-[calc(var(--zindex-modal-wrapper)-1)] cursor-default border-0 bg-transparent p-0"
                                 onClick={() => setMenuOpen(false)}
                             />
-                            <div className="absolute right-0 top-8 z-50 w-44 rounded-md border border-border bg-panel p-1 text-[12px] shadow-xl">
+                            <div className="absolute right-0 top-8 z-[var(--zindex-modal-wrapper)] w-44 rounded-md border border-border bg-background p-1 text-[12px] shadow-xl">
                                 <MenuItem
                                     onClick={() => {
                                         setMenuOpen(false);

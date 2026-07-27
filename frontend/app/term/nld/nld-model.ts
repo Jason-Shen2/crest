@@ -20,6 +20,7 @@ import type { InputMode } from "@/app/view/cmdblock/cmdblock-input";
 import * as jotai from "jotai";
 
 import { Classifier } from "./classifier";
+import { ensureEmbedderWarm } from "./embedder-edgeflow";
 import type { ClassifierContext, InputClassification } from "./types";
 import { NEUTRAL_CLASSIFICATION } from "./types";
 
@@ -52,12 +53,12 @@ export class NLDModel {
     // What the classifier *would* run if the user hit enter right now.
     // Only meaningful when modeAtom === "auto".  Other times this stays
     // pinned to whatever the locked mode is.
-    readonly effectiveModeAtom = jotai.atom<"terminal" | "agent">("agent") as jotai.PrimitiveAtom<
-        "terminal" | "agent"
-    >;
+    readonly effectiveModeAtom = jotai.atom<"terminal" | "agent">("agent") as jotai.PrimitiveAtom<"terminal" | "agent">;
 
     readonly statusAtom = jotai.atom<DetectionStatus>("idle") as jotai.PrimitiveAtom<DetectionStatus>;
-    readonly lastVerdictAtom = jotai.atom<InputClassification>(NEUTRAL_CLASSIFICATION) as jotai.PrimitiveAtom<InputClassification>;
+    readonly lastVerdictAtom = jotai.atom<InputClassification>(
+        NEUTRAL_CLASSIFICATION
+    ) as jotai.PrimitiveAtom<InputClassification>;
 
     private readonly classifier: Classifier;
     private debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -105,6 +106,11 @@ export class NLDModel {
         recentCommands: readonly string[],
         isAgentFollowUp: boolean
     ): Promise<void> {
+        // First real use kicks off the lazy tier-2 warm-up (D11) —
+        // tier-1 / word-score carry the verdicts below until the worker
+        // reports ready, same behavior as the old startup warm-up.
+        void ensureEmbedderWarm();
+
         // Abort any in-flight run from the previous keystroke.
         this.cancelInflight();
         const ac = new AbortController();
@@ -169,11 +175,7 @@ export class NLDModel {
     // for one-shot triggers like "user just turned Auto on" — without
     // this, the auto-toggle would have to wait for the next keystroke
     // before NLD could overwrite the (now stale) effective mode.
-    triggerDetectionImmediate(
-        text: string,
-        recentCommands: readonly string[],
-        isAgentFollowUp: boolean
-    ): void {
+    triggerDetectionImmediate(text: string, recentCommands: readonly string[], isAgentFollowUp: boolean): void {
         if (this.disposed) return;
         if (globalStore.get(this.modeAtom) !== "auto") return;
         // Clear the cooldown that setMode("auto") just set — this run *is*

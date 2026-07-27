@@ -237,13 +237,13 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
                 aria-hidden="true"
                 data-menu-backdrop="true"
                 tabIndex={-1}
-                className="fixed inset-0 z-40 cursor-default border-0 bg-transparent p-0"
+                className="fixed inset-0 z-[calc(var(--zindex-modal-wrapper)-1)] cursor-default border-0 bg-transparent p-0"
                 onClick={closeDetails}
             />
             <div
                 aria-label="Open right tool menu"
                 data-menu-surface="trae"
-                className="absolute right-0 top-8 z-50 flex w-44 flex-col gap-1 rounded-lg border border-border bg-panel p-1 shadow-2xl"
+                className="absolute left-0 top-8 z-[var(--zindex-modal-wrapper)] flex w-44 flex-col gap-1 rounded-lg border border-border bg-background p-1 shadow-2xl"
             >
                 {availableTools.map((tool) => {
                     const metadata = RightToolMetadataById[tool];

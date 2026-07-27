@@ -4,12 +4,7 @@
 // The screen emulator stays in Electron land because it reuses Crest's
 // renderer terminal engine.
 
-import { AnsiParser } from "@/app/term/engine/ansi-parser";
-import { Block } from "@/app/term/engine/block";
-import { BlockHandler, type TerminalContext } from "@/app/term/engine/block-handler";
-import type { Grid } from "@/app/term/engine/grid";
-import type { Cell, CursorShape, TermMode } from "@/app/term/engine/types";
-import { DefaultTermMode } from "@/app/term/engine/types";
+import { Terminal, type IBuffer, type IBufferCell } from "@xterm/xterm";
 
 export interface AgentPtyScreenCell {
     char: string;
@@ -24,7 +19,7 @@ export interface AgentPtyCursor {
     row: number;
     col: number;
     visible: boolean;
-    shape: CursorShape;
+    shape: "block" | "bar" | "underline";
     blink: boolean;
 }
 
@@ -40,87 +35,84 @@ export interface AgentPtyScreenOptions {
     respond: (bytes: string) => void;
 }
 
+interface SynchronousTerminalCore {
+    writeSync(data: string | Uint8Array): void;
+    coreService: {
+        isCursorHidden: boolean;
+    };
+}
+
 export class AgentPtyScreen {
     cols: number;
     rows: number;
-    private block: Block;
-    private parser: AnsiParser;
-    private mode: TermMode = { ...DefaultTermMode };
-    private encoder = new TextEncoder();
+    terminal: Terminal;
+    core: SynchronousTerminalCore;
+    encoder = new TextEncoder();
 
     constructor(options: AgentPtyScreenOptions) {
         this.cols = Math.max(1, options.cols);
         this.rows = Math.max(1, options.rows);
-        this.block = new Block({ id: "agent-pty", seq: 0, cols: this.cols });
-        this.block.startPrompt();
-        this.block.endPrompt();
-        this.block.startCommand();
-        this.block.outputGrid.raw().resizeViewport(this.cols, this.rows);
-        this.block.altScreen.resize(this.cols, this.rows);
-        const context: TerminalContext = {
-            respond: options.respond,
-            getMode: () => this.mode,
-            setMode: (patch) => {
-                this.mode = { ...this.mode, ...patch };
-            },
-            onInlineTui: () => {
-                this.block.outputGrid.raw().resizeViewport(this.cols, this.rows);
-            },
-        };
-        this.parser = new AnsiParser(new BlockHandler(this.block, context));
+        this.terminal = new Terminal({
+            cols: this.cols,
+            rows: this.rows,
+            scrollback: 0,
+            allowProposedApi: false,
+            logLevel: "off",
+        });
+        this.core = (this.terminal as unknown as { _core: SynchronousTerminalCore })._core;
+        this.terminal.onData(options.respond);
     }
 
     feed(data: string | Uint8Array): void {
         if (!data.length) return;
-        this.parser.feed(typeof data === "string" ? this.encoder.encode(data) : data);
-        this.parser.flush();
-        this.block.outputGrid.raw().resizeViewport(this.cols, this.rows);
-        this.block.altScreen.resize(this.cols, this.rows);
+        const bytes = typeof data === "string" ? this.encoder.encode(data) : data;
+        let wasAltScreenActive = this.terminal.buffer.active.type === "alternate";
+        for (const byte of bytes) {
+            this.core.writeSync(Uint8Array.of(byte));
+            const isAltScreenActive = this.terminal.buffer.active.type === "alternate";
+            if (!wasAltScreenActive && isAltScreenActive) {
+                this.core.writeSync("\x1b[H\x1b[2J");
+            }
+            wasAltScreenActive = isAltScreenActive;
+        }
     }
 
     resize(cols: number, rows: number): void {
         this.cols = Math.max(1, cols);
         this.rows = Math.max(1, rows);
-        this.block.outputGrid.raw().resizeViewport(this.cols, this.rows);
-        this.block.altScreen.resize(this.cols, this.rows);
+        this.terminal.resize(this.cols, this.rows);
     }
 
     snapshot(): AgentPtyScreenSnapshot {
-        const grid = this.activeGrid();
-        const cursorState = grid.cursorState;
+        const buffer = this.terminal.buffer.active;
         return {
-            rows: this.rowsFromGrid(grid),
+            rows: this.rowsFromBuffer(buffer),
             cursor: {
-                row: grid.cursor.row,
-                col: grid.cursor.col,
-                visible: cursorState.visible,
-                shape: cursorState.shape,
-                blink: cursorState.blink,
+                row: buffer.cursorY,
+                col: buffer.cursorX,
+                visible: !this.core.coreService.isCursorHidden,
+                shape: this.terminal.options.cursorStyle ?? "block",
+                blink: this.terminal.options.cursorBlink ?? false,
             },
-            isAltScreenActive: this.block.altScreen.active,
+            isAltScreenActive: buffer.type === "alternate",
         };
     }
 
     primaryRowCount(): number {
-        return this.block.outputGrid.raw().rowCount();
+        return this.terminal.buffer.normal.length;
     }
 
     altRowCount(): number {
-        return this.block.altScreen.grid.rowCount();
+        return Math.max(this.rows, this.terminal.buffer.alternate.length);
     }
 
-    private activeGrid(): Grid {
-        if (this.block.altScreen.active) {
-            return this.block.altScreen.grid;
-        }
-        return this.block.outputGrid.raw();
-    }
-
-    private rowsFromGrid(grid: Grid): AgentPtyScreenRow[] {
+    rowsFromBuffer(buffer: IBuffer): AgentPtyScreenRow[] {
         const rows: AgentPtyScreenRow[] = [];
         for (let row = 0; row < this.rows; row += 1) {
+            const line = buffer.getLine(buffer.viewportY + row);
+            const reusableCell = buffer.getNullCell();
             const cells = Array.from({ length: this.cols }, (_value, col) =>
-                this.cellToSnapshot(grid.getCell(row, col))
+                this.cellToSnapshot(line?.getCell(col, reusableCell))
             );
             rows.push({
                 text: cells
@@ -133,7 +125,7 @@ export class AgentPtyScreen {
         return rows;
     }
 
-    private cellToSnapshot(cell: Cell): AgentPtyScreenCell {
-        return { char: cell.char + (cell.extra?.zeroWidth ?? "") };
+    cellToSnapshot(cell?: IBufferCell): AgentPtyScreenCell {
+        return { char: cell?.getChars() ?? "" };
     }
 }

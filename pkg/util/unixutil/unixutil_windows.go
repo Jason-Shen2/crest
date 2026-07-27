@@ -14,6 +14,10 @@ func GetProcessGroupId(pid int) (int, error) {
 	return 0, fmt.Errorf("process group id not supported on windows")
 }
 
+func GetTtyForegroundProcessGroup(fd int) (int, error) {
+	return 0, fmt.Errorf("tty foreground process group not supported on windows")
+}
+
 func ParseSignal(sigName string) os.Signal {
 	return nil
 }

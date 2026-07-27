@@ -26,6 +26,7 @@ import (
 	"github.com/s-zx/crest/pkg/remote/conncontroller"
 	"github.com/s-zx/crest/pkg/util/pamparse"
 	"github.com/s-zx/crest/pkg/util/shellutil"
+	"github.com/s-zx/crest/pkg/util/unixutil"
 	"github.com/s-zx/crest/pkg/wavebase"
 	"github.com/s-zx/crest/pkg/waveobj"
 	"github.com/s-zx/crest/pkg/wshrpc"
@@ -92,6 +93,28 @@ func (sp *ShellProc) WaitNB() (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+// true while a job other than the shell itself owns the tty
+// (tcgetpgrp != shell pgid). only meaningful for local shells where the
+// pty master fd is in-process; remote/WSL transports return false.
+func (sp *ShellProc) HasForegroundJob() bool {
+	cmdWrap, ok := sp.Cmd.(CmdWrap)
+	if !ok {
+		return false
+	}
+	if cmdWrap.Cmd == nil || cmdWrap.Cmd.Process == nil || cmdWrap.Pty == nil {
+		return false
+	}
+	shellPgid, err := unixutil.GetProcessGroupId(cmdWrap.Cmd.Process.Pid)
+	if err != nil || shellPgid <= 0 {
+		return false
+	}
+	fgPgid, err := unixutil.GetTtyForegroundProcessGroup(int(cmdWrap.Fd()))
+	if err != nil || fgPgid <= 0 {
+		return false
+	}
+	return fgPgid != shellPgid
 }
 
 func ExitCodeFromWaitErr(err error) int {

@@ -37,7 +37,7 @@ var clearScrollbackSeq = []byte("\x1b[3J")
 // session.  Hook it into a PTY read loop by calling OnBytes each time a chunk
 // is appended to the parent blockfile: Tracker translates A/C/D events into
 // MakePromptStarted / MarkCommandSubmitted / MarkCommandDone calls and
-// publishes cmdblock:row + cmdblock:chunk events for live updates.
+// publishes cmdblock:row events for live updates.
 type Tracker struct {
 	mu         sync.Mutex
 	blockID    string
@@ -136,12 +136,11 @@ func (t *Tracker) FinishRunningCommand(ctx context.Context, exitCode int64) erro
 // OnBytes must be called with every PTY chunk in the order it lands in the
 // parent blockfile, AFTER the chunk has been appended. The parser maintains
 // absolute offsets relative to the first byte fed; those offsets are recorded
-// verbatim into the cmdblock rows and also used as the "offset" for chunk
-// events so the frontend can line them up against the blockfile.
+// verbatim into the cmdblock rows so consumers can line them up against the
+// blockfile.
 func (t *Tracker) OnBytes(ctx context.Context, chunk []byte) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	chunkStart := t.parser.Offset()
 	// Snapshot currentOID before processing events — detectClear uses the
 	// "before" OID so that clearing the screen attributes the clear to the
 	// block that was active when the sequence arrived, not any new prompt row
@@ -150,9 +149,6 @@ func (t *Tracker) OnBytes(ctx context.Context, chunk []byte) {
 	events := t.parser.Feed(chunk)
 	for _, ev := range events {
 		t.handleEvent(ctx, ev)
-	}
-	if t.state == StateRunning && t.currentOID != "" && len(chunk) > 0 {
-		t.publishChunk(t.currentOID, chunkStart, chunk)
 	}
 	t.detectAltScreen(chunk)
 	t.detectOsc7(ctx, chunk)
@@ -372,19 +368,6 @@ func (t *Tracker) publishRow(cb *cbtypes.CmdBlock) {
 		Event:  wps.Event_CmdBlockRow,
 		Scopes: []string{"block:" + t.blockID},
 		Data:   cb,
-	})
-}
-
-func (t *Tracker) publishChunk(oid string, offset int64, data []byte) {
-	wps.Broker.Publish(wps.WaveEvent{
-		Event:  wps.Event_CmdBlockChunk,
-		Scopes: []string{"block:" + t.blockID},
-		Data: &cbtypes.CmdBlockChunkEvent{
-			BlockID: t.blockID,
-			OID:     oid,
-			Offset:  offset,
-			Data64:  base64.StdEncoding.EncodeToString(data),
-		},
 	})
 }
 

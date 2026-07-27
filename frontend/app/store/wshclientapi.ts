@@ -30,12 +30,6 @@ export class RpcApiType {
         return client.wshRpcCall("aisendmessage", data, opts);
     }
 
-    // command "appendagentrun" [call]
-    AppendAgentRunCommand(client: WshClient, data: CommandAppendAgentRunData, opts?: RpcOpts): Promise<CmdBlock> {
-        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "appendagentrun", data, opts);
-        return client.wshRpcCall("appendagentrun", data, opts);
-    }
-
     // command "authenticate" [call]
     AuthenticateCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<CommandAuthenticateRtnData> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "authenticate", data, opts);
@@ -172,6 +166,12 @@ export class RpcApiType {
     ControllerDestroyCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<void> {
         if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "controllerdestroy", data, opts);
         return client.wshRpcCall("controllerdestroy", data, opts);
+    }
+
+    // command "controllerhasforegroundjob" [call]
+    ControllerHasForegroundJobCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<boolean> {
+        if (this.mockClient) return this.mockClient.mockWshRpcCall(client, "controllerhasforegroundjob", data, opts);
+        return client.wshRpcCall("controllerhasforegroundjob", data, opts);
     }
 
     // command "controllerinput" [call]

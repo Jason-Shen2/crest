@@ -49,18 +49,18 @@ func TestGenerateWshCommandDeclMap_TestMultiArgCommand(t *testing.T) {
 	}
 }
 
-func TestGenerateWshCommandDeclMap_AppendAgentRunCommand(t *testing.T) {
-	decl := GenerateWshCommandDeclMap()["appendagentrun"]
+func TestGenerateWshCommandDeclMap_GetCmdBlocksCommand(t *testing.T) {
+	decl := GenerateWshCommandDeclMap()["getcmdblocks"]
 	if decl == nil {
-		t.Fatalf("expected appendagentrun command declaration")
+		t.Fatalf("expected getcmdblocks command declaration")
 	}
-	if decl.MethodName != "AppendAgentRunCommand" {
-		t.Fatalf("expected AppendAgentRunCommand method name, got %q", decl.MethodName)
+	if decl.MethodName != "GetCmdBlocksCommand" {
+		t.Fatalf("expected GetCmdBlocksCommand method name, got %q", decl.MethodName)
 	}
 	if len(decl.GetCommandDataTypes()) != 1 {
 		t.Fatalf("expected 1 command arg, got %d", len(decl.GetCommandDataTypes()))
 	}
-	if decl.GetCommandDataTypes()[0] != reflect.TypeOf(CommandAppendAgentRunData{}) {
+	if decl.GetCommandDataTypes()[0] != reflect.TypeOf(CommandGetCmdBlocksData{}) {
 		t.Fatalf("unexpected command arg type: %v", decl.GetCommandDataTypes()[0])
 	}
 }

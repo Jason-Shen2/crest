@@ -15,20 +15,7 @@ const (
 	StateDone    = "done"
 
 	KindShell = "shell"
-	KindAgent = "agent"
 )
-
-// CmdBlockChunkEvent is published on cmdblock:chunk while a cmdblock row is
-// in the "running" state. Data64 is a base64-encoded slice of PTY bytes that
-// landed in the parent blockfile starting at Offset. Includes OSC 16162
-// sequences; consumers can either strip or pass through to xterm (which will
-// treat unknown OSC numbers as a no-op).
-type CmdBlockChunkEvent struct {
-	BlockID string `json:"blockid"`
-	OID     string `json:"oid"`
-	Offset  int64  `json:"offset"`
-	Data64  string `json:"data64"`
-}
 
 // CmdBlockAltScreenEvent is published on cmdblock:altscreen when the PTY
 // enters (Enter=true) or leaves (Enter=false) the alternate screen buffer
@@ -62,14 +49,14 @@ type CmdBlockNotifyEvent struct {
 	Body    string `json:"body"`
 }
 
-// CmdBlock is the legacy storage row for one terminal timeline item.
+// CmdBlock is the storage row for one terminal timeline item.
 //
 // Shell rows cover the span from OSC 16162;A (prompt appeared) to OSC 16162;D
-// (command done). Agent rows are static timeline references to a main-owned
-// AgentRun. The database table is still named db_cmdblock for compatibility,
-// but callers should treat this as the timeline index row, not as the agent
-// content store. Shell offsets index the parent block's BlockFile_Term for the
+// (command done). Offsets index the parent block's BlockFile_Term for the
 // LIVE view; OutputData is the durable per-block snapshot of command output.
+// Agent timeline rows (kind='agent' with agent_session_path /
+// agent_user_entry_id anchors) were retired by D12 in
+// docs/terax-terminal-port.md; migration 000017 dropped those columns.
 type CmdBlock struct {
 	OID               string  `db:"oid" json:"oid"`
 	BlockID           string  `db:"blockid" json:"blockid"`
@@ -89,8 +76,6 @@ type CmdBlock struct {
 	TsCmdNs           *int64  `db:"ts_cmd_ns" json:"tscmdns,omitempty"`
 	TsDoneNs          *int64  `db:"ts_done_ns" json:"tsdonens,omitempty"`
 	AgentSessionID    *string `db:"agent_session_id" json:"agentsessionid,omitempty"`
-	AgentSessionPath  *string `db:"agent_session_path" json:"agentsessionpath,omitempty"`
-	AgentUserEntryID  *string `db:"agent_user_entry_id" json:"agentuserentryid,omitempty"`
 	CreatedAt         int64   `db:"created_at" json:"createdat"`
 	// Durable per-block output snapshot. Excluded from JSON (never sent in the
 	// live row/chunk events — those stream output directly); fetched on demand

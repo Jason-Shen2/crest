@@ -9,8 +9,8 @@ import { activeTabIdAtom } from "@/app/store/tab-model";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { makeTabRouteId } from "@/app/store/wshrouter";
 import { initWshrpc, shutdownRendererWshrpc, TabRpcClient } from "@/app/store/wshrpcutil";
-import { getPtyScreenSnapshot } from "@/app/term/terminal-model";
 import { ThemeModel } from "@/app/theme/theme-model";
+import { getPtyScreenSnapshot } from "@/app/xterm/xterm-session";
 import { countersClear, countersPrint } from "@/store/counters";
 import {
     atoms,
