@@ -33,7 +33,7 @@ class GlobalModel {
     async initialize(initOpts: GlobalInitOptions): Promise<void> {
         ClientModel.getInstance().initialize(initOpts.clientId);
         this.windowId = initOpts.windowId;
-        this.builderId = initOpts.builderId;
+        this.builderId = initOpts.rendererKind === "builder" ? initOpts.builderId : null;
         this.platform = initOpts.platform;
 
         this.windowDataAtom = atom((get) => {

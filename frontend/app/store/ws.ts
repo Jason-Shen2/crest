@@ -47,6 +47,7 @@ class WSControl {
     eoOpts: ElectronOverrideOpts;
     noReconnect: boolean = false;
     onOpenTimeoutId: NodeJS.Timeout = null;
+    pingIntervalId: NodeJS.Timeout;
 
     constructor(
         baseHostPort: string,
@@ -59,12 +60,16 @@ class WSControl {
         this.stableId = stableId;
         this.open = false;
         this.eoOpts = electronOverrideOpts;
-        setInterval(this.sendPing.bind(this), 5000);
+        this.pingIntervalId = setInterval(this.sendPing.bind(this), 5000);
     }
 
     shutdown() {
         this.noReconnect = true;
-        this.wsConn.close();
+        clearInterval(this.pingIntervalId);
+        if (this.onOpenTimeoutId != null) {
+            clearTimeout(this.onOpenTimeoutId);
+        }
+        this.wsConn?.close();
     }
 
     connectNow(desc: string) {

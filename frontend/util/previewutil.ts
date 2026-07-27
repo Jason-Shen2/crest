@@ -1,4 +1,5 @@
 import { createBlock, getApi } from "@/app/store/global";
+import { sendWorkspaceCommand } from "@/app/store/workspace-command-client";
 import { makeNativeLabel } from "./platformutil";
 import { fireAndForget } from "./util";
 import { formatRemoteUri } from "./waveutil";
@@ -45,14 +46,7 @@ export function addOpenMenuItems(menu: ContextMenuItem[], conn: string, finfo: F
             label: "Open Preview in New Block",
             click: () =>
                 fireAndForget(async () => {
-                    const blockDef: BlockDef = {
-                        meta: {
-                            view: "preview",
-                            file: finfo.path,
-                            connection: conn,
-                        },
-                    };
-                    await createBlock(blockDef);
+                    sendWorkspaceCommand({ type: "open-preview", path: finfo.path });
                 }),
         });
     }

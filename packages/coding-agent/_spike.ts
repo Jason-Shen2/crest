@@ -6,17 +6,17 @@
 // Exercises the full stack from sessions.ts → harness-factory.ts →
 // AgentHarness → pi-ai → upstream LLM. Confirms:
 //   - packages/coding-agent + packages/ai compile and load at runtime
-//   - JsonlSessionRepo mints a JSONL file under the configured root
+//   - SqliteSessionRepo mints a SQLite session under the configured root
 //   - buildAgentHarnessHost wires env / model / system prompt correctly
 //   - AgentHarness.prompt drives a real turn and emits event stream
-//   - Session JSONL contains the appended messages afterwards
+//   - Session storage contains the appended messages afterwards
 //
 // Usage:
 //   ANTHROPIC_API_KEY=sk-ant-... npx tsx packages/coding-agent/_spike.ts
 //   OPENAI_API_KEY=sk-... npx tsx packages/coding-agent/_spike.ts "Tell me a joke"
 //   GEMINI_API_KEY=... npx tsx packages/coding-agent/_spike.ts
 //
-// Spike writes session JSONL under a tmp dir (not the user's real
+// Spike writes session data under a tmp dir (not the user's real
 // sessions store) so repeated runs don't pile up real conversations.
 //
 // Delete this file once the Electron main runtime + IPC wiring is in
@@ -27,8 +27,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { getModel } from "@crest/ai";
-import { JsonlSessionRepo } from "@crest/agent/harness/session/jsonl-repo";
-import { NodeExecutionEnv } from "@crest/agent/node";
+import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import { buildAgentHarnessHost } from "./harness-factory";
 import { _setSessionsRepoForTests, createPaneSession } from "./sessions";
 
@@ -61,8 +60,7 @@ async function main(): Promise<void> {
     // Sandbox the sessions root to a tmp dir so we don't pollute the
     // user's real conversation history.
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-spike-"));
-    const sandboxedEnv = new NodeExecutionEnv({ cwd: process.cwd() });
-    const tmpRepo = new JsonlSessionRepo({ fs: sandboxedEnv, sessionsRoot: tmpRoot });
+    const tmpRepo = new SqliteSessionRepo({ sessionsRoot: tmpRoot });
     _setSessionsRepoForTests(tmpRepo);
     console.log(`[spike] sessions root: ${tmpRoot}`);
 

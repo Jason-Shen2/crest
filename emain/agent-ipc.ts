@@ -7,7 +7,7 @@
 // subscribers via a single "agent:event"
 // channel. The owner — not this layer — holds the authoritative
 // conversation state and decides send routing; this layer is the thin
-// IPC ↔ owner adapter. See emain/agent/agent-session-runtime.ts.
+// IPC ↔ owner adapter. See packages/coding-agent/agent-session-runtime.ts.
 //
 // See docs/agent-runtime-architecture.md §2 for the topology and
 // §6 for the per-session lifecycle this layer implements.
@@ -46,7 +46,13 @@ import * as path from "node:path";
 
 import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
 import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
-import { AgentRuntimeRegistry } from "@crest/coding-agent/agent-runtime-registry";
+import { AgentPtyHost } from "./agent-tools/agent-pty-host";
+import { parseAgentExecutionContext, type AgentExecutionContext } from "@crest/coding-agent/agent-execution-context";
+import { MaxAgentPtyCols, MaxAgentPtyRows } from "@crest/coding-agent/agent-pty-host";
+import {
+    AgentRuntimeRegistry,
+    AgentSessionMutationActiveError,
+} from "@crest/coding-agent/agent-runtime-registry";
 import {
     AgentSessionRuntime,
     buildContextStateFromSessionEntries,
@@ -86,7 +92,7 @@ import { summarizeContextDraft, type ContextSummaryCompletion } from "@crest/cod
 import { createContextTurnPreparation, type ContextTurnDraftAttachmentInput } from "@crest/coding-agent/context/turn-preparer";
 import type { ContextBudgetResult, ContextReferenceConfig, ContextRepresentation } from "@crest/coding-agent/context/types";
 import { ContextReferenceError } from "@crest/coding-agent/context/types";
-import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
+import { buildAgentHarnessHost, type AgentHarnessHost } from "@crest/coding-agent/harness-factory";
 import { convertToLlm } from "@crest/agent/harness/messages";
 import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
 import type {
@@ -98,15 +104,18 @@ import type {
 import { buildPermissionsHook, isBenchMode } from "@crest/coding-agent/permissions";
 import { loadProjectContextFiles } from "@crest/coding-agent/resource-loader";
 import {
+    archivePaneSession,
     createPaneSession,
     defaultSessionsDir,
     forkPaneSession,
     importPaneSessionFromJsonl,
-    listAllSessionDetails,
     listSessionDetailsForCwd,
     listSessionsForCwd,
     openPaneSession,
     openPaneSessionByPath,
+    renamePaneSession,
+    restoreMovedPaneSession,
+    stageDeletePaneSession,
 } from "@crest/coding-agent/sessions";
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { getDefaultTools } from "@crest/coding-agent/tools";
@@ -124,29 +133,52 @@ const runtimeRegistry = new AgentRuntimeRegistry<AgentSessionRuntime>({
 });
 let contextDraftRegistry = new ContextDraftRegistry();
 let contextSummaryCompletion: ContextSummaryCompletion | undefined;
+const runtimeWorkspaceBindings = new WeakMap<AgentSessionRuntime, string>();
 let runtimeSweepTimer: NodeJS.Timeout | undefined;
+let runtimeSweepPromise: Promise<void> | undefined;
 
 type SubKey = string;
 interface AgentSubscriptionRecord {
     unsubscribe: () => void;
     sessionPath: string;
+    sender: electron.WebContents;
+    rendererPath: string;
+    authorization: AgentSubscriptionAuthorization;
+    senderId: number;
+    workspaceId: string;
+    generation: number;
+}
+
+interface LiveAgentRuntimeLookup {
+    path: string;
+    runtime: AgentSessionRuntime;
+}
+
+interface AgentSubscriptionAuthorization extends WorkspaceAgentRequestContext {
+    validateCurrent: () => Promise<void>;
+    guardRuntime: (lookup: LiveAgentRuntimeLookup) => Promise<void>;
+}
+
+interface PendingAgentSubscription {
+    sender: electron.WebContents;
+    canonicalPath: string;
+    rendererPath: string;
+    authorization: AgentSubscriptionAuthorization;
+}
+
+interface SuspendedAgentSubscriptions {
+    intents: Map<SubKey, PendingAgentSubscription>;
 }
 
 const subscriptions = new Map<SubKey, AgentSubscriptionRecord>();
 const subscriptionsBySender = new Map<number, Set<SubKey>>();
-const pendingSubscriptions = new Map<
-    SubKey,
-    { sender: electron.WebContents; canonicalPath: string; rendererPath: string }
->();
+const pendingSubscriptions = new Map<SubKey, PendingAgentSubscription>();
 const sendIngressTails = new Map<string, Promise<void>>();
 
 interface SendOptions {
     /** Existing session, if any. null on first send → main mints a fresh one. */
     sessionMetadata?: JsonlSessionMetadata | null;
-    /** Parent terminal block ID for pane-scoped tools and command context. */
-    blockId: string;
-    /** Pane's current cwd. Drives system prompt + tool execution dir. */
-    cwd: string;
+    context: AgentExecutionContext;
     /** Prompt text. */
     text: string;
     /** User-attached images as renderer-safe data URLs. */
@@ -185,7 +217,7 @@ function reserveAgentSendIngress(opts: SendOptions): <T>(operation: () => Promis
     const key =
         typeof sessionPath === "string" && sessionPath.trim() !== ""
             ? `session:${path.resolve(sessionPath)}`
-            : `new:${opts.blockId}`;
+            : `workspace:${opts.context.workspaceId}`;
     const previous = sendIngressTails.get(key) ?? Promise.resolve();
     let release!: () => void;
     const hold = new Promise<void>((resolve) => {
@@ -211,6 +243,119 @@ let contextProviderAdapterFactory:
           thinkingLevel: ThinkingLevel | "off"
       ) => ContextProviderAdapter | undefined)
     | undefined = createContextProviderAdapter;
+
+interface AgentHostedCommandInput {
+    commandId: string;
+}
+
+interface AgentHostedCommandWriteInput extends AgentHostedCommandInput {
+    input: string;
+}
+
+interface AgentHostedCommandResizeInput extends AgentHostedCommandInput {
+    cols: number;
+    rows: number;
+}
+
+interface AgentRenameSessionInput {
+    sessionMetadata: JsonlSessionMetadata;
+    name: string;
+}
+
+export interface WorkspaceAgentRequestContext {
+    workspaceId: string;
+    generation: number;
+}
+
+export interface ResolvedWorkspaceAgentSender extends WorkspaceAgentRequestContext {
+    windowId: string;
+    workspaceDir: string;
+    validatePreferredTerminal: (terminalTabId: string) => Promise<boolean>;
+}
+
+export interface AgentIpcRegistrationOptions {
+    resolveWorkspaceSender: (senderId: number) => Promise<ResolvedWorkspaceAgentSender | undefined>;
+    loadWorkspace: (workspaceId: string) => Promise<Workspace>;
+    saveWorkspaceAgentState: (data: SaveWorkspaceAgentStateData) => Promise<WorkspaceAgentStateCheckpoint>;
+}
+
+type AuthenticatedWorkspaceAgentSender = Readonly<ResolvedWorkspaceAgentSender>;
+type AuthorizationGuard = () => Promise<void>;
+type LiveRuntimeGuard = (lookup: LiveAgentRuntimeLookup) => Promise<void>;
+interface AgentSessionRemovalPersistence {
+    workspaceId: string;
+    loadWorkspace: AgentIpcRegistrationOptions["loadWorkspace"];
+    saveWorkspaceAgentState: AgentIpcRegistrationOptions["saveWorkspaceAgentState"];
+}
+
+interface PersistedSessionTarget {
+    id: string;
+    createdAt: string;
+    cwd: string;
+    trustedPaths: Set<string>;
+}
+
+function lookupLiveAgentRuntime(...paths: Array<string | undefined>): LiveAgentRuntimeLookup | undefined {
+    for (const runtimePath of paths) {
+        if (!runtimePath) {
+            continue;
+        }
+        const runtime = runtimeRegistry.get(runtimePath);
+        if (runtime) {
+            return { path: runtimePath, runtime };
+        }
+    }
+    return undefined;
+}
+
+async function guardLiveRuntimeIfPresent(
+    paths: Array<string | undefined>,
+    guardRuntime?: LiveRuntimeGuard,
+    beforeReturn?: AuthorizationGuard
+): Promise<void> {
+    await beforeReturn?.();
+    const liveRuntime = lookupLiveAgentRuntime(...paths);
+    if (liveRuntime) {
+        await guardRuntime?.(liveRuntime);
+    }
+}
+
+function requireCommandId(input: unknown): string {
+    return requireNonEmptyString((input as AgentHostedCommandInput)?.commandId, "commandId");
+}
+
+async function requireLiveRuntimeForCommand(
+    sessionPath: string,
+    authorization: AgentSubscriptionAuthorization
+): Promise<AgentSessionRuntime> {
+    await authorization.validateCurrent();
+    const liveRuntime = lookupLiveAgentRuntime(sessionPath);
+    if (!liveRuntime) {
+        throw new Error("agent IPC: hosted command session is not running");
+    }
+    await authorization.guardRuntime(liveRuntime);
+    return liveRuntime.runtime;
+}
+
+export async function guardLiveAgentRuntimeAccess(options: {
+    lookup: LiveAgentRuntimeLookup;
+    workspaceId: string;
+    beforeAccess: AuthorizationGuard;
+    allowFirstBinding?: boolean;
+}): Promise<void> {
+    await options.beforeAccess();
+    if (runtimeRegistry.get(options.lookup.path) !== options.lookup.runtime) {
+        throw new Error("agent IPC: live runtime changed during request");
+    }
+    const boundWorkspaceId = runtimeWorkspaceBindings.get(options.lookup.runtime);
+    if (!boundWorkspaceId && options.allowFirstBinding) {
+        runtimeWorkspaceBindings.set(options.lookup.runtime, options.workspaceId);
+        return;
+    }
+    if (boundWorkspaceId !== options.workspaceId) {
+        throw new Error("agent IPC: live runtime belongs to another Workspace");
+    }
+}
 
 function imageContentFromDataUrl(src: string): ImageContent | undefined {
     const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/.exec(src);
@@ -295,6 +440,97 @@ function requireNonEmptyString(value: unknown, fieldName: string): string {
     return value;
 }
 
+function requireSessionName(value: unknown): string {
+    const name = requireNonEmptyString(value, "name").trim();
+    if (name.length > 120) {
+        throw new Error("agent IPC: name is too long");
+    }
+    return name;
+}
+
+function validateRequestContext(value: unknown): WorkspaceAgentRequestContext {
+    if (!isRecord(value)) {
+        throw new Error("agent IPC: request context must be an object");
+    }
+    const keys = Reflect.ownKeys(value);
+    if (
+        keys.length !== 2 ||
+        !Object.hasOwn(value, "workspaceId") ||
+        !Object.hasOwn(value, "generation") ||
+        typeof value.workspaceId !== "string" ||
+        !value.workspaceId.trim() ||
+        typeof value.generation !== "number" ||
+        !Number.isInteger(value.generation) ||
+        value.generation <= 0
+    ) {
+        throw new Error("agent IPC: invalid Workspace request context");
+    }
+    return { workspaceId: value.workspaceId, generation: value.generation };
+}
+
+async function authenticateWorkspaceSender(
+    options: AgentIpcRegistrationOptions,
+    senderId: number,
+    requestContext: unknown
+): Promise<AuthenticatedWorkspaceAgentSender> {
+    const requested = validateRequestContext(requestContext);
+    const resolved = await options.resolveWorkspaceSender(senderId);
+    if (resolved) {
+        releaseStaleSubscriptionsForSender(senderId, resolved);
+    } else {
+        releaseAllForSender(senderId);
+    }
+    if (!resolved || resolved.workspaceId !== requested.workspaceId || resolved.generation !== requested.generation) {
+        throw new Error("agent IPC: sender is not the current Workspace renderer");
+    }
+    return Object.freeze(resolved);
+}
+
+async function assertWorkspaceSenderCurrent(
+    options: AgentIpcRegistrationOptions,
+    senderId: number,
+    authenticated: AuthenticatedWorkspaceAgentSender
+): Promise<void> {
+    const current = await options.resolveWorkspaceSender(senderId);
+    if (
+        !current ||
+        current.windowId !== authenticated.windowId ||
+        current.workspaceId !== authenticated.workspaceId ||
+        current.generation !== authenticated.generation ||
+        current.workspaceDir !== authenticated.workspaceDir
+    ) {
+        throw new Error("agent IPC: Workspace sender changed during request");
+    }
+}
+
+async function requireSessionBelongsToWorkspace(
+    authenticated: AuthenticatedWorkspaceAgentSender,
+    sessionMetadata: unknown
+): Promise<JsonlSessionMetadata> {
+    const input = validateSessionMetadataShape(sessionMetadata);
+    return await withCanonicalSessionAccess(
+        input.path,
+        async (canonicalPath) => {
+            const { metadata, session } = await openValidatedSessionMetadata({ ...input, path: canonicalPath });
+            try {
+                let sessionCwd: string;
+                try {
+                    sessionCwd = await fs.realpath(metadata.cwd);
+                } catch {
+                    throw new Error("agent IPC: session cwd is not an existing directory");
+                }
+                if (sessionCwd !== authenticated.workspaceDir) {
+                    throw new Error("agent IPC: session does not belong to this Workspace");
+                }
+                return metadata;
+            } finally {
+                session.close();
+            }
+        },
+        "sessionMetadata.path"
+    );
+}
+
 function getPathCommandArgument(argsText: string): string | undefined {
     const argsString = argsText.trimStart();
     if (!argsString) return undefined;
@@ -343,6 +579,15 @@ async function validateSessionPath(value: unknown, fieldName = "sessionPath"): P
     return sessionPath;
 }
 
+async function withCanonicalSessionAccess<T>(
+    sessionPath: unknown,
+    fn: (canonicalPath: string) => Promise<T> | T,
+    fieldName = "sessionPath"
+): Promise<T> {
+    const canonicalPath = await validateSessionPath(sessionPath, fieldName);
+    return await runtimeRegistry.withSessionAccess(canonicalPath, () => fn(canonicalPath));
+}
+
 function validateSessionMetadataShape(value: unknown): JsonlSessionMetadata {
     if (!isRecord(value)) {
         throw new Error("agent IPC: sessionMetadata must be an object");
@@ -380,8 +625,13 @@ async function openValidatedSessionMetadata(value: unknown): Promise<{
     const input = validateSessionMetadataShape(value);
     const sessionPath = await validateSessionPath(input.path, "sessionMetadata.path");
     const session = await openPaneSessionByPath(sessionPath);
-    const metadata = await session.getMetadata();
-    return { metadata, session, requestedPath: input.path };
+    try {
+        const metadata = await session.getMetadata();
+        return { metadata, session, requestedPath: input.path };
+    } catch (error) {
+        session.close();
+        throw error;
+    }
 }
 
 async function requireSessionEntry(
@@ -412,9 +662,14 @@ async function validateNavigateInput(value: unknown): Promise<{
 }> {
     if (!isRecord(value)) throw new Error("agent IPC: navigateTree input must be an object");
     const { metadata, session, requestedPath } = await openValidatedSessionMetadata(value.sessionMetadata);
-    const targetId = requireNonEmptyString(value.targetId, "targetId");
-    await requireSessionEntry(session, targetId, "targetId");
-    return { metadata, session, targetId, requestedPath };
+    try {
+        const targetId = requireNonEmptyString(value.targetId, "targetId");
+        await requireSessionEntry(session, targetId, "targetId");
+        return { metadata, session, targetId, requestedPath };
+    } catch (error) {
+        session.close();
+        throw error;
+    }
 }
 
 async function validateForkInput(value: unknown): Promise<{
@@ -422,24 +677,36 @@ async function validateForkInput(value: unknown): Promise<{
     session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
     cwd: string;
     entryId: string;
+    requestedPath: string;
 }> {
     if (!isRecord(value)) throw new Error("agent IPC: forkSession input must be an object");
-    const { metadata, session } = await openValidatedSessionMetadata(value.sessionMetadata);
-    const cwd = requireNonEmptyString(value.cwd, "cwd");
-    const entryId = requireNonEmptyString(value.entryId, "entryId");
-    await requireSessionEntry(session, entryId, "entryId");
-    return { metadata, session, cwd, entryId };
+    const { metadata, session, requestedPath } = await openValidatedSessionMetadata(value.sessionMetadata);
+    try {
+        const cwd = requireNonEmptyString(value.cwd, "cwd");
+        const entryId = requireNonEmptyString(value.entryId, "entryId");
+        await requireSessionEntry(session, entryId, "entryId");
+        return { metadata, session, cwd, entryId, requestedPath };
+    } catch (error) {
+        session.close();
+        throw error;
+    }
 }
 
 async function validateCloneInput(value: unknown): Promise<{
     metadata: JsonlSessionMetadata;
     session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
     cwd: string;
+    requestedPath: string;
 }> {
     if (!isRecord(value)) throw new Error("agent IPC: cloneSession input must be an object");
-    const { metadata, session } = await openValidatedSessionMetadata(value.sessionMetadata);
-    const cwd = requireNonEmptyString(value.cwd, "cwd");
-    return { metadata, session, cwd };
+    const { metadata, session, requestedPath } = await openValidatedSessionMetadata(value.sessionMetadata);
+    try {
+        const cwd = requireNonEmptyString(value.cwd, "cwd");
+        return { metadata, session, cwd, requestedPath };
+    } catch (error) {
+        session.close();
+        throw error;
+    }
 }
 
 function resolveModelOrThrow(provider: string, modelId: string): Model<Api> {
@@ -454,10 +721,10 @@ function resolveModelOrThrow(provider: string, modelId: string): Model<Api> {
 
 function buildPromptInputs(opts: SendOptions): SystemPromptInputs {
     return {
-        cwd: opts.cwd,
-        gitBranch: opts.gitBranch,
-        connection: opts.connection,
-        recentCmds: opts.recentCmds,
+        cwd: opts.context.workspaceDir,
+        gitBranch: opts.context.gitBranch,
+        connection: opts.context.connection,
+        recentCmds: opts.context.recentCmds,
     };
 }
 
@@ -466,12 +733,41 @@ async function ensureSession(opts: SendOptions): Promise<{
     isNew: boolean;
 }> {
     if (opts.sessionMetadata) {
-        const { metadata } = await openValidatedSessionMetadata(opts.sessionMetadata);
-        return { metadata, isNew: false };
+        const input = validateSessionMetadataShape(opts.sessionMetadata);
+        return await withCanonicalSessionAccess(
+            input.path,
+            async (canonicalPath) => {
+                const { metadata, session } = await openValidatedSessionMetadata({ ...input, path: canonicalPath });
+                try {
+                    return { metadata, isNew: false };
+                } finally {
+                    session.close();
+                }
+            },
+            "sessionMetadata.path"
+        );
     }
-    const created = await createPaneSession(opts.cwd);
-    const { metadata } = await openValidatedSessionMetadata(await created.session.getMetadata());
-    return { metadata, isNew: true };
+    const created = await createPaneSession(opts.context.workspaceDir);
+    try {
+        const createdMetadata = await created.session.getMetadata();
+        return await withCanonicalSessionAccess(
+            createdMetadata.path,
+            async (canonicalPath) => {
+                const { metadata, session } = await openValidatedSessionMetadata({
+                    ...createdMetadata,
+                    path: canonicalPath,
+                });
+                try {
+                    return { metadata, isNew: true };
+                } finally {
+                    session.close();
+                }
+            },
+            "sessionMetadata.path"
+        );
+    } finally {
+        created.session.close();
+    }
 }
 
 async function resolveApiKey(opts: SendOptions): Promise<string | undefined> {
@@ -495,35 +791,54 @@ async function createAgentRuntime(
     options: { attachObservability?: boolean } = {}
 ): Promise<AgentSessionRuntime> {
     const piSession = await openPaneSession(metadata);
+    try {
+        return await createAgentRuntimeFromSession(metadata, opts, config, piSession, options);
+    } catch (error) {
+        piSession.close();
+        throw error;
+    }
+}
+
+async function createAgentRuntimeFromSession(
+    metadata: JsonlSessionMetadata,
+    opts: SendOptions,
+    config: AgentExecutionConfig,
+    piSession: Awaited<ReturnType<typeof openPaneSession>>,
+    options: { attachObservability?: boolean } = {}
+): Promise<AgentSessionRuntime> {
     // Discover skills from <configHome>/skills and <cwd>/.crest/skills.
     // Loaded once per harness construction (session open); the skills
     // section is only injected into the system prompt when the read
     // tool is active (build-system-prompt.ts).
-    const skills = await loadAgentSkills({ cwd: opts.cwd });
+    const skills = await loadAgentSkills({ cwd: opts.context.workspaceDir });
     let getRuntimeCwd = () => config.promptInputs.cwd;
-    const host = buildAgentHarnessHost({
+    let owner: AgentSessionRuntime | undefined;
+    let host: AgentHarnessHost;
+    const runtimeForTools = {
+        startHostedCommand: (...args: Parameters<AgentSessionRuntime["startHostedCommand"]>) => {
+            if (!owner) throw new Error("agent runtime is not ready");
+            return owner.startHostedCommand(...args);
+        },
+    } as AgentSessionRuntime;
+    host = buildAgentHarnessHost({
         session: piSession,
         model: config.model,
         thinkingLevel: config.thinkingLevel,
         promptInputs: config.promptInputs,
         tools: [
             ...getDefaultTools(() => getRuntimeCwd()),
-            // spawn_cli_agent delegates long-running / interactive commands to a
-            // CLI subagent. Only the main agent runtime gets it (never in
-            // getDefaultTools, which the subagent factory also draws from). The
-            // subagent runs in an ephemeral in-memory session and shares this
-            // runtime's initial resolved model + API key.
             createSpawnCliAgentTool({
-                parentBlockId: opts.blockId,
+                runtime: runtimeForTools,
                 getModel: () => host.harness.getModel(),
-                createSession: () => new InMemorySessionRepo().create(),
-                getApiKeyAndHeaders: (model) => host.resolveAuth(model),
+                createSession: async () => new InMemorySessionRepo().create({}),
+                getApiKeyAndHeaders: config.authResolver,
+                getExecutionContext: (cwd) => ({ ...opts.context, workspaceDir: cwd }),
             }),
         ],
         // Load AGENTS.md / CLAUDE.md from cwd up to the filesystem root so
         // project-specific instructions reach the system prompt. Loaded once
         // per harness construction (session open); cheap sync reads.
-        contextFiles: loadProjectContextFiles({ cwd: opts.cwd }),
+        contextFiles: loadProjectContextFiles({ cwd: opts.context.workspaceDir }),
         skills,
         getApiKeyAndHeaders: config.authResolver,
         toolCallHook: config.toolCallHook,
@@ -561,9 +876,10 @@ async function createAgentRuntime(
             owner.setTurnChangeOutline(turn.turnId, changeOutline);
         }
     };
-    const owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, {
+    owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, {
         onTurnFinished,
         initialContextEntries: initialEntries,
+        ptyHost: new AgentPtyHost(),
     });
     if (options.attachObservability !== false) {
         attachAgentObservability(metadata.path, host.harness);
@@ -573,14 +889,25 @@ async function createAgentRuntime(
 
 async function ensureAgentRuntime(
     metadata: JsonlSessionMetadata,
-    opts: SendOptions
-): Promise<{ runtime: AgentSessionRuntime; config: AgentExecutionConfig; apiKey?: string }> {
+    opts: SendOptions,
+    workspaceId?: string
+): Promise<{ runtime: AgentSessionRuntime; config: AgentExecutionConfig }> {
     const resolved = await resolveAgentExecution(opts);
-    const runtime = await runtimeRegistry.getOrCreate(metadata.path, () =>
-        createAgentRuntime(metadata, opts, resolved.config)
-    );
-    attachPendingSubscribers(metadata.path, runtime);
-    return { runtime, ...resolved };
+    const runtime = await runtimeRegistry.getOrCreate(metadata.path, async () => {
+        const created = await createAgentRuntime(metadata, opts, resolved.config);
+        if (workspaceId) {
+            runtimeWorkspaceBindings.set(created, workspaceId);
+        }
+        return created;
+    });
+    const boundWorkspaceId = runtimeWorkspaceBindings.get(runtime);
+    if (workspaceId && boundWorkspaceId && boundWorkspaceId !== workspaceId) {
+        throw new Error("agent IPC: live runtime belongs to another Workspace");
+    }
+    if (workspaceId && !boundWorkspaceId) {
+        runtimeWorkspaceBindings.set(runtime, workspaceId);
+    }
+    return { runtime, config: resolved.config };
 }
 
 async function resolveAgentExecution(opts: SendOptions): Promise<{ config: AgentExecutionConfig; apiKey?: string }> {
@@ -610,6 +937,8 @@ async function resolveAgentExecution(opts: SendOptions): Promise<{ config: Agent
 
 function releaseSubscription(key: SubKey): void {
     const record = subscriptions.get(key);
+    const pending = pendingSubscriptions.get(key);
+    const senderId = record?.senderId ?? pending?.sender.id;
     if (record) {
         try {
             record.unsubscribe();
@@ -620,6 +949,13 @@ function releaseSubscription(key: SubKey): void {
         subscriptions.delete(key);
     }
     pendingSubscriptions.delete(key);
+    if (senderId != null) {
+        const keys = subscriptionsBySender.get(senderId);
+        keys?.delete(key);
+        if (keys?.size === 0) {
+            subscriptionsBySender.delete(senderId);
+        }
+    }
 }
 
 function releaseAllForSender(senderId: number): void {
@@ -629,7 +965,112 @@ function releaseAllForSender(senderId: number): void {
         subscriptionsBySender.delete(senderId);
     }
     for (const [key, pending] of pendingSubscriptions) {
-        if (pending.sender.id === senderId) pendingSubscriptions.delete(key);
+        if (pending.sender.id === senderId) releaseSubscription(key);
+    }
+}
+
+function suspendSubscriptionsForPath(
+    sessionPath: string,
+    suspended: SuspendedAgentSubscriptions = { intents: new Map() }
+): SuspendedAgentSubscriptions {
+    const { intents } = suspended;
+    for (const [key, record] of [...subscriptions]) {
+        if (record.sessionPath !== sessionPath) continue;
+        const intent = {
+            sender: record.sender,
+            canonicalPath: record.sessionPath,
+            rendererPath: record.rendererPath,
+            authorization: record.authorization,
+        };
+        try {
+            record.unsubscribe();
+        } catch (err) {
+            console.error("[agent-ipc] unsubscribe error:", err);
+        }
+        runtimeRegistry.release(record.sessionPath, key);
+        subscriptions.delete(key);
+        pendingSubscriptions.set(key, intent);
+        intents.set(key, intent);
+    }
+    for (const [key, pending] of [...pendingSubscriptions]) {
+        if (pending.canonicalPath !== sessionPath) continue;
+        intents.set(key, pending);
+    }
+    return suspended;
+}
+
+function commitSuspendedSubscriptions(suspended: SuspendedAgentSubscriptions): void {
+    for (const key of suspended.intents.keys()) {
+        releaseSubscription(key);
+    }
+}
+
+async function restoreSuspendedSubscriptions(suspended: SuspendedAgentSubscriptions): Promise<void> {
+    for (const [key, intent] of suspended.intents) {
+        if (intent.sender.isDestroyed()) {
+            releaseSubscription(key);
+            continue;
+        }
+        try {
+            await intent.authorization.validateCurrent();
+        } catch {
+            releaseSubscription(key);
+            continue;
+        }
+        pendingSubscriptions.set(key, intent);
+        trackSenderKey(intent.sender, key);
+        const liveRuntime = lookupLiveAgentRuntime(intent.canonicalPath);
+        if (liveRuntime) {
+            try {
+                await subscribeToOwner(
+                    intent.sender,
+                    intent.canonicalPath,
+                    liveRuntime.runtime,
+                    intent.rendererPath,
+                    intent.authorization
+                );
+            } catch {
+                releaseSubscription(key);
+            }
+        }
+    }
+}
+
+function releaseSubscriptionsForSenderPath(senderId: number, sessionPath: string): void {
+    for (const [key, record] of [...subscriptions]) {
+        if (record.senderId === senderId && record.sessionPath === sessionPath) {
+            releaseSubscription(key);
+        }
+    }
+    for (const [key, pending] of [...pendingSubscriptions]) {
+        if (pending.sender.id === senderId && pending.canonicalPath === sessionPath) {
+            releaseSubscription(key);
+        }
+    }
+}
+
+function releaseStaleSubscriptionsForSender(senderId: number, identity: WorkspaceAgentRequestContext): void {
+    const keys = subscriptionsBySender.get(senderId);
+    if (keys) {
+        for (const key of [...keys]) {
+            const record = subscriptions.get(key);
+            if (record && (record.workspaceId !== identity.workspaceId || record.generation !== identity.generation)) {
+                releaseSubscription(key);
+                keys.delete(key);
+            }
+        }
+        if (keys.size === 0) {
+            subscriptionsBySender.delete(senderId);
+        }
+    }
+    for (const [key, pending] of pendingSubscriptions) {
+        if (
+            pending.sender.id === senderId &&
+            (pending.authorization.workspaceId !== identity.workspaceId ||
+                pending.authorization.generation !== identity.generation)
+        ) {
+            releaseSubscription(key);
+        }
     }
 }
 
@@ -643,38 +1084,76 @@ function trackSenderKey(sender: electron.WebContents, key: SubKey): void {
     set.add(key);
 }
 
+function makeFallbackSubscriptionAuthorization(beforeMutation?: AuthorizationGuard): AgentSubscriptionAuthorization {
+    const fallbackWorkspaceId = "workspace-test";
+    return {
+        workspaceId: fallbackWorkspaceId,
+        generation: 1,
+        validateCurrent: async () => {
+            await beforeMutation?.();
+        },
+        guardRuntime: async (lookup) => {
+            await guardLiveAgentRuntimeAccess({
+                lookup,
+                workspaceId: fallbackWorkspaceId,
+                beforeAccess: async () => {
+                    await beforeMutation?.();
+                },
+                allowFirstBinding: true,
+            });
+        },
+    };
+}
+
 async function sendPersistedSessionState(
     sender: electron.WebContents,
     sessionPath: string,
-    rendererSessionPath = sessionPath
+    rendererSessionPath: string,
+    authorization: AgentSubscriptionAuthorization,
+    key: SubKey
 ): Promise<void> {
     let canonicalPath = sessionPath;
     try {
         canonicalPath = await validateSessionPath(sessionPath);
         const session = await openPaneSessionByPath(canonicalPath);
-        const context = await session.buildContext();
-        const branch = await session.getBranch();
-        const turns = buildPersistedTurnsFromSessionEntries(branch);
-        const contextState = buildContextStateFromSessionEntries(branch);
-        if (sender.isDestroyed()) return;
-        sender.send(
-            "agent:event",
-            makeAgentEventPayload(canonicalPath, rendererSessionPath, {
-                type: "session_state",
-                messages: context.messages,
-                turns,
-                status: "idle",
-                steer: [],
-                followUp: [],
-                ...contextState,
-            })
-        );
+        try {
+            const context = await session.buildContext();
+            const branch = await session.getBranch();
+            const contextState = buildContextStateFromSessionEntries(branch);
+            const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
+            if (liveRuntime) {
+                await authorization.guardRuntime(liveRuntime);
+            } else {
+                await authorization.validateCurrent();
+            }
+            if (sender.isDestroyed()) return;
+            sender.send(
+                "agent:event",
+                makeAgentEventPayload(canonicalPath, rendererSessionPath, authorization, {
+                    type: "session_state",
+                    messages: context.messages,
+                    turns: buildPersistedTurnsFromSessionEntries(branch),
+                    status: "idle",
+                    steer: [],
+                    followUp: [],
+                    commands: [],
+                    ...contextState,
+                })
+            );
+        } finally {
+            session.close();
+        }
     } catch (err) {
+        releaseSubscription(key);
         console.error(`[agent-ipc] persisted session_state error for ${canonicalPath}:`, err);
     }
 }
 
-async function buildPersistedSessionState(sessionPath: string): Promise<{
+async function buildPersistedSessionState(
+    sessionPath: string,
+    guardRuntime?: LiveRuntimeGuard,
+    beforeReturn?: AuthorizationGuard
+): Promise<{
     type: "session_state";
     messages: AgentMessage[];
     turns: AgentTurn[];
@@ -682,11 +1161,13 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
     steer: AgentMessage[];
     followUp: AgentMessage[];
     contextReports: ReturnType<typeof buildContextStateFromSessionEntries>["contextReports"];
+    commands: ReturnType<AgentSessionRuntime["getSessionState"]>["commands"];
 }> {
     const canonicalPath = await validateSessionPath(sessionPath);
-    const owner = runtimeRegistry.get(canonicalPath);
-    if (owner) {
-        const state = owner.getSessionState();
+    const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
+    if (liveRuntime) {
+        await guardRuntime?.(liveRuntime);
+        const state = liveRuntime.runtime.getSessionState();
         return {
             type: "session_state",
             messages: state.messages,
@@ -695,103 +1176,194 @@ async function buildPersistedSessionState(sessionPath: string): Promise<{
             steer: state.steerQueue,
             followUp: state.followUpQueue,
             contextReports: state.contextReports,
+            commands: state.commands,
         };
     }
     const session = await openPaneSessionByPath(canonicalPath);
-    const context = await session.buildContext();
-    const branch = await session.getBranch();
-    return {
-        type: "session_state",
-        messages: context.messages,
-        turns: buildPersistedTurnsFromSessionEntries(branch),
-        status: "idle",
-        steer: [],
-        followUp: [],
-        ...buildContextStateFromSessionEntries(branch),
-    };
-}
-
-function subscribeToOwner(
-    sender: electron.WebContents,
-    sessionPath: string,
-    session: AgentSessionRuntime,
-    rendererSessionPath = sessionPath
-): void {
-    const key: SubKey = makeAgentSubscriptionKey(sender.id, sessionPath, rendererSessionPath);
-    pendingSubscriptions.delete(key);
-    if (sender.isDestroyed()) return;
-    if (subscriptions.has(key)) return;
-    const unsub = session.subscribe((agentEvent) => {
-        if (sender.isDestroyed()) return;
-        sender.send(
-            "agent:event",
-            makeAgentEventPayload(sessionPath, rendererSessionPath, {
-                ...agentEvent,
-                turns: session.getSessionState().turns,
-            })
-        );
-    });
-    subscriptions.set(key, { unsubscribe: unsub, sessionPath });
-    runtimeRegistry.acquire(sessionPath, key);
-    trackSenderKey(sender, key);
-    const sessionState = session.getSessionState();
-    if (sender.isDestroyed()) return;
-    sender.send(
-        "agent:event",
-        makeAgentEventPayload(sessionPath, rendererSessionPath, {
+    try {
+        const context = await session.buildContext();
+        const branch = await session.getBranch();
+        await guardLiveRuntimeIfPresent([canonicalPath], guardRuntime, beforeReturn);
+        return {
             type: "session_state",
-            messages: sessionState.messages,
-            turns: sessionState.turns,
-            status: sessionState.status,
-            steer: sessionState.steerQueue,
-            followUp: sessionState.followUpQueue,
-            contextReports: sessionState.contextReports,
-        })
-    );
-}
-
-function attachPendingSubscribers(sessionPath: string, session: AgentSessionRuntime): void {
-    for (const [key, sender] of pendingSubscriptions) {
-        if (sender.canonicalPath !== sessionPath) continue;
-        if (sender.sender.isDestroyed()) {
-            pendingSubscriptions.delete(key);
-            continue;
-        }
-        subscribeToOwner(sender.sender, sender.canonicalPath, session, sender.rendererPath);
+            messages: context.messages,
+            turns: buildPersistedTurnsFromSessionEntries(branch),
+            status: "idle",
+            steer: [],
+            followUp: [],
+            commands: [],
+            ...buildContextStateFromSessionEntries(branch),
+        };
+    } finally {
+        session.close();
     }
 }
 
-async function getSessionTreeData(sessionMetadataInput: unknown): Promise<{
+async function subscribeToOwner(
+    sender: electron.WebContents,
+    sessionPath: string,
+    session: AgentSessionRuntime,
+    rendererSessionPath: string,
+    authorization: AgentSubscriptionAuthorization
+): Promise<void> {
+    const key: SubKey = makeAgentSubscriptionKey(sender.id, sessionPath, rendererSessionPath, authorization);
+    pendingSubscriptions.delete(key);
+    if (sender.isDestroyed()) return;
+    if (subscriptions.has(key)) return;
+    const lookup = { path: sessionPath, runtime: session };
+    await authorization.guardRuntime(lookup);
+    const unsub = session.subscribe((agentEvent) => {
+        void runtimeRegistry
+            .withSessionAccess(sessionPath, async () => {
+                await authorization.guardRuntime(lookup);
+                if (sender.isDestroyed()) {
+                    releaseSubscription(key);
+                    return;
+                }
+                sender.send(
+                    "agent:event",
+                    makeAgentEventPayload(sessionPath, rendererSessionPath, authorization, {
+                        ...agentEvent,
+                        turns: session.getSessionState().turns,
+                    })
+                );
+            })
+            .catch((error) => {
+                if (error instanceof AgentSessionMutationActiveError) return;
+                releaseSubscription(key);
+            });
+    });
+    subscriptions.set(key, {
+        unsubscribe: unsub,
+        sessionPath,
+        sender,
+        rendererPath: rendererSessionPath,
+        authorization,
+        senderId: sender.id,
+        workspaceId: authorization.workspaceId,
+        generation: authorization.generation,
+    });
+    runtimeRegistry.acquire(sessionPath, key);
+    trackSenderKey(sender, key);
+    try {
+        await authorization.guardRuntime(lookup);
+        const sessionState = session.getSessionState();
+        if (sender.isDestroyed()) {
+            releaseSubscription(key);
+            return;
+        }
+        sender.send(
+            "agent:event",
+            makeAgentEventPayload(sessionPath, rendererSessionPath, authorization, {
+                type: "session_state",
+                messages: sessionState.messages,
+                turns: sessionState.turns,
+                status: sessionState.status,
+                steer: sessionState.steerQueue,
+                followUp: sessionState.followUpQueue,
+                contextReports: sessionState.contextReports,
+                commands: sessionState.commands,
+            })
+        );
+    } catch (error) {
+        releaseSubscription(key);
+        throw error;
+    }
+}
+
+async function attachPendingSubscribers(sessionPath: string, session: AgentSessionRuntime): Promise<void> {
+    for (const [key, pending] of [...pendingSubscriptions]) {
+        if (pending.canonicalPath !== sessionPath) continue;
+        if (pending.sender.isDestroyed()) {
+            pendingSubscriptions.delete(key);
+            continue;
+        }
+        try {
+            await pending.authorization.guardRuntime({ path: sessionPath, runtime: session });
+            await subscribeToOwner(
+                pending.sender,
+                pending.canonicalPath,
+                session,
+                pending.rendererPath,
+                pending.authorization
+            );
+        } catch {
+            releaseSubscription(key);
+        }
+    }
+}
+
+async function getSessionTreeData(
+    sessionMetadataInput: unknown,
+    guardRuntime?: LiveRuntimeGuard,
+    beforeReturn?: AuthorizationGuard
+): Promise<{
     entries: Awaited<ReturnType<AgentSessionRuntime["listTreeEntries"]>>["entries"];
     leafId: string | null;
     labels: Map<string, string | undefined>;
 }> {
     const { metadata: sessionMetadata, session, requestedPath } = await validateTreeInput(sessionMetadataInput);
-    const owner = runtimeRegistry.get(sessionMetadata.path) ?? runtimeRegistry.get(requestedPath);
-    if (owner) return owner.listTreeEntries();
+    try {
+        const liveRuntime = lookupLiveAgentRuntime(sessionMetadata.path, requestedPath);
+        if (liveRuntime) {
+            await guardRuntime?.(liveRuntime);
+            const treeData = await liveRuntime.runtime.listTreeEntries();
+            await guardRuntime?.(liveRuntime);
+            return treeData;
+        }
 
-    const allEntries = await session.getEntries();
-    const rawLeafId = await session.getLeafId();
-    const { entries, effectiveLeafId } = filterTreeForDisplay(allEntries, rawLeafId);
-    const labels = new Map<string, string | undefined>();
-    for (const entry of entries) {
-        labels.set(entry.id, await session.getLabel(entry.id));
+        const allEntries = await session.getEntries();
+        const rawLeafId = await session.getLeafId();
+        const { entries, effectiveLeafId } = filterTreeForDisplay(allEntries, rawLeafId);
+        const labels = new Map<string, string | undefined>();
+        for (const entry of entries) {
+            labels.set(entry.id, await session.getLabel(entry.id));
+        }
+        await guardLiveRuntimeIfPresent([sessionMetadata.path, requestedPath], guardRuntime, beforeReturn);
+        return { entries, leafId: effectiveLeafId, labels };
+    } finally {
+        session.close();
     }
-    return { entries, leafId: effectiveLeafId, labels };
 }
 
 export function listAgentCommandsForIpc(): AgentCommandInfo[] {
     return getBuiltInAgentCommands();
 }
 
-export async function listAgentTreeForIpc(sessionMetadata: unknown): Promise<AgentTreeResult> {
-    const { entries, leafId, labels } = await getSessionTreeData(sessionMetadata);
-    return { entries: buildAgentTreeEntryViews(entries, leafId, labels), leafId };
+export async function listAgentTreeForIpc(
+    sessionMetadata: unknown,
+    guardRuntime?: LiveRuntimeGuard,
+    beforeReturn?: AuthorizationGuard
+): Promise<AgentTreeResult> {
+    const input = validateSessionMetadataShape(sessionMetadata);
+    return await withCanonicalSessionAccess(
+        input.path,
+        async (canonicalPath) => {
+            const { entries, leafId, labels } = await getSessionTreeData(
+                { ...input, path: canonicalPath },
+                guardRuntime,
+                beforeReturn
+            );
+            return { entries: buildAgentTreeEntryViews(entries, leafId, labels), leafId };
+        },
+        "sessionMetadata.path"
+    );
 }
 
-export async function listAgentForkPointsForIpc(sessionMetadata: unknown): Promise<AgentForkPointView[]> {
-    const { entries } = await getSessionTreeData(sessionMetadata);
-    return buildAgentForkPointViews(entries);
+export async function listAgentForkPointsForIpc(
+    sessionMetadata: unknown,
+    guardRuntime?: LiveRuntimeGuard,
+    beforeReturn?: AuthorizationGuard
+): Promise<AgentForkPointView[]> {
+    const input = validateSessionMetadataShape(sessionMetadata);
+    return await withCanonicalSessionAccess(
+        input.path,
+        async (canonicalPath) => {
+            const { entries } = await getSessionTreeData({ ...input, path: canonicalPath }, guardRuntime, beforeReturn);
+            return buildAgentForkPointViews(entries);
+        },
+        "sessionMetadata.path"
+    );
 }
 
 async function readContextReferenceConfig(): Promise<ContextReferenceConfig> {
@@ -846,7 +1418,11 @@ function requireContextObject(input: unknown, operation: string): Record<string,
 export async function listAgentReferencePointsForIpc(input: unknown): Promise<AgentReferencePointView[]> {
     const value = requireContextObject(input, "listReferencePoints");
     const { session } = await openCanonicalContextSession(value.sourceSessionPath, "sourceSessionPath");
-    return buildAgentReferencePointViews(await session.getBranch());
+    try {
+        return buildAgentReferencePointViews(await session.getBranch());
+    } finally {
+        session.close();
+    }
 }
 
 export async function prepareContextDraftForIpc(input: unknown) {
@@ -861,53 +1437,69 @@ export async function prepareContextDraftForIpc(input: unknown) {
         }
     }
     const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
-    const source = await openCanonicalContextSession(value.sourceSessionPath, "sourceSessionPath");
-    if (value.sourceKind !== "turn" && value.sourceKind !== "session") {
-        throw new ContextReferenceError("invalid_input", "sourceKind must be turn or session");
+    try {
+        const source = await openCanonicalContextSession(value.sourceSessionPath, "sourceSessionPath");
+        try {
+            if (value.sourceKind !== "turn" && value.sourceKind !== "session") {
+                throw new ContextReferenceError("invalid_input", "sourceKind must be turn or session");
+            }
+            const sourceTurnId =
+                value.sourceTurnId == null ? undefined : requireNonEmptyString(value.sourceTurnId, "sourceTurnId");
+            if (value.sourceKind === "turn" && sourceTurnId == null) {
+                throw new ContextReferenceError("invalid_input", "sourceTurnId is required for turn context");
+            }
+            if (value.sourceKind === "session" && sourceTurnId != null) {
+                throw new ContextReferenceError("invalid_input", "sourceTurnId is not valid for session context");
+            }
+            const sourceEntries = await source.session.getBranch();
+            const sourceTitle = (await source.session.getSessionName()) || path.basename(source.metadata.cwd) || undefined;
+            const draft = captureContextArtifactDraft({
+                sourceMetadata: source.metadata,
+                sourceEntries,
+                sourceLeafId: sourceEntries.at(-1)?.id ?? null,
+                sourceKind: value.sourceKind as AgentPrepareContextDraftInput["sourceKind"],
+                ...(sourceTitle == null ? {} : { sourceTitle }),
+                ...(sourceTurnId == null ? {} : { sourceTurnId }),
+            });
+            return contextDraftRegistry.create(target.canonicalPath, draft);
+        } finally {
+            source.session.close();
+        }
+    } finally {
+        target.session.close();
     }
-    const sourceTurnId =
-        value.sourceTurnId == null ? undefined : requireNonEmptyString(value.sourceTurnId, "sourceTurnId");
-    if (value.sourceKind === "turn" && sourceTurnId == null) {
-        throw new ContextReferenceError("invalid_input", "sourceTurnId is required for turn context");
-    }
-    if (value.sourceKind === "session" && sourceTurnId != null) {
-        throw new ContextReferenceError("invalid_input", "sourceTurnId is not valid for session context");
-    }
-    const sourceEntries = await source.session.getBranch();
-    const sourceTitle = (await source.session.getSessionName()) || path.basename(source.metadata.cwd) || undefined;
-    const draft = captureContextArtifactDraft({
-        sourceMetadata: source.metadata,
-        sourceEntries,
-        sourceLeafId: sourceEntries.at(-1)?.id ?? null,
-        sourceKind: value.sourceKind as AgentPrepareContextDraftInput["sourceKind"],
-        ...(sourceTitle == null ? {} : { sourceTitle }),
-        ...(sourceTurnId == null ? {} : { sourceTurnId }),
-    });
-    return contextDraftRegistry.create(target.canonicalPath, draft);
 }
 
 export async function listContextStateForIpc(input: unknown): Promise<AgentContextStateView> {
     const value = requireContextObject(input, "listContextState");
     const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
-    const state = buildContextStateFromSessionEntries(await target.session.getBranch());
-    return {
-        drafts: contextDraftRegistry.list(target.canonicalPath),
-        contextReports: state.contextReports,
-    };
+    try {
+        const state = buildContextStateFromSessionEntries(await target.session.getBranch());
+        return {
+            drafts: contextDraftRegistry.list(target.canonicalPath),
+            contextReports: state.contextReports,
+        };
+    } finally {
+        target.session.close();
+    }
 }
 
 export async function discardContextDraftForIpc(input: unknown): Promise<{ discarded: boolean }> {
     const value = requireContextObject(input, "discardContextDraft");
     const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
-    const draftId = requireNonEmptyString(value.draftId, "draftId");
-    const existing = contextDraftRegistry.peek(target.canonicalPath, draftId);
-    if (!existing) {
-        if (contextDraftRegistry.findTarget(draftId) != null) {
-            throw new ContextReferenceError("invalid_input", "Context draft belongs to another target session");
+    try {
+        const draftId = requireNonEmptyString(value.draftId, "draftId");
+        const existing = contextDraftRegistry.peek(target.canonicalPath, draftId);
+        if (!existing) {
+            if (contextDraftRegistry.findTarget(draftId) != null) {
+                throw new ContextReferenceError("invalid_input", "Context draft belongs to another target session");
+            }
+            return { discarded: false };
         }
-        return { discarded: false };
+        return { discarded: contextDraftRegistry.discard(target.canonicalPath, draftId) };
+    } finally {
+        target.session.close();
     }
-    return { discarded: contextDraftRegistry.discard(target.canonicalPath, draftId) };
 }
 
 async function resolveContextSummaryConfig() {
@@ -933,15 +1525,19 @@ export async function summarizeContextDraftForIpc(input: unknown) {
     await requireContextReferencesEnabled();
     const value = requireContextObject(input, "summarizeContextDraft");
     const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
-    const draftId = requireNonEmptyString(value.draftId, "draftId");
-    const result = await summarizeContextDraft({
-        registry: contextDraftRegistry,
-        targetSessionPath: target.canonicalPath,
-        draftId,
-        ...(await resolveContextSummaryConfig()),
-    });
-    if (!result.ok) throw result.error;
-    return contextDraftRegistry.peek(target.canonicalPath, draftId);
+    try {
+        const draftId = requireNonEmptyString(value.draftId, "draftId");
+        const result = await summarizeContextDraft({
+            registry: contextDraftRegistry,
+            targetSessionPath: target.canonicalPath,
+            draftId,
+            ...(await resolveContextSummaryConfig()),
+        });
+        if (!result.ok) throw result.error;
+        return contextDraftRegistry.peek(target.canonicalPath, draftId);
+    } finally {
+        target.session.close();
+    }
 }
 
 function requireRepresentation(value: unknown): ContextRepresentation {
@@ -1036,10 +1632,23 @@ function makeContextTurnPrepareCallback(input: {
 }
 
 export async function getAgentSessionStateForIpc(
-    sessionMetadata: unknown
+    sessionMetadata: unknown,
+    guardRuntime?: LiveRuntimeGuard,
+    beforeReturn?: AuthorizationGuard
 ): Promise<Awaited<ReturnType<typeof buildPersistedSessionState>>> {
-    const { metadata, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
-    return await buildPersistedSessionState(requestedPath || metadata.path);
+    const input = validateSessionMetadataShape(sessionMetadata);
+    return await withCanonicalSessionAccess(
+        input.path,
+        async (canonicalPath) => {
+            const { metadata, session } = await openValidatedSessionMetadata({ ...input, path: canonicalPath });
+            try {
+                return await buildPersistedSessionState(metadata.path, guardRuntime, beforeReturn);
+            } finally {
+                session.close();
+            }
+        },
+        "sessionMetadata.path"
+    );
 }
 
 type ContextIpcEnvelope<T> =
@@ -1075,12 +1684,50 @@ async function contextIpcEnvelope<T>(operation: () => Promise<T>): Promise<Conte
     }
 }
 
-export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavigateTreeResult> {
-    const { metadata, session, targetId, requestedPath } = await validateNavigateInput(input);
-    const owner = runtimeRegistry.get(metadata.path) ?? runtimeRegistry.get(requestedPath);
+export async function navigateAgentTreeForIpc(
+    input: unknown,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentNavigateTreeResult> {
+    if (!isRecord(input)) throw new Error("agent IPC: navigateTree input must be an object");
+    const sessionMetadata = validateSessionMetadataShape(input.sessionMetadata);
+    return await withCanonicalSessionAccess(
+        sessionMetadata.path,
+        (canonicalPath) =>
+            navigateAgentTreeWithAccess(
+                { ...input, sessionMetadata: { ...sessionMetadata, path: canonicalPath } },
+                beforeMutation,
+                guardRuntime
+            ),
+        "sessionMetadata.path"
+    );
+}
 
-    if (owner) {
-        const result = await owner.navigateTree(targetId);
+async function navigateAgentTreeWithAccess(
+    input: unknown,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentNavigateTreeResult> {
+    const opened = await validateNavigateInput(input);
+    try {
+        return await navigateAgentTreeWithOpenSession(opened, beforeMutation, guardRuntime);
+    } finally {
+        opened.session.close();
+    }
+}
+
+async function navigateAgentTreeWithOpenSession(
+    opened: Awaited<ReturnType<typeof validateNavigateInput>>,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentNavigateTreeResult> {
+    const { metadata, session, targetId, requestedPath } = opened;
+    const liveRuntime = lookupLiveAgentRuntime(metadata.path, requestedPath);
+
+    if (liveRuntime) {
+        await guardRuntime?.(liveRuntime);
+        const result = await liveRuntime.runtime.navigateTree(targetId);
+        await guardRuntime?.(liveRuntime);
         return { sessionMetadata: metadata, ...result };
     }
 
@@ -1129,11 +1776,14 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
         newLeafId = targetId;
     }
     if (oldLeafId !== newLeafId) {
+        await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
         await session.moveTo(newLeafId);
+        await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
     }
     const branchEntries = await session.getBranch();
     const context = await session.buildContext();
     const turns = buildPersistedTurnsFromSessionEntries(branchEntries);
+    await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
 
     // Broadcast the post-navigate session_state to every sender that has a
     // subscription (pending or active) on this session. Active-subscription
@@ -1154,7 +1804,11 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
         if (pending.canonicalPath !== metadata.path) continue;
         const { sender } = pending;
         if (sender.isDestroyed()) continue;
-        sender.send("agent:event", makeAgentEventPayload(metadata.path, pending.rendererPath, sessionState));
+        await pending.authorization.validateCurrent();
+        sender.send(
+            "agent:event",
+            makeAgentEventPayload(metadata.path, pending.rendererPath, pending.authorization, sessionState)
+        );
     }
     // Also send to the IPC caller if it's not already covered. The caller
     // doesn't wait for the IPC event — the navigate return carries
@@ -1165,37 +1819,130 @@ export async function navigateAgentTreeForIpc(input: unknown): Promise<AgentNavi
     return { sessionMetadata: metadata, editorText };
 }
 
-export async function forkAgentSessionForIpc(input: unknown): Promise<AgentForkSessionResult> {
-    const { metadata: sourceMetadata, session: source, cwd, entryId } = await validateForkInput(input);
-    const target = await source.getEntry(entryId);
-    const { metadata } = await forkPaneSession(sourceMetadata, {
-        cwd,
-        entryId,
-    });
-    return {
-        sessionMetadata: metadata,
-        ...(target ? { selectedText: previewSessionEntry(target) } : {}),
-    };
+export async function forkAgentSessionForIpc(
+    input: unknown,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentForkSessionResult> {
+    if (!isRecord(input)) throw new Error("agent IPC: forkSession input must be an object");
+    const sessionMetadata = validateSessionMetadataShape(input.sessionMetadata);
+    return await withCanonicalSessionAccess(
+        sessionMetadata.path,
+        (canonicalPath) =>
+            forkAgentSessionWithAccess(
+                { ...input, sessionMetadata: { ...sessionMetadata, path: canonicalPath } },
+                beforeMutation,
+                guardRuntime
+            ),
+        "sessionMetadata.path"
+    );
 }
 
-export async function cloneAgentSessionForIpc(input: unknown): Promise<AgentCloneSessionResult> {
-    const { metadata: sourceMetadata, session: source, cwd } = await validateCloneInput(input);
-    const leafId = await source.getLeafId();
-    if (!leafId) {
-        return { message: "No session branch to clone yet." };
+async function forkAgentSessionWithAccess(
+    input: unknown,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentForkSessionResult> {
+    const { metadata: sourceMetadata, session: source, cwd, entryId, requestedPath } = await validateForkInput(input);
+    try {
+        const target = await source.getEntry(entryId);
+        await guardLiveRuntimeIfPresent([sourceMetadata.path, requestedPath], guardRuntime, beforeMutation);
+        const forked = await forkPaneSession(sourceMetadata, {
+            cwd,
+            entryId,
+        });
+        forked.session.close();
+        await guardLiveRuntimeIfPresent([sourceMetadata.path, requestedPath], guardRuntime, beforeMutation);
+        return {
+            sessionMetadata: forked.metadata,
+            ...(target ? { selectedText: previewSessionEntry(target) } : {}),
+        };
+    } finally {
+        source.close();
     }
-    await requireSessionEntry(source, leafId, "targetId");
-    const { metadata } = await forkPaneSession(sourceMetadata, { cwd, entryId: leafId, position: "at" });
-    return { sessionMetadata: metadata };
 }
 
-export async function runAgentCommandForIpc(input: unknown): Promise<AgentCommandExecutionResult> {
+export async function cloneAgentSessionForIpc(
+    input: unknown,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentCloneSessionResult> {
+    if (!isRecord(input)) throw new Error("agent IPC: cloneSession input must be an object");
+    const sessionMetadata = validateSessionMetadataShape(input.sessionMetadata);
+    return await withCanonicalSessionAccess(
+        sessionMetadata.path,
+        (canonicalPath) =>
+            cloneAgentSessionWithAccess(
+                { ...input, sessionMetadata: { ...sessionMetadata, path: canonicalPath } },
+                beforeMutation,
+                guardRuntime
+            ),
+        "sessionMetadata.path"
+    );
+}
+
+async function cloneAgentSessionWithAccess(
+    input: unknown,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentCloneSessionResult> {
+    const { metadata: sourceMetadata, session: source, cwd, requestedPath } = await validateCloneInput(input);
+    try {
+        const leafId = await source.getLeafId();
+        if (!leafId) {
+            await guardLiveRuntimeIfPresent([sourceMetadata.path, requestedPath], guardRuntime, beforeMutation);
+            return { message: "No session branch to clone yet." };
+        }
+        await requireSessionEntry(source, leafId, "targetId");
+        await guardLiveRuntimeIfPresent([sourceMetadata.path, requestedPath], guardRuntime, beforeMutation);
+        const forked = await forkPaneSession(sourceMetadata, { cwd, entryId: leafId, position: "at" });
+        forked.session.close();
+        await guardLiveRuntimeIfPresent([sourceMetadata.path, requestedPath], guardRuntime, beforeMutation);
+        return { sessionMetadata: forked.metadata };
+    } finally {
+        source.close();
+    }
+}
+
+export async function runAgentCommandForIpc(
+    input: unknown,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentCommandExecutionResult> {
     const parsed = validateRunCommandInput(input);
+    if (!parsed.sessionMetadata?.path) {
+        return await runParsedAgentCommand(parsed, beforeMutation, guardRuntime);
+    }
+    return await withCanonicalSessionAccess(
+        parsed.sessionMetadata.path,
+        (canonicalPath) =>
+            runParsedAgentCommand(
+                {
+                    ...parsed,
+                    sessionMetadata: { ...parsed.sessionMetadata!, path: canonicalPath },
+                },
+                beforeMutation,
+                guardRuntime
+            ),
+        "sessionMetadata.path"
+    );
+}
+
+async function runParsedAgentCommand(
+    parsed: AgentRunCommandInput,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentCommandExecutionResult> {
     switch (parsed.command) {
         case "new":
             return await runNewAgentSessionCommand(parsed.cwd);
         case "compact":
-            return await runCompactSessionCommand(parsed.sessionMetadata, parsed.argsText);
+            return await runCompactSessionCommand(
+                parsed.sessionMetadata,
+                parsed.argsText,
+                beforeMutation,
+                guardRuntime
+            );
         case "session":
         case "resume":
             return {
@@ -1204,12 +1951,19 @@ export async function runAgentCommandForIpc(input: unknown): Promise<AgentComman
                 managerMode: "session",
             };
         case "info":
-            return await runSessionInfoCommand(parsed.sessionMetadata);
+            return await runSessionInfoCommand(parsed.sessionMetadata, beforeMutation, guardRuntime);
         case "copy":
-            return await runCopyLastAssistantMessageCommand(parsed.sessionMetadata);
+            return await runCopyLastAssistantMessageCommand(parsed.sessionMetadata, beforeMutation, guardRuntime);
         case "export":
-            return await runExportSessionCommand(parsed.sessionMetadata, parsed.cwd, parsed.argsText);
+            return await runExportSessionCommand(
+                parsed.sessionMetadata,
+                parsed.cwd,
+                parsed.argsText,
+                beforeMutation,
+                guardRuntime
+            );
         case "import":
+            await beforeMutation?.();
             return await runImportSessionCommand(parsed.cwd, parsed.argsText);
         case "reload":
             return commandSuccess("Reloaded keybindings, extensions, skills, prompts, themes");
@@ -1232,22 +1986,45 @@ async function runNewAgentSessionCommand(_cwd: string): Promise<AgentCommandExec
 
 async function runCompactSessionCommand(
     sessionMetadata: JsonlSessionMetadata | undefined,
-    argsText: string
+    argsText: string,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
 ): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session to compact.");
-    const { metadata, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
-    const owner = runtimeRegistry.get(metadata.path) ?? runtimeRegistry.get(requestedPath);
-    if (!owner) return commandNoop("No active agent session to compact.");
-    const customInstructions = argsText.trim() || undefined;
-    await owner.compact(customInstructions);
-    return commandSuccess("Compacted session context.");
+    const { metadata, session, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
+    try {
+        const liveRuntime = lookupLiveAgentRuntime(metadata.path, requestedPath);
+        if (!liveRuntime) return commandNoop("No active agent session to compact.");
+        const customInstructions = argsText.trim() || undefined;
+        await guardRuntime?.(liveRuntime);
+        await liveRuntime.runtime.compact(customInstructions);
+        await guardRuntime?.(liveRuntime);
+        return commandSuccess("Compacted session context.");
+    } finally {
+        session.close();
+    }
 }
 
 async function runSessionInfoCommand(
-    sessionMetadata: JsonlSessionMetadata | undefined
+    sessionMetadata: JsonlSessionMetadata | undefined,
+    beforeReturn?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
 ): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
-    const { metadata, session } = await openValidatedSessionMetadata(sessionMetadata);
+    const opened = await openValidatedSessionMetadata(sessionMetadata);
+    try {
+        return await buildSessionInfoCommand(opened, beforeReturn, guardRuntime);
+    } finally {
+        opened.session.close();
+    }
+}
+
+async function buildSessionInfoCommand(
+    opened: Awaited<ReturnType<typeof openValidatedSessionMetadata>>,
+    beforeReturn?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentCommandExecutionResult> {
+    const { metadata, session, requestedPath } = opened;
     const context = await session.buildContext();
     const messages = context.messages ?? [];
     const userMessages = messages.filter((message) => message.role === "user").length;
@@ -1299,28 +2076,41 @@ async function runSessionInfoCommand(
     if (totalCacheWrite > 0) lines.push(`Cache Write: ${totalCacheWrite.toLocaleString()}`);
     lines.push(`Total: ${(totalInput + totalOutput + totalCacheRead + totalCacheWrite).toLocaleString()}`);
     if (totalCost > 0) lines.push("", "Cost", `Total: ${totalCost.toFixed(4)}`);
+    await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeReturn);
     return commandSuccess(lines.join("\n"));
 }
 
 async function runCopyLastAssistantMessageCommand(
-    sessionMetadata: JsonlSessionMetadata | undefined
+    sessionMetadata: JsonlSessionMetadata | undefined,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
 ): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
-    const { session } = await openValidatedSessionMetadata(sessionMetadata);
-    const context = await session.buildContext();
-    const text = [...(context.messages ?? [])]
-        .reverse()
-        .map(getAssistantText)
-        .find((value) => value);
-    if (!text) return commandNoop("No agent messages to copy yet.");
-    electron.clipboard.writeText(text);
-    return commandSuccess("Copied last agent message to clipboard");
+    const { metadata, session, requestedPath } = await openValidatedSessionMetadata(sessionMetadata);
+    try {
+        const context = await session.buildContext();
+        const text = [...(context.messages ?? [])]
+            .reverse()
+            .map(getAssistantText)
+            .find((value) => value);
+        if (!text) {
+            await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
+            return commandNoop("No agent messages to copy yet.");
+        }
+        await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
+        electron.clipboard.writeText(text);
+        return commandSuccess("Copied last agent message to clipboard");
+    } finally {
+        session.close();
+    }
 }
 
 async function runExportSessionCommand(
     sessionMetadata: JsonlSessionMetadata | undefined,
     cwd: string,
-    argsText: string
+    argsText: string,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
 ): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
     const outputArg = getPathCommandArgument(argsText);
@@ -1328,8 +2118,21 @@ async function runExportSessionCommand(
         outputArg ?? `session-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`,
         cwd
     );
-    const { metadata, session } = await openValidatedSessionMetadata(sessionMetadata);
-    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    const opened = await openValidatedSessionMetadata(sessionMetadata);
+    try {
+        return await exportOpenSession(opened, outputPath, beforeMutation, guardRuntime);
+    } finally {
+        opened.session.close();
+    }
+}
+
+async function exportOpenSession(
+    opened: Awaited<ReturnType<typeof openValidatedSessionMetadata>>,
+    outputPath: string,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<AgentCommandExecutionResult> {
+    const { metadata, session, requestedPath } = opened;
     const header: JsonlSessionHeader = {
         type: "session",
         version: 3,
@@ -1346,7 +2149,11 @@ async function runExportSessionCommand(
         lines.push(JSON.stringify(linear));
         prevId = entry.id;
     }
+    await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
     await fs.writeFile(outputPath, `${lines.join("\n")}\n`);
+    await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
     return commandSuccess(`Session exported to: ${outputPath}`);
 }
 
@@ -1354,113 +2161,531 @@ async function runImportSessionCommand(cwd: string, argsText: string): Promise<A
     const inputArg = getPathCommandArgument(argsText);
     if (!inputArg) throw new Error("Usage: /import <path.jsonl>");
     const inputPath = resolvePathForCwd(inputArg, cwd);
-    const { metadata } = await importPaneSessionFromJsonl(inputPath, cwd);
+    const imported = await importPaneSessionFromJsonl(inputPath, cwd);
+    try {
+        return {
+            status: "success",
+            message: `Session imported from: ${inputPath}`,
+            sessionMetadata: imported.metadata,
+        };
+    } finally {
+        imported.session.close();
+    }
+}
+
+export async function abortAgentSessionForIpc(
+    sessionPath: unknown,
+    beforeMutation?: AuthorizationGuard,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<void> {
+    await withCanonicalSessionAccess(sessionPath, async (canonicalPath) => {
+        const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
+        if (!liveRuntime) {
+            await beforeMutation?.();
+            return;
+        }
+        if (guardRuntime) {
+            await guardRuntime(liveRuntime);
+        } else {
+            await beforeMutation?.();
+        }
+        liveRuntime.runtime.abort();
+    });
+}
+
+export async function subscribeAgentSessionForIpc(
+    sender: electron.WebContents,
+    sessionPath: unknown,
+    authorizationOrBeforeMutation?: AgentSubscriptionAuthorization | AuthorizationGuard
+): Promise<void> {
+    const authorization =
+        typeof authorizationOrBeforeMutation === "function"
+            ? makeFallbackSubscriptionAuthorization(authorizationOrBeforeMutation)
+            : (authorizationOrBeforeMutation ?? makeFallbackSubscriptionAuthorization());
+    const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
+    await withCanonicalSessionAccess(rendererPath, async (canonicalPath) => {
+        await authorization.validateCurrent();
+        if (sender.isDestroyed()) return;
+        releaseStaleSubscriptionsForSender(sender.id, authorization);
+        const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
+        if (!liveRuntime) {
+            const key: SubKey = makeAgentSubscriptionKey(sender.id, canonicalPath, rendererPath, authorization);
+            if (!pendingSubscriptions.has(key)) {
+                pendingSubscriptions.set(key, { sender, canonicalPath, rendererPath, authorization });
+                trackSenderKey(sender, key);
+            }
+            await sendPersistedSessionState(sender, canonicalPath, rendererPath, authorization, key);
+            return;
+        }
+        await subscribeToOwner(sender, canonicalPath, liveRuntime.runtime, rendererPath, authorization);
+    });
+}
+
+export async function unsubscribeAgentSessionForIpc(
+    senderId: number,
+    sessionPath: unknown,
+    authorizationOrBeforeMutation?: AgentSubscriptionAuthorization | AuthorizationGuard
+): Promise<void> {
+    const authorization =
+        typeof authorizationOrBeforeMutation === "function"
+            ? makeFallbackSubscriptionAuthorization(authorizationOrBeforeMutation)
+            : (authorizationOrBeforeMutation ?? makeFallbackSubscriptionAuthorization());
+    const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
+    await withCanonicalSessionAccess(rendererPath, async (canonicalPath) => {
+        await authorization.validateCurrent();
+        const key: SubKey = makeAgentSubscriptionKey(senderId, canonicalPath, rendererPath, authorization);
+        releaseSubscription(key);
+        const set = subscriptionsBySender.get(senderId);
+        if (set) {
+            set.delete(key);
+            if (set.size === 0) subscriptionsBySender.delete(senderId);
+        }
+    });
+}
+
+function normalizedSessionPath(sessionPath: string): string {
+    return path.resolve(sessionPath);
+}
+
+async function preparePersistedSessionTarget(
+    workspace: Workspace,
+    workspaceId: string,
+    sessionMetadata: JsonlSessionMetadata
+): Promise<PersistedSessionTarget | undefined> {
+    if (workspace.oid !== workspaceId) {
+        throw new Error("agent IPC: loaded Workspace does not match the authorized Workspace");
+    }
+    const activeSession = workspace.agentstate?.activesession;
+    if (
+        !activeSession ||
+        activeSession.id !== sessionMetadata.id ||
+        activeSession.createdAt !== sessionMetadata.createdAt ||
+        activeSession.cwd !== sessionMetadata.cwd
+    ) {
+        return undefined;
+    }
+    let activeCanonicalPath: string;
+    try {
+        activeCanonicalPath = await fs.realpath(activeSession.path);
+    } catch {
+        activeCanonicalPath = normalizedSessionPath(activeSession.path);
+    }
+    if (activeCanonicalPath !== sessionMetadata.path) return undefined;
     return {
-        status: "success",
-        message: `Session imported from: ${inputPath}`,
-        sessionMetadata: metadata,
+        id: sessionMetadata.id,
+        createdAt: sessionMetadata.createdAt,
+        cwd: sessionMetadata.cwd,
+        trustedPaths: new Set([normalizedSessionPath(sessionMetadata.path), normalizedSessionPath(activeSession.path)]),
     };
 }
 
-export async function abortAgentSessionForIpc(sessionPath: unknown): Promise<void> {
-    const canonicalPath = await validateSessionPath(sessionPath);
-    runtimeRegistry.get(canonicalPath)?.abort();
+function persistedActiveSessionMatchesTarget(state: WorkspaceAgentState, target: PersistedSessionTarget): boolean {
+    const activeSession = state?.activesession;
+    if (
+        !activeSession ||
+        activeSession.id !== target.id ||
+        activeSession.createdAt !== target.createdAt ||
+        activeSession.cwd !== target.cwd
+    ) {
+        return false;
+    }
+    return target.trustedPaths.has(normalizedSessionPath(activeSession.path));
 }
 
-export async function subscribeAgentSessionForIpc(sender: electron.WebContents, sessionPath: unknown): Promise<void> {
-    const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
-    const canonicalPath = await validateSessionPath(rendererPath);
-    if (sender.isDestroyed()) return;
-    const session = runtimeRegistry.get(canonicalPath);
-    if (!session) {
-        const key: SubKey = makeAgentSubscriptionKey(sender.id, canonicalPath, rendererPath);
-        if (!pendingSubscriptions.has(key)) {
-            pendingSubscriptions.set(key, { sender, canonicalPath, rendererPath });
-            trackSenderKey(sender, key);
+function withoutActiveSession(state: WorkspaceAgentState): WorkspaceAgentState {
+    const next = {
+        ...state,
+        ...(state.selection ? { selection: { ...state.selection } } : {}),
+    };
+    delete next.activesession;
+    return next;
+}
+
+function isStaleWorkspaceAgentCheckpointError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes("stale workspace checkpoint") || message.includes("expected Agent revision");
+}
+
+async function clearPersistedActiveSession(
+    persistence: AgentSessionRemovalPersistence,
+    initialWorkspace: Workspace,
+    target: PersistedSessionTarget
+): Promise<void> {
+    let workspace = initialWorkspace;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (!persistedActiveSessionMatchesTarget(workspace.agentstate, target)) return;
+        try {
+            await persistence.saveWorkspaceAgentState({
+                workspaceid: persistence.workspaceId,
+                expectedrevision: workspace.agentrevision ?? 0,
+                state: withoutActiveSession(workspace.agentstate),
+            });
+            return;
+        } catch (error) {
+            if (!isStaleWorkspaceAgentCheckpointError(error) || attempt > 0) {
+                throw error;
+            }
+            workspace = await persistence.loadWorkspace(persistence.workspaceId);
+            if (workspace.oid !== persistence.workspaceId) {
+                throw new Error("agent IPC: loaded Workspace does not match the authorized Workspace");
+            }
         }
-        await sendPersistedSessionState(sender, canonicalPath, rendererPath);
-        return;
     }
-    subscribeToOwner(sender, canonicalPath, session, rendererPath);
 }
 
-export async function unsubscribeAgentSessionForIpc(senderId: number, sessionPath: unknown): Promise<void> {
-    const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
-    const canonicalPath = await validateSessionPath(rendererPath);
-    const key: SubKey = makeAgentSubscriptionKey(senderId, canonicalPath, rendererPath);
-    releaseSubscription(key);
-    const set = subscriptionsBySender.get(senderId);
-    if (set) {
-        set.delete(key);
-        if (set.size === 0) subscriptionsBySender.delete(senderId);
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+async function rollbackMovedSession(
+    operation: "archive" | "delete",
+    movedMetadata: JsonlSessionMetadata,
+    canonicalPath: string,
+    mutationError: unknown
+): Promise<void> {
+    try {
+        await restoreMovedPaneSession(movedMetadata, canonicalPath);
+    } catch (rollbackError) {
+        throw new AggregateError(
+            [mutationError, rollbackError],
+            `agent IPC: ${operation} partial failure: ${errorMessage(mutationError)}; rollback failed: ${errorMessage(rollbackError)}`
+        );
     }
+}
+
+export async function renameAgentSessionForIpc(
+    sessionMetadata: JsonlSessionMetadata,
+    name: string,
+    beforeMutation?: AuthorizationGuard
+): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionMetadata.path);
+    await beforeMutation?.();
+    await runtimeRegistry.withExclusiveSessionMutation(canonicalPath, { rejectIfRunning: true }, async () => {
+        await beforeMutation?.();
+        await renamePaneSession({ ...sessionMetadata, path: canonicalPath }, name);
+        await beforeMutation?.();
+    });
+}
+
+export async function archiveAgentSessionForIpc(
+    sessionMetadata: JsonlSessionMetadata,
+    beforeMutation?: AuthorizationGuard,
+    persistence?: AgentSessionRemovalPersistence
+): Promise<JsonlSessionMetadata> {
+    const canonicalPath = await validateSessionPath(sessionMetadata.path);
+    await beforeMutation?.();
+    const canonicalMetadata = { ...sessionMetadata, path: canonicalPath };
+    let workspace: Workspace | undefined;
+    let target: PersistedSessionTarget | undefined;
+    let suspended: SuspendedAgentSubscriptions | undefined;
+    let suspensionFinalized = false;
+    try {
+        return await runtimeRegistry.withExclusiveSessionMutation(
+            canonicalPath,
+            {
+                rejectIfRunning: true,
+                onExclusiveStart: () => {
+                    suspended = suspendSubscriptionsForPath(canonicalPath);
+                },
+                afterSessionAccessDrained: () => {
+                    suspended = suspendSubscriptionsForPath(canonicalPath, suspended!);
+                },
+                beforeRuntimeDisposal: async () => {
+                    await beforeMutation?.();
+                    workspace = persistence ? await persistence.loadWorkspace(persistence.workspaceId) : undefined;
+                    target =
+                        workspace && persistence
+                            ? await preparePersistedSessionTarget(workspace, persistence.workspaceId, canonicalMetadata)
+                            : undefined;
+                },
+                onFailureBeforeRelease: async () => {
+                    if (suspended && !suspensionFinalized) {
+                        await restoreSuspendedSubscriptions(suspended);
+                        suspensionFinalized = true;
+                    }
+                },
+            },
+            async () => {
+                await beforeMutation?.();
+                const activeSuspension = suspended!;
+                let archived: JsonlSessionMetadata | undefined;
+                try {
+                    archived = await archivePaneSession(canonicalMetadata);
+                    if (workspace && target && persistence) {
+                        await clearPersistedActiveSession(persistence, workspace, target);
+                    }
+                    commitSuspendedSubscriptions(activeSuspension);
+                    suspensionFinalized = true;
+                    return archived;
+                } catch (error) {
+                    if (!archived) {
+                        await restoreSuspendedSubscriptions(activeSuspension);
+                        suspensionFinalized = true;
+                        throw error;
+                    }
+                    try {
+                        await rollbackMovedSession("archive", archived, canonicalPath, error);
+                    } catch (rollbackError) {
+                        commitSuspendedSubscriptions(activeSuspension);
+                        suspensionFinalized = true;
+                        throw rollbackError;
+                    }
+                    await restoreSuspendedSubscriptions(activeSuspension);
+                    suspensionFinalized = true;
+                    throw error;
+                }
+            }
+        );
+    } catch (error) {
+        if (suspended && !suspensionFinalized) {
+            throw new AggregateError([error], "agent IPC: archive subscription recovery did not complete");
+        }
+        throw error;
+    }
+}
+
+export async function deleteAgentSessionForIpc(
+    sessionMetadata: JsonlSessionMetadata,
+    beforeMutation?: AuthorizationGuard,
+    persistence?: AgentSessionRemovalPersistence
+): Promise<void> {
+    const canonicalPath = await validateSessionPath(sessionMetadata.path);
+    await beforeMutation?.();
+    const canonicalMetadata = { ...sessionMetadata, path: canonicalPath };
+    let workspace: Workspace | undefined;
+    let target: PersistedSessionTarget | undefined;
+    let suspended: SuspendedAgentSubscriptions | undefined;
+    let suspensionFinalized = false;
+    try {
+        await runtimeRegistry.withExclusiveSessionMutation(
+            canonicalPath,
+            {
+                rejectIfRunning: true,
+                onExclusiveStart: () => {
+                    suspended = suspendSubscriptionsForPath(canonicalPath);
+                },
+                afterSessionAccessDrained: () => {
+                    suspended = suspendSubscriptionsForPath(canonicalPath, suspended!);
+                },
+                beforeRuntimeDisposal: async () => {
+                    await beforeMutation?.();
+                    workspace = persistence ? await persistence.loadWorkspace(persistence.workspaceId) : undefined;
+                    target =
+                        workspace && persistence
+                            ? await preparePersistedSessionTarget(workspace, persistence.workspaceId, canonicalMetadata)
+                            : undefined;
+                },
+                onFailureBeforeRelease: async () => {
+                    if (suspended && !suspensionFinalized) {
+                        await restoreSuspendedSubscriptions(suspended);
+                        suspensionFinalized = true;
+                    }
+                },
+            },
+            async () => {
+                await beforeMutation?.();
+                const activeSuspension = suspended!;
+                let staged: JsonlSessionMetadata | undefined;
+                try {
+                    staged = await stageDeletePaneSession(canonicalMetadata);
+                    if (workspace && target && persistence) {
+                        await clearPersistedActiveSession(persistence, workspace, target);
+                    }
+                    commitSuspendedSubscriptions(activeSuspension);
+                    suspensionFinalized = true;
+                } catch (error) {
+                    if (!staged) {
+                        await restoreSuspendedSubscriptions(activeSuspension);
+                        suspensionFinalized = true;
+                        throw error;
+                    }
+                    try {
+                        await rollbackMovedSession("delete", staged, canonicalPath, error);
+                    } catch (rollbackError) {
+                        commitSuspendedSubscriptions(activeSuspension);
+                        suspensionFinalized = true;
+                        throw rollbackError;
+                    }
+                    await restoreSuspendedSubscriptions(activeSuspension);
+                    suspensionFinalized = true;
+                    throw error;
+                }
+            }
+        );
+    } catch (error) {
+        if (suspended && !suspensionFinalized) {
+            throw new AggregateError([error], "agent IPC: delete subscription recovery did not complete");
+        }
+        throw error;
+    }
+}
+
+function sweepIdleAgentRuntimes(): Promise<void> {
+    if (runtimeSweepPromise) {
+        return runtimeSweepPromise;
+    }
+    const sweep = runtimeRegistry
+        .evictIdle()
+        .then(() => {})
+        .catch((error) => {
+            console.error("[agent-ipc] runtime sweep failed:", error);
+        })
+        .finally(() => {
+            if (runtimeSweepPromise === sweep) {
+                runtimeSweepPromise = undefined;
+            }
+        });
+    runtimeSweepPromise = sweep;
+    return sweep;
 }
 
 /**
  * Wire the agent IPC handlers. Call once at app startup from
  * emain-ipc.ts initIpcHandlers().
  */
-export function registerAgentIpcHandlers(): void {
+export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): void {
     if (!runtimeSweepTimer) {
         runtimeSweepTimer = setInterval(() => {
-            runtimeRegistry.evictIdle();
+            void sweepIdleAgentRuntimes();
             contextDraftRegistry.sweepExpired();
         }, AgentRuntimeSweepIntervalMs);
         runtimeSweepTimer.unref();
     }
 
-    electron.ipcMain.handle("agent:create-session", async (_event, cwd: string): Promise<JsonlSessionMetadata> => {
-        const { metadata } = await createPaneSession(cwd);
-        return metadata;
+    const authenticate = async (
+        event: electron.IpcMainInvokeEvent,
+        requestContext: unknown
+    ): Promise<AuthenticatedWorkspaceAgentSender> => {
+        return await authenticateWorkspaceSender(options, event.sender.id, requestContext);
+    };
+    const assertCurrent = async (
+        event: electron.IpcMainInvokeEvent,
+        authenticated: AuthenticatedWorkspaceAgentSender
+    ): Promise<void> => {
+        await assertWorkspaceSenderCurrent(options, event.sender.id, authenticated);
+    };
+    const makeAuthorization = (
+        event: electron.IpcMainInvokeEvent,
+        authenticated: AuthenticatedWorkspaceAgentSender
+    ): AgentSubscriptionAuthorization => ({
+        workspaceId: authenticated.workspaceId,
+        generation: authenticated.generation,
+        validateCurrent: () => assertCurrent(event, authenticated),
+        guardRuntime: (lookup) =>
+            guardLiveAgentRuntimeAccess({
+                lookup,
+                workspaceId: authenticated.workspaceId,
+                beforeAccess: () => assertCurrent(event, authenticated),
+            }),
+    });
+    const authorizeSession = async (
+        event: electron.IpcMainInvokeEvent,
+        requestContext: unknown,
+        sessionMetadata: unknown
+    ): Promise<{ authenticated: AuthenticatedWorkspaceAgentSender; metadata: JsonlSessionMetadata }> => {
+        const authenticated = await authenticate(event, requestContext);
+        const metadata = await requireSessionBelongsToWorkspace(authenticated, sessionMetadata);
+        await assertCurrent(event, authenticated);
+        return { authenticated, metadata };
+    };
+
+    electron.ipcMain.handle("agent:create-session", async (event, requestContext): Promise<JsonlSessionMetadata> => {
+        const authenticated = await authenticate(event, requestContext);
+        await assertCurrent(event, authenticated);
+        const created = await createPaneSession(authenticated.workspaceDir);
+        try {
+            await assertCurrent(event, authenticated);
+            return created.metadata;
+        } finally {
+            created.session.close();
+        }
+    });
+
+    electron.ipcMain.handle("agent:list-sessions", async (event, requestContext): Promise<JsonlSessionMetadata[]> => {
+        const authenticated = await authenticate(event, requestContext);
+        const sessions = await listSessionsForCwd(authenticated.workspaceDir);
+        await assertCurrent(event, authenticated);
+        return sessions;
     });
 
     electron.ipcMain.handle(
-        "agent:list-sessions-for-cwd",
-        async (_event, cwd: string): Promise<JsonlSessionMetadata[]> => {
-            return await listSessionsForCwd(cwd);
+        "agent:list-session-details",
+        async (event, requestContext, limit?: number): Promise<SessionDetailInfo[]> => {
+            const authenticated = await authenticate(event, requestContext);
+            const sessions = await listSessionDetailsForCwd(authenticated.workspaceDir, limit);
+            await assertCurrent(event, authenticated);
+            return sessions;
         }
     );
 
-    electron.ipcMain.handle(
-        "agent:list-session-details-for-cwd",
-        async (_event, cwd: string, limit?: number): Promise<SessionDetailInfo[]> => {
-            return await listSessionDetailsForCwd(cwd, limit);
-        }
-    );
-
-    electron.ipcMain.handle(
-        "agent:list-all-session-details",
-        async (_event, limit?: number): Promise<SessionDetailInfo[]> => {
-            return await listAllSessionDetails(limit);
-        }
-    );
-
-    electron.ipcMain.handle("agent:list-commands", (): AgentCommandInfo[] => {
+    electron.ipcMain.handle("agent:list-commands", async (event, requestContext): Promise<AgentCommandInfo[]> => {
+        const authenticated = await authenticate(event, requestContext);
+        await assertCurrent(event, authenticated);
         return listAgentCommandsForIpc();
     });
 
     electron.ipcMain.handle(
         "agent:list-tree",
-        async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentTreeResult> => {
-            return await listAgentTreeForIpc(sessionMetadata);
+        async (event, requestContext, sessionMetadata: JsonlSessionMetadata): Promise<AgentTreeResult> => {
+            const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+            const authorization = makeAuthorization(event, authenticated);
+            const result = await listAgentTreeForIpc(
+                metadata,
+                authorization.guardRuntime,
+                authorization.validateCurrent
+            );
+            await assertCurrent(event, authenticated);
+            return result;
         }
     );
 
-    electron.ipcMain.handle("agent:get-session-state", async (_event, sessionMetadata: JsonlSessionMetadata) => {
-        return await getAgentSessionStateForIpc(sessionMetadata);
+    electron.ipcMain.handle("agent:get-session-state", async (event, requestContext, sessionMetadata) => {
+        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        const authorization = makeAuthorization(event, authenticated);
+        const result = await getAgentSessionStateForIpc(
+            metadata,
+            authorization.guardRuntime,
+            authorization.validateCurrent
+        );
+        await assertCurrent(event, authenticated);
+        return result;
     });
 
     electron.ipcMain.handle(
         "agent:list-fork-points",
-        async (_event, sessionMetadata: JsonlSessionMetadata): Promise<AgentForkPointView[]> => {
-            return await listAgentForkPointsForIpc(sessionMetadata);
+        async (event, requestContext, sessionMetadata: JsonlSessionMetadata): Promise<AgentForkPointView[]> => {
+            const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+            const authorization = makeAuthorization(event, authenticated);
+            const result = await listAgentForkPointsForIpc(
+                metadata,
+                authorization.guardRuntime,
+                authorization.validateCurrent
+            );
+            await assertCurrent(event, authenticated);
+            return result;
         }
     );
 
     const contextHandler =
         <T>(operation: (input: unknown) => Promise<T>) =>
-        async (_event: unknown, input: unknown) =>
-            await contextIpcEnvelope(() => operation(input));
+        async (event: electron.IpcMainInvokeEvent, requestContext: unknown, input: unknown) =>
+            await contextIpcEnvelope(async () => {
+                const authenticated = await authenticate(event, requestContext);
+                const value = requireContextObject(input, "context");
+                for (const fieldName of ["targetSessionPath", "sourceSessionPath"] as const) {
+                    if (value[fieldName] == null) continue;
+                    const opened = await openCanonicalContextSession(value[fieldName], fieldName);
+                    try {
+                        await requireSessionBelongsToWorkspace(authenticated, opened.metadata);
+                    } finally {
+                        opened.session.close();
+                    }
+                }
+                await assertCurrent(event, authenticated);
+                const result = await operation(input);
+                await assertCurrent(event, authenticated);
+                return result;
+            });
     electron.ipcMain.handle("agent:prepare-context-draft", contextHandler(prepareContextDraftForIpc));
     electron.ipcMain.handle("agent:discard-context-draft", contextHandler(discardContextDraftForIpc));
     electron.ipcMain.handle("agent:list-reference-points", contextHandler(listAgentReferencePointsForIpc));
@@ -1469,116 +2694,319 @@ export function registerAgentIpcHandlers(): void {
 
     electron.ipcMain.handle(
         "agent:navigate-tree",
-        async (_event, input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> => {
-            return await navigateAgentTreeForIpc(input);
+        async (event, requestContext, input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> => {
+            const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
+            const authorization = makeAuthorization(event, authenticated);
+            const result = await navigateAgentTreeForIpc(
+                { ...input, sessionMetadata: metadata },
+                authorization.validateCurrent,
+                authorization.guardRuntime
+            );
+            await assertCurrent(event, authenticated);
+            return result;
         }
     );
 
     electron.ipcMain.handle(
         "agent:fork-session",
-        async (_event, input: AgentForkSessionInput): Promise<AgentForkSessionResult> => {
-            return await forkAgentSessionForIpc(input);
+        async (event, requestContext, input: AgentForkSessionInput): Promise<AgentForkSessionResult> => {
+            const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
+            const authorization = makeAuthorization(event, authenticated);
+            const result = await forkAgentSessionForIpc(
+                {
+                    ...input,
+                    sessionMetadata: metadata,
+                    cwd: authenticated.workspaceDir,
+                },
+                authorization.validateCurrent,
+                authorization.guardRuntime
+            );
+            await assertCurrent(event, authenticated);
+            return result;
         }
     );
 
     electron.ipcMain.handle(
         "agent:clone-session",
-        async (_event, input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> => {
-            return await cloneAgentSessionForIpc(input);
+        async (event, requestContext, input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> => {
+            const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
+            const authorization = makeAuthorization(event, authenticated);
+            const result = await cloneAgentSessionForIpc(
+                {
+                    ...input,
+                    sessionMetadata: metadata,
+                    cwd: authenticated.workspaceDir,
+                },
+                authorization.validateCurrent,
+                authorization.guardRuntime
+            );
+            await assertCurrent(event, authenticated);
+            return result;
         }
     );
 
     electron.ipcMain.handle(
         "agent:run-command",
-        async (_event, input: AgentRunCommandInput): Promise<AgentCommandExecutionResult> => {
-            return await runAgentCommandForIpc(input);
+        async (event, requestContext, input: AgentRunCommandInput): Promise<AgentCommandExecutionResult> => {
+            const authenticated = await authenticate(event, requestContext);
+            let sessionMetadata = input?.sessionMetadata;
+            if (sessionMetadata) {
+                sessionMetadata = await requireSessionBelongsToWorkspace(authenticated, sessionMetadata);
+            }
+            const authorization = makeAuthorization(event, authenticated);
+            await authorization.validateCurrent();
+            const result = await runAgentCommandForIpc(
+                {
+                    ...input,
+                    cwd: authenticated.workspaceDir,
+                    sessionMetadata,
+                },
+                authorization.validateCurrent,
+                authorization.guardRuntime
+            );
+            await assertCurrent(event, authenticated);
+            return result;
         }
     );
 
     electron.ipcMain.handle(
         "agent:send",
         async (
-            _event,
-            opts: SendOptions
+            event,
+            requestContext,
+            input: SendOptions
         ): Promise<ContextIpcEnvelope<{ sessionMetadata: JsonlSessionMetadata; turnId: string }>> => {
-            const runInIngress = reserveAgentSendIngress(opts);
-            return await runInIngress(
-                async () =>
-                    await contextIpcEnvelope(async () => {
-                        console.log(
-                            `[agent-ipc] agent:send provider=${opts.provider} model=${opts.model} ` +
-                                `reasoning=${opts.reasoning ?? "off"} ` +
-                                `cred=${opts.token ? "token" : opts.tokenSecretName ? `secret:${opts.tokenSecretName}` : "NONE"} ` +
-                                `textLen=${opts.text?.length ?? 0}`
+            return await contextIpcEnvelope(async () => {
+                const authenticated = await authenticate(event, requestContext);
+                const rendererContext = await parseAgentExecutionContext(input.context, {
+                    validatePreferredTerminal: authenticated.validatePreferredTerminal,
+                });
+                if (
+                    rendererContext.workspaceId !== authenticated.workspaceId ||
+                    rendererContext.workspaceDir !== authenticated.workspaceDir
+                ) {
+                    throw new Error("agent IPC: execution context does not match authenticated Workspace");
+                }
+                let sessionMetadata = input.sessionMetadata;
+                if (sessionMetadata) {
+                    sessionMetadata = await requireSessionBelongsToWorkspace(authenticated, sessionMetadata);
+                }
+                if (rendererContext.sessionPath) {
+                    const contextSessionPath = await validateSessionPath(
+                        rendererContext.sessionPath,
+                        "context.sessionPath"
+                    );
+                    if (!sessionMetadata || contextSessionPath !== sessionMetadata.path) {
+                        throw new Error("agent IPC: execution context session does not match the request");
+                    }
+                }
+                await assertCurrent(event, authenticated);
+                const opts: SendOptions = {
+                    ...input,
+                    sessionMetadata,
+                    context: {
+                        ...rendererContext,
+                        workspaceId: authenticated.workspaceId,
+                        workspaceDir: authenticated.workspaceDir,
+                    },
+                };
+                console.log(
+                    `[agent-ipc] agent:send provider=${opts.provider} model=${opts.model} ` +
+                        `reasoning=${opts.reasoning ?? "off"} ` +
+                        `cred=${opts.token ? "token" : opts.tokenSecretName ? `secret:${opts.tokenSecretName}` : "NONE"} ` +
+                        `textLen=${opts.text?.length ?? 0}`
+                );
+                const runInIngress = reserveAgentSendIngress(opts);
+                return await runInIngress(async () => {
+                    const { metadata } = await ensureSession(opts);
+                    return await runtimeRegistry.withSessionAccess(metadata.path, async () => {
+                        await assertCurrent(event, authenticated);
+                        const { runtime, config } = await ensureAgentRuntime(
+                            metadata,
+                            opts,
+                            authenticated.workspaceId
                         );
-                        const { metadata } = await ensureSession(opts);
+                        const authorization = makeAuthorization(event, authenticated);
+                        await authorization.guardRuntime({ path: metadata.path, runtime });
+                        await attachPendingSubscribers(metadata.path, runtime);
+
                         const targetSessionPath = await validateSessionPath(metadata.path);
                         const targetSession = await openPaneSessionByPath(targetSessionPath);
                         const attachments = parseContextAttachments(opts.contextAttachments);
-                        const { runtime, config } = await ensureAgentRuntime(metadata, opts);
                         const images = imageContentsFromRenderer(opts.images);
-                        const resolveContextPreparation = async (): Promise<
-                            AgentHarnessTurnPreparation | undefined
-                        > => {
-                            if (attachments.length === 0) return undefined;
-                            try {
+                        try {
+                            const resolveContextPreparation = async (): Promise<
+                                AgentHarnessTurnPreparation | undefined
+                            > => {
+                                if (attachments.length === 0) return undefined;
                                 await requireContextReferencesEnabled();
-                            } catch (error) {
-                                if (
-                                    attachments.length > 0 ||
-                                    !(error instanceof ContextReferenceError) ||
-                                    error.code !== "disabled"
-                                ) {
-                                    throw error;
-                                }
-                                return undefined;
-                            }
-                            if (attachments.length > 0) {
                                 contextDraftRegistry.readMany(
                                     targetSessionPath,
                                     attachments.map((attachment) => attachment.draftId)
                                 );
-                            }
-                            return makeContextTurnPrepareCallback({
-                                targetSessionPath,
-                                session: targetSession,
-                                attachments,
-                                model: config.model,
+                                return makeContextTurnPrepareCallback({
+                                    targetSessionPath,
+                                    session: targetSession,
+                                    attachments,
+                                    model: config.model,
+                                });
+                            };
+                            await authorization.guardRuntime({ path: metadata.path, runtime });
+                            const userEntryId = await runtime.sendWithExecutionConfig(opts.text, config, {
+                                ...(images ? { images } : {}),
+                                activatePreparation: async () => await resolveContextPreparation(),
                             });
-                        };
-                        const userEntryId = await runtime.sendWithExecutionConfig(opts.text, config, {
-                            ...(images ? { images } : {}),
-                            activatePreparation: async () => await resolveContextPreparation(),
-                        });
-
-                        return { sessionMetadata: metadata, turnId: userEntryId };
-                    })
-            );
+                            await authorization.guardRuntime({ path: metadata.path, runtime });
+                            return { sessionMetadata: metadata, turnId: userEntryId };
+                        } finally {
+                            targetSession.close();
+                        }
+                    });
+                });
+            });
         }
     );
 
-    electron.ipcMain.on("agent:abort", (_event, sessionPath: string) => {
-        void abortAgentSessionForIpc(sessionPath).catch((err) => {
-            console.error("[agent-ipc] abort validation error:", err);
+    electron.ipcMain.handle("agent:command-read", async (event, requestContext, sessionMetadata, input) => {
+        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        const authorization = makeAuthorization(event, authenticated);
+        return await runtimeRegistry.withSessionAccess(metadata.path, async () => {
+            const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
+            const commandId = requireCommandId(input);
+            const result = runtime.readHostedCommand(commandId);
+            await authorization.guardRuntime({ path: metadata.path, runtime });
+            return result;
         });
     });
 
-    electron.ipcMain.on("agent:subscribe", (event, sessionPath: string) => {
-        void subscribeAgentSessionForIpc(event.sender, sessionPath).catch((err) => {
-            console.error("[agent-ipc] subscribe validation error:", err);
+    electron.ipcMain.handle("agent:command-write", async (event, requestContext, sessionMetadata, input) => {
+        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        const authorization = makeAuthorization(event, authenticated);
+        await runtimeRegistry.withSessionAccess(metadata.path, async () => {
+            const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
+            const commandId = requireCommandId(input);
+            const text = requireNonEmptyString((input as AgentHostedCommandWriteInput)?.input, "input");
+            await runtime.writeHostedCommand(commandId, text);
+            await authorization.guardRuntime({ path: metadata.path, runtime });
         });
     });
 
-    electron.ipcMain.on("agent:unsubscribe", (event, sessionPath: string) => {
-        void unsubscribeAgentSessionForIpc(event.sender.id, sessionPath).catch((err) => {
-            console.error("[agent-ipc] unsubscribe validation error:", err);
+    electron.ipcMain.handle("agent:command-resize", async (event, requestContext, sessionMetadata, input) => {
+        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        const authorization = makeAuthorization(event, authenticated);
+        await runtimeRegistry.withSessionAccess(metadata.path, async () => {
+            const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
+            const commandId = requireCommandId(input);
+            const { cols, rows } = input as AgentHostedCommandResizeInput;
+            if (
+                !Number.isFinite(cols) ||
+                cols < 1 ||
+                cols > MaxAgentPtyCols ||
+                !Number.isFinite(rows) ||
+                rows < 1 ||
+                rows > MaxAgentPtyRows
+            ) {
+                throw new Error("agent IPC: invalid hosted command size");
+            }
+            runtime.resizeHostedCommand(commandId, cols, rows);
+            await authorization.guardRuntime({ path: metadata.path, runtime });
         });
+    });
+
+    electron.ipcMain.handle("agent:command-stop", async (event, requestContext, sessionMetadata, input) => {
+        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        const authorization = makeAuthorization(event, authenticated);
+        await runtimeRegistry.withSessionAccess(metadata.path, async () => {
+            const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
+            const commandId = requireCommandId(input);
+            await runtime.stopHostedCommand(commandId);
+            await authorization.guardRuntime({ path: metadata.path, runtime });
+        });
+    });
+
+    electron.ipcMain.handle("agent:rename-session", async (event, requestContext, input: AgentRenameSessionInput) => {
+        if (!isRecord(input)) {
+            throw new Error("agent IPC: renameSession input must be an object");
+        }
+        const { authenticated, metadata } = await authorizeSession(event, requestContext, input.sessionMetadata);
+        const name = requireSessionName(input.name);
+        await renameAgentSessionForIpc(metadata, name, () => assertCurrent(event, authenticated));
+        await assertCurrent(event, authenticated);
+    });
+
+    electron.ipcMain.handle(
+        "agent:archive-session",
+        async (event, requestContext, sessionMetadata): Promise<JsonlSessionMetadata> => {
+            const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+            const archived = await archiveAgentSessionForIpc(metadata, () => assertCurrent(event, authenticated), {
+                workspaceId: authenticated.workspaceId,
+                loadWorkspace: options.loadWorkspace,
+                saveWorkspaceAgentState: options.saveWorkspaceAgentState,
+            });
+            await assertCurrent(event, authenticated);
+            return archived;
+        }
+    );
+
+    electron.ipcMain.handle("agent:delete-session", async (event, requestContext, sessionMetadata) => {
+        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        await deleteAgentSessionForIpc(metadata, () => assertCurrent(event, authenticated), {
+            workspaceId: authenticated.workspaceId,
+            loadWorkspace: options.loadWorkspace,
+            saveWorkspaceAgentState: options.saveWorkspaceAgentState,
+        });
+        await assertCurrent(event, authenticated);
+    });
+
+    electron.ipcMain.handle("agent:abort", async (event, requestContext, sessionPath: string) => {
+        const authenticated = await authenticate(event, requestContext);
+        const metadata = await requireSessionBelongsToWorkspace(authenticated, {
+            id: "",
+            createdAt: "",
+            path: sessionPath,
+            cwd: authenticated.workspaceDir,
+        });
+        const authorization = makeAuthorization(event, authenticated);
+        await authorization.validateCurrent();
+        await abortAgentSessionForIpc(metadata.path, authorization.validateCurrent, authorization.guardRuntime);
+        await authorization.validateCurrent();
+    });
+
+    electron.ipcMain.handle("agent:subscribe", async (event, requestContext, sessionPath: string) => {
+        const authenticated = await authenticate(event, requestContext);
+        const metadata = await requireSessionBelongsToWorkspace(authenticated, {
+            id: "",
+            createdAt: "",
+            path: sessionPath,
+            cwd: authenticated.workspaceDir,
+        });
+        const authorization = makeAuthorization(event, authenticated);
+        await authorization.validateCurrent();
+        try {
+            await subscribeAgentSessionForIpc(event.sender, metadata.path, authorization);
+            await authorization.validateCurrent();
+        } catch (error) {
+            releaseSubscriptionsForSenderPath(event.sender.id, metadata.path);
+            throw error;
+        }
+    });
+
+    electron.ipcMain.handle("agent:unsubscribe", async (event, requestContext, sessionPath: string) => {
+        const authenticated = await authenticate(event, requestContext);
+        const metadata = await requireSessionBelongsToWorkspace(authenticated, {
+            id: "",
+            createdAt: "",
+            path: sessionPath,
+            cwd: authenticated.workspaceDir,
+        });
+        const authorization = makeAuthorization(event, authenticated);
+        await authorization.validateCurrent();
+        await unsubscribeAgentSessionForIpc(event.sender.id, metadata.path, authorization);
+        await authorization.validateCurrent();
     });
 }
 
-/** Test-only escape hatch: clear the runtime registry + subscriptions. */
-export function _resetAgentIpcForTests(): void {
-    _resetAgentObservabilityForTests();
+export async function disposeAgentRuntimesForShutdown(): Promise<void> {
     for (const record of subscriptions.values()) {
         try {
             record.unsubscribe();
@@ -1594,7 +3022,8 @@ export function _resetAgentIpcForTests(): void {
         clearInterval(runtimeSweepTimer);
         runtimeSweepTimer = undefined;
     }
-    runtimeRegistry.disposeAll();
+    await runtimeSweepPromise;
+    await runtimeRegistry.disposeAll();
     contextDraftRegistry = new ContextDraftRegistry();
     contextSummaryCompletion = undefined;
     contextProviderAdapterFactory = createContextProviderAdapter;
@@ -1606,4 +3035,10 @@ export function _setContextSummaryCompletionForTests(completion: ContextSummaryC
 
 export function _setContextProviderAdapterFactoryForTests(factory: typeof contextProviderAdapterFactory): void {
     contextProviderAdapterFactory = factory;
+}
+
+/** Test-only escape hatch: clear the runtime registry + subscriptions. */
+export async function _resetAgentIpcForTests(): Promise<void> {
+    _resetAgentObservabilityForTests();
+    await disposeAgentRuntimesForShutdown();
 }

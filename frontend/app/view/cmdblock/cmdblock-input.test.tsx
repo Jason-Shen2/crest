@@ -1,9 +1,13 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+// @vitest-environment jsdom
 
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CmdBlockInput, __testing } from "./cmdblock-input";
+
+afterEach(cleanup);
 
 describe("CmdBlockInput", () => {
     it("discovers /session and /info while keeping /resume hidden", () => {
@@ -62,5 +66,50 @@ describe("CmdBlockInput", () => {
         expect(html).not.toContain("#42");
         expect(html).not.toContain("crest@devbox");
         expect(html).not.toContain("prod-context");
+    });
+
+    it("does not resync controlled editor text while IME composition is active", () => {
+        const onTextChange = vi.fn();
+        render(
+            <CmdBlockInput
+                mode="terminal"
+                onModeChange={() => undefined}
+                onSubmit={() => undefined}
+                hideHelpRow
+                onTextChange={onTextChange}
+            />
+        );
+        const editor = screen.getByRole("textbox");
+
+        fireEvent.compositionStart(editor);
+        editor.textContent = "n";
+        fireEvent.input(editor);
+        expect(onTextChange).not.toHaveBeenCalled();
+
+        editor.textContent = "你";
+        fireEvent.compositionEnd(editor);
+        expect(onTextChange).toHaveBeenLastCalledWith("你");
+    });
+
+    it("does not submit when Enter confirms an IME composition", () => {
+        const onSubmit = vi.fn();
+        render(
+            <CmdBlockInput
+                mode="terminal"
+                onModeChange={() => undefined}
+                onSubmit={onSubmit}
+                hideHelpRow
+            />
+        );
+        const editor = screen.getByRole("textbox");
+
+        editor.textContent = "echo";
+        fireEvent.input(editor);
+        onSubmit.mockClear();
+
+        fireEvent.compositionStart(editor);
+        fireEvent.keyDown(editor, { key: "Enter" });
+
+        expect(onSubmit).not.toHaveBeenCalled();
     });
 });

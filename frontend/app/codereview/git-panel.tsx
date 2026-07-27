@@ -6,6 +6,8 @@ import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { ContextMenuModel } from "@/app/store/contextmenu";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
+import { useWorkspaceTopTabController } from "@/app/workspace/top-tab-controller-context";
+import type { WorkspaceTopTabController } from "@/app/workspace/top-tab-controller";
 import { getApi } from "@/store/global";
 import { cn, fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
@@ -17,6 +19,20 @@ const ShikiTheme = "github-dark-high-contrast";
 const FileSidebar_DefaultWidth = 250;
 const FileSidebar_MinWidth = 160;
 const FileSidebar_MaxWidth = 480;
+
+export function openCodeReviewGitDiff(
+    controller: Pick<WorkspaceTopTabController, "openGitDiff">,
+    repoRoot: string,
+    file: Pick<GitChangedFile, "path" | "origPath">,
+    diffMode: DiffMode
+): void {
+    controller.openGitDiff({
+        repoRoot,
+        path: file.path,
+        mode: diffMode === "Head" ? "-" : "+",
+        originalPath: file.origPath,
+    });
+}
 
 // ---- Extension → Shiki language mapping ----
 const ExtToShikiLang: Record<string, string> = {
@@ -789,6 +805,7 @@ function CommentsPanel({ comments }: { comments: ReviewComment[] }) {
 // ---- Main panel ----
 export const GitReviewSidebar = memo(() => {
     const model = GitModel.getInstance();
+    const topTabController = useWorkspaceTopTabController();
     const isRepo = useAtomValue(model.isRepoAtom);
     const branch = useAtomValue(model.branchAtom);
     const mainBranch = useAtomValue(model.mainBranchAtom);
@@ -804,6 +821,7 @@ export const GitReviewSidebar = memo(() => {
     const diffMode = useAtomValue(model.diffModeAtom);
     const selectedFile = useAtomValue(model.selectedFileAtom);
     const comments = useAtomValue(model.commentsAtom);
+    const repoRoot = useAtomValue(model.cwdAtom);
 
     useEffect(() => {
         model.syncCwd();
@@ -953,7 +971,13 @@ export const GitReviewSidebar = memo(() => {
                             files={files}
                             selected={selectedFile}
                             fileStats={fileStats}
-                            onSelect={(p) => model.selectFile(p)}
+                            onSelect={(p) => {
+                                model.selectFile(p);
+                                const file = files.find((candidate) => candidate.path === p);
+                                if (file) {
+                                    openCodeReviewGitDiff(topTabController, repoRoot, file, diffMode);
+                                }
+                            }}
                             width={sidebarWidth}
                             onResize={handleSidebarResize}
                         />

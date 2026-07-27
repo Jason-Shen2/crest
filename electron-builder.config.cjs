@@ -5,6 +5,18 @@ const path = require("path");
 
 const windowsShouldSign = !!process.env.SM_CODE_SIGNING_CERT_SHA1_HASH;
 
+function chmodMatchingFiles(rootDir, predicate, mode) {
+    if (!fs.existsSync(rootDir)) {
+        return;
+    }
+    fs.readdirSync(rootDir, {
+        recursive: true,
+        withFileTypes: true,
+    })
+        .filter((file) => file.isFile() && predicate(file.name))
+        .forEach((file) => fs.chmodSync(path.resolve(file.parentPath ?? file.path, file.name), mode));
+}
+
 /**
  * @type {import('electron-builder').Configuration}
  * @see https://www.electron.build/configuration/configuration
@@ -49,6 +61,11 @@ const config = {
             to: "node_modules/typescript",
             filter: ["lib/**/*", "package.json"],
         },
+        {
+            from: "node_modules/node-pty",
+            to: "node_modules/node-pty",
+            filter: ["package.json", "build/Release/**/*", "lib/**/*", "prebuilds/**/*"],
+        },
         "!node_modules", // We don't need electron-builder to package in Node modules as Vite has already bundled any code that our program is using.
     ],
     extraResources: [
@@ -65,6 +82,7 @@ const config = {
         "dist/schema/**/*", // schema files for Monaco editor
         "node_modules/typescript-language-server/**",
         "node_modules/typescript/**",
+        "node_modules/node-pty/**",
     ],
     mac: {
         target: [
@@ -141,20 +159,20 @@ const config = {
     },
     publish: null,
     afterPack: (context) => {
+        const appResourcesDir = path.resolve(context.appOutDir, `${pkg.productName}.app/Contents/Resources`);
+        chmodMatchingFiles(
+            path.resolve(appResourcesDir, "app.asar.unpacked/node_modules/node-pty/prebuilds"),
+            (name) => name === "spawn-helper",
+            0o755
+        );
+
         // This is a workaround to restore file permissions to the wavesrv binaries on macOS after packaging the universal binary.
         if (context.electronPlatformName === "darwin" && context.arch === Arch.universal) {
-            const packageBinDir = path.resolve(
-                context.appOutDir,
-                `${pkg.productName}.app/Contents/Resources/app.asar.unpacked/dist/bin`
+            chmodMatchingFiles(
+                path.resolve(appResourcesDir, "app.asar.unpacked/dist/bin"),
+                (name) => name.startsWith("wavesrv"),
+                0o755
             );
-
-            // Reapply file permissions to the wavesrv binaries in the final app package
-            fs.readdirSync(packageBinDir, {
-                recursive: true,
-                withFileTypes: true,
-            })
-                .filter((f) => f.isFile() && f.name.startsWith("wavesrv"))
-                .forEach((f) => fs.chmodSync(path.resolve(f.parentPath ?? f.path, f.name), 0o755)); // 0o755 corresponds to -rwxr-xr-x
         }
     },
 };

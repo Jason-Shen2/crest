@@ -10,6 +10,7 @@ import { RpcApi } from "../frontend/app/store/wshclientapi";
 import { isDev } from "../frontend/util/isdev";
 import { fireAndForget } from "../frontend/util/util";
 import { setUserConfirmedQuit } from "./emain-activity";
+import { guardApplicationClose } from "./emain-quit-coordinator";
 import { delay } from "./emain-util";
 import { focusedWaveWindow, getAllWaveWindows } from "./emain-window";
 import { ElectronWshClient } from "./emain-wsh";
@@ -202,10 +203,19 @@ export class Updater {
      */
     async installUpdate() {
         if (this.status == "ready") {
-            this.status = "installing";
             await delay(1000);
-            setUserConfirmedQuit(true);
-            autoUpdater.quitAndInstall();
+            if (this.status != "ready") {
+                return;
+            }
+            await guardApplicationClose(
+                "quit",
+                () => {
+                    this.status = "installing";
+                    setUserConfirmedQuit(true);
+                    autoUpdater.quitAndInstall();
+                },
+                true
+            );
         }
     }
 }

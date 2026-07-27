@@ -1,9 +1,47 @@
 # Agent Rendering & Conversation-State Architecture
 
 How crest gets a streaming agent conversation from the Electron **main**
-process (where the agent runs) onto the screen in the **renderer**, and
-how agent output is positioned in the terminal timeline alongside shell
-blocks.
+process (where the agent runs) onto the screen in the **Workspace renderer**.
+
+**Phase 3 update:** Agent is now a fixed Workspace surface. It is not a
+Terminal pane, Wave Tab, Block, or `TerminalModel` participant. The active
+session is owned by `WorkspaceAgentModel` / persisted Workspace agent state,
+and rendering goes through:
+
+```text
+Workspace AgentContent
+  -> AgentRuntimeClient
+  -> authenticated Agent IPC
+  -> AgentRuntimeRegistry
+  -> AgentSessionRuntime
+       -> AgentHarness
+       -> AgentPtyHost
+            -> AgentPtyScreen
+```
+
+**Phase 4A update:** File, Preview, and Git Diff are production Top Tabs in
+that same Workspace renderer. Switching Agent → Terminal → any implemented Top
+Tab → Agent retains one Workspace renderer and the mounted Agent surface.
+Agent and activated File content live in isolated Workspace content slots.
+Navigation changes update only slot activation. Inactive slots use
+`display:none`, which removes their visual subtree from Chromium's layout and
+paint trees while preserving the mounted React/DOM instance and its runtime
+state. `visibility:hidden` is not a sufficient renderer boundary for Agent
+messages that use `content-visibility:auto` and composited animation layers.
+Agent resource activity is delivered through one stable lifecycle controller
+whose listeners acquire or release subscriptions and observers without
+becoming React render state.
+Cold File slots retain their own loading surface and do not mount the
+File/Monaco surface until the runtime reports ready.
+Browser Top Tabs are deferred; URL launchers still target the existing
+right-side Browser tool. Automated coverage is complete for this cutover, but
+the Electron runtime smoke remains a user acceptance step.
+
+The sections below document the historical bug and the ownership principle
+that still applies: main owns the authoritative transcript, and the renderer
+mirrors snapshots/deltas. Any references to Terminal blocks in that historical
+analysis describe the pre-Phase-3 implementation and are not a supported
+runtime integration point.
 
 This doc exists because the first cut got this wrong and produced a
 recurring class of bug ("…loading agent run…" stuck forever; replies not
@@ -38,7 +76,7 @@ Two independent failure modes fell out of this:
   the authoritative snapshot at the true indices). Frozen `run-0` stopped
   matching any recomputed key → stuck forever.
 - **Lossy reconstruction.** The renderer subscribes to the event stream
-  only *after* `agent:send` returns the session. The main process starts
+  only _after_ `agent:send` returns the session. The main process starts
   `harness.prompt()` immediately (fire-and-forget); a fast turn (observed:
   **13 ms**) streamed its entire first run **before the renderer
   subscribed**. Those events were missed and nothing back-filled them, so
@@ -53,7 +91,7 @@ lossy delta stream instead of mirroring an authoritative source.**
 
 ## 2. Evidence: how pi (our harness's author) and Warp do it
 
-We use pi's `AgentHarness` (`earendil-works/pi`). pi's *own* coding-agent
+We use pi's `AgentHarness` (`earendil-works/pi`). pi's _own_ coding-agent
 is the reference implementation for consuming it — the strongest possible
 evidence for "best practice" here.
 
@@ -71,7 +109,7 @@ evidence for "best practice" here.
   harness once (`agent-session.ts:336`), persists on `message_end`
   (`sessionManager.appendMessage(...)`), and re-emits to its own
   listeners. The UI consumes `AgentSession`, not the raw harness.
-- **The TUI subscribes for a *signal* and reads owned state to render.**
+- **The TUI subscribes for a _signal_ and reads owned state to render.**
   `packages/coding-agent/src/modes/interactive/interactive-mode.ts`:
   ```ts
   :2646  this.unsubscribe = this.session.subscribe(async (event) => { … })  // re-render signal
@@ -92,7 +130,7 @@ evidence for "best practice" here.
   creation** that never changes.
 - Streaming tokens **mutate that owned model in place**
   (`conversation.rs:2731 append_to_message_content`) and emit an
-  `UpdatedStreamingExchange` event that is *only a re-render signal*
+  `UpdatedStreamingExchange` event that is _only a re-render signal_
   (`model_impl.rs:194`); the view then **reads the live model**.
 - Terminal `Block`s and `AIConversation`s are **separate sovereign
   models** composed at the view layer by stable id — never one dual
@@ -117,7 +155,7 @@ IPC boundary. So crest **mirrors** the authoritative state across IPC,
 applying the same three principles:
 
 1. **Main is the source of truth.** The agent's authoritative transcript
-   lives where the harness runs. The renderer holds a *mirror*, never an
+   lives where the harness runs. The renderer holds a _mirror_, never an
    independently-reconstructed copy.
 
 2. **Snapshot on subscribe + deltas (no missed history).** `agent-ipc`
@@ -136,7 +174,7 @@ applying the same three principles:
    is `{role, content, timestamp}` (no separate id field) and the TUI
    keys finer-grained units by `content.id`.
 
-### The owner: pi's `AgentSession` *pattern*, at the harness layer
+### The owner: pi's `AgentSession` _pattern_, at the harness layer
 
 pi exposes the agent at two levels:
 
@@ -145,7 +183,7 @@ pi exposes the agent at two levels:
   `subscribe` / `prompt` / `steer` / `followUp`.
 - **`AgentHarness`** (`harness/agent-harness.ts`) — a batteries-included
   wrapper that owns a `Session` (JSONL persistence), manages the
-  steer/followUp queues, and is **event-only**: it has *no* synchronous
+  steer/followUp queues, and is **event-only**: it has _no_ synchronous
   `messages` getter; the transcript surfaces through the event stream
   (`message_start/update/end`, `agent_end` with the full array) plus
   `queue_update` (steer + followUp arrays).
@@ -155,13 +193,13 @@ pi's own coding-agent wraps the **`Agent`** in an `AgentSession`
 `get messages() { return this.agent.state.messages }`). `AgentSession`
 is an **owner/aggregator**: subscribe once, own the authoritative
 transcript + queues, persist, and re-emit to the UI — which works because
-the TUI is in the *same process* and can read `state.messages`
+the TUI is in the _same process_ and can read `state.messages`
 synchronously.
 
 crest consumes the **`AgentHarness`**, and that is the correct layer for
 an embedder: the renderer is in another process and **cannot read
 synchronous state across IPC anyway**, so an event-driven source fits
-*better* than `Agent`'s sync-state model, and the harness already bundles
+_better_ than `Agent`'s sync-state model, and the harness already bundles
 persistence + queues. Vendoring `coding-agent`'s `AgentSession` wholesale
 would be wrong — it drags in `extensions/`, `export-html/`,
 `slash-commands`, `settings-manager`, `theme`, `model-registry`,
@@ -170,8 +208,8 @@ would be wrong — it drags in `extensions/`, `export-html/`,
 What crest was missing was not the harness layer — it was the **owner**.
 Harness events were scattered into a loose `Map` (updated only on
 `agent_end`, so stale mid-turn) and concurrent sends were handled by
-*catching* `AgentHarnessError("busy")`. So crest applies the
-`AgentSession` *pattern* at the harness layer: a single per-session owner,
+_catching_ `AgentHarnessError("busy")`. So crest applies the
+`AgentSession` _pattern_ at the harness layer: a single per-session owner,
 `AgentSessionRuntime` (`emain/agent/agent-session-runtime.ts`), that subscribes
 to the harness once, owns the transcript + queue + status, and decides
 send routing from its own tracked state.
@@ -187,7 +225,7 @@ send routing from its own tracked state.
     (so reopened conversations show history), then appends on
     `message_start` and replaces the tail on `message_update` /
     `message_end`. **`agent_end` does NOT replace the array** — its
-    `messages` field is *run-scoped* (only the latest `prompt()`'s
+    `messages` field is _run-scoped_ (only the latest `prompt()`'s
     messages; `agent-loop.ts` builds it as `[...prompts]` + responses, not
     the whole conversation). Replacing on `agent_end` was the second
     incarnation of the "…loading agent run…" bug: after a 2nd send the
@@ -216,7 +254,7 @@ send routing from its own tracked state.
   - `agent:subscribe` acquires a Registry subscriber reference, attaches
     `runtime.subscribe(cb)`, then replays `runtime.getSessionState()` as a
     `session_state` event so a late/re-subscribing renderer mirrors the
-    owned state, including a turn that is *mid-stream*.
+    owned state, including a turn that is _mid-stream_.
   - `agent:unsubscribe` and renderer destruction release the Registry
     subscriber reference.
   - `agent:abort` → `runtime.abort()`.
@@ -240,7 +278,7 @@ send routing from its own tracked state.
   (`queue_update`) and forwards them in the snapshot + live stream, so the
   data is on the renderer side. Remaining: `usePiChat` exposing the queued
   messages and the UI rendering a "queued" chip + a "Stop" affordance.
-  Warp instead *interrupts* (cancels the in-flight turn) with no queue — we
+  Warp instead _interrupts_ (cancels the in-flight turn) with no queue — we
   chose pi's queue model on purpose so in-flight tool calls / output aren't
   discarded.
 - **Renderer single-model collapse.** Main now has a clean owner; the
@@ -265,5 +303,8 @@ send routing from its own tracked state.
       queues), valid mid-stream — not just on completed turns.
 - [x] Concurrent send routed from the owner's tracked run state (queue via
       `followUp`), no exception-as-control-flow.
+- [x] Workspace renderer remains the single Agent owner while switching
+      Terminal and production File/Preview/Git Diff Top Tabs.
 - [ ] Verified against the stuck-loading + concurrent-send repros in the
       running app.
+- [ ] Electron runtime smoke for the Workspace Top Tab cutover.

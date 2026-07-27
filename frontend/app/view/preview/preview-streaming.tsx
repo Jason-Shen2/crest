@@ -46,6 +46,34 @@ function StreamingImagePreview({ url }: { url: string }) {
     );
 }
 
+function StreamingPreviewContent({ url, mimeType }: { url: string; mimeType: string }) {
+    if (mimeType === "application/pdf") {
+        return (
+            <div className="flex flex-row h-full overflow-hidden items-center justify-center p-[5px]">
+                <iframe src={url} width="100%" height="100%" name="pdfview" />
+            </div>
+        );
+    }
+    if (mimeType.startsWith("video/")) {
+        return (
+            <div className="flex flex-row h-full overflow-hidden items-center justify-center">
+                <video controls src={url} className="w-full h-full p-[10px] object-contain" />
+            </div>
+        );
+    }
+    if (mimeType.startsWith("audio/")) {
+        return (
+            <div className="flex flex-row h-full overflow-hidden items-center justify-center">
+                <audio controls src={url} className="w-full h-full p-[10px] object-contain" />
+            </div>
+        );
+    }
+    if (mimeType.startsWith("image/")) {
+        return <StreamingImagePreview url={url} />;
+    }
+    return <CenteredDiv>Preview Not Supported</CenteredDiv>;
+}
+
 function StreamingPreview({ model }: SpecializedViewProps) {
     useEffect(() => {
         model.refreshCallback = () => {
@@ -62,31 +90,7 @@ function StreamingPreview({ model }: SpecializedViewProps) {
     const usp = new URLSearchParams();
     usp.set("path", remotePath);
     const streamingUrl = `${getWebServerEndpoint()}/wave/stream-file?${usp.toString()}`;
-    if (fileInfo.mimetype === "application/pdf") {
-        return (
-            <div className="flex flex-row h-full overflow-hidden items-center justify-center p-[5px]">
-                <iframe src={streamingUrl} width="100%" height="100%" name="pdfview" />
-            </div>
-        );
-    }
-    if (fileInfo.mimetype.startsWith("video/")) {
-        return (
-            <div className="flex flex-row h-full overflow-hidden items-center justify-center">
-                <video controls src={streamingUrl} className="w-full h-full p-[10px] object-contain" />
-            </div>
-        );
-    }
-    if (fileInfo.mimetype.startsWith("audio/")) {
-        return (
-            <div className="flex flex-row h-full overflow-hidden items-center justify-center">
-                <audio controls src={streamingUrl} className="w-full h-full p-[10px] object-contain" />
-            </div>
-        );
-    }
-    if (fileInfo.mimetype.startsWith("image/")) {
-        return <StreamingImagePreview url={streamingUrl} />;
-    }
-    return <CenteredDiv>Preview Not Supported</CenteredDiv>;
+    return <StreamingPreviewContent url={streamingUrl} mimeType={fileInfo.mimetype} />;
 }
 
-export { StreamingPreview };
+export { StreamingPreview, StreamingPreviewContent };

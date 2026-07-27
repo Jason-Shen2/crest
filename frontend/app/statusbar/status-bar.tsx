@@ -30,7 +30,7 @@ import { quote as shellQuote } from "shell-quote";
 import "./status-bar.scss";
 
 export function StatusBar() {
-    const tabId = useAtomValue(atoms.staticTabId);
+    const tabId = useAtomValue(atoms.staticTabId ?? NullAtom);
     const layoutModel = useMemo(() => (tabId ? getLayoutModelForStaticTab() : null), [tabId]);
     const focusedNodeAtom = layoutModel?.focusedNode ?? NullAtom;
     const focusedNode = useAtomValue(focusedNodeAtom) as LayoutNode | null;

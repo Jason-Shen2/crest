@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/s-zx/crest/pkg/baseds"
 	"github.com/s-zx/crest/pkg/blockcontroller"
 	"github.com/s-zx/crest/pkg/blocklogger"
@@ -39,6 +40,7 @@ import (
 	"github.com/s-zx/crest/pkg/remote/conncontroller"
 	"github.com/s-zx/crest/pkg/remote/fileshare/wshfs"
 	"github.com/s-zx/crest/pkg/secretstore"
+	"github.com/s-zx/crest/pkg/service/workspaceservice"
 	"github.com/s-zx/crest/pkg/suggestion"
 	"github.com/s-zx/crest/pkg/telemetry"
 	"github.com/s-zx/crest/pkg/telemetry/telemetrydata"
@@ -69,6 +71,62 @@ type WshServer struct{}
 func (*WshServer) WshServerImpl() {}
 
 var WshServerImpl = WshServer{}
+var workspaceService = workspaceservice.WorkspaceService{}
+
+func (ws *WshServer) WorkspaceCreateTerminalCommand(ctx context.Context, data wshrpc.WorkspaceCreateTerminalData) (*wshrpc.WorkspaceTerminalCheckpoint, error) {
+	checkpoint, err := workspaceService.CreateTerminalTab(ctx, workspaceservice.TerminalTabCreateData(data))
+	return toRpcWorkspaceCheckpoint(checkpoint), err
+}
+
+func (ws *WshServer) WorkspaceRenameTerminalCommand(ctx context.Context, data wshrpc.WorkspaceRenameTerminalData) error {
+	return workspaceService.RenameTerminalTab(ctx, workspaceservice.TerminalTabRenameData(data))
+}
+
+func (ws *WshServer) WorkspaceCloseTerminalCommand(ctx context.Context, data wshrpc.WorkspaceTerminalData) (*wshrpc.WorkspaceTerminalCheckpoint, error) {
+	checkpoint, err := workspaceService.CloseTerminalTab(ctx, workspaceservice.TerminalTabMutationData(data))
+	return toRpcWorkspaceCheckpoint(checkpoint), err
+}
+
+func (ws *WshServer) WorkspaceReorderTerminalsCommand(ctx context.Context, data wshrpc.WorkspaceReorderTerminalsData) (*wshrpc.WorkspaceTerminalCheckpoint, error) {
+	checkpoint, err := workspaceService.ReorderTerminalTabs(ctx, workspaceservice.TerminalTabReorderData(data))
+	return toRpcWorkspaceCheckpoint(checkpoint), err
+}
+
+func (ws *WshServer) WorkspaceSaveAgentStateCommand(ctx context.Context, data wshrpc.WorkspaceSaveAgentStateData) (*wshrpc.WorkspaceAgentCheckpoint, error) {
+	checkpoint, err := workspaceService.SaveWorkspaceAgentState(ctx, workspaceservice.SaveWorkspaceAgentStateData{
+		WorkspaceId:      data.WorkspaceId,
+		ExpectedRevision: data.ExpectedRevision,
+		State:            data.State,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return toRpcWorkspaceAgentCheckpoint(checkpoint), nil
+}
+
+func toRpcWorkspaceCheckpoint(checkpoint *workspaceservice.WorkspaceCheckpoint) *wshrpc.WorkspaceTerminalCheckpoint {
+	if checkpoint == nil {
+		return nil
+	}
+	return &wshrpc.WorkspaceTerminalCheckpoint{
+		WorkspaceId:         checkpoint.WorkspaceId,
+		NavigationRevision:  checkpoint.NavigationRevision,
+		TerminalTabIds:      append([]string{}, checkpoint.TerminalTabIds...),
+		ContentState:        checkpoint.ContentState,
+		ActiveTerminalTabId: checkpoint.ActiveTerminalTabId,
+	}
+}
+
+func toRpcWorkspaceAgentCheckpoint(checkpoint *workspaceservice.WorkspaceAgentStateCheckpoint) *wshrpc.WorkspaceAgentCheckpoint {
+	if checkpoint == nil {
+		return nil
+	}
+	return &wshrpc.WorkspaceAgentCheckpoint{
+		WorkspaceId: checkpoint.WorkspaceId,
+		Revision:    checkpoint.Revision,
+		State:       checkpoint.State,
+	}
+}
 
 func (ws *WshServer) GetJwtPublicKeyCommand(ctx context.Context) (string, error) {
 	return wavejwt.GetPublicKeyBase64(), nil
@@ -177,20 +235,10 @@ func (ws *WshServer) ResetTabNameCommand(ctx context.Context, tabId string, rese
 	return nil
 }
 
-func (ws *WshServer) UpdateWorkspaceTabIdsCommand(ctx context.Context, workspaceId string, tabIds []string) error {
-	oref := waveobj.ORef{OType: waveobj.OType_Workspace, OID: workspaceId}
-	err := wcore.UpdateWorkspaceTabIds(ctx, workspaceId, tabIds)
-	if err != nil {
-		return fmt.Errorf("error updating workspace tab ids: %w", err)
-	}
-	wcore.SendWaveObjUpdate(oref)
-	return nil
-}
-
 func (ws *WshServer) SetMetaCommand(ctx context.Context, data wshrpc.CommandSetMetaData) error {
 	log.Printf("SetMetaCommand: %s | %v\n", data.ORef, data.Meta)
 	oref := data.ORef
-	err := wstore.UpdateObjectMeta(ctx, oref, data.Meta, false)
+	err := wcore.UpdateObjectMetaWithTerminalGuard(ctx, oref, data.Meta, false)
 	if err != nil {
 		return fmt.Errorf("error updating object meta: %w", err)
 	}
@@ -1470,19 +1518,27 @@ func (ws *WshServer) PathCommand(ctx context.Context, data wshrpc.PathCommandDat
 	}
 
 	if openInternal {
-		_, err := ws.CreateBlockCommand(ctx, wshrpc.CommandCreateBlockData{
-			TabId: data.TabId,
-			BlockDef: &waveobj.BlockDef{Meta: map[string]any{
-				waveobj.MetaKey_View: "preview",
-				waveobj.MetaKey_File: path,
-			}},
-			Ephemeral: true,
-			Focused:   true,
-		})
-
+		workspaceId, err := wstore.DBFindWorkspaceForTabId(ctx, data.TabId)
 		if err != nil {
-			return path, fmt.Errorf("error opening path: %w", err)
+			return path, fmt.Errorf("error resolving Terminal Tab: %w", err)
 		}
+		workspace, err := wcore.GetWorkspace(ctx, workspaceId)
+		if err != nil {
+			return path, fmt.Errorf("error resolving Workspace: %w", err)
+		}
+		if utilfn.FindStringInSlice(workspace.TerminalTabIds, data.TabId) == -1 {
+			return path, fmt.Errorf("tab %s is not a registered Terminal Tab", data.TabId)
+		}
+		wps.Broker.Publish(wps.WaveEvent{
+			Event:  wps.Event_WorkspaceOpenContent,
+			Scopes: []string{"workspace:" + workspaceId},
+			Data: wshrpc.WorkspaceOpenContentEvent{
+				WorkspaceId: workspaceId,
+				Kind:        "preview",
+				Path:        path,
+				RequestId:   uuid.NewString(),
+			},
+		})
 	} else if openExternal {
 		err := open.Run(path)
 		if err != nil {

@@ -145,14 +145,13 @@ function PreviewApp() {
 
 function initPreview() {
     installPreviewElectronApi();
-    const initOpts = {
-        tabId: PreviewTabId,
+    const initOpts: GlobalInitOptions = {
         windowId: PreviewWindowId,
         clientId: PreviewClientId,
         environment: "renderer",
+        rendererKind: "preview",
         platform: "darwin",
-        isPreview: true,
-    } as GlobalInitOptions;
+    };
     initGlobalAtoms(initOpts);
     globalStore.set(getAtoms().fullConfigAtom, {} as FullConfigType);
     GlobalModel.getInstance().initialize(initOpts);

@@ -36,7 +36,8 @@
 | 3 | Move agent-core → `packages/agent` (`@crest/agent`) | ✅ done | `e32d13e4` | ✅ |
 | 4 | Pty family → `emain/agent-tools/`, barrel + factory injection | ✅ done | `9c76b1c2` | ✅ |
 | 5 | Rest of `emain/agent` → `packages/coding-agent` | ✅ done | `9fe401ac` | ✅ |
-| 6 | Boundary test, slim config, Electron-free acceptance | ✅ done | `b822645a` | ⬜ |
+| 6 | Boundary test, slim config, Electron-free acceptance | ✅ done | `b822645a` | ✅ |
+| Integration | Merge current local `main` and preserve package boundaries | ✅ done | (this merge commit) | ⬜ |
 
 ## Task log
 
@@ -146,7 +147,28 @@
   same 3 pre-existing failing files; observability type tests 2/2 pass;
   `npm run build:dev` exits 0 with the existing `sharp` image-optimizer warnings.
 - Review: code review found one Important workflow path-filter gap; fixed and amended into
-  `b822645a`. Push is still pending from this local worktree.
+  `b822645a`. The task commit is pushed.
+
+### Local `main` integration (2026-07-27)
+
+- Merged local `main` at `8cfd80b1`, including the workspace renderer/content-isolation
+  architecture and its hosted Agent PTY runtime, into the package-extraction worktree.
+- Reconciled the hosted PTY implementation with the package fence: pure execution context,
+  PTY contracts, and ring-buffer code live in `packages/coding-agent`; the Electron/frontend
+  screen and concrete host live in `emain/agent-tools`. `AgentSessionRuntime` accepts the
+  host through dependency injection and defaults to an unavailable Electron-free host.
+- Removed the superseded terminal-block `_pty-rpc`/`_pty-screen` transport. The Electron
+  bridge now creates the concrete hosted PTY implementation and injects its command port
+  into the pure CLI-subagent factory.
+- Validation before review: merge-focused suite 257/257 passed; package boundary passed
+  under normal and slim Vitest; Electron-free acceptance printed
+  `tools: 8 harness: function`; observability type tests passed; `npm run build:dev`
+  exited 0. Full Vitest ran 2176 tests: environment-dependent failures passed when rerun
+  after building or outside the network sandbox, leaving only the two pre-existing
+  `list-provider-models`/`middleEllipsis` failing files. TypeScript reports 135 errors
+  versus 143 on the integrated local `main` baseline.
+- Relevant Go suites passed for `workspaceservice`, `wcore`, `wshserver`, and `wshremote`.
+  Independent merge review reported no Critical, Important, or Minor findings.
 
 ## How to resume after an interruption
 

@@ -211,6 +211,16 @@ function getWaveObjectValue<T extends WaveObj>(oref: string, createIfMissing = t
     return wov;
 }
 
+function getOrCreateWaveObjectValue<T extends WaveObj>(oref: string, shouldFetch: boolean): WaveObjectValue<T> {
+    let wov = getWaveObjectValue<T>(oref, false);
+    if (wov != null) {
+        return wov;
+    }
+    wov = createWaveValueObject<T>(oref, shouldFetch);
+    waveObjectValueCache.set(oref, wov);
+    return wov;
+}
+
 function loadAndPinWaveObject<T extends WaveObj>(oref: string): Promise<T> {
     const wov = getWaveObjectValue<T>(oref);
     if (wov.pendingPromise == null) {
@@ -222,13 +232,13 @@ function loadAndPinWaveObject<T extends WaveObj>(oref: string): Promise<T> {
 
 const waveObjectDerivedAtomCache = new Map<string, Atom<any>>();
 
-function getWaveObjectAtom<T extends WaveObj>(oref: string): Atom<T> {
+function getWaveObjectAtom<T extends WaveObj>(oref: string, shouldFetch = true): Atom<T> {
     const cacheKey = oref + ":value";
     let cachedAtom = waveObjectDerivedAtomCache.get(cacheKey) as Atom<T>;
     if (cachedAtom != null) {
         return cachedAtom;
     }
-    const wov = getWaveObjectValue<T>(oref);
+    const wov = getOrCreateWaveObjectValue<T>(oref, shouldFetch);
     cachedAtom = atom((get) => get(wov.dataAtom).value);
     waveObjectDerivedAtomCache.set(cacheKey, cachedAtom);
     return cachedAtom;
@@ -326,6 +336,16 @@ function setObjectValue<T extends WaveObj>(value: T, setFn?: Setter, pushToServe
     }
 }
 
+function primeWaveObject<T extends WaveObj>(value: T): void {
+    const oref = makeORef(value.otype, value.oid);
+    const wov = getOrCreateWaveObjectValue<T>(oref, false);
+    const current = globalStore.get(wov.dataAtom).value;
+    if (current != null && current.version > value.version) {
+        return;
+    }
+    globalStore.set(wov.dataAtom, { value, loading: false });
+}
+
 export {
     callBackendService,
     getObjectValue,
@@ -335,6 +355,7 @@ export {
     loadAndPinWaveObject,
     makeORef,
     mockObjectForPreview,
+    primeWaveObject,
     reloadWaveObject,
     setObjectValue,
     splitORef,

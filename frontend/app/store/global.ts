@@ -38,17 +38,21 @@ import * as WOS from "./wos";
 import { getFileSubject, waveEventSubscribeSingle } from "./wps";
 
 let globalPrimaryTabStartup: boolean = false;
+let aboutListenerInitialized = false;
 
 function initGlobal(initOpts: GlobalInitOptions) {
-    globalPrimaryTabStartup = initOpts.primaryTabStartup ?? false;
+    globalPrimaryTabStartup = initOpts.rendererKind === "terminal" ? (initOpts.primaryTabStartup ?? false) : false;
     setPlatform(initOpts.platform);
     initGlobalAtoms(initOpts);
-    try {
-        getApi().onMenuItemAbout(() => {
-            modalsModel.pushModal("AboutModal");
-        });
-    } catch (e) {
-        console.log("failed to initialize onMenuItemAbout handler", e);
+    if (!aboutListenerInitialized) {
+        aboutListenerInitialized = true;
+        try {
+            getApi().onMenuItemAbout(() => {
+                modalsModel.pushModal("AboutModal");
+            });
+        } catch (e) {
+            console.log("failed to initialize onMenuItemAbout handler", e);
+        }
     }
 }
 
@@ -523,13 +527,8 @@ function getLocalHostDisplayNameAtom(): Atom<string> {
  */
 async function openLink(uri: string, forceOpenInternally = false) {
     if (forceOpenInternally || globalStore.get(atoms.settingsAtom)?.["web:openlinksinternally"]) {
-        const blockDef: BlockDef = {
-            meta: {
-                view: "web",
-                url: uri,
-            },
-        };
-        await createBlock(blockDef);
+        const { sendWorkspaceCommand } = await import("./workspace-command-client");
+        sendWorkspaceCommand({ type: "open-url", url: uri });
     } else {
         getApi().openExternal(uri);
     }
@@ -645,14 +644,6 @@ function getConnStatusAtom(conn: string): PrimitiveAtom<ConnStatus> {
     return rtn;
 }
 
-function createTab() {
-    getApi().createTab();
-}
-
-function setActiveTab(tabId: string) {
-    getApi().setActiveTab(tabId);
-}
-
 function recordTEvent(event: string, props?: TEventProps) {
     if (isPreviewWindow()) return;
     if (props == null) {
@@ -666,7 +657,6 @@ export {
     createBlock,
     createBlockSplitHorizontally,
     createBlockSplitVertically,
-    createTab,
     fetchWaveFile,
     getAllBlockComponentModels,
     getApi,
@@ -699,7 +689,6 @@ export {
     refocusNode,
     registerBlockComponentModel,
     replaceBlock,
-    setActiveTab,
     setNodeFocus,
     setPlatform,
     subscribeToConnEvents,

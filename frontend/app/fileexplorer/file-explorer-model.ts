@@ -1,22 +1,20 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { globalStore } from "@/app/store/jotaiStore";
-import { ObjectService, WorkspaceService } from "@/app/store/services";
-import * as WOS from "@/app/store/wos";
-import { RpcApi } from "@/app/store/wshclientapi";
-import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { RightEditorModel } from "@/app/righteditor/right-editor-model";
 import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
+import { globalStore } from "@/app/store/jotaiStore";
+import { RpcApi } from "@/app/store/wshclientapi";
+import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
-import { atoms, createBlock, getApi, getFocusedBlockId, getSettingsKeyAtom } from "@/store/global";
-import { fireAndForget, sleep, stringToBase64 } from "@/util/util";
+import { getApi, getSettingsKeyAtom } from "@/store/global";
+import { joinLocalPath } from "@/util/local-path";
+import { fireAndForget } from "@/util/util";
 import { formatRemoteUri } from "@/util/waveutil";
 import * as jotai from "jotai";
 import { debounce } from "throttle-debounce";
-import { quote as shellQuote } from "shell-quote";
 import { getCachedHome } from "./file-explorer-atoms";
-import { openFileInEditorTab } from "./open-editor-tab";
+import type { FileExplorerWorkspaceActions } from "./file-explorer-workspace-actions";
 
 function compareEntries(a: FileInfo, b: FileInfo): number {
     const aDir = a.isdir ? 1 : 0;
@@ -59,6 +57,7 @@ export class FileExplorerModel {
     private debouncedFlushRefresh: () => void;
     // Keep old name for the rare case where we do need a full tree refresh (setRoot).
     private debouncedRefreshAll: () => void;
+    workspaceActions: FileExplorerWorkspaceActions | undefined;
 
     private constructor() {
         this.rootAtom = jotai.atom(getCachedHome()) as jotai.PrimitiveAtom<string>;
@@ -91,6 +90,22 @@ export class FileExplorerModel {
             FileExplorerModel.instance = new FileExplorerModel();
         }
         return FileExplorerModel.instance;
+    }
+
+    bindWorkspaceActions(actions: FileExplorerWorkspaceActions): () => void {
+        this.workspaceActions = actions;
+        return () => {
+            if (this.workspaceActions === actions) {
+                this.workspaceActions = undefined;
+            }
+        };
+    }
+
+    requireWorkspaceActions(): FileExplorerWorkspaceActions {
+        if (!this.workspaceActions) {
+            throw new Error("File Explorer Workspace actions are unavailable");
+        }
+        return this.workspaceActions;
     }
 
     // ---- Auto-refresh via native fs.watch ----
@@ -183,13 +198,15 @@ export class FileExplorerModel {
 
     private setLoading(path: string, loading: boolean): void {
         const next = new Set(globalStore.get(this.loadingPathsAtom));
-        if (loading) next.add(path); else next.delete(path);
+        if (loading) next.add(path);
+        else next.delete(path);
         globalStore.set(this.loadingPathsAtom, next);
     }
 
     private setError(path: string, msg: string | null): void {
         const next = new Map(globalStore.get(this.errorMapAtom));
-        if (msg == null) next.delete(path); else next.set(path, msg);
+        if (msg == null) next.delete(path);
+        else next.set(path, msg);
         globalStore.set(this.errorMapAtom, next);
     }
 
@@ -270,12 +287,18 @@ export class FileExplorerModel {
     }
 
     async openFile(finfo: FileInfo): Promise<void> {
-        if (finfo.isdir) { await this.toggleExpand(finfo.path); return; }
-        await openFileInEditorTab(finfo.path, this.getRootNow());
+        if (finfo.isdir) {
+            await this.toggleExpand(finfo.path);
+            return;
+        }
+        await this.requireWorkspaceActions().openFile(finfo.path);
     }
 
     async openFileInRightEditor(finfo: FileInfo): Promise<void> {
-        if (finfo.isdir) { await this.toggleExpand(finfo.path); return; }
+        if (finfo.isdir) {
+            await this.toggleExpand(finfo.path);
+            return;
+        }
         const layoutModel = WorkspaceLayoutModel.getInstance();
         layoutModel.openRightEditorTool();
         await RightEditorModel.getInstance(RightEditorProductionRpc).openFile(finfo.path, this.getRootNow());
@@ -308,24 +331,20 @@ export class FileExplorerModel {
     // ---- File operations ----
 
     private parentDir(path: string): string {
-        const idx = path.lastIndexOf("/");
-        if (idx < 0) return path;
+        const normalized = path.replace(/\\/g, "/");
+        const idx = normalized.lastIndexOf("/");
+        if (idx < 0) return normalized;
         if (idx === 0) return "/";
-        return path.slice(0, idx);
+        return normalized.slice(0, idx);
     }
 
     async commitRename(oldPath: string, newName: string): Promise<void> {
         globalStore.set(this.editingAtom, null);
         if (!newName.trim()) return;
         const dir = this.parentDir(oldPath);
-        const newPath = `${dir}/${newName.trim()}`;
+        const newPath = joinLocalPath(dir, newName.trim());
         try {
-            await RpcApi.FileMoveCommand(TabRpcClient, {
-                srcuri: formatRemoteUri(oldPath, "local"),
-                desturi: formatRemoteUri(newPath, "local"),
-            });
-            RightEditorModel.getExistingInstance()?.handleFileRenamed(oldPath, newPath);
-            await syncCodeEditorBlockRenames(oldPath, newPath);
+            await this.requireWorkspaceActions().renamePath(oldPath, newPath);
         } catch (e) {
             console.error("rename failed:", e);
         }
@@ -335,7 +354,7 @@ export class FileExplorerModel {
     async commitNewFile(parentPath: string, name: string): Promise<void> {
         globalStore.set(this.editingAtom, null);
         if (!name.trim()) return;
-        const newPath = `${parentPath}/${name.trim()}`;
+        const newPath = joinLocalPath(parentPath, name.trim());
         try {
             await RpcApi.FileCreateCommand(TabRpcClient, { info: { path: formatRemoteUri(newPath, "local") } });
         } catch (e) {
@@ -347,7 +366,7 @@ export class FileExplorerModel {
     async commitNewFolder(parentPath: string, name: string): Promise<void> {
         globalStore.set(this.editingAtom, null);
         if (!name.trim()) return;
-        const newPath = `${parentPath}/${name.trim()}`;
+        const newPath = joinLocalPath(parentPath, name.trim());
         try {
             await RpcApi.FileMkdirCommand(TabRpcClient, { info: { path: formatRemoteUri(newPath, "local") } });
         } catch (e) {
@@ -359,12 +378,7 @@ export class FileExplorerModel {
     async deleteFile(path: string): Promise<void> {
         const dir = this.parentDir(path);
         try {
-            await RpcApi.FileDeleteCommand(TabRpcClient, {
-                path: formatRemoteUri(path, "local"),
-                recursive: true,
-            });
-            RightEditorModel.getExistingInstance()?.handleFileDeleted(path);
-            await syncCodeEditorBlockDeletes(path);
+            await this.requireWorkspaceActions().deletePath(path);
         } catch (e) {
             console.error("delete failed:", e);
         }
@@ -372,118 +386,10 @@ export class FileExplorerModel {
     }
 
     async cdToDir(dir: string): Promise<void> {
-        const blockId = getFocusedBlockId();
-        if (blockId) {
-            // Inject "cd <dir>" into the currently focused terminal — same as typing it.
-            const cmd = `cd ${shellQuote([dir])}\n`;
-            RpcApi.ControllerInputCommand(TabRpcClient, {
-                blockid: blockId,
-                inputdata64: stringToBase64(cmd),
-            });
-        } else {
-            // No focused terminal — open a new one at the target dir.
-            await createBlock({ meta: { controller: "shell", view: "term", "cmd:cwd": dir } });
-        }
+        await this.requireWorkspaceActions().createTerminal(dir);
     }
 
     async openInNewTab(dir: string): Promise<void> {
-        // Create a new Wave tab, then open a terminal block at the given directory.
-        // Wait for staticTabId to flip to the new tab instead of a fixed sleep(200) —
-        // slow hosts regularly miss that window and the block lands in the old tab.
-        const before = globalStore.get(atoms.staticTabId);
-        getApi().createTab();
-        const deadline = Date.now() + 3000;
-        while (Date.now() < deadline) {
-            const current = globalStore.get(atoms.staticTabId);
-            if (current !== before && current !== "") break;
-            await sleep(30);
-        }
-        // `block:kind: "folder"` is the marker the workspace switcher
-        // reads to render the tab as a folder-explorer tab (folder icon
-        // + dir-name label + cwd subtitle) instead of a plain terminal.
-        // MetaType is a closed-string index but ts-ignore keeps the build
-        // green until we extend the index.
-        // @ts-ignore — MetaType is closed; the switcher reads this key.
-        await createBlock({ meta: { controller: "shell", view: "term", "cmd:cwd": dir, "block:kind": "folder" } });
+        await this.requireWorkspaceActions().createTerminal(dir);
     }
-}
-
-async function syncCodeEditorBlockRenames(oldPath: string, newPath: string): Promise<void> {
-    const matches = await findCodeEditorBlocksForPath(oldPath);
-    await Promise.all(
-        matches.map(({ block, blockId }) =>
-            ObjectService.UpdateObjectMeta(WOS.makeORef("block", blockId), {
-                ...block.meta,
-                file: replacePathPrefix(block.meta.file as string, oldPath, newPath),
-            })
-        )
-    );
-}
-
-async function syncCodeEditorBlockDeletes(path: string): Promise<void> {
-    const matches = await findCodeEditorBlocksForPath(path);
-    const matchesByTabId = new Map<string, CodeEditorBlockMatch[]>();
-    for (const match of matches) {
-        const tabMatches = matchesByTabId.get(match.tabId) ?? [];
-        tabMatches.push(match);
-        matchesByTabId.set(match.tabId, tabMatches);
-    }
-    const operations: Promise<unknown>[] = [];
-    for (const [tabId, tabMatches] of matchesByTabId.entries()) {
-        const tab = tabMatches[0]?.tab;
-        if (!tab) continue;
-        if (tabMatches.length >= tab.blockids.length) {
-            operations.push(WorkspaceService.CloseTab(tabMatches[0].workspaceId, tabId, false));
-            continue;
-        }
-        for (const { blockId } of tabMatches) {
-            operations.push(ObjectService.DeleteBlock(blockId));
-        }
-    }
-    await Promise.all(operations);
-}
-
-type CodeEditorBlockMatch = {
-    tabId: string;
-    workspaceId: string;
-    tab: Tab;
-    blockId: string;
-    block: Block;
-};
-
-async function findCodeEditorBlocksForPath(targetPath: string): Promise<CodeEditorBlockMatch[]> {
-    const workspace = globalStore.get(atoms.workspace);
-    const tabIds = workspace?.tabids ?? [];
-    const workspaceId = workspace?.oid ?? "";
-    const matches: CodeEditorBlockMatch[] = [];
-    for (const tabId of tabIds) {
-        const tab = await loadWaveObject<Tab>("tab", tabId, "codeeditor sync");
-        if (!tab) continue;
-        for (const blockId of tab.blockids ?? []) {
-            const block = await loadWaveObject<Block>("block", blockId, "codeeditor sync");
-            const filePath = block?.meta?.file;
-            if (block?.meta?.view === "codeeditor" && typeof filePath === "string" && isPathOrChild(filePath, targetPath)) {
-                matches.push({ tabId, workspaceId, tab, blockId, block });
-            }
-        }
-    }
-    return matches;
-}
-
-async function loadWaveObject<T extends WaveObj>(otype: string, oid: string, context: string): Promise<T | null> {
-    try {
-        return await WOS.loadAndPinWaveObject<T>(WOS.makeORef(otype, oid));
-    } catch (e) {
-        console.warn(`failed to load ${otype} while ${context}`, oid, e);
-        return null;
-    }
-}
-
-function isPathOrChild(path: string, targetPath: string): boolean {
-    return path === targetPath || path.startsWith(`${targetPath}/`);
-}
-
-function replacePathPrefix(path: string, oldPrefix: string, newPrefix: string): string {
-    if (path === oldPrefix) return newPrefix;
-    return `${newPrefix}${path.slice(oldPrefix.length)}`;
 }

@@ -36,7 +36,7 @@ func GetStarterLayout() PortableLayout {
 	return PortableLayout{
 		{IndexArr: []int{0}, BlockDef: &waveobj.BlockDef{
 			Meta: waveobj.MetaMapType{
-				waveobj.MetaKey_View:       "agent",
+				waveobj.MetaKey_View:       "termblocks",
 				waveobj.MetaKey_Controller: "shell",
 			},
 		}, Focused: true},
@@ -121,6 +121,32 @@ func QueueLayoutActionForTab(ctx context.Context, tabId string, actions ...waveo
 }
 
 func ApplyPortableLayout(ctx context.Context, tabId string, layout PortableLayout, recordTelemetry bool) error {
+	var terminalDomain bool
+	err := wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
+		var err error
+		terminalDomain, err = validateTerminalDomainTabWrite(tx, tabId, nil)
+		if err != nil || !terminalDomain {
+			return err
+		}
+		views := make([]string, 0, len(layout))
+		for _, layoutAction := range layout {
+			if err := validateBlockDef(layoutAction.BlockDef); err != nil {
+				return err
+			}
+			views = append(views, layoutAction.BlockDef.Meta.GetString(waveobj.MetaKey_View, ""))
+		}
+		if _, err := validateTerminalDomainTabWrite(tx, tabId, views); err != nil {
+			return err
+		}
+		return applyTerminalPortableLayoutInTx(tx, tabId, layout)
+	})
+	if err != nil {
+		return fmt.Errorf("unable to apply Terminal portable layout to tab %s: %w", tabId, err)
+	}
+	if terminalDomain {
+		return nil
+	}
+
 	actions := make([]waveobj.LayoutActionData, len(layout)+1)
 	actions[0] = waveobj.LayoutActionData{ActionType: LayoutActionDataType_ClearTree}
 	for i := 0; i < len(layout); i++ {
@@ -140,7 +166,7 @@ func ApplyPortableLayout(ctx context.Context, tabId string, layout PortableLayou
 		}
 	}
 
-	err := QueueLayoutActionForTab(ctx, tabId, actions...)
+	err = QueueLayoutActionForTab(ctx, tabId, actions...)
 	if err != nil {
 		return fmt.Errorf("unable to queue layout actions for portable layout: %w", err)
 	}
@@ -171,6 +197,9 @@ func BootstrapStarterLayout(ctx context.Context) error {
 	workspace, err := wstore.DBMustGet[*waveobj.Workspace](ctx, window.WorkspaceId)
 	if err != nil {
 		return fmt.Errorf("error getting workspace: %w", err)
+	}
+	if workspace.TabDomainVersion >= waveobj.CurrentTabDomainVersion {
+		return nil
 	}
 
 	tabId := workspace.ActiveTabId

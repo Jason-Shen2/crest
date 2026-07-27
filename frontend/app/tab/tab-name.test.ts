@@ -64,12 +64,11 @@ describe("deriveBlockDisplayName", () => {
     it("uses the cwd directory name for terminal blocks", () => {
         expect(deriveBlockDisplayName(makeBlock({ view: "term", "cmd:cwd": "/repo/src" }))).toBe("src");
         expect(deriveBlockDisplayName(makeBlock({ view: "termblocks", "cmd:cwd": "/repo/src" }))).toBe("src");
-        expect(deriveBlockDisplayName(makeBlock({ view: "agent", "cmd:cwd": "/repo/src" }))).toBe("src");
     });
 
     it("returns empty for a terminal that has not reported a cwd yet", () => {
         expect(deriveBlockDisplayName(makeBlock({ view: "term" }))).toBe("");
-        expect(deriveBlockDisplayName(makeBlock({ view: "agent" }))).toBe("");
+        expect(deriveBlockDisplayName(makeBlock({ view: "termblocks" }))).toBe("");
     });
 
     it("uses the url for web blocks", () => {

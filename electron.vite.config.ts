@@ -92,6 +92,7 @@ export default defineConfig({
         build: {
             target: NODE,
             rollupOptions: {
+                external: ["node-pty"],
                 input: {
                     index: "emain/emain.ts",
                 },
@@ -181,6 +182,7 @@ export default defineConfig({
                     index: "index.html",
                 },
                 output: {
+                    onlyExplicitManualChunks: true,
                     manualChunks(id) {
                         const p = id.replace(/\\/g, "/");
                         if (p.includes("node_modules/monaco") || p.includes("node_modules/@monaco")) return "monaco";

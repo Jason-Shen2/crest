@@ -33,6 +33,12 @@
 // See docs/agent-rendering-architecture.md.
 
 import type { Api, ImageContent, Model } from "@crest/ai";
+import {
+    makeUnavailableAgentPtyHost,
+    type AgentPtyCommandPort,
+    type AgentPtyHost,
+    type AgentPtySnapshot,
+} from "./agent-pty-host";
 import type { SystemPromptInputs } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import { filterTreeForDisplay } from "./commands/session-views";
@@ -77,6 +83,7 @@ export interface AgentSessionRuntimeState {
     status: AgentSessionRuntimeStatus;
     errorMessage?: string;
     contextReports: ContextProjectionReport[];
+    commands: AgentPtySnapshot[];
 }
 
 export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
@@ -90,11 +97,13 @@ interface AgentSessionRuntimeStateEvent {
     steer: AgentMessage[];
     followUp: AgentMessage[];
     contextReports: ContextProjectionReport[];
+    commands: AgentPtySnapshot[];
 }
 
 export interface AgentSessionRuntimeOptions {
     onTurnFinished?: AgentTurnFinishedHook;
     initialContextEntries?: SessionTreeEntry[];
+    ptyHost?: AgentPtyHost;
 }
 
 export interface AgentExecutionConfig {
@@ -208,6 +217,7 @@ export class AgentSessionRuntime {
     listeners = new Set<AgentSessionRuntimeListener>();
     unsubscribeHarness: () => void;
     onTurnFinished: AgentTurnFinishedHook | undefined;
+    ptyHost: AgentPtyHost;
 
     constructor(
         path: string,
@@ -219,6 +229,8 @@ export class AgentSessionRuntime {
         this.path = path;
         this.host = host;
         this.onTurnFinished = options.onTurnFinished;
+        this.ptyHost = options.ptyHost ?? makeUnavailableAgentPtyHost();
+        this.ptyHost.setOnUpdate?.(() => this.emitSessionState());
         // Seed the transcript from the persisted session so a REOPENED
         // conversation shows its history. A fresh session passes []. New
         // messages then accumulate via the live stream on top of this.
@@ -237,7 +249,7 @@ export class AgentSessionRuntime {
     }
 
     isRunning(): boolean {
-        return !this.host.harness.isIdle();
+        return !this.host.harness.isIdle() || this.ptyHost.hasRunningCommands();
     }
 
     async syncExecutionConfig(config: AgentExecutionConfig): Promise<void> {
@@ -416,6 +428,7 @@ export class AgentSessionRuntime {
             status: this.status,
             errorMessage: this.errorMessage,
             contextReports: this.contextReports,
+            commands: this.ptyHost.snapshots(),
         };
     }
 
@@ -498,7 +511,7 @@ export class AgentSessionRuntime {
         return this.host.session.getLeafId();
     }
 
-    dispose(): void {
+    async dispose(): Promise<void> {
         this.unsubscribeHarness();
         this.listeners.clear();
         // Reject any send() promises still awaiting a userEntryId — the
@@ -506,9 +519,37 @@ export class AgentSessionRuntime {
         // never arrive.
         this.rejectPendingSends(new Error("session disposed before the user message was committed"));
         this.ignoredCommittedEntryIds.clear();
-        void this.host.harness.abort().catch(() => {
-            // best-effort on teardown
-        });
+        try {
+            await Promise.allSettled([this.host.harness.abort(), this.ptyHost.dispose()]);
+        } finally {
+            this.host.session.close();
+        }
+    }
+
+    async startHostedCommand(
+        command: string,
+        context: import("./agent-execution-context").AgentExecutionContext
+    ): Promise<{ port: AgentPtyCommandPort; snapshot: AgentPtySnapshot }> {
+        const snapshot = await this.ptyHost.start(command, context);
+        const port = this.ptyHost.getCommandPort(snapshot.commandId);
+        this.emitSessionState();
+        return { port, snapshot };
+    }
+
+    readHostedCommand(commandId: string): AgentPtySnapshot {
+        return this.ptyHost.read(commandId);
+    }
+
+    async writeHostedCommand(commandId: string, input: string): Promise<void> {
+        await this.ptyHost.write(commandId, input);
+    }
+
+    resizeHostedCommand(commandId: string, cols: number, rows: number): void {
+        this.ptyHost.resize(commandId, cols, rows);
+    }
+
+    async stopHostedCommand(commandId: string): Promise<void> {
+        await this.ptyHost.stop(commandId);
     }
 
     private rejectPendingSends(err: unknown): void {
@@ -764,6 +805,7 @@ export class AgentSessionRuntime {
             steer: this.steerQueue,
             followUp: this.followUpQueue,
             contextReports: this.contextReports,
+            commands: this.ptyHost.snapshots(),
         };
         for (const listener of this.listeners) {
             try {

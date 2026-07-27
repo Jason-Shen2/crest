@@ -172,13 +172,17 @@ export class WaveTabView extends WebContentsView {
         }
         this.webContents.on("destroyed", () => {
             wcIdToWaveTabMap.delete(wcId);
-            removeWaveTabView(this.waveTabId);
+            removeWaveTabView(this.waveTabId, this);
             this.isDestroyed = true;
         });
         this.setBackgroundColor(computeBgColor(fullConfig));
     }
 
     get waveTabId(): string {
+        return this._waveTabId;
+    }
+
+    get terminalTabId(): string {
         return this._waveTabId;
     }
 
@@ -208,12 +212,12 @@ export class WaveTabView extends WebContentsView {
         if (
             curBounds.width == winBounds.width &&
             curBounds.height == winBounds.height &&
-            curBounds.x == 0 &&
-            curBounds.y == 0
+            curBounds.x == winBounds.x &&
+            curBounds.y == winBounds.y
         ) {
             return;
         }
-        this.setBounds({ x: 0, y: 0, width: winBounds.width, height: winBounds.height });
+        this.setBounds(winBounds);
     }
 
     positionTabOffScreen(winBounds: Rectangle) {
@@ -371,8 +375,11 @@ export function setWaveTabView(waveTabId: string, wcv: WaveTabView): void {
     checkAndEvictCache();
 }
 
-function removeWaveTabView(waveTabId: string): void {
+function removeWaveTabView(waveTabId: string, expectedView?: WaveTabView): void {
     if (waveTabId == null) {
+        return;
+    }
+    if (expectedView && wcvCache.get(waveTabId) !== expectedView) {
         return;
     }
     wcvCache.delete(waveTabId);

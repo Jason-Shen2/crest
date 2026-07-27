@@ -163,19 +163,11 @@ export class WorkspaceServiceType {
         this.waveEnv = waveEnv;
     }
 
-    // @returns CloseTabRtn (and object updates)
-    CloseTab(workspaceId: string, tabId: string, fromElectron: boolean): Promise<CloseTabRtnType> {
-        return callBackendService(this?.waveEnv, "workspace", "CloseTab", Array.from(arguments))
+    CloseTerminalTab(arg2: TerminalTabMutationData): Promise<WorkspaceCheckpoint> {
+        return callBackendService(this?.waveEnv, "workspace", "CloseTerminalTab", Array.from(arguments))
     }
-
-    // @returns tabId (and object updates)
-    CreateTab(workspaceId: string, tabName: string, activateTab: boolean): Promise<string> {
-        return callBackendService(this?.waveEnv, "workspace", "CreateTab", Array.from(arguments))
-    }
-
-    // @returns tabId (and object updates)
-    CreateTabWithBlock(workspaceId: string, tabName: string, activateTab: boolean, blockDef: BlockDef): Promise<string> {
-        return callBackendService(this?.waveEnv, "workspace", "CreateTabWithBlock", Array.from(arguments))
+    CreateTerminalTab(arg2: TerminalTabCreateData): Promise<WorkspaceCheckpoint> {
+        return callBackendService(this?.waveEnv, "workspace", "CreateTerminalTab", Array.from(arguments))
     }
 
     // @returns workspaceId
@@ -205,15 +197,25 @@ export class WorkspaceServiceType {
     ListWorkspaces(): Promise<WorkspaceListEntry[]> {
         return callBackendService(this?.waveEnv, "workspace", "ListWorkspaces", Array.from(arguments))
     }
-
-    // @returns object updates
-    SetActiveTab(workspaceId: string, tabId: string): Promise<void> {
-        return callBackendService(this?.waveEnv, "workspace", "SetActiveTab", Array.from(arguments))
+    RenameTerminalTab(arg2: TerminalTabRenameData): Promise<void> {
+        return callBackendService(this?.waveEnv, "workspace", "RenameTerminalTab", Array.from(arguments))
+    }
+    ReorderTerminalTabs(arg2: TerminalTabReorderData): Promise<WorkspaceCheckpoint> {
+        return callBackendService(this?.waveEnv, "workspace", "ReorderTerminalTabs", Array.from(arguments))
+    }
+    SaveWorkspaceAgentState(arg2: SaveWorkspaceAgentStateData): Promise<WorkspaceAgentStateCheckpoint> {
+        return callBackendService(this?.waveEnv, "workspace", "SaveWorkspaceAgentState", Array.from(arguments))
+    }
+    SaveWorkspaceCheckpoint(data: SaveWorkspaceCheckpointData): Promise<SaveWorkspaceCheckpointResult> {
+        return callBackendService(this?.waveEnv, "workspace", "SaveWorkspaceCheckpoint", Array.from(arguments))
     }
 
     // @returns object updates
     UpdateWorkspace(workspaceId: string, name: string, icon: string, color: string, applyDefaults: boolean): Promise<void> {
         return callBackendService(this?.waveEnv, "workspace", "UpdateWorkspace", Array.from(arguments))
+    }
+    ValidateWorkspaceTerminalTab(workspaceId: string, terminalTabId: string): Promise<boolean> {
+        return callBackendService(this?.waveEnv, "workspace", "ValidateWorkspaceTerminalTab", Array.from(arguments))
     }
 }
 

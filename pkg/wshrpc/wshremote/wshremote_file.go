@@ -217,7 +217,10 @@ func (impl *ServerImpl) RemoteListEntriesCommand(ctx context.Context, data wshrp
 		}
 		innerFilesEntries := []os.DirEntry{}
 		seen := 0
-		if data.Opts.Limit == 0 {
+		if data.Opts.Offset < 0 {
+			data.Opts.Offset = 0
+		}
+		if data.Opts.Limit <= 0 || data.Opts.Limit > wshrpc.MaxDirSize {
 			data.Opts.Limit = wshrpc.MaxDirSize
 		}
 		if data.Opts.All {
@@ -226,28 +229,35 @@ func (impl *ServerImpl) RemoteListEntriesCommand(ctx context.Context, data wshrp
 				return
 			}
 			fs.WalkDir(os.DirFS(path), ".", func(path string, d fs.DirEntry, err error) error {
-				defer func() {
-					seen++
-				}()
-				if seen < data.Opts.Offset {
-					return nil
-				}
-				if seen >= data.Opts.Offset+data.Opts.Limit {
-					return io.EOF
-				}
 				if err != nil {
 					return err
 				}
 				if d.IsDir() {
 					return nil
 				}
+				if seen < data.Opts.Offset {
+					seen++
+					return nil
+				}
+				if len(innerFilesEntries) >= data.Opts.Limit {
+					return io.EOF
+				}
 				innerFilesEntries = append(innerFilesEntries, d)
+				seen++
 				return nil
 			})
 		} else {
-			innerFilesEntries, err = os.ReadDir(path)
+			dir, openErr := os.Open(path)
+			if openErr != nil {
+				ch <- wshutil.RespErr[wshrpc.CommandRemoteListEntriesRtnData](fmt.Errorf("cannot open dir %q: %w", path, openErr))
+				return
+			}
+			defer dir.Close()
+			// A globally sorted page requires enumerating the whole directory. Bounded pages instead follow one
+			// native directory stream; UI consumers that require name order already sort the returned page.
+			innerFilesEntries, err = readBoundedDirEntries(dir.ReadDir, data.Opts.Offset, data.Opts.Limit)
 			if err != nil {
-				ch <- wshutil.RespErr[wshrpc.CommandRemoteListEntriesRtnData](fmt.Errorf("cannot open dir %q: %w", path, err))
+				ch <- wshutil.RespErr[wshrpc.CommandRemoteListEntriesRtnData](fmt.Errorf("cannot read dir %q: %w", path, err))
 				return
 			}
 		}
@@ -276,6 +286,45 @@ func (impl *ServerImpl) RemoteListEntriesCommand(ctx context.Context, data wshrp
 		}
 	}()
 	return ch
+}
+
+func readBoundedDirEntries(
+	readDir func(int) ([]os.DirEntry, error),
+	offset int,
+	limit int,
+) ([]os.DirEntry, error) {
+	for remaining := offset; remaining > 0; {
+		requestSize := min(remaining, wshrpc.DirChunkSize)
+		entries, err := readDir(requestSize)
+		remaining -= len(entries)
+		if err == io.EOF {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) == 0 {
+			return nil, io.ErrNoProgress
+		}
+	}
+
+	var result []os.DirEntry
+	for remaining := limit; remaining > 0; {
+		requestSize := min(remaining, wshrpc.DirChunkSize)
+		entries, err := readDir(requestSize)
+		result = append(result, entries...)
+		remaining -= len(entries)
+		if err == io.EOF {
+			return result, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) == 0 {
+			return nil, io.ErrNoProgress
+		}
+	}
+	return result, nil
 }
 
 func statToFileInfo(fullPath string, finfo fs.FileInfo, extended bool) *wshrpc.FileInfo {

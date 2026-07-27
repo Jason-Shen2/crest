@@ -7,7 +7,7 @@ import { toggleRightPanelFromTopBar } from "@/app/topbar/topbar-right-panel";
 import * as jotai from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultRightToolPanelState } from "./right-tool-panel-state";
-import { RightToolPanelMetaKey, WorkspaceLayoutModel } from "./workspace-layout-model";
+import { LeftPanelMetaKey, RightToolPanelMetaKey, WorkspaceLayoutModel } from "./workspace-layout-model";
 
 const mockGlobal = vi.hoisted(() => ({
     workspaceAtom: null as jotai.PrimitiveAtom<Workspace>,
@@ -99,6 +99,12 @@ function setWorkspace(oid: string, meta: Record<string, any> = {}): void {
         meta,
         tabids: [],
         activetabid: "",
+        navigationrevision: 0,
+        agentstate: {},
+        contentstate: {
+            activecontent: { kind: "agent" },
+            toptabs: [],
+        },
     };
     mockGlobal.metaValues.set(`workspace:${oid}`, meta);
     globalStore.set(mockGlobal.workspaceAtom, workspace);
@@ -109,6 +115,135 @@ function getPersistedRightToolPanelState() {
     const lastCall = calls[calls.length - 1];
     return lastCall?.[1]?.meta?.[RightToolPanelMetaKey];
 }
+
+describe("WorkspaceLayoutModel left panel state", () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        setWindowWidth(1200);
+        vi.mocked(RpcApi.SetMetaCommand).mockClear();
+        mockGlobal.metaAtoms.clear();
+        mockGlobal.metaValues.clear();
+        mockGlobal.settingsAtoms.clear();
+        WorkspaceLayoutModel.resetInstance();
+    });
+
+    it("switches one shared left panel between mutually exclusive modes", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+
+        model.toggleLeftPanel("files");
+        expect(globalStore.get(model.leftPanelAtom)).toEqual({ visible: true, mode: "files", width: 260 });
+
+        model.toggleLeftPanel("terminals");
+        expect(globalStore.get(model.leftPanelAtom)).toEqual({ visible: true, mode: "terminals", width: 260 });
+
+        model.toggleLeftPanel("terminals");
+        expect(globalStore.get(model.leftPanelAtom)).toEqual({ visible: false, mode: "terminals", width: 260 });
+    });
+
+    it("restores one width for every left panel mode", () => {
+        setWorkspace("ws-a", {
+            [LeftPanelMetaKey]: { visible: true, mode: "sessions", width: 312 },
+        });
+
+        const model = WorkspaceLayoutModel.getInstance();
+
+        expect(globalStore.get(model.leftPanelAtom)).toEqual({
+            visible: true,
+            mode: "sessions",
+            width: 312,
+        });
+    });
+
+    it.each([
+        [
+            { visible: "yes", mode: "sessions", width: 312 },
+            { visible: false, mode: "files", width: 260 },
+        ],
+        [
+            { visible: true, mode: "bad", width: 312 },
+            { visible: false, mode: "files", width: 260 },
+        ],
+        [
+            { visible: true, mode: "sessions", width: -1 },
+            { visible: false, mode: "files", width: 260 },
+        ],
+    ])("uses the full default when persisted state is invalid", (saved, expected) => {
+        setWorkspace("ws-a", { [LeftPanelMetaKey]: saved });
+
+        const model = WorkspaceLayoutModel.getInstance();
+
+        expect(globalStore.get(model.leftPanelAtom)).toEqual(expected);
+    });
+
+    it("previews width without persisting and debounces committed width", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+        vi.mocked(RpcApi.SetMetaCommand).mockClear();
+
+        model.previewLeftPanelWidth(300);
+        expect(globalStore.get(model.leftPanelAtom).width).toBe(300);
+        expect(RpcApi.SetMetaCommand).not.toHaveBeenCalled();
+
+        model.setLeftPanelWidth(312);
+        expect(RpcApi.SetMetaCommand).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(300);
+
+        expect(RpcApi.SetMetaCommand).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(RpcApi.SetMetaCommand).mock.calls[0][1]).toMatchObject({
+            oref: "workspace:ws-a",
+            meta: {
+                [LeftPanelMetaKey]: { visible: false, mode: "files", width: 312 },
+            },
+        });
+    });
+
+    it("never lets a pending width timer write into a different workspace or survive reset", () => {
+        setWorkspace("ws-a");
+        const firstModel = WorkspaceLayoutModel.getInstance();
+        firstModel.setLeftPanelWidth(312);
+
+        setWorkspace("ws-b");
+        WorkspaceLayoutModel.resetInstance();
+        WorkspaceLayoutModel.getInstance().toggleLeftPanel("sessions");
+        vi.advanceTimersByTime(300);
+
+        const calls = vi.mocked(RpcApi.SetMetaCommand).mock.calls;
+        expect(
+            calls.some((call) => call[1].oref === "workspace:ws-b" && call[1].meta?.[LeftPanelMetaKey]?.width === 312)
+        ).toBe(false);
+    });
+
+    it("persists the latest state after rapid toggles", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+        vi.mocked(RpcApi.SetMetaCommand).mockClear();
+
+        model.toggleLeftPanel("sessions");
+        model.toggleLeftPanel("terminals");
+        model.setLeftPanelWidth(333);
+        vi.advanceTimersByTime(300);
+
+        const persisted = vi.mocked(RpcApi.SetMetaCommand).mock.calls.at(-1)?.[1].meta?.[LeftPanelMetaKey];
+        expect(persisted).toEqual({ visible: true, mode: "terminals", width: 333 });
+    });
+
+    it("reads a target workspace left panel state without mutating the singleton atom", () => {
+        setWorkspace("ws-a", {
+            [LeftPanelMetaKey]: { visible: true, mode: "sessions", width: 300 },
+        });
+        const model = WorkspaceLayoutModel.getInstance();
+        const wsAState = globalStore.get(model.leftPanelAtom);
+        setWorkspace("ws-b", {
+            [LeftPanelMetaKey]: { visible: true, mode: "terminals", width: 340 },
+        });
+
+        const wsBState = model.getLeftPanelStateForWorkspace("ws-b", wsAState);
+
+        expect(wsBState).toEqual({ visible: true, mode: "terminals", width: 340 });
+        expect(globalStore.get(model.leftPanelAtom)).toEqual(wsAState);
+    });
+});
 
 describe("WorkspaceLayoutModel right tool panel state", () => {
     beforeEach(() => {
@@ -160,7 +295,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
 
         expect(globalStore.get(model.rightToolPanelAtom)).toMatchObject({
             visible: false,
-            width: 620,
+            width: 840,
             openedTools: ["browser"],
             activeTool: "browser",
             focused: true,
@@ -168,7 +303,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         });
         expect(getPersistedRightToolPanelState()).toEqual({
             visible: false,
-            width: 620,
+            width: 840,
             openedTools: ["browser"],
             activeTool: "browser",
             toolState: {},
@@ -178,21 +313,18 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         });
     });
 
-    it("reserves visible left panels and the main content floor when clamping right panel width", () => {
+    it("reserves the visible left panel and the main content floor when clamping right panel width", () => {
         setWorkspace("ws-a");
         const model = WorkspaceLayoutModel.getInstance();
-        globalStore.set(model.vtabVisibleAtom, true);
-        globalStore.set(model.vtabWidthAtom, 248);
-        globalStore.set(model.fileExplorerVisibleAtom, true);
-        globalStore.set(model.fileExplorerWidthAtom, 260);
+        globalStore.set(model.leftPanelAtom, { visible: true, mode: "files", width: 260 });
 
-        expect(model.getRightToolPanelMaxWidth(1200, true, 248, true, 260)).toBe(372);
+        expect(model.getRightToolPanelMaxWidth(1200, true, 260)).toBe(620);
 
         model.setRightToolPanelWidth(99999);
 
-        expect(globalStore.get(model.rightToolPanelAtom).width).toBe(372);
+        expect(globalStore.get(model.rightToolPanelAtom).width).toBe(620);
         expect(getPersistedRightToolPanelState()).toMatchObject({
-            width: 372,
+            width: 620,
         });
     });
 

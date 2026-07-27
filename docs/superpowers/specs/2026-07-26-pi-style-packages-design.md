@@ -72,7 +72,7 @@ line that spreads it.
 
 | Coupling point | Decision |
 | --- | --- |
-| `emain/agent/tools/_pty-rpc.ts`, `_pty-screen.ts` (import `ElectronWshClient`, frontend `RpcApi`, lazy `emain-web`/`emain-tabview`) | Stay in Electron land. Move to `emain/agent-tools/` together with `pty-read`, `pty-write`, `pty-transfer`, and `spawn-cli-agent`. These are host-provided tools, injected into coding-agent via the existing tool-injection parameters. |
+| Agent PTY transport and screen rendering | The original terminal-block `_pty-rpc.ts`/`_pty-screen.ts` transport moved to Electron land during extraction and was later superseded when local `main` introduced the hosted PTY runtime. Pure PTY contracts, execution context, and ring buffer live in `packages/coding-agent`; the concrete host and frontend terminal-engine screen live in `emain/agent-tools`. Electron injects the host and its tools into coding-agent. |
 | `emain/agent/tools/index.ts:33` static re-export of `spawn-cli-agent` | Delete the re-export. This alone makes `tools/` and `eval/` import-clean. |
 | `cli-subagent-factory.ts` imports three pty tool factories | Change signature to accept the pty tools as an `AgentTool[]` parameter; the file itself is pure and moves into `packages/coding-agent`. |
 | `emain/ai/models-dev-overlay.ts` (transitively Electron- and frontend-coupled via `emain-platform`) | Moves to `emain/models-dev-overlay.ts` (the `emain/ai` directory goes away). It is not exported from the `ai` barrel; its only consumers are `emain/emain.ts` and `emain/aiconfig/`, which repoint. It imports nothing from ai internals (only `fs`, `path`, `../emain-platform`), so the move is a one-line import fix. |

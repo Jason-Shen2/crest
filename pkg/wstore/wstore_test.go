@@ -5,6 +5,8 @@ package wstore
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +14,145 @@ import (
 	"github.com/s-zx/crest/pkg/wavebase"
 	"github.com/s-zx/crest/pkg/waveobj"
 )
+
+func TestAfterCommitRunsOnlyAfterSuccessfulOutermostCommit(t *testing.T) {
+	ctx := setupWStoreTest(t)
+	var callbackOrder []string
+	outerReturned := false
+	err := WithTx(ctx, func(tx *TxWrap) error {
+		if err := RegisterAfterCommit(tx, func(context.Context) error {
+			if outerReturned {
+				t.Fatalf("callback ran after WithTx returned instead of before return")
+			}
+			callbackOrder = append(callbackOrder, "outer")
+			return nil
+		}); err != nil {
+			return err
+		}
+		if err := WithTx(tx.Context(), func(nestedTx *TxWrap) error {
+			return RegisterAfterCommit(nestedTx, func(context.Context) error {
+				callbackOrder = append(callbackOrder, "nested")
+				return nil
+			})
+		}); err != nil {
+			return err
+		}
+		if len(callbackOrder) != 0 {
+			t.Fatalf("callback ran before outer commit")
+		}
+		return nil
+	})
+	outerReturned = true
+	if err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+	if fmt.Sprint(callbackOrder) != "[outer nested]" {
+		t.Fatalf("callback order = %v, want [outer nested]", callbackOrder)
+	}
+}
+
+func TestAfterCommitDoesNotRunOnRollback(t *testing.T) {
+	ctx := setupWStoreTest(t)
+	callbackRan := false
+	err := WithTx(ctx, func(tx *TxWrap) error {
+		if err := RegisterAfterCommit(tx, func(context.Context) error {
+			callbackRan = true
+			return nil
+		}); err != nil {
+			return err
+		}
+		return fmt.Errorf("rollback")
+	})
+	if err == nil {
+		t.Fatalf("WithTx unexpectedly committed")
+	}
+	if callbackRan {
+		t.Fatalf("callback ran after rollback")
+	}
+}
+
+func TestAfterCommitLogsCallbackErrorsAndPreservesCommitSuccess(t *testing.T) {
+	ctx := setupWStoreTest(t)
+	firstErr := errors.New("first callback")
+	secondRan := false
+	tab := &waveobj.Tab{OID: "after-commit-error-tab"}
+	err := WithTx(ctx, func(tx *TxWrap) error {
+		if err := DBInsert(tx.Context(), tab); err != nil {
+			return err
+		}
+		if err := RegisterAfterCommit(tx, func(context.Context) error {
+			return firstErr
+		}); err != nil {
+			return err
+		}
+		return RegisterAfterCommit(tx, func(context.Context) error {
+			secondRan = true
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("WithTx returned post-commit callback error: %v", err)
+	}
+	if !secondRan {
+		t.Fatalf("callback after error did not run")
+	}
+	if committedTab, _ := DBGet[*waveobj.Tab](ctx, tab.OID); committedTab == nil {
+		t.Fatalf("callback error rolled back committed database transaction")
+	}
+}
+
+func TestAfterCommitRecoversCallbackPanicAndPreservesCommitSuccess(t *testing.T) {
+	ctx := setupWStoreTest(t)
+	secondRan := false
+	err := WithTx(ctx, func(tx *TxWrap) error {
+		if err := RegisterAfterCommit(tx, func(context.Context) error {
+			panic("cleanup panic")
+		}); err != nil {
+			return err
+		}
+		return RegisterAfterCommit(tx, func(context.Context) error {
+			secondRan = true
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("WithTx returned post-commit callback panic: %v", err)
+	}
+	if !secondRan {
+		t.Fatalf("callback after panic did not run")
+	}
+}
+
+func TestAfterCommitUsesIndependentBoundedContext(t *testing.T) {
+	baseCtx := setupWStoreTest(t)
+	type requestContextKey struct{}
+	requestCtx := context.WithValue(baseCtx, requestContextKey{}, "request")
+	callbackRan := false
+	err := WithTx(requestCtx, func(tx *TxWrap) error {
+		if err := RegisterAfterCommit(tx, func(callbackCtx context.Context) error {
+			callbackRan = true
+			if callbackCtx.Err() != nil {
+				t.Fatalf("callback context inherited cancellation: %v", callbackCtx.Err())
+			}
+			if callbackCtx.Value(requestContextKey{}) != nil {
+				t.Fatalf("callback context inherited request values")
+			}
+			if _, ok := callbackCtx.Deadline(); !ok {
+				t.Fatalf("callback context has no deadline")
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+	if !callbackRan {
+		t.Fatalf("callback did not run")
+	}
+}
 
 func TestUpdateTabNameMarksTabAsManual(t *testing.T) {
 	ctx := setupWStoreTest(t)

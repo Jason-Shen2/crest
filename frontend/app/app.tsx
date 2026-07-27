@@ -17,7 +17,8 @@ import { makeWaveEnvImpl } from "@/app/waveenv/waveenvimpl";
 import { Workspace } from "@/app/workspace/workspace";
 import { getLayoutModelForStaticTab } from "@/layout/index";
 import { ContextMenuModel } from "@/store/contextmenu";
-import { atoms, createBlock, getSettingsPrefixAtom, refocusNode } from "@/store/global";
+import { atoms, getSettingsPrefixAtom, refocusNode } from "@/store/global";
+import { sendWorkspaceCommand } from "@/app/store/workspace-command-client";
 import { appHandleKeyDown, keyboardMouseDownHandler } from "@/store/keymodel";
 import { getElemAsStr } from "@/util/focusutil";
 import * as keyutil from "@/util/keyutil";
@@ -26,17 +27,11 @@ import * as util from "@/util/util";
 import clsx from "clsx";
 import debug from "debug";
 import { Provider, useAtomValue } from "jotai";
-import "overlayscrollbars/overlayscrollbars.css";
 import { useEffect, useRef } from "react";
 import { DndProvider } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { AppBackground } from "./app-bg";
 import { CenteredDiv } from "./element/quickelems";
-
-import "./app.scss";
-
-// tailwindsetup.css should come *after* app.scss (don't remove the newline above otherwise prettier will reorder these imports)
-import "../tailwindsetup.css";
 
 const dlog = debug("wave:app");
 const focusLog = debug("wave:focus");
@@ -125,12 +120,7 @@ async function handleContextMenu(e: React.MouseEvent<HTMLDivElement>) {
         menu.push({
             label: "Open Clipboard URL (" + clipboardURL.hostname + ")",
             click: () => {
-                createBlock({
-                    meta: {
-                        view: "web",
-                        url: clipboardURL.toString(),
-                    },
-                });
+                sendWorkspaceCommand({ type: "open-url", url: clipboardURL.toString() });
             },
         });
     }

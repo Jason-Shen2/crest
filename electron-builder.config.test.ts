@@ -34,4 +34,13 @@ describe("electron-builder config", () => {
             ],
         });
     });
+
+    it("external native node-pty files are packaged outside ASAR", () => {
+        expect(config.files).toContainEqual({
+            from: "node_modules/node-pty",
+            to: "node_modules/node-pty",
+            filter: expect.arrayContaining(["package.json", "build/Release/**/*", "lib/**/*", "prebuilds/**/*"]),
+        });
+        expect(config.asarUnpack).toContain("node_modules/node-pty/**");
+    });
 });

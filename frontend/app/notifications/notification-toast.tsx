@@ -76,14 +76,10 @@ const ToastCard = memo(({ note, onDismiss }: { note: AppNotification; onDismiss:
             </div>
             <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-1 mb-0.5">
-                    {note.title && (
-                        <span className="text-[11px] text-secondary truncate">{note.title}</span>
-                    )}
+                    {note.title && <span className="text-[11px] text-secondary truncate">{note.title}</span>}
                     <span className="text-[10px] text-secondary/60 shrink-0 ml-auto">{timeAgoShort(note.ts)}</span>
                 </div>
-                <div className="text-[12px] font-semibold text-primary leading-tight line-clamp-2">
-                    {note.body}
-                </div>
+                <div className="text-[12px] font-semibold text-primary leading-tight line-clamp-2">{note.body}</div>
             </div>
             <button
                 type="button"
@@ -101,10 +97,9 @@ const ToastCard = memo(({ note, onDismiss }: { note: AppNotification; onDismiss:
 });
 ToastCard.displayName = "ToastCard";
 
-export const NotificationToastStacker = memo(() => {
+const NotificationToastStackerView = memo(({ activeTabId }: { activeTabId?: string }) => {
     const model = ToastModel.getInstance();
     const toasts = useAtomValue(model.toastsAtom);
-    const activeTabId = useAtomValue(atoms.staticTabId);
     const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
     const handleDismiss = (id: string) => {
@@ -151,4 +146,13 @@ export const NotificationToastStacker = memo(() => {
         document.body
     );
 });
+NotificationToastStackerView.displayName = "NotificationToastStackerView";
+
+export const NotificationToastStacker = memo(() => {
+    const activeTabId = useAtomValue(atoms.staticTabId);
+    return <NotificationToastStackerView activeTabId={activeTabId} />;
+});
 NotificationToastStacker.displayName = "NotificationToastStacker";
+
+export const WorkspaceNotificationToastStacker = memo(() => <NotificationToastStackerView />);
+WorkspaceNotificationToastStacker.displayName = "WorkspaceNotificationToastStacker";

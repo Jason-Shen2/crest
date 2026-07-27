@@ -2,43 +2,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { BlockNodeModel } from "@/app/block/blocktypes";
-import { GitDiffViewModel } from "@/app/gitdiff";
 import type { TabModel } from "@/app/store/tab-model";
-import { FileEditorViewModel } from "@/app/view/codeeditor/file-editor-model";
-import { AgentViewModel } from "@/app/view/agentblock/agent-model";
-import { LauncherViewModel } from "@/app/view/launcher/launcher";
-import { PreviewModel } from "@/app/view/preview/preview-model";
-import { ProcessViewerViewModel } from "@/app/view/processviewer/processviewer";
-import { SysinfoViewModel } from "@/app/view/sysinfo/sysinfo";
-import { TermBlocksViewModel } from "@/app/view/termblocks/termblocks";
-import { TsunamiViewModel } from "@/app/view/tsunami/tsunami";
-import { VDomModel } from "@/app/view/vdom/vdom-model";
 import { WaveEnv } from "@/app/waveenv/waveenv";
 import { atom } from "jotai";
-import { QuickTipsViewModel } from "../view/quicktipsview/quicktipsview";
-import { WaveConfigViewModel } from "../view/waveconfig/waveconfig-model";
 import { blockViewToIcon, blockViewToName } from "./blockutil";
-import { HelpViewModel } from "@/view/helpview/helpview";
-import { TermViewModel } from "@/view/term/term-model";
-import { WebViewModel } from "@/view/webview/webview";
 
 const BlockRegistry: Map<string, ViewModelClass> = new Map();
-BlockRegistry.set("term", TermViewModel);
-BlockRegistry.set("agent", AgentViewModel);
-BlockRegistry.set("preview", PreviewModel);
-BlockRegistry.set("codeeditor", FileEditorViewModel);
-BlockRegistry.set("web", WebViewModel);
-BlockRegistry.set("gitdiff", GitDiffViewModel);
-BlockRegistry.set("cpuplot", SysinfoViewModel);
-BlockRegistry.set("sysinfo", SysinfoViewModel);
-BlockRegistry.set("vdom", VDomModel);
-BlockRegistry.set("tips", QuickTipsViewModel);
-BlockRegistry.set("help", HelpViewModel);
-BlockRegistry.set("launcher", LauncherViewModel);
-BlockRegistry.set("tsunami", TsunamiViewModel);
-BlockRegistry.set("waveconfig", WaveConfigViewModel);
-BlockRegistry.set("processviewer", ProcessViewerViewModel);
-BlockRegistry.set("termblocks", TermBlocksViewModel);
+
+function registerBlockViewModel(viewType: string, viewModel: ViewModelClass): void {
+    BlockRegistry.set(viewType, viewModel);
+}
+
+function clearBlockViewModels(): void {
+    BlockRegistry.clear();
+}
+
+function getRegisteredBlockViewTypes(): string[] {
+    return Array.from(BlockRegistry.keys()).sort();
+}
 
 function makeDefaultViewModel(viewType: string): ViewModel {
     const viewModel: ViewModel = {
@@ -66,4 +47,4 @@ function makeViewModel(
     return makeDefaultViewModel(blockView);
 }
 
-export { makeViewModel };
+export { clearBlockViewModels, getRegisteredBlockViewTypes, makeViewModel, registerBlockViewModel };

@@ -9,7 +9,7 @@ import {
 } from "@assistant-ui/react";
 import type { FC, PropsWithChildren } from "react";
 
-import { Thread } from "@/app/term/render/assistant-ui";
+import { Thread } from "@/app/agent/assistant-ui";
 
 const messages: ThreadMessageLike[] = [
     {

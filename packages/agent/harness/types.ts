@@ -459,6 +459,7 @@ export interface SessionDetailInfo {
 }
 
 export interface SessionStorage<TMetadata extends SessionMetadata = SessionMetadata> {
+	close?(): void;
 	getMetadata(): Promise<TMetadata>;
 	getLeafId(): Promise<string | null>;
 	/** Persist a leaf entry that records the active session-tree leaf. */

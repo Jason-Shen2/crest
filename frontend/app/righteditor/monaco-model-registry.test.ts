@@ -72,6 +72,29 @@ describe("MonacoModelRegistry", () => {
         expect(second.getValue()).toBe("export const a = 1;");
     });
 
+    it("supports independently constructed workspace registries", () => {
+        const firstRegistry = new MonacoModelRegistry();
+        const secondRegistry = new MonacoModelRegistry();
+        const first = firstRegistry.getOrCreateModel({
+            path: "workspace-1:/repo/a.ts",
+            uri: "wave://workspace/workspace-1/%2Frepo%2Fa.ts",
+            text: "one",
+            language: "typescript",
+        });
+        secondRegistry.getOrCreateModel({
+            path: "workspace-2:/repo/a.ts",
+            uri: "wave://workspace/workspace-2/%2Frepo%2Fa.ts",
+            text: "two",
+            language: "typescript",
+        });
+
+        firstRegistry.disposeAll();
+
+        expect((first as unknown as MockModel).disposed).toBe(true);
+        expect(secondRegistry.getModelByPath("workspace-2:/repo/a.ts")?.getValue()).toBe("two");
+        secondRegistry.disposeAll();
+    });
+
     it("updates model language without replacing the model", () => {
         const registry = MonacoModelRegistry.getInstance();
         const model = registry.getOrCreateModel({

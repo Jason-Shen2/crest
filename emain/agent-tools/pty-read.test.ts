@@ -1,85 +1,110 @@
 import { describe, expect, it, vi } from "vitest";
 
-let tailResp = { text: "recent output", isrunning: true, altscreen: false, exitcode: undefined as number | undefined };
-const readBlockIds: string[] = [];
-vi.mock("./_pty-rpc", () => ({
-    getCmdBlockTail: async (blockId: string) => {
-        readBlockIds.push(blockId);
-        return tailResp;
-    },
-}));
-// Screen snapshot backend: by default it fails (renderer unavailable) so
-// pty_read falls back to transcript; individual tests can swap in a
-// resolving snapshot via screenSnapshotImpl.
-let screenSnapshotImpl: (blockId: string) => Promise<unknown> = async () => {
-    throw new Error("renderer unavailable");
-};
-vi.mock("./_pty-screen", () => ({
-    getScreenSnapshot: (blockId: string) => screenSnapshotImpl(blockId),
-}));
-
+import type { AgentPtyCommandPort, AgentPtySnapshot } from "@crest/coding-agent/agent-pty-host";
 import { createPtyReadTool } from "./pty-read";
 
+function makePort(overrides: Partial<AgentPtyCommandPort> = {}): AgentPtyCommandPort {
+    return {
+        commandId: "cmd-real",
+        read: vi.fn(() => ({
+            commandId: "cmd-real",
+            command: "npm run dev",
+            cwd: "/tmp",
+            tail: "recent output",
+            screen: {
+                rows: [{ text: "screen output", cells: [] }],
+                cursor: { row: 0, col: 6, visible: true, shape: "block", blink: false },
+                isAltScreenActive: false,
+            },
+            running: true,
+            cols: 80,
+            rows: 24,
+            needsUserInput: false,
+        }) as AgentPtySnapshot),
+        write: vi.fn(async () => {}),
+        resize: vi.fn(() => {}),
+        requestUserInput: vi.fn(() => {}),
+        stop: vi.fn(async () => {}),
+        ...overrides,
+    };
+}
+
 describe("pty_read", () => {
-    it("does not require the model to provide a block_id", () => {
-        const tool = createPtyReadTool("blk1");
-        expect((tool.parameters as { required?: string[] }).required ?? []).not.toContain("block_id");
+    it("does not require the model to provide a command_id", () => {
+        const tool = createPtyReadTool(makePort());
+        expect((tool.parameters as { required?: string[] }).required ?? []).not.toContain("command_id");
     });
 
-    it("always reads the bound block even if the model guesses a placeholder block_id", async () => {
-        readBlockIds.length = 0;
-        tailResp = { text: "recent output", isrunning: true, altscreen: false, exitcode: undefined };
-        const tool = createPtyReadTool("blk-real");
-        const r = await tool.execute("t1", { block_id: "default", mode: "auto" });
-        expect(readBlockIds).toEqual(["blk-real"]);
-        expect(r.details).toMatchObject({ block_id: "blk-real" });
+    it("always reads the bound command even if the model guesses a placeholder command_id", async () => {
+        const port = makePort();
+        const tool = createPtyReadTool(port);
+        const r = await tool.execute("t1", { command_id: "default", mode: "auto" });
+        expect(port.read).toHaveBeenCalledOnce();
+        expect(r.details).toMatchObject({ command_id: "cmd-real" });
     });
 
-    it("auto + altscreen=false returns transcript_tail", async () => {
-        readBlockIds.length = 0;
-        tailResp = { text: "recent output", isrunning: true, altscreen: false, exitcode: undefined };
-        const tool = createPtyReadTool("blk1");
-        const r = await tool.execute("t1", { block_id: "blk1", mode: "auto" });
+    it("auto + altscreen=false returns transcript tail", async () => {
+        const tool = createPtyReadTool(makePort());
+        const r = await tool.execute("t1", { mode: "auto" });
         expect(r.details).toMatchObject({ source: "transcript_tail", is_running: true, approximate: true });
         expect(r.content[0]).toMatchObject({ type: "text", text: "recent output" });
     });
 
-    it("auto + altscreen=true degrades to transcript when renderer fails", async () => {
-        tailResp = { text: "vim buffer tail", isrunning: true, altscreen: true, exitcode: undefined };
-        const tool = createPtyReadTool("blk1");
-        const r = await tool.execute("t1", { block_id: "blk1", mode: "auto" });
-        expect(r.details).toMatchObject({ source: "transcript_tail", degraded: true });
-    });
-
-    it("auto + altscreen=true returns screen_snapshot when renderer answers", async () => {
-        tailResp = { text: "vim buffer tail", isrunning: true, altscreen: true, exitcode: undefined };
-        screenSnapshotImpl = async (blockId: string) => ({
-            grid_contents: "line one\nline <|cursor|>two",
-            cursor: "<|cursor|>",
+    it("auto + altscreen=true returns hosted screen snapshot without renderer fallback", async () => {
+        const tool = createPtyReadTool(
+            makePort({
+                read: vi.fn(() => ({
+                    commandId: "cmd-real",
+                    command: "vim",
+                    cwd: "/tmp",
+                    tail: "vim buffer tail",
+                    screen: {
+                        rows: [
+                            { text: "line one", cells: [] },
+                            { text: "line two", cells: [] },
+                        ],
+                        cursor: { row: 1, col: 4, visible: true, shape: "block", blink: false },
+                        isAltScreenActive: true,
+                    },
+                    running: true,
+                    cols: 80,
+                    rows: 24,
+                    needsUserInput: false,
+                }) as AgentPtySnapshot),
+            })
+        );
+        const r = await tool.execute("t1", { mode: "auto" });
+        expect(r.details).toMatchObject({
+            source: "screen_snapshot",
             is_alt_screen_active: true,
-            block_id: blockId,
+            is_running: true,
         });
-        try {
-            const tool = createPtyReadTool("blk1");
-            const r = await tool.execute("t1", { block_id: "blk1", mode: "auto" });
-            expect(r.details).toMatchObject({
-                source: "screen_snapshot",
-                is_alt_screen_active: true,
-                is_running: true,
-            });
-            expect((r.content[0] as { text: string }).text).toContain("line one");
-            expect((r.content[0] as { text: string }).text).toContain("<|cursor|>");
-        } finally {
-            screenSnapshotImpl = async () => {
-                throw new Error("renderer unavailable");
-            };
-        }
+        expect((r.content[0] as { text: string }).text).toContain("line one");
+        expect((r.content[0] as { text: string }).text).toContain("[cursor: row 2, col 5]");
     });
 
     it("reports exit_code when finished", async () => {
-        tailResp = { text: "done", isrunning: false, altscreen: false, exitcode: 0 };
-        const tool = createPtyReadTool("blk1");
-        const r = await tool.execute("t1", { block_id: "blk1", mode: "transcript" });
+        const tool = createPtyReadTool(
+            makePort({
+                read: vi.fn(() => ({
+                    commandId: "cmd-real",
+                    command: "done",
+                    cwd: "/tmp",
+                    tail: "done",
+                    screen: {
+                        rows: [],
+                        cursor: { row: 0, col: 0, visible: true, shape: "block", blink: false },
+                        isAltScreenActive: false,
+                    },
+                    running: false,
+                    exitCode: 0,
+                    cols: 80,
+                    rows: 24,
+                    needsUserInput: false,
+                }) as AgentPtySnapshot),
+            })
+        );
+        const r = await tool.execute("t1", { mode: "transcript" });
         expect(r.details).toMatchObject({ is_running: false, exit_code: 0 });
     });
 });

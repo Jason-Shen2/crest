@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JsonlSessionRepo } from "@crest/agent/harness/session/jsonl-repo";
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import { foldContextJournal } from "./context/journal";
+import { Session } from "@crest/agent/harness/session/session";
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import { SqliteSessionStorage } from "@crest/agent/harness/session/sqlite-storage";
 import { SqliteDb } from "@crest/agent/harness/session/sqlite-driver";
@@ -427,6 +428,32 @@ describe("SqliteSessionStorage", () => {
 		await expect(reopened.getEntries()).rejects.toThrow(/valid JSON/i);
 		reopened.close();
 	});
+
+	it("Session closes a storage handle only once", () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		const close = vi.spyOn(storage, "close");
+		const session = new Session(storage);
+
+		session.close();
+		session.close();
+
+		expect(close).toHaveBeenCalledOnce();
+	});
+
+	it("Session retries storage close after a failure", () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		const closeStorage = storage.close.bind(storage);
+		const failure = new Error("close failed");
+		const close = vi.spyOn(storage, "close").mockImplementationOnce(() => {
+			throw failure;
+		});
+		close.mockImplementationOnce(closeStorage);
+		const session = new Session(storage);
+
+		expect(() => session.close()).toThrow(failure);
+		expect(() => session.close()).not.toThrow();
+		expect(close).toHaveBeenCalledTimes(2);
+	});
 });
 
 describe("SqliteSessionRepo — drop-in for JsonlSessionRepo", () => {
@@ -517,11 +544,70 @@ describe("SqliteSessionRepo — drop-in for JsonlSessionRepo", () => {
 		expect(await repo.list({ cwd: "/tmp/never-touched" })).toEqual([]);
 	});
 
-	it("delete removes the session file", async () => {
+	it("delete stages the session under .trash and can restore it to the original path", async () => {
 		const created = await repo.create({ cwd: "/tmp/proj-del" });
 		const meta = await created.getMetadata();
 		await repo.delete(meta);
+		const trashRoot = path.join(path.dirname(meta.path), ".trash");
+		const [uniqueDir] = await fs.readdir(trashRoot);
+		const deletedPath = path.join(trashRoot, uniqueDir, path.basename(meta.path));
+
 		await expect(fs.access(meta.path)).rejects.toThrow();
+		await expect(fs.access(deletedPath)).resolves.toBeUndefined();
+		expect(await repo.list({ cwd: meta.cwd })).toEqual([]);
+
+		await repo.restoreMovedSession({ ...meta, path: deletedPath }, meta.path);
+
+		await expect(fs.access(meta.path)).resolves.toBeUndefined();
+		await expect(fs.access(deletedPath)).rejects.toThrow();
+		await expect(fs.readdir(trashRoot)).resolves.toEqual([]);
+	});
+
+	it("preserves existing archive and trash destinations when staging a matching basename", async () => {
+		for (const directoryName of [".archive", ".trash"] as const) {
+			const created = await repo.create({ cwd: `/tmp/proj-collision-${directoryName}` });
+			const meta = await created.getMetadata();
+			const stagingRoot = path.join(path.dirname(meta.path), directoryName);
+			const existingPath = path.join(stagingRoot, path.basename(meta.path));
+			await fs.mkdir(stagingRoot, { recursive: true });
+			await fs.writeFile(existingPath, `existing ${directoryName}`);
+
+			const moved =
+				directoryName === ".archive" ? await repo.archive(meta) : await repo.stageDelete(meta);
+
+			expect(moved.path).not.toBe(existingPath);
+			await expect(fs.readFile(existingPath, "utf8")).resolves.toBe(`existing ${directoryName}`);
+			await expect(fs.access(moved.path)).resolves.toBeUndefined();
+			await expect(repo.open(moved)).resolves.toBeDefined();
+		}
+	});
+
+	it("rename appends a session name event visible in listDetails", async () => {
+		const created = await repo.create({ cwd: "/tmp/proj-rename" });
+		const meta = await created.getMetadata();
+		created.close();
+		const close = vi.spyOn(SqliteSessionStorage.prototype, "close");
+
+		await repo.rename(meta, "Better name");
+
+		expect(close).toHaveBeenCalledOnce();
+		const details = await repo.listDetails({ cwd: "/tmp/proj-rename" });
+		expect(details).toHaveLength(1);
+		expect(details[0].name).toBe("Better name");
+	});
+
+	it("archive moves the database under the cwd archive sibling and excludes it from normal lists", async () => {
+		const created = await repo.create({ cwd: "/tmp/proj-archive" });
+		const meta = await created.getMetadata();
+
+		const archived = await repo.archive(meta);
+
+		await expect(fs.access(meta.path)).rejects.toThrow();
+		await expect(fs.access(archived.path)).resolves.toBeUndefined();
+		expect(path.basename(path.dirname(path.dirname(archived.path)))).toBe(".archive");
+		expect(archived.cwd).toBe(meta.cwd);
+		expect(await repo.list({ cwd: "/tmp/proj-archive" })).toEqual([]);
+		expect(await repo.listDetails({ cwd: "/tmp/proj-archive" })).toEqual([]);
 	});
 
 	it("listDetails derives messageCount, firstMessage and previewText", async () => {

@@ -15,6 +15,7 @@ import {
 } from "@/app/suggestion/suggestion";
 import { MockBoundary } from "@/app/waveenv/mockboundary";
 import { useWaveEnv } from "@/app/waveenv/waveenv";
+import { sendWorkspaceCommand } from "@/app/store/workspace-command-client";
 import { openLink } from "@/store/global";
 import { adaptFromReactOrNativeKeyEvent, checkKeyPressed } from "@/util/keyutil";
 import { fireAndForget, useAtomValueSafe } from "@/util/util";
@@ -756,13 +757,7 @@ const BookmarkTypeahead = memo(
         const openBookmarksJson = () => {
             fireAndForget(async () => {
                 const path = `${env.electron.getConfigDir()}/presets/bookmarks.json`;
-                const blockDef: BlockDef = {
-                    meta: {
-                        view: "preview",
-                        file: path,
-                    },
-                };
-                await env.createBlock(blockDef, false, true);
+                sendWorkspaceCommand({ type: "open-preview", path });
                 model.setTypeaheadOpen(false);
             });
         };

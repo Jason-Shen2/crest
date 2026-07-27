@@ -1,8 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// WorkspaceLayoutModel — owns visibility + px width for the two left
-// panels (VTabBar + FileExplorer).  Mirrors warp's pattern (LeftPanelView
+// WorkspaceLayoutModel — owns mode, visibility, and px width for one
+// left panel. Mirrors warp's pattern (LeftPanelView
 // + ResizableData / WindowSnapshot in app/src/workspace/view/left_panel.rs
 // and app/src/terminal/resizable_data.rs):
 //
@@ -24,15 +24,12 @@
 // dozens of meta writes.
 
 import { globalStore } from "@/app/store/jotaiStore";
-import { ObjectService, WorkspaceService } from "@/app/store/services";
-import { isBuilderWindow } from "@/app/store/windowtype";
-import * as WOS from "@/app/store/wos";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { getLayoutModelForStaticTab } from "@/layout/lib/layoutModelHooks";
-import { atoms, getApi, getOrefMetaKeyAtom, getSettingsKeyAtom, refocusNode } from "@/store/global";
+import { atoms, getOrefMetaKeyAtom, refocusNode } from "@/store/global";
+import * as WOS from "@/app/store/wos";
 import * as jotai from "jotai";
-import { debounce } from "lodash-es";
 import type { RightToolId, RightToolPanelState } from "./right-tool-panel-state";
 import {
     closeRightTool,
@@ -50,27 +47,38 @@ import {
 //   warp/drive/panel.rs:38           MIN_SIDEBAR_WIDTH      = 250.
 //   warp/drive/panel.rs:39           MAX_SIDEBAR_WIDTH_RATIO = 0.75
 //   warp/terminal/resizable_data.rs:16  DEFAULT_LEFT_PANEL_WIDTH = 240.
-// crest tweaks: VTab+FE coexist (warp has one panel with view-switcher),
-// so we give the FE a slightly tighter max and the VTab a narrower band
-// so the two together can't crowd the terminal off the screen.
-const VTabBar_DefaultWidth = 248;
-const VTabBar_MinWidth = 200;
-const VTabBar_MaxWidth = 360;
+// crest keeps one shared slot for files, sessions, and terminals.
+const LeftPanelDefaultWidth = 260;
+const LeftPanelMinWidth = 180;
+const LeftPanelMaxWidthRatio = 0.5;
 
-const FileExplorer_DefaultWidth = 260;
-const FileExplorer_MinWidth = 180;
-const FileExplorer_MaxWidthRatio = 0.5;
-
-// Floor for the content panel — together both side panels can never
+// Floor for the content panel — side panels can never
 // take more than (window - this) px.  Matches the spirit of warp's
 // max_width clamp without needing a runtime window-size callback.
 const Content_MinWidth = 320;
 const RightToolPanelWindowWidthFallback = 1200;
 export const RightToolPanelMetaKey = "layout:righttoolpanel";
+export const LeftPanelMetaKey = "layout:leftpanel";
+
+export type LeftPanelMode = "files" | "sessions" | "terminals";
+type PersistedLeftPanelState = NonNullable<MetaType[typeof LeftPanelMetaKey]>;
+export type LeftPanelState = Omit<PersistedLeftPanelState, "mode"> & {
+    mode: LeftPanelMode;
+};
+
+const DefaultLeftPanelState: LeftPanelState = {
+    visible: false,
+    mode: "files",
+    width: LeftPanelDefaultWidth,
+};
 
 function clamp(value: number, min: number, max: number): number {
     if (max < min) return min;
     return Math.max(min, Math.min(value, max));
+}
+
+function isLeftPanelMode(mode: string): mode is LeftPanelMode {
+    return mode === "files" || mode === "sessions" || mode === "terminals";
 }
 
 function getRightToolPanelWindowWidth(): number {
@@ -81,15 +89,8 @@ class WorkspaceLayoutModel {
     private static instance: WorkspaceLayoutModel | null = null;
 
     // ---- Source-of-truth atoms ----
-    // Visibility booleans — toggle flips them, view skips render when false.
-    vtabVisibleAtom: jotai.PrimitiveAtom<boolean>;
-    fileExplorerVisibleAtom: jotai.PrimitiveAtom<boolean>;
-    sessionsPanelVisibleAtom: jotai.PrimitiveAtom<boolean>;
-    agentTabIdAtom: jotai.PrimitiveAtom<string>;
-    // Widths in px.  Workspace.tsx reads these via useAtomValue.
-    vtabWidthAtom: jotai.PrimitiveAtom<number>;
-    fileExplorerWidthAtom: jotai.PrimitiveAtom<number>;
-    // Right-side code-review panel — orthogonal to the two left panels.
+    leftPanelAtom: jotai.PrimitiveAtom<LeftPanelState>;
+    // Right-side code-review panel — orthogonal to the left panel.
     codeReviewVisibleAtom: jotai.PrimitiveAtom<boolean>;
     codeReviewWideAtom: jotai.PrimitiveAtom<boolean>;
     // Legacy: AI panel was removed but external callers still import the
@@ -97,51 +98,18 @@ class WorkspaceLayoutModel {
     panelVisibleAtom: jotai.PrimitiveAtom<boolean>;
     rightToolPanelAtom: jotai.PrimitiveAtom<RightToolPanelState>;
 
-    private debouncedPersistVTabWidth: () => void;
-    private debouncedPersistFileExplorerWidth: () => void;
+    private leftPanelPersistTimer: ReturnType<typeof setTimeout>;
+    private hydratedLeftPanelWorkspaceId = "";
     private hydratedRightToolPanelWorkspaceId = "";
 
     private constructor() {
-        this.vtabVisibleAtom = jotai.atom(false);
-        this.fileExplorerVisibleAtom = jotai.atom(true);
-        this.sessionsPanelVisibleAtom = jotai.atom(false);
-        this.agentTabIdAtom = jotai.atom("");
-        this.vtabWidthAtom = jotai.atom(VTabBar_DefaultWidth);
-        this.fileExplorerWidthAtom = jotai.atom(FileExplorer_DefaultWidth);
+        this.leftPanelAtom = jotai.atom({ ...DefaultLeftPanelState });
         this.codeReviewVisibleAtom = jotai.atom(false);
         this.codeReviewWideAtom = jotai.atom(false);
         this.panelVisibleAtom = jotai.atom(false);
         this.rightToolPanelAtom = jotai.atom({ ...DefaultRightToolPanelState });
 
         this.initializeFromMeta();
-
-        this.debouncedPersistVTabWidth = debounce(() => {
-            if (!globalStore.get(this.vtabVisibleAtom)) return;
-            const width = globalStore.get(this.vtabWidthAtom);
-            if (width <= 0) return;
-            try {
-                RpcApi.SetMetaCommand(TabRpcClient, {
-                    oref: WOS.makeORef("workspace", this.getWorkspaceId()),
-                    meta: { "layout:vtabbarwidth": width },
-                });
-            } catch (e) {
-                console.warn("Failed to persist vtabbar width:", e);
-            }
-        }, 300);
-
-        this.debouncedPersistFileExplorerWidth = debounce(() => {
-            if (!globalStore.get(this.fileExplorerVisibleAtom)) return;
-            const width = globalStore.get(this.fileExplorerWidthAtom);
-            if (width <= 0) return;
-            try {
-                RpcApi.SetMetaCommand(TabRpcClient, {
-                    oref: WOS.makeORef("workspace", this.getWorkspaceId()),
-                    meta: { "layout:fileexplorerwidth": width },
-                });
-            } catch (e) {
-                console.warn("Failed to persist file explorer width:", e);
-            }
-        }, 300);
     }
 
     static getInstance(): WorkspaceLayoutModel {
@@ -152,6 +120,9 @@ class WorkspaceLayoutModel {
     }
 
     static resetInstance(): void {
+        if (WorkspaceLayoutModel.instance?.leftPanelPersistTimer != null) {
+            clearTimeout(WorkspaceLayoutModel.instance.leftPanelPersistTimer);
+        }
         WorkspaceLayoutModel.instance = null;
     }
 
@@ -161,30 +132,12 @@ class WorkspaceLayoutModel {
         return globalStore.get(atoms.workspace)?.oid ?? "";
     }
 
-    private getVTabBarWidthAtom(): jotai.Atom<number> {
-        return getOrefMetaKeyAtom(WOS.makeORef("workspace", this.getWorkspaceId()), "layout:vtabbarwidth");
+    private getLeftPanelMetaAtomForWorkspace(workspaceId: string): jotai.Atom<PersistedLeftPanelState> {
+        return getOrefMetaKeyAtom(WOS.makeORef("workspace", workspaceId), LeftPanelMetaKey);
     }
 
-    private getFileExplorerVisibleAtom(): jotai.Atom<boolean> {
-        return getOrefMetaKeyAtom(WOS.makeORef("workspace", this.getWorkspaceId()), "layout:fileexplorervisible");
-    }
-
-    private getFileExplorerWidthAtom(): jotai.Atom<number> {
-        return getOrefMetaKeyAtom(WOS.makeORef("workspace", this.getWorkspaceId()), "layout:fileexplorerwidth");
-    }
-
-    private getSessionsPanelVisibleAtom(): jotai.Atom<boolean> {
-        return getOrefMetaKeyAtom(
-            WOS.makeORef("workspace", this.getWorkspaceId()),
-            "layout:sessionpanelvisible" as keyof MetaType
-        ) as jotai.Atom<boolean>;
-    }
-
-    private getAgentTabIdAtom(): jotai.Atom<string> {
-        return getOrefMetaKeyAtom(
-            WOS.makeORef("workspace", this.getWorkspaceId()),
-            "layout:agenttabid" as keyof MetaType
-        ) as jotai.Atom<string>;
+    private getLeftPanelMetaAtom(): jotai.Atom<PersistedLeftPanelState> {
+        return this.getLeftPanelMetaAtomForWorkspace(this.getWorkspaceId());
     }
 
     private getRightToolPanelMetaAtomForWorkspace(workspaceId: string): jotai.Atom<Partial<RightToolPanelState>> {
@@ -200,38 +153,62 @@ class WorkspaceLayoutModel {
 
     private initializeFromMeta(): void {
         try {
-            const savedVTabWidth = globalStore.get(this.getVTabBarWidthAtom());
-            const savedFileExplorerVisible = globalStore.get(this.getFileExplorerVisibleAtom());
-            const savedFileExplorerWidth = globalStore.get(this.getFileExplorerWidthAtom());
-            if (savedVTabWidth != null && savedVTabWidth > 0) {
-                globalStore.set(this.vtabWidthAtom, clamp(savedVTabWidth, VTabBar_MinWidth, VTabBar_MaxWidth));
-            }
-            if (savedFileExplorerVisible != null) {
-                globalStore.set(this.fileExplorerVisibleAtom, savedFileExplorerVisible);
-            }
-            if (savedFileExplorerWidth != null && savedFileExplorerWidth > 0) {
-                // Initial FE width clamp is min-only; the runtime max
-                // depends on the live window width, which the view
-                // re-clamps on drag.
-                globalStore.set(this.fileExplorerWidthAtom, Math.max(FileExplorer_MinWidth, savedFileExplorerWidth));
-            }
-            const savedSessionsVisible = globalStore.get(this.getSessionsPanelVisibleAtom());
-            if (savedSessionsVisible != null) {
-                globalStore.set(this.sessionsPanelVisibleAtom, savedSessionsVisible);
-                if (savedSessionsVisible) {
-                    globalStore.set(this.fileExplorerVisibleAtom, false);
-                }
-            }
-            const savedAgentTabId = globalStore.get(this.getAgentTabIdAtom());
-            if (typeof savedAgentTabId === "string") {
-                globalStore.set(this.agentTabIdAtom, savedAgentTabId);
-            }
-            const tabBarPosition = globalStore.get(getSettingsKeyAtom("app:tabbar")) ?? "top";
-            const showLeftTabBar = tabBarPosition === "left" && !isBuilderWindow();
-            globalStore.set(this.vtabVisibleAtom, showLeftTabBar);
+            this.hydrateLeftPanelFromWorkspace();
             this.hydrateRightToolPanelFromWorkspace();
         } catch (e) {
             console.warn("Failed to initialize from tab meta:", e);
+        }
+    }
+
+    hydrateLeftPanelFromWorkspace(): void {
+        const workspaceId = this.getWorkspaceId();
+        if (this.leftPanelPersistTimer != null) {
+            clearTimeout(this.leftPanelPersistTimer);
+            this.leftPanelPersistTimer = undefined;
+        }
+        const saved = globalStore.get(this.getLeftPanelMetaAtom());
+        const state = this.normalizeLeftPanelState(saved);
+        globalStore.set(this.leftPanelAtom, state);
+        this.hydratedLeftPanelWorkspaceId = workspaceId;
+    }
+
+    private normalizeLeftPanelState(saved: PersistedLeftPanelState): LeftPanelState {
+        if (
+            typeof saved?.visible !== "boolean" ||
+            !isLeftPanelMode(saved.mode) ||
+            !Number.isFinite(saved.width) ||
+            saved.width <= 0
+        ) {
+            return { ...DefaultLeftPanelState };
+        }
+        return {
+            visible: saved.visible,
+            mode: saved.mode,
+            width: clamp(saved.width, LeftPanelMinWidth, this.getLeftPanelMaxWidth(getRightToolPanelWindowWidth())),
+        };
+    }
+
+    private ensureLeftPanelWorkspaceCurrent(): void {
+        if (this.hydratedLeftPanelWorkspaceId === this.getWorkspaceId()) return;
+        this.hydrateLeftPanelFromWorkspace();
+    }
+
+    getLeftPanelStateForWorkspace(workspaceId: string, hydratedState: LeftPanelState): LeftPanelState {
+        if (this.hydratedLeftPanelWorkspaceId === workspaceId) {
+            return hydratedState;
+        }
+        return this.normalizeLeftPanelState(globalStore.get(this.getLeftPanelMetaAtomForWorkspace(workspaceId)));
+    }
+
+    private persistLeftPanelState(workspaceId: string, state: LeftPanelState): void {
+        if (workspaceId !== this.getWorkspaceId() || workspaceId !== this.hydratedLeftPanelWorkspaceId) return;
+        try {
+            RpcApi.SetMetaCommand(TabRpcClient, {
+                oref: WOS.makeORef("workspace", workspaceId),
+                meta: { [LeftPanelMetaKey]: state },
+            });
+        } catch (e) {
+            console.warn("Failed to persist left panel state:", e);
         }
     }
 
@@ -279,49 +256,23 @@ class WorkspaceLayoutModel {
     // The view passes `maxFn` to ResizeHandle as a live callback so the
     // upper bound tracks window resizes mid-drag (warp's `with_bounds_callback`).
 
-    getVTabMinWidth(): number {
-        return VTabBar_MinWidth;
+    getLeftPanelMinWidth(): number {
+        return LeftPanelMinWidth;
     }
 
-    getVTabMaxWidth(windowWidth: number, fileExplorerVisible: boolean, fileExplorerWidth: number): number {
-        const otherSidePx = fileExplorerVisible ? fileExplorerWidth : 0;
-        const budget = windowWidth - otherSidePx - Content_MinWidth;
-        return Math.max(VTabBar_MinWidth, Math.min(VTabBar_MaxWidth, budget));
+    getLeftPanelMaxWidth(windowWidth: number): number {
+        const hardMax = Math.floor(windowWidth * LeftPanelMaxWidthRatio);
+        return Math.max(LeftPanelMinWidth, Math.min(hardMax, windowWidth - Content_MinWidth));
     }
 
-    getFileExplorerMinWidth(): number {
-        return FileExplorer_MinWidth;
-    }
-
-    getFileExplorerMaxWidth(windowWidth: number, vtabVisible: boolean, vtabWidth: number): number {
-        const otherSidePx = vtabVisible ? vtabWidth : 0;
-        const hardMax = Math.floor(windowWidth * FileExplorer_MaxWidthRatio);
-        const budget = windowWidth - otherSidePx - Content_MinWidth;
-        return Math.max(FileExplorer_MinWidth, Math.min(hardMax, budget));
-    }
-
-    getRightToolPanelMaxWidth(
-        windowWidth: number,
-        vtabVisible: boolean,
-        vtabWidth: number,
-        fileExplorerVisible: boolean,
-        fileExplorerWidth: number
-    ): number {
-        const leftSidePx = (vtabVisible ? vtabWidth : 0) + (fileExplorerVisible ? fileExplorerWidth : 0);
+    getRightToolPanelMaxWidth(windowWidth: number, leftPanelVisible: boolean, leftPanelWidth: number): number {
+        const leftSidePx = leftPanelVisible ? leftPanelWidth : 0;
         const hardMax = getRightToolPanelStateMaxWidth(windowWidth);
         const budget = windowWidth - leftSidePx - Content_MinWidth;
         return Math.max(MinRightToolPanelWidth, Math.min(hardMax, budget));
     }
 
     // ---- Public getters ----
-
-    getVTabVisible(): boolean {
-        return globalStore.get(this.vtabVisibleAtom);
-    }
-
-    getFileExplorerVisible(): boolean {
-        return globalStore.get(this.fileExplorerVisibleAtom);
-    }
 
     getRightToolPanelState(): RightToolPanelState {
         this.ensureRightToolPanelWorkspaceCurrent();
@@ -342,162 +293,49 @@ class WorkspaceLayoutModel {
     // layout commits, no transition tweaking.  The view's conditional
     // render (workspace.tsx) handles the appearance/disappearance.
 
-    setVTabVisible(visible: boolean): void {
-        if (globalStore.get(this.vtabVisibleAtom) === visible) return;
-        globalStore.set(this.vtabVisibleAtom, visible);
+    toggleLeftPanel(mode: LeftPanelMode): void {
+        this.ensureLeftPanelWorkspaceCurrent();
+        const state = globalStore.get(this.leftPanelAtom);
+        const nextState = {
+            ...state,
+            visible: state.mode === mode ? !state.visible : true,
+            mode,
+        };
+        globalStore.set(this.leftPanelAtom, nextState);
+        this.persistLeftPanelState(this.getWorkspaceId(), nextState);
     }
 
-    setFileExplorerVisible(visible: boolean): void {
-        if (globalStore.get(this.fileExplorerVisibleAtom) === visible) return;
-        globalStore.set(this.fileExplorerVisibleAtom, visible);
-        if (visible) {
-            globalStore.set(this.sessionsPanelVisibleAtom, false);
+    showLeftPanel(mode: LeftPanelMode): void {
+        this.ensureLeftPanelWorkspaceCurrent();
+        const state = globalStore.get(this.leftPanelAtom);
+        const nextState = {
+            ...state,
+            visible: true,
+            mode,
+        };
+        globalStore.set(this.leftPanelAtom, nextState);
+        this.persistLeftPanelState(this.getWorkspaceId(), nextState);
+    }
+
+    previewLeftPanelWidth(widthPx: number): void {
+        this.ensureLeftPanelWorkspaceCurrent();
+        const state = globalStore.get(this.leftPanelAtom);
+        globalStore.set(this.leftPanelAtom, {
+            ...state,
+            width: clamp(widthPx, LeftPanelMinWidth, this.getLeftPanelMaxWidth(getRightToolPanelWindowWidth())),
+        });
+    }
+
+    setLeftPanelWidth(widthPx: number): void {
+        this.previewLeftPanelWidth(widthPx);
+        if (this.leftPanelPersistTimer != null) {
+            clearTimeout(this.leftPanelPersistTimer);
         }
-        // Persist visibility immediately — width is debounced but the
-        // bool is a single byte and the user expects the next session
-        // to come up in the same state.
-        try {
-            RpcApi.SetMetaCommand(TabRpcClient, {
-                oref: WOS.makeORef("workspace", this.getWorkspaceId()),
-                meta: { "layout:fileexplorervisible": visible },
-            });
-        } catch (e) {
-            console.warn("Failed to persist file explorer visibility:", e);
-        }
-    }
-
-    getSessionsPanelVisible(): boolean {
-        return globalStore.get(this.sessionsPanelVisibleAtom);
-    }
-
-    getAgentTabId(): string {
-        return globalStore.get(this.agentTabIdAtom);
-    }
-
-    isAgentTab(tabId: string): boolean {
-        const tab = globalStore.get(WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tabId)));
-        const firstBlockId = tab?.blockids?.[0];
-        if (!firstBlockId) return false;
-        const block = globalStore.get(WOS.getWaveObjectAtom<Block>(WOS.makeORef("block", firstBlockId)));
-        return block?.meta?.view === "agent";
-    }
-
-    findAgentTabId(tabIds: string[]): string {
-        const savedAgentTabId = this.getAgentTabId();
-        if (savedAgentTabId && tabIds.includes(savedAgentTabId)) return savedAgentTabId;
-        return tabIds.find((tabId) => this.isAgentTab(tabId)) ?? "";
-    }
-
-    setAgentTabId(tabId: string): void {
-        if (globalStore.get(this.agentTabIdAtom) === tabId) return;
-        globalStore.set(this.agentTabIdAtom, tabId);
-        try {
-            RpcApi.SetMetaCommand(TabRpcClient, {
-                oref: WOS.makeORef("workspace", this.getWorkspaceId()),
-                meta: { "layout:agenttabid": tabId } as MetaType,
-            });
-        } catch (e) {
-            console.warn("Failed to persist agent tab id:", e);
-        }
-    }
-
-    async openAgentTab(session?: AgentSessionMeta): Promise<string> {
-        this.setSessionsPanelVisible(true);
-        const workspace = globalStore.get(atoms.workspace);
-        const tabIds = workspace?.tabids ?? [];
-        // Resolve the existing agent tab reliably — the sync cache may be cold
-        // on a fresh project, so fall back to loading tab/block objects before
-        // deciding whether one exists.  We only create as a true last resort so
-        // there is always exactly one fixed Agent tab, never a fresh duplicate.
-        let tabId = await this.resolveAgentTabId(tabIds);
-        if (!tabId) {
-            const meta: MetaType = { view: "agent", controller: "shell" };
-            if (session) {
-                meta["agent:session"] = session;
-            }
-            tabId = await WorkspaceService.CreateTabWithBlock(this.getWorkspaceId(), "Agent", true, { meta });
-            this.setAgentTabId(tabId);
-            return tabId;
-        }
-        this.setAgentTabId(tabId);
-        if (session) {
-            const tab = await this.getAgentBackingTab(tabId);
-            const blockId = tab?.blockids?.[0];
-            if (blockId) {
-                await ObjectService.UpdateObjectMeta(WOS.makeORef("block", blockId), { "agent:session": session });
-            }
-        }
-        getApi().setActiveTab(tabId);
-        return tabId;
-    }
-
-    private async resolveAgentTabId(tabIds: string[]): Promise<string> {
-        const savedAgentTabId = this.getAgentTabId();
-        if (savedAgentTabId && tabIds.includes(savedAgentTabId)) return savedAgentTabId;
-        const syncMatch = this.findAgentTabId(tabIds);
-        if (syncMatch) return syncMatch;
-        for (const tabId of tabIds) {
-            let tab: Tab | null = null;
-            try {
-                tab = await WOS.loadAndPinWaveObject<Tab>(WOS.makeORef("tab", tabId));
-            } catch (e) {
-                console.warn("failed to load tab while resolving agent tab", tabId, e);
-                continue;
-            }
-            const firstBlockId = tab?.blockids?.[0];
-            if (!firstBlockId) continue;
-            let block: Block | null = null;
-            try {
-                block = await WOS.loadAndPinWaveObject<Block>(WOS.makeORef("block", firstBlockId));
-            } catch (e) {
-                console.warn("failed to load block while resolving agent tab", firstBlockId, e);
-                continue;
-            }
-            if (block?.meta?.view === "agent") return tabId;
-        }
-        return "";
-    }
-
-    private async getAgentBackingTab(tabId: string): Promise<Tab> {
-        const cached = globalStore.get(WOS.getWaveObjectAtom<Tab>(WOS.makeORef("tab", tabId)));
-        if (cached) return cached;
-        return (await ObjectService.GetObject(WOS.makeORef("tab", tabId))) as Tab;
-    }
-
-    setSessionsPanelVisible(visible: boolean): void {
-        if (globalStore.get(this.sessionsPanelVisibleAtom) === visible) return;
-        globalStore.set(this.sessionsPanelVisibleAtom, visible);
-        if (visible) {
-            globalStore.set(this.fileExplorerVisibleAtom, false);
-        }
-        try {
-            RpcApi.SetMetaCommand(TabRpcClient, {
-                oref: WOS.makeORef("workspace", this.getWorkspaceId()),
-                meta: { "layout:sessionpanelvisible": visible } as MetaType,
-            });
-        } catch (e) {
-            console.warn("Failed to persist sessions panel visibility:", e);
-        }
-    }
-
-    // ---- Width setters (called by ResizeHandle during drag) ----
-
-    setVTabWidth(widthPx: number): void {
-        const fileExplorerVisible = globalStore.get(this.fileExplorerVisibleAtom);
-        const fileExplorerWidth = globalStore.get(this.fileExplorerWidthAtom);
-        const max = this.getVTabMaxWidth(window.innerWidth, fileExplorerVisible, fileExplorerWidth);
-        const clamped = clamp(widthPx, VTabBar_MinWidth, max);
-        globalStore.set(this.vtabWidthAtom, clamped);
-        this.debouncedPersistVTabWidth();
-    }
-
-    setFileExplorerWidth(widthPx: number): void {
-        const vtabVisible = globalStore.get(this.vtabVisibleAtom);
-        const vtabWidth = globalStore.get(this.vtabWidthAtom);
-        const max = this.getFileExplorerMaxWidth(window.innerWidth, vtabVisible, vtabWidth);
-        const clamped = clamp(widthPx, FileExplorer_MinWidth, max);
-        globalStore.set(this.fileExplorerWidthAtom, clamped);
-        this.debouncedPersistFileExplorerWidth();
+        const workspaceId = this.getWorkspaceId();
+        this.leftPanelPersistTimer = setTimeout(() => {
+            this.leftPanelPersistTimer = undefined;
+            this.persistLeftPanelState(workspaceId, globalStore.get(this.leftPanelAtom));
+        }, 300);
     }
 
     // ---- Code review panel (orthogonal, right side) ----
@@ -530,16 +368,12 @@ class WorkspaceLayoutModel {
 
     private makeRightToolPanelWidthState(widthPx: number): RightToolPanelState {
         const state = this.getRightToolPanelState();
-        const vtabVisible = globalStore.get(this.vtabVisibleAtom);
-        const vtabWidth = globalStore.get(this.vtabWidthAtom);
-        const fileExplorerVisible = globalStore.get(this.fileExplorerVisibleAtom);
-        const fileExplorerWidth = globalStore.get(this.fileExplorerWidthAtom);
+        this.ensureLeftPanelWorkspaceCurrent();
+        const leftPanel = globalStore.get(this.leftPanelAtom);
         const maxWidth = this.getRightToolPanelMaxWidth(
             getRightToolPanelWindowWidth(),
-            vtabVisible,
-            vtabWidth,
-            fileExplorerVisible,
-            fileExplorerWidth
+            leftPanel.visible,
+            leftPanel.width
         );
         const nextState = setRightToolPanelStateWidth(
             state,
