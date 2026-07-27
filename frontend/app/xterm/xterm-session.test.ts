@@ -113,6 +113,7 @@ const h = vi.hoisted(() => {
         ptys: new Map<string, any>(),
         ptyHandlers: new Map<string, any>(),
         statusSubs: [] as any[],
+        resyncCalls: [] as any[],
         fetchImpl: null as any,
         fgJobImpl: null as any,
         acquireSlot(params: any) {
@@ -202,9 +203,13 @@ vi.mock("./pty-bridge", () => ({
 }));
 
 vi.mock("@/store/global", () => ({
+    atoms: { staticTabId: "static-tab-id" },
     fetchWaveFile: (zoneId: string, name: string) => {
         h.order.push(`fetch:${zoneId}`);
         return h.fetchImpl(zoneId, name);
+    },
+    globalStore: {
+        get: (atom: unknown) => (atom === "static-tab-id" ? "tab-1" : undefined),
     },
 }));
 
@@ -220,6 +225,10 @@ vi.mock("@/app/store/wps", () => ({
 
 vi.mock("@/app/store/wshclientapi", () => ({
     RpcApi: {
+        ControllerResyncCommand: (_client: any, data: any) => {
+            h.resyncCalls.push(data);
+            return Promise.resolve();
+        },
         ControllerHasForegroundJobCommand: (_client: any, blockId: string) => h.fgJobImpl(blockId),
     },
 }));
@@ -323,6 +332,7 @@ beforeEach(() => {
     h.ptys.clear();
     h.ptyHandlers.clear();
     h.statusSubs.length = 0;
+    h.resyncCalls.length = 0;
     h.fetchImpl = async () => ({ data: null, fileInfo: null });
     h.fgJobImpl = async () => false;
 });
@@ -332,6 +342,15 @@ afterEach(() => {
 });
 
 describe("attach + cold restore", () => {
+    it("resyncs the shell controller once when a session is first attached", async () => {
+        const blockId = newBlockId();
+        attachSession(blockId, fakeContainer(), {});
+        attachSession(blockId, fakeContainer(), {});
+        await flushAsync();
+
+        expect(h.resyncCalls).toEqual([{ tabid: "tab-1", blockid: blockId }]);
+    });
+
     it("subscribes to the pty stream before fetching the blockfile", async () => {
         const { blockId } = await attachReady();
         expect(h.order.indexOf(`attachPty:${blockId}`)).toBeGreaterThanOrEqual(0);

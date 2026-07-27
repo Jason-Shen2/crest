@@ -112,4 +112,23 @@ describe("CmdBlockInput", () => {
 
         expect(onSubmit).not.toHaveBeenCalled();
     });
+
+    it("preserves pasted line breaks when submitting terminal input", () => {
+        const onSubmit = vi.fn();
+        render(
+            <CmdBlockInput
+                mode="terminal"
+                onModeChange={() => undefined}
+                onSubmit={onSubmit}
+                hideHelpRow
+            />
+        );
+        const editor = screen.getByRole("textbox");
+
+        editor.innerHTML = "<div>echo TERAX_ML1</div><div>echo TERAX_ML2</div>";
+        fireEvent.input(editor);
+        fireEvent.keyDown(editor, { key: "Enter" });
+
+        expect(onSubmit).toHaveBeenCalledWith("echo TERAX_ML1\necho TERAX_ML2", "terminal");
+    });
 });

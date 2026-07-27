@@ -924,7 +924,7 @@ const Editor = memo(
             if (composingRef.current) return;
             const el = ref.current;
             if (!el) return;
-            syncText(el.textContent ?? "");
+            syncText(getEditorPlainText(el));
         }, [syncText]);
 
         const handleCompositionStart = useCallback(() => {

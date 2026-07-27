@@ -4,7 +4,7 @@
 import { waveEventSubscribeSingle } from "@/app/store/wps";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { fetchWaveFile } from "@/store/global";
+import { atoms, fetchWaveFile, globalStore } from "@/store/global";
 import type { ISearchOptions, SearchAddon } from "@xterm/addon-search";
 import type { Terminal } from "@xterm/xterm";
 import { ensureAgentActivityListener, isAgentActive } from "./agent-activity";
@@ -936,14 +936,28 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
     };
     sessions.set(blockId, s);
 
-    // The backend owns the PTY lifecycle (blockcontroller); attaching only
-    // subscribes to the existing stream — there is no spawn and no pre-spawn
-    // input queue (the ws layer already queues writes during reconnects).
+    // Subscribe before asking the backend to start/resume the controller so
+    // the first prompt bytes cannot race past the file subject.
     s.pty = attachPty(blockId, {
         onData: (bytes) => deliverPtyBytes(s, bytes),
         onTruncate: () => handleTruncate(s),
         onShellExit: () => applyShellStatus(s, true),
     });
+
+    // A block's controller metadata is declarative; creating the block does
+    // not itself spawn the shell. The legacy TerminalModel performed this
+    // mount handshake, so the xterm session must retain it after the engine
+    // replacement. One session issues one idempotent resync.
+    const tabId = atoms.staticTabId == null ? null : globalStore.get(atoms.staticTabId);
+    if (tabId) {
+        void RpcApi.ControllerResyncCommand(TabRpcClient, {
+            tabid: tabId,
+            blockid: blockId,
+        }).catch(() => {
+            // Non-fatal: a live controller may already be running, and its
+            // stream remains authoritative.
+        });
+    }
 
     s.statusUnsub = waveEventSubscribeSingle({
         eventType: "controllerstatus",
