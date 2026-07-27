@@ -431,6 +431,17 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
     slot.term.options.disableStdin = p.shellExited;
 
     if (!fast) {
+        // A stolen slot still has the previous leaf's OSC handlers. Replace
+        // them before replaying this leaf's serialized state or dormant PTY
+        // bytes; prompt markers in that replay must update the new session,
+        // not the evicted one (or disappear when the old handlers were gone).
+        for (const d of slot.oscDisposers) {
+            try {
+                d();
+            } catch {}
+        }
+        slot.oscDisposers = [];
+
         slot.term.clear();
         slot.term.reset();
 
@@ -438,6 +449,7 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
             slot.term.resize(p.cols, p.rows);
         }
 
+        slot.oscDisposers = p.registerOsc(slot.term);
         if (p.snapshot) {
             try {
                 slot.term.write(p.snapshot);
@@ -456,13 +468,6 @@ function bindSlot(slot: Slot, p: AcquireParams): void {
         try {
             slot.term.write("\x1b[?25h");
         } catch {}
-
-        for (const d of slot.oscDisposers) {
-            try {
-                d();
-            } catch {}
-        }
-        slot.oscDisposers = p.registerOsc(slot.term);
     } else {
         p.drainRing((bytes) => slot.term.write(bytes));
     }

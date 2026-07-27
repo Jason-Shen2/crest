@@ -7,8 +7,8 @@
 - ✅ P1 全部（依赖、纯函数移植、pty-bridge、renderer-pool + theme、xterm-session、XtermView/XtermPaneModel、四渲染点切换、旧引擎删除 −10,833 行；tsc/vitest 门禁与基线零差异）
 - ✅ P2 全部（P2.2 find-bar over SearchAddon、P2.5 pty_read seam、P2.6 上下文换源、P2.7/D9 视图合并 + term:blocks meta 键）。唯一 deferred：liveGitBranch（ContextChipModel 失去宿主，需新 cwd/命令驱动）
 - ✅ P3 全部（decorations + cmdblock:row 增强、BlockOverlay/Watermark、CmdBlockInput 接线 + 三项输入 bug 修复、.bt-match CSS）
-- ✅ P4.2/P4.3/P4.4/P4.5（cmdblock:chunk 与 agent 穿插清除 + 迁移 000017、NLD 惰性化、文档收尾）；🟨 P4.1 性能基准部分完成（结果见 `docs/terax-terminal-benchmark-2026-07-27.md`）
-- 🟨 **P1/P2/P3 Electron 冒烟部分完成**（prompt/输入输出/历史/ETX/less alt-screen/Cmd+F/exit overlay/多行提交/WebGL 重输出滚动已验；vim/IME/池驱逐/冷恢复/多 pane 仍待验）
+- ✅ P4.2/P4.3/P4.4/P4.5（cmdblock:chunk 与 agent 穿插清除 + 迁移 000017、NLD 惰性化、文档收尾）；🟨 P4.1 场景 1–5 已完成，场景 6 缺旧引擎 CPU baseline（结果见 `docs/terax-terminal-benchmark-2026-07-27.md`）
+- 🟨 **P1/P2/P3 Electron 冒烟大部完成**（prompt/输入输出/历史/ETX/less+vim alt-screen/Cmd+F/exit overlay/多行提交/WebGL 重输出滚动/8 pane/池驱逐恢复已验；IME 与 renderer 进程冷恢复仍待人工/专项验证）
 **策略**: 项目处于 POC/MVP 阶段（见 CLAUDE.md"不考虑向后兼容"），**不做双引擎共存、不做灰度开关**——在分支上完成核心替换并通过验收清单后整体合入，回退手段就是 git revert。
 **参考仓库**: `/Users/bytedance/Documents/terax-ai`（Tauri v2 + React，只读参考，Apache-2.0，与 crest 同许可）
 **被替换并删除**: `frontend/app/term/engine/`、`frontend/app/term/render/` 的渲染层、`terminal-model.ts`（约 16.8k LOC 非测试 + 6k 测试）
@@ -257,11 +257,15 @@ export function attachPty(blockId: string, handlers: PtyHandlers): PtySession {
 
 通过线：所有场景 p99 帧时间 ≤16.7ms；场景 6 后台 renderer CPU 较旧引擎降 ≥80%；场景 3 scrollback 完整（旧引擎因 50ms 钳制必挂，对照留档）。
 
-> 2026-07-27 校正：macOS/BSD `head` 不接受 `100M`，实测使用精确的
-> `104857600`。当前 `term:scrollback` 默认 2,000、最大 50,000，因此
+> 2026-07-27 校正：macOS/BSD `head` 不接受 `100M`；即使用精确的
+> `104857600`，`yes | BSD head -c` 在 TTY 上也会退化为数百万次 4–5 字节
+> PTY read，不适合作为 renderer 洪水生成器。改用 Python 块写入后，100 MiB
+> 全链路 1.50s 完成；50 MiB 文本 `cat` 为 997ms。当前 `term:scrollback`
+> 默认 2,000、最大 50,000，因此
 > “`seq 100000` 后 100,000 行全部保留”按现有产品约束无法通过；需要先决定
-> 是把验收线改为配置上限内完整，还是提高产品上限。100 MiB 洪水在 171.7s
-> 内未完成，虽 p99=9.3ms，仍按吞吐失败处理。P4.1 不标完成。
+> 是把验收线改为配置上限内完整，还是提高产品上限。60Hz 环境的 p50 已为
+> 16.7ms，固定 `p99 <= 16.7ms` 也需改为刷新率归一化。P4.1 仅余场景 6
+> （已删除旧引擎的 CPU baseline 不再可直接取得）与这两项验收口径决策。
 
 ---
 
