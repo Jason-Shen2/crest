@@ -1,11 +1,15 @@
+// @vitest-environment jsdom
+
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from "vitest";
+import type { Terminal } from "@xterm/xterm";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     encodeSgrWheel,
     FullscreenTuiWheelController,
+    installFullscreenTuiWheel,
     type TuiMouseTrackingMode,
     type WheelEventLike,
 } from "./fullscreen-tui-wheel";
@@ -68,6 +72,103 @@ function makeHarness() {
         },
     };
 }
+
+function makeTerminalHarness() {
+    let frame: FrameRequestCallback | null = null;
+    let wheelHandler: ((event: WheelEvent) => boolean) | null = null;
+    let trackingMode: TuiMouseTrackingMode = "vt200";
+    const inputs: Array<[string, boolean | undefined]> = [];
+    const csi = new Map<string, (params: (number | number[])[]) => boolean | Promise<boolean>>();
+    const esc = new Map<string, () => boolean | Promise<boolean>>();
+    const disposedHandlers: string[] = [];
+    const screen = document.createElement("div");
+    screen.className = "xterm-screen";
+    screen.getBoundingClientRect = () =>
+        ({
+            left: 0,
+            top: 0,
+            width: 100,
+            height: 100,
+            right: 100,
+            bottom: 100,
+            x: 0,
+            y: 0,
+            toJSON: () => ({}),
+        }) as DOMRect;
+    const element = document.createElement("div");
+    element.appendChild(screen);
+
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+        frame = callback;
+        return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {
+        frame = null;
+    });
+
+    const term = {
+        cols: 10,
+        rows: 5,
+        element,
+        modes: {
+            get mouseTrackingMode() {
+                return trackingMode;
+            },
+        },
+        parser: {
+            registerCsiHandler(
+                id: { prefix?: string; final: string },
+                callback: (params: (number | number[])[]) => boolean | Promise<boolean>
+            ) {
+                const key = `${id.prefix ?? ""}${id.final}`;
+                csi.set(key, callback);
+                return {
+                    dispose: () => {
+                        disposedHandlers.push(key);
+                        csi.delete(key);
+                    },
+                };
+            },
+            registerEscHandler(id: { final: string }, callback: () => boolean | Promise<boolean>) {
+                esc.set(id.final, callback);
+                return {
+                    dispose: () => {
+                        disposedHandlers.push(id.final);
+                        esc.delete(id.final);
+                    },
+                };
+            },
+        },
+        attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean) {
+            wheelHandler = handler;
+        },
+        input(data: string, wasUserInput?: boolean) {
+            inputs.push([data, wasUserInput]);
+        },
+    } as unknown as Terminal;
+
+    return {
+        term,
+        csi,
+        esc,
+        inputs,
+        disposedHandlers,
+        wheel: (event: WheelEventLike) => wheelHandler?.(event as WheelEvent),
+        flushFrame() {
+            const callback = frame;
+            frame = null;
+            callback?.(16);
+        },
+        hasPendingFrame: () => frame !== null,
+        setTrackingMode(value: TuiMouseTrackingMode) {
+            trackingMode = value;
+        },
+    };
+}
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 describe("FullscreenTuiWheelController", () => {
     it("accumulates raw trackpad pixels and sends an SGR report on the next frame", () => {
@@ -181,5 +282,60 @@ describe("encodeSgrWheel", () => {
 
     it("clamps coordinates to terminal bounds", () => {
         expect(encodeSgrWheel("down", { col: 999, row: -1 }, { alt: true }, 10, 5)).toBe("\x1b[<73;10;1M");
+    });
+});
+
+describe("installFullscreenTuiWheel", () => {
+    it("observes DECSET without consuming xterm's own parser handler", () => {
+        const h = makeTerminalHarness();
+        const binding = installFullscreenTuiWheel(h.term, () => true);
+
+        expect(h.csi.get("?h")?.([1000, 1006])).toBe(false);
+        expect(h.wheel(wheel({ deltaY: 20 }))).toBe(false);
+        h.flushFrame();
+
+        expect(h.inputs).toEqual([["\x1b[<65;5;3M", false]]);
+        binding.dispose();
+    });
+
+    it("observes DECRST and full reset without consuming them", () => {
+        const h = makeTerminalHarness();
+        const binding = installFullscreenTuiWheel(h.term, () => true);
+
+        expect(h.csi.get("?h")?.([1006])).toBe(false);
+        expect(h.csi.get("?l")?.([1006])).toBe(false);
+        expect(h.wheel(wheel({ deltaY: 20 }))).toBe(true);
+
+        expect(h.csi.get("?h")?.([1006])).toBe(false);
+        expect(h.esc.get("c")?.()).toBe(false);
+        expect(h.wheel(wheel({ deltaY: 20 }))).toBe(true);
+
+        binding.dispose();
+    });
+
+    it("returns to native xterm handling when the Slot is inactive", () => {
+        const h = makeTerminalHarness();
+        const binding = installFullscreenTuiWheel(h.term, () => false);
+
+        h.csi.get("?h")?.([1006]);
+        expect(h.wheel(wheel({ deltaY: 20 }))).toBe(true);
+
+        binding.dispose();
+    });
+
+    it("disposes parser observers and pending frame state", () => {
+        const h = makeTerminalHarness();
+        const binding = installFullscreenTuiWheel(h.term, () => true);
+
+        h.csi.get("?h")?.([1006]);
+        expect(h.wheel(wheel({ deltaY: 20 }))).toBe(false);
+        expect(h.hasPendingFrame()).toBe(true);
+
+        binding.dispose();
+
+        expect(h.hasPendingFrame()).toBe(false);
+        expect(h.disposedHandlers.sort()).toEqual(["?h", "?l", "c"]);
+        expect(h.csi.size).toBe(0);
+        expect(h.esc.size).toBe(0);
     });
 });

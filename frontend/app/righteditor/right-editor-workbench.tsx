@@ -431,7 +431,7 @@ export function RightEditorWorkbench({ model }: RightEditorWorkbenchProps) {
                                 aria-label={`Close ${file.path}`}
                                 data-close-visibility="hover"
                                 className={cn(
-                                    "pointer-events-none absolute right-1.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-opacity hover:bg-[#3f3f46] hover:text-[#f4f4f5] focus:pointer-events-auto focus:opacity-100",
+                                    "pointer-events-none absolute right-1.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-[#71717a] transition-[opacity,font-weight,color] duration-100 hover:font-semibold hover:text-[#f4f4f5] focus:pointer-events-auto focus:opacity-100",
                                     "opacity-0 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100"
                                 )}
                                 title={file.path}

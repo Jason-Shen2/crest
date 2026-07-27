@@ -1,6 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { Terminal } from "@xterm/xterm";
+
 export type WheelEventLike = Pick<
     WheelEvent,
     "deltaMode" | "deltaX" | "deltaY" | "ctrlKey" | "shiftKey" | "altKey" | "clientX" | "clientY" | "timeStamp"
@@ -200,4 +202,61 @@ export class FullscreenTuiWheelController {
         );
         this.options.send(report.repeat(reportCount));
     }
+}
+
+export type FullscreenTuiWheelBinding = {
+    cancelGesture(): void;
+    resetTerminal(): void;
+    dispose(): void;
+};
+
+export function installFullscreenTuiWheel(
+    term: Terminal,
+    isActive: () => boolean
+): FullscreenTuiWheelBinding {
+    const controller = new FullscreenTuiWheelController({
+        isActive,
+        getTrackingMode: () => term.modes.mouseTrackingMode,
+        getGeometry: () => {
+            const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+            if (!screen) return null;
+            const rect = screen.getBoundingClientRect();
+            return {
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                cols: term.cols,
+                rows: term.rows,
+            };
+        },
+        send: (data) => term.input(data, false),
+        requestFrame: (callback) => requestAnimationFrame(callback),
+        cancelFrame: (handle) => cancelAnimationFrame(handle),
+    });
+
+    term.attachCustomWheelEventHandler((event) => controller.handleWheel(event));
+    const parserDisposables = [
+        term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+            controller.setPrivateModes(params, true);
+            return false;
+        }),
+        term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+            controller.setPrivateModes(params, false);
+            return false;
+        }),
+        term.parser.registerEscHandler({ final: "c" }, () => {
+            controller.resetTerminal();
+            return false;
+        }),
+    ];
+
+    return {
+        cancelGesture: () => controller.cancelGesture(),
+        resetTerminal: () => controller.resetTerminal(),
+        dispose: () => {
+            controller.dispose();
+            for (const disposable of parserDisposables) disposable.dispose();
+        },
+    };
 }

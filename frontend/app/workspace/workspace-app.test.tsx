@@ -212,10 +212,6 @@ vi.mock("@/app/topbar/topbar", async () => {
     };
 });
 
-vi.mock("@/app/statusbar/status-bar", () => ({
-    StatusBar: () => <footer>Workspace status</footer>,
-}));
-
 vi.mock("@/app/modals/modalsrenderer", () => ({
     ModalsRenderer: () => <div>Workspace modals</div>,
 }));

@@ -12,7 +12,7 @@
     "autoupdate:intervalms": 3600000,
     "conn:askbeforewshinstall": true,
     "conn:wshenabled": true,
-    "editor:minimapenabled": true,
+    "editor:minimapenabled": false,
     "web:defaulturl": "https://github.com/s-zx/crest",
     "web:defaultsearch": "https://www.google.com/search?q={query}",
     "window:tilegapsize": 3,

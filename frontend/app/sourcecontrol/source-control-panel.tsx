@@ -93,7 +93,7 @@ const Tooltip = memo(({ label, children, side = "bottom", className }: { label: 
         <div className={cn("relative inline-flex", className)} onMouseEnter={showTooltip} onMouseLeave={hideTooltip}>
             {children}
             {show && (
-                <div className={cn("pointer-events-none absolute z-50 whitespace-nowrap rounded border border-border bg-panel px-2 py-1 text-[10.5px] text-foreground shadow-lg shadow-black/30", posClass)}>
+                <div className={cn("pointer-events-none absolute z-[var(--zindex-modal-wrapper)] whitespace-nowrap rounded border border-border bg-background px-2 py-1 text-[10.5px] text-foreground shadow-lg shadow-black/30", posClass)}>
                     {label}
                 </div>
             )}
@@ -243,7 +243,7 @@ function BranchDropdown({
                 <span className="max-w-[8rem] truncate">{repoLabel}</span>
             </button>
             {open && (
-                <div className="absolute left-0 top-full z-50 mt-1 w-56 rounded-lg border border-border bg-panel p-1 shadow-2xl">
+                <div className="absolute left-0 top-full z-[var(--zindex-modal-wrapper)] mt-1 w-56 rounded-lg border border-border bg-background p-1 shadow-2xl">
                     {loading ? (
                         <div className="flex items-center gap-2 px-3 py-3 text-[11px] text-muted-foreground">
                             <Spinner size={12} />

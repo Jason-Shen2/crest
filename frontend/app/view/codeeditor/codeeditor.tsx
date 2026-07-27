@@ -20,7 +20,7 @@ function defaultEditorOptions(): MonacoTypes.editor.IEditorOptions {
             horizontalScrollbarSize: 5,
         },
         minimap: {
-            enabled: true,
+            enabled: false,
         },
         stickyScroll: {
             enabled: false,

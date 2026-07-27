@@ -14,7 +14,6 @@ const RendererAssetsPath = path.resolve(FrontendRoot, "../dist/frontend/assets")
 const ForbiddenTerminalModules = [
     "/app/workspace/",
     "/app/topbar/",
-    "/app/statusbar/",
     "/app/agent/",
     "/app/view/codeeditor/",
     "/app/view/webview/",

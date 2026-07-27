@@ -6,7 +6,6 @@ import { CenteredDiv } from "@/app/element/quickelems";
 import { ModalsRenderer } from "@/app/modals/modalsrenderer";
 import { NotificationToastStacker } from "@/app/notifications/notification-toast";
 import { NotificationsModel } from "@/app/notifications/notifications-model";
-import { StatusBar } from "@/app/statusbar/status-bar";
 import { FocusManager } from "@/app/store/focusManager";
 import { TabContent } from "@/app/tab/tabcontent";
 import { TopBar } from "@/app/topbar/topbar";
@@ -191,7 +190,6 @@ const WorkspaceElem = memo(({ terminalList }: { terminalList?: ReactNode }) => {
                 <ModalsRenderer />
             </div>
             <NotificationToastStacker />
-            <StatusBar />
         </div>
     );
 });

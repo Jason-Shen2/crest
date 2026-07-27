@@ -27,7 +27,7 @@ function defaultDiffEditorOptions(): MonacoTypes.editor.IDiffEditorOptions {
             horizontalScrollbarSize: 5,
         },
         minimap: {
-            enabled: true,
+            enabled: false,
         },
         readOnly: true,
         renderSideBySide: true,

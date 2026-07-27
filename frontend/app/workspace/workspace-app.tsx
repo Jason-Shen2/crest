@@ -8,7 +8,6 @@ import { WorkspaceNotificationToastStacker } from "@/app/notifications/notificat
 import { ToastModel } from "@/app/notifications/toast-model";
 import { MonacoModelRegistry } from "@/app/righteditor/monaco-model-registry";
 import { RightEditorProductionRpc } from "@/app/righteditor/right-editor-rpc";
-import { StatusBar } from "@/app/statusbar/status-bar";
 import { getApi, getOrefMetaKeyAtom } from "@/app/store/global";
 import { globalStore } from "@/app/store/jotaiStore";
 import { registerWorkspaceKeyLifecycle } from "@/app/store/keymodel";
@@ -456,7 +455,6 @@ function WorkspaceAppInner({
                     />
                     <WorkspaceRightPanelHost agentModel={agentModel} />
                 </div>
-                <StatusBar />
                 <ModalsRenderer />
                 <TopTabCloseDialog controller={closeDialogController} />
                 <WorkspaceNotificationToastStacker />
