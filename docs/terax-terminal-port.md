@@ -7,8 +7,8 @@
 - ✅ P1 全部（依赖、纯函数移植、pty-bridge、renderer-pool + theme、xterm-session、XtermView/XtermPaneModel、四渲染点切换、旧引擎删除 −10,833 行；tsc/vitest 门禁与基线零差异）
 - ✅ P2 全部（P2.2 find-bar over SearchAddon、P2.5 pty_read seam、P2.6 上下文换源、P2.7/D9 视图合并 + term:blocks meta 键）。唯一 deferred：liveGitBranch（ContextChipModel 失去宿主，需新 cwd/命令驱动）
 - ✅ P3 全部（decorations + cmdblock:row 增强、BlockOverlay/Watermark、CmdBlockInput 接线 + 三项输入 bug 修复、.bt-match CSS）
-- ✅ P4.2/P4.3/P4.4/P4.5（cmdblock:chunk 与 agent 穿插清除 + 迁移 000017、NLD 惰性化、文档收尾）；⬜ P4.1 性能基准
-- ⬜ **P1 运行时人工冒烟未做**（bash/vim/中文 IME/池驱逐/冷恢复——需真实 Electron 环境，代码侧门禁已全绿）
+- ✅ P4.2/P4.3/P4.4/P4.5（cmdblock:chunk 与 agent 穿插清除 + 迁移 000017、NLD 惰性化、文档收尾）；🟨 P4.1 性能基准部分完成（结果见 `docs/terax-terminal-benchmark-2026-07-27.md`）
+- 🟨 **P1/P2/P3 Electron 冒烟部分完成**（prompt/输入输出/历史/ETX/less alt-screen/Cmd+F/exit overlay/多行提交/WebGL 重输出滚动已验；vim/IME/池驱逐/冷恢复/多 pane 仍待验）
 **策略**: 项目处于 POC/MVP 阶段（见 CLAUDE.md"不考虑向后兼容"），**不做双引擎共存、不做灰度开关**——在分支上完成核心替换并通过验收清单后整体合入，回退手段就是 git revert。
 **参考仓库**: `/Users/bytedance/Documents/terax-ai`（Tauri v2 + React，只读参考，Apache-2.0，与 crest 同许可）
 **被替换并删除**: `frontend/app/term/engine/`、`frontend/app/term/render/` 的渲染层、`terminal-model.ts`（约 16.8k LOC 非测试 + 6k 测试）
@@ -246,7 +246,7 @@ export function attachPty(blockId: string, handlers: PtyHandlers): PtySession {
 
 ## 六、性能基准（P4 留档）
 
-工具：`frontend/app/xterm/bench/`（Playwright 驱动或手动脚本），记录 p50/p99 帧时间、总耗时、常驻内存（旧引擎数据在 P1 删除前先采一轮作对照）：
+工具：`frontend/app/xterm/bench/`（renderer sampler + Playwright/手动驱动），记录 p50/p99 帧时间、总耗时、常驻内存。2026-07-27 实测结果见 [`terax-terminal-benchmark-2026-07-27.md`](./terax-terminal-benchmark-2026-07-27.md)：
 
 1. `yes | head -c 100M`（吞吐洪水）
 2. `cat 50MB.log`（大文件一次性）
@@ -256,6 +256,12 @@ export function attachPty(blockId: string, handlers: PtyHandlers): PtySession {
 6. 后台 tab 跑 `yes` 60s，前台 tab 帧率 + 进程 CPU（后台成本）
 
 通过线：所有场景 p99 帧时间 ≤16.7ms；场景 6 后台 renderer CPU 较旧引擎降 ≥80%；场景 3 scrollback 完整（旧引擎因 50ms 钳制必挂，对照留档）。
+
+> 2026-07-27 校正：macOS/BSD `head` 不接受 `100M`，实测使用精确的
+> `104857600`。当前 `term:scrollback` 默认 2,000、最大 50,000，因此
+> “`seq 100000` 后 100,000 行全部保留”按现有产品约束无法通过；需要先决定
+> 是把验收线改为配置上限内完整，还是提高产品上限。100 MiB 洪水在 171.7s
+> 内未完成，虽 p99=9.3ms，仍按吞吐失败处理。P4.1 不标完成。
 
 ---
 
