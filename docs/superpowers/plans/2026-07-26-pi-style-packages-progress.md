@@ -35,7 +35,7 @@
 | 2 | Move `emain/ai` → `packages/ai` (`@crest/ai`) | ✅ done | `2df3b0df` | ✅ |
 | 3 | Move agent-core → `packages/agent` (`@crest/agent`) | ✅ done | `e32d13e4` | ✅ |
 | 4 | Pty family → `emain/agent-tools/`, barrel + factory injection | ✅ done | `9c76b1c2` | ✅ |
-| 5 | Rest of `emain/agent` → `packages/coding-agent` | ⬜ | | |
+| 5 | Rest of `emain/agent` → `packages/coding-agent` | ✅ done | `9fe401ac` | ✅ |
 | 6 | Boundary test, slim config, Electron-free acceptance | ⬜ | | |
 
 ## Task log
@@ -111,6 +111,22 @@
   worktree explicitly; one reviewer also briefly mutated the worktree with a
   `git checkout <base> -- .` and restored it (verified clean afterwards).
 - Reviews: spec ✅ (first pass), quality ❌→fix→✅ (dead options + stale header).
+
+### Task 5 (2026-07-27)
+
+- `@crest/coding-agent` landed: 84 files moved (81 R100 byte-identical; 3 retain 94–99%
+  similarity after comment-only path corrections), `agent-event-routing` kept in `emain/`,
+  and all runtime/test/mock consumers repointed to workspace package exports.
+- Package-boundary scans found no imports from `packages/` to Electron, `emain/`, or
+  `frontend/`; the old `emain/agent` import tree has no remaining source references.
+- Fresh gates: 69 tsc errors (zero count delta); full Vitest 1478/1484 tests passed, with
+  all 6 failures confined to 3 files unchanged by Task 5; observability type tests 2/2
+  passed; `npm run build:dev` exited 0.
+- Two plan omissions are explicitly deferred to Task 6: `.github/workflows/agent-tests.yml`
+  still filters on moved paths, and root `NOTICE` still cites the old agent/ai directories
+  and license location.
+- Reviews: spec ✅ (first pass); quality ✅ after fixing stale usage/reference comments in
+  `_spike.ts`, `eval/run-regression.ts`, and `harness-factory.ts`.
 
 ## How to resume after an interruption
 
