@@ -22,8 +22,8 @@ describe("WorkspaceContentSlot", () => {
 
         expect(activeSlot.getAttribute("aria-hidden")).toBe("false");
         expect(activeSlot.hasAttribute("inert")).toBe(false);
-        expect(activeSlot.style.visibility).toBe("visible");
-        expect(activeSlot.style.pointerEvents).toBe("auto");
+        expect(activeSlot.hidden).toBe(false);
+        expect(activeSlot.style.display).toBe("block");
 
         view.rerender(
             <WorkspaceContentSlot active={false} testId="workspace-slot">
@@ -36,7 +36,7 @@ describe("WorkspaceContentSlot", () => {
         expect(screen.getByTestId("slot-child")).toBe(child);
         expect(inactiveSlot.getAttribute("aria-hidden")).toBe("true");
         expect(inactiveSlot.hasAttribute("inert")).toBe(true);
-        expect(inactiveSlot.style.visibility).toBe("hidden");
-        expect(inactiveSlot.style.pointerEvents).toBe("none");
+        expect(inactiveSlot.hidden).toBe(true);
+        expect(inactiveSlot.style.display).toBe("none");
     });
 });

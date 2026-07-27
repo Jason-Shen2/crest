@@ -114,7 +114,7 @@ function cloneTopTab(tab: TopTab): TopTab {
 function cloneState(state: WorkspaceContentState): WorkspaceContentState {
     return {
         activeContent: { ...state.activeContent },
-        topTabs: state.topTabs.map(cloneTopTab),
+        topTabs: [...state.topTabs],
         lastActiveTopTabId: state.lastActiveTopTabId,
     };
 }

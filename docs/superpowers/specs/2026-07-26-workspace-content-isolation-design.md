@@ -1,7 +1,7 @@
 # Workspace 内容隔离与 File Tab 视觉设计
 
 - 日期：2026-07-26
-- 状态：方案 A 已实现，待桌面运行时验收
+- 状态：绘制边界修正已实现，待真实会话桌面验收
 - 适用范围：Workspace Agent、File Top Tab、Top Tab 导航条、内容切换生命周期
 - 上位设计：`2026-07-23-workspace-tab-architecture-design.md`
 
@@ -21,20 +21,33 @@ Phase 3/4A 最初的 `WorkspaceMainContent` 同时负责：
 - 渲染 Terminal 占位区域。
 
 因此 Agent → File 会在同一次 React 提交中执行 Agent 内容树更新和 File/Monaco
-挂载。提交完成前，浏览器只能继续显示旧 Agent 画面。这个问题是内容隔离边界
-缺失，不是 `visibility` CSS 的问题。
+挂载。提交完成前，浏览器只能继续显示旧 Agent 画面。这是第一层问题：React
+内容隔离边界缺失。
 
 第一次内容隔离实现虽然用 `memo(AgentContent)` 保住了 Agent 根组件 identity，
 但又把 `active` 作为 `AgentSurfaceActivityContext` 的 boolean value 传入 Agent
 子树。Context value 变化会绕过 memo boundary，强制 `AgentChatHost`、所有
 `AgentCommandCard` 等 consumer 参与切换渲染。React 仍需等这些 consumer 完成，
-才能提交外层 `visibility: hidden`，所以桌面运行时依旧出现约一秒 Agent 残影。
+才能提交外层隐藏状态，所以桌面运行时依旧出现约一秒 Agent 残影。
+
+activity 隔离完成后，逐帧运行时诊断确认 Agent slot 在点击后约 7ms、首个
+`requestAnimationFrame` 前已经提交 `aria-hidden` 和 `visibility:hidden`，
+但真实会话仍可能出现旧文字残影。这暴露出第二层问题：`visibility:hidden`
+仍保留内容的布局盒和绘制/合成资源，而 Agent 消息节点大量使用
+`content-visibility:auto`、入场动画和独立合成层。它不能作为复杂 renderer
+之间的强绘制隔离边界。
+
+最终 `WorkspaceContentSlot` 在 inactive 时使用 `hidden` + `display:none`，
+把整棵视觉子树从布局和绘制树中摘除；React 子树、DOM identity、Agent runtime、
+composer draft 和 File editor runtime 仍然保留。该规则修正的是内容容器契约，
+不依赖点击时 DOM mutation、定时器、遮罩或延迟隐藏。
 
 最终架构采用以下规则：
 
 - Agent 是固定内容实例，首次激活后常驻。
 - File 内容首次激活后保留到 Tab 关闭，不因 Agent/File 切换卸载。
-- Workspace 路由只控制轻量内容容器的 `hidden`、`inert` 和 `aria-hidden`。
+- Workspace 路由只控制轻量内容容器的 `display`、`hidden`、`inert` 和
+  `aria-hidden`。
 - Agent 运行时活跃状态通过稳定 lifecycle controller 下发，不作为 React
   Context boolean、组件 state 或 `AgentContent` 根组件 prop。
 - activity listener 只 acquire/release session subscription、ResizeObserver 等
@@ -163,13 +176,14 @@ WorkspaceContentArea
 
 每个 inactive slot 必须同时满足：
 
-- `visibility: hidden`；
-- `pointer-events: none`；
+- `hidden`；
+- `display: none`，从布局和绘制树中移除；
 - `aria-hidden="true"`；
 - `inert`；
 - 绝对定位，不参与其他 slot 布局。
 
-不得只设置透明度，也不得让 inactive Monaco 或 Agent 接收键盘焦点。
+不得只设置透明度或 `visibility:hidden`，也不得让 inactive Monaco 或 Agent
+接收键盘焦点。
 
 ### 4.3 稳定渲染边界
 
@@ -228,8 +242,8 @@ controller 所管理的资源绑定，但 navigation activity 改变不重新执
 
 `AgentCommandCard` 在挂载时注册一次 listener。listener 负责连接或断开
 `ResizeObserver`；按钮和输入事件在执行时读取 `controller.getActive()`。
-inactive slot 已由 `inert` 和 `pointer-events: none` 阻止用户交互，因此 activity
-无需改变 JSX 的 `disabled` 或其他渲染属性。
+inactive slot 已由 `display:none` 和 `inert` 阻止用户交互，因此 activity 无需
+改变 JSX 的 `disabled` 或其他渲染属性。
 
 activity 是 renderer-local 生命周期信号，不参与 workspace checkpoint，也不
 影响 main 中的 Agent session 是否继续执行。它与视觉正确性解耦：即使资源释放

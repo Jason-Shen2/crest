@@ -20,7 +20,7 @@ import { Provider, useAtomValue } from "jotai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WorkspacePreviewRepository } from "./preview-repository";
 import { ResizeHandle } from "./resize-handle";
-import { makeTerminalNavigationAdapter } from "./terminal-navigation";
+import { makeTerminalNavigationAdapter, type TerminalNavigationAdapter } from "./terminal-navigation";
 import { TerminalTabList } from "./terminal-tab-list";
 import {
     makeTopTabCloseCoordinator,
@@ -28,7 +28,7 @@ import {
     type TopTabCloseCoordinator,
 } from "./top-tab-close-coordinator";
 import { TopTabCloseDialog, TopTabCloseDialogController } from "./top-tab-close-dialog";
-import { makeWorkspaceTopTabController } from "./top-tab-controller";
+import { makeWorkspaceTopTabController, type WorkspaceTopTabController } from "./top-tab-controller";
 import { WorkspaceTopTabControllerContext } from "./top-tab-controller-context";
 import { WorkspaceTopTabRuntimeRegistry } from "./top-tab-runtime-registry";
 import { TopTabStrip } from "./top-tab-strip";
@@ -70,6 +70,106 @@ export async function handleWorkspaceCloseRequest(
     respond({ requestid: request.requestid, allow });
 }
 
+function WorkspaceTopBarHost({
+    workspace,
+    model,
+    runtimeRegistry,
+    controller,
+    onActivateAgent,
+}: {
+    workspace: Workspace;
+    model: WorkspaceModel;
+    runtimeRegistry: WorkspaceTopTabRuntimeRegistry;
+    controller: WorkspaceTopTabController;
+    onActivateAgent: () => void;
+}) {
+    const contentState = useAtomValue(model.contentStateAtom);
+
+    return (
+        <TopBar
+            workspace={workspace}
+            agentActive={contentState.activeContent.kind === "agent"}
+            onActivateAgent={onActivateAgent}
+            topTabStrip={
+                contentState.topTabs.length > 0 ? (
+                    <TopTabStrip
+                        tabs={contentState.topTabs}
+                        activeTopTabId={
+                            contentState.activeContent.kind === "top-tab"
+                                ? contentState.activeContent.topTabId
+                                : undefined
+                        }
+                        registry={runtimeRegistry}
+                        onActivate={(topTabId) => controller.activate(topTabId)}
+                        onClose={(topTabId) => controller.close(topTabId)}
+                        onReorder={(topTabId, targetIndex) => {
+                            const target = contentState.topTabs[targetIndex];
+                            if (target) {
+                                model.reorderTopTabs(topTabId, target.id);
+                            }
+                        }}
+                    />
+                ) : undefined
+            }
+        />
+    );
+}
+
+function WorkspaceMainContentHost({
+    workspaceId,
+    generation,
+    model,
+    agentModel,
+    agentClient,
+    agentExecutionContext,
+    topTabController,
+    terminalNavigation,
+    editorRegistry,
+    runtimeRegistry,
+    previewRepository,
+}: {
+    workspaceId: string;
+    generation: number;
+    model: WorkspaceModel;
+    agentModel: WorkspaceAgentModel;
+    agentClient?: AgentRuntimeClient;
+    agentExecutionContext: AgentExecutionContext;
+    topTabController: WorkspaceTopTabController;
+    terminalNavigation: TerminalNavigationAdapter;
+    editorRegistry: WorkspaceEditorRegistry;
+    runtimeRegistry: WorkspaceTopTabRuntimeRegistry;
+    previewRepository: WorkspacePreviewRepository;
+}) {
+    const contentState = useAtomValue(model.contentStateAtom);
+    const terminalSurfaceStatus = useAtomValue(model.terminalSurfaceStatusAtom);
+    const onCloseTopTab = useCallback((topTabId: string) => topTabController.close(topTabId), [topTabController]);
+    const onCloseTerminal = useCallback(
+        (terminalTabId: string) => {
+            void terminalNavigation.close(terminalTabId);
+        },
+        [terminalNavigation]
+    );
+
+    return (
+        <WorkspaceMainContent
+            workspaceId={workspaceId}
+            generation={generation}
+            activeContent={contentState.activeContent}
+            terminalSurfaceStatus={terminalSurfaceStatus}
+            agentModel={agentModel}
+            agentClient={agentClient}
+            agentExecutionContext={agentExecutionContext}
+            topTabs={contentState.topTabs}
+            onCloseTopTab={onCloseTopTab}
+            onCloseTerminal={onCloseTerminal}
+            editorRegistry={editorRegistry}
+            runtimeRegistry={runtimeRegistry}
+            previewRepository={previewRepository}
+            topTabController={topTabController}
+        />
+    );
+}
+
 function WorkspaceAppInner({
     windowId,
     workspace,
@@ -84,10 +184,8 @@ function WorkspaceAppInner({
     onFirstRender?: () => void;
 }) {
     const layoutModel = WorkspaceLayoutModel.getInstance();
-    const contentState = useAtomValue(model.contentStateAtom);
     const terminalTabIds = useAtomValue(model.terminalTabIdsAtom);
     const activeTerminalTabId = useAtomValue(model.activeTerminalTabIdAtom);
-    const terminalSurfaceStatus = useAtomValue(model.terminalSurfaceStatusAtom);
     const [workspaceDirAtom] = useState(() => {
         WOS.primeWaveObject(workspace);
         return getOrefMetaKeyAtom(WOS.makeORef("workspace", workspace.oid), "workspace:dir");
@@ -303,31 +401,12 @@ function WorkspaceAppInner({
     return (
         <WorkspaceTopTabControllerContext.Provider value={topTabController}>
             <div className="flex h-full w-full flex-col overflow-hidden" data-testid="workspace-renderer-root">
-                <TopBar
+                <WorkspaceTopBarHost
                     workspace={workspace}
-                    agentActive={contentState.activeContent.kind === "agent"}
+                    model={model}
+                    runtimeRegistry={topTabRuntimeRegistry}
+                    controller={topTabController}
                     onActivateAgent={onActivateAgent}
-                    topTabStrip={
-                        contentState.topTabs.length > 0 ? (
-                            <TopTabStrip
-                                tabs={contentState.topTabs}
-                                activeTopTabId={
-                                    contentState.activeContent.kind === "top-tab"
-                                        ? contentState.activeContent.topTabId
-                                        : undefined
-                                }
-                                registry={topTabRuntimeRegistry}
-                                onActivate={(topTabId) => topTabController.activate(topTabId)}
-                                onClose={(topTabId) => topTabController.close(topTabId)}
-                                onReorder={(topTabId, targetIndex) => {
-                                    const target = contentState.topTabs[targetIndex];
-                                    if (target) {
-                                        model.reorderTopTabs(topTabId, target.id);
-                                    }
-                                }}
-                            />
-                        ) : undefined
-                    }
                 />
                 <div className="flex min-h-0 flex-1">
                     {leftPanel.visible ? (
@@ -359,21 +438,18 @@ function WorkspaceAppInner({
                             />
                         </>
                     ) : null}
-                    <WorkspaceMainContent
+                    <WorkspaceMainContentHost
                         workspaceId={workspace.oid}
                         generation={generation}
-                        activeContent={contentState.activeContent}
-                        terminalSurfaceStatus={terminalSurfaceStatus}
+                        model={model}
                         agentModel={agentModel}
                         agentClient={agentRuntimeClient}
                         agentExecutionContext={agentExecutionContext}
-                        topTabs={contentState.topTabs}
-                        onCloseTopTab={(topTabId) => topTabController.close(topTabId)}
-                        onCloseTerminal={(terminalTabId) => void terminalNavigation.close(terminalTabId)}
+                        topTabController={topTabController}
+                        terminalNavigation={terminalNavigation}
                         editorRegistry={editorRegistry}
                         runtimeRegistry={topTabRuntimeRegistry}
                         previewRepository={previewRepository}
-                        topTabController={topTabController}
                     />
                     <WorkspaceRightPanelHost agentModel={agentModel} />
                 </div>

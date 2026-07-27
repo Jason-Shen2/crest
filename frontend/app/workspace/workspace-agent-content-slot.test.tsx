@@ -61,7 +61,8 @@ describe("WorkspaceAgentContentSlot", () => {
 
         expect(screen.getByTestId("agent-surface")).toBe(slot);
         expect(screen.getByTestId("mock-agent-content")).toBe(content);
-        expect(slot.style.visibility).toBe("hidden");
+        expect(slot.hidden).toBe(true);
+        expect(slot.style.display).toBe("none");
         expect(slot.getAttribute("aria-hidden")).toBe("true");
         expect(slot.hasAttribute("inert")).toBe(true);
         expect(agentContentMock.rootRenderCount).toBe(1);

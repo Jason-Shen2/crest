@@ -97,6 +97,19 @@ describe("workspace content state", () => {
         expect(agent.lastActiveTopTabId).toBe("file-1");
     });
 
+    it("preserves Top Tab descriptor identity across navigation-only actions", () => {
+        const initial = stateWithTabs([FileOne, FileTwo]);
+
+        const file = reduceWorkspaceContent(initial, { type: "activate-top-tab", topTabId: "file-2" });
+        const agent = reduceWorkspaceContent(file, { type: "activate-agent" });
+
+        expect(file.topTabs).not.toBe(initial.topTabs);
+        expect(file.topTabs[0]).toBe(initial.topTabs[0]);
+        expect(file.topTabs[1]).toBe(initial.topTabs[1]);
+        expect(agent.topTabs[0]).toBe(file.topTabs[0]);
+        expect(agent.topTabs[1]).toBe(file.topTabs[1]);
+    });
+
     it("deduplicates files by normalized absolute path and keeps the original tab", () => {
         const once = reduceWorkspaceContent(makeDefaultWorkspaceContentState(), {
             type: "open-top-tab",
