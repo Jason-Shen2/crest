@@ -1137,7 +1137,9 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         };
     }
 
-    function makeHost(snapshot = makeSnapshot()) {
+    function makeHost(initialSnapshot = makeSnapshot()) {
+        let snapshot = initialSnapshot;
+        let onUpdate: ((snapshot: AgentPtySnapshot) => void) | undefined;
         const port: AgentPtyCommandPort = {
             commandId: snapshot.commandId,
             read: vi.fn(() => snapshot),
@@ -1158,8 +1160,15 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
                 getCommandPort: vi.fn(() => port),
                 snapshots: vi.fn(() => [snapshot]),
                 hasRunningCommands: vi.fn(() => snapshot.running),
+                setOnUpdate: vi.fn((listener: (snapshot: AgentPtySnapshot) => void) => {
+                    onUpdate = listener;
+                }),
                 dispose: vi.fn(async () => {}),
             } as unknown as AgentPtyHost,
+            updateSnapshot(next: AgentPtySnapshot) {
+                snapshot = next;
+                onUpdate?.(next);
+            },
         };
     }
 
@@ -1183,6 +1192,24 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
             expect.objectContaining({
                 type: "session_state",
                 commands: [expect.objectContaining({ commandId: "cmd1" })],
+            })
+        );
+    });
+
+    it("emits updated hosted command snapshots after the PTY host changes", async () => {
+        const fake = makeFakeHarness();
+        const { host, updateSnapshot } = makeHost();
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { ptyHost: host } as any);
+        const listener = vi.fn();
+        owner.subscribe(listener);
+        listener.mockClear();
+
+        updateSnapshot(makeSnapshot({ tail: "listening", screen: { ...makeSnapshot().screen, rows: [{ text: "listening", cells: [] }] } }));
+
+        expect(listener).toHaveBeenCalledWith(
+            expect.objectContaining({
+                type: "session_state",
+                commands: [expect.objectContaining({ commandId: "cmd1", tail: "listening" })],
             })
         );
     });

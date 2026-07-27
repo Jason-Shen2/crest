@@ -206,7 +206,7 @@ interface SendOptions {
      * Per-pane tool allowlist. Optional in v1 — when omitted, permissions
      * default to allowAll:true (no approval UI exists yet; the agent
      * stays functional). Bench mode (CREST_AGENT_BENCH=1) also forces
-     * allowAll regardless of this value. See emain/agent/permissions.ts.
+     * allowAll regardless of this value. See packages/coding-agent/permissions.ts.
      */
     allowedTools?: string[];
     contextAttachments?: ContextTurnDraftAttachmentInput[];

@@ -27,8 +27,12 @@ on:
       - "packages/ai/**"
       - "packages/boundary.test.ts"
       - "packages/coding-agent/**"
+      - "electron.vite.config.ts"
       - "package.json"
       - "package-lock.json"
+      - "tsconfig.json"
+      - "vitest.config.ts"
+      - "vitest.slim.config.ts"
   push:
     branches:
       - main

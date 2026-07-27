@@ -3,9 +3,10 @@
 //
 // Agents section — stub.
 //
-// Crest's agent system is in-flight (see emain/agent/ and the related WIP
-// docs); the full terax AgentsSection.tsx ships 567 lines covering persona
-// editor, snippet CRUD, prompt templates, and a deletion confirm flow.
+// Crest's agent system is in-flight across packages/agent and
+// packages/coding-agent; the full terax AgentsSection.tsx ships 567 lines
+// covering persona editor, snippet CRUD, prompt templates, and a deletion
+// confirm flow.
 //
 // This iteration ships a placeholder that explains the section's role and
 // notes which sub-tabs land in the next pass.
@@ -52,7 +53,7 @@ export function AgentsSection() {
 
             <div className="text-[11px] text-white/45">
                 Agent editor lands once the persona + snippet schema stabilizes
-                in emain/agent/. The three cards above are the planned
+                in packages/agent. The three cards above are the planned
                 sub-sections.
             </div>
         </div>
