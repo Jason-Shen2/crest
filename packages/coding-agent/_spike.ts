@@ -5,16 +5,16 @@
 //
 // Exercises the full stack from sessions.ts → harness-factory.ts →
 // AgentHarness → pi-ai → upstream LLM. Confirms:
-//   - emain/agent + emain/ai compile and load at runtime
+//   - packages/coding-agent + packages/ai compile and load at runtime
 //   - JsonlSessionRepo mints a JSONL file under the configured root
 //   - buildAgentHarnessHost wires env / model / system prompt correctly
 //   - AgentHarness.prompt drives a real turn and emits event stream
 //   - Session JSONL contains the appended messages afterwards
 //
 // Usage:
-//   ANTHROPIC_API_KEY=sk-ant-... npx tsx emain/agent/_spike.ts
-//   OPENAI_API_KEY=sk-... npx tsx emain/agent/_spike.ts "Tell me a joke"
-//   GEMINI_API_KEY=... npx tsx emain/agent/_spike.ts
+//   ANTHROPIC_API_KEY=sk-ant-... npx tsx packages/coding-agent/_spike.ts
+//   OPENAI_API_KEY=sk-... npx tsx packages/coding-agent/_spike.ts "Tell me a joke"
+//   GEMINI_API_KEY=... npx tsx packages/coding-agent/_spike.ts
 //
 // Spike writes session JSONL under a tmp dir (not the user's real
 // sessions store) so repeated runs don't pile up real conversations.

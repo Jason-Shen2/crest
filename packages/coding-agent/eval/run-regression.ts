@@ -9,13 +9,13 @@
 // Usage:
 //   ANTHROPIC_API_KEY=... OPENAI_API_KEY=... \
 //     GEMINI_API_KEY=... OPENROUTER_API_KEY=... \
-//     npx tsx emain/agent/eval/run-regression.ts
+//     npx tsx packages/coding-agent/eval/run-regression.ts
 //
 //   # restrict to specific providers:
-//   ONLY=openrouter,anthropic npx tsx emain/agent/eval/run-regression.ts
+//   ONLY=openrouter,anthropic npx tsx packages/coding-agent/eval/run-regression.ts
 //
 //   # restrict to specific scenarios:
-//   SCENARIOS=text-only,list-dir npx tsx emain/agent/eval/run-regression.ts
+//   SCENARIOS=text-only,list-dir npx tsx packages/coding-agent/eval/run-regression.ts
 //
 // Providers with no key are skipped (not failed). Exit code is non-zero if
 // any executed scenario failed, so CI can gate on it once keys are wired

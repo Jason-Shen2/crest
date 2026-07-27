@@ -8,8 +8,8 @@
 
 import { type Static, Type } from "typebox";
 import type { Api, Model } from "@crest/ai";
-import { buildCliSubagentHarness } from "../agent/cli-subagent-factory";
-import type { CliSubagentHarness } from "../agent/cli-subagent-factory";
+import { buildCliSubagentHarness } from "@crest/coding-agent/cli-subagent-factory";
+import type { CliSubagentHarness } from "@crest/coding-agent/cli-subagent-factory";
 import type { Session } from "@crest/agent/harness/types";
 import type { AgentTool } from "@crest/agent/types";
 import { startAgentCommandBlock, stopBlock } from "./_pty-rpc";

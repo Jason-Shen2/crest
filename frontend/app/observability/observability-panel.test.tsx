@@ -2,7 +2,7 @@ import { Children, isValidElement, type ReactElement, type ReactNode } from "rea
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TraceBuilder } from "../../../emain/agent/observability/trace-builder";
+import { TraceBuilder } from "@crest/coding-agent/observability/trace-builder";
 import { ObservabilityPanel, type AgentObservabilityApi } from "./observability-panel";
 import { TracePanel } from "./trace-panel/trace-panel";
 import { TraceSelector } from "./trace-selector";

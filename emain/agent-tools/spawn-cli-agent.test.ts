@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../emain-wsh", () => ({ ElectronWshClient: {} }));
 
-import * as factory from "../agent/cli-subagent-factory";
+import * as factory from "@crest/coding-agent/cli-subagent-factory";
 import * as rpc from "./_pty-rpc";
 import { createSpawnCliAgentTool, runSubagentToCompletion } from "./spawn-cli-agent";
 

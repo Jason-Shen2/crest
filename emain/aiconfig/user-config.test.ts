@@ -12,7 +12,7 @@ vi.mock("../emain-platform", () => ({
     getWaveConfigDir: () => TestState.configDir,
 }));
 
-import { parseContextReferenceConfig } from "../agent/context/validation";
+import { parseContextReferenceConfig } from "@crest/coding-agent/context/validation";
 import { readAIUserConfig, writeAIUserConfig } from "./user-config";
 
 function config(overrides: Record<string, unknown> = {}) {

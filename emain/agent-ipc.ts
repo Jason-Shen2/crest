@@ -45,8 +45,8 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
 import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
-import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent/agent-event-routing";
-import { AgentRuntimeRegistry } from "./agent/agent-runtime-registry";
+import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
+import { AgentRuntimeRegistry } from "@crest/coding-agent/agent-runtime-registry";
 import {
     AgentSessionRuntime,
     buildContextStateFromSessionEntries,
@@ -54,18 +54,18 @@ import {
     type AgentExecutionConfig,
     type AgentSessionRuntimeStatus,
     type AgentTurn,
-} from "./agent/agent-session-runtime";
-import type { SystemPromptInputs } from "./agent/build-system-prompt";
-import { extractChangeOperationsFromMessages, generateChangeOutline } from "./agent/change-review/change-outline";
-import { getBuiltInAgentCommands } from "./agent/commands/registry";
-import { commandNoop, commandSuccess } from "./agent/commands/session-command-results";
+} from "@crest/coding-agent/agent-session-runtime";
+import type { SystemPromptInputs } from "@crest/coding-agent/build-system-prompt";
+import { extractChangeOperationsFromMessages, generateChangeOutline } from "@crest/coding-agent/change-review/change-outline";
+import { getBuiltInAgentCommands } from "@crest/coding-agent/commands/registry";
+import { commandNoop, commandSuccess } from "@crest/coding-agent/commands/session-command-results";
 import {
     buildAgentForkPointViews,
     buildAgentReferencePointViews,
     buildAgentTreeEntryViews,
     filterTreeForDisplay,
     previewSessionEntry,
-} from "./agent/commands/session-views";
+} from "@crest/coding-agent/commands/session-views";
 import type {
     AgentBackendCommandName,
     AgentCommandExecutionResult,
@@ -76,17 +76,17 @@ import type {
     AgentReferencePointView,
     AgentRunCommandInput,
     AgentTreeEntryView,
-} from "./agent/commands/types";
-import { ContextDraftRegistry } from "./agent/context/draft-registry";
-import { decorateContextHistory } from "./agent/context/history";
-import type { ContextProviderRequest } from "./agent/context/projector";
-import { createContextProviderAdapter, type ContextProviderAdapter } from "./agent/context/provider-adapter";
-import { captureContextArtifactDraft } from "./agent/context/snapshot";
-import { summarizeContextDraft, type ContextSummaryCompletion } from "./agent/context/summary";
-import { createContextTurnPreparation, type ContextTurnDraftAttachmentInput } from "./agent/context/turn-preparer";
-import type { ContextBudgetResult, ContextReferenceConfig, ContextRepresentation } from "./agent/context/types";
-import { ContextReferenceError } from "./agent/context/types";
-import { buildAgentHarnessHost } from "./agent/harness-factory";
+} from "@crest/coding-agent/commands/types";
+import { ContextDraftRegistry } from "@crest/coding-agent/context/draft-registry";
+import { decorateContextHistory } from "@crest/coding-agent/context/history";
+import type { ContextProviderRequest } from "@crest/coding-agent/context/projector";
+import { createContextProviderAdapter, type ContextProviderAdapter } from "@crest/coding-agent/context/provider-adapter";
+import { captureContextArtifactDraft } from "@crest/coding-agent/context/snapshot";
+import { summarizeContextDraft, type ContextSummaryCompletion } from "@crest/coding-agent/context/summary";
+import { createContextTurnPreparation, type ContextTurnDraftAttachmentInput } from "@crest/coding-agent/context/turn-preparer";
+import type { ContextBudgetResult, ContextReferenceConfig, ContextRepresentation } from "@crest/coding-agent/context/types";
+import { ContextReferenceError } from "@crest/coding-agent/context/types";
+import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
 import { convertToLlm } from "@crest/agent/harness/messages";
 import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
 import type {
@@ -95,8 +95,8 @@ import type {
     JsonlSessionMetadata,
     SessionDetailInfo,
 } from "@crest/agent/harness/types";
-import { buildPermissionsHook, isBenchMode } from "./agent/permissions";
-import { loadProjectContextFiles } from "./agent/resource-loader";
+import { buildPermissionsHook, isBenchMode } from "@crest/coding-agent/permissions";
+import { loadProjectContextFiles } from "@crest/coding-agent/resource-loader";
 import {
     createPaneSession,
     defaultSessionsDir,
@@ -107,9 +107,9 @@ import {
     listSessionsForCwd,
     openPaneSession,
     openPaneSessionByPath,
-} from "./agent/sessions";
-import { loadAgentSkills } from "./agent/skills-loader";
-import { getDefaultTools } from "./agent/tools";
+} from "@crest/coding-agent/sessions";
+import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
+import { getDefaultTools } from "@crest/coding-agent/tools";
 import { createSpawnCliAgentTool } from "./agent-tools/spawn-cli-agent";
 import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
 import type { Api, ImageContent, Message, Model } from "@crest/ai";

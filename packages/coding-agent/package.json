@@ -1,0 +1,11 @@
+{
+    "name": "@crest/coding-agent",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "crest's coding-agent layer (tools, system prompt, sessions, permissions), mirroring pi's coding-agent role",
+    "exports": {
+        "./tools": "./tools/index.ts",
+        "./*": "./*.ts"
+    }
+}

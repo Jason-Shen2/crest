@@ -34,17 +34,17 @@ vi.mock("electron", () => ({
 }));
 
 vi.mock("@crest/ai", () => ({ getModel: vi.fn() }));
-vi.mock("./agent/change-review/change-outline", () => ({
+vi.mock("@crest/coding-agent/change-review/change-outline", () => ({
     extractChangeOperationsFromMessages: vi.fn(() => []),
     generateChangeOutline: vi.fn(),
 }));
-vi.mock("./agent/harness-factory", () => ({ buildAgentHarnessHost: vi.fn() }));
+vi.mock("@crest/coding-agent/harness-factory", () => ({ buildAgentHarnessHost: vi.fn() }));
 vi.mock("@crest/agent", () => ({}));
-vi.mock("./agent/permissions", () => ({
+vi.mock("@crest/coding-agent/permissions", () => ({
     buildPermissionsHook: vi.fn(),
     isBenchMode: vi.fn(() => false),
 }));
-vi.mock("./agent/tools", () => ({ getDefaultTools: vi.fn(() => []) }));
+vi.mock("@crest/coding-agent/tools", () => ({ getDefaultTools: vi.fn(() => []) }));
 vi.mock("./aiconfig/secrets", () => ({ getSecret: vi.fn() }));
 vi.mock("../frontend/app/store/wshclientapi", () => ({
     RpcApi: {
@@ -75,14 +75,14 @@ import {
     summarizeContextDraftForIpc,
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
-import { AgentSessionRuntime } from "./agent/agent-session-runtime";
-import { foldContextJournal } from "./agent/context/journal";
-import { ContextReferenceError } from "./agent/context/types";
-import { buildAgentHarnessHost } from "./agent/harness-factory";
+import { AgentSessionRuntime } from "@crest/coding-agent/agent-session-runtime";
+import { foldContextJournal } from "@crest/coding-agent/context/journal";
+import { ContextReferenceError } from "@crest/coding-agent/context/types";
+import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import { Session } from "@crest/agent/harness/session/session";
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
-import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir, openPaneSession } from "./agent/sessions";
+import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir, openPaneSession } from "@crest/coding-agent/sessions";
 import type { AgentMessage } from "@crest/agent/types";
 import { getModel } from "@crest/ai";
 

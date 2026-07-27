@@ -11,8 +11,8 @@ import {
     TraceEventCoalescer,
 } from "./agent-observability-ipc";
 import type { AgentHarness } from "@crest/agent/harness/agent-harness";
-import { TraceBuilder } from "./agent/observability/trace-builder";
-import type { TraceDetail } from "./agent/observability/types";
+import { TraceBuilder } from "@crest/coding-agent/observability/trace-builder";
+import type { TraceDetail } from "@crest/coding-agent/observability/types";
 
 vi.mock("electron", () => ({
     ipcMain: {
@@ -26,7 +26,7 @@ const TraceStoreMock = vi.hoisted(() => ({
     listTraces: vi.fn(() => []),
 }));
 
-vi.mock("./agent/observability/sqlite-trace-store", () => ({
+vi.mock("@crest/coding-agent/observability/sqlite-trace-store", () => ({
     SqliteTraceStore: class {
         getTraceDetail = TraceStoreMock.getTraceDetail;
         listTraces = TraceStoreMock.listTraces;

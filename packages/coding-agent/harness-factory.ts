@@ -58,7 +58,7 @@ export interface BuildAgentHarnessHostOptions {
      * AgentHarness invokes this before executing every tool call.
      * Returning undefined allows; {block: true, reason} denies and
      * surfaces `reason` as the tool result text (visible inline in
-     * the agent block). See emain/agent/permissions.ts and
+     * the agent block). See packages/coding-agent/permissions.ts and
      * docs/agent-runtime-architecture.md §7.9.
      */
     toolCallHook?: ToolCallHook;
