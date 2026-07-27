@@ -212,6 +212,8 @@ describe("WorkspaceMainContent identity", () => {
         expect(screen.getByTestId("agent-surface")).toBe(agent);
         expect(agent.getAttribute("aria-hidden")).toBe("true");
         expect(agent.hasAttribute("inert")).toBe(true);
+        expect(agent.hidden).toBe(true);
+        expect(agent.style.display).toBe("none");
         expect(screen.getByTestId("agent-surface").className).toContain("absolute");
         expect(screen.getByTestId("terminal-surface").className).toContain("absolute");
         view.rerender(
@@ -222,6 +224,8 @@ describe("WorkspaceMainContent identity", () => {
         expect(screen.getByTestId("agent-surface")).toBe(agent);
         expect(agent.getAttribute("aria-hidden")).toBe("true");
         expect(agent.hasAttribute("inert")).toBe(true);
+        expect(agent.hidden).toBe(true);
+        expect(agent.style.display).toBe("none");
         expect(screen.getByTestId("file-top-tab-surface-file-b").className).toContain("absolute");
 
         view.rerender(<WorkspaceMainContent {...makeProps({ activeContent: { kind: "agent" } })} />);
@@ -230,6 +234,8 @@ describe("WorkspaceMainContent identity", () => {
         expect(screen.getByTestId("agent-surface")).toBe(agent);
         expect(agent.getAttribute("aria-hidden")).toBe("false");
         expect(agent.hasAttribute("inert")).toBe(false);
+        expect(agent.hidden).toBe(false);
+        expect(agent.style.display).toBe("block");
     });
 
     it("shows matching Terminal failure and retries with a newer surface revision", () => {

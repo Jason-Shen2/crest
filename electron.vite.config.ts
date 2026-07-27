@@ -210,6 +210,7 @@ export default defineConfig({
             watch: {
                 ignored: [
                     "dist/**",
+                    "**/packages/**",
                     "**/*.go",
                     "**/go.mod",
                     "**/go.sum",

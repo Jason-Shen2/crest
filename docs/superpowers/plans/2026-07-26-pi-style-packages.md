@@ -229,12 +229,12 @@ Upstream mapping: `pi-mono/packages/ai`. Sync by diffing against
 
 Known deviations from upstream:
 
-- Image generation, Bedrock, Vertex, Azure, Codex, Mistral, Cloudflare, and Faux
+- Image generation, Bedrock, Vertex, Azure, Codex, Mistral, and Faux
   providers are stripped — re-add by copying back from upstream.
 - `models-dev-overlay.ts` is crest-only and lives in `emain/` (Electron-coupled).
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`).
+(enforced by `packages/boundary.test.ts`, added later in this extraction).
 ```
 
 Run: `npm install` (links `node_modules/@crest/ai`).
@@ -361,7 +361,7 @@ Known deviations from upstream:
 - `harness/messages.ts` augments `../types` CustomAgentMessages with crest message kinds.
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`).
+(enforced by `packages/boundary.test.ts`, added later in this extraction).
 ```
 
 Run: `npm install`.
@@ -624,7 +624,7 @@ upstream: v0.82.1). This package deviates from upstream by design:
   Electron-host-provided and lives in `emain/agent-tools/`, injected via factory options.
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
-(enforced by `packages/boundary.test.ts`).
+(enforced by `packages/boundary.test.ts`, added later in this extraction).
 ```
 
 Run: `npm install`.
@@ -746,12 +746,15 @@ to:
 
 ```bash
 npx tsx -e '
-const { getDefaultTools } = await import("@crest/coding-agent/tools");
-const { AgentHarness } = await import("@crest/agent");
-const tools = getDefaultTools(process.cwd());
-console.log("tools:", tools.length, "harness:", typeof AgentHarness);
+Promise.all([import("@crest/coding-agent/tools"), import("@crest/agent")]).then(([t, a]) => {
+    const tools = t.getDefaultTools(process.cwd());
+    console.log("tools:", tools.length, "harness:", typeof a.AgentHarness);
+});
 '
 ```
+
+(Promise-chain form on purpose: `tsx -e` compiles eval snippets as CJS and rejects
+top-level `await` — discovered in the Task 1 spike.)
 
 Expected output: `tools: 8 harness: function` — the agent stack loads and constructs with no Electron process. (Before this change, importing the tools barrel dragged in `emain-wsh` and `@/app/store/wshclientapi` and this could not run.)
 

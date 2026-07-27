@@ -36,9 +36,9 @@ import {
 
 /**
  * Mirror of pi's AgentMessage at the renderer boundary. Kept as a
- * structural type rather than imported from emain/agent/types because
+ * structural type rather than imported from packages/agent/types because
  * the renderer must not pull main-process modules. Stays in sync with
- * emain/agent/types.ts AgentMessage by review during the wiring task.
+ * packages/agent/types.ts AgentMessage by review during the wiring task.
  */
 export interface PiAgentMessageBase {
     role: "user" | "assistant" | "toolResult" | string;

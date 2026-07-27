@@ -23,9 +23,14 @@ Workspace AgentContent
 that same Workspace renderer. Switching Agent → Terminal → any implemented Top
 Tab → Agent retains one Workspace renderer and the mounted Agent surface.
 Agent and activated File content live in isolated Workspace content slots.
-Navigation changes update only slot activation. Agent resource activity is
-delivered through one stable lifecycle controller whose listeners acquire or
-release subscriptions and observers without becoming React render state.
+Navigation changes update only slot activation. Inactive slots use
+`display:none`, which removes their visual subtree from Chromium's layout and
+paint trees while preserving the mounted React/DOM instance and its runtime
+state. `visibility:hidden` is not a sufficient renderer boundary for Agent
+messages that use `content-visibility:auto` and composited animation layers.
+Agent resource activity is delivered through one stable lifecycle controller
+whose listeners acquire or release subscriptions and observers without
+becoming React render state.
 Cold File slots retain their own loading surface and do not mount the
 File/Monaco surface until the runtime reports ready.
 Browser Top Tabs are deferred; URL launchers still target the existing

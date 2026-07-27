@@ -4,7 +4,7 @@ import type {
     Score as StoredScore,
     Trace as StoredTrace,
     TraceDetail as StoredTraceDetail,
-} from "../../../emain/agent/observability/types";
+} from "@crest/coding-agent/observability/types";
 
 type SubscribeEvent = Parameters<Window["api"]["agentObservability"]["subscribe"]>[1] extends (
     event: infer Event

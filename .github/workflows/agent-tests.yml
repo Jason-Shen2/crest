@@ -1,19 +1,38 @@
 name: Agent Tests
 
 # The agent runtime moved from Go (pkg/agent + pkg/aiusechat, deleted in
-# 2994635c) to TypeScript in the Electron main process (emain/agent +
-# emain/aiconfig), so this job now runs the vitest suite that covers it.
+# 2994635c) to TypeScript packages plus Electron main-process integration,
+# so this job runs the vitest suite that covers both sides.
 
 on:
   pull_request:
     paths:
-      - "emain/agent/**"
       - "emain/aiconfig/**"
-      - "emain/ai/**"
+      - "emain/aiconfig-ipc.ts"
+      - "emain/agent-event-routing.ts"
+      - "emain/agent-event-routing.test.ts"
+      - "emain/agent-ipc.ts"
+      - "emain/agent-ipc.test.ts"
+      - "emain/agent-observability-ipc.ts"
+      - "emain/agent-observability-ipc.test.ts"
+      - "emain/agent-tools/**"
+      - "emain/emain-ipc.ts"
+      - "emain/models-dev-overlay.ts"
+      - "emain/preload.ts"
       - "frontend/app/store/**"
       - "frontend/app/term/**"
+      - "frontend/app/observability/**"
+      - "frontend/types/custom.d.ts"
+      - "packages/agent/**"
+      - "packages/ai/**"
+      - "packages/boundary.test.ts"
+      - "packages/coding-agent/**"
+      - "electron.vite.config.ts"
       - "package.json"
       - "package-lock.json"
+      - "tsconfig.json"
+      - "vitest.config.ts"
+      - "vitest.slim.config.ts"
   push:
     branches:
       - main

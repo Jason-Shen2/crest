@@ -10,7 +10,6 @@ import { sprintf } from "sprintf-js";
 import * as services from "../frontend/app/store/services";
 import { initElectronWshrpc, shutdownWshrpc } from "../frontend/app/store/wshrpcutil-base";
 import { fireAndForget, sleep } from "../frontend/util/util";
-import { initModelsDevOverlay } from "./ai/models-dev-overlay";
 import { AuthKey, configureAuthKeyRequestInjection } from "./authkey";
 import {
     getActivityState,
@@ -60,6 +59,7 @@ import { ElectronWshClient, initElectronWshClient } from "./emain-wsh";
 import { getLaunchSettings } from "./launchsettings";
 import { LspWebSocketBridge } from "./lsp/lsp-websocket-server";
 import { configureAutoUpdater, updater } from "./updater";
+import { initModelsDevOverlay } from "./models-dev-overlay";
 
 const electronApp = electron.app;
 

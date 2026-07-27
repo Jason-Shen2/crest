@@ -1,0 +1,11 @@
+{
+    "name": "@crest/ai",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "crest's integrated AI client, started from @earendil-works/pi-ai v0.75.5",
+    "exports": {
+        ".": "./index.ts",
+        "./*": "./*.ts"
+    }
+}

@@ -1,0 +1,11 @@
+{
+    "name": "@crest/agent",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "crest's agent core + harness, an in-tree fork of @earendil-works/pi-agent-core",
+    "exports": {
+        ".": "./index.ts",
+        "./*": "./*.ts"
+    }
+}

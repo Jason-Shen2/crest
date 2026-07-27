@@ -15,7 +15,7 @@ import * as keyutil from "../frontend/util/keyutil";
 import { fireAndForget, parseDataUrl } from "../frontend/util/util";
 import { registerAgentIpcHandlers } from "./agent-ipc";
 import { registerAgentObservabilityIpcHandlers } from "./agent-observability-ipc";
-import { resolveAuthenticatedWorkspaceSender } from "./agent/agent-execution-context";
+import { resolveAuthenticatedWorkspaceSender } from "@crest/coding-agent/agent-execution-context";
 import { registerAiConfigIpcHandlers } from "./aiconfig-ipc";
 import {
     incrementTermCommandsDurable,

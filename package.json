@@ -180,6 +180,7 @@
     },
     "packageManager": "npm@10.9.2",
     "workspaces": [
-        "tsunami/frontend"
+        "tsunami/frontend",
+        "packages/*"
     ]
 }

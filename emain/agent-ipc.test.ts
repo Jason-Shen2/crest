@@ -48,19 +48,20 @@ vi.mock("electron", () => {
     };
 });
 
-vi.mock("./ai", () => ({ getModel: vi.fn() }));
-vi.mock("./agent/change-review/change-outline", () => ({
+vi.mock("@crest/ai", () => ({ getModel: vi.fn() }));
+vi.mock("@crest/coding-agent/change-review/change-outline", () => ({
     extractChangeOperationsFromMessages: vi.fn(() => []),
     generateChangeOutline: vi.fn(),
 }));
-vi.mock("./agent/harness-factory", () => ({ buildAgentHarnessHost: vi.fn() }));
-vi.mock("./agent/index", () => ({}));
-vi.mock("./agent/permissions", () => ({
+vi.mock("@crest/coding-agent/harness-factory", () => ({ buildAgentHarnessHost: vi.fn() }));
+vi.mock("@crest/agent", () => ({}));
+vi.mock("@crest/coding-agent/permissions", () => ({
     buildPermissionsHook: vi.fn(),
     isBenchMode: vi.fn(() => false),
 }));
-vi.mock("./agent/skills-loader", () => ({ loadAgentSkills: vi.fn(async () => []) }));
-vi.mock("./agent/tools", () => ({
+vi.mock("@crest/coding-agent/skills-loader", () => ({ loadAgentSkills: vi.fn(async () => []) }));
+vi.mock("@crest/coding-agent/tools", () => ({ getDefaultTools: vi.fn(() => []) }));
+vi.mock("./agent-tools/spawn-cli-agent", () => ({
     createSpawnCliAgentTool: vi.fn(() => ({
         name: "spawn_cli_agent",
         label: "spawn cli agent",
@@ -68,7 +69,6 @@ vi.mock("./agent/tools", () => ({
         parameters: {},
         execute: vi.fn(),
     })),
-    getDefaultTools: vi.fn(() => []),
 }));
 vi.mock("./aiconfig/secrets", () => ({ getSecret: vi.fn() }));
 vi.mock("../frontend/app/store/wshclientapi", () => ({
@@ -93,17 +93,20 @@ import {
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
-import { AgentRuntimeRegistry } from "./agent/agent-runtime-registry";
-import { AgentSessionRuntime } from "./agent/agent-session-runtime";
-import { buildAgentHarnessHost } from "./agent/harness-factory";
-import { Session } from "./agent/harness/session/session";
-import { SqliteSessionRepo } from "./agent/harness/session/sqlite-repo";
-import { SqliteSessionStorage } from "./agent/harness/session/sqlite-storage";
-import type { JsonlSessionMetadata } from "./agent/harness/types";
-import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "./agent/sessions";
-import { loadAgentSkills } from "./agent/skills-loader";
-import type { AgentMessage } from "./agent/types";
-import { getModel } from "./ai";
+import { AgentRuntimeRegistry } from "@crest/coding-agent/agent-runtime-registry";
+import { AgentSessionRuntime } from "@crest/coding-agent/agent-session-runtime";
+import { foldContextJournal } from "@crest/coding-agent/context/journal";
+import { ContextReferenceError } from "@crest/coding-agent/context/types";
+import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
+import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
+import { Session } from "@crest/agent/harness/session/session";
+import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
+import { SqliteSessionStorage } from "@crest/agent/harness/session/sqlite-storage";
+import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
+import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir, openPaneSession } from "@crest/coding-agent/sessions";
+import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
+import type { AgentMessage } from "@crest/agent/types";
+import { getModel } from "@crest/ai";
 
 const TrustedRequestContext = { workspaceId: "workspace-test", generation: 1 };
 
@@ -724,11 +727,15 @@ describe("agent-ipc command helpers", () => {
             rows: 24,
             needsUserInput: false,
         });
-        const commandWrite = vi.spyOn(AgentSessionRuntime.prototype as any, "writeHostedCommand").mockResolvedValue();
+        const commandWrite = vi
+            .spyOn(AgentSessionRuntime.prototype as any, "writeHostedCommand")
+            .mockResolvedValue(undefined);
         const commandResize = vi
             .spyOn(AgentSessionRuntime.prototype as any, "resizeHostedCommand")
             .mockImplementation(() => {});
-        const commandStop = vi.spyOn(AgentSessionRuntime.prototype as any, "stopHostedCommand").mockResolvedValue();
+        const commandStop = vi
+            .spyOn(AgentSessionRuntime.prototype as any, "stopHostedCommand")
+            .mockResolvedValue(undefined);
 
         try {
             registerAgentIpcHandlers();

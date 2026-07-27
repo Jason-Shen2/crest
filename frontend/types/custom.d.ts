@@ -670,7 +670,7 @@ declare global {
         /**
          * Per-pane tool allowlist. Optional — when omitted, main defaults
          * to allowAll (no UX-gated approval in v1). See
-         * emain/agent/permissions.ts and the architecture doc §7.9.
+         * packages/coding-agent/permissions.ts and the architecture doc §7.9.
          */
         allowedTools?: string[];
         /** Ordered composer references. Main validates ownership and representation. */

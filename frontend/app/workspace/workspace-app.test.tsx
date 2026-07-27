@@ -19,6 +19,7 @@ const layout = vi.hoisted(() => ({
     model: null as any,
     terminalListProps: null as any,
     leftPanelProps: null as any,
+    leftPanelRenderCount: 0,
     rightPanelProps: null as any,
     topTabController: null as any,
     openTopTabOnMount: false,
@@ -222,6 +223,7 @@ vi.mock("@/app/modals/modalsrenderer", () => ({
 vi.mock("./workspace-left-panel", () => ({
     WorkspaceLeftPanel: (props: { mode: string; terminalList?: React.ReactNode }) => {
         layout.leftPanelProps = props;
+        layout.leftPanelRenderCount++;
         return (
             <aside>
                 {props.mode}
@@ -329,6 +331,7 @@ beforeEach(() => {
     terminalRpc.reorder.mockReset();
     layout.terminalListProps = null;
     layout.leftPanelProps = null;
+    layout.leftPanelRenderCount = 0;
     layout.rightPanelProps = null;
     layout.topTabController = null;
     layout.openTopTabOnMount = false;
@@ -833,7 +836,8 @@ describe("WorkspaceApp", () => {
         );
         expect(screen.getByTestId("terminal-surface").hidden).toBe(false);
         expect(agent.getAttribute("aria-hidden")).toBe("true");
-        expect(agent.getAttribute("style")).toContain("visibility: hidden");
+        expect(agent.hidden).toBe(true);
+        expect(agent.style.display).toBe("none");
 
         fireEvent.click(screen.getByRole("button", { name: "Agent" }));
         expect(agent.getAttribute("aria-hidden")).toBe("false");
@@ -841,6 +845,17 @@ describe("WorkspaceApp", () => {
         fireEvent.click(screen.getByRole("tab", { name: "README.md" }));
         expect(screen.getByTestId("file-top-tab-surface-readme").textContent).toContain("README.md");
         expect(screen.getByTestId("workspace-renderer-root")).toBe(root);
+    });
+
+    it("keeps the left panel out of Agent to File navigation commits", () => {
+        globalStore.set(layout.model.leftPanelAtom, { visible: true, mode: "files", width: 260 });
+        render(<WorkspaceApp init={makeWorkspaceInit()} />);
+        const renderCountBeforeNavigation = layout.leftPanelRenderCount;
+
+        act(() => layout.topTabController.openFile("/repo/new-file.ts"));
+
+        expect(screen.getByTestId("agent-surface").getAttribute("aria-hidden")).toBe("true");
+        expect(layout.leftPanelRenderCount).toBe(renderCountBeforeNavigation);
     });
 
     it("keeps one Workspace renderer across Agent, Terminal, File, Preview, Diff, and Agent", () => {
@@ -992,13 +1007,13 @@ describe("WorkspaceApp", () => {
         const controller = layout.topTabController;
         const model = WorkspaceModel.getInstance({ windowId: init.windowId, workspaceId: init.workspace.oid });
 
-        expect(activeSubscriptions.get(model.contentStateAtom)).toBe(2);
+        expect(activeSubscriptions.get(model.contentStateAtom)).toBe(3);
         expect(model.preReplacementTeardowns.size).toBe(5);
         controller.stop();
-        expect(activeSubscriptions.get(model.contentStateAtom)).toBe(1);
+        expect(activeSubscriptions.get(model.contentStateAtom)).toBe(2);
         expect(model.preReplacementTeardowns.size).toBe(4);
         controller.start();
-        expect(activeSubscriptions.get(model.contentStateAtom)).toBe(2);
+        expect(activeSubscriptions.get(model.contentStateAtom)).toBe(3);
         expect(model.preReplacementTeardowns.size).toBe(5);
         view.rerender(
             <StrictMode>
@@ -1006,7 +1021,7 @@ describe("WorkspaceApp", () => {
             </StrictMode>
         );
         expect(layout.topTabController).toBe(controller);
-        expect(activeSubscriptions.get(model.contentStateAtom)).toBe(2);
+        expect(activeSubscriptions.get(model.contentStateAtom)).toBe(3);
         expect(model.preReplacementTeardowns.size).toBe(5);
 
         view.unmount();

@@ -15,8 +15,9 @@ export function WorkspaceContentSlot({ active, children, testId }: WorkspaceCont
             aria-hidden={!active}
             className="absolute inset-0 h-full w-full"
             data-testid={testId}
+            hidden={!active}
             inert={active ? undefined : true}
-            style={{ visibility: active ? "visible" : "hidden", pointerEvents: active ? "auto" : "none" }}
+            style={{ display: active ? "block" : "none" }}
         >
             {children}
         </section>

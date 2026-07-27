@@ -3,10 +3,10 @@
 
 import * as electron from "electron";
 
-import type { AgentHarness } from "./agent/harness/agent-harness";
-import { SqliteTraceStore, type TraceStore } from "./agent/observability/sqlite-trace-store";
-import { TraceBuilder } from "./agent/observability/trace-builder";
-import type { TraceDetail } from "./agent/observability/types";
+import type { AgentHarness } from "@crest/agent/harness/agent-harness";
+import { SqliteTraceStore, type TraceStore } from "@crest/coding-agent/observability/sqlite-trace-store";
+import { TraceBuilder } from "@crest/coding-agent/observability/trace-builder";
+import type { TraceDetail } from "@crest/coding-agent/observability/types";
 
 type SubKey = string;
 
