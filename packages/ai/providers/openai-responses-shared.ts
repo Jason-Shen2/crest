@@ -8,6 +8,7 @@ import type {
 	ResponseInputContent,
 	ResponseInputImage,
 	ResponseInputText,
+	ResponseOutputItem,
 	ResponseOutputMessage,
 	ResponseReasoningItem,
 	ResponseStreamEvent,
@@ -291,6 +292,11 @@ export async function processResponsesStream<TApi extends Api>(
 	let currentBlock: ThinkingContent | TextContent | (ToolCall & { partialJson: string }) | null = null;
 	const blocks = output.content;
 	const blockIndex = () => blocks.length - 1;
+	const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
+		if (item.type === "message" && item.phase === "final_answer") {
+			output.stopReason = "stop";
+		}
+	};
 
 	for await (const event of openaiStream) {
 		if (event.type === "response.created") {
@@ -303,6 +309,7 @@ export async function processResponsesStream<TApi extends Api>(
 				output.content.push(currentBlock);
 				stream.push({ type: "thinking_start", contentIndex: blockIndex(), partial: output });
 			} else if (item.type === "message") {
+				applyMessagePhaseStopReason(item);
 				currentItem = item;
 				currentBlock = { type: "text", text: "" };
 				output.content.push(currentBlock);
@@ -437,6 +444,7 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 		} else if (event.type === "response.output_item.done") {
 			const item = event.item;
+			applyMessagePhaseStopReason(item);
 
 			if (item.type === "reasoning" && currentBlock?.type === "thinking") {
 				const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";

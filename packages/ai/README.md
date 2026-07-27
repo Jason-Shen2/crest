@@ -4,7 +4,7 @@ In-tree fork of [`@earendil-works/pi-ai`](https://github.com/badlogic/pi-mono), 
 from **v0.75.5**. Exports TypeScript source directly; the app bundle inlines it.
 
 Upstream mapping: `pi-mono/packages/ai`. Sync by diffing against
-`~/Documents/pi-reference/packages/ai` (last checked upstream: v0.82.1).
+`~/Documents/pi-reference/packages/ai` (last checked upstream: pi main `a597371b`).
 
 Known deviations from upstream:
 

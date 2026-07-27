@@ -5,7 +5,7 @@ In-tree fork of [`@earendil-works/pi-agent-core`](https://github.com/badlogic/pi
 `types.ts`, `agent.ts`, `agent-loop.ts`, `proxy.ts`, `harness/`.
 
 Sync by diffing against `~/Documents/pi-reference/packages/agent/src` (last checked
-upstream: v0.82.1). The last full upstream sync predates this extraction — the next sync
+upstream: pi main `a597371b`). The last full upstream sync predates this extraction — the next sync
 should start from that diff.
 
 Known deviations from upstream:

@@ -5,7 +5,7 @@ to use tools — tool definitions, system prompt assembly, sessions, permissions
 context management, change review, observability, eval.
 
 Sync by diffing against `~/Documents/pi-reference/packages/coding-agent` (last checked
-upstream: v0.82.1). This package deviates from upstream by design:
+upstream: pi main `a597371b`). This package deviates from upstream by design:
 
 - pi-tui render layer stripped (crest has its own renderer).
 - `find`/`grep` are pure-Node (upstream shells out to fd/ripgrep); `web_fetch` is crest-only.

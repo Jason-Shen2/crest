@@ -86,4 +86,45 @@ describe("Google transport options", () => {
         expect((await stream.result()).stopReason).toBe("aborted");
         expect(abortObserved).toBe(true);
     });
+
+    it("treats a stream ending without a finish reason as an error", async () => {
+        googleMocks.generateContentStream.mockResolvedValue(
+            (async function* () {
+                yield {
+                    candidates: [
+                        {
+                            content: {
+                                parts: [{ text: "partial" }],
+                            },
+                        },
+                    ],
+                };
+            })()
+        );
+
+        const stream = streamGoogle(
+            {
+                provider: "google",
+                id: "gemini",
+                name: "Gemini",
+                api: "google-generative-ai",
+                baseUrl: "https://generativelanguage.googleapis.com",
+                reasoning: false,
+                contextWindow: 100_000,
+                maxTokens: 4_000,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+            {
+                systemPrompt: "",
+                messages: [{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 }],
+                tools: [],
+            },
+            { apiKey: "test-key" }
+        );
+
+        const result = await stream.result();
+        expect(result.stopReason).toBe("error");
+        expect(result.errorMessage).toBe("Google stream ended without a finish reason");
+    });
 });
