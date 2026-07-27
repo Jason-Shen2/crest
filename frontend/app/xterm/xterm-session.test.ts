@@ -155,8 +155,15 @@ vi.mock("./renderer-pool", () => ({
     configureRendererPool: (a: any) => {
         h.pool.adapter = a;
     },
+    beginLeafWriteBarrier: (leafId: number, callback: (slot: FakeSlot) => void) => {
+        const slot = h.pool.slots.get(leafId) ?? h.pool.retained.get(leafId);
+        if (!slot) return false;
+        callback(slot);
+        return true;
+    },
     acquireSlot: (params: any) => h.acquireSlot(params),
     releaseSlot: (leafId: number) => h.releaseSlot(leafId),
+    endLeafWriteBarrier: () => {},
     writeToSlot: (slot: any, data: string | Uint8Array) => slot.term.write(data),
     getSlotForLeaf: (leafId: number) => h.pool.slots.get(leafId) ?? null,
     getLiveSlotForLeaf: (leafId: number) => h.pool.slots.get(leafId) ?? h.pool.retained.get(leafId) ?? null,
@@ -410,6 +417,30 @@ describe("attach + cold restore", () => {
         await flushAsync();
 
         expect(joined(slot)).toBe(snapshot + afterSnapshot);
+    });
+
+    it("ignores a stale restore snapshot and preserves new offset-zero output after truncate", async () => {
+        const blockId = newBlockId();
+        let resolveFetch: (v: { data: Uint8Array; fileInfo: any }) => void;
+        h.fetchImpl = () =>
+            new Promise((r) => {
+                resolveFetch = r;
+            });
+        attachSession(blockId, fakeContainer(), {});
+        setSessionVisibility(blockId, true, true);
+        const slot: FakeSlot = h.pool.slots.get(sessionLeafId(blockId));
+        const handlers = h.ptyHandlers.get(blockId);
+
+        handlers.onData(enc("PRE-TRUNCATE"), 4);
+        handlers.onTruncate();
+        handlers.onData(enc("NEW"), 0);
+        resolveFetch!({
+            data: enc("OLD-SNAPSHOT"),
+            fileInfo: { size: "OLD-SNAPSHOT".length },
+        });
+        await flushAsync();
+
+        expect(joined(slot)).toBe("NEW");
     });
 
     it("without a slot, rebuilds the ring as file-then-appends for the next bind", async () => {
@@ -796,6 +827,24 @@ describe("slot adapter", () => {
         await flushAsync();
 
         expect(joined(h.pool.slots.get(sessionLeafId(blockId)))).toBe("DRAINED|DURING-EVICTION");
+    });
+
+    it("discards a draining pre-truncate snapshot before rebinding new bytes", async () => {
+        const { blockId, leafId, handlers } = await attachReady();
+        h.pool.adapter.evictLeaf(leafId, true);
+        h.pool.retained.delete(leafId);
+
+        handlers.onTruncate();
+        handlers.onData(enc("NEW"), 0);
+        h.pool.adapter.storeSnapshot(leafId, {
+            snapshot: "PRE-TRUNCATE",
+            cols: 80,
+            rows: 24,
+            altScreen: false,
+        });
+        await flushAsync();
+
+        expect(joined(h.pool.slots.get(sessionLeafId(blockId)))).toBe("NEW");
     });
 });
 

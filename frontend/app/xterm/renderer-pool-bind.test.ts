@@ -105,8 +105,10 @@ vi.mock("@xterm/addon-webgl", () => ({
 
 import {
     acquireSlot,
+    beginLeafWriteBarrier,
     configureRendererPool,
     disposeLeafSlot,
+    endLeafWriteBarrier,
     getSlotForLeaf,
     poolSize,
     poolSlotStats,
@@ -225,5 +227,220 @@ describe("renderer slot replay", () => {
         expect(replacement.term.writes).not.toContain("OLD-LEAF");
         expect(h.snapshots).toEqual([{ leafId: 1, snapshot: "\u001b[?25hOLD-LEAF" }]);
         expect(poolSize()).toBe(5);
+    });
+
+    it("resets only after pre-truncate writes drain, then accepts new bytes", async () => {
+        const slot = acquireSlot({
+            leafId: 1,
+            container: document.body.appendChild(document.createElement("div")),
+            snapshot: null,
+            altScreen: false,
+            drainRing: () => {},
+            shellExited: false,
+            searchQuery: null,
+            cols: 80,
+            rows: 24,
+            registerOsc: () => [],
+            onSearchReady: () => {},
+        }) as Slot & {
+            term: Slot["term"] & { flushWrites(): void; writes: string[] };
+        };
+
+        h.deferWrites = true;
+        writeToSlot(slot, "OLD");
+        h.deferWrites = false;
+
+        expect(
+            beginLeafWriteBarrier(1, (barrierSlot) => {
+                barrierSlot.term.clear();
+                barrierSlot.term.reset();
+                endLeafWriteBarrier(barrierSlot, 1);
+                writeToSlot(barrierSlot, "NEW");
+            })
+        ).toBe(true);
+
+        slot.term.flushWrites();
+        await Promise.resolve();
+
+        expect(slot.term.writes).toEqual(["NEW"]);
+    });
+
+    it("returns to the five-slot limit after all slots leave write barriers", async () => {
+        const barrierSlots: Array<Slot & { term: Slot["term"] & { flushWrites(): void; writes: string[] } }> = [];
+        for (let leafId = 1; leafId <= 5; leafId++) {
+            const slot = acquireSlot({
+                leafId,
+                container: document.body.appendChild(document.createElement("div")),
+                snapshot: null,
+                altScreen: false,
+                drainRing: () => {},
+                shellExited: false,
+                searchQuery: null,
+                cols: 80,
+                rows: 24,
+                registerOsc: () => [],
+                onSearchReady: () => {},
+            }) as (typeof barrierSlots)[number];
+            h.deferWrites = true;
+            writeToSlot(slot, `OLD-${leafId}`);
+            h.deferWrites = false;
+            beginLeafWriteBarrier(leafId, (barrierSlot) => {
+                endLeafWriteBarrier(barrierSlot, leafId);
+                writeToSlot(barrierSlot, `NEW-${leafId}`);
+            });
+            barrierSlots.push(slot);
+        }
+
+        acquireSlot({
+            leafId: 6,
+            container: document.body.appendChild(document.createElement("div")),
+            snapshot: null,
+            altScreen: false,
+            drainRing: () => {},
+            shellExited: false,
+            searchQuery: null,
+            cols: 80,
+            rows: 24,
+            registerOsc: () => [],
+            onSearchReady: () => {},
+        });
+        expect(poolSize()).toBe(6);
+
+        h.deferWrites = true;
+        for (const slot of barrierSlots) slot.term.flushWrites();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(poolSize()).toBe(6);
+        expect(h.evicted).toHaveLength(1);
+
+        h.deferWrites = false;
+        for (const slot of barrierSlots) slot.term.flushWrites();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(poolSize()).toBe(5);
+        expect(h.evicted).toHaveLength(1);
+    });
+
+    it("can trim a later overflow after the first trim target is disposed while draining", async () => {
+        const acquire = (leafId: number) =>
+            acquireSlot({
+                leafId,
+                container: document.body.appendChild(document.createElement("div")),
+                snapshot: null,
+                altScreen: false,
+                drainRing: () => {},
+                shellExited: false,
+                searchQuery: null,
+                cols: 80,
+                rows: 24,
+                registerOsc: () => [],
+                onSearchReady: () => {},
+            }) as Slot & {
+                term: Slot["term"] & { flushWrites(): void; writes: string[] };
+            };
+
+        const firstWave = Array.from({ length: 5 }, (_, index) => {
+            const leafId = index + 1;
+            const slot = acquire(leafId);
+            h.deferWrites = true;
+            writeToSlot(slot, `OLD-${leafId}`);
+            h.deferWrites = false;
+            beginLeafWriteBarrier(leafId, (barrierSlot) => {
+                endLeafWriteBarrier(barrierSlot, leafId);
+                writeToSlot(barrierSlot, `NEW-${leafId}`);
+            });
+            return slot;
+        });
+        acquire(6);
+
+        h.deferWrites = true;
+        for (const slot of firstWave) slot.term.flushWrites();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(poolSize()).toBe(6);
+        expect(h.evicted).toHaveLength(1);
+        disposeLeafSlot(h.evicted[0]);
+        expect(poolSize()).toBe(5);
+
+        h.deferWrites = false;
+        for (const slot of firstWave) slot.term.flushWrites();
+        await Promise.resolve();
+
+        const liveLeafIds = poolSlotStats()
+            .map((stat) => stat.leafId ?? stat.retainedLeafId)
+            .filter((leafId): leafId is number => leafId !== null);
+        expect(liveLeafIds).toHaveLength(5);
+
+        const secondWave = liveLeafIds.map((leafId) => {
+            const slot = getSlotForLeaf(leafId) as (typeof firstWave)[number];
+            h.deferWrites = true;
+            writeToSlot(slot, `OLD-AGAIN-${leafId}`);
+            h.deferWrites = false;
+            beginLeafWriteBarrier(leafId, (barrierSlot) => {
+                endLeafWriteBarrier(barrierSlot, leafId);
+            });
+            return slot;
+        });
+        acquire(20);
+        expect(poolSize()).toBe(6);
+
+        for (const slot of secondWave) slot.term.flushWrites();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(poolSize()).toBe(5);
+        expect(h.evicted).toHaveLength(2);
+    });
+
+    it("serializes a barrier trim with an ordinary eviction finishing in the same turn", async () => {
+        const acquire = (leafId: number) =>
+            acquireSlot({
+                leafId,
+                container: document.body.appendChild(document.createElement("div")),
+                snapshot: null,
+                altScreen: false,
+                drainRing: () => {},
+                shellExited: false,
+                searchQuery: null,
+                cols: 80,
+                rows: 24,
+                registerOsc: () => [],
+                onSearchReady: () => {},
+            }) as Slot & {
+                term: Slot["term"] & { flushWrites(): void; writes: string[] };
+            };
+
+        const slots = Array.from({ length: 5 }, (_, index) => acquire(index + 1));
+        h.deferWrites = true;
+        writeToSlot(slots[0], "ORDINARY-EVICTION");
+        h.deferWrites = false;
+        const sixth = acquire(6);
+        expect(h.evicted).toEqual([1]);
+
+        const barrierSlots = [...slots.slice(1), sixth];
+        for (const [index, slot] of barrierSlots.entries()) {
+            const leafId = index + 2;
+            h.deferWrites = true;
+            writeToSlot(slot, `BARRIER-${leafId}`);
+            h.deferWrites = false;
+            beginLeafWriteBarrier(leafId, (barrierSlot) => {
+                endLeafWriteBarrier(barrierSlot, leafId);
+                writeToSlot(barrierSlot, `POST-BARRIER-${leafId}`);
+            });
+        }
+
+        const seventh = acquire(7);
+        h.deferWrites = true;
+        writeToSlot(seventh, "SEVENTH-PENDING");
+        barrierSlots[0].term.flushWrites();
+        slots[0].term.flushWrites();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(poolSize()).toBe(6);
+        expect(h.evicted).toHaveLength(2);
     });
 });

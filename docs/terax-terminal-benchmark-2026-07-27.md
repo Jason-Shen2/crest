@@ -100,8 +100,10 @@ before its final snapshot is stored; the replacement pane temporarily uses an
 overflow slot, and the pool returns to five after the callbacks complete.
 Blockfile append events now also carry the absolute offset captured by the same
 lock as the append, allowing cold restore to remove bytes already included in
-the fetched snapshot without dropping later output. Focused regressions cover
-both races.
+the fetched snapshot without dropping later output. A restore-generation guard
+also rejects a stale snapshot when truncate resets offsets to zero; a write
+barrier delays reset and post-truncate replay until pre-truncate xterm parsing
+has drained. Focused regressions cover these races.
 
 ## Functional Electron smoke completed alongside the benchmark
 

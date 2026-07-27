@@ -28,8 +28,10 @@ import {
 import { attachPty, type PtySession } from "./pty-bridge";
 import {
     acquireSlot,
+    beginLeafWriteBarrier,
     configureRendererPool,
     disposeLeafSlot,
+    endLeafWriteBarrier,
     focusSlot,
     getLiveSlotForLeaf,
     getSlotForLeaf,
@@ -118,9 +120,15 @@ type XtermSession = {
     // Cold restore in flight: appends wait with their absolute file offsets
     // until the fetched blockfile snapshot can reconcile overlap.
     restoring: boolean;
+    // Invalidates an in-flight snapshot when truncate resets file offsets.
+    restoreGeneration: number;
+    // Post-truncate bytes ring until pre-truncate xterm writes finish parsing
+    // and the live slot can be reset without stale bytes crossing the reset.
+    truncatePending: boolean;
     // A stolen slot still has xterm writes queued. New bytes ring until the
     // old queue drains and its final snapshot is stored.
     slotEvictionPending: boolean;
+    slotEvictionGeneration: number | null;
     hiddenReleaseTimer: ReturnType<typeof setTimeout>;
     statusUnsub: () => void;
     rowUnsub: () => void;
@@ -534,7 +542,7 @@ export function getSessionScreenSnapshot(blockId: string): string | null {
 }
 
 function sessionBusy(s: XtermSession): boolean {
-    return s.commandRunning || isAgentActive(s.blockId);
+    return s.commandRunning || s.truncatePending || isAgentActive(s.blockId);
 }
 
 // A parked hidden leaf went idle: give the post-command prompt a moment to
@@ -633,6 +641,7 @@ configureRendererPool({
         const s = sessionForLeaf(leafId);
         if (!s) return;
         s.slotEvictionPending = waitForWrites;
+        s.slotEvictionGeneration = waitForWrites ? s.restoreGeneration : null;
         unbindSessionFromSlot(s);
     },
     isLeafFocused(leafId) {
@@ -652,12 +661,14 @@ configureRendererPool({
     storeSnapshot(leafId, out) {
         const s = sessionForLeaf(leafId);
         if (!s) return;
-        s.snapshot = out.snapshot;
+        const snapshotInvalidated = s.slotEvictionPending && s.slotEvictionGeneration !== s.restoreGeneration;
+        s.snapshot = snapshotInvalidated ? null : out.snapshot;
         if (out.cols > 0) s.cols = out.cols;
         if (out.rows > 0) s.rows = out.rows;
-        s.altScreenAtRelease = out.altScreen;
+        s.altScreenAtRelease = snapshotInvalidated ? false : out.altScreen;
         if (!s.slotEvictionPending) return;
         s.slotEvictionPending = false;
+        s.slotEvictionGeneration = null;
         if (!s.container || s.disposed || s.hasSlot) return;
         if (s.visibleNow) {
             bindSessionToSlot(s);
@@ -678,6 +689,10 @@ function deliverPtyBytes(s: XtermSession, bytes: Uint8Array, offset?: number): v
         s.restoreAppends.push({ bytes, offset });
         return;
     }
+    if (s.truncatePending) {
+        s.dormantRing.push(bytes);
+        return;
+    }
     // Retained slots keep parsing live (render paused); the ring is only for
     // leaves whose buffer was stolen or never bound.
     const slot = getLiveSlotForLeaf(s.leafId);
@@ -691,6 +706,7 @@ function deliverPtyBytes(s: XtermSession, bytes: Uint8Array, offset?: number): v
 // each append's absolute start offset; comparing it with the snapshot's size
 // removes bytes already present in the fetch while preserving later suffixes.
 async function coldRestoreScrollback(s: XtermSession): Promise<void> {
+    const restoreGeneration = s.restoreGeneration;
     let data: Uint8Array = null;
     let snapshotEndOffset: number | null = null;
     try {
@@ -698,9 +714,10 @@ async function coldRestoreScrollback(s: XtermSession): Promise<void> {
         data = file.data;
         snapshotEndOffset = Number.isFinite(file.fileInfo?.size) ? file.fileInfo.size : null;
     } catch (e) {
+        if (s.disposed || s.restoreGeneration !== restoreGeneration) return;
         console.warn("[xterm-session] scrollback fetch failed for block", s.blockId, e);
     }
-    if (s.disposed) return;
+    if (s.disposed || s.restoreGeneration !== restoreGeneration) return;
     s.restoring = false;
     const restoreAppends = s.restoreAppends;
     s.restoreAppends = [];
@@ -730,12 +747,23 @@ async function coldRestoreScrollback(s: XtermSession): Promise<void> {
 }
 
 function handleTruncate(s: XtermSession): void {
+    const restoreGeneration = ++s.restoreGeneration;
+    s.restoring = false;
+    s.restoreAppends = [];
     s.snapshot = null;
     s.dormantRing = new DormantRing();
-    const slot = getLiveSlotForLeaf(s.leafId);
-    if (slot) {
+    s.truncatePending = true;
+    const hasWriteBarrier = beginLeafWriteBarrier(s.leafId, (slot) => {
+        if (s.disposed || s.restoreGeneration !== restoreGeneration) return;
         slot.term.clear();
         slot.term.reset();
+        endLeafWriteBarrier(slot, s.leafId);
+        s.truncatePending = false;
+        const liveSlot = getLiveSlotForLeaf(s.leafId);
+        if (liveSlot) s.dormantRing.drain((bytes) => writeToSlot(liveSlot, bytes));
+    });
+    if (!hasWriteBarrier) {
+        s.truncatePending = false;
     }
 }
 
@@ -960,7 +988,10 @@ function ensureSession(blockId: string, blocks: boolean): XtermSession {
         altScreenAtRelease: false,
         commandRunning: false,
         restoring: true,
+        restoreGeneration: 0,
+        truncatePending: false,
         slotEvictionPending: false,
+        slotEvictionGeneration: null,
         hiddenReleaseTimer: null,
         statusUnsub: null,
         rowUnsub: null,

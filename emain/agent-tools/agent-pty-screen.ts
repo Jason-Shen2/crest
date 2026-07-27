@@ -19,7 +19,7 @@ export interface AgentPtyCursor {
     row: number;
     col: number;
     visible: boolean;
-    shape: string;
+    shape: "block" | "bar" | "underline";
     blink: boolean;
 }
 

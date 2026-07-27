@@ -78,6 +78,8 @@ export type Slot = {
     pendingWrites: number;
     writeDrainCallbacks: (() => void)[];
     drainingLeafId: number | null;
+    writeBarrierLeafId: number | null;
+    trimRemoval: boolean;
     disposed: boolean;
     lastCols: number;
     lastRows: number;
@@ -88,6 +90,7 @@ export type Slot = {
 
 const slots: Slot[] = [];
 let nextSlotId = 0;
+let poolTrimInProgress = false;
 let recyclerEl: HTMLDivElement | null = null;
 let adapter: SlotAdapter | null = null;
 
@@ -234,6 +237,8 @@ function createSlot(): Slot {
         pendingWrites: 0,
         writeDrainCallbacks: [],
         drainingLeafId: null,
+        writeBarrierLeafId: null,
+        trimRemoval: false,
         disposed: false,
         lastCols: term.cols,
         lastRows: term.rows,
@@ -342,6 +347,33 @@ function afterSlotWritesDrain(slot: Slot, callback: () => void): void {
     slot.writeDrainCallbacks.push(callback);
 }
 
+export function beginLeafWriteBarrier(leafId: number, callback: (slot: Slot) => void): boolean {
+    const slot = slots.find(
+        (candidate) =>
+            candidate.drainingLeafId === null &&
+            (candidate.currentLeafId === leafId || candidate.retainedLeafId === leafId)
+    );
+    if (!slot) return false;
+    slot.writeBarrierLeafId = leafId;
+    cancelWebglReap(slot);
+    cancelSlotReap(slot);
+    afterSlotWritesDrain(slot, () => {
+        if (slot.disposed || slot.writeBarrierLeafId !== leafId) return;
+        callback(slot);
+    });
+    return true;
+}
+
+export function endLeafWriteBarrier(slot: Slot, leafId: number): void {
+    if (slot.disposed || slot.writeBarrierLeafId !== leafId) return;
+    slot.writeBarrierLeafId = null;
+    if (slot.currentLeafId === null) {
+        scheduleWebglReap(slot);
+        scheduleSlotReap(slot);
+    }
+    requestPoolTrim();
+}
+
 function isAltScreen(s: Slot): boolean {
     try {
         return s.term.buffer.active.type === "alternate";
@@ -367,13 +399,15 @@ export function evictionScore(s: Slot): number {
 }
 
 function pickSlotFor(leafId: number): PickResult {
-    const available = slots.filter((s) => s.drainingLeafId === null);
+    const available = slots.filter((s) => s.drainingLeafId === null && s.writeBarrierLeafId === null);
     const retainedOwn = available.find((s) => s.currentLeafId === null && s.retainedLeafId === leafId);
     if (retainedOwn) return { slot: retainedOwn, previousLeafId: null };
 
     const clean = available.find((s) => s.currentLeafId === null && s.retainedLeafId === null);
     if (clean) return { slot: clean, previousLeafId: null };
-    if (available.length < PoolMaxSize) return { slot: createSlot(), previousLeafId: null };
+    if (slots.length < PoolMaxSize || available.length === 0) {
+        return { slot: createSlot(), previousLeafId: null };
+    }
 
     // Retained buffers are cheaper to lose than bound ones: serialize, no evict.
     let retained: Slot | null = null;
@@ -453,9 +487,65 @@ function retireSlotAfterWrites(slot: Slot, leafId: number): void {
     cancelSlotReap(slot);
     afterSlotWritesDrain(slot, () => {
         if (slot.disposed || slot.drainingLeafId !== leafId) return;
+        const wasTrimRemoval = slot.trimRemoval;
+        if (wasTrimRemoval && slots.length <= PoolMaxSize) {
+            slot.trimRemoval = false;
+            slot.drainingLeafId = null;
+            adapter?.storeSnapshot(leafId, serializeSlot(slot));
+            if (slot.currentLeafId === null) {
+                scheduleWebglReap(slot);
+                scheduleSlotReap(slot);
+            }
+            poolTrimInProgress = false;
+            requestPoolTrim();
+            return;
+        }
+        slot.trimRemoval = false;
         adapter?.storeSnapshot(leafId, serializeSlot(slot));
         disposeSlot(slot);
+        if (wasTrimRemoval) trimPoolToMax();
+        else requestPoolTrim();
     });
+}
+
+function requestPoolTrim(): void {
+    if (poolTrimInProgress || slots.length <= PoolMaxSize) return;
+    poolTrimInProgress = true;
+    queueMicrotask(trimPoolToMax);
+}
+
+function trimPoolToMax(): void {
+    while (slots.length > PoolMaxSize) {
+        const candidates = slots.filter((slot) => slot.drainingLeafId === null && slot.writeBarrierLeafId === null);
+        if (candidates.length === 0) {
+            poolTrimInProgress = false;
+            return;
+        }
+        const slot = candidates.reduce((best, candidate) =>
+            evictionScore(candidate) < evictionScore(best) ? candidate : best
+        );
+        const leafId = slot.currentLeafId ?? slot.retainedLeafId;
+        if (leafId === null) {
+            disposeSlot(slot);
+            continue;
+        }
+
+        const waitForWrites = slot.pendingWrites > 0;
+        if (slot.currentLeafId !== null) {
+            adapter?.evictLeaf(leafId, waitForWrites);
+        } else if (waitForWrites) {
+            adapter?.evictLeaf(leafId, true);
+        }
+        if (slot.currentLeafId !== null) detachSlotFromLeaf(slot, true);
+        if (waitForWrites) {
+            slot.trimRemoval = true;
+            retireSlotAfterWrites(slot, leafId);
+            return;
+        }
+        adapter?.storeSnapshot(leafId, serializeSlot(slot));
+        disposeSlot(slot);
+    }
+    poolTrimInProgress = false;
 }
 
 function discardRetention(slot: Slot): void {
@@ -773,7 +863,9 @@ function reapIdleSlot(slot: Slot): void {
 }
 
 function disposeSlot(slot: Slot): void {
+    const wasTrimRemoval = slot.trimRemoval;
     slot.disposed = true;
+    slot.trimRemoval = false;
     slot.writeDrainCallbacks = [];
     cancelSlotReap(slot);
     cancelWebglReap(slot);
@@ -799,6 +891,10 @@ function disposeSlot(slot: Slot): void {
     slot.host.remove();
     const i = slots.indexOf(slot);
     if (i >= 0) slots.splice(i, 1);
+    if (wasTrimRemoval) {
+        poolTrimInProgress = false;
+        requestPoolTrim();
+    }
 }
 
 function attachWebgl(slot: Slot): void {

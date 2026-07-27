@@ -303,7 +303,7 @@ prompt/输出完整；场景 3 的配置 scrollback + viewport 必须连续无 g
 | D14 | scrollback 验收按配置窗口连续                             | 保持 legacy 一致的 50,000 产品上限；验证 scrollback + viewport 尾窗无 gap                                                                                                  | 为单个基准把产品上限提到 100,000——引入未评估内存成本     |
 | D15 | 后台成本用同构建可见/parked A/B                           | 旧引擎删除前没有 CPU 原始样本；用 parked 状态、layout 降幅、数据/提示符恢复作为可复现守门                                                                                  | 从不同历史 commit 拼一个不可比的“legacy baseline”        |
 | D16 | slot 有待解析写入时先 draining，再驱逐                    | `Terminal.write` 异步排队且 `reset()` 不清队列；直接复用会把旧 pane 字节解析进新 pane。短暂 overflow 后等待 write callback，保留最终快照且不突破稳定态 5-slot 上限         | 同步 reset/rebind——无法隔离 xterm 内部 WriteBuffer       |
-| D17 | blockfile append 事件携带绝对起始 offset                  | 后端先落文件再发事件，冷恢复 fetch 可能已包含同时收到的 append；锁内取得 offset 后可精确裁掉重叠前缀，同时保留 fetch 之后的后缀                                            | 无 offset 全量 replay——控制序列和普通输出都可能重复      |
+| D17 | blockfile append 事件携带绝对起始 offset                  | 后端先落文件再发事件，冷恢复 fetch 可能已包含同时收到的 append；锁内 offset 精确裁重。truncate 失效旧恢复代次，并以 write barrier 排空旧解析队列后 reset，再回放新字节     | 无 offset 全量 replay——控制序列和普通输出都可能重复      |
 
 ---
 
