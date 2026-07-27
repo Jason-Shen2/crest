@@ -73,7 +73,6 @@ vi.mock("./agent/tools", () => ({
 vi.mock("./aiconfig/secrets", () => ({ getSecret: vi.fn() }));
 vi.mock("../frontend/app/store/wshclientapi", () => ({
     RpcApi: {
-        AppendAgentRunCommand: vi.fn(),
         GetCmdBlocksCommand: vi.fn(() => Promise.resolve([])),
     },
 }));
@@ -701,7 +700,7 @@ describe("agent-ipc command helpers", () => {
             })
         );
         expect(result.turnId).toBe("entry-xyz");
-        expect(vi.mocked(RpcApi.AppendAgentRunCommand)).not.toHaveBeenCalled();
+        expect("AppendAgentRunCommand" in RpcApi).toBe(false);
         sendConfiguredSpy.mockRestore();
     });
 

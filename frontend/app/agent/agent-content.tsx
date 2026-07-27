@@ -177,6 +177,27 @@ function AgentInlineError({ message, onDismiss }: { message: string; onDismiss: 
     );
 }
 
+function AgentInlineNotification({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+    if (!message) return null;
+    return (
+        <div
+            aria-live="polite"
+            className="flex items-start justify-between gap-3 rounded-xl border border-white/15 bg-white/[0.07] px-3 py-2 text-sm text-white/80"
+            role="status"
+        >
+            <span>{message}</span>
+            <button
+                aria-label="Dismiss notification"
+                className="cursor-pointer text-white/50 transition-colors hover:text-white/80"
+                onClick={onDismiss}
+                type="button"
+            >
+                ×
+            </button>
+        </div>
+    );
+}
+
 function ComposerTextRestore({ request }: { request?: { text: string; requestId: number } }) {
     const aui = useAui();
     useEffect(() => {
@@ -270,6 +291,7 @@ export function AgentContent({ model, client, executionContext }: AgentContentPr
     const [dismissedHostError, setDismissedHostError] = useState<string>();
     const [dismissedModelError, setDismissedModelError] = useState<string>();
     const [userErrorMessage, setUserErrorMessage] = useState("");
+    const [userNotificationMessage, setUserNotificationMessage] = useState("");
     const userErrorMessageRef = useRef("");
     const userErrorWriteGenerationRef = useRef(0);
     const [agentTurns, setAgentTurns] = useState<PiTurn[]>([]);
@@ -302,6 +324,16 @@ export function AgentContent({ model, client, executionContext }: AgentContentPr
         userErrorWriteGenerationRef.current++;
         setUserErrorMessage(message);
     }, []);
+    const onUserMessage = useCallback((message: string) => {
+        setUserNotificationMessage(message);
+    }, []);
+    useEffect(() => {
+        if (!userNotificationMessage) {
+            return;
+        }
+        const timeout = window.setTimeout(() => setUserNotificationMessage(""), 4_000);
+        return () => window.clearTimeout(timeout);
+    }, [userNotificationMessage]);
     const onHostStateChange = useCallback(
         (next: AgentHostState) => {
             const previous = hostStateRef.current;
@@ -525,7 +557,7 @@ export function AgentContent({ model, client, executionContext }: AgentContentPr
                                     onClose={() =>
                                         setAttachedPanelState((prev) => ({ ...prev, selectorRequest: null }))
                                     }
-                                    onUserMessage={onUserError}
+                                    onUserMessage={onUserMessage}
                                     onEditorText={(text) =>
                                         setAgentRestoredTextRequest((prev) => ({
                                             text,
@@ -550,6 +582,10 @@ export function AgentContent({ model, client, executionContext }: AgentContentPr
                                     catalog={CATALOG}
                                     onOpenConfigFile={() => {}}
                                     anchorRef={composerAnchorRef}
+                                />
+                                <AgentInlineNotification
+                                    message={userNotificationMessage}
+                                    onDismiss={() => setUserNotificationMessage("")}
                                 />
                                 <AgentInlineError
                                     message={visibleError?.message}

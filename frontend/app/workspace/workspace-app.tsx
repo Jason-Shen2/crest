@@ -32,7 +32,7 @@ import { makeWorkspaceTopTabController } from "./top-tab-controller";
 import { WorkspaceTopTabControllerContext } from "./top-tab-controller-context";
 import { WorkspaceTopTabRuntimeRegistry } from "./top-tab-runtime-registry";
 import { TopTabStrip } from "./top-tab-strip";
-import { buildWorkspaceAgentExecutionContext } from "./workspace-agent-context";
+import { buildWorkspaceAgentExecutionContext, useWorkspaceAgentTerminalContext } from "./workspace-agent-context";
 import { WorkspaceAgentModel } from "./workspace-agent-model";
 import { WorkspaceAgentSync } from "./workspace-agent-sync";
 import { WorkspaceCommandRouter } from "./workspace-command-router";
@@ -153,6 +153,7 @@ function WorkspaceAppInner({
         if (!agentApi) return undefined;
         return new AgentRuntimeClient(agentApi, { workspaceId: workspace.oid, generation });
     });
+    const terminalAgentContext = useWorkspaceAgentTerminalContext(activeTerminalTabId);
     const agentExecutionContext = useMemo(
         () =>
             buildWorkspaceAgentExecutionContext({
@@ -160,8 +161,10 @@ function WorkspaceAppInner({
                 generation,
                 workspaceDir,
                 preferredTerminalTabId: activeTerminalTabId,
+                connection: terminalAgentContext.connection,
+                recentCmds: terminalAgentContext.recentCmds,
             }),
-        [activeTerminalTabId, generation, workspace.oid, workspaceDir]
+        [activeTerminalTabId, generation, terminalAgentContext, workspace.oid, workspaceDir]
     );
     const [agentModel] = useState(() =>
         WorkspaceAgentModel.getInstance({

@@ -108,6 +108,9 @@ vi.mock("@/app/store/wshclientapi", async () => {
             WorkspaceReorderTerminalsCommand: terminalRpc.reorder,
             FileReadCommand: vi.fn().mockResolvedValue({ info: {}, data64: "" }),
             FileWriteCommand: vi.fn().mockResolvedValue(undefined),
+            GetCmdBlocksCommand: vi.fn().mockResolvedValue([]),
+            EventSubCommand: vi.fn(),
+            EventUnsubCommand: vi.fn(),
         },
     };
 });
@@ -401,6 +404,7 @@ beforeEach(() => {
         closeTab: electronApi.closeTab,
         setWorkspaceSurface: electronApi.setWorkspaceSurface,
         getHomeDir: electronApi.getHomeDir,
+        getEnv: vi.fn(() => "test.invalid"),
         agent: {
             createSession: vi.fn(),
             listSessions: vi.fn(),
@@ -422,6 +426,13 @@ beforeEach(() => {
             subscribe: vi.fn(),
         },
     };
+    vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+            ok: true,
+            json: vi.fn().mockResolvedValue({ data: null }),
+        })
+    );
 });
 
 describe("WorkspaceApp", () => {

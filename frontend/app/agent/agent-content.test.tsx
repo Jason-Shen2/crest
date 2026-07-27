@@ -18,6 +18,10 @@ const hostProps = vi.hoisted(() => ({
     submitError: "",
 }));
 
+const selectorProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
 vi.mock("./agent-chat-host", () => ({
     AgentChatHost: (props: any) => {
         hostProps.latest = props;
@@ -37,6 +41,13 @@ vi.mock("./agent-chat-host", () => ({
             });
         }
         return <div data-testid="agent-chat-host" />;
+    },
+}));
+
+vi.mock("@/app/view/cmdblock/session-selector", () => ({
+    SessionSelector: (props: any) => {
+        selectorProps.latest = props;
+        return null;
     },
 }));
 
@@ -71,6 +82,8 @@ afterEach(async () => {
     hostProps.simulateMissingSessionSelectorError = false;
     hostProps.submitResult = true;
     hostProps.submitError = "";
+    selectorProps.latest = null;
+    vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
@@ -126,6 +139,34 @@ describe("AgentContent", () => {
 
         expect(globalStore.get(model.errorAtom)).toBe("");
         expect(screen.getByRole("alert").textContent).toContain("Agent is still starting");
+    });
+
+    it("shows selector success as a transient neutral notification, not an error", () => {
+        vi.useFakeTimers();
+        const model = makeModel();
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{
+                        workspaceId: "workspace-1",
+                        workspaceDir: "/repo",
+                        connection: "",
+                        environment: {},
+                    }}
+                />
+            </Provider>
+        );
+
+        act(() => selectorProps.latest.onUserMessage("Reference added"));
+
+        expect(screen.queryByRole("alert")).toBeNull();
+        expect(screen.getByRole("status").textContent).toContain("Reference added");
+
+        act(() => vi.advanceTimersByTime(4_000));
+
+        expect(screen.queryByRole("status")).toBeNull();
     });
 
     it.each([
