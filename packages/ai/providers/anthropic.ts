@@ -683,6 +683,9 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 				throw new Error("Request was aborted");
 			}
 
+			if (output.stopReason === "pending") {
+				throw new Error("Anthropic stream ended without a stop reason");
+			}
 			if (output.stopReason === "aborted" || output.stopReason === "error") {
 				throw new Error("An unknown error occurred");
 			}
