@@ -141,7 +141,7 @@ describe("AgentContent", () => {
         expect(screen.getByRole("alert").textContent).toContain("Agent is still starting");
     });
 
-    it("shows selector success as a transient neutral notification, not an error", () => {
+    it("restarts an identical selector success notification without disturbing errors", () => {
         vi.useFakeTimers();
         const model = makeModel();
         render(
@@ -159,13 +159,24 @@ describe("AgentContent", () => {
             </Provider>
         );
 
-        act(() => selectorProps.latest.onUserMessage("Reference added"));
+        act(() => {
+            hostProps.latest.onUserError("real failure");
+            selectorProps.latest.onUserMessage("Reference added");
+        });
 
-        expect(screen.queryByRole("alert")).toBeNull();
+        expect(screen.getByRole("alert").textContent).toContain("real failure");
         expect(screen.getByRole("status").textContent).toContain("Reference added");
 
-        act(() => vi.advanceTimersByTime(4_000));
+        act(() => vi.advanceTimersByTime(3_000));
+        act(() => selectorProps.latest.onUserMessage("Reference added"));
+        act(() => vi.advanceTimersByTime(1_500));
 
+        expect(screen.getByRole("status").textContent).toContain("Reference added");
+        expect(screen.getByRole("alert").textContent).toContain("real failure");
+
+        act(() => vi.advanceTimersByTime(2_500));
+
+        expect(screen.getByRole("alert").textContent).toContain("real failure");
         expect(screen.queryByRole("status")).toBeNull();
     });
 

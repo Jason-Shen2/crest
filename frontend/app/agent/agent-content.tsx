@@ -291,7 +291,7 @@ export function AgentContent({ model, client, executionContext }: AgentContentPr
     const [dismissedHostError, setDismissedHostError] = useState<string>();
     const [dismissedModelError, setDismissedModelError] = useState<string>();
     const [userErrorMessage, setUserErrorMessage] = useState("");
-    const [userNotificationMessage, setUserNotificationMessage] = useState("");
+    const [userNotification, setUserNotification] = useState<{ message: string; generation: number }>();
     const userErrorMessageRef = useRef("");
     const userErrorWriteGenerationRef = useRef(0);
     const [agentTurns, setAgentTurns] = useState<PiTurn[]>([]);
@@ -325,15 +325,18 @@ export function AgentContent({ model, client, executionContext }: AgentContentPr
         setUserErrorMessage(message);
     }, []);
     const onUserMessage = useCallback((message: string) => {
-        setUserNotificationMessage(message);
+        setUserNotification((current) => ({
+            message,
+            generation: (current?.generation ?? 0) + 1,
+        }));
     }, []);
     useEffect(() => {
-        if (!userNotificationMessage) {
+        if (!userNotification) {
             return;
         }
-        const timeout = window.setTimeout(() => setUserNotificationMessage(""), 4_000);
+        const timeout = window.setTimeout(() => setUserNotification(undefined), 4_000);
         return () => window.clearTimeout(timeout);
-    }, [userNotificationMessage]);
+    }, [userNotification]);
     const onHostStateChange = useCallback(
         (next: AgentHostState) => {
             const previous = hostStateRef.current;
@@ -584,8 +587,8 @@ export function AgentContent({ model, client, executionContext }: AgentContentPr
                                     anchorRef={composerAnchorRef}
                                 />
                                 <AgentInlineNotification
-                                    message={userNotificationMessage}
-                                    onDismiss={() => setUserNotificationMessage("")}
+                                    message={userNotification?.message}
+                                    onDismiss={() => setUserNotification(undefined)}
                                 />
                                 <AgentInlineError
                                     message={visibleError?.message}

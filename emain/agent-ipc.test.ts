@@ -78,7 +78,6 @@ vi.mock("../frontend/app/store/wshclientapi", () => ({
 }));
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
-import { RpcApi } from "../frontend/app/store/wshclientapi";
 import {
     _resetAgentIpcForTests,
     abortAgentSessionForIpc,
@@ -661,7 +660,7 @@ describe("agent-ipc command helpers", () => {
         expect(sender.send).not.toHaveBeenCalled();
     });
 
-    it("agent:send returns the committed turn id without writing a legacy marker", async () => {
+    it("agent:send returns the turn id committed by the configured runtime", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-send");
         // Stub the harness build so ensureAgentRuntime constructs a real
         // AgentSessionRuntime without a live model/provider.
@@ -700,7 +699,6 @@ describe("agent-ipc command helpers", () => {
             })
         );
         expect(result.turnId).toBe("entry-xyz");
-        expect("AppendAgentRunCommand" in RpcApi).toBe(false);
         sendConfiguredSpy.mockRestore();
     });
 

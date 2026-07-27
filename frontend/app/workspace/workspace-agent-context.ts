@@ -105,7 +105,7 @@ export function useWorkspaceAgentTerminalContext(
     const tabOref = preferredTerminalTabId ? WOS.makeORef("tab", preferredTerminalTabId) : undefined;
     const tab = useSubscribedWaveObject<Tab>(tabOref);
     const layoutOref =
-        tab?.oid === preferredTerminalTabId && tab.layoutstate ? WOS.makeORef("layout", tab.layoutstate) : undefined;
+        tab?.oid === preferredTerminalTabId && tab?.layoutstate ? WOS.makeORef("layout", tab.layoutstate) : undefined;
     const layout = useSubscribedWaveObject<LayoutState>(layoutOref);
     const blockId = resolveWorkspaceAgentTerminalBlockId(tab, layout);
     const blockOref = blockId ? WOS.makeORef("block", blockId) : undefined;
