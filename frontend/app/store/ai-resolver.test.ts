@@ -304,7 +304,7 @@ describe("resolveAIConfig — error paths", () => {
     it("synthesizes provider defaults when catalog provider exists but model isn't enumerated", () => {
         // Live /models endpoints surface ids the catalog doesn't enumerate
         // (direct providers occasionally lag behind upstream releases). The
-        // picker writes those to agent:selection and the resolver must still
+        // picker writes those to Workspace Agent selection and the resolver must still
         // produce a usable ResolvedAIConfig instead of erroring with
         // unknown_model.
         const r = resolveAIConfig({ provider: "openai", model: "gpt-9000" }, BASE_CONFIG, TEST_CATALOG);

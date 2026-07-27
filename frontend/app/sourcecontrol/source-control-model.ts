@@ -8,7 +8,7 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { fireAndForget } from "@/util/util";
 import * as jotai from "jotai";
 import { debounce } from "throttle-debounce";
-import { openGitDiffTab } from "./open-git-diff-tab";
+import type { SourceControlWorkspaceActions } from "./source-control-workspace-actions";
 
 type PanelState = "closed" | "loading" | "no-repo" | "ready" | "error";
 type CheckState = "checked" | "indeterminate" | "unchecked";
@@ -170,6 +170,7 @@ export class SourceControlModel {
     private inFlight: boolean = false;
     private pendingRefreshPaths: Set<string> = new Set();
     private debouncedRefresh: () => void;
+    workspaceActions: SourceControlWorkspaceActions | undefined;
 
     private constructor() {
         this.panelstateAtom = jotai.atom("closed" as PanelState) as jotai.PrimitiveAtom<PanelState>;
@@ -197,6 +198,15 @@ export class SourceControlModel {
             SourceControlModel.instance = new SourceControlModel();
         }
         return SourceControlModel.instance;
+    }
+
+    bindWorkspaceActions(actions: SourceControlWorkspaceActions): () => void {
+        this.workspaceActions = actions;
+        return () => {
+            if (this.workspaceActions === actions) {
+                this.workspaceActions = undefined;
+            }
+        };
     }
 
     setCwd(cwd: string): void {
@@ -573,14 +583,16 @@ export class SourceControlModel {
         this.selectPath(entry.path);
         const repo = globalStore.get(this.repoAtom);
         if (!repo) return;
-        fireAndForget(() =>
-            openGitDiffTab({
-                repoRoot: repo.reporoot,
-                path: entry.path,
-                mode: entry.unstaged ? "-" : "+",
-                originalPath: entry.originalpath,
-            })
-        );
+        if (!this.workspaceActions) {
+            globalStore.set(this.actionerrorAtom, "Source Control Workspace actions are unavailable");
+            return;
+        }
+        this.workspaceActions.openGitDiff({
+            repoRoot: repo.reporoot,
+            path: entry.path,
+            mode: entry.unstaged ? "-" : "+",
+            originalPath: entry.originalpath,
+        });
     }
 
     dismissActionMessage(): void {

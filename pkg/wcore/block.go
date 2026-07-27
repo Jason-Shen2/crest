@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,6 +39,14 @@ func createSubBlockObj(ctx context.Context, parentBlockId string, blockDef *wave
 		if parentBlock == nil {
 			return nil, fmt.Errorf("parent block not found: %q", parentBlockId)
 		}
+		tabId, err := findTabForBlockInTx(tx, parentBlockId)
+		if err != nil {
+			return nil, err
+		}
+		view := blockDef.Meta.GetString(waveobj.MetaKey_View, "")
+		if _, err := validateTerminalDomainTabWrite(tx, tabId, []string{view}); err != nil {
+			return nil, err
+		}
 		blockId := uuid.NewString()
 		blockData := &waveobj.Block{
 			OID:         blockId,
@@ -45,9 +54,13 @@ func createSubBlockObj(ctx context.Context, parentBlockId string, blockDef *wave
 			RuntimeOpts: nil,
 			Meta:        blockDef.Meta,
 		}
-		wstore.DBInsert(tx.Context(), blockData)
+		if err := wstore.DBInsert(tx.Context(), blockData); err != nil {
+			return nil, err
+		}
 		parentBlock.SubBlockIds = append(parentBlock.SubBlockIds, blockId)
-		wstore.DBUpdate(tx.Context(), parentBlock)
+		if err := wstore.DBUpdate(tx.Context(), parentBlock); err != nil {
+			return nil, err
+		}
 		return blockData, nil
 	})
 }
@@ -132,22 +145,34 @@ func recordBlockCreationTelemetry(blockView string, blockController string) {
 
 func createBlockObj(ctx context.Context, tabId string, blockDef *waveobj.BlockDef, rtOpts *waveobj.RuntimeOpts) (*waveobj.Block, error) {
 	return wstore.WithTxRtn(ctx, func(tx *wstore.TxWrap) (*waveobj.Block, error) {
-		tab, _ := wstore.DBGet[*waveobj.Tab](tx.Context(), tabId)
-		if tab == nil {
-			return nil, fmt.Errorf("tab not found: %q", tabId)
-		}
-		blockId := uuid.NewString()
-		blockData := &waveobj.Block{
-			OID:         blockId,
-			ParentORef:  waveobj.MakeORef(waveobj.OType_Tab, tabId).String(),
-			RuntimeOpts: rtOpts,
-			Meta:        blockDef.Meta,
-		}
-		wstore.DBInsert(tx.Context(), blockData)
-		tab.BlockIds = append(tab.BlockIds, blockId)
-		wstore.DBUpdate(tx.Context(), tab)
-		return blockData, nil
+		return createBlockObjInTx(tx, tabId, blockDef, rtOpts)
 	})
+}
+
+func createBlockObjInTx(tx *wstore.TxWrap, tabId string, blockDef *waveobj.BlockDef, rtOpts *waveobj.RuntimeOpts) (*waveobj.Block, error) {
+	tab, _ := wstore.DBGet[*waveobj.Tab](tx.Context(), tabId)
+	if tab == nil {
+		return nil, fmt.Errorf("tab not found: %q", tabId)
+	}
+	view := blockDef.Meta.GetString(waveobj.MetaKey_View, "")
+	if _, err := validateTerminalDomainTabWrite(tx, tabId, []string{view}); err != nil {
+		return nil, err
+	}
+	blockId := uuid.NewString()
+	blockData := &waveobj.Block{
+		OID:         blockId,
+		ParentORef:  waveobj.MakeORef(waveobj.OType_Tab, tabId).String(),
+		RuntimeOpts: rtOpts,
+		Meta:        blockDef.Meta,
+	}
+	if err := wstore.DBInsert(tx.Context(), blockData); err != nil {
+		return nil, err
+	}
+	tab.BlockIds = append(tab.BlockIds, blockId)
+	if err := wstore.DBUpdate(tx.Context(), tab); err != nil {
+		return nil, err
+	}
+	return blockData, nil
 }
 
 // Must delete all blocks individually first.
@@ -160,6 +185,13 @@ func DeleteBlock(ctx context.Context, blockId string, recursive bool) error {
 		return fmt.Errorf("error getting block: %w", err)
 	}
 	if block == nil {
+		return nil
+	}
+	handled, err := deleteRegisteredTerminalRoot(ctx, block)
+	if err != nil {
+		return err
+	}
+	if handled {
 		return nil
 	}
 	if len(block.SubBlockIds) > 0 {
@@ -192,6 +224,142 @@ func DeleteBlock(ctx context.Context, blockId string, recursive bool) error {
 	}
 	sendBlockCloseEvent(blockId)
 	return nil
+}
+
+type refCountKeyedMutexEntry struct {
+	mutex sync.Mutex
+	refs  int
+}
+
+type refCountKeyedMutex struct {
+	mutex   sync.Mutex
+	entries map[string]*refCountKeyedMutexEntry
+}
+
+func newRefCountKeyedMutex() *refCountKeyedMutex {
+	return &refCountKeyedMutex{entries: make(map[string]*refCountKeyedMutexEntry)}
+}
+
+func (pool *refCountKeyedMutex) lock(key string) func() {
+	pool.mutex.Lock()
+	entry := pool.entries[key]
+	if entry == nil {
+		entry = &refCountKeyedMutexEntry{}
+		pool.entries[key] = entry
+	}
+	entry.refs++
+	pool.mutex.Unlock()
+
+	entry.mutex.Lock()
+	return func() {
+		entry.mutex.Unlock()
+		pool.mutex.Lock()
+		entry.refs--
+		if entry.refs == 0 && pool.entries[key] == entry {
+			delete(pool.entries, key)
+		}
+		pool.mutex.Unlock()
+	}
+}
+
+func (pool *refCountKeyedMutex) size() int {
+	pool.mutex.Lock()
+	defer pool.mutex.Unlock()
+	return len(pool.entries)
+}
+
+var terminalRootDeleteLocks = newRefCountKeyedMutex()
+
+type terminalRootDeleteResult struct {
+	handled         bool
+	deletedBlockIds []string
+}
+
+func deleteRegisteredTerminalRoot(ctx context.Context, block *waveobj.Block) (bool, error) {
+	parentORef := waveobj.ParseORefNoErr(block.ParentORef)
+	if parentORef == nil || parentORef.OType != waveobj.OType_Tab {
+		return false, nil
+	}
+	release := terminalRootDeleteLocks.lock(parentORef.OID)
+	result, err := func() (terminalRootDeleteResult, error) {
+		defer release()
+		return wstore.WithTxRtn(ctx, func(tx *wstore.TxWrap) (terminalRootDeleteResult, error) {
+			current, err := wstore.DBGet[*waveobj.Block](tx.Context(), block.OID)
+			if err != nil {
+				return terminalRootDeleteResult{}, err
+			}
+			if current == nil {
+				return terminalRootDeleteResult{handled: true}, nil
+			}
+			currentParent := waveobj.ParseORefNoErr(current.ParentORef)
+			if currentParent == nil || currentParent.OType != waveobj.OType_Tab || currentParent.OID != parentORef.OID {
+				return terminalRootDeleteResult{}, nil
+			}
+			workspaceId, err := wstore.DBFindWorkspaceForTabId(tx.Context(), parentORef.OID)
+			if err != nil || workspaceId == "" {
+				return terminalRootDeleteResult{}, err
+			}
+			workspace, err := wstore.DBMustGet[*waveobj.Workspace](tx.Context(), workspaceId)
+			if err != nil {
+				return terminalRootDeleteResult{}, err
+			}
+			if utilfn.FindStringInSlice(workspace.TerminalTabIds, parentORef.OID) == -1 {
+				return terminalRootDeleteResult{}, nil
+			}
+			tab, err := wstore.DBMustGet[*waveobj.Tab](tx.Context(), parentORef.OID)
+			if err != nil {
+				return terminalRootDeleteResult{handled: true}, err
+			}
+			if utilfn.FindStringInSlice(tab.BlockIds, current.OID) == -1 {
+				return terminalRootDeleteResult{handled: true},
+					fmt.Errorf("registered Terminal root %s is missing from Tab inventory", current.OID)
+			}
+			if len(tab.BlockIds) <= 1 {
+				return terminalRootDeleteResult{handled: true}, fmt.Errorf(
+					"final registered Terminal block %s must be deleted through CloseTerminalTab",
+					current.OID,
+				)
+			}
+			deletedBlockIds, err := deleteTerminalBlockSubtreeInTx(tx, current.OID)
+			if err != nil {
+				return terminalRootDeleteResult{handled: true}, err
+			}
+			tab.BlockIds = utilfn.RemoveElemFromSlice(tab.BlockIds, current.OID)
+			if err := wstore.DBUpdate(tx.Context(), tab); err != nil {
+				return terminalRootDeleteResult{handled: true}, err
+			}
+			return terminalRootDeleteResult{handled: true, deletedBlockIds: deletedBlockIds}, nil
+		})
+	}()
+	if err != nil {
+		return result.handled, err
+	}
+	if len(result.deletedBlockIds) > 0 {
+		runTerminalRootDeleteSideEffects(result.deletedBlockIds)
+	}
+	return result.handled, nil
+}
+
+func runTerminalRootDeleteSideEffects(blockIds []string) {
+	func() {
+		defer func() {
+			panichandler.PanicHandler("DeleteBlock:cleanupTerminalRootZones", recover())
+		}()
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancelCleanup()
+		if err := cleanupTerminalTabZones(cleanupCtx, blockIds); err != nil {
+			log.Printf("error cleaning deleted Terminal root zones: %v", err)
+		}
+	}()
+	func() {
+		defer func() {
+			panichandler.PanicHandler("DeleteBlock:terminalRootSideEffects", recover())
+		}()
+		for _, blockId := range blockIds {
+			wstore.DeleteRTInfo(waveobj.MakeORef(waveobj.OType_Block, blockId))
+			sendBlockCloseEvent(blockId)
+		}
+	}()
 }
 
 // returns the updated block count for the parent object

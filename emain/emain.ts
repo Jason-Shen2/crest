@@ -3,12 +3,14 @@
 
 import { RpcApi } from "@/app/store/wshclientapi";
 import * as electron from "electron";
+import { disposeAgentRuntimesForShutdown } from "emain/agent-ipc";
 import { focusedBuilderWindow, getAllBuilderWindows } from "emain/emain-builder";
 import { globalEvents } from "emain/emain-events";
 import { sprintf } from "sprintf-js";
 import * as services from "../frontend/app/store/services";
 import { initElectronWshrpc, shutdownWshrpc } from "../frontend/app/store/wshrpcutil-base";
 import { fireAndForget, sleep } from "../frontend/util/util";
+import { initModelsDevOverlay } from "./ai/models-dev-overlay";
 import { AuthKey, configureAuthKeyRequestInjection } from "./authkey";
 import {
     getActivityState,
@@ -18,7 +20,6 @@ import {
     getAndClearTermCommandsWsl,
     getForceQuit,
     getGlobalIsRelaunching,
-    getUserConfirmedQuit,
     setForceQuit,
     setGlobalIsQuitting,
     setGlobalIsStarting,
@@ -28,7 +29,6 @@ import {
 } from "./emain-activity";
 import { initIpcHandlers } from "./emain-ipc";
 import { log } from "./emain-log";
-import { LspWebSocketBridge } from "./lsp/lsp-websocket-server";
 import { initMenuEventSubscriptions, makeAndSetAppMenu, makeDockTaskbar } from "./emain-menu";
 import {
     checkIfRunningUnderARM64Translation,
@@ -40,6 +40,7 @@ import {
     unameArch,
     unamePlatform,
 } from "./emain-platform";
+import { EMainQuitCoordinator, setApplicationCloseCoordinator } from "./emain-quit-coordinator";
 import { ensureHotSpareTab, setMaxTabCacheSize } from "./emain-tabview";
 import { getIsWaveSrvDead, getWaveSrvProc, getWaveSrvReady, runWaveSrv } from "./emain-wavesrv";
 import {
@@ -57,12 +58,14 @@ import {
 } from "./emain-window";
 import { ElectronWshClient, initElectronWshClient } from "./emain-wsh";
 import { getLaunchSettings } from "./launchsettings";
+import { LspWebSocketBridge } from "./lsp/lsp-websocket-server";
 import { configureAutoUpdater, updater } from "./updater";
-import { initModelsDevOverlay } from "./ai/models-dev-overlay";
 
 const electronApp = electron.app;
 
-let confirmQuit = true;
+let finishingQuitAfterAgentCleanup = false;
+const quitCoordinator = new EMainQuitCoordinator(electronApp, getAllWaveWindows);
+setApplicationCloseCoordinator(quitCoordinator);
 
 const waveDataDir = getWaveDataDir();
 const waveConfigDir = getWaveConfigDir();
@@ -110,14 +113,6 @@ function handleWSEvent(evtMsg: WSEventType) {
             if (ww != null) {
                 ww.destroy(); // bypass the "are you sure?" dialog
             }
-        } else if (evtMsg.eventtype == "electron:updateactivetab") {
-            const activeTabUpdate: { workspaceid: string; newactivetabid: string } = evtMsg.data;
-            console.log("electron:updateactivetab", activeTabUpdate);
-            const ww = getWaveWindowByWorkspaceId(activeTabUpdate.workspaceid);
-            if (ww == null) {
-                return;
-            }
-            await ww.setActiveTab(activeTabUpdate.newactivetabid, false);
         } else {
             console.log("unhandled electron ws eventtype", evtMsg.eventtype);
         }
@@ -257,6 +252,23 @@ function hideWindowWithCatch(window: WaveBrowserWindow) {
     }
 }
 
+function finishQuitAfterAgentCleanup(): void {
+    if (finishingQuitAfterAgentCleanup) {
+        return;
+    }
+    finishingQuitAfterAgentCleanup = true;
+    fireAndForget(async () => {
+        try {
+            await disposeAgentRuntimesForShutdown();
+        } catch (error) {
+            console.log("error disposing agent runtimes during quit", error);
+        } finally {
+            setForceQuit(true);
+            electronApp.quit();
+        }
+    });
+}
+
 electronApp.on("window-all-closed", () => {
     if (getGlobalIsRelaunching()) {
         return;
@@ -267,37 +279,19 @@ electronApp.on("window-all-closed", () => {
     }
 });
 electronApp.on("before-quit", (e) => {
-    const allWindows = getAllWaveWindows();
-    const allBuilders = getAllBuilderWindows();
-    if (
-        confirmQuit &&
-        !getForceQuit() &&
-        !getUserConfirmedQuit() &&
-        (allWindows.length > 0 || allBuilders.length > 0) &&
-        !getIsWaveSrvDead() &&
-        !process.env.WAVETERM_NOCONFIRMQUIT
-    ) {
-        e.preventDefault();
-        const choice = electron.dialog.showMessageBoxSync(null, {
-            type: "question",
-            buttons: ["Cancel", "Quit"],
-            title: "Confirm Quit",
-            message: "Are you sure you want to quit Crest?",
-            defaultId: 0,
-            cancelId: 0,
-        });
-        if (choice === 0) {
-            return;
-        }
-        setUserConfirmedQuit(true);
-        electronApp.quit();
+    if (!getForceQuit() && !getIsWaveSrvDead() && !quitCoordinator.beforeQuit(e)) {
         return;
     }
+    const allWindows = getAllWaveWindows();
+    const allBuilders = getAllBuilderWindows();
     setGlobalIsQuitting(true);
     updater?.stop();
     if (unamePlatform == "win32") {
-        // win32 doesn't have a SIGINT, so we just let electron die, which
-        // ends up killing wavesrv via closing it's stdin.
+        // win32 doesn't have a SIGINT. Finish Agent runtime cleanup first,
+        // then let Electron exit, which ends up killing wavesrv via closing
+        // its stdin.
+        e.preventDefault();
+        finishQuitAfterAgentCleanup();
         return;
     }
     getWaveSrvProc()?.kill("SIGINT");
@@ -315,14 +309,12 @@ electronApp.on("before-quit", (e) => {
     }
     if (getIsWaveSrvDead()) {
         console.log("wavesrv is dead, quitting immediately");
-        setForceQuit(true);
-        electronApp.quit();
+        finishQuitAfterAgentCleanup();
         return;
     }
     setTimeout(() => {
         console.log("waiting for wavesrv to exit...");
-        setForceQuit(true);
-        electronApp.quit();
+        finishQuitAfterAgentCleanup();
     }, 3000);
 });
 process.on("SIGINT", () => {
@@ -416,9 +408,6 @@ async function appMain() {
     }
     const fullConfig = await RpcApi.GetFullConfigCommand(ElectronWshClient);
     checkIfRunningUnderARM64Translation(fullConfig);
-    if (fullConfig?.settings?.["app:confirmquit"] != null) {
-        confirmQuit = fullConfig.settings["app:confirmquit"];
-    }
     ensureHotSpareTab(fullConfig);
     await relaunchBrowserWindows();
     setTimeout(runActiveTimer, 5000); // start active timer, wait 5s just to be safe

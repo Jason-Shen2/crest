@@ -873,10 +873,12 @@ const Editor = memo(
     }: EditorProps) => {
         const localRef = useRef<HTMLDivElement>(null);
         const ref = hostRef ?? localRef;
+        const composingRef = useRef(false);
 
         useLayoutEffect(() => {
             const el = ref.current;
             if (!el) return;
+            if (composingRef.current) return;
             if (getEditorPlainText(el) !== value) {
                 el.textContent = value;
                 // Place caret at end after programmatic value change so a
@@ -919,6 +921,18 @@ const Editor = memo(
         );
 
         const flush = useCallback(() => {
+            if (composingRef.current) return;
+            const el = ref.current;
+            if (!el) return;
+            syncText(el.textContent ?? "");
+        }, [syncText]);
+
+        const handleCompositionStart = useCallback(() => {
+            composingRef.current = true;
+        }, []);
+
+        const handleCompositionEnd = useCallback(() => {
+            composingRef.current = false;
             const el = ref.current;
             if (!el) return;
             syncText(getEditorPlainText(el));
@@ -946,6 +960,7 @@ const Editor = memo(
         const handleKeyDown = useCallback(
             (e: React.KeyboardEvent<HTMLDivElement>) => {
                 if (disabled) return;
+                if (composingRef.current || (e.nativeEvent as KeyboardEvent).isComposing) return;
                 // Completion menu keys win — but only when it's open (which
                 // itself only happens while the slash / @ menus are closed),
                 // so they must be handled before submit / history logic.
@@ -1106,6 +1121,8 @@ const Editor = memo(
                     data-placeholder={placeholder ?? ""}
                     onInput={flush}
                     onBeforeInput={handleBeforeInput}
+                    onCompositionStart={handleCompositionStart}
+                    onCompositionEnd={handleCompositionEnd}
                     onKeyDown={handleKeyDown}
                     style={{
                         fontSize: `${fontSize}px`,
@@ -1636,28 +1653,12 @@ export const CmdBlockInput = memo(
                 prNumber != null ||
                 kubernetesContext);
         const showFooter = !isCompactTerminal || hasContextChipContent;
-        const [slashCommands, setSlashCommands] = useState<InlineCommand[]>(SlashCommands);
+        const slashCommands = SlashCommands;
 
         useEffect(() => {
             if (!openModelPickerRequest || !hasModelPicker) return;
             setModelPickerOpen(true);
         }, [openModelPickerRequest, hasModelPicker]);
-        useEffect(() => {
-            const listCommands = getApi()?.agent?.listCommands;
-            if (!listCommands) return;
-            let cancelled = false;
-            void listCommands()
-                .then((commands) => {
-                    if (cancelled) return;
-                    setSlashCommands(
-                        mergeSlashCommands(makeSlashCommandsFromAgentRegistry(commands), LocalSlashCommands)
-                    );
-                })
-                .catch(() => undefined);
-            return () => {
-                cancelled = true;
-            };
-        }, []);
         const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
         const [atSelectedIdx, setAtSelectedIdx] = useState(0);
         const [dragOver, setDragOver] = useState(false);

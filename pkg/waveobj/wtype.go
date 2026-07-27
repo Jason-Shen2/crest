@@ -34,6 +34,17 @@ const (
 	OType_Builder     = "builder" // not persisted to DB
 )
 
+const (
+	ActiveContentKindAgent    = "agent"
+	ActiveContentKindTerminal = "terminal"
+	ActiveContentKindTopTab   = "top-tab"
+	TopTabKindFile            = "file"
+	TopTabKindBrowser         = "browser"
+	TopTabKindPreview         = "preview"
+	TopTabKindGitDiff         = "git-diff"
+	CurrentTabDomainVersion   = 1
+)
+
 var ValidOTypes = map[string]bool{
 	OType_Client:      true,
 	OType_Window:      true,
@@ -166,20 +177,66 @@ type WorkspaceListEntry struct {
 
 type WorkspaceList []*WorkspaceListEntry
 
+type ActiveContent struct {
+	Kind          string `json:"kind"`
+	TerminalTabId string `json:"terminaltabid,omitempty"`
+	TopTabId      string `json:"toptabid,omitempty"`
+}
+
+func (active ActiveContent) ContentId() string {
+	switch active.Kind {
+	case ActiveContentKindTerminal:
+		return active.TerminalTabId
+	case ActiveContentKindTopTab:
+		return active.TopTabId
+	default:
+		return ""
+	}
+}
+
+type TopTabDescriptor struct {
+	Id           string `json:"id"`
+	Kind         string `json:"kind"`
+	Path         string `json:"path,omitempty"`
+	Title        string `json:"title"`
+	RepoRoot     string `json:"reporoot,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	OriginalPath string `json:"originalpath,omitempty"`
+}
+
+type WorkspaceContentState struct {
+	ActiveContent      ActiveContent      `json:"activecontent"`
+	TopTabs            []TopTabDescriptor `json:"toptabs"`
+	LastActiveTopTabId string             `json:"lastactivetoptabid,omitempty"`
+}
+
+type WorkspaceAgentState struct {
+	ActiveSession          *AgentSessionMeta   `json:"activesession,omitempty"`
+	Selection              *AgentSelectionMeta `json:"selection,omitempty"`
+	PreferredTerminalTabId string              `json:"preferredterminaltabid,omitempty"`
+}
+
 type ActiveTabUpdate struct {
 	WorkspaceId    string `json:"workspaceid"`
 	NewActiveTabId string `json:"newactivetabid"`
 }
 
 type Workspace struct {
-	OID         string      `json:"oid"`
-	Version     int         `json:"version"`
-	Name        string      `json:"name,omitempty"`
-	Icon        string      `json:"icon,omitempty"`
-	Color       string      `json:"color,omitempty"`
-	TabIds      []string    `json:"tabids"`
-	ActiveTabId string      `json:"activetabid"`
-	Meta        MetaMapType `json:"meta"`
+	OID                 string                `json:"oid"`
+	Version             int                   `json:"version"`
+	Name                string                `json:"name,omitempty"`
+	Icon                string                `json:"icon,omitempty"`
+	Color               string                `json:"color,omitempty"`
+	TabIds              []string              `json:"tabids"`
+	ActiveTabId         string                `json:"activetabid"`
+	TabDomainVersion    int                   `json:"tabdomainversion,omitempty"`
+	TerminalTabIds      []string              `json:"terminaltabids,omitempty"`
+	ContentState        WorkspaceContentState `json:"contentstate"`
+	ActiveTerminalTabId string                `json:"activeterminaltabid,omitempty"`
+	NavigationRevision  int64                 `json:"navigationrevision"`
+	AgentState          WorkspaceAgentState   `json:"agentstate"`
+	AgentRevision       int64                 `json:"agentrevision,omitempty"`
+	Meta                MetaMapType           `json:"meta"`
 }
 
 func (*Workspace) GetOType() string {

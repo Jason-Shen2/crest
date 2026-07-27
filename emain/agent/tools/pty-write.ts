@@ -1,20 +1,19 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// pty-write.ts — subagent-private tool: write input to a running PTY
-// command via ControllerInput. Mirrors Warp's WriteToLongRunningShell-
-// Command + AIAgentPtyWriteMode::decorate_bytes
-// (crates/ai/src/agent/action/mod.rs#L779-L822). See spec §6.1.
+// pty-write.ts — subagent-private tool: write input to a running hosted PTY
+// command.
 
 import { type Static, Type } from "typebox";
+import type { AgentPtyCommandPort } from "../agent-pty-host";
 import type { AgentTool } from "../types";
-import { sendControllerInput } from "./_pty-rpc";
 
 const ptyWriteSchema = Type.Object({
-    block_id: Type.Optional(
+    command_id: Type.Optional(
         Type.String({
-            description: "Deprecated compatibility field; omit it. This tool is already bound to one PTY block.",
-        }),
+            description:
+                "Deprecated compatibility field; omit it. This tool is already bound to one hosted PTY command.",
+        })
     ),
     input: Type.String({ description: "Bytes / text to send" }),
     mode: Type.Union([Type.Literal("raw"), Type.Literal("line"), Type.Literal("block")]),
@@ -50,7 +49,10 @@ function isStartupCommandReplay(input: string, opts?: PtyWriteGuardOptions): boo
     if (normalized === initialCommand) return true;
     const cwd = opts?.cwd?.trim();
     if (!cwd) return false;
-    return normalized === `cd ${cwd} && ${initialCommand}` || normalized === `cd ${shellQuoteSingle(cwd)} && ${initialCommand}`;
+    return (
+        normalized === `cd ${cwd} && ${initialCommand}` ||
+        normalized === `cd ${shellQuoteSingle(cwd)} && ${initialCommand}`
+    );
 }
 
 function decorateBytes(input: string, mode: PtyWriteInput["mode"]): string {
@@ -67,16 +69,14 @@ function decorateBytes(input: string, mode: PtyWriteInput["mode"]): string {
             // Warp only wraps when is_bracketed_paste_enabled; first phase
             // defaults enabled (Warp's common path). Otherwise pass through.
             const isBracketedPasteEnabled = true;
-            return isBracketedPasteEnabled
-                ? `${BRACKETED_PASTE_START}${input}${BRACKETED_PASTE_END}`
-                : input;
+            return isBracketedPasteEnabled ? `${BRACKETED_PASTE_START}${input}${BRACKETED_PASTE_END}` : input;
         }
     }
 }
 
 export function createPtyWriteTool(
-    blockId: string,
-    guardOptions?: PtyWriteGuardOptions,
+    command: AgentPtyCommandPort,
+    guardOptions?: PtyWriteGuardOptions
 ): AgentTool<typeof ptyWriteSchema, undefined> {
     return {
         name: "pty_write",
@@ -97,7 +97,7 @@ export function createPtyWriteTool(
                     details: undefined,
                 };
             }
-            await sendControllerInput(blockId, decorateBytes(params.input, params.mode));
+            await command.write(decorateBytes(params.input, params.mode));
             return { content: [{ type: "text", text: `sent ${params.mode} input` }], details: undefined };
         },
     };

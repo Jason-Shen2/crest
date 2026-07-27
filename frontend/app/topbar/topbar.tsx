@@ -25,23 +25,29 @@
 // here just keeps the chrome at full density.  Toggle later.
 
 import { Tooltip } from "@/app/element/tooltip";
-import { Icon } from "@/app/icon/Icon";
-import { NotificationsPanel } from "@/app/notifications/notifications-panel";
-import { NotificationsModel } from "@/app/notifications/notifications-model";
 import { GitHubModel } from "@/app/github/github-model";
+import { Icon } from "@/app/icon/Icon";
+import { NotificationsModel } from "@/app/notifications/notifications-model";
+import { NotificationsPanel } from "@/app/notifications/notifications-panel";
 import { atoms } from "@/app/store/global";
 import { modalsModel } from "@/app/store/modalmodel";
-import { TabBar } from "@/app/tab/tabbar";
 import { WorkspaceSwitcher } from "@/app/tab/workspaceswitcher";
-import {
-    getRightPanelButtonActive,
-    toggleRightPanelFromTopBar,
-} from "@/app/topbar/topbar-right-panel";
+import { FixedAgentEntry } from "@/app/topbar/fixed-agent-entry";
+import { getRightPanelButtonActive, toggleRightPanelFromTopBar } from "@/app/topbar/topbar-right-panel";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
-import { FloatingPortal, flip, offset, shift, useClick, useDismiss, useFloating, useInteractions } from "@floating-ui/react";
+import {
+    FloatingPortal,
+    flip,
+    offset,
+    shift,
+    useClick,
+    useDismiss,
+    useFloating,
+    useInteractions,
+} from "@floating-ui/react";
 import { useAtomValue } from "jotai";
+import type { PointerEventHandler, ReactNode } from "react";
 import { memo, useCallback } from "react";
-import type { PointerEventHandler } from "react";
 import "./topbar.scss";
 
 // ---- Generic icon button ----
@@ -105,11 +111,7 @@ const PanelAnchor = memo(({ children, panel, isOpen, onOpenChange }: PanelAnchor
             </div>
             {isOpen && (
                 <FloatingPortal>
-                    <div
-                        ref={refs.setFloating}
-                        style={{ ...floatingStyles, zIndex: 1000 }}
-                        {...getFloatingProps()}
-                    >
+                    <div ref={refs.setFloating} style={{ ...floatingStyles, zIndex: 1000 }} {...getFloatingProps()}>
                         {panel}
                     </div>
                 </FloatingPortal>
@@ -119,24 +121,30 @@ const PanelAnchor = memo(({ children, panel, isOpen, onOpenChange }: PanelAnchor
 });
 PanelAnchor.displayName = "PanelAnchor";
 
-// ---- Left chrome: explorer + sessions ----
-const LeftChrome = memo(() => {
+// ---- Left chrome: shared panel modes ----
+const LeftChrome = memo(({ workspaceId }: { workspaceId: string }) => {
     const model = WorkspaceLayoutModel.getInstance();
-    const explorerVisible = useAtomValue(model.fileExplorerVisibleAtom);
-    const sessionsVisible = useAtomValue(model.sessionsPanelVisibleAtom);
+    const hydratedLeftPanel = useAtomValue(model.leftPanelAtom);
+    const leftPanel = model.getLeftPanelStateForWorkspace(workspaceId, hydratedLeftPanel);
     return (
         <div className="topbar-left-chrome">
             <ToolbarButton
                 icon="list-tree"
-                label="Toggle File Explorer"
-                active={explorerVisible}
-                onClick={() => model.setFileExplorerVisible(!model.getFileExplorerVisible())}
+                label="Files"
+                active={leftPanel.visible && leftPanel.mode === "files"}
+                onClick={() => model.toggleLeftPanel("files")}
             />
             <ToolbarButton
                 icon="message-01"
                 label="Agent Sessions"
-                active={sessionsVisible}
-                onClick={() => model.setSessionsPanelVisible(!model.getSessionsPanelVisible())}
+                active={leftPanel.visible && leftPanel.mode === "sessions"}
+                onClick={() => model.toggleLeftPanel("sessions")}
+            />
+            <ToolbarButton
+                icon="terminal"
+                label="Terminal"
+                active={leftPanel.visible && leftPanel.mode === "terminals"}
+                onClick={() => model.toggleLeftPanel("terminals")}
             />
         </div>
     );
@@ -155,12 +163,7 @@ const SearchInline = memo(() => {
             : modalsModel.pushModal("CommandPaletteModal");
     }, []);
     return (
-        <button
-            type="button"
-            title="Search"
-            className="topbar-search"
-            onClick={onOpen}
-        >
+        <button type="button" title="Search" className="topbar-search" onClick={onOpen}>
             <Icon name="search-01" size={12} strokeWidth={1.75} />
             <span>Search</span>
             <span className="topbar-search-kbd" aria-label="Command P">
@@ -206,11 +209,7 @@ const RightChrome = memo(() => {
                     badgeCount={notifUnread}
                 />
             </PanelAnchor>
-            <ToolbarButton
-                icon="settings-01"
-                label="Settings"
-                onClick={() => modalsModel.pushModal("SettingsModal")}
-            />
+            <ToolbarButton icon="settings-01" label="Settings" onClick={() => modalsModel.pushModal("SettingsModal")} />
         </div>
     );
 });
@@ -218,38 +217,42 @@ RightChrome.displayName = "RightChrome";
 
 type TopBarProps = {
     workspace: Workspace;
-    showTabs?: boolean;
+    agentActive?: boolean;
+    onActivateAgent?: () => void;
+    topTabStrip?: ReactNode;
     onPointerDownCapture?: PointerEventHandler<HTMLDivElement>;
 };
 
-export const TopBar = memo(({ workspace, showTabs = true, onPointerDownCapture }: TopBarProps) => {
-    const isFullScreen = useAtomValue(atoms.isFullScreen);
+export const TopBar = memo(
+    ({ workspace, agentActive = false, onActivateAgent, topTabStrip, onPointerDownCapture }: TopBarProps) => {
+        const isFullScreen = useAtomValue(atoms.isFullScreen);
 
-    return (
-        <div
-            className="topbar-root"
-            onPointerDownCapture={onPointerDownCapture}
-            data-fullscreen={isFullScreen ? "1" : "0"}
-        >
-            {/* ① mac traffic lights spacer (h-10) */}
-            <div className="topbar-traffic-spacer" />
+        return (
+            <div
+                className="topbar-root"
+                onPointerDownCapture={onPointerDownCapture}
+                data-fullscreen={isFullScreen ? "1" : "0"}
+            >
+                {/* ① mac traffic lights spacer (h-10) */}
+                <div className="topbar-traffic-spacer" />
 
-            {/* ② left chrome: file explorer + agent sessions */}
-            <LeftChrome />
-            <span className="topbar-vsep" />
+                {/* ② left chrome: file explorer + agent sessions */}
+                <LeftChrome workspaceId={workspace.oid} />
+                <span className="topbar-vsep" />
 
-            {/* ③ space pill (Default ▸) */}
-            <WorkspaceSwitcher />
+                {/* ③ space pill (Default ▸) */}
+                <WorkspaceSwitcher />
 
-            {/* ④ tab strip (sliding pill) */}
-            {showTabs && <TabBar key={workspace.oid} workspace={workspace} embedded />}
+                {onActivateAgent != null ? <FixedAgentEntry active={agentActive} onActivate={onActivateAgent} /> : null}
+                {topTabStrip}
 
-            {/* ⑤ search + right chrome (notifications + settings) */}
-            <div className="topbar-spacer" />
-            <SearchInline />
-            <span className="topbar-vsep" />
-            <RightChrome />
-        </div>
-    );
-});
+                {/* ④ search + right chrome (notifications + settings) */}
+                <div className="topbar-spacer" />
+                <SearchInline />
+                <span className="topbar-vsep" />
+                <RightChrome />
+            </div>
+        );
+    }
+);
 TopBar.displayName = "TopBar";

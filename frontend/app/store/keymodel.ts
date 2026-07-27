@@ -6,7 +6,6 @@ import {
     createBlock,
     createBlockSplitHorizontally,
     createBlockSplitVertically,
-    createTab,
     getAllBlockComponentModels,
     getApi,
     getBlockComponentModel,
@@ -19,8 +18,9 @@ import {
     WOS,
 } from "@/app/store/global";
 import { getActiveTabModel } from "@/app/store/tab-model";
+import { sendWorkspaceCommand } from "@/app/store/workspace-command-client";
 import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
-import { deleteLayoutModelForTab, getLayoutModelForStaticTab, NavigateDirection } from "@/layout/index";
+import { getLayoutModelForStaticTab, NavigateDirection } from "@/layout/index";
 import * as keyutil from "@/util/keyutil";
 import { CHORD_TIMEOUT } from "@/util/sharedconst";
 import { fireAndForget } from "@/util/util";
@@ -126,19 +126,7 @@ function getStaticTabBlockCount(): number {
 }
 
 function simpleCloseStaticTab() {
-    const workspaceId = globalStore.get(atoms.workspaceId);
-    const tabId = globalStore.get(atoms.staticTabId);
-    const confirmClose = globalStore.get(getSettingsKeyAtom("tab:confirmclose")) ?? false;
-    getApi()
-        .closeTab(workspaceId, tabId, confirmClose)
-        .then((didClose) => {
-            if (didClose) {
-                deleteLayoutModelForTab(tabId);
-            }
-        })
-        .catch((e) => {
-            console.log("error closing tab", e);
-        });
+    sendWorkspaceCommand({ type: "close-active" });
 }
 
 function uxCloseBlock(blockId: string) {
@@ -194,40 +182,12 @@ function switchBlockInDirection(direction: NavigateDirection) {
     }, 10);
 }
 
-function getAllTabs(ws: Workspace): string[] {
-    return ws.tabids ?? [];
-}
-
 function switchTabAbs(index: number) {
-    console.log("switchTabAbs", index);
-    const ws = globalStore.get(atoms.workspace);
-    const newTabIdx = index - 1;
-    const tabids = getAllTabs(ws);
-    if (newTabIdx < 0 || newTabIdx >= tabids.length) {
-        return;
-    }
-    const newActiveTabId = tabids[newTabIdx];
-    getApi().setActiveTab(newActiveTabId);
+    sendWorkspaceCommand({ type: "activate-terminal-index", index: index - 1 });
 }
 
 function switchTab(offset: number) {
-    console.log("switchTab", offset);
-    const ws = globalStore.get(atoms.workspace);
-    const curTabId = globalStore.get(atoms.staticTabId);
-    let tabIdx = -1;
-    const tabids = getAllTabs(ws);
-    for (let i = 0; i < tabids.length; i++) {
-        if (tabids[i] == curTabId) {
-            tabIdx = i;
-            break;
-        }
-    }
-    if (tabIdx == -1) {
-        return;
-    }
-    const newTabIdx = (tabIdx + offset + tabids.length) % tabids.length;
-    const newActiveTabId = tabids[newTabIdx];
-    getApi().setActiveTab(newActiveTabId);
+    sendWorkspaceCommand({ type: offset > 0 ? "next-content" : "previous-content" });
 }
 
 function handleCmdI() {
@@ -386,11 +346,9 @@ function appHandleKeyDown(waveEvent: WaveKeyboardEvent): boolean {
 }
 
 function handleMagnifyToggle(): boolean {
-    const workspaceLayoutModel = WorkspaceLayoutModel.getInstance();
-    if (workspaceLayoutModel.toggleFocusedRightToolPanelMagnified()) {
+    if (WorkspaceLayoutModel.getInstance().toggleFocusedRightToolPanelMagnified()) {
         return true;
     }
-
     const layoutModel = getLayoutModelForStaticTab();
     const focusedNode = globalStore.get(layoutModel.focusedNode);
     if (focusedNode != null) {
@@ -400,7 +358,7 @@ function handleMagnifyToggle(): boolean {
 }
 
 function registerControlShiftStateUpdateHandler() {
-    getApi().onControlShiftStateUpdate((state: boolean) => {
+    return getApi().onControlShiftStateUpdate((state: boolean) => {
         if (state) {
             setControlShift();
         } else {
@@ -410,7 +368,7 @@ function registerControlShiftStateUpdateHandler() {
 }
 
 function registerElectronReinjectKeyHandler() {
-    getApi().onReinjectKey((event: WaveKeyboardEvent) => {
+    return getApi().onReinjectKey((event: WaveKeyboardEvent) => {
         appHandleKeyDown(event);
     });
 }
@@ -433,6 +391,7 @@ function countTermBlocks(): number {
 }
 
 function registerGlobalKeys() {
+    unregisterGlobalKeys();
     globalKeyMap.set("Cmd:]", () => {
         switchTab(1);
         return true;
@@ -466,7 +425,7 @@ function registerGlobalKeys() {
         return true;
     });
     globalKeyMap.set("Cmd:t", () => {
-        createTab();
+        sendWorkspaceCommand({ type: "new-terminal" });
         return true;
     });
     globalKeyMap.set("Cmd:p", () => {
@@ -478,7 +437,7 @@ function registerGlobalKeys() {
         return true;
     });
     globalKeyMap.set("Cmd:w", () => {
-        genericClose();
+        simpleCloseStaticTab();
         return true;
     });
     globalKeyMap.set("Cmd:Shift:w", () => {
@@ -657,8 +616,7 @@ function registerGlobalKeys() {
         return false;
     });
     globalKeyMap.set("Cmd:b", () => {
-        const model = WorkspaceLayoutModel.getInstance();
-        model.setVTabVisible(!model.getVTabVisible());
+        sendWorkspaceCommand({ type: "toggle-left-panel-files" });
         return true;
     });
     const allKeys = Array.from(globalKeyMap.keys());
@@ -684,6 +642,68 @@ function registerGlobalKeys() {
         return true;
     });
     globalChordMap.set("Ctrl:Shift:s", splitBlockKeys);
+    return unregisterGlobalKeys;
+}
+
+function registerWorkspaceGlobalKeys(dispatch: (command: WorkspaceCommand) => void) {
+    unregisterGlobalKeys();
+    globalKeyMap.set("Cmd:]", () => {
+        dispatch({ type: "next-content" });
+        return true;
+    });
+    globalKeyMap.set("Shift:Cmd:]", () => {
+        dispatch({ type: "next-content" });
+        return true;
+    });
+    globalKeyMap.set("Cmd:[", () => {
+        dispatch({ type: "previous-content" });
+        return true;
+    });
+    globalKeyMap.set("Shift:Cmd:[", () => {
+        dispatch({ type: "previous-content" });
+        return true;
+    });
+    globalKeyMap.set("Cmd:t", () => {
+        dispatch({ type: "new-terminal" });
+        return true;
+    });
+    globalKeyMap.set("Cmd:w", () => {
+        dispatch({ type: "close-active" });
+        return true;
+    });
+    globalKeyMap.set("Cmd:Shift:w", () => {
+        dispatch({ type: "close-active" });
+        return true;
+    });
+    globalKeyMap.set("Cmd:b", () => {
+        dispatch({ type: "toggle-left-panel-files" });
+        return true;
+    });
+    for (let idx = 1; idx <= 9; idx++) {
+        globalKeyMap.set(`Cmd:${idx}`, () => {
+            dispatch({ type: "activate-terminal-index", index: idx - 1 });
+            return true;
+        });
+    }
+    getApi().registerGlobalWebviewKeys(Array.from(globalKeyMap.keys()));
+    return unregisterGlobalKeys;
+}
+
+function registerWorkspaceKeyLifecycle(dispatch: (command: WorkspaceCommand) => void) {
+    const keyDownHandler = keyutil.keydownWrapper(appHandleKeyDown);
+    const mouseDownHandler = (event: MouseEvent) => keyboardMouseDownHandler(event);
+    const cleanups = [
+        registerWorkspaceGlobalKeys(dispatch),
+        registerElectronReinjectKeyHandler(),
+        registerControlShiftStateUpdateHandler(),
+    ];
+    document.addEventListener("keydown", keyDownHandler);
+    document.addEventListener("mousedown", mouseDownHandler);
+    return () => {
+        document.removeEventListener("keydown", keyDownHandler);
+        document.removeEventListener("mousedown", mouseDownHandler);
+        cleanups.reverse().forEach((cleanup) => cleanup());
+    };
 }
 
 function registerBuilderGlobalKeys() {
@@ -693,6 +713,14 @@ function registerBuilderGlobalKeys() {
     });
     const allKeys = Array.from(globalKeyMap.keys());
     getApi().registerGlobalWebviewKeys(allKeys);
+    return unregisterGlobalKeys;
+}
+
+function unregisterGlobalKeys() {
+    resetChord();
+    globalKeyMap.clear();
+    globalChordMap.clear();
+    getApi().registerGlobalWebviewKeys([]);
 }
 
 function getAllGlobalKeyBindings(): string[] {
@@ -716,6 +744,9 @@ export {
     registerControlShiftStateUpdateHandler,
     registerElectronReinjectKeyHandler,
     registerGlobalKeys,
+    registerWorkspaceGlobalKeys,
+    registerWorkspaceKeyLifecycle,
+    unregisterGlobalKeys,
     simpleCloseStaticTab,
     switchBlockInDirection,
     switchTab,

@@ -6,8 +6,4 @@
 // …) were deleted with the old engine (docs/terax-terminal-port.md §四
 // P1.7); terminal rendering lives in frontend/app/xterm/ now.
 
-export { AgentChatHost } from "./agent-chat-host";
-export type { AgentChatHostApi, AgentChatHostProps, AgentSelectorRequest } from "./agent-chat-host";
-export { WorkspaceAgentSurface } from "./agent-surface";
-export type { AgentSurfaceContext, WorkspaceAgentSurfaceProps } from "./agent-surface";
 export { TerminalNotification } from "./terminal-notification";

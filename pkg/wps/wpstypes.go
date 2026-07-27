@@ -15,28 +15,29 @@ import (
 //     - Use reflect.TypeOf((*YourType)(nil)) for pointer types
 //     - Use nil if no data is sent for the event
 const (
-	Event_BlockClose          = "blockclose"           // type: string
-	Event_ConnChange          = "connchange"           // type: wshrpc.ConnStatus
-	Event_SysInfo             = "sysinfo"              // type: wshrpc.TimeSeriesData
-	Event_ControllerStatus    = "controllerstatus"     // type: *blockcontroller.BlockControllerRuntimeStatus
-	Event_BuilderStatus       = "builderstatus"        // type: wshrpc.BuilderStatusData
-	Event_BuilderOutput       = "builderoutput"        // type: map[string]any
-	Event_WaveObjUpdate       = "waveobj:update"       // type: waveobj.WaveObjUpdate
-	Event_BlockFile           = "blockfile"            // type: *WSFileEventData
-	Event_Config              = "config"               // type: wconfig.WatcherUpdate
-	Event_UserInput           = "userinput"            // type: *userinput.UserInputRequest
-	Event_RouteDown           = "route:down"           // type: none
-	Event_RouteUp             = "route:up"             // type: none
-	Event_WorkspaceUpdate     = "workspace:update"     // type: none
-	Event_WaveAppAppGoUpdated = "waveapp:appgoupdated" // type: none
-	Event_TsunamiUpdateMeta   = "tsunami:updatemeta"   // type: wshrpc.AppMeta
-	Event_BlockJobStatus      = "block:jobstatus"      // type: wshrpc.BlockJobStatusData
-	Event_Badge               = "badge"                // type: baseds.BadgeEvent
-	Event_CmdBlockRow         = "cmdblock:row"         // type: *cbtypes.CmdBlock
-	Event_CmdBlockAltScreen   = "cmdblock:altscreen"   // type: *cbtypes.CmdBlockAltScreenEvent
-	Event_CmdBlockClear       = "cmdblock:clear"       // type: *cbtypes.CmdBlockClearEvent
-	Event_CmdBlockNotify      = "cmdblock:notify"      // type: *cbtypes.CmdBlockNotifyEvent
-	Event_AgentNotification   = "agent:notification"   // type: *AgentNotificationEvent
+	Event_BlockClose           = "blockclose"             // type: string
+	Event_ConnChange           = "connchange"             // type: wshrpc.ConnStatus
+	Event_SysInfo              = "sysinfo"                // type: wshrpc.TimeSeriesData
+	Event_ControllerStatus     = "controllerstatus"       // type: *blockcontroller.BlockControllerRuntimeStatus
+	Event_BuilderStatus        = "builderstatus"          // type: wshrpc.BuilderStatusData
+	Event_BuilderOutput        = "builderoutput"          // type: map[string]any
+	Event_WaveObjUpdate        = "waveobj:update"         // type: waveobj.WaveObjUpdate
+	Event_BlockFile            = "blockfile"              // type: *WSFileEventData
+	Event_Config               = "config"                 // type: wconfig.WatcherUpdate
+	Event_UserInput            = "userinput"              // type: *userinput.UserInputRequest
+	Event_RouteDown            = "route:down"             // type: none
+	Event_RouteUp              = "route:up"               // type: none
+	Event_WorkspaceUpdate      = "workspace:update"       // type: none
+	Event_WaveAppAppGoUpdated  = "waveapp:appgoupdated"   // type: none
+	Event_TsunamiUpdateMeta    = "tsunami:updatemeta"     // type: wshrpc.AppMeta
+	Event_BlockJobStatus       = "block:jobstatus"        // type: wshrpc.BlockJobStatusData
+	Event_Badge                = "badge"                  // type: baseds.BadgeEvent
+	Event_CmdBlockRow          = "cmdblock:row"           // type: *cbtypes.CmdBlock
+	Event_CmdBlockAltScreen    = "cmdblock:altscreen"     // type: *cbtypes.CmdBlockAltScreenEvent
+	Event_CmdBlockClear        = "cmdblock:clear"         // type: *cbtypes.CmdBlockClearEvent
+	Event_CmdBlockNotify       = "cmdblock:notify"        // type: *cbtypes.CmdBlockNotifyEvent
+	Event_AgentNotification    = "agent:notification"     // type: *AgentNotificationEvent
+	Event_WorkspaceOpenContent = "workspace:open-content" // type: wshrpc.WorkspaceOpenContentEvent
 )
 
 var AllEvents []string = []string{
@@ -62,6 +63,7 @@ var AllEvents []string = []string{
 	Event_CmdBlockClear,
 	Event_CmdBlockNotify,
 	Event_AgentNotification,
+	Event_WorkspaceOpenContent,
 }
 
 type WaveEvent struct {

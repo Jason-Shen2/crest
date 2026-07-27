@@ -12,11 +12,12 @@ declare global {
         builderAppId: jotai.PrimitiveAtom<string>; // app being edited in builder mode
         uiContext: jotai.Atom<UIContext>; // driven from windowId, tabId
         workspaceId: jotai.Atom<string>; // derived from window WOS object
+        workspaceGeneration: jotai.Atom<number>; // workspace renderer generation; 0 outside workspace renderer
         workspace: jotai.Atom<Workspace>; // driven from workspaceId via WOS
         fullConfigAtom: jotai.PrimitiveAtom<FullConfigType>; // driven from WOS, settings -- updated via WebSocket
         settingsAtom: jotai.Atom<SettingsType>; // derrived from fullConfig
         hasConfigErrors: jotai.Atom<boolean>; // derived from fullConfig
-        staticTabId: jotai.Atom<string>;
+        staticTabId?: jotai.Atom<string>;
         isFullScreen: jotai.PrimitiveAtom<boolean>;
         zoomFactorAtom: jotai.PrimitiveAtom<number>;
         controlShiftDelayAtom: jotai.PrimitiveAtom<boolean>;
@@ -49,22 +50,122 @@ declare global {
         blockId: string;
     };
 
-    type GlobalInitOptions = {
-        tabId?: string;
+    type RendererKind = "workspace" | "terminal" | "builder" | "preview";
+
+    type WorkspaceInitOpts = {
+        clientId: string;
+        windowId: string;
+        workspaceId: string;
+        generation: number;
+    };
+
+    type WorkspaceReadyStatus = {
+        workspaceId: string;
+        generation: number;
+    };
+
+    type WorkspaceSurfaceState =
+        | {
+              kind: "agent";
+              workspaceId: string;
+              generation: number;
+              revision: number;
+              bounds: Electron.Rectangle;
+          }
+        | {
+              kind: "terminal";
+              terminalTabId: string;
+              workspaceId: string;
+              generation: number;
+              revision: number;
+              bounds: Electron.Rectangle;
+          }
+        | {
+              kind: "top-tab";
+              workspaceId: string;
+              generation: number;
+              revision: number;
+              bounds: Electron.Rectangle;
+          };
+
+    type TerminalSurfaceStatus =
+        | {
+              state: "idle";
+              workspaceid: string;
+              generation: number;
+              revision: number;
+          }
+        | {
+              state: "loading" | "ready";
+              workspaceid: string;
+              generation: number;
+              revision: number;
+              terminaltabid: string;
+          }
+        | {
+              state: "error";
+              workspaceid: string;
+              generation: number;
+              revision: number;
+              terminaltabid: string;
+              message: string;
+          };
+
+    type WorkspaceCommand =
+        | { type: "open-url"; url: string }
+        | { type: "open-file"; path: string }
+        | { type: "open-preview"; path: string }
+        | {
+              type: "open-git-diff";
+              repoRoot: string;
+              path: string;
+              mode: "+" | "-";
+              originalPath?: string;
+          }
+        | { type: "activate-agent" }
+        | { type: "activate-terminal"; terminalTabId: string }
+        | { type: "activate-terminal-index"; index: number }
+        | { type: "activate-top-tab"; topTabId: string }
+        | { type: "new-terminal" }
+        | { type: "close-active" }
+        | { type: "next-content" }
+        | { type: "previous-content" }
+        | { type: "toggle-left-panel-files" };
+
+    type GlobalInitCommonOptions = {
         platform: NodeJS.Platform;
         windowId: string;
         clientId: string;
         environment: "electron" | "renderer";
-        primaryTabStartup?: boolean;
-        builderId?: string;
-        isPreview?: boolean;
     };
+
+    type GlobalInitOptions = GlobalInitCommonOptions &
+        (
+            | {
+                  rendererKind: "workspace";
+                  workspaceId: string;
+                  generation?: number;
+              }
+            | {
+                  rendererKind: "terminal";
+                  tabId: string;
+                  primaryTabStartup?: boolean;
+              }
+            | {
+                  rendererKind: "builder";
+                  builderId: string;
+              }
+            | {
+                  rendererKind: "preview";
+              }
+        );
 
     type WaveInitOpts = {
         tabId: string;
         clientId: string;
         windowId: string;
         activate: boolean;
+        rendererKind: "terminal";
         primaryTabStartup?: boolean;
     };
 
@@ -118,18 +219,28 @@ declare global {
         installAppUpdate: () => void; // install-app-update
         onMenuItemAbout: (callback: () => void) => void; // menu-item-about
         updateWindowControlsOverlay: (rect: Dimensions) => void; // update-window-controls-overlay
-        onReinjectKey: (callback: (waveEvent: WaveKeyboardEvent) => void) => void; // reinject-key
+        onReinjectKey: (callback: (waveEvent: WaveKeyboardEvent) => void) => () => void; // reinject-key
         setWebviewFocus: (focusedId: number) => void; // webview-focus, focusedId is the getWebContentsId of the webview
         registerGlobalWebviewKeys: (keys: string[]) => void; // register-global-webview-keys
-        onControlShiftStateUpdate: (callback: (state: boolean) => void) => void; // control-shift-state-update
+        onControlShiftStateUpdate: (callback: (state: boolean) => void) => () => void; // control-shift-state-update
         createWorkspace: (dir: string) => void; // create-workspace
         selectDirectory: () => Promise<string | null>; // select-directory
+        selectFile: () => Promise<string | null>; // select-file
         switchWorkspace: (workspaceId: string) => void; // switch-workspace
         deleteWorkspace: (workspaceId: string) => void; // delete-workspace
-        setActiveTab: (tabId: string) => void; // set-active-tab
-        createTab: () => void; // create-tab
-        closeTab: (workspaceId: string, tabId: string, confirmClose: boolean) => Promise<boolean>; // close-tab
-        setWindowInitStatus: (status: "ready" | "wave-ready") => void; // set-window-init-status
+        setWindowInitStatus: (
+            status: "ready" | "wave-ready" | "workspace-ready" | "workspace-init-failed",
+            workspaceReady?: WorkspaceReadyStatus
+        ) => void; // set-window-init-status
+        onWorkspaceInit: (callback: (initOpts: WorkspaceInitOpts) => void) => void; // workspace-init
+        onWorkspaceInitFatal: (callback: (status: WorkspaceReadyStatus) => void) => () => void; // workspace-init-fatal
+        sendWorkspaceCommand: (command: WorkspaceCommand) => void; // workspace-command
+        onWorkspaceCommand: (callback: (command: WorkspaceCommand) => void) => () => void; // workspace-command
+        onWorkspaceCloseRequest: (callback: (request: WorkspaceCloseRequest) => void) => () => void; // workspace-close-request
+        respondWorkspaceClose: (response: WorkspaceCloseResponse) => void; // workspace-close-response
+        onWorkspaceCloseFinalize: (callback: (finalize: WorkspaceCloseFinalize) => void) => () => void; // workspace-close-finalize
+        setWorkspaceSurface: (surface: WorkspaceSurfaceState) => void; // workspace-surface
+        onTerminalSurfaceStatus: (callback: (status: TerminalSurfaceStatus) => void) => () => void; // terminal-surface-status
         onWaveInit: (callback: (initOpts: WaveInitOpts) => void) => void; // wave-init
         onBuilderInit: (callback: (initOpts: BuilderInitOpts) => void) => void; // builder-init
         sendLog: (log: string) => void; // fe-log
@@ -167,32 +278,100 @@ declare global {
         // Event payloads are pi AgentHarnessEvent shapes (text deltas, tool calls,
         // turn boundaries, etc.); usePiChat (task #12) wraps them into React state.
         agent: {
-            createSession: (cwd: string) => Promise<AgentSessionMeta>;
-            listSessionsForCwd: (cwd: string) => Promise<AgentSessionMeta[]>;
-            listSessionDetailsForCwd: (cwd: string, limit?: number) => Promise<AgentSessionDetail[]>;
-            listAllSessionDetails: (limit?: number) => Promise<AgentSessionDetail[]>;
-            listCommands: () => Promise<AgentCommandInfo[]>; // agent:list-commands
-            getSessionState: (sessionMetadata: AgentSessionMeta) => Promise<unknown>; // agent:get-session-state
-            listTree: (sessionMetadata: AgentSessionMeta) => Promise<AgentTreeResult>; // agent:list-tree
-            listForkPoints: (sessionMetadata: AgentSessionMeta) => Promise<AgentForkPointView[]>; // agent:list-fork-points
-            navigateTree: (input: AgentNavigateTreeInput) => Promise<AgentNavigateTreeResult>; // agent:navigate-tree
-            forkSession: (input: AgentForkSessionInput) => Promise<AgentForkSessionResult>; // agent:fork-session
-            cloneSession: (input: AgentCloneSessionInput) => Promise<AgentCloneSessionResult>; // agent:clone-session
-            runCommand: (input: AgentRunCommandInput) => Promise<AgentCommandExecutionResult>; // agent:run-command
-            prepareContextDraft: (input: AgentPrepareContextDraftInput) => Promise<AgentPrepareContextDraftResult>;
+            createSession: (context: WorkspaceAgentRequestContext) => Promise<AgentSessionMeta>;
+            listSessions: (context: WorkspaceAgentRequestContext) => Promise<AgentSessionMeta[]>;
+            listSessionDetails: (
+                context: WorkspaceAgentRequestContext,
+                limit?: number
+            ) => Promise<AgentSessionDetail[]>;
+            listCommands: (context: WorkspaceAgentRequestContext) => Promise<AgentCommandInfo[]>; // agent:list-commands
+            getSessionState: (
+                context: WorkspaceAgentRequestContext,
+                sessionMetadata: AgentSessionMeta
+            ) => Promise<unknown>; // agent:get-session-state
+            listTree: (
+                context: WorkspaceAgentRequestContext,
+                sessionMetadata: AgentSessionMeta
+            ) => Promise<AgentTreeResult>; // agent:list-tree
+            listForkPoints: (
+                context: WorkspaceAgentRequestContext,
+                sessionMetadata: AgentSessionMeta
+            ) => Promise<AgentForkPointView[]>; // agent:list-fork-points
+            navigateTree: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentNavigateTreeInput
+            ) => Promise<AgentNavigateTreeResult>; // agent:navigate-tree
+            forkSession: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentForkSessionInput
+            ) => Promise<AgentForkSessionResult>; // agent:fork-session
+            cloneSession: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentCloneSessionInput
+            ) => Promise<AgentCloneSessionResult>; // agent:clone-session
+            runCommand: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentRunCommandInput
+            ) => Promise<AgentCommandExecutionResult>; // agent:run-command
+            prepareContextDraft: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentPrepareContextDraftInput
+            ) => Promise<AgentPrepareContextDraftResult>;
             summarizeContextDraft: (
+                context: WorkspaceAgentRequestContext,
                 input: AgentSummarizeContextDraftInput
             ) => Promise<AgentSummarizeContextDraftResult>;
-            discardContextDraft: (input: AgentDiscardContextDraftInput) => Promise<AgentDiscardContextDraftResult>;
-            listReferencePoints: (input: AgentListReferencePointsInput) => Promise<AgentReferencePointView[]>;
-            listContextState: (input: AgentListContextStateInput) => Promise<AgentContextState>;
-            send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
-            abort: (sessionPath: string) => void;
+            discardContextDraft: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentDiscardContextDraftInput
+            ) => Promise<AgentDiscardContextDraftResult>;
+            listReferencePoints: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentListReferencePointsInput
+            ) => Promise<AgentReferencePointView[]>;
+            listContextState: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentListContextStateInput
+            ) => Promise<AgentContextState>;
+            commandRead: (
+                context: WorkspaceAgentRequestContext,
+                sessionMetadata: AgentSessionMeta,
+                input: { commandId: string }
+            ) => Promise<AgentPtySnapshot>; // agent:command-read
+            commandWrite: (
+                context: WorkspaceAgentRequestContext,
+                sessionMetadata: AgentSessionMeta,
+                input: { commandId: string; input: string }
+            ) => Promise<void>; // agent:command-write
+            commandResize: (
+                context: WorkspaceAgentRequestContext,
+                sessionMetadata: AgentSessionMeta,
+                input: { commandId: string; cols: number; rows: number }
+            ) => Promise<void>; // agent:command-resize
+            commandStop: (
+                context: WorkspaceAgentRequestContext,
+                sessionMetadata: AgentSessionMeta,
+                input: { commandId: string }
+            ) => Promise<void>; // agent:command-stop
+            renameSession: (
+                context: WorkspaceAgentRequestContext,
+                input: { sessionMetadata: AgentSessionMeta; name: string }
+            ) => Promise<void>; // agent:rename-session
+            archiveSession: (
+                context: WorkspaceAgentRequestContext,
+                sessionMetadata: AgentSessionMeta
+            ) => Promise<AgentSessionMeta>; // agent:archive-session
+            deleteSession: (context: WorkspaceAgentRequestContext, sessionMetadata: AgentSessionMeta) => Promise<void>; // agent:delete-session
+            send: (
+                context: WorkspaceAgentRequestContext,
+                opts: AgentSendOptions
+            ) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
+            abort: (context: WorkspaceAgentRequestContext, sessionPath: string) => Promise<void>;
             /** Subscribe to events for one session. Returns an unsubscribe fn. */
             subscribe: (
+                context: WorkspaceAgentRequestContext,
                 sessionPath: string,
-                callback: (event: unknown) => void,
-                opts?: { blockId?: string }
+                callback: (event: unknown) => void
             ) => () => void;
         };
         agentObservability: {
@@ -201,6 +380,10 @@ declare global {
             subscribe: (sessionId: string, callback: (event: TraceEvent) => void) => () => void;
         };
     };
+
+    type WorkspaceCloseRequest = { requestid: string; reason: "window" | "workspace" | "quit" };
+    type WorkspaceCloseResponse = { requestid: string; allow: boolean };
+    type WorkspaceCloseFinalize = { requestid: string; commit: boolean };
 
     type TraceStatus = "running" | "success" | "error" | "aborted";
 
@@ -429,11 +612,49 @@ declare global {
         timestamp?: string;
     };
 
+    type WorkspaceAgentRequestContext = {
+        workspaceId: string;
+        generation: number;
+    };
+
+    type AgentExecutionContext = {
+        workspaceId: string;
+        workspaceDir: string;
+        sessionPath?: string;
+        connection: string;
+        environment: Record<string, string>;
+        preferredTerminalTabId?: string;
+        gitBranch?: string;
+        recentCmds?: string[];
+    };
+
+    type AgentPtySnapshot = {
+        commandId: string;
+        command: string;
+        cwd: string;
+        tail: string;
+        screen: {
+            rows: Array<{ text: string; cells: Array<{ char: string }> }>;
+            cursor: {
+                row: number;
+                col: number;
+                visible: boolean;
+                shape: "block" | "underline" | "bar";
+                blink: boolean;
+            };
+            isAltScreenActive: boolean;
+        };
+        running: boolean;
+        exitCode?: number;
+        cols: number;
+        rows: number;
+        needsUserInput: boolean;
+    };
+
     type AgentSendOptions = {
         /** Existing session metadata, or null to have main mint a new one. */
         sessionMetadata?: AgentSessionMeta | null;
-        blockId: string;
-        cwd: string;
+        context: AgentExecutionContext;
         text: string;
         images?: string[];
         provider: string;
@@ -446,9 +667,6 @@ declare global {
          */
         token?: string;
         tokenSecretName?: string;
-        gitBranch?: string;
-        recentCmds?: string[];
-        connection?: string;
         /**
          * Per-pane tool allowlist. Optional — when omitted, main defaults
          * to allowAll (no UX-gated approval in v1). See
@@ -524,7 +742,6 @@ declare global {
     type AgentNavigateTreeInput = {
         sessionMetadata: AgentSessionMeta;
         targetId: string;
-        blockId?: string;
     };
 
     type AgentNavigateTreeResult = {
@@ -534,7 +751,6 @@ declare global {
 
     type AgentForkSessionInput = {
         sessionMetadata: AgentSessionMeta;
-        cwd: string;
         entryId: string;
     };
 
@@ -545,7 +761,6 @@ declare global {
 
     type AgentCloneSessionInput = {
         sessionMetadata: AgentSessionMeta;
-        cwd: string;
     };
 
     type AgentCloneSessionResult = {
@@ -564,10 +779,8 @@ declare global {
 
     type AgentRunCommandInput = {
         sessionMetadata?: AgentSessionMeta;
-        cwd: string;
         command: AgentBackendCommandName;
         argsText: string;
-        blockId?: string;
     };
 
     type ElectronContextMenuItem = {

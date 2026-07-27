@@ -12,13 +12,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/s-zx/crest/pkg/eventbus"
-	"github.com/s-zx/crest/pkg/telemetry"
-	"github.com/s-zx/crest/pkg/telemetry/telemetrydata"
 	"github.com/s-zx/crest/pkg/util/utilfn"
 	"github.com/s-zx/crest/pkg/waveobj"
 	"github.com/s-zx/crest/pkg/wconfig"
 	"github.com/s-zx/crest/pkg/wps"
-	"github.com/s-zx/crest/pkg/wshrpc"
 	"github.com/s-zx/crest/pkg/wstore"
 )
 
@@ -51,11 +48,17 @@ var WorkspaceIcons = [...]string{
 
 func CreateWorkspace(ctx context.Context, name string, icon string, color string, applyDefaults bool, isInitialLaunch bool, dir string) (*waveobj.Workspace, error) {
 	ws := &waveobj.Workspace{
-		OID:    uuid.NewString(),
-		TabIds: []string{},
-		Name:   "",
-		Icon:   "",
-		Color:  "",
+		OID:              uuid.NewString(),
+		TabIds:           []string{},
+		TabDomainVersion: waveobj.CurrentTabDomainVersion,
+		TerminalTabIds:   []string{},
+		ContentState: waveobj.WorkspaceContentState{
+			ActiveContent: waveobj.ActiveContent{Kind: waveobj.ActiveContentKindAgent},
+			TopTabs:       []waveobj.TopTabDescriptor{},
+		},
+		Name:  "",
+		Icon:  "",
+		Color: "",
 	}
 	if dir != "" {
 		ws.Meta = waveobj.MetaMapType{waveobj.MetaKey_WorkspaceDir: dir}
@@ -64,11 +67,6 @@ func CreateWorkspace(ctx context.Context, name string, icon string, color string
 	if err != nil {
 		return nil, fmt.Errorf("error inserting workspace: %w", err)
 	}
-	_, err = CreateTab(ctx, ws.OID, "", true, isInitialLaunch)
-	if err != nil {
-		return nil, fmt.Errorf("error creating tab: %w", err)
-	}
-
 	wps.Broker.Publish(wps.WaveEvent{
 		Event: wps.Event_WorkspaceUpdate,
 	})
@@ -140,8 +138,11 @@ func UpdateWorkspace(ctx context.Context, workspaceId string, name string, icon 
 func DeleteWorkspace(ctx context.Context, workspaceId string, force bool) (bool, string, error) {
 	log.Printf("DeleteWorkspace %s\n", workspaceId)
 	workspace, err := wstore.DBMustGet[*waveobj.Workspace](ctx, workspaceId)
-	if err != nil && wstore.ErrNotFound == err {
-		return true, "", fmt.Errorf("workspace already deleted %w", err)
+	if err != nil {
+		if wstore.ErrNotFound == err {
+			return true, "", fmt.Errorf("workspace already deleted %w", err)
+		}
+		return false, "", fmt.Errorf("error loading workspace: %w", err)
 	}
 	// @jalileh list needs to be saved early on i assume
 	workspaces, err := ListWorkspaces(ctx)
@@ -154,17 +155,10 @@ func DeleteWorkspace(ctx context.Context, workspaceId string, force bool) (bool,
 		return false, "", nil
 	}
 
-	for _, tabId := range workspace.TabIds {
-		log.Printf("deleting tab %s\n", tabId)
-		_, err := DeleteTab(ctx, workspaceId, tabId, false)
-		if err != nil {
-			return false, "", fmt.Errorf("error closing tab: %w", err)
-		}
-	}
 	windowId, _ := wstore.DBFindWindowForWorkspaceId(ctx, workspaceId)
-	err = wstore.DBDelete(ctx, waveobj.OType_Workspace, workspaceId)
+	err = deleteWorkspaceTabsAndObject(ctx, workspaceId)
 	if err != nil {
-		return false, "", fmt.Errorf("error deleting workspace: %w", err)
+		return false, "", err
 	}
 	log.Printf("deleted workspace %s\n", workspaceId)
 	wps.Broker.Publish(wps.WaveEvent{
@@ -201,6 +195,130 @@ func DeleteWorkspace(ctx context.Context, workspaceId string, force bool) (bool,
 		}
 	}
 	return true, "", nil
+}
+
+func deleteWorkspaceTabsAndObject(ctx context.Context, workspaceId string) error {
+	return wstore.WithTx(ctx, func(tx *wstore.TxWrap) error {
+		workspace, err := wstore.DBMustGet[*waveobj.Workspace](tx.Context(), workspaceId)
+		if err != nil {
+			return err
+		}
+		if err := validateWorkspaceTabOwnershipInTx(tx, workspaceId, workspace.TabIds); err != nil {
+			return fmt.Errorf("cannot delete workspace with invalid tab ownership: %w", err)
+		}
+		terminalIds := make(map[string]bool, len(workspace.TerminalTabIds))
+		for _, tabId := range workspace.TerminalTabIds {
+			if terminalIds[tabId] {
+				return fmt.Errorf("workspace Terminal inventory contains duplicate %s", tabId)
+			}
+			terminalIds[tabId] = true
+			if utilfn.FindStringInSlice(workspace.TabIds, tabId) == -1 {
+				return fmt.Errorf("registered Terminal %s is missing from workspace tab inventory", tabId)
+			}
+			if err := ValidateTerminalTabMutation(tx, workspaceId, tabId, nil); err != nil {
+				return fmt.Errorf("cannot delete registered Terminal %s: %w", tabId, err)
+			}
+		}
+
+		tabs := make(map[string]*waveobj.Tab, len(workspace.TabIds))
+		allBlocks := make(map[string]bool)
+		var deletedBlockIds []string
+		for _, tabId := range workspace.TabIds {
+			tab, err := wstore.DBMustGet[*waveobj.Tab](tx.Context(), tabId)
+			if err != nil {
+				return fmt.Errorf("cannot delete Tab %s: %w", tabId, err)
+			}
+			path := make(map[string]bool)
+			for _, blockId := range tab.BlockIds {
+				if err := collectWorkspaceDeleteSubtree(
+					tx,
+					blockId,
+					path,
+					allBlocks,
+					&deletedBlockIds,
+				); err != nil {
+					return fmt.Errorf("cannot delete Tab %s: %w", tabId, err)
+				}
+			}
+			tabs[tabId] = tab
+		}
+
+		var legacyZoneIds []string
+		for _, tabId := range workspace.TabIds {
+			if terminalIds[tabId] {
+				if err := DeleteTerminalTabInTx(tx, workspaceId, tabId); err != nil {
+					return err
+				}
+				continue
+			}
+			tab := tabs[tabId]
+			for _, blockId := range tab.BlockIds {
+				zoneIds, err := deleteTerminalBlockSubtreeInTx(tx, blockId)
+				if err != nil {
+					return err
+				}
+				legacyZoneIds = append(legacyZoneIds, zoneIds...)
+			}
+			if err := wstore.DBDeleteInTxNoSideEffects(tx, waveobj.OType_Tab, tabId); err != nil {
+				return err
+			}
+			legacyZoneIds = append(legacyZoneIds, tabId)
+			if tab.LayoutState != "" {
+				if err := wstore.DBDeleteInTxNoSideEffects(tx, waveobj.OType_LayoutState, tab.LayoutState); err != nil {
+					return err
+				}
+				legacyZoneIds = append(legacyZoneIds, tab.LayoutState)
+			}
+		}
+		if err := wstore.DBDeleteInTxNoSideEffects(tx, waveobj.OType_Workspace, workspaceId); err != nil {
+			return err
+		}
+		if len(legacyZoneIds) > 0 {
+			if err := wstore.RegisterAfterCommit(tx, func(callbackCtx context.Context) error {
+				return cleanupTerminalTabZones(callbackCtx, legacyZoneIds)
+			}); err != nil {
+				return err
+			}
+		}
+		return wstore.RegisterAfterCommit(tx, func(callbackCtx context.Context) error {
+			for _, blockId := range deletedBlockIds {
+				wstore.DeleteRTInfo(waveobj.MakeORef(waveobj.OType_Block, blockId))
+				deleteWorkspaceBlockCloseEvent(blockId)
+			}
+			return nil
+		})
+	})
+}
+
+var deleteWorkspaceBlockCloseEvent = sendBlockCloseEvent
+
+func collectWorkspaceDeleteSubtree(
+	tx *wstore.TxWrap,
+	blockId string,
+	path map[string]bool,
+	allBlocks map[string]bool,
+	deletedBlockIds *[]string,
+) error {
+	if path[blockId] {
+		return fmt.Errorf("cycle found in block subtree at %s", blockId)
+	}
+	if allBlocks[blockId] {
+		return fmt.Errorf("block %s is referenced more than once", blockId)
+	}
+	path[blockId] = true
+	allBlocks[blockId] = true
+	*deletedBlockIds = append(*deletedBlockIds, blockId)
+	block, err := wstore.DBMustGet[*waveobj.Block](tx.Context(), blockId)
+	if err != nil {
+		return err
+	}
+	for _, subBlockId := range block.SubBlockIds {
+		if err := collectWorkspaceDeleteSubtree(tx, subBlockId, path, allBlocks, deletedBlockIds); err != nil {
+			return err
+		}
+	}
+	delete(path, blockId)
+	return nil
 }
 
 // DiscardDirlessWorkspaces removes any workspace that has no workspace:dir
@@ -253,111 +371,6 @@ func applyTabBackground(ctx context.Context, tab *waveobj.Tab) {
 	wstore.UpdateObjectMeta(ctx, *tabORef, waveobj.MetaMapType{waveobj.MetaKey_TabBackground: tabBg}, false)
 }
 
-func recordCreateTabTelemetry() {
-	telemetry.GoUpdateActivityWrap(wshrpc.ActivityUpdate{NewTab: 1}, "createtab")
-	telemetry.GoRecordTEventWrap(&telemetrydata.TEvent{
-		Event: "action:createtab",
-	})
-}
-
-// returns tabid
-func CreateTab(ctx context.Context, workspaceId string, tabName string, activateTab bool, isInitialLaunch bool) (string, error) {
-	tabName, meta, err := defaultTabNameAndMeta(ctx, workspaceId, tabName)
-	if err != nil {
-		return "", err
-	}
-
-	tab, err := createTabObj(ctx, workspaceId, tabName, meta)
-	if err != nil {
-		return "", fmt.Errorf("error creating tab: %w", err)
-	}
-	if activateTab {
-		err = SetActiveTab(ctx, workspaceId, tab.OID)
-		if err != nil {
-			return "", fmt.Errorf("error setting active tab: %w", err)
-		}
-	}
-
-	// No need to apply an initial layout for the initial launch, since the starter layout will get applied after onboarding modal dismissal
-	if !isInitialLaunch {
-		// Anchor the new block's spawn cwd to the Space (workspace) dir so
-		// agent shells open in the project directory.
-		var workspaceDir string
-		if ws, wsErr := GetWorkspace(ctx, workspaceId); wsErr == nil {
-			workspaceDir = ws.Meta.GetString(waveobj.MetaKey_WorkspaceDir, "")
-		}
-		err = ApplyPortableLayout(ctx, tab.OID, GetNewTabLayout(workspaceDir), true)
-		if err != nil {
-			return tab.OID, fmt.Errorf("error applying new tab layout: %w", err)
-		}
-		applyTabBackground(ctx, tab)
-	}
-	recordCreateTabTelemetry()
-	return tab.OID, nil
-}
-
-var applyPortableLayoutForCreateTabWithBlock = ApplyPortableLayout
-
-func CreateTabWithBlock(ctx context.Context, workspaceId string, tabName string, activateTab bool, blockDef waveobj.BlockDef) (rtnTabId string, rtnErr error) {
-	tabName, meta, err := defaultTabNameAndMeta(ctx, workspaceId, tabName)
-	if err != nil {
-		return "", err
-	}
-	if err := validateBlockDef(&blockDef); err != nil {
-		return "", err
-	}
-	ws, err := GetWorkspace(ctx, workspaceId)
-	if err != nil {
-		return "", err
-	}
-	originalActiveTabId := ws.ActiveTabId
-
-	tab, err := createTabObj(ctx, workspaceId, tabName, meta)
-	if err != nil {
-		return "", fmt.Errorf("error creating tab: %w", err)
-	}
-	defer func() {
-		if rtnErr == nil {
-			return
-		}
-		_, rollbackErr := DeleteTab(ctx, workspaceId, tab.OID, false)
-		if rollbackErr != nil {
-			rtnErr = fmt.Errorf("%w; additionally failed to rollback tab %s: %v", rtnErr, tab.OID, rollbackErr)
-			return
-		}
-		if activateTab {
-			if originalActiveTabId != "" {
-				rollbackErr = SetActiveTab(ctx, workspaceId, originalActiveTabId)
-			} else {
-				ws, rollbackErr = GetWorkspace(ctx, workspaceId)
-				if rollbackErr == nil {
-					ws.ActiveTabId = ""
-					rollbackErr = wstore.DBUpdate(ctx, ws)
-				}
-			}
-			if rollbackErr != nil {
-				rtnErr = fmt.Errorf("%w; additionally failed to restore active tab %s: %v", rtnErr, originalActiveTabId, rollbackErr)
-			}
-		}
-	}()
-	if activateTab {
-		err = SetActiveTab(ctx, workspaceId, tab.OID)
-		if err != nil {
-			return "", fmt.Errorf("error setting active tab: %w", err)
-		}
-	}
-	layout := PortableLayout{
-		{IndexArr: []int{0}, BlockDef: &blockDef, Focused: true},
-	}
-	err = applyPortableLayoutForCreateTabWithBlock(ctx, tab.OID, layout, true)
-	if err != nil {
-		return "", fmt.Errorf("error applying single-block tab layout: %w", err)
-	}
-	applyTabBackground(ctx, tab)
-	recordCreateTabTelemetry()
-	return tab.OID, nil
-}
-
 func createTabObj(ctx context.Context, workspaceId string, name string, meta waveobj.MetaMapType) (*waveobj.Tab, error) {
 	ws, err := GetWorkspace(ctx, workspaceId)
 	if err != nil {
@@ -395,6 +408,12 @@ func DeleteTab(ctx context.Context, workspaceId string, tabId string, recursive 
 	tabIdx := utilfn.FindStringInSlice(ws.TabIds, tabId)
 	if tabIdx == -1 {
 		return "", fmt.Errorf("tab %s not found in workspace %s", tabId, workspaceId)
+	}
+	if utilfn.FindStringInSlice(ws.TerminalTabIds, tabId) != -1 {
+		return "", fmt.Errorf(
+			"registered Terminal Tab %s must be closed through the Terminal service",
+			tabId,
+		)
 	}
 	ws.TabIds = append(ws.TabIds[:tabIdx], ws.TabIds[tabIdx+1:]...)
 
@@ -441,22 +460,6 @@ func DeleteTab(ctx context.Context, workspaceId string, tabId string, recursive 
 	return newActiveTabId, nil
 }
 
-func SetActiveTab(ctx context.Context, workspaceId string, tabId string) error {
-	if tabId != "" && workspaceId != "" {
-		workspace, err := GetWorkspace(ctx, workspaceId)
-		if err != nil {
-			return fmt.Errorf("workspace %s not found: %w", workspaceId, err)
-		}
-		tab, _ := wstore.DBGet[*waveobj.Tab](ctx, tabId)
-		if tab == nil {
-			return fmt.Errorf("tab not found: %q", tabId)
-		}
-		workspace.ActiveTabId = tabId
-		wstore.DBUpdate(ctx, workspace)
-	}
-	return nil
-}
-
 func SendActiveTabUpdate(ctx context.Context, workspaceId string, newActiveTabId string) {
 	eventbus.SendEventToElectron(eventbus.WSEventType{
 		EventType: eventbus.WSEvent_ElectronUpdateActiveTab,
@@ -464,14 +467,45 @@ func SendActiveTabUpdate(ctx context.Context, workspaceId string, newActiveTabId
 	})
 }
 
-func UpdateWorkspaceTabIds(ctx context.Context, workspaceId string, tabIds []string) error {
-	ws, _ := wstore.DBGet[*waveobj.Workspace](ctx, workspaceId)
-	if ws == nil {
-		return fmt.Errorf("workspace not found: %q", workspaceId)
+func validateWorkspaceTabOwnershipInTx(tx *wstore.TxWrap, workspaceId string, tabIds []string) error {
+	if _, err := uniqueTabIdSet(tabIds); err != nil {
+		return err
 	}
-	ws.TabIds = tabIds
-	wstore.DBUpdate(ctx, ws)
+	workspaces, err := wstore.DBGetAllObjsByType[*waveobj.Workspace](tx.Context(), waveobj.OType_Workspace)
+	if err != nil {
+		return fmt.Errorf("cannot validate workspace tab ownership: %w", err)
+	}
+	for _, tabId := range tabIds {
+		if _, err := wstore.DBMustGet[*waveobj.Tab](tx.Context(), tabId); err != nil {
+			return fmt.Errorf("workspace tab %s does not exist: %w", tabId, err)
+		}
+		ownerCount := 0
+		ownedByWorkspace := false
+		for _, candidate := range workspaces {
+			if utilfn.FindStringInSlice(candidate.TabIds, tabId) != -1 {
+				ownerCount++
+				ownedByWorkspace = ownedByWorkspace || candidate.OID == workspaceId
+			}
+		}
+		if ownerCount != 1 || !ownedByWorkspace {
+			return fmt.Errorf("workspace tab %s has foreign or ambiguous ownership", tabId)
+		}
+	}
 	return nil
+}
+
+func uniqueTabIdSet(tabIds []string) (map[string]bool, error) {
+	rtn := make(map[string]bool, len(tabIds))
+	for _, tabId := range tabIds {
+		if tabId == "" {
+			return nil, fmt.Errorf("workspace tab inventory contains an empty id")
+		}
+		if rtn[tabId] {
+			return nil, fmt.Errorf("workspace tab inventory contains duplicate %s", tabId)
+		}
+		rtn[tabId] = true
+	}
+	return rtn, nil
 }
 
 func ListWorkspaces(ctx context.Context) (waveobj.WorkspaceList, error) {

@@ -12,7 +12,7 @@ import {
     globalStore,
     WOS,
 } from "@/app/store/global";
-import { globalRefocusWithTimeout } from "@/app/store/keymodel";
+import { globalRefocusWithTimeout } from "@/app/store/tab-actions";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { NodeModel } from "@/layout/index";

@@ -9,6 +9,12 @@ import (
 
 const Entity_Any = "any"
 
+type LeftPanelState struct {
+	Visible bool   `json:"visible"`
+	Mode    string `json:"mode"`
+	Width   int    `json:"width"`
+}
+
 // for typescript typing
 type MetaTSType struct {
 	// shared
@@ -103,11 +109,9 @@ type MetaTSType struct {
 	BgActiveBorderColor string  `json:"bg:activebordercolor,omitempty"` // frame:activebordercolor
 
 	// for workspace
-	WorkspaceDir              string `json:"workspace:dir,omitempty"` // project dir; set at Space creation, immutable
-	LayoutVTabBarWidth        int    `json:"layout:vtabbarwidth,omitempty"`
-	LayoutWidgetsVisible      *bool  `json:"layout:widgetsvisible,omitempty"`
-	LayoutFileExplorerVisible *bool  `json:"layout:fileexplorervisible,omitempty"`
-	LayoutFileExplorerWidth   int    `json:"layout:fileexplorerwidth,omitempty"`
+	WorkspaceDir         string          `json:"workspace:dir,omitempty"` // project dir; set at Space creation, immutable
+	LayoutLeftPanel      *LeftPanelState `json:"layout:leftpanel,omitempty"`
+	LayoutWidgetsVisible *bool           `json:"layout:widgetsvisible,omitempty"`
 
 	TermClear               bool     `json:"term:*,omitempty"`
 	TermFontSize            int      `json:"term:fontsize,omitempty"`
@@ -172,10 +176,9 @@ type AgentSelectionMeta struct {
 }
 
 // AgentSessionMeta is the per-pane agent session pointer persisted on
-// the outer block's meta. Structurally a subset of pi's
-// JsonlSessionMetadata (emain/agent/harness/types.ts:439) — main
-// process round-trips this object straight into repo.open() without
-// translation. See docs/agent-runtime-architecture.md §5.
+// the outer block's meta. It carries the canonical SQLite session path
+// used by the main process to reopen the session without translation.
+// See docs/agent-runtime-architecture.md §5.
 //
 // Naming exception: camelCase here (createdAt) rather than crest's
 // usual lowercase, to match pi's wire shape exactly. See

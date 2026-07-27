@@ -31,6 +31,7 @@ import { useAtomValue } from "jotai";
 import { memo, useEffect, useRef, useState } from "react";
 import { getCachedHome, workspaceDirAtom } from "./file-explorer-atoms";
 import { FileExplorerModel } from "./file-explorer-model";
+import type { FileExplorerWorkspaceActions } from "./file-explorer-workspace-actions";
 import { FileExplorerTree } from "./file-explorer-tree";
 
 function basename(path: string): string {
@@ -49,12 +50,16 @@ function prettyRoot(path: string): string {
     return basename(path) || path;
 }
 
-export const FileExplorer = memo(() => {
+export const FileExplorer = memo(({ workspaceActions }: { workspaceActions: FileExplorerWorkspaceActions }) => {
     const model = FileExplorerModel.getInstance();
     const root = useAtomValue(model.rootAtom);
     const cwd = useAtomValue(workspaceDirAtom);
     const [isTreeScrolling, setIsTreeScrolling] = useState(false);
     const treeScrollIdleTimerRef = useRef<number>(0);
+
+    useEffect(() => {
+        return model.bindWorkspaceActions(workspaceActions);
+    }, [model, workspaceActions]);
 
     useEffect(() => {
         if (!cwd) return;
@@ -69,7 +74,7 @@ export const FileExplorer = memo(() => {
     const onNewFolder = () => model.startNewFolder(root);
 
     const onClose = () => {
-        WorkspaceLayoutModel.getInstance().setFileExplorerVisible(false);
+        WorkspaceLayoutModel.getInstance().toggleLeftPanel("files");
     };
 
     const onTreeScroll = () => {

@@ -26,9 +26,11 @@
         "coverage": "vitest run --coverage",
         "test": "vitest",
         "test:observability-types": "vitest run --typecheck.only --typecheck.ignoreSourceErrors frontend/app/observability/observability-types.test-d.ts frontend/app/observability/trace-panel/io-preview.test-d.ts",
+        "smoke:agent-pty-package": "node scripts/smoke-agent-pty-package.mjs",
         "postinstall": "node ./postinstall.cjs"
     },
     "devDependencies": {
+        "@electron/rebuild": "^4.2.0",
         "@eslint/js": "^9.39",
         "@rollup/plugin-node-resolve": "^16.0.3",
         "@tailwindcss/vite": "^4.2.1",
@@ -128,6 +130,7 @@
         "monaco-editor": "^0.55.1",
         "monaco-languageclient": "^10.7.0",
         "monaco-yaml": "^5.4.0",
+        "node-pty": "^1.1.0",
         "onnxruntime-web": "^1.26.0",
         "openai": "^6.26.0",
         "overlayscrollbars": "^2.14.0",

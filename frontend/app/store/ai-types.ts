@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// AI configuration types — selection (per-pane), user config
+// AI configuration types — Agent selection, user config
 // (~/.config/crest/ai.json), and the resolver's output.
 //
 // Design: see docs/ai-config-architecture.md.  These are the canonical
@@ -12,12 +12,12 @@
 import type { ApiType, Capability, ModelEntry, ReasoningLevel } from "./ai-catalog";
 
 // =========================================================================
-// Selection — what the user currently has picked in one pane
+// Selection — what the user currently has picked for the Workspace Agent
 // =========================================================================
 //
-// Stored at block.meta["agent:selection"] on the outer block.  Inline
-// triple (not a profile reference) so it's self-describing and
-// survives profile deletes.  See docs/ai-config-architecture.md §5.
+// Stored in Workspace agent state as an inline triple (not a profile
+// reference) so it is self-describing and survives profile deletes.  See
+// docs/ai-config-architecture.md §5.
 
 export interface AgentSelection {
     provider: string;

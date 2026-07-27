@@ -131,7 +131,7 @@ func (svc *ObjectService) UpdateObjectMeta(uiContext waveobj.UIContext, orefStr 
 	if err != nil {
 		return nil, fmt.Errorf("error parsing object reference: %w", err)
 	}
-	err = wstore.UpdateObjectMeta(ctx, *oref, meta, false)
+	err = wcore.UpdateObjectMetaWithTerminalGuard(ctx, *oref, meta, false)
 	if err != nil {
 		return nil, fmt.Errorf("error updating %q meta: %w", orefStr, err)
 	}
@@ -151,15 +151,7 @@ func (svc *ObjectService) UpdateObject(uiContext waveobj.UIContext, waveObj wave
 	if waveObj == nil {
 		return nil, fmt.Errorf("update wavobj is nil")
 	}
-	oref := waveobj.ORefFromWaveObj(waveObj)
-	found, err := wstore.DBExistsORef(ctx, *oref)
-	if err != nil {
-		return nil, fmt.Errorf("error getting object: %w", err)
-	}
-	if !found {
-		return nil, fmt.Errorf("object not found: %s", oref)
-	}
-	err = wstore.DBUpdate(ctx, waveObj)
+	err := wcore.UpdateObjectWithTerminalGuard(ctx, waveObj)
 	if err != nil {
 		return nil, fmt.Errorf("error updating object: %w", err)
 	}

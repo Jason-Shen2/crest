@@ -92,9 +92,21 @@ export interface VTabItem {
     iconName?: string;
 }
 
+export interface VTabAccessibleRow {
+    role: "option" | "tab";
+    label: string;
+    tabIndex: number;
+    selected: boolean;
+    onKeyDown: React.KeyboardEventHandler<HTMLDivElement>;
+    onFocus?: React.FocusEventHandler<HTMLDivElement>;
+    selectionRef?: React.Ref<HTMLDivElement>;
+}
+
 interface VTabProps {
     tab: VTabItem;
     active: boolean;
+    draggable?: boolean;
+    accessibleRow?: VTabAccessibleRow;
     viewMode?: "compact" | "expanded";
     showDivider?: boolean;
     isDragging: boolean;
@@ -102,7 +114,7 @@ interface VTabProps {
     hoverResetVersion?: number;
     onSelect: () => void;
     onClose?: () => void;
-    onRename?: (newName: string) => void;
+    onRename?: (newName: string) => void | Promise<void>;
     onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void;
     onMoreButtonClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
     onDragStart: (event: React.DragEvent<HTMLDivElement>) => void;
@@ -116,10 +128,7 @@ interface VTabProps {
 // Agent visual treatment.  The brand glyph is shown as a small badge in the
 // bottom-right corner of the tab's main icon (vertical-tabs icon-with-
 // status pattern).  Color matches each vendor so the status reads at a glance.
-const AgentBadgeStyles: Record<
-    AgentKind,
-    { icon: string; color: string; title: string; spin?: boolean }
-> = {
+const AgentBadgeStyles: Record<AgentKind, { icon: string; color: string; title: string; spin?: boolean }> = {
     claude: { icon: "claude", color: "#c0634a", title: "Claude Code running" },
     codex: { icon: "stars-01", color: "#10a37f", title: "Codex running" },
     ai: { icon: "stars-01", color: "var(--color-accent)", title: "AI agent running" },
@@ -159,6 +168,8 @@ function GitStatsBadge({ adds, dels }: { adds?: number; dels?: number }) {
 export function VTab({
     tab,
     active,
+    draggable = true,
+    accessibleRow,
     viewMode = "expanded",
     isDragging,
     isReordering,
@@ -179,7 +190,17 @@ export function VTab({
     const [isEditable, setIsEditable] = useState(false);
     const editableRef = useRef<HTMLDivElement>(null);
     const editableTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const authoritativeNameRef = useRef(tab.name);
     const badges = tab.badges ?? (tab.badge ? [tab.badge] : null);
+    authoritativeNameRef.current = tab.name;
+    const restoreAuthoritativeName = useCallback(() => {
+        const editor = editableRef.current;
+        if (!editor) {
+            return;
+        }
+        editor.textContent = authoritativeNameRef.current;
+        setIsEditable(false);
+    }, []);
 
     const rawFlagColor = tab.flagColor;
     let flagColor: string | null = null;
@@ -251,7 +272,8 @@ export function VTab({
         editableRef.current.textContent = newText;
         setIsEditable(false);
         if (newText !== originalName) {
-            onRename?.(newText);
+            const renameResult = onRename?.(newText);
+            void Promise.resolve(renameResult).catch(restoreAuthoritativeName);
         }
         setTimeout(() => refocusNode(null), 10);
     };
@@ -279,8 +301,7 @@ export function VTab({
     const isCompact = viewMode === "compact";
     // Resolve metadata-left for the third row (Expanded only).
     const hasMetadataLeft = !!(tab.metadataLeftKind && tab.metadataLeftValue);
-    const hasGitStats =
-        (tab.gitAdds ?? 0) > 0 || (tab.gitDels ?? 0) > 0 || (tab.gitChangedFiles ?? 0) > 0;
+    const hasGitStats = (tab.gitAdds ?? 0) > 0 || (tab.gitDels ?? 0) > 0 || (tab.gitChangedFiles ?? 0) > 0;
     const showMetadataRow = !isCompact && (hasMetadataLeft || hasGitStats);
     const [isLocalHovered, setIsLocalHovered] = useState(false);
 
@@ -299,18 +320,22 @@ export function VTab({
 
     return (
         <div
-            draggable
+            draggable={accessibleRow == null ? draggable : undefined}
             data-tabid={tab.id}
-            onClick={onSelect}
-            onDoubleClick={(event) => {
-                event.stopPropagation();
-                startRename();
-            }}
+            onClick={accessibleRow == null ? onSelect : undefined}
+            onDoubleClick={
+                accessibleRow == null
+                    ? (event) => {
+                          event.stopPropagation();
+                          startRename();
+                      }
+                    : undefined
+            }
             onContextMenu={onContextMenu}
-            onDragStart={onDragStart}
-            onDragOver={onDragOver}
-            onDrop={onDrop}
-            onDragEnd={onDragEnd}
+            onDragStart={accessibleRow == null ? onDragStart : undefined}
+            onDragOver={accessibleRow == null ? onDragOver : undefined}
+            onDrop={accessibleRow == null ? onDrop : undefined}
+            onDragEnd={accessibleRow == null ? onDragEnd : undefined}
             onMouseEnter={() => {
                 setIsLocalHovered(true);
                 onHoverChanged?.(true);
@@ -351,10 +376,43 @@ export function VTab({
                 isDragging && "opacity-50"
             )}
         >
+            {accessibleRow ? (
+                <div
+                    ref={accessibleRow.selectionRef}
+                    draggable={draggable}
+                    data-vtab-selection-target="true"
+                    role={isEditable ? undefined : accessibleRow.role}
+                    aria-label={isEditable ? undefined : accessibleRow.label}
+                    aria-selected={isEditable ? undefined : accessibleRow.selected}
+                    aria-hidden={isEditable ? true : undefined}
+                    tabIndex={isEditable ? -1 : accessibleRow.tabIndex}
+                    onClick={onSelect}
+                    onFocus={accessibleRow.onFocus}
+                    onKeyDown={accessibleRow.onKeyDown}
+                    onDoubleClick={(event) => {
+                        event.stopPropagation();
+                        startRename();
+                    }}
+                    onDragStart={onDragStart}
+                    onDragOver={onDragOver}
+                    onDrop={onDrop}
+                    onDragEnd={onDragEnd}
+                    className={cn(
+                        "absolute inset-0 rounded outline-none focus-visible:ring-1 focus-visible:ring-accent",
+                        isEditable ? "pointer-events-none" : "z-0"
+                    )}
+                />
+            ) : null}
             {/* No flag-color stripe — warp `pane_row_background`
                 tints the whole row background (handled via the
                 style prop above), there's no left-edge accent rail. */}
-            <div className="relative flex h-6 w-6 shrink-0 items-center justify-center">
+            <div
+                aria-hidden={accessibleRow && !isEditable ? true : undefined}
+                className={cn(
+                    "relative flex h-6 w-6 shrink-0 items-center justify-center",
+                    accessibleRow && !isEditable && "pointer-events-none z-[1]"
+                )}
+            >
                 {badges && badges.length > 0 && !tab.runningKind ? (
                     <TabBadges
                         badges={badges}
@@ -367,22 +425,21 @@ export function VTab({
                     // identical between compact and expanded.  Icon color
                     // is theme.sub_text in both states; selection only
                     // changes the row background, never the glyph color.
-                    <UIcon
-                        name={tab.iconName ?? "terminal"}
-                        size={16}
-                        className="text-secondary"
-                    />
+                    <UIcon name={tab.iconName ?? "terminal"} size={16} className="text-secondary" />
                 )}
                 {tab.runningKind && <AgentBadge kind={tab.runningKind} />}
             </div>
             <div
+                aria-hidden={accessibleRow && !isEditable ? true : undefined}
                 className={cn(
                     "flex min-w-0 flex-1 flex-col pr-1 pt-[1px]",
                     // Warp Expanded uses 2px between lines
                     // (`with_margin_top(2.)` in render_terminal_row_content);
                     // Compact uses 1px (`with_spacing(1.)` in
                     // render_compact_pane_row).
-                    isCompact ? "gap-[1px]" : "gap-[2px]"
+                    isCompact ? "gap-[1px]" : "gap-[2px]",
+                    accessibleRow && !isEditable && "pointer-events-none relative z-[1]",
+                    accessibleRow && isEditable && "relative z-[2]"
                 )}
             >
                 {/* Line 1 — title @ 12px, identical in both modes. */}
@@ -395,9 +452,9 @@ export function VTab({
                             isEditable && "rounded-[2px] bg-fg-overlay-3 px-[3px] outline-none"
                         )}
                         contentEditable={isEditable}
-                        role="textbox"
-                        aria-label="Tab name"
-                        aria-readonly={!isEditable}
+                        role={isEditable || accessibleRow == null ? "textbox" : undefined}
+                        aria-label={isEditable || accessibleRow == null ? "Tab name" : undefined}
+                        aria-readonly={accessibleRow == null ? !isEditable : undefined}
                         onBlur={handleBlur}
                         onKeyDown={handleKeyDown}
                         suppressContentEditableWarning={true}
@@ -414,10 +471,7 @@ export function VTab({
                 {tab.subtitle && (
                     <PathText
                         text={tab.subtitle}
-                        className={cn(
-                            "leading-tight text-sub-text",
-                            isCompact ? "text-[12px]" : "text-[13px]"
-                        )}
+                        className={cn("leading-tight text-sub-text", isCompact ? "text-[12px]" : "text-[13px]")}
                         title={tab.subtitle}
                     />
                 )}
@@ -482,13 +536,15 @@ export function VTab({
                         "transition-opacity duration-100",
                         isReordering
                             ? "pointer-events-none opacity-0"
-                            : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100"
+                            : cn(
+                                  "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
+                                  accessibleRow &&
+                                      "z-[3] group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                              )
                     )}
                     style={{
-                        backgroundColor:
-                            "color-mix(in srgb, var(--color-background) 85%, var(--color-foreground) 15%)",
-                        borderColor:
-                            "color-mix(in srgb, var(--color-background) 80%, var(--color-foreground) 20%)",
+                        backgroundColor: "color-mix(in srgb, var(--color-background) 85%, var(--color-foreground) 15%)",
+                        borderColor: "color-mix(in srgb, var(--color-background) 80%, var(--color-foreground) 20%)",
                     }}
                 >
                     {(onContextMenu || onMoreButtonClick) && (
@@ -512,7 +568,7 @@ export function VTab({
                                     onContextMenu!(event as unknown as React.MouseEvent<HTMLDivElement>);
                                 }
                             }}
-                            aria-label="Tab options"
+                            aria-label={accessibleRow ? `Options for ${tab.name}` : "Tab options"}
                             title="Tab options"
                         >
                             <UIcon name="dots-vertical" size={12} />
@@ -525,7 +581,7 @@ export function VTab({
                             event.stopPropagation();
                             onClose();
                         }}
-                        aria-label="Close tab"
+                        aria-label={accessibleRow ? `Close ${tab.name}` : "Close tab"}
                         title="Close tab"
                     >
                         <UIcon name="x-close" size={12} />

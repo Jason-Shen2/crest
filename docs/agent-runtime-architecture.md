@@ -1,12 +1,41 @@
 # Agent Runtime Architecture — Design Doc
 
-**Status:** **design locked (2026-05-23)** · **Implementation in progress (tasks #8–#14)**
+**Status:** **Phase 3 implemented for Workspace Agent** · Phase 4A File/Preview/Git Diff automated implementation complete, Electron smoke pending · Browser Top Tab deferred
 **Replaces:** the deleted `pkg/agent/` Go agent loop + `pkg/aiusechat/` four hand-rolled backends
 **Companion docs:**
 - [`ai-config-architecture.md`](./ai-config-architecture.md) — model selection, catalog, resolver (Layer 1–4 of the AI stack)
 - [`ai-sdk-provider-migration-eval.md`](./ai-sdk-provider-migration-eval.md) — why Option D (agent loop in Electron main + pi) was chosen over A/B/C
 
-This doc captures the **runtime** layer: how a per-pane conversation runs in the Electron main process on top of pi-agent-core (`emain/agent/`) and pi-ai (`emain/ai/`), how sessions are persisted, how cwd flows through requests, how panes bind to sessions, and the cross-pane / lifecycle behavior.
+This doc captures the **runtime** layer: how a Workspace Agent conversation runs in the Electron main process on top of pi-agent-core (`emain/agent/`) and pi-ai (`emain/ai/`), how sessions are persisted, how cwd flows through requests, how the Workspace binds to sessions, and the cross-workspace / lifecycle behavior.
+
+**Phase 3 topology:**
+
+```text
+Workspace AgentContent
+  -> AgentRuntimeClient
+  -> authenticated Agent IPC
+  -> AgentRuntimeRegistry
+  -> AgentSessionRuntime
+       -> AgentHarness
+       -> AgentPtyHost
+            -> AgentPtyScreen
+```
+
+Agent execution no longer depends on `block.meta`, `staticTabId`, backing
+Agent Tabs, or `TerminalModel`. Session/model selection live in Workspace
+agent state and use a separate `agentrevision`. Hosted command execution is
+owned by Electron main through `AgentPtyHost`; the renderer only displays
+snapshots and sends input/resize/abort requests through authenticated IPC.
+
+File, Preview, and Git Diff now use the Workspace renderer's production Top
+Tab model without backend Tab, Block, or LayoutState objects. File runtime
+resources are Workspace-owned; Preview and Git Diff remount from persisted
+descriptors. Browser Top Tabs remain deferred, so URL launchers continue to
+open the existing right-side Browser tool. This cutover is covered by the
+automated gate; the Electron runtime smoke has not yet been performed.
+
+Sections that mention pane/block binding document the pre-Phase-3 design
+history and are retained only as migration context.
 
 References that informed the design are inline. Major sources:
 - **warp** AI / agent code at `/Users/mac/projects/warp/app/src/` (read May 2026)
@@ -26,7 +55,7 @@ After the [migration eval](./ai-sdk-provider-migration-eval.md), the project com
 - **pi-agent-core + pi-ai** as the underlying agent / LLM stack, integrated in-tree (not vendored)
 - Renderer becomes a pure UI surface that talks to main via IPC
 
-This doc takes those decisions as given and specifies the per-pane runtime that lives on top.
+This doc takes those decisions as given and specifies the Workspace-scoped runtime that lives on top.
 
 ---
 
