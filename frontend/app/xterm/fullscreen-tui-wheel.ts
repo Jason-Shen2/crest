@@ -210,10 +210,7 @@ export type FullscreenTuiWheelBinding = {
     dispose(): void;
 };
 
-export function installFullscreenTuiWheel(
-    term: Terminal,
-    isActive: () => boolean
-): FullscreenTuiWheelBinding {
+export function installFullscreenTuiWheel(term: Terminal, isActive: () => boolean): FullscreenTuiWheelBinding {
     const controller = new FullscreenTuiWheelController({
         isActive,
         getTrackingMode: () => term.modes.mouseTrackingMode,
