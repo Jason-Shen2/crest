@@ -21,6 +21,8 @@
 //                                    termDurableStatus / termConfigedDurable
 //   - blockframe-header.tsx:         viewType === "term", termConfigedDurable
 //   - blockregistry.ts:              the class itself, registered for "term"
+//                                    and (via termblocks.tsx) "termblocks" —
+//                                    the two view types are merged (D9)
 //
 // **Surface removed** — the legacy model exposed dozens of atoms tied to
 // xterm internals (connStatus, shellProcFullStatus, blockJobStatusAtom,
@@ -166,12 +168,18 @@ export class TermViewModel implements ViewModel {
 //   - `term:mode = "vdom"` + `term:vdomblockid`     → full-pane VDom replace
 //   - `term:vdomtoolbarblockid`                     → VDom subblock as toolbar strip
 //
+// Command-block decorations are on by default for both merged view types
+// ("term"/"termblocks" — docs/terax-terminal-port.md §四 P2.7, D9); the
+// per-block meta key `term:blocks` is the escape hatch, where only an
+// explicit `false` disables them.
+//
 // Workspace stickers (`term:stickers`) are not yet ported — see
 // docs/term-engine-migration.md (Track B).
 const TermViewAdapter: React.FC<{ model: TermViewModel }> = ({ model }) => {
     const fontSize = useAtomValue(model.termFontSizeAtom);
     const focusRequest = useAtomValue(model.focusRequestAtom);
     const blockId = model.blockId;
+    const blocksMeta = useAtomValue(getBlockMetaKeyAtom(blockId, "term:blocks"));
     const termMode = useAtomValue(getBlockMetaKeyAtom(blockId, "term:mode")) as string | undefined;
     const vdomBlockId = useAtomValue(getBlockMetaKeyAtom(blockId, "term:vdomblockid")) as string | undefined;
     const vdomToolbarBlockId = useAtomValue(getBlockMetaKeyAtom(blockId, "term:vdomtoolbarblockid")) as
@@ -196,6 +204,7 @@ const TermViewAdapter: React.FC<{ model: TermViewModel }> = ({ model }) => {
             focusRequest={focusRequest}
             replaceContent={replaceContent}
             topSlot={topSlot}
+            blocks={blocksMeta !== false}
         />
     );
 };

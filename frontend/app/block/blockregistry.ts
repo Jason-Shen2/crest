@@ -4,8 +4,8 @@
 import { BlockNodeModel } from "@/app/block/blocktypes";
 import { GitDiffViewModel } from "@/app/gitdiff";
 import type { TabModel } from "@/app/store/tab-model";
-import { FileEditorViewModel } from "@/app/view/codeeditor/file-editor-model";
 import { AgentViewModel } from "@/app/view/agentblock/agent-model";
+import { FileEditorViewModel } from "@/app/view/codeeditor/file-editor-model";
 import { LauncherViewModel } from "@/app/view/launcher/launcher";
 import { PreviewModel } from "@/app/view/preview/preview-model";
 import { ProcessViewerViewModel } from "@/app/view/processviewer/processviewer";
@@ -14,13 +14,13 @@ import { TermBlocksViewModel } from "@/app/view/termblocks/termblocks";
 import { TsunamiViewModel } from "@/app/view/tsunami/tsunami";
 import { VDomModel } from "@/app/view/vdom/vdom-model";
 import { WaveEnv } from "@/app/waveenv/waveenv";
+import { HelpViewModel } from "@/view/helpview/helpview";
+import { TermViewModel } from "@/view/term/term-model";
+import { WebViewModel } from "@/view/webview/webview";
 import { atom } from "jotai";
 import { QuickTipsViewModel } from "../view/quicktipsview/quicktipsview";
 import { WaveConfigViewModel } from "../view/waveconfig/waveconfig-model";
 import { blockViewToIcon, blockViewToName } from "./blockutil";
-import { HelpViewModel } from "@/view/helpview/helpview";
-import { TermViewModel } from "@/view/term/term-model";
-import { WebViewModel } from "@/view/webview/webview";
 
 const BlockRegistry: Map<string, ViewModelClass> = new Map();
 BlockRegistry.set("term", TermViewModel);
@@ -38,6 +38,8 @@ BlockRegistry.set("launcher", LauncherViewModel);
 BlockRegistry.set("tsunami", TsunamiViewModel);
 BlockRegistry.set("waveconfig", WaveConfigViewModel);
 BlockRegistry.set("processviewer", ProcessViewerViewModel);
+// alias of TermViewModel (D9 view-type merge) — name kept so stored
+// block.meta.view = "termblocks" values keep resolving
 BlockRegistry.set("termblocks", TermBlocksViewModel);
 
 function makeDefaultViewModel(viewType: string): ViewModel {

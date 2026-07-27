@@ -35,12 +35,10 @@ describe("terminal view focus", () => {
         expect(globalStore.get(model.focusRequestAtom)).toBe(before + 1);
     });
 
-    it("requests command input focus through the termblocks view model", () => {
+    it("resolves the termblocks alias to the merged term view model (D9)", () => {
+        expect(TermBlocksViewModel).toBe(TermViewModel);
+
         const model = new TermBlocksViewModel({ blockId: "block-2" } as ViewModelInitType);
-        const before = globalStore.get(model.focusRequestAtom);
-
         expect(model.giveFocus()).toBe(true);
-
-        expect(globalStore.get(model.focusRequestAtom)).toBe(before + 1);
     });
 });

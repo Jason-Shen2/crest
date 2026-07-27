@@ -1482,6 +1482,7 @@ declare global {
         "term:bellindicator"?: boolean;
         "term:osc52"?: string;
         "term:durable"?: boolean;
+        "term:blocks"?: boolean;
         "web:zoom"?: number;
         "web:hidenav"?: boolean;
         "web:partition"?: string;

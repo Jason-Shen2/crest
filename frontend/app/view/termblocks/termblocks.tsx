@@ -1,76 +1,15 @@
 // Copyright 2026, s-zx
 // SPDX-License-Identifier: Apache-2.0
 //
-// TermBlocksViewModel — compatibility shim.  The block registry still
-// resolves view type "termblocks" through this model so existing
-// block.meta.view fields round-trip; rendering is delegated entirely to
-// the pooled xterm engine in frontend/app/xterm/.  The legacy in-file
-// implementation (2.7k lines of xterm.js + agent timeline + snackbar
-// variants + …) was removed — see git history if you need to revive any of
-// it.
+// "termblocks" registration shim.  The "term" and "termblocks" view types
+// are merged (docs/terax-terminal-port.md §四 P2.7, decision D9): both
+// resolve to TermViewModel and render identically through the pooled xterm
+// engine, with command-block decorations on by default and the per-block
+// meta key `term:blocks` (explicit false) as the opt-out.
 //
-// The model intentionally exposes a *minimal* public surface: blockId so
-// the adapter can address the right outer block, and termFontSizeAtom so
-// the view picks up runtime font-size overrides.  Everything else the old
-// model owned (block list, output cache, wps subscriptions, polling, alt-
-// screen state, agent chat) lives in frontend/app/xterm/xterm-session.ts
-// and its renderer pool.
+// This alias exists only so serialized block.meta.view values of
+// "termblocks" keep resolving through the block registry.  The former
+// standalone TermBlocksViewModel (itself a shim over the same engine) was
+// deleted — see git history.
 
-import { getBlockMetaKeyAtom, getSettingsKeyAtom } from "@/app/store/global";
-import { globalStore } from "@/app/store/jotaiStore";
-import { disposeXtermPaneModel } from "@/app/xterm/xterm-pane-model";
-import { disposeSession } from "@/app/xterm/xterm-session";
-import { XtermView } from "@/app/xterm/xterm-view";
-import * as jotai from "jotai";
-import { useAtomValue } from "jotai";
-
-export class TermBlocksViewModel implements ViewModel {
-    readonly viewType = "termblocks";
-    readonly blockId: string;
-
-    readonly viewIcon = jotai.atom("terminal");
-    readonly viewName = jotai.atom("");
-    readonly noPadding = jotai.atom(true);
-
-    readonly termFontSizeAtom: jotai.Atom<number>;
-    readonly focusRequestAtom = jotai.atom(0);
-
-    disposed = false;
-
-    constructor({ blockId }: ViewModelInitType) {
-        this.blockId = blockId;
-        const metaAtom = getBlockMetaKeyAtom(blockId, "term:fontsize");
-        const settingAtom = getSettingsKeyAtom("term:fontsize");
-        this.termFontSizeAtom = jotai.atom((get) => {
-            const override = get(metaAtom);
-            if (typeof override === "number") return override;
-            const fallback = get(settingAtom);
-            return typeof fallback === "number" ? fallback : 16;
-        });
-    }
-
-    get viewComponent(): ViewComponent {
-        return TerminalViewAdapter as unknown as ViewComponent;
-    }
-
-    giveFocus(): boolean {
-        globalStore.set(this.focusRequestAtom, (prev) => prev + 1);
-        return true;
-    }
-
-    dispose(): void {
-        this.disposed = true;
-        disposeSession(this.blockId);
-        disposeXtermPaneModel(this.blockId);
-    }
-}
-
-// TerminalViewAdapter — bridge from the registry's
-// ViewComponentProps<TermBlocksViewModel> shape to the engine-side
-// XtermView, pulling just the two pieces of state the view needs.
-const TerminalViewAdapter: React.FC<{ model: TermBlocksViewModel }> = ({ model }) => {
-    const fontSize = useAtomValue(model.termFontSizeAtom);
-    const focusRequest = useAtomValue(model.focusRequestAtom);
-    return <XtermView outerBlockId={model.blockId} fontSize={fontSize} focusRequest={focusRequest} blocks />;
-};
-TerminalViewAdapter.displayName = "TerminalViewAdapter";
+export { TermViewModel as TermBlocksViewModel } from "@/view/term/term-model";
