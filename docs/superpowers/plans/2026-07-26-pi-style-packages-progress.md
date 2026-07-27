@@ -36,7 +36,7 @@
 | 3 | Move agent-core → `packages/agent` (`@crest/agent`) | ✅ done | `e32d13e4` | ✅ |
 | 4 | Pty family → `emain/agent-tools/`, barrel + factory injection | ✅ done | `9c76b1c2` | ✅ |
 | 5 | Rest of `emain/agent` → `packages/coding-agent` | ✅ done | `9fe401ac` | ✅ |
-| 6 | Boundary test, slim config, Electron-free acceptance | ⬜ | | |
+| 6 | Boundary test, slim config, Electron-free acceptance | ✅ done | `b822645a` | ⬜ |
 
 ## Task log
 
@@ -127,6 +127,26 @@
   and license location.
 - Reviews: spec ✅ (first pass); quality ✅ after fixing stale usage/reference comments in
   `_spike.ts`, `eval/run-regression.ts`, and `harness-factory.ts`.
+
+### Task 6 (2026-07-27)
+
+- Package boundary fence landed in `packages/boundary.test.ts` using TypeScript AST
+  extraction. It scans static imports, re-exports, dynamic `import()`, `require()`, and
+  Vitest mock specifiers, and rejects `electron`, `emain`, `frontend`, and `@/` imports
+  from anything under `packages/`.
+- `vitest.slim.config.ts` now includes `packages/**/*.test.ts`. The agent test workflow
+  now watches moved package paths plus the Electron bridge/tool files, including
+  `emain/models-dev-overlay.ts` and `emain/aiconfig-ipc.ts`.
+- Root `NOTICE` now points to `packages/agent`, `packages/ai`, and
+  `packages/coding-agent`; package READMEs no longer describe the boundary test as future
+  work.
+- Fresh gates after the review fix: boundary test 2/2 pass under normal and slim Vitest;
+  Electron-free acceptance prints `tools: 8 harness: function`; `npx tsc --noEmit`
+  remains at the 69-error baseline; non-sandbox full Vitest is 1480/1486 pass with the
+  same 3 pre-existing failing files; observability type tests 2/2 pass;
+  `npm run build:dev` exits 0 with the existing `sharp` image-optimizer warnings.
+- Review: code review found one Important workflow path-filter gap; fixed and amended into
+  `b822645a`. Push is still pending from this local worktree.
 
 ## How to resume after an interruption
 
