@@ -56,17 +56,17 @@ export function encodeSgrWheel(
 }
 
 export class FullscreenTuiWheelController {
-    private encoding: MouseEncoding = "default";
-    private gestureKind: GestureKind | null = null;
-    private lastEventTime = Number.NEGATIVE_INFINITY;
-    private accumulator = 0;
-    private direction: WheelDirection | null = null;
-    private frameHandle: number | null = null;
-    private latestEvent: WheelEventLike | null = null;
-    private latestGeometry: TuiWheelGeometry | null = null;
-    private disposed = false;
+    encoding: MouseEncoding = "default";
+    gestureKind: GestureKind | null = null;
+    lastEventTime = Number.NEGATIVE_INFINITY;
+    accumulator = 0;
+    direction: WheelDirection | null = null;
+    frameHandle: number | null = null;
+    latestEvent: WheelEventLike | null = null;
+    latestGeometry: TuiWheelGeometry | null = null;
+    disposed = false;
 
-    constructor(private readonly options: TuiWheelControllerOptions) {}
+    constructor(readonly options: TuiWheelControllerOptions) {}
 
     setPrivateModes(params: (number | number[])[], enabled: boolean): void {
         let nextEncoding = this.encoding;
@@ -137,7 +137,7 @@ export class FullscreenTuiWheelController {
         this.cancelGesture();
     }
 
-    private canHandle(event: WheelEventLike): boolean {
+    canHandle(event: WheelEventLike): boolean {
         return (
             !this.disposed &&
             this.options.isActive() &&
@@ -151,7 +151,7 @@ export class FullscreenTuiWheelController {
         );
     }
 
-    private classifyGesture(event: WheelEventLike): GestureKind {
+    classifyGesture(event: WheelEventLike): GestureKind {
         const trackpadLike =
             Math.abs(event.deltaY) < 50 ||
             !Number.isInteger(event.deltaY) ||
@@ -159,16 +159,16 @@ export class FullscreenTuiWheelController {
         return trackpadLike ? "trackpad" : "physical";
     }
 
-    private isValidGeometry(geometry: TuiWheelGeometry | null): geometry is TuiWheelGeometry {
+    isValidGeometry(geometry: TuiWheelGeometry | null): geometry is TuiWheelGeometry {
         return geometry !== null && geometry.width > 0 && geometry.height > 0 && geometry.cols > 0 && geometry.rows > 0;
     }
 
-    private scheduleFrame(): void {
+    scheduleFrame(): void {
         if (this.frameHandle !== null) return;
         this.frameHandle = this.options.requestFrame(() => this.flushFrame());
     }
 
-    private flushFrame(): void {
+    flushFrame(): void {
         this.frameHandle = null;
         const event = this.latestEvent;
         const geometry = this.latestGeometry;

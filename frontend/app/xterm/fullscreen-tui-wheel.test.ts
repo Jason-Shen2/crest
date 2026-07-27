@@ -216,6 +216,16 @@ describe("FullscreenTuiWheelController", () => {
         expect(h.hasPendingFrame()).toBe(false);
     });
 
+    it("keeps a physical-wheel burst on the native xterm path", () => {
+        const h = makeHarness();
+        h.controller.setPrivateModes([1006], true);
+
+        expect(h.controller.handleWheel(wheel({ deltaY: 100, timeStamp: 1 }))).toBe(true);
+        expect(h.controller.handleWheel(wheel({ deltaY: 2, timeStamp: 20 }))).toBe(true);
+        expect(h.hasPendingFrame()).toBe(false);
+        expect(h.sent).toEqual([]);
+    });
+
     it("falls back for inactive slots and terminals without mouse tracking", () => {
         const h = makeHarness();
         h.controller.setPrivateModes([1006], true);
