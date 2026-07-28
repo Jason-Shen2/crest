@@ -39,12 +39,28 @@ export interface WorkspaceSnapshotCoverage {
     complete: boolean;
     eligibleEntryCount: number;
     newlyHashedBytes: number;
-    exclusions: Array<{
-        path?: string;
-        pathBytesBase64?: string;
-        reason: WorkspaceCoverageReason;
-    }>;
+    exclusions: WorkspaceSnapshotCoverageExclusion[];
 }
+
+export type WorkspaceSnapshotCoverageExclusion =
+    | {
+          path: string;
+          pathBytesBase64?: never;
+          scope?: never;
+          reason: WorkspaceCoverageReason;
+      }
+    | {
+          path?: never;
+          pathBytesBase64: string;
+          scope?: never;
+          reason: WorkspaceCoverageReason;
+      }
+    | {
+          path?: never;
+          pathBytesBase64?: never;
+          scope: "workspace-root";
+          reason: "capture-budget";
+      };
 
 export type WorkspaceCheckpointFailureCode =
     | "disabled"

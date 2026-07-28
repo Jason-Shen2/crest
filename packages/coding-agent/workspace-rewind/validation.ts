@@ -226,14 +226,27 @@ function decodeWorkspaceSnapshotCoverage(value: unknown): WorkspaceSnapshotCover
     }
     const exclusions: WorkspaceSnapshotCoverage["exclusions"] = [];
     const seenLocatorBytes = new Set<string>();
+    let seenWorkspaceRoot = false;
     for (const item of value.exclusions) {
-        if (!isRecord(item) || !hasExactKeys(item, ["reason"], ["path", "pathBytesBase64"])) {
+        if (!isRecord(item) || !hasExactKeys(item, ["reason"], ["path", "pathBytesBase64", "scope"])) {
             return undefined;
         }
         const hasPath = Object.hasOwn(item, "path");
         const hasPathBytes = Object.hasOwn(item, "pathBytesBase64");
-        if (hasPath === hasPathBytes || !isWorkspaceCoverageReason(item.reason)) {
+        const hasScope = Object.hasOwn(item, "scope");
+        if (
+            Number(hasPath) + Number(hasPathBytes) + Number(hasScope) !== 1 ||
+            !isWorkspaceCoverageReason(item.reason)
+        ) {
             return undefined;
+        }
+        if (hasScope) {
+            if (item.scope !== "workspace-root" || item.reason !== "capture-budget" || seenWorkspaceRoot) {
+                return undefined;
+            }
+            seenWorkspaceRoot = true;
+            exclusions.push({ scope: "workspace-root", reason: "capture-budget" });
+            continue;
         }
         if (hasPath) {
             if (!isCanonicalRelativePath(item.path)) {

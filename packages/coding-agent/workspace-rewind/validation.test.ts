@@ -117,6 +117,40 @@ describe("workspace rewind validation", () => {
         expect(decodeWorkspaceCheckpointV1(unavailable)).toEqual(unavailable);
     });
 
+    it("round trips the workspace-root capture-budget exclusion locator", () => {
+        const checkpoint = {
+            ...availableCheckpoint(),
+            coverage: {
+                ...coverage(),
+                complete: false,
+                exclusions: [{ scope: "workspace-root", reason: "capture-budget" }],
+            },
+        };
+
+        expect(decodeWorkspaceCheckpointV1(checkpoint)).toEqual(checkpoint);
+    });
+
+    it.each([
+        [{ scope: "other", reason: "capture-budget" }],
+        [{ scope: "workspace-root", reason: "ignored" }],
+        [{ scope: "workspace-root", path: "src/index.ts", reason: "capture-budget" }],
+        [{ scope: "workspace-root", pathBytesBase64: "c3Jj", reason: "capture-budget" }],
+        [
+            { scope: "workspace-root", reason: "capture-budget" },
+            { scope: "workspace-root", reason: "capture-budget" },
+        ],
+    ])("rejects invalid or duplicate workspace-root exclusion locators", (exclusions) => {
+        expect(
+            decodeWorkspaceCheckpointV1({
+                ...availableCheckpoint(),
+                coverage: {
+                    ...coverage(),
+                    exclusions,
+                },
+            })
+        ).toBeUndefined();
+    });
+
     it.each(FailureCodes)("round trips unavailable checkpoint reason %s", (reasonCode) => {
         const checkpoint = { ...unavailableCheckpoint(), reasonCode };
 

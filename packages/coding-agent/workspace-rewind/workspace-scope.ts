@@ -1,0 +1,939 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import ignore, { type Ignore } from "ignore";
+import { createHash } from "node:crypto";
+import { constants, lstatSync, type BigIntStats, type Dirent } from "node:fs";
+import { lstat, open, opendir } from "node:fs/promises";
+import { isAbsolute, resolve, sep } from "node:path";
+
+import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
+import type { WorkspaceCoverageReason, WorkspaceSnapshotCoverage } from "./types";
+import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+
+export interface WorkspaceScopeEntry {
+    pathBytes: Buffer;
+    path?: string;
+    kind: "file" | "symlink" | "excluded";
+    tracked: boolean;
+    executable?: boolean;
+    size?: number;
+    exclusionReason?: WorkspaceCoverageReason;
+}
+
+export interface WorkspaceScope {
+    root: string;
+    entries: WorkspaceScopeEntry[];
+    coverage: WorkspaceSnapshotCoverage;
+    manifest: WorkspaceScopeManifest;
+}
+
+export interface WorkspaceScopeManifestPath {
+    path?: string;
+    pathBytesBase64?: string;
+}
+
+export interface WorkspaceScopeIgnoreInput extends WorkspaceScopeManifestPath {
+    source: "gitignore" | "git-info-exclude" | "git-core-excludes-file";
+    contentHash: string;
+}
+
+export interface WorkspaceScopeManifest {
+    schemaVersion: 1;
+    policy: {
+        maxEntries: number;
+        maxUntrackedBytes: number;
+        gitGlobalExcludes: "disabled-by-isolated-runner";
+    };
+    ignoreInputs: WorkspaceScopeIgnoreInput[];
+    nestedRepositoryBoundaries: WorkspaceScopeManifestPath[];
+    budgetExhaustion?: WorkspaceScopeBudgetExhaustion;
+}
+
+export type WorkspaceScopeBudgetExhaustion = { scope: "workspace-root" };
+
+interface IgnoreMatcher {
+    basePathBytes: Buffer;
+    matcher: Ignore;
+}
+
+interface GitClassification {
+    tracked: Set<string>;
+    ignored: Set<string>;
+    ignoredDirectories: Buffer[];
+    ignoreInputs: WorkspaceScopeIgnoreInput[];
+    trackedHash: string;
+    ignoredHash: string;
+    indexPath: Buffer;
+    indexVersion: FileVersion;
+    infoExcludePath: Buffer;
+    coreExcludesPath?: Buffer;
+}
+
+interface DiscoveryState {
+    rootBytes: Buffer;
+    entries: WorkspaceScopeEntry[];
+    exclusions: WorkspaceSnapshotCoverage["exclusions"];
+    git?: GitClassification;
+    maxEntries: number;
+    maxUntrackedBytes: number;
+    eligibleEntryCount: number;
+    ignoreInputs: WorkspaceScopeIgnoreInput[];
+    nestedRepositoryBoundaries: WorkspaceScopeManifestPath[];
+    scannedEntryCount: number;
+    scanStopped: boolean;
+    directorySnapshots: DirectorySnapshot[];
+}
+
+interface DirectoryIdentity {
+    dev: bigint;
+    ino: bigint;
+    mtimeNs: bigint;
+    ctimeNs: bigint;
+}
+
+interface DirectorySnapshot {
+    pathBytes: Buffer;
+    identity: DirectoryIdentity;
+    entryCount: number;
+    namesHash: string;
+}
+
+interface FileVersion {
+    exists: boolean;
+    dev?: bigint;
+    ino?: bigint;
+    size?: bigint;
+    mtimeNs?: bigint;
+    ctimeNs?: bigint;
+}
+
+interface WorkspaceScopeAttempt {
+    scope: WorkspaceScope;
+    git?: GitClassification;
+    directorySnapshots: DirectorySnapshot[];
+}
+
+const ScopeGitTimeoutMs = 30_000;
+const IgnoreInputMaxBytes = 1024 * 1024;
+const Utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+
+class WorkspaceBudgetExceeded extends Error {
+    constructor() {
+        super("Workspace scope scan budget exceeded");
+    }
+}
+
+export async function discoverWorkspaceScope(input: {
+    identity: CanonicalWorkspaceIdentity;
+    git: WorkspaceGitRunner;
+    maxEntries: number;
+    maxUntrackedBytes: number;
+}): Promise<WorkspaceScope> {
+    validateLimits(input.maxEntries, input.maxUntrackedBytes);
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await discoverWorkspaceScopeAttempt(input);
+        if (await verifyWorkspaceScope(input, result)) {
+            return result.scope;
+        }
+    }
+    throw new Error("Workspace changed repeatedly during scope discovery");
+}
+
+async function verifyWorkspaceScope(
+    input: {
+        identity: CanonicalWorkspaceIdentity;
+        git: WorkspaceGitRunner;
+    },
+    attempt: WorkspaceScopeAttempt
+): Promise<boolean> {
+    if (attempt.git && !(await verifyGitWorkspaceScope(input, attempt))) {
+        return false;
+    }
+    const rootBytes = Buffer.from(input.identity.canonicalRoot);
+    if (!(await verifyDirectorySnapshots(rootBytes, attempt.directorySnapshots))) {
+        return false;
+    }
+    if (!(await verifyIgnoreInputs(rootBytes, attempt.scope.manifest.ignoreInputs))) {
+        return false;
+    }
+    if (!attempt.git) {
+        return true;
+    }
+    return (
+        (await verifyExternalIgnoreInput(
+            attempt.scope.manifest.ignoreInputs,
+            "git-info-exclude",
+            attempt.git.infoExcludePath
+        )) &&
+        (await verifyExternalIgnoreInput(
+            attempt.scope.manifest.ignoreInputs,
+            "git-core-excludes-file",
+            attempt.git.coreExcludesPath
+        ))
+    );
+}
+
+async function discoverWorkspaceScopeAttempt(input: {
+    identity: CanonicalWorkspaceIdentity;
+    git: WorkspaceGitRunner;
+    maxEntries: number;
+    maxUntrackedBytes: number;
+}): Promise<WorkspaceScopeAttempt> {
+    const rootBytes = Buffer.from(input.identity.canonicalRoot);
+    const git = await classifyGitWorkspace(input.identity.canonicalRoot, input.git);
+    const state: DiscoveryState = {
+        rootBytes,
+        entries: [],
+        exclusions: [],
+        git,
+        maxEntries: input.maxEntries,
+        maxUntrackedBytes: input.maxUntrackedBytes,
+        eligibleEntryCount: 0,
+        ignoreInputs: git?.ignoreInputs ?? [],
+        nestedRepositoryBoundaries: [],
+        scannedEntryCount: 0,
+        scanStopped: false,
+        directorySnapshots: [],
+    };
+    try {
+        await enumerateDirectory(state, Buffer.alloc(0), []);
+    } catch (error) {
+        if (!(error instanceof WorkspaceBudgetExceeded)) {
+            throw error;
+        }
+        state.scanStopped = true;
+        state.exclusions.push({ scope: "workspace-root", reason: "capture-budget" });
+    }
+    state.entries.sort((left, right) => Buffer.compare(left.pathBytes, right.pathBytes));
+
+    return {
+        git,
+        directorySnapshots: state.directorySnapshots,
+        scope: {
+            root: input.identity.canonicalRoot,
+            entries: state.entries,
+            coverage: {
+                complete: state.exclusions.length === 0 && !state.scanStopped,
+                eligibleEntryCount: state.eligibleEntryCount,
+                newlyHashedBytes: 0,
+                exclusions: state.exclusions,
+            },
+            manifest: {
+                schemaVersion: 1,
+                policy: {
+                    maxEntries: input.maxEntries,
+                    maxUntrackedBytes: input.maxUntrackedBytes,
+                    gitGlobalExcludes: "disabled-by-isolated-runner",
+                },
+                ignoreInputs: state.ignoreInputs,
+                nestedRepositoryBoundaries: state.nestedRepositoryBoundaries,
+                ...(state.scanStopped
+                    ? {
+                          budgetExhaustion: { scope: "workspace-root" } as const,
+                      }
+                    : {}),
+            },
+        },
+    };
+}
+
+async function classifyGitWorkspace(root: string, git: WorkspaceGitRunner): Promise<GitClassification | undefined> {
+    let inside;
+    try {
+        inside = await git.run(["rev-parse", "--is-inside-work-tree"], {
+            cwd: root,
+            timeoutMs: ScopeGitTimeoutMs,
+        });
+    } catch (error) {
+        if (error instanceof WorkspaceGitRunnerError && error.code === "nonzero_exit") {
+            return undefined;
+        }
+        throw error;
+    }
+    if (stripLineEnding(inside.stdout).toString("ascii") !== "true") {
+        return undefined;
+    }
+
+    const [indexPath, infoExcludePath, coreExcludesPath] = await Promise.all([
+        resolveGitPath(git, root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]),
+        resolveGitPath(git, root, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]),
+        resolveOptionalCoreExcludesPath(git, root),
+    ]);
+    const indexVersion = await readOptionalFileVersion(indexPath);
+    const ignoreInputs: WorkspaceScopeIgnoreInput[] = [];
+    await appendExternalIgnoreInput(ignoreInputs, "git-info-exclude", infoExcludePath);
+    await appendExternalIgnoreInput(ignoreInputs, "git-core-excludes-file", coreExcludesPath);
+    const [trackedResult, ignoredResult] = await Promise.all([
+        git.run(["ls-files", "--cached", "-z"], {
+            cwd: root,
+            timeoutMs: ScopeGitTimeoutMs,
+        }),
+        git.run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], {
+            cwd: root,
+            timeoutMs: ScopeGitTimeoutMs,
+        }),
+    ]);
+    const trackedPaths = splitNul(trackedResult.stdout);
+    const ignoredPaths = splitNul(ignoredResult.stdout);
+    return {
+        tracked: new Set(trackedPaths.map(pathKey)),
+        ignored: new Set(ignoredPaths.map((path) => pathKey(trimDirectorySuffix(path)))),
+        ignoredDirectories: ignoredPaths.filter((path) => path.at(-1) === 0x2f).map(trimDirectorySuffix),
+        ignoreInputs,
+        trackedHash: hashContent(trackedResult.stdout),
+        ignoredHash: hashContent(ignoredResult.stdout),
+        indexPath,
+        indexVersion,
+        infoExcludePath,
+        coreExcludesPath,
+    };
+}
+
+async function verifyGitWorkspaceScope(
+    input: {
+        identity: CanonicalWorkspaceIdentity;
+        git: WorkspaceGitRunner;
+    },
+    attempt: WorkspaceScopeAttempt
+): Promise<boolean> {
+    const classification = attempt.git!;
+    const [trackedResult, ignoredResult, indexPath, infoExcludePath, coreExcludesPath] = await Promise.all([
+        input.git.run(["ls-files", "--cached", "-z"], {
+            cwd: input.identity.canonicalRoot,
+            timeoutMs: ScopeGitTimeoutMs,
+        }),
+        input.git.run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], {
+            cwd: input.identity.canonicalRoot,
+            timeoutMs: ScopeGitTimeoutMs,
+        }),
+        resolveGitPath(input.git, input.identity.canonicalRoot, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "index",
+        ]),
+        resolveGitPath(input.git, input.identity.canonicalRoot, [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ]),
+        resolveOptionalCoreExcludesPath(input.git, input.identity.canonicalRoot),
+    ]);
+    if (
+        hashContent(trackedResult.stdout) !== classification.trackedHash ||
+        hashContent(ignoredResult.stdout) !== classification.ignoredHash ||
+        !indexPath.equals(classification.indexPath) ||
+        !infoExcludePath.equals(classification.infoExcludePath) ||
+        !optionalBufferEquals(coreExcludesPath, classification.coreExcludesPath)
+    ) {
+        return false;
+    }
+    if (!sameFileVersion(classification.indexVersion, await readOptionalFileVersion(classification.indexPath))) {
+        return false;
+    }
+    return true;
+}
+
+async function verifyDirectorySnapshots(rootBytes: Buffer, snapshots: DirectorySnapshot[]): Promise<boolean> {
+    for (const snapshot of snapshots) {
+        const path = absolutePath(rootBytes, snapshot.pathBytes);
+        let identity: DirectoryIdentity;
+        try {
+            identity = await readDirectoryIdentity(path);
+        } catch {
+            return false;
+        }
+        try {
+            assertSameDirectory(snapshot.identity, identity);
+        } catch {
+            return false;
+        }
+        const entries = await readBoundedDirectory(path, snapshot.entryCount + 1);
+        let identityAfter: DirectoryIdentity;
+        try {
+            identityAfter = await readDirectoryIdentity(path);
+            assertSameDirectory(snapshot.identity, identityAfter);
+        } catch {
+            return false;
+        }
+        if (entries.length !== snapshot.entryCount) {
+            return false;
+        }
+        entries.sort((left, right) => Buffer.compare(left.name, right.name));
+        if (hashDirectoryNames(entries) !== snapshot.namesHash) {
+            return false;
+        }
+    }
+    return true;
+}
+
+async function enumerateDirectory(
+    state: DiscoveryState,
+    directoryPathBytes: Buffer,
+    inheritedMatchers: IgnoreMatcher[]
+): Promise<void> {
+    const absoluteDirectory = absolutePath(state.rootBytes, directoryPathBytes);
+    const before = await readDirectoryIdentity(absoluteDirectory);
+    const entryStart = state.entries.length;
+    const exclusionStart = state.exclusions.length;
+    const ignoreInputStart = state.ignoreInputs.length;
+    const boundaryStart = state.nestedRepositoryBoundaries.length;
+    const directorySnapshotStart = state.directorySnapshots.length;
+    const eligibleStart = state.eligibleEntryCount;
+    const scannedStart = state.scannedEntryCount;
+    try {
+        const matchers = await loadDirectoryIgnoreMatcher(state, directoryPathBytes, inheritedMatchers);
+        assertSameDirectory(before, await readDirectoryIdentity(absoluteDirectory));
+        const remainingBudget = Math.max(0, state.maxEntries - state.scannedEntryCount);
+        const children = await readBoundedDirectory(absoluteDirectory, remainingBudget + 1);
+        if (children.length > remainingBudget) {
+            throw new WorkspaceBudgetExceeded();
+        }
+        children.sort((left, right) => Buffer.compare(left.name, right.name));
+
+        for (const child of children) {
+            const pathBytes = appendPath(directoryPathBytes, child.name);
+            if (state.scannedEntryCount >= state.maxEntries) {
+                throw new WorkspaceBudgetExceeded();
+            }
+            state.scannedEntryCount += 1;
+            assertSameDirectory(before, await readDirectoryIdentity(absoluteDirectory));
+            const absoluteChild = absolutePath(state.rootBytes, pathBytes);
+            const metadata = await lstat(absoluteChild, { bigint: true });
+            const tracked = state.git?.tracked.has(pathKey(pathBytes)) ?? false;
+            const path = decodePath(pathBytes);
+            if (path == null) {
+                addExclusion(state, pathBytes, undefined, tracked, "non-utf8-path");
+                continue;
+            }
+
+            if (isRepositoryBoundary(state, pathBytes, child.name, metadata.isDirectory())) {
+                state.nestedRepositoryBoundaries.push(manifestPath(pathBytes));
+                addExclusion(state, pathBytes, path, tracked, "nested-repository");
+                continue;
+            }
+            if (isIgnored(state, pathBytes, metadata.isDirectory(), matchers)) {
+                addExclusion(state, pathBytes, path, tracked, "ignored");
+                continue;
+            }
+            if (metadata.isDirectory()) {
+                await enumerateDirectory(state, pathBytes, matchers);
+                continue;
+            }
+
+            if (metadata.isSymbolicLink()) {
+                addEligibleEntry(state, {
+                    pathBytes,
+                    path,
+                    kind: "symlink",
+                    tracked,
+                    size: Number(metadata.size),
+                });
+                continue;
+            }
+            if (!metadata.isFile()) {
+                addExclusion(state, pathBytes, path, tracked, "special-entry");
+                continue;
+            }
+            if (metadata.nlink > 1n) {
+                addExclusion(state, pathBytes, path, tracked, "hard-linked");
+                continue;
+            }
+            if (!tracked && metadata.size > BigInt(state.maxUntrackedBytes)) {
+                addExclusion(state, pathBytes, path, false, "oversized-untracked");
+                continue;
+            }
+            addEligibleEntry(state, {
+                pathBytes,
+                path,
+                kind: "file",
+                tracked,
+                executable: (metadata.mode & 0o111n) !== 0n,
+                size: Number(metadata.size),
+            });
+        }
+        const after = await readDirectoryIdentity(absoluteDirectory);
+        assertSameDirectory(before, after);
+        state.directorySnapshots.push({
+            pathBytes: directoryPathBytes,
+            identity: after,
+            entryCount: children.length,
+            namesHash: hashDirectoryNames(children),
+        });
+    } catch (error) {
+        state.entries.length = entryStart;
+        state.exclusions.length = exclusionStart;
+        state.ignoreInputs.length = ignoreInputStart;
+        state.nestedRepositoryBoundaries.length = boundaryStart;
+        state.directorySnapshots.length = directorySnapshotStart;
+        state.eligibleEntryCount = eligibleStart;
+        state.scannedEntryCount = scannedStart;
+        throw error;
+    }
+}
+
+async function readBoundedDirectory(path: Buffer, limit: number): Promise<Array<Dirent<Buffer>>> {
+    const directory = await opendir(path, { encoding: "buffer" as BufferEncoding });
+    const entries: Array<Dirent<Buffer>> = [];
+    try {
+        while (entries.length < limit) {
+            const entry = await directory.read();
+            if (!entry) {
+                break;
+            }
+            if (!Buffer.isBuffer(entry.name)) {
+                throw new Error("Workspace directory enumerator did not preserve raw path bytes");
+            }
+            entries.push(entry as unknown as Dirent<Buffer>);
+        }
+    } finally {
+        await directory.close();
+    }
+    return entries;
+}
+
+async function loadDirectoryIgnoreMatcher(
+    state: DiscoveryState,
+    directoryPathBytes: Buffer,
+    inheritedMatchers: IgnoreMatcher[]
+): Promise<IgnoreMatcher[]> {
+    const gitignorePathBytes = appendPath(directoryPathBytes, Buffer.from(".gitignore"));
+    try {
+        const rules = await readSafeIgnoreInput(absolutePath(state.rootBytes, gitignorePathBytes));
+        state.ignoreInputs.push({
+            source: "gitignore",
+            ...manifestPath(gitignorePathBytes),
+            contentHash: hashContent(rules),
+        });
+        if (state.git) {
+            return inheritedMatchers;
+        }
+        return [
+            ...inheritedMatchers,
+            {
+                basePathBytes: directoryPathBytes,
+                matcher: ignore().add(rules.toString("utf8")),
+            },
+        ];
+    } catch (error) {
+        if (isMissing(error)) {
+            return inheritedMatchers;
+        }
+        throw error;
+    }
+}
+
+async function readSafeIgnoreInput(path: Buffer): Promise<Buffer> {
+    const before = await lstat(path, { bigint: true });
+    if (!isSafeIgnoreInputStat(before)) {
+        throw new Error(`unsafe .gitignore input: ${displayPath(path)}`);
+    }
+
+    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    let content: Buffer;
+    try {
+        const opened = await handle.stat({ bigint: true });
+        if (!isSafeIgnoreInputStat(opened) || !sameIgnoreFileVersion(before, opened)) {
+            throw new Error(`unstable .gitignore input: ${displayPath(path)}`);
+        }
+        content = Buffer.alloc(Number(opened.size));
+        let offset = 0;
+        while (offset < content.length) {
+            const result = await handle.read(content, offset, content.length - offset, offset);
+            if (result.bytesRead === 0) {
+                throw new Error(`unstable .gitignore input: ${displayPath(path)}`);
+            }
+            offset += result.bytesRead;
+        }
+        const overflow = await handle.read(Buffer.alloc(1), 0, 1, content.length);
+        const openedAfter = await handle.stat({ bigint: true });
+        if (overflow.bytesRead !== 0 || !sameIgnoreFileVersion(opened, openedAfter)) {
+            throw new Error(`unstable .gitignore input: ${displayPath(path)}`);
+        }
+    } finally {
+        await handle.close();
+    }
+
+    const after = await lstat(path, { bigint: true });
+    if (!sameIgnoreFileVersion(before, after)) {
+        throw new Error(`unstable .gitignore input: ${displayPath(path)}`);
+    }
+    return content;
+}
+
+function isSafeIgnoreInputStat(value: BigIntStats): boolean {
+    return value.isFile() && value.nlink === 1n && value.size <= BigInt(IgnoreInputMaxBytes);
+}
+
+function sameIgnoreFileVersion(left: BigIntStats, right: BigIntStats): boolean {
+    return (
+        right.isFile() &&
+        right.dev === left.dev &&
+        right.ino === left.ino &&
+        right.nlink === left.nlink &&
+        right.size === left.size &&
+        right.mtimeNs === left.mtimeNs &&
+        right.ctimeNs === left.ctimeNs
+    );
+}
+
+async function readOptionalFileVersion(path: Buffer): Promise<FileVersion> {
+    try {
+        const value = await lstat(path, { bigint: true });
+        if (!value.isFile()) {
+            throw new Error(`Git index is not a regular file: ${displayPath(path)}`);
+        }
+        return {
+            exists: true,
+            dev: value.dev,
+            ino: value.ino,
+            size: value.size,
+            mtimeNs: value.mtimeNs,
+            ctimeNs: value.ctimeNs,
+        };
+    } catch (error) {
+        if (isMissing(error)) {
+            return { exists: false };
+        }
+        throw error;
+    }
+}
+
+function sameFileVersion(left: FileVersion, right: FileVersion): boolean {
+    return (
+        left.exists === right.exists &&
+        left.dev === right.dev &&
+        left.ino === right.ino &&
+        left.size === right.size &&
+        left.mtimeNs === right.mtimeNs &&
+        left.ctimeNs === right.ctimeNs
+    );
+}
+
+async function verifyIgnoreInputs(rootBytes: Buffer, inputs: WorkspaceScopeIgnoreInput[]): Promise<boolean> {
+    for (const input of inputs) {
+        const locator = manifestLocatorBytes(input);
+        const path = input.source === "gitignore" ? absolutePath(rootBytes, locator) : platformPath(locator);
+        try {
+            const content = await readSafeIgnoreInput(path);
+            if (hashContent(content) !== input.contentHash) {
+                return false;
+            }
+        } catch (error) {
+            if (isMissing(error)) {
+                return false;
+            }
+            throw error;
+        }
+    }
+    return true;
+}
+
+async function verifyExternalIgnoreInput(
+    inputs: WorkspaceScopeIgnoreInput[],
+    source: "git-info-exclude" | "git-core-excludes-file",
+    path: Buffer | undefined
+): Promise<boolean> {
+    const expected = inputs.find(
+        (input) => input.source === source && path != null && manifestLocatorBytes(input).equals(path)
+    );
+    if (!path) {
+        return expected == null;
+    }
+    try {
+        const content = await readSafeIgnoreInput(path);
+        return expected?.contentHash === hashContent(content);
+    } catch (error) {
+        if (isMissing(error)) {
+            return expected == null;
+        }
+        throw error;
+    }
+}
+
+function optionalBufferEquals(left: Buffer | undefined, right: Buffer | undefined): boolean {
+    if (!left || !right) {
+        return left == null && right == null;
+    }
+    return left.equals(right);
+}
+
+function manifestLocatorBytes(value: WorkspaceScopeManifestPath): Buffer {
+    if (value.pathBytesBase64 != null) {
+        return Buffer.from(value.pathBytesBase64, "base64");
+    }
+    return Buffer.from(value.path!);
+}
+
+async function readDirectoryIdentity(path: Buffer): Promise<DirectoryIdentity> {
+    const value = await lstat(path, { bigint: true });
+    if (!value.isDirectory()) {
+        throw new Error(`Workspace directory changed during scope discovery: ${displayPath(path)}`);
+    }
+    return {
+        dev: value.dev,
+        ino: value.ino,
+        mtimeNs: value.mtimeNs,
+        ctimeNs: value.ctimeNs,
+    };
+}
+
+function assertSameDirectory(expected: DirectoryIdentity, actual: DirectoryIdentity): void {
+    if (
+        expected.dev !== actual.dev ||
+        expected.ino !== actual.ino ||
+        expected.mtimeNs !== actual.mtimeNs ||
+        expected.ctimeNs !== actual.ctimeNs
+    ) {
+        throw new Error("Workspace directory changed during scope discovery");
+    }
+}
+
+function hashDirectoryNames(entries: Array<Dirent<Buffer>>): string {
+    const hash = createHash("sha256");
+    for (const entry of entries) {
+        hash.update(entry.name);
+        hash.update(Buffer.from([0]));
+    }
+    return hash.digest("hex");
+}
+
+function displayPath(path: Buffer): string {
+    return decodePath(path) ?? path.toString("base64");
+}
+
+async function resolveGitPath(git: WorkspaceGitRunner, root: string, args: readonly string[]): Promise<Buffer> {
+    const result = await git.run(args, {
+        cwd: root,
+        timeoutMs: ScopeGitTimeoutMs,
+    });
+    return stripLineEnding(result.stdout);
+}
+
+async function resolveOptionalCoreExcludesPath(git: WorkspaceGitRunner, root: string): Promise<Buffer | undefined> {
+    try {
+        const result = await git.run(["config", "--path", "--null", "--get", "core.excludesFile"], {
+            cwd: root,
+            timeoutMs: ScopeGitTimeoutMs,
+        });
+        const value = stripNul(result.stdout);
+        if (value.length === 0) {
+            return undefined;
+        }
+        return resolveExternalPath(root, value);
+    } catch (error) {
+        if (error instanceof WorkspaceGitRunnerError && error.code === "nonzero_exit") {
+            return undefined;
+        }
+        throw error;
+    }
+}
+
+async function appendExternalIgnoreInput(
+    inputs: WorkspaceScopeIgnoreInput[],
+    source: "git-info-exclude" | "git-core-excludes-file",
+    path: Buffer | undefined
+): Promise<void> {
+    if (!path) {
+        return;
+    }
+    try {
+        const content = await readSafeIgnoreInput(path);
+        inputs.push({
+            source,
+            ...manifestPath(path),
+            contentHash: hashContent(content),
+        });
+    } catch (error) {
+        if (isMissing(error)) {
+            return;
+        }
+        throw error;
+    }
+}
+
+function resolveExternalPath(root: string, pathBytes: Buffer): Buffer {
+    const path = decodePath(pathBytes);
+    if (path != null) {
+        return Buffer.from(isAbsolute(path) ? path : resolve(root, path));
+    }
+    if (sep === "/" && pathBytes.at(0) === 0x2f) {
+        return pathBytes;
+    }
+    return Buffer.concat([Buffer.from(root), Buffer.from(sep), platformPath(pathBytes)]);
+}
+
+function isRepositoryBoundary(state: DiscoveryState, pathBytes: Buffer, name: Buffer, directory: boolean): boolean {
+    if (name.equals(Buffer.from(".git"))) {
+        return true;
+    }
+    if (!directory || pathBytes.length === 0) {
+        return false;
+    }
+    try {
+        const gitMarker = absolutePath(state.rootBytes, appendPath(pathBytes, Buffer.from(".git")));
+        return lstatSync(gitMarker) != null;
+    } catch (error) {
+        if (isMissing(error)) {
+            return false;
+        }
+        throw error;
+    }
+}
+
+function isIgnored(state: DiscoveryState, pathBytes: Buffer, directory: boolean, matchers: IgnoreMatcher[]): boolean {
+    if (state.git) {
+        if (state.git.ignored.has(pathKey(pathBytes))) {
+            return true;
+        }
+        return state.git.ignoredDirectories.some((directoryBytes) => pathBytes.equals(directoryBytes));
+    }
+    let ignored = false;
+    for (const item of matchers) {
+        const relativeBytes = relativeTo(item.basePathBytes, pathBytes);
+        const relative = decodePath(relativeBytes);
+        if (relative == null) {
+            continue;
+        }
+        const result = item.matcher.test(`${relative}${directory ? "/" : ""}`);
+        if (result.ignored) {
+            ignored = true;
+        }
+        if (result.unignored) {
+            ignored = false;
+        }
+    }
+    return ignored;
+}
+
+function addEligibleEntry(state: DiscoveryState, entry: WorkspaceScopeEntry): void {
+    state.eligibleEntryCount += 1;
+    state.entries.push(entry);
+}
+
+function addExclusion(
+    state: DiscoveryState,
+    pathBytes: Buffer,
+    path: string | undefined,
+    tracked: boolean,
+    reason: WorkspaceCoverageReason
+): void {
+    state.entries.push({
+        pathBytes,
+        path,
+        kind: "excluded",
+        tracked,
+        exclusionReason: reason,
+    });
+    state.exclusions.push(path == null ? { pathBytesBase64: pathBytes.toString("base64"), reason } : { path, reason });
+}
+
+function absolutePath(rootBytes: Buffer, relativeBytes: Buffer): Buffer {
+    if (relativeBytes.length === 0) {
+        return rootBytes;
+    }
+    return Buffer.concat([rootBytes, Buffer.from(sep), platformPath(relativeBytes)]);
+}
+
+function platformPath(pathBytes: Buffer): Buffer {
+    if (sep === "/") {
+        return pathBytes;
+    }
+    const result = Buffer.from(pathBytes);
+    for (let index = 0; index < result.length; index++) {
+        if (result[index] === 0x2f) {
+            result[index] = sep.charCodeAt(0);
+        }
+    }
+    return result;
+}
+
+function appendPath(parent: Buffer, name: Buffer): Buffer {
+    if (parent.length === 0) {
+        return Buffer.from(name);
+    }
+    return Buffer.concat([parent, Buffer.from("/"), name]);
+}
+
+function relativeTo(parent: Buffer, child: Buffer): Buffer {
+    if (parent.length === 0) {
+        return child;
+    }
+    return child.subarray(parent.length + 1);
+}
+
+function decodePath(pathBytes: Buffer): string | undefined {
+    try {
+        return Utf8Decoder.decode(pathBytes);
+    } catch {
+        return undefined;
+    }
+}
+
+function manifestPath(pathBytes: Buffer): WorkspaceScopeManifestPath {
+    const path = decodePath(pathBytes);
+    if (path == null) {
+        return { pathBytesBase64: pathBytes.toString("base64") };
+    }
+    return { path };
+}
+
+function pathKey(pathBytes: Buffer): string {
+    return pathBytes.toString("base64");
+}
+
+function splitNul(value: Buffer): Buffer[] {
+    const result: Buffer[] = [];
+    let start = 0;
+    for (let index = 0; index < value.length; index++) {
+        if (value[index] !== 0) {
+            continue;
+        }
+        result.push(value.subarray(start, index));
+        start = index + 1;
+    }
+    if (start < value.length) {
+        result.push(value.subarray(start));
+    }
+    return result.filter((item) => item.length > 0);
+}
+
+function trimDirectorySuffix(pathBytes: Buffer): Buffer {
+    if (pathBytes.at(-1) !== 0x2f) {
+        return pathBytes;
+    }
+    return pathBytes.subarray(0, -1);
+}
+
+function stripLineEnding(value: Buffer): Buffer {
+    if (value.at(-1) === 0x0a) {
+        return value.subarray(0, -1);
+    }
+    return value;
+}
+
+function stripNul(value: Buffer): Buffer {
+    if (value.at(-1) === 0) {
+        return value.subarray(0, -1);
+    }
+    return value;
+}
+
+function hashContent(value: Buffer): string {
+    return createHash("sha256").update(value).digest("hex");
+}
+
+function validateLimits(maxEntries: number, maxUntrackedBytes: number): void {
+    if (!Number.isSafeInteger(maxEntries) || maxEntries < 0) {
+        throw new Error("maxEntries must be a nonnegative safe integer");
+    }
+    if (!Number.isSafeInteger(maxUntrackedBytes) || maxUntrackedBytes < 0) {
+        throw new Error("maxUntrackedBytes must be a nonnegative safe integer");
+    }
+}
+
+function isMissing(error: unknown): boolean {
+    return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
