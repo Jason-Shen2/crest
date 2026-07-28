@@ -31,8 +31,8 @@ Expected: `package.json` contains `"@pierre/diffs": "1.2.10"` and the lockfile r
 Run:
 
 ```bash
-node -e 'import("@pierre/diffs").then((m) => console.log(typeof m.parsePatchFiles))'
-node -e 'import("@pierre/diffs/react").then((m) => console.log(typeof m.FileDiff, typeof m.MultiFileDiff))'
+node --input-type=module -e 'globalThis.navigator={userAgent:"node"}; const m=await import("@pierre/diffs"); console.log(typeof m.parsePatchFiles)'
+node --input-type=module -e 'globalThis.navigator={userAgent:"node"}; const m=await import("@pierre/diffs/react"); console.log(typeof m.FileDiff, typeof m.MultiFileDiff)'
 ```
 
 Expected:
