@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fsPromises from "node:fs/promises";
-import { link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -19,6 +19,52 @@ const execFileAsync = promisify(execFile);
 const TwoMiB = 2 * 1024 * 1024;
 
 describe("discoverWorkspaceScope", () => {
+    test("returns raw-safe transient directory evidence that detects a newly added name", async () => {
+        const workspace = join(root, "workspace");
+        await mkdir(join(workspace, "nested"), { recursive: true });
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const scope = await discoverWorkspaceScope({
+            identity,
+            git: gitRunner,
+            maxEntries: 200_000,
+            maxUntrackedBytes: 2 * 1024 ** 2,
+        });
+        const transient = scope as typeof scope & {
+            directories?: Array<{
+                pathBytes: Buffer;
+                dev: bigint;
+                ino: bigint;
+                birthtimeNs: bigint;
+                mtimeNs: bigint;
+                ctimeNs: bigint;
+                namesHash: string;
+            }>;
+        };
+
+        expect(transient.directories?.map((item) => item.pathBytes)).toEqual([Buffer.alloc(0), Buffer.from("nested")]);
+        expect(
+            transient.directories?.every(
+                (item) =>
+                    item.dev > 0n &&
+                    item.ino > 0n &&
+                    item.birthtimeNs >= 0n &&
+                    item.mtimeNs > 0n &&
+                    item.ctimeNs > 0n &&
+                    /^[0-9a-f]{64}$/.test(item.namesHash)
+            )
+        ).toBe(true);
+
+        await writeFile(join(workspace, "added.txt"), "added");
+        const module = await import("./workspace-scope");
+        const verify = (
+            module as typeof module & {
+                verifyWorkspaceScopeDirectories: (value: typeof scope, signal?: AbortSignal) => Promise<boolean>;
+            }
+        ).verifyWorkspaceScopeDirectories;
+        expect(typeof verify).toBe("function");
+        await expect(verify(scope)).resolves.toBe(false);
+    });
+
     let root: string;
     let dataHome: string;
     let originalDataHome: string | undefined;
@@ -663,6 +709,39 @@ describe("discoverWorkspaceScope", () => {
         ).rejects.toMatchObject({ code: "nonzero_exit" });
     });
 
+    test("aborts the in-flight Git operand and waits for its child to be killed", async () => {
+        const workspace = join(root, "workspace");
+        const executable = join(root, "blocking-git");
+        const pidPath = join(root, "blocking-git.pid");
+        await mkdir(workspace);
+        await writeFile(
+            executable,
+            `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+setTimeout(() => {
+    process.stdout.write("false\\n");
+}, 1500);
+`
+        );
+        await chmod(executable, 0o755);
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const controller = new AbortController();
+        const discovery = discoverWorkspaceScope({
+            identity,
+            git: new WorkspaceGitRunner(executable),
+            maxEntries: 10_000,
+            maxUntrackedBytes: TwoMiB,
+            signal: controller.signal,
+        });
+        const pid = Number(await waitForFile(pidPath));
+
+        controller.abort();
+
+        await expect(discovery).rejects.toMatchObject({ code: "aborted" });
+        expect(() => process.kill(pid, 0)).toThrowError(expect.objectContaining({ code: "ESRCH" }));
+    });
+
     async function discover(workspace: string) {
         const identity = await resolveCanonicalWorkspaceIdentity(workspace);
         return discoverWorkspaceScope({
@@ -682,6 +761,20 @@ function entry(entries: WorkspaceScopeEntry[], path: string): WorkspaceScopeEntr
 
 function sha256(value: string): string {
     return createHash("sha256").update(value).digest("hex");
+}
+
+async function waitForFile(path: string): Promise<string> {
+    for (let attempt = 0; attempt < 100; attempt++) {
+        try {
+            return await readFile(path, "utf8");
+        } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+                throw error;
+            }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Timed out waiting for file: ${path}`);
 }
 
 class ClassificationFailureGitRunner extends WorkspaceGitRunner {

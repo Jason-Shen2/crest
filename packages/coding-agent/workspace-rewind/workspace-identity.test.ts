@@ -3,14 +3,19 @@
 
 import { execFile } from "node:child_process";
 import * as fsPromises from "node:fs/promises";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { resolveCanonicalWorkspaceIdentity } from "./workspace-identity";
+import {
+    captureWorkspaceParentIdentity,
+    resolveCanonicalWorkspaceIdentity,
+    verifyCanonicalWorkspaceIdentity,
+    verifyWorkspaceParentIdentity,
+} from "./workspace-identity";
 
 const execFileAsync = promisify(execFile);
 
@@ -122,6 +127,43 @@ describe("resolveCanonicalWorkspaceIdentity", () => {
         await expect(realpath(join(root, "crest-data"))).resolves.toBe(await realpath(join(root, "crest-data")));
     });
 
+    test("freezes and revalidates the no-follow filesystem-root identity chain", async () => {
+        const container = join(root, "container");
+        const workspace = join(container, "workspace");
+        const displaced = join(root, "displaced");
+        const outside = join(root, "outside");
+        await mkdir(workspace, { recursive: true });
+        await mkdir(join(outside, "workspace"), { recursive: true });
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+
+        expect(Object.isFrozen(identity.ancestorIdentityChain)).toBe(true);
+        expect(identity.ancestorIdentityChain.every(Object.isFrozen)).toBe(true);
+        await expect(verifyCanonicalWorkspaceIdentity(identity)).resolves.toBeUndefined();
+
+        await rename(container, displaced);
+        await symlink(outside, container, "dir");
+
+        await expect(verifyCanonicalWorkspaceIdentity(identity)).rejects.toThrow(/identity chain/);
+    });
+
+    test("captures and revalidates every no-follow workspace parent identity", async () => {
+        const workspace = join(root, "workspace");
+        const directory = join(workspace, "directory");
+        const outside = join(root, "outside");
+        await mkdir(directory, { recursive: true });
+        await mkdir(outside);
+        await writeFile(join(directory, "file.txt"), "inside");
+        await writeFile(join(outside, "file.txt"), "outside");
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const parentIdentity = await captureWorkspaceParentIdentity(identity, "directory/file.txt");
+        await expect(verifyWorkspaceParentIdentity(identity, parentIdentity)).resolves.toBeUndefined();
+
+        await rm(directory, { recursive: true });
+        await symlink(outside, directory, "dir");
+
+        await expect(verifyWorkspaceParentIdentity(identity, parentIdentity)).rejects.toThrow(/parent identity/);
+    });
+
     test("fails closed when the filesystem reports an unreliable root file identity", async () => {
         const workspace = join(root, "workspace");
         await mkdir(workspace);
@@ -130,8 +172,8 @@ describe("resolveCanonicalWorkspaceIdentity", () => {
             const actual = await vi.importActual<typeof fsPromises>("node:fs/promises");
             return {
                 ...actual,
-                stat: async (...args: Parameters<typeof actual.stat>) => {
-                    const result = await actual.stat(...args);
+                lstat: async (...args: Parameters<typeof actual.lstat>) => {
+                    const result = await actual.lstat(...args);
                     if (typeof result.ino !== "bigint") {
                         return result;
                     }

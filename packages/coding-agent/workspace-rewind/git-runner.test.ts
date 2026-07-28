@@ -236,6 +236,7 @@ describe.sequential("WorkspaceGitRunner", () => {
         "diff-tree",
         "update-ref",
         "for-each-ref",
+        "rev-list",
         "show-ref",
         "count-objects",
         "fsck",
@@ -475,6 +476,20 @@ describe.sequential("WorkspaceGitRunner", () => {
             vi.doUnmock("node:child_process");
             vi.resetModules();
         }
+    });
+
+    test("registers one process exit cleanup across isolated module instances", async () => {
+        const before = process.listenerCount("exit");
+        for (let index = 0; index < 12; index++) {
+            vi.resetModules();
+            const isolated = await import("./git-runner");
+            await new isolated.WorkspaceGitRunner().run(["hash-object", "--stdin"], {
+                stdin: Buffer.from(String(index)),
+                timeoutMs: 2_000,
+            });
+        }
+
+        expect(process.listenerCount("exit") - before).toBeLessThanOrEqual(1);
     });
 });
 

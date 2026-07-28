@@ -75,6 +75,7 @@ const ApprovedGitSubcommands = new Set([
     "diff-tree",
     "update-ref",
     "for-each-ref",
+    "rev-list",
     "show-ref",
     "count-objects",
     "fsck",
@@ -88,7 +89,13 @@ interface SecureGitPaths {
     globalConfig: string;
 }
 
-let SecurePaths: SecureGitPaths | undefined;
+interface SecureGitProcessState {
+    paths?: SecureGitPaths;
+    cleanupRegistered: boolean;
+}
+
+const SecureGitStateKey = Symbol.for("crest.workspace-rewind.git-runner.secure-paths");
+const SecureGitState = getSecureGitProcessState();
 
 export class WorkspaceGitRunner {
     constructor(readonly executable = "git") {}
@@ -301,8 +308,8 @@ function makeIsolatedEnv(discovery: boolean, globalConfigPath: string): NodeJS.P
 }
 
 function getSecureGitPaths(): SecureGitPaths {
-    if (SecurePaths) {
-        return SecurePaths;
+    if (SecureGitState.paths) {
+        return SecureGitState.paths;
     }
 
     const root = mkdtempSync(join(tmpdir(), "crest-workspace-git-runner-"));
@@ -315,9 +322,12 @@ function getSecureGitPaths(): SecureGitPaths {
         const configFd = openSync(globalConfig, "wx", 0o600);
         closeSync(configFd);
         chmodSync(globalConfig, 0o600);
-        SecurePaths = { root, hooks, globalConfig };
-        process.once("exit", cleanupSecureGitPaths);
-        return SecurePaths;
+        SecureGitState.paths = { root, hooks, globalConfig };
+        if (!SecureGitState.cleanupRegistered) {
+            SecureGitState.cleanupRegistered = true;
+            process.once("exit", cleanupSecureGitPaths);
+        }
+        return SecureGitState.paths;
     } catch (error) {
         rmSync(root, { recursive: true, force: true });
         throw error;
@@ -325,14 +335,23 @@ function getSecureGitPaths(): SecureGitPaths {
 }
 
 function cleanupSecureGitPaths(): void {
-    if (!SecurePaths) {
+    if (!SecureGitState.paths) {
         return;
     }
     try {
-        rmSync(SecurePaths.root, { recursive: true, force: true });
+        rmSync(SecureGitState.paths.root, { recursive: true, force: true });
+        SecureGitState.paths = undefined;
     } catch {
         return;
     }
+}
+
+function getSecureGitProcessState(): SecureGitProcessState {
+    const processGlobal = globalThis as typeof globalThis & {
+        [SecureGitStateKey]?: SecureGitProcessState;
+    };
+    processGlobal[SecureGitStateKey] ??= { cleanupRegistered: false };
+    return processGlobal[SecureGitStateKey];
 }
 
 function makeError(

@@ -3,9 +3,9 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import type { BigIntStats } from "node:fs";
-import { link, mkdir, readFile, realpath, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, readFile, realpath, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 
@@ -14,6 +14,19 @@ export interface CanonicalWorkspaceIdentity {
     workspaceIdentity: string;
     workspaceIncarnation: string;
     storeKey: string;
+    ancestorIdentityChain: readonly WorkspaceDirectoryIdentityToken[];
+}
+
+export interface WorkspaceDirectoryIdentityToken {
+    absolutePath: string;
+    dev: string;
+    ino: string;
+    birthtimeNs: string;
+}
+
+export interface WorkspaceParentIdentity {
+    relativeParentPath: string;
+    chain: readonly WorkspaceDirectoryIdentityToken[];
 }
 
 const IdentityDiscoveryTimeoutMs = 10_000;
@@ -32,7 +45,7 @@ export async function resolveCanonicalWorkspaceIdentity(root: string): Promise<C
 
     const canonicalRoot = await resolveGitRoot(requestedRoot);
     await assertSupportedIdentityFilesystem(canonicalRoot);
-    const rootStat = await stat(canonicalRoot, { bigint: true });
+    const rootStat = await lstat(canonicalRoot, { bigint: true });
     if (!rootStat.isDirectory()) {
         throw new Error(`Workspace root is not a directory: ${canonicalRoot}`);
     }
@@ -41,7 +54,8 @@ export async function resolveCanonicalWorkspaceIdentity(root: string): Promise<C
     const fileIdentity = makeReliableFileIdentity(rootStat);
     const registryKey = digest(Buffer.from(`${workspaceIdentity}\0${fileIdentity}`));
     const nonce = await registerIncarnationNonce(registryKey);
-    const verifiedStat = await stat(canonicalRoot, { bigint: true });
+    const ancestorIdentityChain = await captureAncestorIdentityChain(canonicalRoot);
+    const verifiedStat = await lstat(canonicalRoot, { bigint: true });
     if (makeReliableFileIdentity(verifiedStat) !== fileIdentity) {
         throw new Error(`Workspace root changed during identity resolution: ${canonicalRoot}`);
     }
@@ -52,7 +66,123 @@ export async function resolveCanonicalWorkspaceIdentity(root: string): Promise<C
         workspaceIdentity,
         workspaceIncarnation,
         storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
+        ancestorIdentityChain,
     };
+}
+
+export async function verifyCanonicalWorkspaceIdentity(identity: CanonicalWorkspaceIdentity): Promise<void> {
+    const expectedPaths = makeAncestorPaths(identity.canonicalRoot);
+    if (expectedPaths.length !== identity.ancestorIdentityChain.length) {
+        throw new Error("Canonical workspace identity chain is invalid");
+    }
+    for (let index = 0; index < expectedPaths.length; index++) {
+        const expected = identity.ancestorIdentityChain[index]!;
+        if (expected.absolutePath !== expectedPaths[index]) {
+            throw new Error("Canonical workspace identity chain is invalid");
+        }
+        const current = await readDirectoryIdentityToken(expected.absolutePath);
+        if (!sameDirectoryIdentityToken(current, expected)) {
+            throw new Error(`Canonical workspace identity chain changed: ${expected.absolutePath}`);
+        }
+    }
+}
+
+export async function captureWorkspaceParentIdentity(
+    identity: CanonicalWorkspaceIdentity,
+    relativePath: string
+): Promise<WorkspaceParentIdentity> {
+    validateRelativePath(relativePath);
+    await verifyCanonicalWorkspaceIdentity(identity);
+    const segments = relativePath.split("/");
+    const parentSegments = segments.slice(0, -1);
+    const chain: WorkspaceDirectoryIdentityToken[] = [];
+    let path = identity.canonicalRoot;
+    chain.push(await readDirectoryIdentityToken(path));
+    for (const segment of parentSegments) {
+        path = join(path, segment);
+        chain.push(await readDirectoryIdentityToken(path));
+    }
+    return Object.freeze({
+        relativeParentPath: parentSegments.join("/"),
+        chain: Object.freeze(chain),
+    });
+}
+
+export async function verifyWorkspaceParentIdentity(
+    identity: CanonicalWorkspaceIdentity,
+    parentIdentity: WorkspaceParentIdentity
+): Promise<void> {
+    await verifyCanonicalWorkspaceIdentity(identity);
+    for (const expected of parentIdentity.chain) {
+        let current;
+        try {
+            current = await readDirectoryIdentityToken(expected.absolutePath);
+        } catch (cause) {
+            throw new Error(`Workspace parent identity changed: ${expected.absolutePath}`, { cause });
+        }
+        if (!sameDirectoryIdentityToken(current, expected)) {
+            throw new Error(`Workspace parent identity changed: ${expected.absolutePath}`);
+        }
+    }
+}
+
+async function captureAncestorIdentityChain(
+    canonicalRoot: string
+): Promise<readonly WorkspaceDirectoryIdentityToken[]> {
+    const chain: WorkspaceDirectoryIdentityToken[] = [];
+    for (const path of makeAncestorPaths(canonicalRoot)) {
+        chain.push(await readDirectoryIdentityToken(path));
+    }
+    return Object.freeze(chain);
+}
+
+function makeAncestorPaths(path: string): string[] {
+    const paths = [path];
+    while (true) {
+        const parent = dirname(paths[0]!);
+        if (parent === paths[0]) {
+            return paths;
+        }
+        paths.unshift(parent);
+    }
+}
+
+async function readDirectoryIdentityToken(path: string): Promise<WorkspaceDirectoryIdentityToken> {
+    const metadata = await lstat(path, { bigint: true });
+    if (!metadata.isDirectory() || metadata.dev <= 0n || metadata.ino <= 0n) {
+        throw new Error(`Workspace identity chain contains an unreliable directory: ${path}`);
+    }
+    return Object.freeze({
+        absolutePath: path,
+        dev: metadata.dev.toString(),
+        ino: metadata.ino.toString(),
+        birthtimeNs: metadata.birthtimeNs.toString(),
+    });
+}
+
+function sameDirectoryIdentityToken(
+    left: WorkspaceDirectoryIdentityToken,
+    right: WorkspaceDirectoryIdentityToken
+): boolean {
+    return (
+        left.absolutePath === right.absolutePath &&
+        left.dev === right.dev &&
+        left.ino === right.ino &&
+        left.birthtimeNs === right.birthtimeNs
+    );
+}
+
+function validateRelativePath(path: string): void {
+    if (
+        !path ||
+        path.includes("\0") ||
+        path.includes("\\") ||
+        path.startsWith("/") ||
+        /^[A-Za-z]:/.test(path) ||
+        path.split("/").some((segment) => !segment || segment === "." || segment === "..")
+    ) {
+        throw new Error(`Invalid workspace-relative path: ${path}`);
+    }
 }
 
 async function assertSupportedIdentityFilesystem(root: string): Promise<void> {

@@ -19,6 +19,22 @@ export interface WorkspaceScopeEntry {
     executable?: boolean;
     size?: number;
     exclusionReason?: WorkspaceCoverageReason;
+    parentIdentity?: WorkspaceScopeDirectoryIdentity;
+    entryIdentity?: WorkspaceScopeEntryIdentity;
+}
+
+export interface WorkspaceScopeDirectoryIdentity {
+    dev: bigint;
+    ino: bigint;
+    birthtimeNs: bigint;
+}
+
+export interface WorkspaceScopeEntryIdentity extends WorkspaceScopeDirectoryIdentity {
+    mode: bigint;
+    nlink: bigint;
+    size: bigint;
+    mtimeNs: bigint;
+    ctimeNs: bigint;
 }
 
 export interface WorkspaceScope {
@@ -26,6 +42,15 @@ export interface WorkspaceScope {
     entries: WorkspaceScopeEntry[];
     coverage: WorkspaceSnapshotCoverage;
     manifest: WorkspaceScopeManifest;
+    directories: WorkspaceScopeDirectoryEvidence[];
+}
+
+export interface WorkspaceScopeInput {
+    identity: CanonicalWorkspaceIdentity;
+    git: WorkspaceGitRunner;
+    maxEntries: number;
+    maxUntrackedBytes: number;
+    signal?: AbortSignal;
 }
 
 export interface WorkspaceScopeManifestPath {
@@ -82,19 +107,25 @@ interface DiscoveryState {
     nestedRepositoryBoundaries: WorkspaceScopeManifestPath[];
     scannedEntryCount: number;
     scanStopped: boolean;
-    directorySnapshots: DirectorySnapshot[];
+    directorySnapshots: WorkspaceScopeDirectoryEvidence[];
+    signal?: AbortSignal;
 }
 
 interface DirectoryIdentity {
     dev: bigint;
     ino: bigint;
+    birthtimeNs: bigint;
     mtimeNs: bigint;
     ctimeNs: bigint;
 }
 
-interface DirectorySnapshot {
+export interface WorkspaceScopeDirectoryEvidence {
     pathBytes: Buffer;
-    identity: DirectoryIdentity;
+    dev: bigint;
+    ino: bigint;
+    birthtimeNs: bigint;
+    mtimeNs: bigint;
+    ctimeNs: bigint;
     entryCount: number;
     namesHash: string;
 }
@@ -111,7 +142,7 @@ interface FileVersion {
 interface WorkspaceScopeAttempt {
     scope: WorkspaceScope;
     git?: GitClassification;
-    directorySnapshots: DirectorySnapshot[];
+    directorySnapshots: WorkspaceScopeDirectoryEvidence[];
 }
 
 const ScopeGitTimeoutMs = 30_000;
@@ -124,14 +155,10 @@ class WorkspaceBudgetExceeded extends Error {
     }
 }
 
-export async function discoverWorkspaceScope(input: {
-    identity: CanonicalWorkspaceIdentity;
-    git: WorkspaceGitRunner;
-    maxEntries: number;
-    maxUntrackedBytes: number;
-}): Promise<WorkspaceScope> {
+export async function discoverWorkspaceScope(input: WorkspaceScopeInput): Promise<WorkspaceScope> {
     validateLimits(input.maxEntries, input.maxUntrackedBytes);
     for (let attempt = 0; attempt < 2; attempt++) {
+        assertScopeActive(input.signal);
         const result = await discoverWorkspaceScopeAttempt(input);
         if (await verifyWorkspaceScope(input, result)) {
             return result.scope;
@@ -140,21 +167,16 @@ export async function discoverWorkspaceScope(input: {
     throw new Error("Workspace changed repeatedly during scope discovery");
 }
 
-async function verifyWorkspaceScope(
-    input: {
-        identity: CanonicalWorkspaceIdentity;
-        git: WorkspaceGitRunner;
-    },
-    attempt: WorkspaceScopeAttempt
-): Promise<boolean> {
+async function verifyWorkspaceScope(input: WorkspaceScopeInput, attempt: WorkspaceScopeAttempt): Promise<boolean> {
+    assertScopeActive(input.signal);
     if (attempt.git && !(await verifyGitWorkspaceScope(input, attempt))) {
         return false;
     }
-    const rootBytes = Buffer.from(input.identity.canonicalRoot);
-    if (!(await verifyDirectorySnapshots(rootBytes, attempt.directorySnapshots))) {
+    if (!(await verifyWorkspaceScopeDirectories(attempt.scope, input.signal))) {
         return false;
     }
-    if (!(await verifyIgnoreInputs(rootBytes, attempt.scope.manifest.ignoreInputs))) {
+    const rootBytes = Buffer.from(input.identity.canonicalRoot);
+    if (!(await verifyIgnoreInputs(rootBytes, attempt.scope.manifest.ignoreInputs, input.signal))) {
         return false;
     }
     if (!attempt.git) {
@@ -164,24 +186,22 @@ async function verifyWorkspaceScope(
         (await verifyExternalIgnoreInput(
             attempt.scope.manifest.ignoreInputs,
             "git-info-exclude",
-            attempt.git.infoExcludePath
+            attempt.git.infoExcludePath,
+            input.signal
         )) &&
         (await verifyExternalIgnoreInput(
             attempt.scope.manifest.ignoreInputs,
             "git-core-excludes-file",
-            attempt.git.coreExcludesPath
+            attempt.git.coreExcludesPath,
+            input.signal
         ))
     );
 }
 
-async function discoverWorkspaceScopeAttempt(input: {
-    identity: CanonicalWorkspaceIdentity;
-    git: WorkspaceGitRunner;
-    maxEntries: number;
-    maxUntrackedBytes: number;
-}): Promise<WorkspaceScopeAttempt> {
+async function discoverWorkspaceScopeAttempt(input: WorkspaceScopeInput): Promise<WorkspaceScopeAttempt> {
+    assertScopeActive(input.signal);
     const rootBytes = Buffer.from(input.identity.canonicalRoot);
-    const git = await classifyGitWorkspace(input.identity.canonicalRoot, input.git);
+    const git = await classifyGitWorkspace(input.identity.canonicalRoot, input.git, input.signal);
     const state: DiscoveryState = {
         rootBytes,
         entries: [],
@@ -195,6 +215,7 @@ async function discoverWorkspaceScopeAttempt(input: {
         scannedEntryCount: 0,
         scanStopped: false,
         directorySnapshots: [],
+        signal: input.signal,
     };
     try {
         await enumerateDirectory(state, Buffer.alloc(0), []);
@@ -206,6 +227,7 @@ async function discoverWorkspaceScopeAttempt(input: {
         state.exclusions.push({ scope: "workspace-root", reason: "capture-budget" });
     }
     state.entries.sort((left, right) => Buffer.compare(left.pathBytes, right.pathBytes));
+    state.directorySnapshots.sort((left, right) => Buffer.compare(left.pathBytes, right.pathBytes));
 
     return {
         git,
@@ -213,6 +235,7 @@ async function discoverWorkspaceScopeAttempt(input: {
         scope: {
             root: input.identity.canonicalRoot,
             entries: state.entries,
+            directories: state.directorySnapshots,
             coverage: {
                 complete: state.exclusions.length === 0 && !state.scanStopped,
                 eligibleEntryCount: state.eligibleEntryCount,
@@ -238,12 +261,18 @@ async function discoverWorkspaceScopeAttempt(input: {
     };
 }
 
-async function classifyGitWorkspace(root: string, git: WorkspaceGitRunner): Promise<GitClassification | undefined> {
+async function classifyGitWorkspace(
+    root: string,
+    git: WorkspaceGitRunner,
+    signal?: AbortSignal
+): Promise<GitClassification | undefined> {
+    assertScopeActive(signal);
     let inside;
     try {
         inside = await git.run(["rev-parse", "--is-inside-work-tree"], {
             cwd: root,
             timeoutMs: ScopeGitTimeoutMs,
+            signal,
         });
     } catch (error) {
         if (error instanceof WorkspaceGitRunnerError && error.code === "nonzero_exit") {
@@ -256,22 +285,25 @@ async function classifyGitWorkspace(root: string, git: WorkspaceGitRunner): Prom
     }
 
     const [indexPath, infoExcludePath, coreExcludesPath] = await Promise.all([
-        resolveGitPath(git, root, ["rev-parse", "--path-format=absolute", "--git-path", "index"]),
-        resolveGitPath(git, root, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]),
-        resolveOptionalCoreExcludesPath(git, root),
+        resolveGitPath(git, root, ["rev-parse", "--path-format=absolute", "--git-path", "index"], signal),
+        resolveGitPath(git, root, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"], signal),
+        resolveOptionalCoreExcludesPath(git, root, signal),
     ]);
+    assertScopeActive(signal);
     const indexVersion = await readOptionalFileVersion(indexPath);
     const ignoreInputs: WorkspaceScopeIgnoreInput[] = [];
-    await appendExternalIgnoreInput(ignoreInputs, "git-info-exclude", infoExcludePath);
-    await appendExternalIgnoreInput(ignoreInputs, "git-core-excludes-file", coreExcludesPath);
+    await appendExternalIgnoreInput(ignoreInputs, "git-info-exclude", infoExcludePath, signal);
+    await appendExternalIgnoreInput(ignoreInputs, "git-core-excludes-file", coreExcludesPath, signal);
     const [trackedResult, ignoredResult] = await Promise.all([
         git.run(["ls-files", "--cached", "-z"], {
             cwd: root,
             timeoutMs: ScopeGitTimeoutMs,
+            signal,
         }),
         git.run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], {
             cwd: root,
             timeoutMs: ScopeGitTimeoutMs,
+            signal,
         }),
     ]);
     const trackedPaths = splitNul(trackedResult.stdout);
@@ -290,36 +322,33 @@ async function classifyGitWorkspace(root: string, git: WorkspaceGitRunner): Prom
     };
 }
 
-async function verifyGitWorkspaceScope(
-    input: {
-        identity: CanonicalWorkspaceIdentity;
-        git: WorkspaceGitRunner;
-    },
-    attempt: WorkspaceScopeAttempt
-): Promise<boolean> {
+async function verifyGitWorkspaceScope(input: WorkspaceScopeInput, attempt: WorkspaceScopeAttempt): Promise<boolean> {
+    assertScopeActive(input.signal);
     const classification = attempt.git!;
     const [trackedResult, ignoredResult, indexPath, infoExcludePath, coreExcludesPath] = await Promise.all([
         input.git.run(["ls-files", "--cached", "-z"], {
             cwd: input.identity.canonicalRoot,
             timeoutMs: ScopeGitTimeoutMs,
+            signal: input.signal,
         }),
         input.git.run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], {
             cwd: input.identity.canonicalRoot,
             timeoutMs: ScopeGitTimeoutMs,
+            signal: input.signal,
         }),
-        resolveGitPath(input.git, input.identity.canonicalRoot, [
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            "index",
-        ]),
-        resolveGitPath(input.git, input.identity.canonicalRoot, [
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            "info/exclude",
-        ]),
-        resolveOptionalCoreExcludesPath(input.git, input.identity.canonicalRoot),
+        resolveGitPath(
+            input.git,
+            input.identity.canonicalRoot,
+            ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+            input.signal
+        ),
+        resolveGitPath(
+            input.git,
+            input.identity.canonicalRoot,
+            ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"],
+            input.signal
+        ),
+        resolveOptionalCoreExcludesPath(input.git, input.identity.canonicalRoot, input.signal),
     ]);
     if (
         hashContent(trackedResult.stdout) !== classification.trackedHash ||
@@ -330,14 +359,20 @@ async function verifyGitWorkspaceScope(
     ) {
         return false;
     }
+    assertScopeActive(input.signal);
     if (!sameFileVersion(classification.indexVersion, await readOptionalFileVersion(classification.indexPath))) {
         return false;
     }
     return true;
 }
 
-async function verifyDirectorySnapshots(rootBytes: Buffer, snapshots: DirectorySnapshot[]): Promise<boolean> {
-    for (const snapshot of snapshots) {
+export async function verifyWorkspaceScopeDirectories(
+    scope: Pick<WorkspaceScope, "root" | "directories">,
+    signal?: AbortSignal
+): Promise<boolean> {
+    const rootBytes = Buffer.from(scope.root);
+    for (const snapshot of scope.directories) {
+        assertScopeActive(signal);
         const path = absolutePath(rootBytes, snapshot.pathBytes);
         let identity: DirectoryIdentity;
         try {
@@ -346,15 +381,15 @@ async function verifyDirectorySnapshots(rootBytes: Buffer, snapshots: DirectoryS
             return false;
         }
         try {
-            assertSameDirectory(snapshot.identity, identity);
+            assertSameDirectory(directoryEvidenceIdentity(snapshot), identity);
         } catch {
             return false;
         }
-        const entries = await readBoundedDirectory(path, snapshot.entryCount + 1);
+        const entries = await readBoundedDirectory(path, snapshot.entryCount + 1, signal);
         let identityAfter: DirectoryIdentity;
         try {
             identityAfter = await readDirectoryIdentity(path);
-            assertSameDirectory(snapshot.identity, identityAfter);
+            assertSameDirectory(directoryEvidenceIdentity(snapshot), identityAfter);
         } catch {
             return false;
         }
@@ -374,6 +409,7 @@ async function enumerateDirectory(
     directoryPathBytes: Buffer,
     inheritedMatchers: IgnoreMatcher[]
 ): Promise<void> {
+    assertScopeActive(state.signal);
     const absoluteDirectory = absolutePath(state.rootBytes, directoryPathBytes);
     const before = await readDirectoryIdentity(absoluteDirectory);
     const entryStart = state.entries.length;
@@ -387,13 +423,14 @@ async function enumerateDirectory(
         const matchers = await loadDirectoryIgnoreMatcher(state, directoryPathBytes, inheritedMatchers);
         assertSameDirectory(before, await readDirectoryIdentity(absoluteDirectory));
         const remainingBudget = Math.max(0, state.maxEntries - state.scannedEntryCount);
-        const children = await readBoundedDirectory(absoluteDirectory, remainingBudget + 1);
+        const children = await readBoundedDirectory(absoluteDirectory, remainingBudget + 1, state.signal);
         if (children.length > remainingBudget) {
             throw new WorkspaceBudgetExceeded();
         }
         children.sort((left, right) => Buffer.compare(left.name, right.name));
 
         for (const child of children) {
+            assertScopeActive(state.signal);
             const pathBytes = appendPath(directoryPathBytes, child.name);
             if (state.scannedEntryCount >= state.maxEntries) {
                 throw new WorkspaceBudgetExceeded();
@@ -430,6 +467,8 @@ async function enumerateDirectory(
                     kind: "symlink",
                     tracked,
                     size: Number(metadata.size),
+                    parentIdentity: directoryIdentityEvidence(before),
+                    entryIdentity: entryIdentityEvidence(metadata),
                 });
                 continue;
             }
@@ -443,6 +482,10 @@ async function enumerateDirectory(
             }
             if (!tracked && metadata.size > BigInt(state.maxUntrackedBytes)) {
                 addExclusion(state, pathBytes, path, false, "oversized-untracked");
+                Object.assign(state.entries.at(-1)!, {
+                    parentIdentity: directoryIdentityEvidence(before),
+                    entryIdentity: entryIdentityEvidence(metadata),
+                });
                 continue;
             }
             addEligibleEntry(state, {
@@ -452,13 +495,15 @@ async function enumerateDirectory(
                 tracked,
                 executable: (metadata.mode & 0o111n) !== 0n,
                 size: Number(metadata.size),
+                parentIdentity: directoryIdentityEvidence(before),
+                entryIdentity: entryIdentityEvidence(metadata),
             });
         }
         const after = await readDirectoryIdentity(absoluteDirectory);
         assertSameDirectory(before, after);
         state.directorySnapshots.push({
             pathBytes: directoryPathBytes,
-            identity: after,
+            ...after,
             entryCount: children.length,
             namesHash: hashDirectoryNames(children),
         });
@@ -474,11 +519,13 @@ async function enumerateDirectory(
     }
 }
 
-async function readBoundedDirectory(path: Buffer, limit: number): Promise<Array<Dirent<Buffer>>> {
+async function readBoundedDirectory(path: Buffer, limit: number, signal?: AbortSignal): Promise<Array<Dirent<Buffer>>> {
+    assertScopeActive(signal);
     const directory = await opendir(path, { encoding: "buffer" as BufferEncoding });
     const entries: Array<Dirent<Buffer>> = [];
     try {
         while (entries.length < limit) {
+            assertScopeActive(signal);
             const entry = await directory.read();
             if (!entry) {
                 break;
@@ -501,7 +548,7 @@ async function loadDirectoryIgnoreMatcher(
 ): Promise<IgnoreMatcher[]> {
     const gitignorePathBytes = appendPath(directoryPathBytes, Buffer.from(".gitignore"));
     try {
-        const rules = await readSafeIgnoreInput(absolutePath(state.rootBytes, gitignorePathBytes));
+        const rules = await readSafeIgnoreInput(absolutePath(state.rootBytes, gitignorePathBytes), state.signal);
         state.ignoreInputs.push({
             source: "gitignore",
             ...manifestPath(gitignorePathBytes),
@@ -525,7 +572,8 @@ async function loadDirectoryIgnoreMatcher(
     }
 }
 
-async function readSafeIgnoreInput(path: Buffer): Promise<Buffer> {
+async function readSafeIgnoreInput(path: Buffer, signal?: AbortSignal): Promise<Buffer> {
+    assertScopeActive(signal);
     const before = await lstat(path, { bigint: true });
     if (!isSafeIgnoreInputStat(before)) {
         throw new Error(`unsafe .gitignore input: ${displayPath(path)}`);
@@ -541,6 +589,7 @@ async function readSafeIgnoreInput(path: Buffer): Promise<Buffer> {
         content = Buffer.alloc(Number(opened.size));
         let offset = 0;
         while (offset < content.length) {
+            assertScopeActive(signal);
             const result = await handle.read(content, offset, content.length - offset, offset);
             if (result.bytesRead === 0) {
                 throw new Error(`unstable .gitignore input: ${displayPath(path)}`);
@@ -548,6 +597,7 @@ async function readSafeIgnoreInput(path: Buffer): Promise<Buffer> {
             offset += result.bytesRead;
         }
         const overflow = await handle.read(Buffer.alloc(1), 0, 1, content.length);
+        assertScopeActive(signal);
         const openedAfter = await handle.stat({ bigint: true });
         if (overflow.bytesRead !== 0 || !sameIgnoreFileVersion(opened, openedAfter)) {
             throw new Error(`unstable .gitignore input: ${displayPath(path)}`);
@@ -612,12 +662,17 @@ function sameFileVersion(left: FileVersion, right: FileVersion): boolean {
     );
 }
 
-async function verifyIgnoreInputs(rootBytes: Buffer, inputs: WorkspaceScopeIgnoreInput[]): Promise<boolean> {
+async function verifyIgnoreInputs(
+    rootBytes: Buffer,
+    inputs: WorkspaceScopeIgnoreInput[],
+    signal?: AbortSignal
+): Promise<boolean> {
     for (const input of inputs) {
+        assertScopeActive(signal);
         const locator = manifestLocatorBytes(input);
         const path = input.source === "gitignore" ? absolutePath(rootBytes, locator) : platformPath(locator);
         try {
-            const content = await readSafeIgnoreInput(path);
+            const content = await readSafeIgnoreInput(path, signal);
             if (hashContent(content) !== input.contentHash) {
                 return false;
             }
@@ -634,8 +689,10 @@ async function verifyIgnoreInputs(rootBytes: Buffer, inputs: WorkspaceScopeIgnor
 async function verifyExternalIgnoreInput(
     inputs: WorkspaceScopeIgnoreInput[],
     source: "git-info-exclude" | "git-core-excludes-file",
-    path: Buffer | undefined
+    path: Buffer | undefined,
+    signal?: AbortSignal
 ): Promise<boolean> {
+    assertScopeActive(signal);
     const expected = inputs.find(
         (input) => input.source === source && path != null && manifestLocatorBytes(input).equals(path)
     );
@@ -643,7 +700,7 @@ async function verifyExternalIgnoreInput(
         return expected == null;
     }
     try {
-        const content = await readSafeIgnoreInput(path);
+        const content = await readSafeIgnoreInput(path, signal);
         return expected?.contentHash === hashContent(content);
     } catch (error) {
         if (isMissing(error)) {
@@ -658,6 +715,12 @@ function optionalBufferEquals(left: Buffer | undefined, right: Buffer | undefine
         return left == null && right == null;
     }
     return left.equals(right);
+}
+
+function assertScopeActive(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+        throw new WorkspaceGitRunnerError("aborted", "Workspace scope discovery aborted");
+    }
 }
 
 function manifestLocatorBytes(value: WorkspaceScopeManifestPath): Buffer {
@@ -675,6 +738,7 @@ async function readDirectoryIdentity(path: Buffer): Promise<DirectoryIdentity> {
     return {
         dev: value.dev,
         ino: value.ino,
+        birthtimeNs: value.birthtimeNs,
         mtimeNs: value.mtimeNs,
         ctimeNs: value.ctimeNs,
     };
@@ -684,11 +748,43 @@ function assertSameDirectory(expected: DirectoryIdentity, actual: DirectoryIdent
     if (
         expected.dev !== actual.dev ||
         expected.ino !== actual.ino ||
+        expected.birthtimeNs !== actual.birthtimeNs ||
         expected.mtimeNs !== actual.mtimeNs ||
         expected.ctimeNs !== actual.ctimeNs
     ) {
         throw new Error("Workspace directory changed during scope discovery");
     }
+}
+
+function directoryEvidenceIdentity(value: WorkspaceScopeDirectoryEvidence): DirectoryIdentity {
+    return {
+        dev: value.dev,
+        ino: value.ino,
+        birthtimeNs: value.birthtimeNs,
+        mtimeNs: value.mtimeNs,
+        ctimeNs: value.ctimeNs,
+    };
+}
+
+function directoryIdentityEvidence(value: DirectoryIdentity): WorkspaceScopeDirectoryIdentity {
+    return {
+        dev: value.dev,
+        ino: value.ino,
+        birthtimeNs: value.birthtimeNs,
+    };
+}
+
+function entryIdentityEvidence(value: BigIntStats): WorkspaceScopeEntryIdentity {
+    return {
+        dev: value.dev,
+        ino: value.ino,
+        birthtimeNs: value.birthtimeNs,
+        mode: value.mode,
+        nlink: value.nlink,
+        size: value.size,
+        mtimeNs: value.mtimeNs,
+        ctimeNs: value.ctimeNs,
+    };
 }
 
 function hashDirectoryNames(entries: Array<Dirent<Buffer>>): string {
@@ -704,19 +800,30 @@ function displayPath(path: Buffer): string {
     return decodePath(path) ?? path.toString("base64");
 }
 
-async function resolveGitPath(git: WorkspaceGitRunner, root: string, args: readonly string[]): Promise<Buffer> {
+async function resolveGitPath(
+    git: WorkspaceGitRunner,
+    root: string,
+    args: readonly string[],
+    signal?: AbortSignal
+): Promise<Buffer> {
     const result = await git.run(args, {
         cwd: root,
         timeoutMs: ScopeGitTimeoutMs,
+        signal,
     });
     return stripLineEnding(result.stdout);
 }
 
-async function resolveOptionalCoreExcludesPath(git: WorkspaceGitRunner, root: string): Promise<Buffer | undefined> {
+async function resolveOptionalCoreExcludesPath(
+    git: WorkspaceGitRunner,
+    root: string,
+    signal?: AbortSignal
+): Promise<Buffer | undefined> {
     try {
         const result = await git.run(["config", "--path", "--null", "--get", "core.excludesFile"], {
             cwd: root,
             timeoutMs: ScopeGitTimeoutMs,
+            signal,
         });
         const value = stripNul(result.stdout);
         if (value.length === 0) {
@@ -734,13 +841,15 @@ async function resolveOptionalCoreExcludesPath(git: WorkspaceGitRunner, root: st
 async function appendExternalIgnoreInput(
     inputs: WorkspaceScopeIgnoreInput[],
     source: "git-info-exclude" | "git-core-excludes-file",
-    path: Buffer | undefined
+    path: Buffer | undefined,
+    signal?: AbortSignal
 ): Promise<void> {
+    assertScopeActive(signal);
     if (!path) {
         return;
     }
     try {
-        const content = await readSafeIgnoreInput(path);
+        const content = await readSafeIgnoreInput(path, signal);
         inputs.push({
             source,
             ...manifestPath(path),
