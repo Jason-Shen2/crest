@@ -165,11 +165,13 @@ describe("AgentSessionsPanel", () => {
         expect(activeRow.className).toContain("bg-sidebar-accent");
         expect(activeRow.className).toContain("text-sidebar-accent-foreground");
         expect(activeRow.className).not.toContain("bg-white");
+        expect(activeRow.className).not.toContain("bg-transparent");
 
         fireEvent.mouseEnter(otherRow);
 
         expect(otherRow.className).toContain("bg-sidebar-accent/70");
         expect(otherRow.className).not.toContain("bg-white");
+        expect(otherRow.className).not.toContain("bg-transparent");
     });
 
     it("offers session management actions in the row context menu", async () => {

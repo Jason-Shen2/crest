@@ -247,7 +247,7 @@ export const AgentSessionsPanel = memo(
                                 data-active={isActive ? "true" : undefined}
                                 data-focused={isFocused ? "true" : undefined}
                                 className={
-                                    "aui-thread-list-item group relative flex min-h-[34px] w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-left text-foreground/85 transition-colors " +
+                                    "aui-thread-list-item group relative flex min-h-[34px] w-full cursor-pointer items-center gap-2 rounded-md border-0 px-2 py-1.5 text-left text-foreground/85 transition-colors " +
                                     (isActive
                                         ? "bg-sidebar-accent text-sidebar-accent-foreground "
                                         : isFocused
