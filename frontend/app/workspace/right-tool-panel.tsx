@@ -13,9 +13,19 @@ import { RightTerminal } from "@/app/rightterminal/right-terminal";
 import { SourceControlPanel } from "@/app/sourcecontrol/source-control-panel";
 import { getSettingsKeyAtom } from "@/store/global";
 import { cn } from "@/util/util";
+import {
+    autoUpdate,
+    flip,
+    offset,
+    shift,
+    useClick,
+    useDismiss,
+    useFloating,
+    useInteractions,
+} from "@floating-ui/react";
 import { useAtomValue } from "jotai";
 import type { CSSProperties, FocusEvent, MouseEvent, ReactNode } from "react";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
 
 type RightToolMetadata = {
@@ -206,62 +216,71 @@ export function RightToolTopBar({
 
 export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: RightToolOpenMenuProps) {
     const availableTools = RightToolIds.filter((tool) => !openedTools.includes(tool));
+    const [isOpen, setIsOpen] = useState<boolean>(initiallyOpen ?? false);
+    const { refs, floatingStyles, context } = useFloating({
+        open: isOpen,
+        onOpenChange: setIsOpen,
+        placement: "bottom-start",
+        middleware: [
+            offset(4),
+            flip({ padding: 8, fallbackPlacements: ["bottom-end", "top-start", "top-end"] }),
+            shift({ padding: 8, boundary: "clippingAncestors" }),
+        ],
+        whileElementsMounted: autoUpdate,
+    });
+    const click = useClick(context);
+    const dismiss = useDismiss(context);
+    const { getReferenceProps, getFloatingProps } = useInteractions([click, dismiss]);
     if (availableTools.length === 0) {
         return null;
     }
-    const closeDetails = (event: MouseEvent<HTMLElement>) => {
-        const details = event.currentTarget.closest("details");
-        if (details != null) {
-            details.open = false;
-        }
-    };
-    const handleOpenTool = (event: MouseEvent<HTMLButtonElement>, tool: RightToolId) => {
+    const handleOpenTool = (tool: RightToolId) => {
         onOpenTool(tool);
-        closeDetails(event);
+        setIsOpen(false);
     };
     return (
-        <details
-            className="relative flex h-7 shrink-0 items-center"
-            data-add-placement="tab-strip-end"
-            open={initiallyOpen ? true : undefined}
-        >
-            <summary
+        <>
+            <button
+                ref={refs.setReference}
+                type="button"
                 aria-label="Open right tool"
-                className="flex h-full w-7 cursor-pointer list-none items-center justify-center rounded-md border border-transparent bg-fg-overlay-1/60 text-muted-foreground transition-colors hover:border-border hover:bg-fg-overlay-2 hover:text-foreground [&::-webkit-details-marker]:hidden"
+                aria-expanded={isOpen}
+                data-add-placement="tab-strip-end"
+                {...getReferenceProps()}
+                className={cn(
+                    "flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-transparent bg-fg-overlay-1/60 text-muted-foreground transition-colors hover:border-border hover:bg-fg-overlay-2 hover:text-foreground",
+                    isOpen && "border-border bg-fg-overlay-2 text-foreground"
+                )}
             >
                 <Icon name="plus" size={14} className="text-xs" />
-            </summary>
-            <button
-                type="button"
-                aria-label="Close right tool menu"
-                aria-hidden="true"
-                data-menu-backdrop="true"
-                tabIndex={-1}
-                className="fixed inset-0 z-[calc(var(--zindex-modal-wrapper)-1)] cursor-default border-0 bg-transparent p-0"
-                onClick={closeDetails}
-            />
-            <div
-                aria-label="Open right tool menu"
-                data-menu-surface="trae"
-                className="absolute left-0 top-8 z-[var(--zindex-modal-wrapper)] flex w-44 flex-col gap-1 rounded-lg border border-border bg-background p-1 shadow-2xl"
-            >
-                {availableTools.map((tool) => {
-                    const metadata = RightToolMetadataById[tool];
-                    return (
-                        <button
-                            key={tool}
-                            type="button"
-                            aria-label={`Open ${metadata.label} right tool`}
-                            className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-foreground/85 transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
-                            onClick={(event) => handleOpenTool(event, tool)}
-                        >
-                            <Icon name={metadata.icon} size={14} className="shrink-0" />
-                            <span>{metadata.label}</span>
-                        </button>
-                    );
-                })}
-            </div>
-        </details>
+            </button>
+            {isOpen ? (
+                <div
+                    ref={refs.setFloating}
+                    aria-label="Open right tool menu"
+                    data-menu-surface="trae"
+                    style={{ ...floatingStyles, zIndex: "var(--zindex-modal-wrapper)" }}
+                    className="flex w-44 flex-col gap-1 rounded-lg border border-border bg-background p-1 shadow-2xl"
+                    {...getFloatingProps()}
+                >
+                    {availableTools.map((tool) => {
+                        const metadata = RightToolMetadataById[tool];
+                        return (
+                            <button
+                                key={tool}
+                                type="button"
+                                aria-label={`Open ${metadata.label} right tool`}
+                                className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-foreground/85 transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                                onClick={() => handleOpenTool(tool)}
+                            >
+                                <Icon name={metadata.icon} size={14} className="shrink-0" />
+                                <span>{metadata.label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+            ) : null}
+        </>
     );
 }
 

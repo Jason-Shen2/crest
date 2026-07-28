@@ -1,10 +1,12 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+// @vitest-environment jsdom
 
 import { Icon } from "@/app/icon/Icon";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { isValidElement, ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockSettings = vi.hoisted(() => ({
     atoms: new Map<string, import("jotai").PrimitiveAtom<unknown>>(),
@@ -132,6 +134,8 @@ function findElementByAriaLabel(node: ReactNode, ariaLabel: string): ReactElemen
     }
     return findElementByAriaLabel(node.props.children, ariaLabel);
 }
+
+afterEach(cleanup);
 
 describe("RightToolPanel", () => {
     it("renders the launcher when no tools are open", () => {
@@ -332,28 +336,30 @@ describe("RightToolPanel parts", () => {
     it("toggles the open tool menu from a square add button and calls action handlers", () => {
         const onOpenTool = vi.fn();
         const onAction = vi.fn();
-        const topBar = RightToolTopBar({
-            activeTool: "editor",
-            openedTools: ["editor"],
-            onOpenTool,
-            onSelectTool: () => null,
-            onCloseTool: () => null,
-            action: (
-                <button type="button" aria-label="Magnify right tool panel" onClick={onAction}>
-                    <Icon name="arrow-expand-01" size={14} />
-                </button>
-            ),
-        });
-        const openButton = findElementByAriaLabel(topBar, "Open right tool");
-        const actionButton = findElementByAriaLabel(topBar, "Magnify right tool panel");
+        const { container } = render(
+            <RightToolTopBar
+                activeTool="editor"
+                openedTools={["editor"]}
+                onOpenTool={onOpenTool}
+                onSelectTool={() => null}
+                onCloseTool={() => null}
+                action={
+                    <button type="button" aria-label="Magnify right tool panel" onClick={onAction}>
+                        <Icon name="arrow-expand-01" size={14} />
+                    </button>
+                }
+            />
+        );
 
-        expect(openButton.type).toBe("summary");
-        const markup = renderToStaticMarkup(topBar);
-        expect(markup).toContain('class="relative flex h-7 shrink-0 items-center"');
-        expect(markup).toContain("h-full w-7");
+        const markup = container.innerHTML;
+        // The + button is now a real <button> (not <summary>) and stays square (h-7 w-7, not w-9).
+        expect(markup).toContain('aria-label="Open right tool"');
         expect(markup).not.toContain("h-7 w-9");
-        expect(actionButton.props.onClick).toBeTypeOf("function");
-        actionButton.props.onClick?.();
+        expect(markup).toContain("h-7 w-7 cursor-pointer");
+
+        act(() => {
+            fireEvent.click(screen.getByLabelText("Magnify right tool panel"));
+        });
 
         expect(onOpenTool).not.toHaveBeenCalled();
         expect(onAction).toHaveBeenCalledTimes(1);
@@ -364,19 +370,18 @@ describe("RightToolPanel parts", () => {
             <RightToolOpenMenu openedTools={["editor", "terminal"]} onOpenTool={() => null} initiallyOpen />
         );
 
-        expect(markup).toContain("<details");
-        expect(markup).toContain('open=""');
-        expect(markup).toContain('aria-label="Close right tool menu"');
-        expect(markup).toContain('data-menu-backdrop="true"');
-        expect(markup).toContain('tabindex="-1"');
-        expect(markup).toContain('aria-hidden="true"');
+        expect(markup).toContain('aria-label="Open right tool"');
+        expect(markup).toContain('aria-expanded="true"');
         expect(markup).toContain('data-menu-surface="trae"');
-        expect(markup).toContain("left-0");
-        expect(markup).toContain("top-8");
+        // Menu is positioned by floating-ui via inline style (no static left-0/top-8 Tailwind class).
+        expect(markup).toMatch(/style="[^"]*position:\s*absolute/);
         expect(markup).toContain("w-44");
         expect(markup).toContain("p-1");
         expect(markup).toContain("text-xs");
+        expect(markup).not.toContain("<details");
         expect(markup).not.toContain("absolute right-0");
+        expect(markup).not.toContain("absolute left-0");
+        expect(markup).not.toContain("top-8");
         expect(markup).not.toContain("top-9");
         expect(markup).not.toContain("w-52");
         expect(markup).not.toContain("p-1.5");
@@ -390,44 +395,15 @@ describe("RightToolPanel parts", () => {
         expect(markup).not.toContain('aria-label="Open Terminal right tool"');
     });
 
-    it("calls onOpenTool and closes details when an unopened tool menu item is selected", () => {
+    it("calls onOpenTool when an unopened tool menu item is selected", () => {
         const onOpenTool = vi.fn();
-        const menu = RightToolOpenMenu({
-            openedTools: ["editor"],
-            onOpenTool,
-            initiallyOpen: true,
-        });
-        const browserItem = findElementByAriaLabel(menu, "Open Browser right tool");
-        const details = { open: true };
+        render(<RightToolOpenMenu openedTools={["editor"]} onOpenTool={onOpenTool} initiallyOpen />);
 
-        expect(browserItem.props.onClick).toBeTypeOf("function");
-        browserItem.props.onClick?.({
-            currentTarget: {
-                closest: (selector: string) => (selector === "details" ? details : null),
-            },
+        act(() => {
+            fireEvent.click(screen.getByLabelText("Open Browser right tool"));
         });
 
         expect(onOpenTool).toHaveBeenCalledWith("browser");
-        expect(details.open).toBe(false);
-    });
-
-    it("closes the open tool menu when the outside dismiss layer is pressed", () => {
-        const menu = RightToolOpenMenu({
-            openedTools: ["editor"],
-            onOpenTool: () => null,
-            initiallyOpen: true,
-        });
-        const dismissLayer = findElementByAriaLabel(menu, "Close right tool menu");
-        const details = { open: true };
-
-        expect(dismissLayer.props.onClick).toBeTypeOf("function");
-        dismissLayer.props.onClick?.({
-            currentTarget: {
-                closest: (selector: string) => (selector === "details" ? details : null),
-            },
-        });
-
-        expect(details.open).toBe(false);
     });
 
     it("hides the open button when all right tools are already open", () => {
