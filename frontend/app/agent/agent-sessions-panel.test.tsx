@@ -137,6 +137,41 @@ describe("AgentSessionsPanel", () => {
         expect(screen.getByRole("button", { name: /hello/ }).getAttribute("data-active")).toBe("true");
     });
 
+    it("uses compact neutral styles for active, focused, and default rows", async () => {
+        const sessions = [
+            makeSession("/sessions/active.sqlite", "session-active"),
+            makeSession("/sessions/other.sqlite", "session-other"),
+        ];
+        const { agentModel } = renderPanel({ sessions });
+        globalStore.set(agentModel.stateAtom, {
+            activeSession: {
+                id: "session-active",
+                createdAt: "2026-07-25T10:00:00.000Z",
+                cwd: "/repo",
+                path: "/sessions/active.sqlite",
+            },
+            selection: undefined,
+            preferredTerminalTabId: "",
+        });
+
+        const rows = await screen.findAllByRole("button", { name: /hello/ });
+        const activeRow = rows[0];
+        const otherRow = rows[1];
+        const list = document.querySelector(".aui-thread-list");
+
+        expect(list?.className).toContain("p-2");
+        expect(activeRow.className).toContain("min-h-[34px]");
+        expect(activeRow.className).toContain("rounded-md");
+        expect(activeRow.className).toContain("bg-sidebar-accent");
+        expect(activeRow.className).toContain("text-sidebar-accent-foreground");
+        expect(activeRow.className).not.toContain("bg-white");
+
+        fireEvent.mouseEnter(otherRow);
+
+        expect(otherRow.className).toContain("bg-sidebar-accent/70");
+        expect(otherRow.className).not.toContain("bg-white");
+    });
+
     it("offers session management actions in the row context menu", async () => {
         renderPanel();
 

@@ -226,14 +226,14 @@ export const AgentSessionsPanel = memo(
                 <div
                     ref={listRef}
                     tabIndex={0}
-                    className="aui-thread-list flex-grow overflow-auto outline-none"
+                    className="aui-thread-list flex-grow overflow-auto p-2 outline-none"
                     onKeyDown={handleKeyDown}
                 >
                     {loading && sessions.length === 0 ? (
-                        <div className="px-3 py-4 text-xs text-muted-foreground">Loading...</div>
+                        <div className="px-3 py-5 text-center text-xs text-muted-foreground">Loading...</div>
                     ) : null}
                     {!loading && sessions.length === 0 ? (
-                        <div className="px-3 py-4 text-xs text-muted-foreground">No sessions yet.</div>
+                        <div className="px-3 py-5 text-center text-xs text-muted-foreground">No sessions yet.</div>
                     ) : null}
                     {sessions.map((session, idx) => {
                         const title = getResumeSessionDisplayText(session);
@@ -247,21 +247,19 @@ export const AgentSessionsPanel = memo(
                                 data-active={isActive ? "true" : undefined}
                                 data-focused={isFocused ? "true" : undefined}
                                 className={
-                                    "aui-thread-list-item group relative flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-[10px] py-[6px] text-left transition-colors " +
+                                    "aui-thread-list-item group relative flex min-h-[34px] w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-left text-foreground/85 transition-colors " +
                                     (isActive
-                                        ? "bg-white/[0.08] "
+                                        ? "bg-sidebar-accent text-sidebar-accent-foreground "
                                         : isFocused
-                                          ? "bg-white/[0.05] "
-                                          : "hover:bg-white/[0.05] ")
+                                          ? "bg-sidebar-accent/70 "
+                                          : "hover:bg-sidebar-accent/60 ")
                                 }
                                 onClick={() => handleSelect(session)}
                                 onContextMenu={(event) => handleContextMenu(event, session)}
                                 onMouseEnter={() => setActiveIdx(idx)}
                             >
-                                <span className="min-w-0 flex-1 truncate text-[13px] leading-[1.4] text-foreground/85">
-                                    {title}
-                                </span>
-                                <span className="shrink-0 text-[11px] leading-[1.4] text-muted-foreground/60">
+                                <span className="min-w-0 flex-1 truncate text-[13px] leading-[1.4]">{title}</span>
+                                <span className="shrink-0 text-[11px] leading-[1.4] text-muted-foreground/50">
                                     {time}
                                 </span>
                             </button>
