@@ -8,6 +8,10 @@ vi.mock("@crest/ai/models", () => ({
     getSupportedThinkingLevels: vi.fn(() => []),
 }));
 vi.mock("../models-dev-overlay", () => ({ getCapabilityOverlay: vi.fn() }));
+vi.mock("./secrets", () => ({
+    getSecret: vi.fn(),
+    _resetSecretsCacheForTests: vi.fn(),
+}));
 
 import { APIType_AnthropicMessages, listProviderModels } from "./list-provider-models";
 
