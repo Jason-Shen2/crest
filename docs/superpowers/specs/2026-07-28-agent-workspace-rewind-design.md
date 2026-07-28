@@ -1,6 +1,6 @@
 # Agent Workspace Rewind Design
 
-**Status:** Draft for review
+**Status:** Approved for implementation
 
 **Date:** 2026-07-28
 
@@ -433,9 +433,10 @@ fails closed and removes nothing. Fork needs no object copy: its copied entry
 becomes another logical owner, so deleting the source session cannot invalidate
 the fork. Archive/trash lookup is by session ID rather than the session's
 mutable path. Unreferenced refs receive a grace period and a second
-reconciliation before Git GC; reachable snapshots are never pruned merely
-because they are old. The first release retains all checkpoints while any
-session entry references them, and default enablement is gated on
+reconciliation before Git GC; the production grace is fixed at seven days and
+cannot be shortened by renderer or IPC input. Reachable snapshots are never
+pruned merely because they are old. The first release retains all checkpoints
+while any session entry references them, and default enablement is gated on
 storage-growth/quota testing.
 
 Capture has hard resource bounds. Session attach performs a best-effort warm
@@ -448,6 +449,13 @@ capture limit or encounters `ENOSPC` becomes an unavailable checkpoint; the
 agent response continues. The reconciler may remove only unreferenced objects.
 If referenced snapshots alone exceed quota, new checkpoints remain unavailable
 with a visible cleanup action until session/reference removal frees space.
+Archive and recoverable delete-to-trash remain owner sources and therefore do
+not release quota. The storage UI may clean only already-unreferenced objects,
+or list trashed sessions for an explicit second-confirmation permanent purge.
+That purge accepts an opaque, short-lived token rather than a database path or
+snapshot ref, follows session-lease then workspace-lock ordering, removes the
+trashed session DB, and reruns owner reconciliation. Active or archived
+sessions are never directly purgeable from this quota surface.
 
 ### 2. Checkpoint Journal in the Session Tree
 
@@ -701,8 +709,9 @@ Applying:
    - explicit target `absent`: unlink a regular file or symlink only;
    - target `excluded`: never enters the apply set.
    File/directory collisions, symlink ancestors, and non-empty directories are
-   conflicts unless every descendant that must be removed is an explicitly
-   covered member of the same plan.
+   hard blockers in the first release. The v1 path-state and recovery
+   classifier do not represent directory state, so even an apparently covered
+   descendant set cannot safely authorize a structural conversion.
 4. Capture the complete post-apply workspace tree, durably anchor every
    snapshot referenced by the pending session entry, and verify the effective
    paths against their target states.
