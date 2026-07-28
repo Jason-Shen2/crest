@@ -36,14 +36,20 @@ products:
   branch suffix. It never runs whole-workspace `reset --hard` or `clean -fd`.
 - A safety/tip snapshot is persisted before restore and becomes the source for
   Redo.
-- Drift checks fail closed instead of silently overwriting files changed after
-  the latest checkpoint.
+- Drift checks fail closed by default. A conflicting preview may offer an
+  explicit, narrowly scoped Force Revert that overwrites only the displayed
+  drift-conflict paths after capturing their current state for Redo.
 - Conversation movement happens only after file restore and verification
   succeed. A recovery journal bridges the unavoidable filesystem/SQLite
   transaction boundary.
 
-The first product entry point is a dedicated `/rewind` command. Existing
-`/tree` remains conversation-only.
+The first product release has two equivalent entry points:
+
+- an OpenCode-style Revert action beside every eligible user message; and
+- a dedicated `/rewind` command for keyboard-first historical selection.
+
+Both open the same server-planned file preview. Existing `/tree` remains
+conversation-only.
 
 ## Reference Provenance and Crest-Owned Decisions
 
@@ -60,8 +66,11 @@ below records the source of inspiration for every major decision.
 | Preserve the current tip for reversal | Primary reference. OpenCode stages the current snapshot before revert and uses it to clear the revert. | pi-rewind does not currently expose a product-level `/redo`. | Crest persists a safety tree and records a one-step redo marker in hidden workspace state. New user work invalidates it. |
 | `/rewind` command name and checkpoint picker | OpenCode uses `/undo`, not `/rewind`. See the [OpenCode TUI commands](https://opencode.ai/docs/tui/). | Primary command reference. pi-rewind registers `/rewind`, selects an earlier checkpoint, and can restore code and conversation to before that prompt. | Crest keeps `/rewind` because it can select any eligible earlier user turn and because `/tree` already means conversation navigation. Crest does not reuse pi-rewind's restore engine. |
 | `/redo` command name and user model | Primary command reference. OpenCode exposes `/redo` after `/undo` and restores the undone message and file changes. See the [OpenCode TUI commands](https://opencode.ai/docs/tui/) and [`use-session-commands.tsx`](https://github.com/anomalyco/opencode/blob/dev/packages/app/src/pages/session/use-session-commands.tsx). | No `/redo` command is registered by the current pi-rewind extension. | Crest adopts the familiar name but deliberately limits the first release to one-step redo. Its redo record, safety checks, and recovery are Crest-specific. |
+| Message-side Revert action | Primary UI reference. OpenCode renders a reset action beside each user message. See [`message-part.tsx`](https://github.com/anomalyco/opencode/blob/017a5977d2107092007623e507fc5c6eb337d3b2/packages/session-ui/src/components/message-part.tsx#L1382-L1394). | No direct reference. | Crest adds the action to its existing user-message action bar and routes it through preview before mutation. OpenCode currently stages the revert directly; Crest deliberately adds confirmation because its shared-workspace safety model is stricter. |
+| Post-revert recovery/Redo surface | Primary UI reference. OpenCode renders rolled-back messages in a collapsible dock above the composer with restore actions. See [`session-revert-dock.tsx`](https://github.com/anomalyco/opencode/blob/017a5977d2107092007623e507fc5c6eb337d3b2/packages/app/src/pages/session/composer/session-revert-dock.tsx#L161-L180). | No direct reference. | Crest uses the same placement and persistent-dock pattern, but the first release shows one operation summary and a single `Redo` action rather than per-message forward stepping. |
+| Red drift warning and `Force revert` | Not present in the current OpenCode `dev` implementation. OpenCode's current core restore path does not expose this conflict UX. | Not present. | Crest-owned product requirement. Only live-state drift/ownership mismatches are forceable. Missing snapshots, unsafe paths/types, stale leaves, busy sessions, and recovery-journal unknown states remain hard blockers. |
 | Keep `/tree` conversation-only | OpenCode has no equivalent conversation-tree command in this flow. | pi-rewind can optionally synchronize code while navigating Pi's tree. | Crest deliberately does not overload the existing `/tree`; combined conversation-and-code restoration remains explicit through `/rewind`. |
-| Multi-session isolation and conflict refusal | No equivalent guarantee in the referenced rewind flow. | No equivalent guarantee. | Crest-owned requirement. A session may restore only a path whose current state still matches the state produced by that session; otherwise restore refuses the path or operation according to the confirmed policy. |
+| Multi-session isolation and conflict handling | No equivalent guarantee in the referenced rewind flow. | No equivalent guarantee. | Crest-owned requirement. Normal Revert never overwrites a path whose live state no longer matches the session's expected state. The user may explicitly Force Revert the exact red-listed drift paths after being warned that they may contain manual or other-session edits. |
 | Durable refs, workspace lock, crash journal, scope identity, quotas, and garbage collection | OpenCode supplies the snapshot/restore basis and a useful precedent for limiting untracked-file capture. | pi-rewind supplies lifecycle and checkpoint-retention precedents. | The concrete durability protocol, recovery journal, lock ordering, canonical workspace identity, scope/incarnation identity, descriptor schema, and quotas are Crest-owned production hardening. |
 
 ### Command Naming Decision
@@ -81,6 +90,21 @@ below records the source of inspiration for every major decision.
   latest user message, while Crest's `/rewind` can target any eligible earlier
   user turn. Calling both behaviors `/undo` would hide that distinction.
 
+### UI Reference Decision
+
+- **Directly from OpenCode:** put a Revert action in the user-message action
+  row, hide it while the session is running, and show a persistent recovery
+  dock above the composer after a successful revert.
+- **Adapted for Crest:** clicking Revert opens a file preview instead of
+  mutating immediately. The same preview is used by `/rewind`.
+- **Crest-owned:** red conflict rows, the exact warning
+  `files changed on disk since the agent last wrote them`, and the
+  `Force revert` action. These do not exist in the current OpenCode `dev`
+  implementation and must not be described as copied OpenCode behavior.
+- **Terminology:** UI labels use `Revert`/`Redo`, matching OpenCode's
+  message-action vocabulary. `/rewind` remains the keyboard command because it
+  includes a historical target picker.
+
 ### Explicitly Not Reused
 
 - No pi-rewind source code is copied; the lifecycle and UX concepts are
@@ -90,6 +114,8 @@ below records the source of inspiration for every major decision.
   checkout.
 - Crest does not move the conversation pointer after a failed code restore.
 - Crest does not assume that the user's workspace is a Git repository.
+- Crest does not copy OpenCode's direct-click mutation; all UI and command
+  entry points preview the exact server-side plan before applying it.
 
 ## Goals
 
@@ -102,6 +128,10 @@ below records the source of inspiration for every major decision.
 - Support both Git and non-Git workspaces.
 - Keep user Git state untouched.
 - Provide preview, conflict detection, rollback-on-failure, and Redo.
+- Provide both a message-side Revert action and keyboard-first slash commands.
+- Show every planned file operation before mutation, and require an explicit
+  destructive Force Revert when displayed live-state drift would otherwise
+  block the operation.
 - Preserve abandoned conversation branches.
 - Keep live and reopened/cold sessions behaviorally identical.
 
@@ -117,8 +147,10 @@ below records the source of inspiration for every major decision.
   metadata.
 - Replacing Git as durable project history.
 - Adding worktree isolation.
-- A force-overwrite path in the first release.
-- Message-level checkpoint buttons in the first release.
+- Force-overriding missing snapshots, unsafe path/type conflicts, stale session
+  state, busy sessions, or unknown crash-recovery states.
+- Multi-step forward history in the first release; Redo restores only the most
+  recent successful Revert/Rewind.
 
 ## Existing Crest Foundations
 
@@ -190,19 +222,31 @@ conversation-only navigation preserves hidden checkpoint coverage and selecting
 the current visible tip is a physical no-op without reviving historical
 workspace state.
 
+### Message-side Revert
+
+Every eligible user message exposes a reset/Revert action in the existing
+message action row beside Copy and Edit:
+
+- the latest eligible message keeps the action visible;
+- older eligible messages reveal it on hover or keyboard focus;
+- the action is hidden or disabled while that session is running, when its
+  checkpoint is unavailable, or when recovery has frozen the workspace; and
+- the action carries the message's persisted `turnId`; the renderer never
+  infers a checkpoint from array position or visible text.
+
+This placement and action vocabulary directly reference OpenCode's user-message
+Revert control. Unlike OpenCode's current direct-stage behavior, clicking it
+does not mutate files immediately. It opens the shared Revert preview dialog
+for that exact turn.
+
 ### `/rewind`
 
 1. Requires the selected session to be idle.
 2. Lists checkpointed user turns on the current active branch only.
 3. Defaults focus to the most recent rewindable turn.
-4. Selecting a turn opens a preview containing:
-   - the number and list of paths that will be restored;
-   - creates, deletes, and writes;
-   - snapshot coverage warnings;
-   - drift conflicts, if any.
-5. Confirmation re-runs planning and drift checks against the current leaf and
-   current workspace. A stale preview can never authorize a stale restore.
-6. On success:
+4. Selecting a turn scrolls/reveals that message when possible and opens the
+   same Revert preview dialog as the message-side action.
+5. On success:
    - affected files match the state immediately before the selected user turn;
    - the conversation leaf moves to the transaction-aware boundary immediately
      before that turn;
@@ -212,6 +256,54 @@ workspace state.
 If any checkpoint is missing between the selected turn and the current active
 tip, combined code-and-conversation rewind is unavailable for that target.
 `/tree` remains available for conversation-only navigation.
+
+### Shared Revert Preview and Force Revert
+
+The message action and `/rewind` share one server-authored preview. The dialog
+shows:
+
+- the selected prompt and the number of messages that will leave the active
+  branch;
+- every effective file operation grouped as create, write, delete, or rename;
+- an expandable diff for supported file kinds;
+- coverage warnings for paths that cannot be restored; and
+- one status per path: clean, forceable drift conflict, or hard blocker.
+
+The renderer receives display rows but never supplies the restore path set.
+Confirmation always recomputes the plan under the mutation lease and workspace
+lock.
+
+When there is no conflict, the footer shows `Cancel` and `Revert`. When at least
+one forceable drift conflict exists and there is no hard blocker:
+
+- each conflicting path is rendered in the destructive/red state;
+- the canonical warning is shown exactly as
+  **`files changed on disk since the agent last wrote them`**;
+- ordinary `Revert` is unavailable; and
+- the only mutation action is the destructive `Force revert` button. `Cancel`
+  always remains available.
+
+If any hard blocker exists, the dialog shows its reason and only `Cancel`;
+neither Revert nor Force Revert is available.
+
+Force Revert is intentionally narrow:
+
+- it may bypass only a live-state drift/ownership mismatch for the exact paths
+  shown in red;
+- it warns that those bytes may be manual edits or work from another Agent
+  Session;
+- confirmation is rejected as stale if the semantic leaf, workspace
+  incarnation, plan, or conflict set has changed since the displayed preview;
+- after revalidation, Crest captures the current live states in the durable
+  safety snapshot before overwriting them, so Redo can restore the force-time
+  state; and
+- it can never bypass a missing/unavailable checkpoint, path or symlink escape,
+  excluded/unsafe entry kind, file/directory collision, busy session, corrupt
+  metadata, or frozen recovery journal.
+
+Normal Revert therefore never overwrites another actor's detected changes.
+Force Revert is the explicit user-authorized exception, limited to the
+displayed affected paths rather than the whole workspace.
 
 ### `/redo`
 
@@ -227,6 +319,13 @@ tip, combined code-and-conversation rewind is unavailable for that target.
   rewind replaces the currently offered Redo.
 - Sending a new user prompt from a rewound state naturally invalidates that
   Redo: the rewind-state entry is no longer the current leaf.
+- After a successful Revert/Rewind, Crest shows an OpenCode-style persistent
+  dock immediately above the composer. Its collapsed state displays
+  `Reverted <message-count> messages · <file-count> files` and a visible
+  `Redo` action. Expanding it shows the restored file list and target prompt.
+- `/redo` and the dock's `Redo` button invoke the same dedicated backend
+  operation. Redo availability is derived from persisted session state, so the
+  dock survives reload and cold-session resume.
 
 ## Architecture
 
@@ -561,27 +660,42 @@ Planning:
      overlaid by the current hidden workspace-state entry when present;
    - any `excluded` state remains unmanaged and is never added to the apply
      set.
-7. Compare each affected live path with its explicit expected current state.
-   Any mismatch is a drift conflict and blocks the operation.
+7. Compare each affected live path with its explicit expected current state
+   and classify the result:
+   - an exact match is clean;
+   - a content, executable-bit, or presence mismatch on an otherwise covered
+     regular-file path is a forceable drift conflict; and
+   - missing snapshot coverage, unsafe structure, path escape, workspace
+     identity/incarnation mismatch, or invalid metadata is a hard blocker.
+   Normal mode is blocked by either conflict class. Force mode may bypass only
+   the forceable drift class and only after the UI displayed that exact
+   live-state fingerprint.
 8. Derive the effective apply set by removing paths whose expected current
    state already equals their target state. The broader union remains only for
    coverage/provenance; unchanged paths are not rewritten.
 
 Preview performs this plan and hashes only affected paths needed for live-state
-comparison. It does not capture a full safety snapshot, create durable refs, or
-write a journal, and it releases its short-lived session lease before returning
-to the UI.
+comparison. It returns an opaque confirmation token bound to the workspace
+incarnation, session, semantic leaf, target turn, effective path set, live-state
+fingerprints, and conflict classifications. It does not capture a full safety
+snapshot, create durable refs, or write a journal, and it releases its
+short-lived session lease before returning to the UI.
 
 Applying:
 
 1. Reacquire and retain the session mutation lease, then acquire one
    continuously held canonical-workspace mutation lock. Recompute the plan and
-   leaf, re-hash affected paths, and reject any drift since preview.
-2. Capture the full safety snapshot, anchor it under
+   leaf and re-hash affected paths. Normal mode rejects any drift. Force mode
+   proceeds only when every forceable conflict and fingerprint exactly matches
+   the confirmation token; a new, removed, or changed conflict returns a stale
+   preview and requires the user to review it again.
+2. Capture the full safety snapshot, including the current bytes of every
+   force-confirmed path, anchor it under
    `refs/crest/ops/<operation-id>`, durably write a `prepared` journal
    containing session ID, expected semantic leaf, target boundary, safety
-   snapshot, and explicit live/target state for every effective path, then
-   durably advance it to `applying_files`.
+   snapshot, apply mode, confirmed conflict fingerprints, and explicit
+   live/target state for every effective path, then durably advance it to
+   `applying_files`.
 3. Restore only effective paths from their explicit target states:
    - target file/symlink: restore raw content, kind, and executable bit;
    - explicit target `absent`: unlink a regular file or symlink only;
@@ -632,6 +746,8 @@ interface WorkspaceStateV1 {
   workspaceIdentity: string;
   workspaceIncarnation: string;
   kind: "rewind" | "redo";
+  applyMode: "normal" | "force-drift";
+  forcedPaths: string[];
   currentSnapshot: WorkspaceSnapshotRefV1;
   currentStates: Array<{ path: string; state: CapturedPathStateV1 }>;
   rewind?: {
@@ -648,7 +764,8 @@ interface WorkspaceStateV1 {
 `rewind.redoSnapshot`, and `rewind.fromLeafId`. Redo restores those explicit
 path states, captures the complete resulting snapshot, and appends
 `kind: "redo"` with `parentId = fromLeafId`. The redo marker has no further
-Redo payload.
+Redo payload. `applyMode` and `forcedPaths` are durable audit facts; the
+renderer does not use them to infer authority for a later operation.
 
 ## Recovery Journal
 
@@ -719,8 +836,10 @@ UI provides:
   clears the workspace gate, and lets unreachable operation refs age through
   normal grace-period reconciliation.
 
-Any other leaf requires manual repair before Retry. There is no force-restore
-action in the first release.
+Any other leaf requires manual repair before Retry. Recovery UI never offers
+Force Retry/Restore: product-level Force Revert is available only before an
+operation starts, while the preview still proves the exact live states the user
+is authorizing Crest to overwrite.
 
 Durability order is strict:
 
@@ -786,13 +905,20 @@ Consequently:
 - changes made by another actor during a turn can be included in that turn's
   before/after diff;
 - changes made after the expected current workspace state are detected on
-  overlapping affected paths and block restore;
+  overlapping affected paths and block normal restore;
+- Force Revert is an explicit user decision to waive that protection only for
+  the red-listed drift paths in the current preview. It may overwrite manual
+  work or another Agent Session's writes on those paths. Paths outside the
+  effective apply set remain untouched;
 - a writer racing after the final drift check remains an unavoidable limitation
   of a shared physical workspace.
 
-The UI states this limitation in preview. The first release has no force mode.
-Strict cross-session isolation requires separate worktrees or a filesystem
-transaction layer and is outside this design.
+The UI states these limitations in preview. Crest guarantees that automatic and
+ordinary Revert never knowingly overwrite another actor's detected changes; it
+does not make that guarantee after the user explicitly confirms Force Revert.
+Strict cross-session isolation even against explicit force or final-check races
+requires separate worktrees or a filesystem transaction layer and is outside
+this design.
 
 ## Snapshot Coverage and Security
 
@@ -845,8 +971,17 @@ Rewind uses dedicated agent APIs rather than changing `navigateTree` semantics:
 
 Every mutation request carries session metadata and
 `expectedSemanticLeafId`.
-`rewind-tree` recomputes the plan server-side; it does not trust renderer paths
-or a prior preview.
+`rewind-tree` additionally carries:
+
+- `targetTurnId`;
+- `mode: "normal" | "force-drift"`; and
+- the opaque confirmation token returned by the latest preview.
+
+The preview response contains display-only file rows with operation, diff
+summary, coverage status, conflict classification/reason, and
+`forceRequired`/`hardBlocked`. `rewind-tree` recomputes the plan server-side and
+verifies the token; it never trusts renderer-supplied paths, hashes, or
+conflict flags.
 
 The new APIs follow the existing agent IPC surface through:
 
@@ -860,11 +995,24 @@ The renderer adds:
 
 - `/rewind` to command discovery and routing;
 - a dedicated rewind selector based on the existing selector frame;
-- a preview/confirmation state with file and conflict rows;
-- `/redo` as an immediate command when a valid rewind state exists.
+- a reset/Revert action in the existing user-message action bar, using the
+  persisted `turnId` already carried in message metadata;
+- one shared preview dialog owned by the Agent conversation surface, populated
+  only by `agent:preview-rewind`;
+- expandable create/write/delete/rename file rows and supported diffs;
+- destructive red styling and the exact drift warning for each forceable
+  conflict;
+- `Cancel` plus ordinary `Revert` when clean, or `Cancel` plus destructive
+  `Force revert` when forceable drift exists;
+- a dedicated persistent post-revert dock above the composer with a visible
+  `Redo` action and an expandable operation/file summary; and
+- `/redo` as an immediate command when persisted session state reports a valid
+  rewind marker.
 
-The first release does not add per-message buttons. That can be layered on the
-same preview/apply APIs later.
+The OpenCode reference is limited to the message action and post-revert dock
+placement. The preview dialog, conflict display, and Force Revert state are
+Crest-specific. Direct UI, `/rewind`, dock Redo, and `/redo` share the same
+preview/apply coordinators and cannot diverge semantically.
 
 ## Error Semantics
 
@@ -884,11 +1032,22 @@ Rewind/Redo:
 
 - reject a running target session;
 - reject stale leaf or stale plan state;
-- reject path escape, symlink escape, missing snapshot objects, and drift;
+- always reject path escape, symlink escape, unsafe structure/kind, missing
+  snapshot objects, workspace-incarnation mismatch, and frozen recovery state;
+- reject live-state drift in normal Revert;
+- allow Force Revert to bypass only the exact forceable drift fingerprints
+  displayed in the confirmation preview; any changed conflict invalidates the
+  confirmation;
 - leave conversation unchanged on any pre-commit failure;
 - perform only classifier-verified rollback on partial apply or
   conversation-commit failure;
 - retain a recovery journal if automatic rollback cannot be verified.
+
+Redo uses the same preview and hard-blocker checks. The first release does not
+offer Force Redo: if files changed after Revert, Redo remains available but
+opens a red conflict preview and cannot apply until those paths again match the
+expected rewound state. This avoids silently overwriting new work created after
+the Revert and avoids creating a second forward-history stack.
 
 ## Testing Strategy
 
@@ -940,7 +1099,13 @@ All production behavior is developed test-first.
 - unchanged paths remain untouched;
 - target-absent files are deleted exactly;
 - rename restores both sides;
-- drift blocks with no mutation;
+- drift blocks normal Revert with no mutation;
+- Force Revert bypasses only preview-confirmed drift paths and never hard
+  blockers;
+- adding, removing, or changing a conflict after preview invalidates Force
+  confirmation without mutation;
+- forced safety capture plus Redo restores the exact bytes that existed at
+  Force Revert confirmation;
 - an effective no-op performs no filesystem write;
 - mid-apply failure uses classifier-safe rollback;
 - an unknown third-party write before in-process rollback is never overwritten;
@@ -949,6 +1114,9 @@ All production behavior is developed test-first.
 - a new prompt invalidates Redo;
 - concurrent restore transactions cannot interleave;
 - concurrent sessions share store safely without whole-workspace reset;
+- two-session tests prove normal Revert never overwrites detected overlapping
+  writes, while explicit Force Revert touches only the displayed effective path
+  set;
 - workspace deletion/recreation without a pending journal invalidates every old
   snapshot at preview and confirmation.
 
@@ -988,6 +1156,18 @@ All production behavior is developed test-first.
 - frozen recovery blocks all write-capable entry points but permits read-only
   inspect/export;
 - preview confirmation and composer prompt restoration;
+- eligible message action visibility, hover/focus access, busy/coverage
+  disabling, and persisted `turnId` targeting;
+- clean file preview renders `Revert`; forceable conflicts render red path rows,
+  the exact `files changed on disk since the agent last wrote them` warning,
+  and `Force revert` instead of ordinary `Revert`;
+- hard blockers never render a Force action;
+- successful Revert shows the persistent Redo dock; Redo, a new prompt, or
+  navigation to another branch removes it according to persisted semantic
+  state; reload/cold resume restores it;
+- message action and `/rewind` produce equivalent preview/apply requests, and
+  dock Redo and `/redo` are equivalent;
+- Redo drift opens a blocked conflict preview and never offers Force Redo;
 - `/tree` remains conversation-only;
 - `/rewind` and `/redo` command discovery and routing.
 
@@ -998,7 +1178,9 @@ All production behavior is developed test-first.
 2. Integrate lifecycle capture and validate checkpoint generation without
    exposing restore.
 3. Add backend preview/apply/redo APIs and failure-injection tests.
-4. Add `/rewind` preview UI and `/redo`.
+4. Add the message-side Revert action, shared file preview, conflict/Force
+   Revert states, persistent Redo dock, `/rewind`, and `/redo` together so every
+   entry point ships with identical safety behavior.
 5. Enable by default after storage growth, cross-platform, crash recovery, and
    multi-session stress tests pass on Linux, macOS, and Windows. The platform
    matrix explicitly covers symlink support, case-only rename, atomic replace,
