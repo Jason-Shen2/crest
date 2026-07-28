@@ -383,6 +383,87 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 		}
 	}
 
+	async findById(sessionId: string): Promise<JsonlSessionMetadata | undefined> {
+		if (!sessionId || sessionId.includes("\0")) {
+			throw new SessionError("invalid_session", "Invalid session id");
+		}
+		const sessions = await this.scanAllMetadata();
+		return sessions.find((metadata) => metadata.id === sessionId);
+	}
+
+	async scanAllMetadata(): Promise<JsonlSessionMetadata[]> {
+		const files = await this.scanSessionFilesRecursively(this.sessionsRoot);
+		const sessions: JsonlSessionMetadata[] = [];
+		const canonicalRoot = files.length === 0 ? undefined : await fsp.realpath(this.sessionsRoot);
+		for (const filePath of files) {
+			const before = await fsp.lstat(filePath, { bigint: true });
+			if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+				throw new SessionError("invalid_session", `Session owner file is unsafe: ${filePath}`);
+			}
+			const resolvedPath = await fsp.realpath(filePath);
+			if (!canonicalRoot || !resolvedPath.startsWith(`${canonicalRoot}${path.sep}`)) {
+				throw new SessionError("invalid_session", `Session path escapes the sessions root: ${filePath}`);
+			}
+			const storage = SqliteSessionStorage.open(filePath);
+			try {
+				sessions.push(await storage.getMetadata());
+			} finally {
+				storage.close();
+			}
+			const after = await fsp.lstat(filePath, { bigint: true });
+			if (
+				!after.isFile() ||
+				after.isSymbolicLink() ||
+				after.nlink !== 1n ||
+				before.dev !== after.dev ||
+				before.ino !== after.ino ||
+				before.birthtimeNs !== after.birthtimeNs
+			) {
+				throw new SessionError("invalid_session", `Session owner file changed while scanning: ${filePath}`);
+			}
+		}
+		sessions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+		return sessions;
+	}
+
+	private async scanSessionFilesRecursively(root: string): Promise<string[]> {
+		if (!(await pathExists(root))) return [];
+		const files: string[] = [];
+		const pending = [root];
+		while (pending.length > 0) {
+			const current = pending.pop()!;
+			const before = await fsp.lstat(current, { bigint: true });
+			if (!before.isDirectory() || before.isSymbolicLink()) {
+				throw new SessionError("invalid_session", `Session owner directory is unsafe: ${current}`);
+			}
+			const dirents = await fsp.readdir(current, { withFileTypes: true });
+			const after = await fsp.lstat(current, { bigint: true });
+			if (
+				!after.isDirectory() ||
+				after.isSymbolicLink() ||
+				before.dev !== after.dev ||
+				before.ino !== after.ino ||
+				before.birthtimeNs !== after.birthtimeNs
+			) {
+				throw new SessionError("invalid_session", `Session owner directory changed while scanning: ${current}`);
+			}
+			for (const dirent of dirents) {
+				const entryPath = path.join(current, dirent.name);
+				if (dirent.isSymbolicLink()) {
+					throw new SessionError("invalid_session", `Session owner source is a symlink: ${entryPath}`);
+				}
+				if (dirent.isDirectory()) {
+					pending.push(entryPath);
+					continue;
+				}
+				if (dirent.isFile() && dirent.name.endsWith(SESSION_FILE_EXT)) {
+					files.push(entryPath);
+				}
+			}
+		}
+		return files.sort();
+	}
+
 	private async listSessionDirs(): Promise<string[]> {
 		if (!(await pathExists(this.sessionsRoot))) return [];
 		const dirents = await fsp.readdir(this.sessionsRoot, { withFileTypes: true });

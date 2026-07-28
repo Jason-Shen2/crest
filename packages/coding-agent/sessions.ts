@@ -108,6 +108,10 @@ export async function openPaneSessionByPath(sessionPath: string): Promise<Sessio
     return getSessionsRepo().openPath(sessionPath);
 }
 
+export async function findPaneSessionById(sessionId: string): Promise<JsonlSessionMetadata | undefined> {
+    return getSessionsRepo().findById(sessionId);
+}
+
 export async function renamePaneSession(sessionMetadata: JsonlSessionMetadata, name: string): Promise<void> {
     await getSessionsRepo().rename(sessionMetadata, name);
 }

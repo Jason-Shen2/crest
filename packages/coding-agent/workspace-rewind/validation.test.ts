@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { decodeWorkspaceCheckpointV1, decodeWorkspaceStateV1 } from "./validation";
+import { decodeWorkspaceCheckpointV1, decodeWorkspaceSnapshotRefV1, decodeWorkspaceStateV1 } from "./validation";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
@@ -109,6 +109,14 @@ function workspaceState(kind: "rewind" | "redo" = "rewind") {
 }
 
 describe("workspace rewind validation", () => {
+    it("exports the same strict exact-shape snapshot decoder for durable owner records", () => {
+        const value = snapshot();
+
+        expect(decodeWorkspaceSnapshotRefV1(value)).toEqual(value);
+        expect(decodeWorkspaceSnapshotRefV1({ ...value, extra: true })).toBeUndefined();
+        expect(decodeWorkspaceSnapshotRefV1({ ...value, id: "a".repeat(39) })).toBeUndefined();
+    });
+
     it("decodes available and unavailable checkpoint variants without changing their values", () => {
         const available = availableCheckpoint();
         const unavailable = unavailableCheckpoint();

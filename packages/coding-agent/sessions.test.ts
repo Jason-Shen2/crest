@@ -17,6 +17,7 @@ import {
     _setSessionsRepoForTests,
     createPaneSession,
     defaultSessionsDir,
+    findPaneSessionById,
     forkPaneSession,
     listAllSessionDetails,
     listSessionDetailsForCwd,
@@ -68,6 +69,13 @@ describe("sessions — SqliteSessionRepo wiring", () => {
         expect(reopenedMeta.id).toBe(created.metadata.id);
         expect(reopenedMeta.path).toBe(created.metadata.path);
         expect(reopenedMeta.cwd).toBe("/tmp/proj-b");
+    });
+
+    it("findPaneSessionById resolves sessions independent of cwd layout", async () => {
+        const created = await createPaneSession("/tmp/proj-by-id");
+
+        expect(await findPaneSessionById(created.metadata.id)).toEqual(created.metadata);
+        expect(await findPaneSessionById("missing-session")).toBeUndefined();
     });
 
     it("openPaneSessionByPath reopens a session when only the JSONL path is known", async () => {

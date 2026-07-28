@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import {
     link,
@@ -25,8 +25,16 @@ import {
     type AnchoredReaderEntry,
     type AnchoredReaderEntryIdentity,
 } from "./anchored-reader";
+import { encodeDurableJson, ensureDurableGitObjects, writeDurableJson } from "./durability";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
+import {
+    decodePendingWorkspaceBoundaryV1,
+    decodeWorkspaceOperationOwnerV1,
+    readWorkspaceOperationOwner,
+    type PendingWorkspaceBoundaryV1,
+    type WorkspaceOperationOwnerV1,
+} from "./pending-boundary-store";
 import { readProcessStartToken, type ProcessOwnerIdentity } from "./process-owner";
 import type {
     CapturedPathStateV1,
@@ -158,6 +166,7 @@ const StoreGitTimeoutMs = 30_000;
 const BootstrapWaitTimeoutMs = 10_000;
 const InitializationPromises = new Map<string, Promise<void>>();
 const SnapshotFingerprints = new WeakMap<WorkspaceSnapshotStore, Map<string, FileFingerprint>>();
+const TrustedSnapshotDescriptors = new WeakMap<WorkspaceSnapshotStore, Set<string>>();
 const CoverageReasons = new Set([
     "ignored",
     "nested-repository",
@@ -210,6 +219,7 @@ export class WorkspaceSnapshotStore {
         this.git = input.git;
         this.processOwner = input.processOwner;
         SnapshotFingerprints.set(this, new Map());
+        TrustedSnapshotDescriptors.set(this, new Set());
     }
 
     static async open(input: {
@@ -331,12 +341,9 @@ export class WorkspaceSnapshotStore {
                 scopeManifest: manifestOid,
             };
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
+            await this.ensureObjectsDurable([...runtime.objectIds], runtime);
+            await this.anchorSnapshot(ref, runtime);
             const ownerRef = this.ownerRefName(descriptorOid);
-            await this.git.run(["update-ref", ownerRef, descriptorOid], {
-                gitDir: this.storeRoot,
-                timeoutMs: remainingTimeout(deadline),
-                signal: controller.signal,
-            });
             try {
                 await secureCaptureArtifacts(this.storeRoot, runtime.objectIds, ownerRef, runtime);
             } catch (error) {
@@ -345,6 +352,7 @@ export class WorkspaceSnapshotStore {
             }
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
             SnapshotFingerprints.set(this, captured.fingerprints);
+            markSnapshotTrusted(this, ref);
             return {
                 ref,
                 coverage: {
@@ -409,6 +417,7 @@ export class WorkspaceSnapshotStore {
             await this.verifyDescriptor(snapshot);
             const manifest = await this.readStoredManifestBlob(snapshot);
             await this.verifyWorkspaceTree(snapshot, manifest);
+            markSnapshotTrusted(this, snapshot);
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
@@ -433,6 +442,222 @@ export class WorkspaceSnapshotStore {
         ) {
             throw new Error("Snapshot descriptor has an invalid scope manifest");
         }
+    }
+
+    async anchorSnapshot(ref: WorkspaceSnapshotRefV1, runtime = makeMaintenanceRuntime()): Promise<void> {
+        this.assertSnapshotIdentity(ref);
+        await this.ensureObjectsDurable([ref.id, ref.tree, ref.scopeManifest], runtime);
+        const refName = this.ownerRefName(ref.id);
+        await this.git.run(["update-ref", refName, ref.id], {
+            gitDir: this.storeRoot,
+            timeoutMs: remainingTimeout(runtime.deadline),
+            signal: runtime.signal,
+        });
+        await secureCaptureArtifacts(this.storeRoot, new Set(), refName, runtime);
+    }
+
+    async anchorPending(record: PendingWorkspaceBoundaryV1): Promise<void> {
+        if (!decodePendingWorkspaceBoundaryV1(record)) {
+            throw new Error("Invalid pending workspace boundary");
+        }
+        this.assertSnapshotIdentity(record.before);
+        if (record.after) {
+            this.assertSnapshotIdentity(record.after);
+        }
+        await this.verifyUntrustedSnapshot(record.before);
+        if (record.after) {
+            await this.verifyUntrustedSnapshot(record.after);
+        }
+        await this.anchorSnapshot(record.before);
+        if (record.after) {
+            await this.anchorSnapshot(record.after);
+        }
+        const descriptor = await this.git.run(["hash-object", "-w", "--stdin", "--no-filters"], {
+            gitDir: this.storeRoot,
+            stdin: encodeDurableJson(record),
+            timeoutMs: StoreGitTimeoutMs,
+        });
+        const descriptorOid = parseOid(descriptor.stdout);
+        await this.ensureObjectsDurable([descriptorOid]);
+        const refName = this.pendingRefName(record);
+        await this.git.run(["update-ref", refName, descriptorOid], {
+            gitDir: this.storeRoot,
+            timeoutMs: StoreGitTimeoutMs,
+        });
+        await secureCaptureArtifacts(this.storeRoot, new Set(), refName);
+    }
+
+    async anchorOperation(record: WorkspaceOperationOwnerV1): Promise<void> {
+        if (!decodeWorkspaceOperationOwnerV1(record)) {
+            throw new Error("Invalid workspace operation owner");
+        }
+        if (
+            record.workspaceIdentity !== this.identity.workspaceIdentity ||
+            record.workspaceIncarnation !== this.identity.workspaceIncarnation
+        ) {
+            throw new Error("Workspace operation belongs to another workspace incarnation");
+        }
+        validateRefToken(record.operationId, "operation id");
+        this.assertSnapshotIdentity(record.snapshot);
+        const canonicalRecord = encodeDurableJson(record);
+        const refName = `refs/crest/ops/${record.operationId}`;
+        const existingRecord = await readWorkspaceOperationOwner(this, record.operationId);
+        if (existingRecord && !encodeDurableJson(existingRecord).equals(canonicalRecord)) {
+            throw new Error("Workspace operation id already belongs to another owner");
+        }
+        const existingRef = await this.readCrestRefBlob(refName);
+        if (existingRef) {
+            let value: unknown;
+            try {
+                value = JSON.parse(existingRef.bytes.toString("utf8"));
+            } catch {
+                throw new Error("Invalid workspace operation ref descriptor");
+            }
+            const refRecord = decodeWorkspaceOperationOwnerV1(value);
+            if (
+                !refRecord ||
+                refRecord.operationId !== record.operationId ||
+                !existingRef.bytes.equals(encodeDurableJson(refRecord))
+            ) {
+                throw new Error("Invalid workspace operation ref descriptor");
+            }
+            if (!existingRef.bytes.equals(canonicalRecord)) {
+                throw new Error("Workspace operation id already belongs to another owner");
+            }
+        }
+        await this.verifyUntrustedSnapshot(record.snapshot);
+        await this.anchorSnapshot(record.snapshot);
+        const descriptor = await this.git.run(["hash-object", "-w", "--stdin", "--no-filters"], {
+            gitDir: this.storeRoot,
+            stdin: canonicalRecord,
+            timeoutMs: StoreGitTimeoutMs,
+        });
+        const descriptorOid = parseOid(descriptor.stdout);
+        await this.ensureObjectsDurable([descriptorOid]);
+        if (existingRef && existingRef.oid !== descriptorOid) {
+            throw new Error("Workspace operation ref conflicts with its durable owner");
+        }
+        let createdRef = false;
+        if (!existingRef) {
+            await this.git.run(["update-ref", refName, descriptorOid, "0".repeat(40)], {
+                gitDir: this.storeRoot,
+                timeoutMs: StoreGitTimeoutMs,
+            });
+            createdRef = true;
+        }
+        await secureCaptureArtifacts(this.storeRoot, new Set(), refName);
+        const operationsRoot = join(this.storeRoot, "journal", "operations");
+        await makePrivateDirectory(operationsRoot);
+        try {
+            await writeDurableJson(join(operationsRoot, `${record.operationId}.json`), record);
+        } catch (error) {
+            if (createdRef) {
+                await this.deleteCrestRef(refName);
+            }
+            throw error;
+        }
+    }
+
+    async deleteCrestRef(refName: string): Promise<void> {
+        validateCrestRefName(refName);
+        const current = (await this.listCrestRefs()).find((ref) => ref.name === refName);
+        if (!current) {
+            return;
+        }
+        await this.deleteCrestRefs([current]);
+    }
+
+    async deleteCrestRefs(refs: readonly { name: string; oid: string }[]): Promise<void> {
+        if (refs.length === 0) {
+            return;
+        }
+        const seen = new Set<string>();
+        const commands = ["start"];
+        for (const ref of refs) {
+            validateCrestRefName(ref.name);
+            validateOid(ref.oid);
+            if (seen.has(ref.name)) {
+                throw new Error("Duplicate Crest ref deletion");
+            }
+            seen.add(ref.name);
+            commands.push(`delete ${ref.name} ${ref.oid}`);
+        }
+        commands.push("prepare", "commit", "");
+        await this.git.run(["update-ref", "--stdin"], {
+            gitDir: this.storeRoot,
+            stdin: Buffer.from(commands.join("\n")),
+            timeoutMs: StoreGitTimeoutMs,
+        });
+    }
+
+    async readCrestRefBlob(refName: string): Promise<{ oid: string; bytes: Buffer } | undefined> {
+        validateCrestRefName(refName);
+        const target = await this.git.run(["for-each-ref", "--format=%(objectname)", refName], {
+            gitDir: this.storeRoot,
+            timeoutMs: StoreGitTimeoutMs,
+            maxStdoutBytes: 256,
+        });
+        if (target.stdout.length === 0) {
+            return undefined;
+        }
+        const oid = parseOid(target.stdout);
+        const result = await this.git.run(["cat-file", "blob", oid], {
+            gitDir: this.storeRoot,
+            timeoutMs: StoreGitTimeoutMs,
+        });
+        return { oid, bytes: result.stdout };
+    }
+
+    async listCrestRefs(): Promise<Array<{ name: string; oid: string }>> {
+        const result = await this.git.run(["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/crest"], {
+            gitDir: this.storeRoot,
+            timeoutMs: StoreGitTimeoutMs,
+            maxStdoutBytes: QuotaMaxRefOutputBytes,
+        });
+        if (result.stdout.length === 0) {
+            return [];
+        }
+        return result.stdout
+            .toString("utf8")
+            .trimEnd()
+            .split("\n")
+            .map((line) => {
+                const parts = line.split("\0");
+                if (parts.length !== 2 || !parts[0] || !parts[1]) {
+                    throw new Error("Git returned an invalid Crest ref");
+                }
+                validateCrestRefName(parts[0]);
+                validateOid(parts[1]);
+                return { name: parts[0], oid: parts[1] };
+            });
+    }
+
+    async ensureObjectsDurable(objectIds: readonly string[], runtime = makeMaintenanceRuntime()): Promise<void> {
+        if (objectIds.length === 0) {
+            return;
+        }
+        const unique = [...new Set(objectIds)];
+        for (const oid of unique) {
+            validateOid(oid);
+        }
+        const result = await this.git.run(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+            gitDir: this.storeRoot,
+            stdin: Buffer.from(`${unique.join("\n")}\n`),
+            timeoutMs: remainingTimeout(runtime.deadline),
+            maxStdoutBytes: QuotaMaxObjectOutputBytes,
+            signal: runtime.signal,
+        });
+        const lines = splitLines(result.stdout);
+        if (
+            lines.length !== unique.length ||
+            lines.some((line, index) => {
+                const [oid, type, extra] = line.split(" ");
+                return oid !== unique[index] || !["blob", "tree", "commit", "tag"].includes(type) || extra != null;
+            })
+        ) {
+            throw new Error("Required Git object is missing or invalid");
+        }
+        await ensureDurableGitObjects(this.storeRoot, unique, new Set(unique));
     }
 
     async getQuotaStatus(runtime = makeMaintenanceRuntime()): Promise<WorkspaceSnapshotQuotaStatus> {
@@ -866,7 +1091,8 @@ export class WorkspaceSnapshotStore {
         const runtime = makeMaintenanceRuntime();
         const actual = new Map<string, CapturedPathStateV1>();
         const leafOids = new Set<string>();
-        await this.collectWorkspaceTreeStates(snapshot.tree, "", actual, leafOids, runtime);
+        const treeOids = new Set<string>();
+        await this.collectWorkspaceTreeStates(snapshot.tree, "", actual, leafOids, treeOids, runtime);
         const expected = new Map(
             manifest.entries
                 .filter((entry) => entry.state.state === "file" || entry.state.state === "symlink")
@@ -892,6 +1118,8 @@ export class WorkspaceSnapshotStore {
             });
             assertBatchBlobObjects(objectInfo.stdout, expectedObjectIds);
         }
+        const objectIds = [snapshot.id, snapshot.scopeManifest, ...treeOids, ...leafOids];
+        await ensureDurableGitObjects(this.storeRoot, objectIds, new Set(objectIds));
     }
 
     async collectWorkspaceTreeStates(
@@ -899,8 +1127,10 @@ export class WorkspaceSnapshotStore {
         parentPath: string,
         states: Map<string, CapturedPathStateV1>,
         leafOids: Set<string>,
+        treeOids: Set<string>,
         runtime: CaptureRuntime
     ): Promise<void> {
+        treeOids.add(treeOid);
         const tree = await this.git.run(["cat-file", "tree", treeOid], {
             gitDir: this.storeRoot,
             timeoutMs: remainingTimeout(runtime.deadline),
@@ -909,7 +1139,7 @@ export class WorkspaceSnapshotStore {
         for (const [name, entry] of parseRawTreeEntries(tree.stdout, treeOid.length / 2)) {
             const path = parentPath ? `${parentPath}/${name}` : name;
             if (entry.mode === "40000") {
-                await this.collectWorkspaceTreeStates(entry.oid, path, states, leafOids, runtime);
+                await this.collectWorkspaceTreeStates(entry.oid, path, states, leafOids, treeOids, runtime);
                 continue;
             }
             leafOids.add(entry.oid);
@@ -928,6 +1158,13 @@ export class WorkspaceSnapshotStore {
         }
     }
 
+    async verifyUntrustedSnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
+        if (TrustedSnapshotDescriptors.get(this)!.has(snapshotTrustKey(snapshot))) {
+            return;
+        }
+        await this.verify(snapshot);
+    }
+
     assertSnapshotIdentity(snapshot: WorkspaceSnapshotRefV1): void {
         validateOid(snapshot.id);
         validateOid(snapshot.tree);
@@ -943,6 +1180,12 @@ export class WorkspaceSnapshotStore {
     ownerRefName(snapshotId: string): string {
         validateOid(snapshotId);
         return `refs/crest/snapshots/${snapshotId}`;
+    }
+
+    pendingRefName(record: Pick<PendingWorkspaceBoundaryV1, "sessionId" | "boundaryToken">): string {
+        validateRefToken(record.boundaryToken, "boundary token");
+        const sessionHash = createHash("sha256").update(record.sessionId, "utf8").digest("hex");
+        return `refs/crest/pending/${sessionHash}/${record.boundaryToken}`;
     }
 }
 
@@ -1008,6 +1251,7 @@ async function initializeBareRepository(
     await configureStore(git, storeRoot, "core.autocrlf", "false");
     await configureStore(git, storeRoot, "core.hooksPath", configuredHooks);
     await configureStore(git, storeRoot, "gc.auto", "0");
+    await configureGitFsyncWhenSupported(git, storeRoot);
     await unlink(join(storeRoot, "index")).catch(ignoreMissing);
     await unlink(join(storeRoot, "objects", "info", "alternates")).catch(ignoreMissing);
 }
@@ -1017,6 +1261,33 @@ async function configureStore(git: WorkspaceGitRunner, storeRoot: string, key: s
         gitDir: storeRoot,
         timeoutMs: StoreGitTimeoutMs,
     });
+}
+
+async function configureGitFsyncWhenSupported(git: WorkspaceGitRunner, storeRoot: string): Promise<void> {
+    try {
+        await configureStore(git, storeRoot, "core.fsync", "loose-object,reference");
+        const probe = await git.run(["rev-parse", "--is-bare-repository"], {
+            gitDir: storeRoot,
+            timeoutMs: StoreGitTimeoutMs,
+        });
+        if (/unknown .*fsync|ignoring unknown core\.fsync/i.test(probe.stderr.toString("utf8"))) {
+            throw new WorkspaceGitRunnerError("nonzero_exit", "Git does not support the configured fsync components");
+        }
+    } catch (error) {
+        if (!(error instanceof WorkspaceGitRunnerError) || error.code !== "nonzero_exit") {
+            throw error;
+        }
+        await git
+            .run(["config", "--local", "--unset-all", "core.fsync"], {
+                gitDir: storeRoot,
+                timeoutMs: StoreGitTimeoutMs,
+            })
+            .catch((unsetError) => {
+                if (!(unsetError instanceof WorkspaceGitRunnerError) || unsetError.code !== "nonzero_exit") {
+                    throw unsetError;
+                }
+            });
+    }
 }
 
 async function verifyPrivateStore(storeRoot: string, git: WorkspaceGitRunner): Promise<void> {
@@ -1637,7 +1908,16 @@ async function secureCaptureArtifacts(
         await securePathWithHandle(referenceDirectory, 0o700, "directory");
     }
     assertRuntimeActive(runtime);
-    await securePathWithHandle(join(storeRoot, ...referenceSegments), 0o600, "file");
+    const referencePath = join(storeRoot, ...referenceSegments);
+    if (await pathExists(referencePath)) {
+        await securePathWithHandle(referencePath, 0o600, "file");
+        return;
+    }
+    const packedRefsPath = join(storeRoot, "packed-refs");
+    if (!(await pathExists(packedRefsPath))) {
+        throw new Error(`Snapshot store reference was not published: ${ownerRef}`);
+    }
+    await securePathWithHandle(packedRefsPath, 0o600, "file");
 }
 
 function assertPrivateStorePlatform(): void {
@@ -1821,6 +2101,32 @@ function validateRelativePath(path: string): void {
 function validateOid(oid: string): void {
     if (!/^[0-9a-f]{40,64}$/.test(oid)) {
         throw new Error("Invalid Git object id");
+    }
+}
+
+function snapshotTrustKey(snapshot: WorkspaceSnapshotRefV1): string {
+    return encodeDurableJson(snapshot).toString("utf8");
+}
+
+function markSnapshotTrusted(store: WorkspaceSnapshotStore, snapshot: WorkspaceSnapshotRefV1): void {
+    TrustedSnapshotDescriptors.get(store)!.add(snapshotTrustKey(snapshot));
+}
+
+function validateRefToken(value: string, label: string): void {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) || value.endsWith(".lock") || value.includes("..")) {
+        throw new Error(`Invalid ${label}`);
+    }
+}
+
+function validateCrestRefName(value: string): void {
+    if (
+        !/^refs\/crest\/(?:snapshots\/[0-9a-f]{40}|pending\/[0-9a-f]{64}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}|ops\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.test(
+            value
+        ) ||
+        value.endsWith(".lock") ||
+        value.includes("..")
+    ) {
+        throw new Error("Invalid Crest ref name");
     }
 }
 

@@ -180,7 +180,7 @@ function decodeCapturedPathStateV1(value: unknown): CapturedPathStateV1 | undefi
     return undefined;
 }
 
-function decodeWorkspaceSnapshotRefV1(value: unknown): WorkspaceSnapshotRefV1 | undefined {
+export function decodeWorkspaceSnapshotRefV1(value: unknown): WorkspaceSnapshotRefV1 | undefined {
     if (
         !isRecord(value) ||
         !hasExactKeys(value, ["id", "workspaceIdentity", "workspaceIncarnation", "tree", "scopeManifest"]) ||

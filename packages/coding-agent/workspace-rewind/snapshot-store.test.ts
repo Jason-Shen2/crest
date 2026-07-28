@@ -60,6 +60,7 @@ describe("private snapshot store", () => {
         expect(config).toContain("bare = true");
         expect(config).toContain("autocrlf = false");
         expect(config).toContain("auto = 0");
+        expect(config).toContain("fsync = loose-object,reference");
         expect(config).toContain(`hooksPath = ${join(storeRoot, "private-hooks")}`);
         expect(await readdir(join(storeRoot, "private-hooks"))).toEqual([]);
     });
@@ -77,6 +78,19 @@ describe("private snapshot store", () => {
 
         expect((await stat(join(storeRoot, "objects"))).isDirectory()).toBe(true);
         expect((await stat(join(storeRoot, "refs"))).isDirectory()).toBe(true);
+    });
+
+    test("falls back when Git reports unsupported core fsync components", async () => {
+        const root = await temporaryDirectory();
+        const storeRoot = join(root, "repo.git");
+
+        await initializePrivateStore({
+            storeRoot,
+            git: new UnsupportedFsyncGit(),
+            processOwner: await makeProcessOwnerIdentity(),
+        });
+
+        expect(await readFile(join(storeRoot, "config"), "utf8")).not.toContain("fsync =");
     });
 
     test("serializes concurrent bootstrap and publishes a mode-0600 owner record", async () => {
@@ -1053,6 +1067,35 @@ describe("workspace snapshots", () => {
         await expect(fixture.store.verify(second.ref)).resolves.toBeUndefined();
     });
 
+    test("deletes a ref batch atomically when every expected object still matches", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "a.txt"), "first");
+        const { ref } = await fixture.store.capture({ profile: "pre-turn" });
+        const firstName = `refs/crest/pending/${fixture.identity.workspaceIdentity}/first`;
+        const secondName = "refs/crest/ops/second";
+        for (const name of [firstName, secondName]) {
+            await fixture.git.run(["update-ref", name, ref.id], {
+                gitDir: fixture.storeRoot,
+                timeoutMs: 5_000,
+            });
+        }
+
+        await expect(
+            fixture.store.deleteCrestRefs([
+                { name: firstName, oid: ref.id },
+                { name: secondName, oid: "f".repeat(40) },
+            ])
+        ).rejects.toThrow();
+
+        const refs = await fixture.store.listCrestRefs();
+        expect(refs).toEqual(
+            expect.arrayContaining([
+                { name: firstName, oid: ref.id },
+                { name: secondName, oid: ref.id },
+            ])
+        );
+    });
+
     test("fails closed for a descriptor from another object", async () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "a.txt"), "a");
@@ -1495,6 +1538,19 @@ class RecordingGit extends WorkspaceGitRunner {
     override async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
         this.calls.push([...args]);
         return super.run(args, options);
+    }
+}
+
+class UnsupportedFsyncGit extends WorkspaceGitRunner {
+    override async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
+        const result = await super.run(args, options);
+        if (args[0] === "rev-parse") {
+            return {
+                ...result,
+                stderr: Buffer.from("warning: ignoring unknown core.fsync component 'reference'\n"),
+            };
+        }
+        return result;
     }
 }
 
