@@ -33,4 +33,8 @@ describe("middleEllipsis", () => {
         // keep = floor((10 - 1) / 2) = 4 → "abcd…mnop" (9 chars, not 10)
         expect(result).toBe("abcd…mnop");
     });
+
+    it("preserves complete graphemes", () => {
+        expect(middleEllipsis("👩‍💻éabcd👨‍👩‍👧‍👦", 6)).toBe("👩‍💻é…d👨‍👩‍👧‍👦");
+    });
 });

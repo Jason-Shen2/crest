@@ -336,6 +336,19 @@ function countGraphemes(str: string): number {
     return Array.from(seg.segment(str)).length;
 }
 
+function middleEllipsis(value: string, maxChars: number): string {
+    if (!value || maxChars < 6) {
+        return value;
+    }
+    const seg = new (Intl as any).Segmenter(undefined, { granularity: "grapheme" });
+    const graphemes = Array.from(seg.segment(value), (segment: any) => segment.segment);
+    if (graphemes.length <= maxChars) {
+        return value;
+    }
+    const keepChars = Math.floor((maxChars - 1) / 2);
+    return `${graphemes.slice(0, keepChars).join("")}…${graphemes.slice(-keepChars).join("")}`;
+}
+
 function makeConnRoute(conn: string): string {
     if (isBlank(conn)) {
         return "conn:local";
@@ -533,6 +546,7 @@ export {
     makeConnRoute,
     makeExternLink,
     makeIconClass,
+    middleEllipsis,
     mergeMeta,
     NullAtom,
     parseDataUrl,
