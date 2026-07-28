@@ -43,6 +43,7 @@ import type {
     WorkspaceSnapshotRefV1,
 } from "./types";
 import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
+import { WorkspaceMutationLock } from "./workspace-lock";
 import {
     discoverWorkspaceScope,
     verifyWorkspaceScopeDirectories,
@@ -207,6 +208,7 @@ export class WorkspaceSnapshotStore {
     readonly identity: CanonicalWorkspaceIdentity;
     readonly git: WorkspaceGitRunner;
     readonly processOwner: ProcessOwnerIdentity;
+    readonly mutationLock: WorkspaceMutationLock;
 
     private constructor(input: {
         storeRoot: string;
@@ -218,6 +220,12 @@ export class WorkspaceSnapshotStore {
         this.identity = input.identity;
         this.git = input.git;
         this.processOwner = input.processOwner;
+        this.mutationLock = new WorkspaceMutationLock({
+            workspaceRoot: dirname(input.storeRoot),
+            workspaceIdentity: input.identity.workspaceIdentity,
+            workspaceIncarnation: input.identity.workspaceIncarnation,
+            processOwner: input.processOwner,
+        });
         SnapshotFingerprints.set(this, new Map());
         TrustedSnapshotDescriptors.set(this, new Set());
     }
@@ -252,7 +260,18 @@ export class WorkspaceSnapshotStore {
         return new WorkspaceSnapshotStore({ ...input, storeRoot });
     }
 
-    async capture(options: CaptureWorkspaceOptions): Promise<{
+    capture(options: CaptureWorkspaceOptions): Promise<{
+        ref: WorkspaceSnapshotRefV1;
+        coverage: WorkspaceSnapshotCoverage;
+    }> {
+        return this.withWorkspaceLock(() => this.#captureUnlocked(options));
+    }
+
+    withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
+        return this.mutationLock.runExclusive(operation);
+    }
+
+    async #captureUnlocked(options: CaptureWorkspaceOptions): Promise<{
         ref: WorkspaceSnapshotRefV1;
         coverage: WorkspaceSnapshotCoverage;
     }> {
@@ -378,7 +397,14 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    async diff(before: WorkspaceSnapshotRefV1, after: WorkspaceSnapshotRefV1): Promise<WorkspacePathChangeV1[]> {
+    diff(before: WorkspaceSnapshotRefV1, after: WorkspaceSnapshotRefV1): Promise<WorkspacePathChangeV1[]> {
+        return this.withWorkspaceLock(() => this.#diffUnlocked(before, after));
+    }
+
+    async #diffUnlocked(
+        before: WorkspaceSnapshotRefV1,
+        after: WorkspaceSnapshotRefV1
+    ): Promise<WorkspacePathChangeV1[]> {
         const beforeManifest = await this.readStoredManifest(before);
         const afterManifest = await this.readStoredManifest(after);
         const beforeStates = manifestStateMap(beforeManifest);
@@ -396,13 +422,21 @@ export class WorkspaceSnapshotStore {
         return changes;
     }
 
-    async readPathState(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
+    readPathState(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
+        return this.withWorkspaceLock(() => this.#readPathStateUnlocked(snapshot, path));
+    }
+
+    async #readPathStateUnlocked(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
         validateRelativePath(path);
         const manifest = await this.readStoredManifest(snapshot);
         return resolveManifestPathState(manifest, manifestStateMap(manifest), path);
     }
 
-    async readBlob(oid: string): Promise<Buffer> {
+    readBlob(oid: string): Promise<Buffer> {
+        return this.withWorkspaceLock(() => this.#readBlobUnlocked(oid));
+    }
+
+    async #readBlobUnlocked(oid: string): Promise<Buffer> {
         validateOid(oid);
         const result = await this.git.run(["cat-file", "blob", oid], {
             gitDir: this.storeRoot,
@@ -411,7 +445,11 @@ export class WorkspaceSnapshotStore {
         return result.stdout;
     }
 
-    async verify(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
+    verify(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
+        return this.withWorkspaceLock(() => this.#verifyUnlocked(snapshot));
+    }
+
+    async #verifyUnlocked(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
         try {
             this.assertSnapshotIdentity(snapshot);
             await this.verifyDescriptor(snapshot);
@@ -444,7 +482,11 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    async anchorSnapshot(ref: WorkspaceSnapshotRefV1, runtime = makeMaintenanceRuntime()): Promise<void> {
+    anchorSnapshot(ref: WorkspaceSnapshotRefV1, runtime = makeMaintenanceRuntime()): Promise<void> {
+        return this.withWorkspaceLock(() => this.#anchorSnapshotUnlocked(ref, runtime));
+    }
+
+    async #anchorSnapshotUnlocked(ref: WorkspaceSnapshotRefV1, runtime = makeMaintenanceRuntime()): Promise<void> {
         this.assertSnapshotIdentity(ref);
         await this.ensureObjectsDurable([ref.id, ref.tree, ref.scopeManifest], runtime);
         const refName = this.ownerRefName(ref.id);
@@ -456,7 +498,11 @@ export class WorkspaceSnapshotStore {
         await secureCaptureArtifacts(this.storeRoot, new Set(), refName, runtime);
     }
 
-    async anchorPending(record: PendingWorkspaceBoundaryV1): Promise<void> {
+    anchorPending(record: PendingWorkspaceBoundaryV1): Promise<void> {
+        return this.withWorkspaceLock(() => this.#anchorPendingUnlocked(record));
+    }
+
+    async #anchorPendingUnlocked(record: PendingWorkspaceBoundaryV1): Promise<void> {
         if (!decodePendingWorkspaceBoundaryV1(record)) {
             throw new Error("Invalid pending workspace boundary");
         }
@@ -487,7 +533,11 @@ export class WorkspaceSnapshotStore {
         await secureCaptureArtifacts(this.storeRoot, new Set(), refName);
     }
 
-    async anchorOperation(record: WorkspaceOperationOwnerV1): Promise<void> {
+    anchorOperation(record: WorkspaceOperationOwnerV1): Promise<void> {
+        return this.withWorkspaceLock(() => this.#anchorOperationUnlocked(record));
+    }
+
+    async #anchorOperationUnlocked(record: WorkspaceOperationOwnerV1): Promise<void> {
         if (!decodeWorkspaceOperationOwnerV1(record)) {
             throw new Error("Invalid workspace operation owner");
         }
@@ -558,7 +608,11 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    async deleteCrestRef(refName: string): Promise<void> {
+    deleteCrestRef(refName: string): Promise<void> {
+        return this.withWorkspaceLock(() => this.#deleteCrestRefUnlocked(refName));
+    }
+
+    async #deleteCrestRefUnlocked(refName: string): Promise<void> {
         validateCrestRefName(refName);
         const current = (await this.listCrestRefs()).find((ref) => ref.name === refName);
         if (!current) {
@@ -567,7 +621,11 @@ export class WorkspaceSnapshotStore {
         await this.deleteCrestRefs([current]);
     }
 
-    async deleteCrestRefs(refs: readonly { name: string; oid: string }[]): Promise<void> {
+    deleteCrestRefs(refs: readonly { name: string; oid: string }[]): Promise<void> {
+        return this.withWorkspaceLock(() => this.#deleteCrestRefsUnlocked(refs));
+    }
+
+    async #deleteCrestRefsUnlocked(refs: readonly { name: string; oid: string }[]): Promise<void> {
         if (refs.length === 0) {
             return;
         }
@@ -590,7 +648,11 @@ export class WorkspaceSnapshotStore {
         });
     }
 
-    async readCrestRefBlob(refName: string): Promise<{ oid: string; bytes: Buffer } | undefined> {
+    readCrestRefBlob(refName: string): Promise<{ oid: string; bytes: Buffer } | undefined> {
+        return this.withWorkspaceLock(() => this.#readCrestRefBlobUnlocked(refName));
+    }
+
+    async #readCrestRefBlobUnlocked(refName: string): Promise<{ oid: string; bytes: Buffer } | undefined> {
         validateCrestRefName(refName);
         const target = await this.git.run(["for-each-ref", "--format=%(objectname)", refName], {
             gitDir: this.storeRoot,
@@ -608,7 +670,11 @@ export class WorkspaceSnapshotStore {
         return { oid, bytes: result.stdout };
     }
 
-    async listCrestRefs(): Promise<Array<{ name: string; oid: string }>> {
+    listCrestRefs(): Promise<Array<{ name: string; oid: string }>> {
+        return this.withWorkspaceLock(() => this.#listCrestRefsUnlocked());
+    }
+
+    async #listCrestRefsUnlocked(): Promise<Array<{ name: string; oid: string }>> {
         const result = await this.git.run(["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/crest"], {
             gitDir: this.storeRoot,
             timeoutMs: StoreGitTimeoutMs,
@@ -632,7 +698,14 @@ export class WorkspaceSnapshotStore {
             });
     }
 
-    async ensureObjectsDurable(objectIds: readonly string[], runtime = makeMaintenanceRuntime()): Promise<void> {
+    ensureObjectsDurable(objectIds: readonly string[], runtime = makeMaintenanceRuntime()): Promise<void> {
+        return this.withWorkspaceLock(() => this.#ensureObjectsDurableUnlocked(objectIds, runtime));
+    }
+
+    async #ensureObjectsDurableUnlocked(
+        objectIds: readonly string[],
+        runtime = makeMaintenanceRuntime()
+    ): Promise<void> {
         if (objectIds.length === 0) {
             return;
         }
@@ -660,7 +733,11 @@ export class WorkspaceSnapshotStore {
         await ensureDurableGitObjects(this.storeRoot, unique, new Set(unique));
     }
 
-    async getQuotaStatus(runtime = makeMaintenanceRuntime()): Promise<WorkspaceSnapshotQuotaStatus> {
+    getQuotaStatus(runtime = makeMaintenanceRuntime()): Promise<WorkspaceSnapshotQuotaStatus> {
+        return this.withWorkspaceLock(() => this.#getQuotaStatusUnlocked(runtime));
+    }
+
+    async #getQuotaStatusUnlocked(runtime = makeMaintenanceRuntime()): Promise<WorkspaceSnapshotQuotaStatus> {
         assertCaptureActive(runtime.deadline, runtime.signal);
         const objectStatus = await this.git.run(["count-objects", "-v"], {
             gitDir: this.storeRoot,

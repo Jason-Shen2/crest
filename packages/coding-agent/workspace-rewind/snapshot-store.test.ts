@@ -37,6 +37,62 @@ afterEach(async () => {
 });
 
 describe("private snapshot store", () => {
+    test("exposes no unlocked bypass and serializes every public capture and ref operation", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "locked.txt"), "locked");
+        const { ref } = await fixture.store.capture({ profile: "terminal" });
+        const release = makeDeferred();
+        const held = fixture.store.withWorkspaceLock(() => release.promise);
+        await fixture.store.mutationLock.waitUntilHeldForTest();
+        const pending = {
+            boundaryToken: "boundary-lock",
+            sessionId: "session-lock",
+            workspaceIdentity: fixture.identity.workspaceIdentity,
+            workspaceIncarnation: fixture.identity.workspaceIncarnation,
+            processOwner: fixture.processOwner,
+            nonce: "c".repeat(64),
+            before: ref,
+        };
+        const operation = {
+            operationId: "operation-lock",
+            sessionId: "session-lock",
+            workspaceIdentity: fixture.identity.workspaceIdentity,
+            workspaceIncarnation: fixture.identity.workspaceIncarnation,
+            snapshot: ref,
+        };
+        let settled = 0;
+        const operations = [
+            fixture.store.capture({ profile: "terminal" }),
+            fixture.store.diff(ref, ref),
+            fixture.store.readPathState(ref, "locked.txt"),
+            fixture.store.readBlob(ref.scopeManifest),
+            fixture.store.verify(ref),
+            fixture.store.anchorSnapshot(ref),
+            fixture.store.anchorPending(pending),
+            fixture.store.anchorOperation(operation),
+            fixture.store.deleteCrestRef("refs/crest/ops/missing-lock"),
+            fixture.store.deleteCrestRefs([]),
+            fixture.store.readCrestRefBlob("refs/crest/ops/missing-lock"),
+            fixture.store.listCrestRefs(),
+            fixture.store.ensureObjectsDurable([ref.id]),
+            fixture.store.getQuotaStatus(),
+        ].map((promise) =>
+            promise.finally(() => {
+                settled++;
+            })
+        );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(settled).toBe(0);
+        const unlockedNames = Object.getOwnPropertyNames(Object.getPrototypeOf(fixture.store)).filter((name) =>
+            name.endsWith("Unlocked")
+        );
+        release.resolve();
+        await held;
+        await Promise.all(operations);
+        expect(unlockedNames).toEqual([]);
+    });
+
     test("initializes a repairable private bare repository without index or alternates", async () => {
         const root = await temporaryDirectory();
         const storeRoot = join(root, "repo.git");
@@ -1600,6 +1656,14 @@ async function temporaryDirectory(): Promise<string> {
     const root = await mkdtemp(join(tmpdir(), "crest-snapshot-store-test-"));
     cleanupRoots.push(root);
     return root;
+}
+
+function makeDeferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
 }
 
 function makeBootstrapChildScript(storeRoot: string): string {

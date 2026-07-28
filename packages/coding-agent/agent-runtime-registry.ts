@@ -1,6 +1,9 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { SessionMutationBarrier } from "./session-mutation-barrier";
+import { assertWorkspaceLockNotHeld } from "./workspace-rewind/workspace-lock";
+
 export interface ManagedAgentRuntime {
     isRunning(): boolean;
     dispose(): void | Promise<void>;
@@ -26,12 +29,23 @@ interface SessionAccessState {
     waiters: Array<() => void>;
 }
 
+interface SessionMutationBarrierEntry {
+    barrier: SessionMutationBarrier;
+    usageCount: number;
+}
+
 export interface ExclusiveSessionMutationOptions {
     rejectIfRunning?: boolean;
     onExclusiveStart?: () => void;
     afterSessionAccessDrained?: () => void;
     beforeRuntimeDisposal?: () => void | Promise<void>;
     onFailureBeforeRelease?: (error: unknown) => void | Promise<void>;
+}
+
+export interface RetainedSessionMutationLease<TRuntime> {
+    readonly path: string;
+    readonly runtime?: TRuntime;
+    readonly token: symbol;
 }
 
 export interface AgentRuntimeRegistryOptions {
@@ -50,7 +64,9 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
     inFlightEvictions = new Set<Promise<void>>();
     pathCleanups = new Map<string, Promise<void>>();
     exclusiveSessionMutations = new Set<string>();
-    exclusiveSessionMutationTurns = new Map<string, Promise<void>>();
+    mutationTombstoneCounts = new Map<string, number>();
+    private sessionMutationBarriers = new Map<string, SessionMutationBarrierEntry>();
+    activeRetainedLeases = new Map<symbol, RetainedSessionMutationLease<TRuntime>>();
     sessionAccess = new Map<string, SessionAccessState>();
 
     constructor(options: AgentRuntimeRegistryOptions) {
@@ -61,7 +77,9 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
     get(path: string): TRuntime | undefined {
         if (this.disposing) return undefined;
         const entry = this.entries.get(path);
-        if (!entry || entry.cleanupFailed || this.pathCleanups.has(path)) return undefined;
+        if (!entry || entry.cleanupFailed || this.pathCleanups.has(path) || this.isMutationActive(path)) {
+            return undefined;
+        }
         entry.lastUsedAt = this.now();
         return entry.runtime;
     }
@@ -144,58 +162,125 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         options: ExclusiveSessionMutationOptions,
         fn: () => Promise<T> | T
     ): Promise<T> {
+        assertWorkspaceLockNotHeld();
         if (this.disposing) {
             throw new Error("Agent runtime registry disposal is in progress");
         }
-        const previousTurn = this.exclusiveSessionMutationTurns.get(path);
-        let releaseTurn!: () => void;
-        const turn = new Promise<void>((resolve) => {
-            releaseTurn = resolve;
+        this.addMutationTombstone(path);
+        const operation = this.runWithSessionMutationBarrier(path, async () => {
+            try {
+                options.onExclusiveStart?.();
+                await this.waitForSessionAccessToDrain(path);
+                const pendingCreate = this.pendingCreates.get(path);
+                if (pendingCreate) {
+                    await pendingCreate.catch(() => undefined);
+                }
+                options.afterSessionAccessDrained?.();
+                const cleanup = this.pathCleanups.get(path);
+                if (cleanup) {
+                    await cleanup;
+                }
+                await options.beforeRuntimeDisposal?.();
+                const entry = this.entries.get(path);
+                if (entry?.runtime.isRunning() && options.rejectIfRunning) {
+                    throw new Error("Agent session is running");
+                }
+                if (entry && !entry.runtime.isRunning()) {
+                    await this.startEntryCleanup(path, entry);
+                }
+                return await fn();
+            } catch (error) {
+                try {
+                    await options.onFailureBeforeRelease?.(error);
+                } catch (recoveryError) {
+                    throw new AggregateError(
+                        [error, recoveryError],
+                        `Agent runtime registry exclusive session mutation recovery failed for ${path}`
+                    );
+                }
+                throw error;
+            }
         });
-        this.exclusiveSessionMutationTurns.set(path, turn);
-        if (previousTurn) {
-            await previousTurn;
-        } else {
-            this.exclusiveSessionMutations.add(path);
+        return operation.finally(() => this.removeMutationTombstone(path));
+    }
+
+    withRetainedSessionMutation<T>(
+        path: string,
+        options: { rejectIfRunning?: boolean },
+        fn: (lease: RetainedSessionMutationLease<TRuntime>) => Promise<T>
+    ): Promise<T> {
+        assertWorkspaceLockNotHeld();
+        if (this.disposing) {
+            return Promise.reject(new Error("Agent runtime registry disposal is in progress"));
         }
-        try {
-            options.onExclusiveStart?.();
+        this.addMutationTombstone(path);
+        const operation = this.runWithSessionMutationBarrier(path, async () => {
             await this.waitForSessionAccessToDrain(path);
             const pendingCreate = this.pendingCreates.get(path);
             if (pendingCreate) {
                 await pendingCreate.catch(() => undefined);
             }
-            options.afterSessionAccessDrained?.();
             const cleanup = this.pathCleanups.get(path);
             if (cleanup) {
                 await cleanup;
             }
-            await options.beforeRuntimeDisposal?.();
             const entry = this.entries.get(path);
+            if (entry?.cleanupFailed) {
+                throw new Error(`Agent runtime cleanup failed for ${path}`, {
+                    cause: entry.cleanupFailure,
+                });
+            }
             if (entry?.runtime.isRunning() && options.rejectIfRunning) {
                 throw new Error("Agent session is running");
             }
-            if (entry && !entry.runtime.isRunning()) {
-                await this.startEntryCleanup(path, entry);
-            }
-            return await fn();
-        } catch (error) {
+            const lease: RetainedSessionMutationLease<TRuntime> = {
+                path,
+                runtime: entry?.runtime,
+                token: Symbol(path),
+            };
+            this.activeRetainedLeases.set(lease.token, lease);
             try {
-                await options.onFailureBeforeRelease?.(error);
-            } catch (recoveryError) {
-                throw new AggregateError(
-                    [error, recoveryError],
-                    `Agent runtime registry exclusive session mutation recovery failed for ${path}`
-                );
+                return await fn(lease);
+            } finally {
+                this.activeRetainedLeases.delete(lease.token);
             }
-            throw error;
+        });
+        return operation.finally(() => this.removeMutationTombstone(path));
+    }
+
+    getRuntimeForLease(lease: RetainedSessionMutationLease<TRuntime>): TRuntime | undefined {
+        this.assertActiveLease(lease);
+        return lease.runtime;
+    }
+
+    async withMutationLeaseAccess<T>(
+        lease: RetainedSessionMutationLease<TRuntime>,
+        fn: (runtime: TRuntime | undefined) => Promise<T>
+    ): Promise<T> {
+        this.assertActiveLease(lease);
+        return fn(lease.runtime);
+    }
+
+    async runWithSessionMutationBarrier<T>(path: string, operation: () => Promise<T> | T): Promise<T> {
+        const entry = this.acquireSessionMutationBarrierEntry(path);
+        try {
+            return await entry.barrier.run(async () => operation());
         } finally {
-            if (this.exclusiveSessionMutationTurns.get(path) === turn) {
-                this.exclusiveSessionMutationTurns.delete(path);
-                this.exclusiveSessionMutations.delete(path);
-            }
-            releaseTurn();
+            this.releaseSessionMutationBarrierEntry(path, entry);
         }
+    }
+
+    async waitForSessionMutationIdle(path: string): Promise<void> {
+        const entry = this.acquireSessionMutationBarrierEntry(path);
+        try {
+            await entry.barrier.waitForIdle();
+        } finally {
+            this.releaseSessionMutationBarrierEntry(path, entry);
+        }
+    }
+
+    getSessionMutationBarrierCountForTest(): number {
+        return this.sessionMutationBarriers.size;
     }
 
     acquire(path: string, subscriberKey: string): void {
@@ -232,9 +317,7 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         if (errors.length > 0) {
             console.error("[agent-runtime-registry] runtime eviction failed", new AggregateError(errors));
         }
-        return cleanups
-            .filter((_, index) => results[index].status === "fulfilled")
-            .map(({ path }) => path);
+        return cleanups.filter((_, index) => results[index].status === "fulfilled").map(({ path }) => path);
     }
 
     disposeAll(): Promise<void> {
@@ -245,7 +328,9 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         this.generation++;
         const pendingCreates = Array.from(this.pendingCreates.values());
         const inFlightEvictions = Array.from(this.inFlightEvictions);
-        const exclusiveTurns = Array.from(this.exclusiveSessionMutationTurns.values());
+        const exclusiveTurns = Array.from(this.sessionMutationBarriers.keys()).map((path) =>
+            this.waitForSessionMutationIdle(path)
+        );
         const disposal = (async () => {
             if (pendingCreates.length > 0 || inFlightEvictions.length > 0 || exclusiveTurns.length > 0) {
                 await Promise.all([
@@ -296,6 +381,10 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
                     this.pathCleanups.delete(path);
                 }
                 this.inFlightEvictions.delete(cleanup);
+                const barrierEntry = this.sessionMutationBarriers.get(path);
+                if (barrierEntry) {
+                    this.cleanupSessionMutationBarrier(path, barrierEntry);
+                }
             });
         this.pathCleanups.set(path, cleanup);
         this.inFlightEvictions.add(cleanup);
@@ -316,8 +405,76 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
     }
 
     private assertSessionAccessible(path: string): void {
-        if (this.exclusiveSessionMutations.has(path)) {
+        if (this.isMutationActive(path)) {
             throw new AgentSessionMutationActiveError(path);
+        }
+    }
+
+    private addMutationTombstone(path: string): void {
+        const count = (this.mutationTombstoneCounts.get(path) ?? 0) + 1;
+        this.mutationTombstoneCounts.set(path, count);
+        this.exclusiveSessionMutations.add(path);
+    }
+
+    private removeMutationTombstone(path: string): void {
+        const count = (this.mutationTombstoneCounts.get(path) ?? 1) - 1;
+        if (count > 0) {
+            this.mutationTombstoneCounts.set(path, count);
+            return;
+        }
+        this.mutationTombstoneCounts.delete(path);
+        this.exclusiveSessionMutations.delete(path);
+        const barrierEntry = this.sessionMutationBarriers.get(path);
+        if (barrierEntry) {
+            this.cleanupSessionMutationBarrier(path, barrierEntry);
+        }
+    }
+
+    private isMutationActive(path: string): boolean {
+        return (this.mutationTombstoneCounts.get(path) ?? 0) > 0;
+    }
+
+    private acquireSessionMutationBarrierEntry(path: string): SessionMutationBarrierEntry {
+        let entry = this.sessionMutationBarriers.get(path);
+        if (!entry) {
+            entry = {
+                barrier: undefined!,
+                usageCount: 0,
+            };
+            entry.barrier = new SessionMutationBarrier(() => this.cleanupSessionMutationBarrier(path, entry!));
+            this.sessionMutationBarriers.set(path, entry);
+        }
+        entry.usageCount++;
+        return entry;
+    }
+
+    private releaseSessionMutationBarrierEntry(path: string, entry: SessionMutationBarrierEntry): void {
+        if (entry.usageCount <= 0) {
+            throw new Error("Session mutation barrier usage underflow");
+        }
+        entry.usageCount--;
+        this.cleanupSessionMutationBarrier(path, entry);
+    }
+
+    private cleanupSessionMutationBarrier(path: string, entry: SessionMutationBarrierEntry): void {
+        if (this.sessionMutationBarriers.get(path) !== entry || entry.usageCount !== 0 || entry.barrier.isBusy()) {
+            return;
+        }
+        if (
+            this.entries.has(path) ||
+            this.pendingCreates.has(path) ||
+            this.pathCleanups.has(path) ||
+            this.sessionAccess.has(path) ||
+            this.isMutationActive(path)
+        ) {
+            return;
+        }
+        this.sessionMutationBarriers.delete(path);
+    }
+
+    private assertActiveLease(lease: RetainedSessionMutationLease<TRuntime>): void {
+        if (this.activeRetainedLeases.get(lease.token) !== lease) {
+            throw new Error("Invalid or expired retained session mutation lease");
         }
     }
 
@@ -336,6 +493,10 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         const waiters = state.waiters.splice(0);
         for (const waiter of waiters) {
             waiter();
+        }
+        const barrierEntry = this.sessionMutationBarriers.get(path);
+        if (barrierEntry) {
+            this.cleanupSessionMutationBarrier(path, barrierEntry);
         }
     }
 

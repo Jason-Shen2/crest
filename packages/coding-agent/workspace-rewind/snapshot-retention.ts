@@ -43,6 +43,13 @@ export async function reconcileSnapshotRefs(input: {
     store: WorkspaceSnapshotStore;
     sessionsRoot: string;
 }): Promise<SnapshotReconcileReport> {
+    return input.store.withWorkspaceLock(() => reconcileSnapshotRefsLocked(input));
+}
+
+async function reconcileSnapshotRefsLocked(input: {
+    store: WorkspaceSnapshotStore;
+    sessionsRoot: string;
+}): Promise<SnapshotReconcileReport> {
     let owners: SnapshotOwners;
     try {
         owners = await scanOwners(input);

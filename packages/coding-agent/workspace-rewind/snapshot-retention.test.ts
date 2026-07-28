@@ -8,7 +8,8 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 
-import { WorkspaceGitRunner } from "./git-runner";
+import { AgentRuntimeRegistry } from "../agent-runtime-registry";
+import { WorkspaceGitRunner, type GitRunOptions, type GitRunResult } from "./git-runner";
 import { PendingBoundaryStore } from "./pending-boundary-store";
 import { makeProcessOwnerIdentity } from "./process-owner";
 import { reconcileSnapshotRefs, SnapshotRetentionLimits } from "./snapshot-retention";
@@ -56,6 +57,52 @@ test("fails closed when a recursive session owner source contains a symlink", as
 
     expect(report.removedRefs).toEqual([]);
     expect(report.failClosedReason).toMatch(/owner source/i);
+});
+
+test("serializes capture with reconciliation and GC under the canonical store lock", async () => {
+    const git = new BlockingCaptureGit();
+    const { store, sessionsRoot } = await makeStore(git);
+    await writeFile(join(store.identity.canonicalRoot, "second.txt"), "second");
+    git.arm();
+    const capture = store.capture({ profile: "terminal" });
+    await git.captureBlocked;
+    let reconciled = false;
+    const reconciliation = reconcileSnapshotRefs({ store, sessionsRoot }).then((report) => {
+        reconciled = true;
+        return report;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(reconciled).toBe(false);
+    expect(git.calls.some((args) => args[0] === "gc")).toBe(false);
+    git.releaseCapture();
+    const [{ ref }, report] = await Promise.all([capture, reconciliation]);
+    expect(report.failClosedReason).toBeUndefined();
+    expect((await store.listCrestRefs()).map((value) => value.name)).toContain(`refs/crest/snapshots/${ref.id}`);
+    expect(git.calls.some((args) => args[0] === "gc")).toBe(true);
+});
+
+test("synthetic destructive consumer preserves owner refs without deadlock", async () => {
+    const { store, sessionsRoot, snapshot } = await makeStore();
+    await addStateOwner(store, sessionsRoot, snapshot, "owned-session");
+    const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+    const release = deferred();
+    const destructive = registry.withRetainedSessionMutation(
+        join(sessionsRoot, "owned-session.db"),
+        { rejectIfRunning: true },
+        async () =>
+            store.withWorkspaceLock(async () => {
+                await store.anchorSnapshot(snapshot);
+                await release.promise;
+            })
+    );
+    await store.mutationLock.waitUntilHeldForTest();
+    const reconciliation = reconcileSnapshotRefs({ store, sessionsRoot });
+    release.resolve();
+
+    const [, report] = await Promise.all([destructive, reconciliation]);
+    expect(report.failClosedReason).toBeUndefined();
+    expect((await store.listCrestRefs()).map((value) => value.name)).toContain(`refs/crest/snapshots/${snapshot.id}`);
 });
 
 test("retains checkpoint owners in archive trash and forks through aggressive Git GC", async () => {
@@ -339,7 +386,7 @@ test("fails closed on a corrupt pending or operation owner record", async () => 
     }
 });
 
-async function makeStore() {
+async function makeStore(git: WorkspaceGitRunner = new WorkspaceGitRunner()) {
     const root = await mkdtemp(join(process.cwd(), ".crest-retention-"));
     CleanupRoots.push(root);
     const workspace = join(root, "workspace");
@@ -357,11 +404,57 @@ async function makeStore() {
     const store = await WorkspaceSnapshotStore.open({
         dataRoot: join(root, "data"),
         identity,
-        git: new WorkspaceGitRunner(),
+        git,
         processOwner: await makeProcessOwnerIdentity(),
     });
     const { ref: snapshot } = await store.capture({ profile: "terminal", requiredPaths: ["tracked.txt"] });
     return { store, sessionsRoot, snapshot };
+}
+
+function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
+class BlockingCaptureGit extends WorkspaceGitRunner {
+    calls: string[][] = [];
+    captureBlocked: Promise<void>;
+    resolveCaptureBlocked!: () => void;
+    captureRelease: Promise<void>;
+    resolveCaptureRelease!: () => void;
+    blocked = false;
+    armed = false;
+
+    constructor() {
+        super();
+        this.captureBlocked = new Promise((resolve) => {
+            this.resolveCaptureBlocked = resolve;
+        });
+        this.captureRelease = new Promise((resolve) => {
+            this.resolveCaptureRelease = resolve;
+        });
+    }
+
+    releaseCapture(): void {
+        this.resolveCaptureRelease();
+    }
+
+    arm(): void {
+        this.armed = true;
+    }
+
+    override async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
+        this.calls.push([...args]);
+        if (args[0] === "mktree" && this.armed && !this.blocked) {
+            this.blocked = true;
+            this.resolveCaptureBlocked();
+            await this.captureRelease;
+        }
+        return super.run(args, options);
+    }
 }
 
 async function addStateOwner(

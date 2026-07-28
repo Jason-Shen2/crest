@@ -23,6 +23,142 @@ function deferred<T>() {
 }
 
 describe("AgentRuntimeRegistry", () => {
+    it("retains an idle runtime and subscribers while holding a drained retained lease", async () => {
+        const runtime = makeRuntime(false);
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        await registry.getOrCreate("/a.db", async () => runtime);
+        registry.acquire("/a.db", "renderer:1");
+        const active = deferred<void>();
+        const releaseAccess = deferred<void>();
+        const access = registry.withSessionAccess("/a.db", async () => {
+            active.resolve();
+            await releaseAccess.promise;
+        });
+        await active.promise;
+        let entered = false;
+        const mutation = registry.withRetainedSessionMutation("/a.db", { rejectIfRunning: true }, async (lease) => {
+            entered = true;
+            expect(registry.get("/a.db")).toBeUndefined();
+            expect(registry.getRuntimeForLease(lease)).toBe(runtime);
+            await expect(registry.withMutationLeaseAccess(lease, async (value) => value)).resolves.toBe(runtime);
+        });
+
+        expect(registry.get("/a.db")).toBeUndefined();
+        await expect(registry.withSessionAccess("/a.db", async () => undefined)).rejects.toThrow(/session mutation/i);
+        expect(entered).toBe(false);
+        releaseAccess.resolve();
+        await access;
+        await mutation;
+        expect(runtime.dispose).not.toHaveBeenCalled();
+        expect(registry.get("/a.db")).toBe(runtime);
+    });
+
+    it("queues same-session retained mutations while allowing different sessions to run", async () => {
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        const release = deferred<void>();
+        const calls: string[] = [];
+        const first = registry.withRetainedSessionMutation("/a.db", {}, async () => {
+            calls.push("first");
+            await release.promise;
+        });
+        const second = registry.withRetainedSessionMutation("/a.db", {}, async () => {
+            calls.push("second");
+        });
+        const parallel = registry.withRetainedSessionMutation("/b.db", {}, async () => {
+            calls.push("parallel");
+        });
+
+        await parallel;
+        expect(calls).toEqual(["first", "parallel"]);
+        release.resolve();
+        await Promise.all([first, second]);
+        expect(calls).toEqual(["first", "parallel", "second"]);
+    });
+
+    it("keeps a retained mutation behind an active registry-owned barrier operation", async () => {
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        const started = deferred<void>();
+        const release = deferred<void>();
+        const calls: string[] = [];
+        const oldOperation = registry.runWithSessionMutationBarrier("/a.db", async () => {
+            calls.push("old");
+            started.resolve();
+            await release.promise;
+        });
+        await started.promise;
+
+        const retained = registry.withRetainedSessionMutation("/a.db", {}, async () => {
+            calls.push("retained");
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(calls).toEqual(["old"]);
+
+        release.resolve();
+        await Promise.all([oldOperation, retained]);
+        expect(calls).toEqual(["old", "retained"]);
+        expect(registry.getSessionMutationBarrierCountForTest()).toBe(0);
+    });
+
+    it("preserves one barrier and FIFO across queued registry-owned operations", async () => {
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        const release = deferred<void>();
+        const calls: number[] = [];
+        const first = registry.runWithSessionMutationBarrier("/a.db", async () => {
+            calls.push(1);
+            await release.promise;
+        });
+        const second = registry.runWithSessionMutationBarrier("/a.db", async () => {
+            calls.push(2);
+        });
+        const third = registry.runWithSessionMutationBarrier("/a.db", async () => {
+            calls.push(3);
+        });
+
+        expect(registry.getSessionMutationBarrierCountForTest()).toBe(1);
+        expect(calls).toEqual([1]);
+        release.resolve();
+        await Promise.all([first, second, third]);
+        expect(calls).toEqual([1, 2, 3]);
+        expect(registry.getSessionMutationBarrierCountForTest()).toBe(0);
+    });
+
+    it("rejects a retained mutation while the live runtime is running", async () => {
+        const runtime = makeRuntime(true);
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        await registry.getOrCreate("/a.db", async () => runtime);
+
+        await expect(
+            registry.withRetainedSessionMutation("/a.db", { rejectIfRunning: true }, async () => undefined)
+        ).rejects.toThrow(/running/i);
+        expect(runtime.dispose).not.toHaveBeenCalled();
+        expect(registry.get("/a.db")).toBe(runtime);
+    });
+
+    it("releases idle mutation barriers for many short-lived sessions", async () => {
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        await Promise.all(
+            Array.from({ length: 500 }, (_, index) =>
+                registry.withRetainedSessionMutation(`/short-${index}.db`, {}, async () => undefined)
+            )
+        );
+
+        expect(registry.getSessionMutationBarrierCountForTest()).toBe(0);
+    });
+
+    it("releases barrier entries for many run-only and wait-only sessions", async () => {
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        await Promise.all(
+            Array.from({ length: 500 }, (_, index) =>
+                registry.runWithSessionMutationBarrier(`/run-${index}.db`, async () => undefined)
+            )
+        );
+        await Promise.all(
+            Array.from({ length: 500 }, (_, index) => registry.waitForSessionMutationIdle(`/wait-${index}.db`))
+        );
+
+        expect(registry.getSessionMutationBarrierCountForTest()).toBe(0);
+    });
+
     it("deduplicates concurrent runtime creation by session path", async () => {
         let resolve!: (runtime: ReturnType<typeof makeRuntime>) => void;
         const runtime = makeRuntime();
@@ -179,9 +315,7 @@ describe("AgentRuntimeRegistry", () => {
         await vi.waitFor(() => expect(runtime.dispose).toHaveBeenCalledOnce());
         const creatingResult = registry.getOrCreate("/a.db", createReplacement).catch((error) => error);
         const mutate = vi.fn(async () => "deleted");
-        const mutationResult = registry
-            .withExclusiveSessionMutation("/a.db", {}, mutate)
-            .catch((error) => error);
+        const mutationResult = registry.withExclusiveSessionMutation("/a.db", {}, mutate).catch((error) => error);
 
         try {
             await new Promise<void>((resolve) => setImmediate(resolve));
@@ -605,9 +739,9 @@ describe("AgentRuntimeRegistry", () => {
         await registry.getOrCreate("/a.db", async () => runtime);
         const mutate = vi.fn();
 
-        await expect(
-            registry.withExclusiveSessionMutation("/a.db", { rejectIfRunning: true }, mutate)
-        ).rejects.toBe(failure);
+        await expect(registry.withExclusiveSessionMutation("/a.db", { rejectIfRunning: true }, mutate)).rejects.toBe(
+            failure
+        );
 
         expect(mutate).not.toHaveBeenCalled();
         expect(registry.get("/a.db")).toBeUndefined();
