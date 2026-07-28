@@ -393,6 +393,41 @@ describe("AgentSessionRuntime — command operations", () => {
         expect(result.entries).toEqual([customEntry, userMsg]);
     });
 
+    it("maps a hidden workspace control leaf to the visible public leafId", async () => {
+        const fake = makeFakeHarness();
+        const userMsg = {
+            type: "message" as const,
+            id: "m1",
+            parentId: null,
+            timestamp: "t1",
+            message: user("hi"),
+        };
+        const checkpoint = {
+            type: "custom" as const,
+            id: "checkpoint-1",
+            parentId: "m1",
+            timestamp: "t2",
+            customType: "workspace_checkpoint",
+            data: {},
+        };
+        const state = {
+            type: "custom" as const,
+            id: "state-1",
+            parentId: "checkpoint-1",
+            timestamp: "t3",
+            customType: "workspace_state",
+            data: {},
+        };
+        fake.session.getEntries.mockResolvedValue([userMsg, checkpoint, state]);
+        fake.session.getLeafId.mockResolvedValue("state-1");
+
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const result = await owner.listTreeEntries();
+
+        expect(result.entries).toEqual([userMsg]);
+        expect(result.leafId).toBe("m1");
+    });
+
     it("navigates the session tree without branch summarization", async () => {
         const fake = makeFakeHarness();
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "edit this" }));

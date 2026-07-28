@@ -1311,13 +1311,13 @@ async function getSessionTreeData(
 
         const allEntries = await session.getEntries();
         const rawLeafId = await session.getLeafId();
-        const { entries, effectiveLeafId } = filterTreeForDisplay(allEntries, rawLeafId);
+        const { entries, displayLeafId } = filterTreeForDisplay(allEntries, rawLeafId);
         const labels = new Map<string, string | undefined>();
         for (const entry of entries) {
             labels.set(entry.id, await session.getLabel(entry.id));
         }
         await guardLiveRuntimeIfPresent([sessionMetadata.path, requestedPath], guardRuntime, beforeReturn);
-        return { entries, leafId: effectiveLeafId, labels };
+        return { entries, leafId: displayLeafId, labels };
     } finally {
         session.close();
     }

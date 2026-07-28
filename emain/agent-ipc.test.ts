@@ -293,6 +293,18 @@ describe("agent-ipc command helpers", () => {
         expect(forkPoints).toEqual([expect.objectContaining({ entryId: firstId, preview: "first question" })]);
     });
 
+    it("maps a cold hidden workspace control leaf to the visible public leafId", async () => {
+        const { metadata, session } = await createPaneSession("/tmp/agent-ipc-workspace-control");
+        const userId = await session.appendMessage(user("first question"));
+        await session.appendCustomEntry("workspace_checkpoint", {});
+        await session.appendCustomEntry("workspace_state", {});
+
+        const tree = await listAgentTreeForIpc(metadata);
+
+        expect(tree.entries.map((entry) => entry.id)).toEqual([userId]);
+        expect(tree.leafId).toBe(userId);
+    });
+
     it("forks before a user message and clones the current branch", async () => {
         const { metadata, session } = await createPaneSession("/tmp/agent-ipc-fork");
         await session.appendMessage(user("keep this"));

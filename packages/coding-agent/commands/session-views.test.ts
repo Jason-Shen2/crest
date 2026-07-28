@@ -13,6 +13,7 @@ import {
 } from "./session-views";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { ContextCustomTypes } from "../context/journal";
+import { WorkspaceControlCustomTypes } from "../workspace-rewind/types";
 
 function userMsg(id: string, parentId: string | null, text: string): SessionTreeEntry {
     return {
@@ -151,6 +152,15 @@ describe("session view helpers", () => {
                 expect(isHiddenTreeEntry(contextEntry(customType, null, customType))).toBe(true);
             }
         });
+        it("hides only recognized workspace control custom entries", () => {
+            expect(
+                isHiddenTreeEntry(
+                    contextEntry("checkpoint", null, WorkspaceControlCustomTypes.checkpoint)
+                )
+            ).toBe(true);
+            expect(isHiddenTreeEntry(contextEntry("state", null, WorkspaceControlCustomTypes.state))).toBe(true);
+            expect(isHiddenTreeEntry(contextEntry("unknown", null, "future_workspace_control"))).toBe(false);
+        });
     });
 
     describe("filterTreeForDisplay", () => {
@@ -162,21 +172,26 @@ describe("session view helpers", () => {
             const aFinal = asstMsg("a-final", "tr1", "I see a file named two_sum.py");
             const leaf = leafEntry("leaf", "a-final");
 
-            const { entries, effectiveLeafId } = filterTreeForDisplay([u1, aEmpty, tr, aFinal, leaf], "leaf");
+            const { entries, semanticLeafId, displayLeafId } = filterTreeForDisplay(
+                [u1, aEmpty, tr, aFinal, leaf],
+                "leaf"
+            );
 
             // Only the leaf pointer is removed; everything else survives untouched.
             expect(entries.map((e) => e.id)).toEqual(["u1", "a-toolcall", "tr1", "a-final"]);
             expect(entries[3]!.parentId).toBe("tr1");
-            expect(effectiveLeafId).toBe("a-final");
+            expect(semanticLeafId).toBe("leaf");
+            expect(displayLeafId).toBe("a-final");
         });
 
         it("passes through when nothing is hidden", () => {
             const u1 = userMsg("u1", null, "hi");
             const a1 = asstMsg("a1", "u1", "hello");
-            const { entries, effectiveLeafId } = filterTreeForDisplay([u1, a1], "a1");
+            const { entries, semanticLeafId, displayLeafId } = filterTreeForDisplay([u1, a1], "a1");
             expect(entries.map((e) => e.id)).toEqual(["u1", "a1"]);
             expect(entries[1]!.parentId).toBe("u1");
-            expect(effectiveLeafId).toBe("a1");
+            expect(semanticLeafId).toBe("a1");
+            expect(displayLeafId).toBe("a1");
         });
 
         it("reparents a transactional user past every hidden context ancestor", () => {
@@ -186,14 +201,39 @@ describe("session view helpers", () => {
             const manifest = contextEntry("manifest", "attach", ContextCustomTypes.transactionManifest);
             const transactionalUser = userMsg("user", "manifest", "visible turn");
 
-            const { entries, effectiveLeafId } = filterTreeForDisplay(
+            const { entries, semanticLeafId, displayLeafId } = filterTreeForDisplay(
                 [previous, artifact, attach, manifest, transactionalUser],
                 "user"
             );
 
             expect(entries.map((entry) => entry.id)).toEqual(["previous", "user"]);
             expect(entries[1]!.parentId).toBe("previous");
-            expect(effectiveLeafId).toBe("user");
+            expect(semanticLeafId).toBe("user");
+            expect(displayLeafId).toBe("user");
+        });
+
+        it("preserves the semantic leaf while crossing workspace controls for display", () => {
+            const user = userMsg("user", null, "rewind");
+            const checkpoint = contextEntry("checkpoint", "user", WorkspaceControlCustomTypes.checkpoint);
+            const state = contextEntry("state", "checkpoint", WorkspaceControlCustomTypes.state);
+
+            const filtered = filterTreeForDisplay([user, checkpoint, state], state.id);
+
+            expect(filtered.semanticLeafId).toBe(state.id);
+            expect(filtered.displayLeafId).toBe(user.id);
+            expect(filtered.entries.map((entry) => entry.id)).toEqual([user.id]);
+        });
+
+        it("reconnects a visible child across a hidden workspace control parent", () => {
+            const user = userMsg("user", null, "first");
+            const checkpoint = contextEntry("checkpoint", "user", WorkspaceControlCustomTypes.checkpoint);
+            const nextUser = userMsg("next-user", "checkpoint", "next");
+
+            const filtered = filterTreeForDisplay([user, checkpoint, nextUser], nextUser.id);
+
+            expect(filtered.entries).toEqual([user, { ...nextUser, parentId: user.id }]);
+            expect(filtered.semanticLeafId).toBe(nextUser.id);
+            expect(filtered.displayLeafId).toBe(nextUser.id);
         });
     });
 });

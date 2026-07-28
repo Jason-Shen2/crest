@@ -483,12 +483,12 @@ export class AgentSessionRuntime {
     }> {
         const allEntries = await this.host.session.getEntries();
         const leafId = await this.host.session.getLeafId();
-        const { entries, effectiveLeafId } = filterTreeForDisplay(allEntries, leafId);
+        const { entries, displayLeafId } = filterTreeForDisplay(allEntries, leafId);
         const labels = new Map<string, string | undefined>();
         for (const entry of entries) {
             labels.set(entry.id, await this.host.session.getLabel(entry.id));
         }
-        return { entries, leafId: effectiveLeafId, labels };
+        return { entries, leafId: displayLeafId, labels };
     }
 
     async navigateTree(targetId: string): Promise<{ editorText?: string }> {

@@ -3,6 +3,7 @@
 
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { isContextCustomEntry } from "../context/journal";
+import { isWorkspaceControlEntry } from "../workspace-rewind/session-state";
 import type { AgentForkPointView, AgentReferencePointView, AgentTreeEntryView } from "./types";
 
 const MaxPreviewLength = 120;
@@ -42,7 +43,7 @@ function isUserMessageEntry(entry: SessionTreeEntry): entry is Extract<SessionTr
 }
 
 /**
- * Only PURELY STRUCTURAL entries are stripped at the backend. Everything else
+ * Only structural and internal control entries are stripped at the backend. Everything else
  * — tool results, model/thinking/session bookkeeping, assistant tool-only
  * turns — is sent to the renderer, which applies Pi's FilterMode
  * (default/no-tools/user-only/labeled-only/all) at display time. This mirrors
@@ -52,19 +53,30 @@ function isUserMessageEntry(entry: SessionTreeEntry): entry is Extract<SessionTr
  * attaches to the target node via the labels map — neither is a real node.
  */
 export function isHiddenTreeEntry(entry: SessionTreeEntry): boolean {
-    return entry.type === "leaf" || entry.type === "label" || isContextCustomEntry(entry);
+    return (
+        entry.type === "leaf" ||
+        entry.type === "label" ||
+        isContextCustomEntry(entry) ||
+        isWorkspaceControlEntry(entry)
+    );
+}
+
+export interface FilteredSessionTree {
+    entries: SessionTreeEntry[];
+    semanticLeafId: string | null;
+    displayLeafId: string | null;
 }
 
 export function filterTreeForDisplay(
     entries: SessionTreeEntry[],
     leafId: string | null = null
-): { entries: SessionTreeEntry[]; effectiveLeafId: string | null } {
+): FilteredSessionTree {
     const hiddenIds = new Set(entries.filter(isHiddenTreeEntry).map((e) => e.id));
     const byId = new Map(entries.map((e) => [e.id, e]));
 
-    let effectiveLeafId: string | null = leafId;
+    let displayLeafId: string | null = leafId;
     if (leafId && hiddenIds.has(leafId)) {
-        effectiveLeafId = null;
+        displayLeafId = null;
         const visited = new Set<string>();
         let cursor: string | null = leafId;
         while (cursor && !visited.has(cursor)) {
@@ -73,7 +85,7 @@ export function filterTreeForDisplay(
             if (!entry) break;
             cursor = entry.parentId ?? null;
             if (cursor && !hiddenIds.has(cursor) && byId.has(cursor)) {
-                effectiveLeafId = cursor;
+                displayLeafId = cursor;
                 break;
             }
         }
@@ -99,7 +111,7 @@ export function filterTreeForDisplay(
             }
             return entry;
         });
-    return { entries: filtered, effectiveLeafId };
+    return { entries: filtered, semanticLeafId: leafId, displayLeafId };
 }
 
 /** Tool-call args captured from assistant turns, keyed by toolCallId. */
