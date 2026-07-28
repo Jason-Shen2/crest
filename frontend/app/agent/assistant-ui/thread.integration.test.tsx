@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
@@ -222,8 +224,9 @@ describe("Thread assistant-ui integration", () => {
 
         expect(html).toContain('data-slot="diff-viewer"');
         expect(html).toContain('data-slot="diff-viewer-header"');
+        expect(html).toContain('data-slot="diff-viewer-collapse-icon"');
+        expect(html).toContain("<diffs-container");
         expect(html).toContain("frontend/app.tsx");
-        expect(html).toContain("new line");
     });
 
     it("renders beforeComposer content directly above the composer", () => {

@@ -22,9 +22,10 @@ Run:
 
 ```bash
 npm install --save-exact @pierre/diffs@1.2.10
+npm install --save-exact @shikijs/themes@4.2.0 @shikijs/transformers@3.20.0
 ```
 
-Expected: `package.json` contains `"@pierre/diffs": "1.2.10"` and the lockfile resolves version `1.2.10`.
+Expected: `package.json` contains the exact Pierre version plus the Shiki theme and transformer versions from OpenCode's lockfile. The explicit Shiki pins prevent npm from combining Pierre's wide peer ranges into a Vite-incompatible 3.x/4.x pair.
 
 - [ ] **Step 2: Verify the installed public API**
 

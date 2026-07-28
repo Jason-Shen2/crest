@@ -1,146 +1,67 @@
 "use client";
 
-import { cn } from "@/util/util";
+import { parsePatchFiles, type FileDiffMetadata, type FileDiffOptions } from "@pierre/diffs";
+import { FileDiff, MultiFileDiff } from "@pierre/diffs/react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { diffLines } from "diff";
-import parseDiff from "parse-diff";
-import { useMemo, type ComponentProps, type FC } from "react";
+import { ChevronsUpDownIcon } from "lucide-react";
+import { useMemo, useState, type CSSProperties, type ComponentProps, type FC, type ReactNode } from "react";
 
-type DiffLineType = "add" | "del" | "normal";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/shadcn/ui/collapsible";
+import { cn } from "@/util/util";
 
-interface ParsedLine {
-    type: DiffLineType;
-    content: string;
-    oldLineNumber?: number;
-    newLineNumber?: number;
+const PierreUnsafeCss = `
+:host {
+    --diffs-bg: var(--color-code-bg);
 }
 
-interface ParsedFile {
-    oldName?: string | undefined;
-    newName?: string | undefined;
-    lines: ParsedLine[];
-    additions: number;
-    deletions: number;
+[data-diff] {
+    --diffs-bg-deletion-override: light-dark(
+        color-mix(in lab, var(--diffs-bg) 33.333%, var(--diffs-deletion-base)),
+        color-mix(in lab, var(--diffs-bg) 60%, var(--diffs-deletion-base))
+    );
+    --diffs-bg-addition-override: light-dark(
+        color-mix(in lab, var(--diffs-bg) 33.333%, var(--diffs-addition-base)),
+        color-mix(in lab, var(--diffs-bg) 60%, var(--diffs-addition-base))
+    );
 }
 
-interface SplitLinePair {
-    left: ParsedLine | null;
-    right: ParsedLine | null;
-}
-
-function parsePatch(patch: string): ParsedFile[] {
-    const files = parseDiff(patch);
-    return files.map((file) => {
-        const lines: ParsedLine[] = [];
-        let additions = 0;
-        let deletions = 0;
-        for (const chunk of file.chunks) {
-            let oldLine = chunk.oldStart;
-            let newLine = chunk.newStart;
-            for (const change of chunk.changes) {
-                if (change.type === "add") {
-                    additions++;
-                    lines.push({
-                        type: "add",
-                        content: change.content.slice(1),
-                        newLineNumber: newLine++,
-                    });
-                } else if (change.type === "del") {
-                    deletions++;
-                    lines.push({
-                        type: "del",
-                        content: change.content.slice(1),
-                        oldLineNumber: oldLine++,
-                    });
-                } else {
-                    lines.push({
-                        type: "normal",
-                        content: change.content.slice(1),
-                        oldLineNumber: oldLine++,
-                        newLineNumber: newLine++,
-                    });
-                }
-            }
-        }
-        return {
-            oldName: file.from,
-            newName: file.to,
-            lines,
-            additions,
-            deletions,
-        };
-    });
-}
-
-function computeDiff(
-    oldContent: string,
-    newContent: string
-): { lines: ParsedLine[]; additions: number; deletions: number } {
-    const changes = diffLines(oldContent, newContent);
-    const lines: ParsedLine[] = [];
-    let oldLine = 1;
-    let newLine = 1;
-    let additions = 0;
-    let deletions = 0;
-
-    for (const change of changes) {
-        const contentLines = change.value.replace(/\n$/, "").split("\n");
-        for (const content of contentLines) {
-            if (change.added) {
-                additions++;
-                lines.push({ type: "add", content, newLineNumber: newLine++ });
-            } else if (change.removed) {
-                deletions++;
-                lines.push({ type: "del", content, oldLineNumber: oldLine++ });
-            } else {
-                lines.push({
-                    type: "normal",
-                    content,
-                    oldLineNumber: oldLine++,
-                    newLineNumber: newLine++,
-                });
-            }
-        }
+[data-diff-header],
+[data-diff] {
+    [data-separator] {
+        height: 24px;
     }
-    return { lines, additions, deletions };
-}
 
-function pairLinesForSplit(lines: ParsedLine[]): SplitLinePair[] {
-    const pairs: SplitLinePair[] = [];
-    let i = 0;
-
-    while (i < lines.length) {
-        const line = lines[i]!;
-        if (line.type === "normal") {
-            pairs.push({ left: line, right: line });
-            i++;
-        } else if (line.type === "del") {
-            const deletions: ParsedLine[] = [];
-            while (i < lines.length && lines[i]!.type === "del") {
-                deletions.push(lines[i]!);
-                i++;
-            }
-            const additions: ParsedLine[] = [];
-            while (i < lines.length && lines[i]!.type === "add") {
-                additions.push(lines[i]!);
-                i++;
-            }
-            const maxLen = Math.max(deletions.length, additions.length);
-            for (let j = 0; j < maxLen; j++) {
-                pairs.push({
-                    left: deletions[j] ?? null,
-                    right: additions[j] ?? null,
-                });
-            }
-        } else {
-            pairs.push({ left: null, right: line });
-            i++;
-        }
+    [data-column-number] {
+        background-color: var(--diffs-bg);
+        cursor: default !important;
     }
-    return pairs;
-}
 
-const diffViewerVariants = cva("aui-diff-viewer overflow-hidden rounded-lg font-mono text-sm", {
+    &[data-interactive-line-numbers] [data-column-number] {
+        cursor: default !important;
+    }
+
+    &[data-interactive-lines] [data-line] {
+        cursor: auto !important;
+    }
+
+    [data-code] {
+        overflow-x: auto !important;
+        overflow-y: clip !important;
+    }
+}
+`;
+
+const PierreStyle = {
+    "--diffs-font-family": "var(--font-mono)",
+    "--diffs-font-size": "inherit",
+    "--diffs-line-height": "24px",
+    "--diffs-tab-size": 2,
+    "--diffs-gap-block": 0,
+    "--diffs-min-number-column-width": "4ch",
+} as CSSProperties;
+
+const diffViewerVariants = cva("aui-diff-viewer-file overflow-hidden rounded-lg font-mono text-sm", {
     variants: {
         variant: {
             default: "bg-[var(--color-code-bg)] border border-border/50",
@@ -159,33 +80,27 @@ const diffViewerVariants = cva("aui-diff-viewer overflow-hidden rounded-lg font-
     },
 });
 
-const diffLineVariants = cva("flex", {
-    variants: {
-        type: {
-            add: "bg-success/10",
-            del: "bg-destructive/10",
-            normal: "",
-            empty: "",
-        },
-    },
-    defaultVariants: {
-        type: "normal",
-    },
-});
-
-const diffLineTextVariants = cva("", {
-    variants: {
-        type: {
-            add: "text-success",
-            del: "text-destructive",
-            normal: "",
-            empty: "",
-        },
-    },
-    defaultVariants: {
-        type: "normal",
-    },
-});
+function makePierreOptions(
+    viewMode: NonNullable<DiffViewerProps["viewMode"]>,
+    showLineNumbers: boolean
+): FileDiffOptions<undefined> {
+    return {
+        themeType: "system",
+        disableLineNumbers: !showLineNumbers,
+        overflow: "wrap",
+        diffStyle: viewMode,
+        diffIndicators: "bars",
+        lineHoverHighlight: "both",
+        disableBackground: false,
+        expansionLineCount: 20,
+        hunkSeparators: "line-info-basic",
+        lineDiffType: viewMode === "split" ? "word-alt" : "none",
+        maxLineDiffLength: 1000,
+        tokenizeMaxLineLength: 1000,
+        disableFileHeader: true,
+        unsafeCSS: PierreUnsafeCss,
+    };
+}
 
 function getFileExtension(filename?: string): string {
     const ext = filename?.split(".").pop()?.toLowerCase();
@@ -193,7 +108,7 @@ function getFileExtension(filename?: string): string {
     return ext.toUpperCase();
 }
 
-function DiffViewerFileBadge({ filename }: { filename?: string | undefined }) {
+function DiffViewerFileBadge({ filename }: { filename?: string }) {
     const ext = getFileExtension(filename);
     if (!ext) return null;
 
@@ -216,13 +131,14 @@ function DiffViewerStats({ additions, deletions }: { additions: number; deletion
     );
 }
 
-interface DiffViewerHeaderProps extends ComponentProps<"div"> {
-    oldName?: string | undefined;
-    newName?: string | undefined;
+interface DiffViewerHeaderProps extends ComponentProps<"button"> {
+    oldName?: string;
+    newName?: string;
     additions?: number;
     deletions?: number;
     showIcon?: boolean;
     showStats?: boolean;
+    open: boolean;
 }
 
 function DiffViewerHeader({
@@ -232,24 +148,25 @@ function DiffViewerHeader({
     deletions = 0,
     showIcon = true,
     showStats = true,
+    open,
     className,
     ...props
 }: DiffViewerHeaderProps) {
-    if (!oldName && !newName) return null;
-
     const displayName = newName || oldName;
 
     return (
-        <div
+        <button
+            type="button"
             data-slot="diff-viewer-header"
+            aria-expanded={open}
             className={cn(
-                "bg-[var(--color-code-header-bg)] text-muted-foreground flex items-center gap-2 border-b border-border/50 px-3.5 py-1.5 text-xs",
+                "bg-[var(--color-code-header-bg)] text-muted-foreground flex w-full cursor-pointer items-center gap-2 border-b border-border/50 px-3.5 py-1.5 text-left text-xs",
                 className
             )}
             {...props}
         >
             {showIcon && <DiffViewerFileBadge filename={displayName} />}
-            <span className="flex-1 font-mono">
+            <span className="min-w-0 flex-1 truncate font-mono">
                 {oldName && newName && oldName !== newName ? (
                     <>
                         <span className="text-destructive">{oldName}</span>
@@ -263,121 +180,80 @@ function DiffViewerHeader({
             {showStats && (additions > 0 || deletions > 0) && (
                 <DiffViewerStats additions={additions} deletions={deletions} />
             )}
-        </div>
+            <ChevronsUpDownIcon
+                data-slot="diff-viewer-collapse-icon"
+                aria-hidden="true"
+                className="size-4 shrink-0 opacity-60"
+            />
+        </button>
     );
 }
 
-interface DiffViewerLineProps extends ComponentProps<"div"> {
-    line: ParsedLine;
-    showLineNumbers?: boolean;
+interface DiffViewerFileProps extends VariantProps<typeof diffViewerVariants> {
+    oldName?: string;
+    newName?: string;
+    additions: number;
+    deletions: number;
+    showIcon: boolean;
+    showStats: boolean;
+    children: ReactNode;
 }
 
-function DiffViewerLine({ line, showLineNumbers = true, className, ...props }: DiffViewerLineProps) {
-    const indicator = line.type === "add" ? "+" : line.type === "del" ? "-" : " ";
+function DiffViewerFile({
+    oldName,
+    newName,
+    additions,
+    deletions,
+    showIcon,
+    showStats,
+    variant,
+    size,
+    children,
+}: DiffViewerFileProps) {
+    const [open, setOpen] = useState(true);
 
     return (
-        <div
-            data-slot="diff-viewer-line"
-            data-type={line.type}
-            className={cn(diffLineVariants({ type: line.type }), className)}
-            {...props}
+        <Collapsible
+            open={open}
+            onOpenChange={setOpen}
+            data-slot="diff-viewer-file"
+            className={diffViewerVariants({ variant, size })}
         >
-            {showLineNumbers && (
-                <span
-                    data-slot="diff-viewer-line-number"
-                    className="text-muted-foreground/50 w-12 shrink-0 px-2 text-end select-none"
-                >
-                    {line.type === "del"
-                        ? line.oldLineNumber
-                        : line.type === "add"
-                          ? line.newLineNumber
-                          : line.oldLineNumber}
-                </span>
-            )}
-            <span
-                data-slot="diff-viewer-indicator"
-                className={cn("w-4 shrink-0 text-center select-none", diffLineTextVariants({ type: line.type }))}
-            >
-                {indicator}
-            </span>
-            <span
-                data-slot="diff-viewer-content"
-                className={cn("flex-1 break-all whitespace-pre-wrap", diffLineTextVariants({ type: line.type }))}
-            >
-                {line.content}
-            </span>
-        </div>
+            <CollapsibleTrigger asChild data-slot="diff-viewer-header">
+                <DiffViewerHeader
+                    oldName={oldName}
+                    newName={newName}
+                    additions={additions}
+                    deletions={deletions}
+                    showIcon={showIcon}
+                    showStats={showStats}
+                    open={open}
+                />
+            </CollapsibleTrigger>
+            <CollapsibleContent data-slot="diff-viewer-content" className="min-w-0 overflow-hidden">
+                {children}
+            </CollapsibleContent>
+        </Collapsible>
     );
 }
 
-interface DiffViewerSplitLineProps extends ComponentProps<"div"> {
-    pair: SplitLinePair;
-    showLineNumbers?: boolean;
+function getPatchStats(fileDiff: FileDiffMetadata): { additions: number; deletions: number } {
+    return fileDiff.hunks.reduce(
+        (stats, hunk) => ({
+            additions: stats.additions + hunk.additionLines,
+            deletions: stats.deletions + hunk.deletionLines,
+        }),
+        { additions: 0, deletions: 0 }
+    );
 }
 
-function DiffViewerSplitLine({ pair, showLineNumbers = true, className, ...props }: DiffViewerSplitLineProps) {
-    const { left, right } = pair;
-
-    return (
-        <div data-slot="diff-viewer-split-line" className={cn("flex", className)} {...props}>
-            <div
-                data-slot="diff-viewer-split-left"
-                data-type={left?.type ?? "empty"}
-                className={cn(
-                    "flex w-1/2 border-e border-border/30",
-                    diffLineVariants({ type: left?.type ?? "empty" })
-                )}
-            >
-                {showLineNumbers && (
-                    <span className="text-muted-foreground/50 w-12 shrink-0 px-2 text-end select-none">
-                        {left?.oldLineNumber ?? ""}
-                    </span>
-                )}
-                <span
-                    className={cn(
-                        "w-4 shrink-0 text-center select-none",
-                        diffLineTextVariants({ type: left?.type ?? "empty" })
-                    )}
-                >
-                    {left ? (left.type === "del" ? "-" : " ") : ""}
-                </span>
-                <span
-                    className={cn(
-                        "flex-1 break-all whitespace-pre-wrap",
-                        diffLineTextVariants({ type: left?.type ?? "empty" })
-                    )}
-                >
-                    {left?.content ?? ""}
-                </span>
-            </div>
-            <div
-                data-slot="diff-viewer-split-right"
-                data-type={right?.type ?? "empty"}
-                className={cn("flex w-1/2", diffLineVariants({ type: right?.type ?? "empty" }))}
-            >
-                {showLineNumbers && (
-                    <span className="text-muted-foreground/50 w-12 shrink-0 px-2 text-end select-none">
-                        {right?.newLineNumber ?? ""}
-                    </span>
-                )}
-                <span
-                    className={cn(
-                        "w-4 shrink-0 text-center select-none",
-                        diffLineTextVariants({ type: right?.type ?? "empty" })
-                    )}
-                >
-                    {right ? (right.type === "add" ? "+" : " ") : ""}
-                </span>
-                <span
-                    className={cn(
-                        "flex-1 break-all whitespace-pre-wrap",
-                        diffLineTextVariants({ type: right?.type ?? "empty" })
-                    )}
-                >
-                    {right?.content ?? ""}
-                </span>
-            </div>
-        </div>
+function getContentStats(oldContent: string, newContent: string): { additions: number; deletions: number } {
+    return diffLines(oldContent, newContent).reduce(
+        (stats, change) => ({
+            additions: stats.additions + (change.added ? (change.count ?? 0) : 0),
+            deletions: stats.deletions + (change.removed ? (change.count ?? 0) : 0),
+        }),
+        { additions: 0, deletions: 0 }
     );
 }
 
@@ -411,27 +287,22 @@ const DiffViewer: FC<DiffViewerProps> = ({
     className,
 }) => {
     const diffPatch = patch ?? code;
-
+    const pierreOptions = useMemo(() => makePierreOptions(viewMode, showLineNumbers), [showLineNumbers, viewMode]);
     const parsedFiles = useMemo(() => {
-        if (diffPatch) {
-            return parsePatch(diffPatch);
-        }
-        if (oldFile && newFile) {
-            const { lines, additions, deletions } = computeDiff(oldFile.content, newFile.content);
-            return [
-                {
-                    oldName: oldFile.name,
-                    newName: newFile.name,
-                    lines,
-                    additions,
-                    deletions,
-                },
-            ];
-        }
-        return [];
-    }, [diffPatch, oldFile, newFile]);
+        if (!diffPatch) return [];
 
-    if (parsedFiles.length === 0) {
+        try {
+            return parsePatchFiles(diffPatch).flatMap((parsedPatch) => parsedPatch.files);
+        } catch {
+            return [];
+        }
+    }, [diffPatch]);
+    const contentStats = useMemo(() => {
+        if (!oldFile || !newFile) return null;
+        return getContentStats(oldFile.content, newFile.content);
+    }, [newFile, oldFile]);
+
+    if (parsedFiles.length === 0 && (!oldFile || !newFile)) {
         return (
             <pre data-slot="diff-viewer" className={cn("bg-muted rounded-lg p-4", className)}>
                 No diff content provided
@@ -439,35 +310,66 @@ const DiffViewer: FC<DiffViewerProps> = ({
         );
     }
 
+    if (parsedFiles.length > 0) {
+        return (
+            <div
+                data-slot="diff-viewer"
+                data-view-mode={viewMode}
+                data-variant={variant ?? "default"}
+                data-size={size ?? "default"}
+                className={cn("my-3 flex min-w-0 flex-col gap-3", className)}
+            >
+                {parsedFiles.map((fileDiff, fileIndex) => {
+                    const stats = getPatchStats(fileDiff);
+
+                    return (
+                        <DiffViewerFile
+                            key={`${fileDiff.prevName ?? ""}:${fileDiff.name}:${fileIndex}`}
+                            oldName={fileDiff.prevName}
+                            newName={fileDiff.name}
+                            additions={stats.additions}
+                            deletions={stats.deletions}
+                            showIcon={showIcon}
+                            showStats={showStats}
+                            variant={variant}
+                            size={size}
+                        >
+                            <FileDiff fileDiff={fileDiff} options={pierreOptions} style={PierreStyle} />
+                        </DiffViewerFile>
+                    );
+                })}
+            </div>
+        );
+    }
+
+    const oldName = oldFile!.name ?? "old-file";
+    const newName = newFile!.name ?? oldFile!.name ?? "new-file";
+
     return (
         <div
             data-slot="diff-viewer"
             data-view-mode={viewMode}
             data-variant={variant ?? "default"}
             data-size={size ?? "default"}
-            className={cn(diffViewerVariants({ variant, size }), "my-3", className)}
+            className={cn("my-3 min-w-0", className)}
         >
-            {parsedFiles.map((file, fileIndex) => (
-                <div key={fileIndex} data-slot="diff-viewer-file">
-                    <DiffViewerHeader
-                        oldName={file.oldName}
-                        newName={file.newName}
-                        additions={file.additions}
-                        deletions={file.deletions}
-                        showIcon={showIcon}
-                        showStats={showStats}
-                    />
-                    <div data-slot="diff-viewer-content" className="overflow-x-auto">
-                        {viewMode === "split"
-                            ? pairLinesForSplit(file.lines).map((pair, pairIndex) => (
-                                  <DiffViewerSplitLine key={pairIndex} pair={pair} showLineNumbers={showLineNumbers} />
-                              ))
-                            : file.lines.map((line, lineIndex) => (
-                                  <DiffViewerLine key={lineIndex} line={line} showLineNumbers={showLineNumbers} />
-                              ))}
-                    </div>
-                </div>
-            ))}
+            <DiffViewerFile
+                oldName={oldName}
+                newName={newName}
+                additions={contentStats!.additions}
+                deletions={contentStats!.deletions}
+                showIcon={showIcon}
+                showStats={showStats}
+                variant={variant}
+                size={size}
+            >
+                <MultiFileDiff
+                    oldFile={{ name: oldName, contents: oldFile!.content }}
+                    newFile={{ name: newName, contents: newFile!.content }}
+                    options={pierreOptions}
+                    style={PierreStyle}
+                />
+            </DiffViewerFile>
         </div>
     );
 };
