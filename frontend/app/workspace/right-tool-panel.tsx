@@ -16,6 +16,7 @@ import { cn } from "@/util/util";
 import {
     autoUpdate,
     flip,
+    FloatingPortal,
     offset,
     shift,
     useClick,
@@ -224,7 +225,7 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
         middleware: [
             offset(4),
             flip({ padding: 8, fallbackPlacements: ["bottom-end", "top-start", "top-end"] }),
-            shift({ padding: 8, boundary: "clippingAncestors" }),
+            shift({ padding: 8 }),
         ],
         whileElementsMounted: autoUpdate,
     });
@@ -255,30 +256,32 @@ export function RightToolOpenMenu({ openedTools, onOpenTool, initiallyOpen }: Ri
                 <Icon name="plus" size={14} className="text-xs" />
             </button>
             {isOpen ? (
-                <div
-                    ref={refs.setFloating}
-                    aria-label="Open right tool menu"
-                    data-menu-surface="trae"
-                    style={{ ...floatingStyles, zIndex: "var(--zindex-modal-wrapper)" }}
-                    className="flex w-44 flex-col gap-1 rounded-lg border border-border bg-background p-1 shadow-2xl"
-                    {...getFloatingProps()}
-                >
-                    {availableTools.map((tool) => {
-                        const metadata = RightToolMetadataById[tool];
-                        return (
-                            <button
-                                key={tool}
-                                type="button"
-                                aria-label={`Open ${metadata.label} right tool`}
-                                className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-foreground/85 transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
-                                onClick={() => handleOpenTool(tool)}
-                            >
-                                <Icon name={metadata.icon} size={14} className="shrink-0" />
-                                <span>{metadata.label}</span>
-                            </button>
-                        );
-                    })}
-                </div>
+                <FloatingPortal>
+                    <div
+                        ref={refs.setFloating}
+                        aria-label="Open right tool menu"
+                        data-menu-surface="trae"
+                        style={{ ...floatingStyles, zIndex: "var(--zindex-modal-wrapper)" }}
+                        className="flex w-44 flex-col gap-1 rounded-lg border border-border bg-background p-1 shadow-2xl"
+                        {...getFloatingProps()}
+                    >
+                        {availableTools.map((tool) => {
+                            const metadata = RightToolMetadataById[tool];
+                            return (
+                                <button
+                                    key={tool}
+                                    type="button"
+                                    aria-label={`Open ${metadata.label} right tool`}
+                                    className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-foreground/85 transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                                    onClick={() => handleOpenTool(tool)}
+                                >
+                                    <Icon name={metadata.icon} size={14} className="shrink-0" />
+                                    <span>{metadata.label}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                </FloatingPortal>
             ) : null}
         </>
     );

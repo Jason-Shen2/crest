@@ -365,34 +365,46 @@ describe("RightToolPanel parts", () => {
         expect(onAction).toHaveBeenCalledTimes(1);
     });
 
-    it("renders an open tool menu with unopened tools only", () => {
+    it("renders the open tool menu trigger in its closed state", () => {
         const markup = renderToStaticMarkup(
-            <RightToolOpenMenu openedTools={["editor", "terminal"]} onOpenTool={() => null} initiallyOpen />
+            <RightToolOpenMenu openedTools={["editor", "terminal"]} onOpenTool={() => null} />
         );
 
+        // The trigger button is rendered in the topbar fragment; the floating menu surface is
+        // portaled to document.body and therefore not part of this static markup.
         expect(markup).toContain('aria-label="Open right tool"');
-        expect(markup).toContain('aria-expanded="true"');
-        expect(markup).toContain('data-menu-surface="trae"');
-        // Menu is positioned by floating-ui via inline style (no static left-0/top-8 Tailwind class).
-        expect(markup).toMatch(/style="[^"]*position:\s*absolute/);
-        expect(markup).toContain("w-44");
-        expect(markup).toContain("p-1");
-        expect(markup).toContain("text-xs");
+        expect(markup).toContain('aria-expanded="false"');
         expect(markup).not.toContain("<details");
         expect(markup).not.toContain("absolute right-0");
         expect(markup).not.toContain("absolute left-0");
         expect(markup).not.toContain("top-8");
         expect(markup).not.toContain("top-9");
-        expect(markup).not.toContain("w-52");
-        expect(markup).not.toContain("p-1.5");
-        expect(markup).not.toContain("text-sm font-medium");
-        expect(markup).not.toContain('role="menu"');
-        expect(markup).not.toContain('role="menuitem"');
-        expect(markup).toContain('aria-label="Open Browser right tool"');
-        expect(markup).toContain('aria-label="Open Code Review right tool"');
-        expect(markup).toContain('aria-label="Open Observability right tool"');
-        expect(markup).not.toContain('aria-label="Open Editor right tool"');
-        expect(markup).not.toContain('aria-label="Open Terminal right tool"');
+    });
+
+    it("renders the open tool menu surface via a portal when initially open", () => {
+        const { baseElement } = render(
+            <RightToolOpenMenu openedTools={["editor", "terminal"]} onOpenTool={() => null} initiallyOpen />
+        );
+        // FloatingPortal mounts to document.body; render() defaults to a fresh container, so
+        // check the portal target explicitly.
+        const portalMarkup = baseElement.innerHTML;
+
+        expect(portalMarkup).toContain('data-menu-surface="trae"');
+        // Menu is positioned by floating-ui via inline style (no static left-0/top-8 Tailwind class).
+        expect(portalMarkup).toMatch(/style="[^"]*position:\s*absolute/);
+        expect(portalMarkup).toContain("w-44");
+        expect(portalMarkup).toContain("p-1");
+        expect(portalMarkup).toContain("text-xs");
+        expect(portalMarkup).not.toContain("w-52");
+        expect(portalMarkup).not.toContain("p-1.5");
+        expect(portalMarkup).not.toContain("text-sm font-medium");
+        expect(portalMarkup).not.toContain('role="menu"');
+        expect(portalMarkup).not.toContain('role="menuitem"');
+        expect(portalMarkup).toContain('aria-label="Open Browser right tool"');
+        expect(portalMarkup).toContain('aria-label="Open Code Review right tool"');
+        expect(portalMarkup).toContain('aria-label="Open Observability right tool"');
+        expect(portalMarkup).not.toContain('aria-label="Open Editor right tool"');
+        expect(portalMarkup).not.toContain('aria-label="Open Terminal right tool"');
     });
 
     it("calls onOpenTool when an unopened tool menu item is selected", () => {
