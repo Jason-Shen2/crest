@@ -1,0 +1,346 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { spawn } from "node:child_process";
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
+
+import { waitForChildProcess } from "../tools/_child-process";
+
+export const WorkspaceGitRunnerLimits = {
+    maxStdoutBytes: 64 * 1024 ** 2,
+    maxStderrBytes: 4 * 1024 ** 2,
+} as const;
+
+export type WorkspaceGitRunnerErrorCode =
+    | "invalid_options"
+    | "spawn_failed"
+    | "nonzero_exit"
+    | "timeout"
+    | "aborted"
+    | "stdout_overflow"
+    | "stderr_overflow";
+
+export interface GitRunOptions {
+    cwd?: string;
+    gitDir?: string;
+    workTree?: string;
+    stdin?: Buffer;
+    timeoutMs: number;
+    maxStdoutBytes?: number;
+    maxStderrBytes?: number;
+    signal?: AbortSignal;
+}
+
+export interface GitRunResult {
+    stdout: Buffer;
+    stderr: Buffer;
+}
+
+export class WorkspaceGitRunnerError extends Error {
+    readonly code: WorkspaceGitRunnerErrorCode;
+    readonly exitCode?: number | null;
+    readonly stdout: Buffer;
+    readonly stderr: Buffer;
+
+    constructor(
+        code: WorkspaceGitRunnerErrorCode,
+        message: string,
+        stdout: Buffer = Buffer.alloc(0),
+        stderr: Buffer = Buffer.alloc(0),
+        exitCode?: number | null,
+        cause?: unknown
+    ) {
+        super(message, cause == null ? undefined : { cause });
+        this.name = "WorkspaceGitRunnerError";
+        this.code = code;
+        this.exitCode = exitCode;
+        this.stdout = stdout;
+        this.stderr = stderr;
+    }
+}
+
+const MaxTimeoutMs = 2 ** 31 - 1;
+const ApprovedGitSubcommands = new Set([
+    "init",
+    "config",
+    "rev-parse",
+    "ls-files",
+    "check-ignore",
+    "hash-object",
+    "mktree",
+    "cat-file",
+    "diff",
+    "diff-tree",
+    "update-ref",
+    "for-each-ref",
+    "show-ref",
+    "count-objects",
+    "fsck",
+    "gc",
+    "reflog",
+]);
+
+interface SecureGitPaths {
+    root: string;
+    hooks: string;
+    globalConfig: string;
+}
+
+let SecurePaths: SecureGitPaths | undefined;
+
+export class WorkspaceGitRunner {
+    constructor(readonly executable = "git") {}
+
+    async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
+        const limits = validateOptions(args, options);
+        if (options.signal?.aborted) {
+            throw makeError("aborted");
+        }
+
+        let securePaths: SecureGitPaths;
+        try {
+            securePaths = getSecureGitPaths();
+        } catch (cause) {
+            throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
+        }
+        const commandArgs = [
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            `core.hooksPath=${securePaths.hooks}`,
+            "-c",
+            "core.autocrlf=false",
+            ...(options.gitDir == null ? [] : [`--git-dir=${options.gitDir}`]),
+            ...(options.workTree == null ? [] : [`--work-tree=${options.workTree}`]),
+            ...args,
+        ];
+        const env = makeIsolatedEnv(options.gitDir == null, securePaths.globalConfig);
+        let child;
+
+        try {
+            child = spawn(this.executable, commandArgs, {
+                cwd: options.cwd,
+                env,
+                shell: false,
+                stdio: ["pipe", "pipe", "pipe"],
+                windowsHide: true,
+            });
+        } catch (cause) {
+            throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
+        }
+
+        const stdoutChunks: Buffer[] = [];
+        const stderrChunks: Buffer[] = [];
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        let terminalError: WorkspaceGitRunnerError | undefined;
+        let timeout: NodeJS.Timeout | undefined;
+
+        const snapshot = (): GitRunResult => ({
+            stdout: Buffer.concat(stdoutChunks, stdoutBytes),
+            stderr: Buffer.concat(stderrChunks, stderrBytes),
+        });
+        const terminate = (code: WorkspaceGitRunnerErrorCode) => {
+            if (terminalError) {
+                return;
+            }
+            const output = snapshot();
+            terminalError = makeError(code, output.stdout, output.stderr);
+            child.kill("SIGKILL");
+        };
+        const onStdout = (chunk: Buffer | string) => {
+            if (terminalError) {
+                return;
+            }
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            if (stdoutBytes + buffer.length > limits.maxStdoutBytes) {
+                terminate("stdout_overflow");
+                return;
+            }
+            stdoutChunks.push(buffer);
+            stdoutBytes += buffer.length;
+        };
+        const onStderr = (chunk: Buffer | string) => {
+            if (terminalError) {
+                return;
+            }
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            if (stderrBytes + buffer.length > limits.maxStderrBytes) {
+                terminate("stderr_overflow");
+                return;
+            }
+            stderrChunks.push(buffer);
+            stderrBytes += buffer.length;
+        };
+        const onAbort = () => terminate("aborted");
+        const onStdinError = (cause: NodeJS.ErrnoException) => {
+            if (
+                terminalError ||
+                child.exitCode != null ||
+                child.signalCode != null ||
+                cause.code === "EPIPE" ||
+                cause.code === "ERR_STREAM_DESTROYED"
+            ) {
+                return;
+            }
+            const output = snapshot();
+            terminalError = makeError("spawn_failed", output.stdout, output.stderr, undefined, cause);
+            child.kill("SIGKILL");
+        };
+
+        child.stdout.on("data", onStdout);
+        child.stderr.on("data", onStderr);
+        child.stdin.on("error", onStdinError);
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        if (options.signal?.aborted) {
+            onAbort();
+        }
+        timeout = setTimeout(() => terminate("timeout"), options.timeoutMs);
+
+        try {
+            try {
+                child.stdin.end(options.stdin);
+            } catch (cause) {
+                const output = snapshot();
+                terminalError = makeError("spawn_failed", output.stdout, output.stderr, undefined, cause);
+                child.kill("SIGKILL");
+            }
+
+            let exitCode: number | null;
+            try {
+                exitCode = await waitForChildProcess(child);
+            } catch (cause) {
+                if (terminalError) {
+                    throw terminalError;
+                }
+                const output = snapshot();
+                throw makeError("spawn_failed", output.stdout, output.stderr, undefined, cause);
+            }
+
+            if (terminalError) {
+                throw terminalError;
+            }
+            const output = snapshot();
+            if (exitCode !== 0) {
+                throw makeError("nonzero_exit", output.stdout, output.stderr, exitCode);
+            }
+            return output;
+        } finally {
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+            options.signal?.removeEventListener("abort", onAbort);
+            child.stdout.removeListener("data", onStdout);
+            child.stderr.removeListener("data", onStderr);
+            child.stdin.removeListener("error", onStdinError);
+        }
+    }
+}
+
+function validateOptions(
+    args: readonly string[],
+    options: GitRunOptions
+): Pick<Required<GitRunOptions>, "maxStdoutBytes" | "maxStderrBytes"> {
+    if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
+        throw makeError("invalid_options");
+    }
+    if (!ApprovedGitSubcommands.has(args[0])) {
+        throw makeError("invalid_options");
+    }
+    if (options == null || !isNonnegativeSafeInteger(options.timeoutMs) || options.timeoutMs > MaxTimeoutMs) {
+        throw makeError("invalid_options");
+    }
+    if (options.cwd != null && typeof options.cwd !== "string") {
+        throw makeError("invalid_options");
+    }
+    if (options.gitDir != null && (typeof options.gitDir !== "string" || !isAbsolute(options.gitDir))) {
+        throw makeError("invalid_options");
+    }
+    if (options.workTree != null && (typeof options.workTree !== "string" || !isAbsolute(options.workTree))) {
+        throw makeError("invalid_options");
+    }
+    if (options.stdin != null && !Buffer.isBuffer(options.stdin)) {
+        throw makeError("invalid_options");
+    }
+
+    const maxStdoutBytes = options.maxStdoutBytes ?? WorkspaceGitRunnerLimits.maxStdoutBytes;
+    const maxStderrBytes = options.maxStderrBytes ?? WorkspaceGitRunnerLimits.maxStderrBytes;
+    if (
+        !isValidLimit(maxStdoutBytes, WorkspaceGitRunnerLimits.maxStdoutBytes) ||
+        !isValidLimit(maxStderrBytes, WorkspaceGitRunnerLimits.maxStderrBytes)
+    ) {
+        throw makeError("invalid_options");
+    }
+    return { maxStdoutBytes, maxStderrBytes };
+}
+
+function isNonnegativeSafeInteger(value: number): boolean {
+    return Number.isSafeInteger(value) && value >= 0;
+}
+
+function isValidLimit(value: number, hardCap: number): boolean {
+    return isNonnegativeSafeInteger(value) && value <= hardCap;
+}
+
+function makeIsolatedEnv(discovery: boolean, globalConfigPath: string): NodeJS.ProcessEnv {
+    const env = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))
+    );
+    return {
+        ...env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_LITERAL_PATHSPECS: "1",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: globalConfigPath,
+        GIT_ATTR_NOSYSTEM: "1",
+        ...(discovery ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
+        LC_ALL: "C",
+    };
+}
+
+function getSecureGitPaths(): SecureGitPaths {
+    if (SecurePaths) {
+        return SecurePaths;
+    }
+
+    const root = mkdtempSync(join(tmpdir(), "crest-workspace-git-runner-"));
+    try {
+        chmodSync(root, 0o700);
+        const hooks = join(root, "hooks");
+        mkdirSync(hooks, { mode: 0o700 });
+        chmodSync(hooks, 0o700);
+        const globalConfig = join(root, "global.gitconfig");
+        const configFd = openSync(globalConfig, "wx", 0o600);
+        closeSync(configFd);
+        chmodSync(globalConfig, 0o600);
+        SecurePaths = { root, hooks, globalConfig };
+        process.once("exit", cleanupSecureGitPaths);
+        return SecurePaths;
+    } catch (error) {
+        rmSync(root, { recursive: true, force: true });
+        throw error;
+    }
+}
+
+function cleanupSecureGitPaths(): void {
+    if (!SecurePaths) {
+        return;
+    }
+    try {
+        rmSync(SecurePaths.root, { recursive: true, force: true });
+    } catch {
+        return;
+    }
+}
+
+function makeError(
+    code: WorkspaceGitRunnerErrorCode,
+    stdout: Buffer = Buffer.alloc(0),
+    stderr: Buffer = Buffer.alloc(0),
+    exitCode?: number | null,
+    cause?: unknown
+): WorkspaceGitRunnerError {
+    return new WorkspaceGitRunnerError(code, `Workspace Git runner failed: ${code}`, stdout, stderr, exitCode, cause);
+}
