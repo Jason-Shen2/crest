@@ -4,9 +4,11 @@
 
 **Date:** 2026-07-28
 
-**Primary reference:** OpenCode Core v2 selective restore
+**Storage and restore reference:** OpenCode Core v2 selective restore
 
-**Lifecycle reference:** Pi / pi-rewind checkpoint-to-user-entry mapping (clean-room design only)
+**Lifecycle and command reference:** Pi / pi-rewind per-turn checkpoint mapping and `/rewind` UX (clean-room design only)
+
+**Crest-owned hardening:** multi-session ownership checks, drift detection, durable refs, crash journal, and workspace locking
 
 ## Purpose
 
@@ -42,6 +44,52 @@ products:
 
 The first product entry point is a dedicated `/rewind` command. Existing
 `/tree` remains conversation-only.
+
+## Reference Provenance and Crest-Owned Decisions
+
+This design is a clean-room synthesis, not a port of either project. The table
+below records the source of inspiration for every major decision.
+
+| Design decision | OpenCode reference | pi-rewind reference | Crest decision and differences |
+| --- | --- | --- | --- |
+| Internal Git-backed snapshot store | Primary reference. OpenCode captures internal Git trees and restores them without user commits. See [`snapshot.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/snapshot.ts). | pi-rewind also maintains private per-session checkpoints. | Crest uses a canonical-workspace store shared by sessions and namespaced by workspace/session identity. It also supports non-Git workspaces. |
+| Bind file state to a completed user turn | OpenCode records step snapshots around assistant work, while its public undo boundary is a user message. | Primary lifecycle reference. pi-rewind records `beforeCommit` and `afterCommit` against `userEntryId`/`turnId`. See [`index.ts`](https://github.com/ayu-exorcist/oh-my-pi/blob/main/extensions/pi-rewind/src/index.ts). | Crest binds `beforeTree` and `afterTree` directly to the existing user-message entry ID. Crest adds explicit harness lifecycle events because Pi's low-level `turn_end` is not a reliable user-turn transaction boundary in Crest. |
+| Selectively restore files affected after the boundary | Primary reference. OpenCode builds a per-path restore plan from later snapshots, keeps the earliest source state for each path, and touches only those paths. See [`revert.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/revert.ts) and [`snapshot.ts`](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/snapshot.ts). | Not adopted: pi-rewind's checkpoint restore is closer to restoring a complete repository state. | Crest adopts OpenCode's selective-path semantics, then adds explicit absent, excluded, symlink, directory, and unsafe-type states. |
+| Suffix union plus earliest pre-change state per path | Primary reference. OpenCode's revert plan walks later snapshots and keeps the first `snapshot.start` seen for each file. | No direct reference. | Crest applies the rule to completed user turns: union all `changedPaths` after the target, then restore each path from the earliest relevant `beforeTree`. |
+| Preview before restore | OpenCode exposes snapshot `preview()` and a selective file plan. | pi-rewind exposes checkpoint selection and code-plus-conversation, conversation-only, and code-only restore modes. See the [pi-rewind README](https://github.com/ayu-exorcist/oh-my-pi/blob/main/extensions/pi-rewind/README.md). | Crest previews paths, conflicts, and ownership warnings, then recomputes the plan on confirmation so a stale preview cannot authorize a changed restore. |
+| Preserve the current tip for reversal | Primary reference. OpenCode stages the current snapshot before revert and uses it to clear the revert. | pi-rewind does not currently expose a product-level `/redo`. | Crest persists a safety tree and records a one-step redo marker in hidden workspace state. New user work invalidates it. |
+| `/rewind` command name and checkpoint picker | OpenCode uses `/undo`, not `/rewind`. See the [OpenCode TUI commands](https://opencode.ai/docs/tui/). | Primary command reference. pi-rewind registers `/rewind`, selects an earlier checkpoint, and can restore code and conversation to before that prompt. | Crest keeps `/rewind` because it can select any eligible earlier user turn and because `/tree` already means conversation navigation. Crest does not reuse pi-rewind's restore engine. |
+| `/redo` command name and user model | Primary command reference. OpenCode exposes `/redo` after `/undo` and restores the undone message and file changes. See the [OpenCode TUI commands](https://opencode.ai/docs/tui/) and [`use-session-commands.tsx`](https://github.com/anomalyco/opencode/blob/dev/packages/app/src/pages/session/use-session-commands.tsx). | No `/redo` command is registered by the current pi-rewind extension. | Crest adopts the familiar name but deliberately limits the first release to one-step redo. Its redo record, safety checks, and recovery are Crest-specific. |
+| Keep `/tree` conversation-only | OpenCode has no equivalent conversation-tree command in this flow. | pi-rewind can optionally synchronize code while navigating Pi's tree. | Crest deliberately does not overload the existing `/tree`; combined conversation-and-code restoration remains explicit through `/rewind`. |
+| Multi-session isolation and conflict refusal | No equivalent guarantee in the referenced rewind flow. | No equivalent guarantee. | Crest-owned requirement. A session may restore only a path whose current state still matches the state produced by that session; otherwise restore refuses the path or operation according to the confirmed policy. |
+| Durable refs, workspace lock, crash journal, scope identity, quotas, and garbage collection | OpenCode supplies the snapshot/restore basis and a useful precedent for limiting untracked-file capture. | pi-rewind supplies lifecycle and checkpoint-retention precedents. | The concrete durability protocol, recovery journal, lock ordering, canonical workspace identity, scope/incarnation identity, descriptor schema, and quotas are Crest-owned production hardening. |
+
+### Command Naming Decision
+
+- **`/rewind` is primarily referenced from pi-rewind.** The name and the
+  interaction of choosing an earlier prompt/checkpoint come from that
+  extension. Crest does not adopt its whole-state restore behavior or failure
+  policy.
+- **`/redo` is primarily referenced from OpenCode.** OpenCode exposes `/undo`
+  and `/redo`; pi-rewind currently exposes `/rewind` but not `/redo`. Crest's
+  exact one-step redo representation is newly designed for Crest's append-only
+  session tree.
+- **The `/rewind` plus `/redo` combination is a Crest product synthesis.** It
+  combines pi-rewind's arbitrary historical selection, OpenCode's reversible
+  restore model, and Crest's existing `/tree` semantics.
+- **Crest does not rename `/rewind` to `/undo`.** OpenCode's `/undo` targets the
+  latest user message, while Crest's `/rewind` can target any eligible earlier
+  user turn. Calling both behaviors `/undo` would hide that distinction.
+
+### Explicitly Not Reused
+
+- No pi-rewind source code is copied; the lifecycle and UX concepts are
+  reimplemented clean-room.
+- Crest does not depend on OpenCode or pi-rewind at runtime.
+- Crest does not use `git reset --hard`, `git clean -fd`, or a workspace-wide
+  checkout.
+- Crest does not move the conversation pointer after a failed code restore.
+- Crest does not assume that the user's workspace is a Git repository.
 
 ## Goals
 
