@@ -99,7 +99,28 @@ describe("file tool cards", () => {
     });
 
     it("falls back while an edit is still running", () => {
-        const { container } = render(<EditToolCard {...toolProps({ status: { type: "running" }, result: undefined })} />);
+        const { container } = render(
+            <EditToolCard {...toolProps({ status: { type: "running" }, result: undefined })} />
+        );
+
+        expect(container.querySelector('[data-slot="tool-fallback-root"]')).not.toBeNull();
+        expect(container.querySelector('[data-slot="diff-viewer"]')).toBeNull();
+    });
+
+    it("falls back when a completed edit reports an error", () => {
+        const { container } = render(
+            <EditToolCard
+                {...toolProps({
+                    isError: true,
+                    result: {
+                        details: {
+                            patch: Patch,
+                            changeOperation: { path: "src/app.ts" },
+                        },
+                    },
+                })}
+            />
+        );
 
         expect(container.querySelector('[data-slot="tool-fallback-root"]')).not.toBeNull();
         expect(container.querySelector('[data-slot="diff-viewer"]')).toBeNull();
@@ -121,5 +142,24 @@ describe("file tool cards", () => {
 
         expect(container.querySelector('[data-slot="tool-fallback-root"]')).not.toBeNull();
         expect(container.querySelector('[data-slot="diff-viewer"]')).toBeNull();
+    });
+
+    it("falls back when a completed write is missing content", () => {
+        const { container } = render(
+            <WriteToolCard
+                {...toolProps({
+                    toolName: "write",
+                    args: { path: "src/new.ts" },
+                    argsText: JSON.stringify({ path: "src/new.ts" }),
+                    result: {
+                        content: [{ type: "text", text: "ok" }],
+                        details: {},
+                    },
+                })}
+            />
+        );
+
+        expect(container.querySelector('[data-slot="tool-fallback-root"]')).not.toBeNull();
+        expect(container.querySelector('[data-slot="write-file-card"]')).toBeNull();
     });
 });

@@ -1,7 +1,7 @@
 "use client";
 
-import { parsePatchFiles } from "@pierre/diffs";
 import type { ToolCallMessagePartComponent, ToolCallMessagePartProps } from "@assistant-ui/react";
+import { parsePatchFiles } from "@pierre/diffs";
 
 import { Code } from "@/app/element/streamdown";
 import { DiffViewer } from "../diff-viewer";
@@ -25,9 +25,7 @@ function editData(props: ToolCallMessagePartProps): { path: string; patch: strin
     const operation = record(details?.changeOperation);
     const args = record(props.args);
     const path =
-        (typeof operation?.path === "string" && operation.path) ||
-        (typeof args?.path === "string" && args.path) ||
-        "";
+        (typeof operation?.path === "string" && operation.path) || (typeof args?.path === "string" && args.path) || "";
     const patch = typeof details?.patch === "string" ? details.patch : "";
     if (!path || !patch) return;
 
