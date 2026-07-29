@@ -3,12 +3,22 @@
 
 // @vitest-environment jsdom
 
+import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { AgentHarnessEvent } from "@crest/agent/harness/types";
-import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
+import {
+    AssistantRuntimeProvider,
+    useExternalStoreRuntime,
+    type ExternalStoreAdapter,
+    type ThreadMessageLike,
+} from "@assistant-ui/react";
+import { AgentHarness } from "@crest/agent/harness/agent-harness";
+import { NodeExecutionEnv } from "@crest/agent/node";
+import { getModel, registerApiProvider, resetApiProviders, type AssistantMessage, type Model } from "@crest/ai";
+import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import * as electron from "electron";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -42,7 +52,10 @@ vi.mock("electron", () => {
 
 // The E2E owns a real rewind stack. These mocks only keep unrelated model/tool
 // startup out of the IPC module loaded by the test.
-vi.mock("@crest/ai", () => ({ getModel: vi.fn() }));
+vi.mock("@crest/ai", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@crest/ai")>()),
+    getModel: vi.fn(),
+}));
 vi.mock("@crest/coding-agent/change-review/change-outline", () => ({
     extractChangeOperationsFromMessages: vi.fn(() => []),
     generateChangeOutline: vi.fn(),
@@ -72,6 +85,7 @@ vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import { AgentRuntimeRegistry } from "@crest/coding-agent/agent-runtime-registry";
+import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
 import { SessionMutationBarrier } from "@crest/coding-agent/session-mutation-barrier";
 import { _setSessionsRepoForTests, defaultSessionsDir } from "@crest/coding-agent/sessions";
 import { registerWorkspaceCheckpointManager } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
@@ -88,7 +102,7 @@ import {
     buildAgentRewindSessionStateView,
     decodeWorkspaceCheckpointEntry,
 } from "@crest/coding-agent/workspace-rewind/session-state";
-import { WorkspaceSnapshotStore } from "@crest/coding-agent/workspace-rewind/snapshot-store";
+import { WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "@crest/coding-agent/workspace-rewind/snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "@crest/coding-agent/workspace-rewind/types";
 import {
     resolveCanonicalWorkspaceIdentity,
@@ -96,7 +110,9 @@ import {
 } from "@crest/coding-agent/workspace-rewind/workspace-identity";
 import { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 import { AgentRuntimeClient } from "../frontend/app/agent/agent-runtime-client";
+import { Thread } from "../frontend/app/agent/assistant-ui";
 import { RedoDock } from "../frontend/app/agent/rewind/redo-dock";
+import { RewindPreviewDialog } from "../frontend/app/agent/rewind/rewind-preview-dialog";
 import { useAgentRewind } from "../frontend/app/agent/rewind/use-agent-rewind";
 import { _resetAgentIpcForTests, registerAgentIpcHandlers } from "./agent-ipc";
 import { openAgentRewindFeature } from "./agent-rewind-feature";
@@ -118,6 +134,18 @@ beforeEach(async () => {
     process.env.CREST_AGENT_WORKSPACE_REWIND = "1";
     vi.mocked(electron.ipcMain.handle).mockClear();
     vi.mocked(electron.ipcMain.on).mockClear();
+    vi.stubGlobal(
+        "ResizeObserver",
+        class {
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+    );
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+        configurable: true,
+        value: vi.fn(),
+    });
     await _resetAgentIpcForTests();
 });
 
@@ -131,6 +159,8 @@ afterEach(async () => {
     else process.env.WAVETERM_CONFIG_HOME = previousConfigHome;
     if (previousDataHome == null) delete process.env.WAVETERM_DATA_HOME;
     else process.env.WAVETERM_DATA_HOME = previousDataHome;
+    resetApiProviders();
+    vi.unstubAllGlobals();
     await Promise.all(cleanupRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -152,6 +182,8 @@ function makeRendererTransport(
         return handler({ sender }, identity, input);
     };
     return {
+        send: (identity: unknown, input: unknown) => invoke("agent:send", identity, input),
+        getSessionState: (identity: unknown, input: unknown) => invoke("agent:get-session-state", identity, input),
         listTree: (identity: unknown, input: unknown) => invoke("agent:list-tree", identity, input),
         navigateTree: (identity: unknown, input: unknown) => invoke("agent:navigate-tree", identity, input),
         listRewindPoints: (identity: unknown, input: unknown) => invoke("agent:list-rewind-points", identity, input),
@@ -169,6 +201,137 @@ function makeRendererTransport(
         purgeTrashedSession: (identity: unknown, input: unknown) =>
             invoke("agent:purge-trashed-session", identity, input),
     };
+}
+
+function installPromptHarness(mutate: () => Promise<void>) {
+    const model: Model<any> = {
+        provider: "p",
+        id: "m",
+        name: "Rewind E2E",
+        api: "rewind-e2e",
+        baseUrl: "http://localhost",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000,
+        maxTokens: 1_000,
+    };
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => {
+        resolveSettled = resolve;
+    });
+    const observed = { events: [] as string[], settled };
+    registerApiProvider({
+        api: model.api,
+        stream: () => new AssistantMessageEventStream(),
+        streamSimple: (activeModel) => {
+            const output = new AssistantMessageEventStream();
+            void (async () => {
+                await mutate();
+                const message: AssistantMessage = {
+                    role: "assistant",
+                    content: [{ type: "text", text: "done" }],
+                    api: activeModel.api,
+                    provider: activeModel.provider,
+                    model: activeModel.id,
+                    stopReason: "stop",
+                    timestamp: Date.now(),
+                    usage: {
+                        input: 0,
+                        output: 0,
+                        cacheRead: 0,
+                        cacheWrite: 0,
+                        totalTokens: 0,
+                        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                    },
+                };
+                output.push({ type: "start", partial: message });
+                output.push({ type: "done", reason: "stop", message });
+            })();
+            return output;
+        },
+    });
+    vi.mocked(getModel).mockReturnValue(model as never);
+    vi.mocked(buildAgentHarnessHost).mockImplementation((options) => {
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: options.promptInputs.cwd }),
+            session: options.session,
+            model,
+            thinkingLevel: "off",
+            tools: [],
+            systemPrompt: "Rewind E2E",
+        });
+        harness.subscribe((event) => {
+            observed.events.push(event.type);
+            if (event.type === "agent_end") {
+                resolveSettled();
+            }
+        });
+        return {
+            harness,
+            session: options.session,
+            appendCustomEntry: (customType: string, data?: unknown) =>
+                options.session.appendCustomEntry(customType, data).then(() => undefined),
+            promptWithCustomEntry: vi.fn(),
+            setAuthResolver: vi.fn(),
+            setToolCallHook: vi.fn(),
+            resolveAuth: vi.fn(),
+            runToolCallHook: vi.fn(),
+            getCwd: () => options.promptInputs.cwd,
+            update: vi.fn(),
+        } as never;
+    });
+    return observed;
+}
+
+function RewindMessageUi(props: {
+    client: AgentRuntimeClient;
+    metadata: AgentSessionMeta;
+    rewindState: AgentRewindSessionStateView;
+    turnId: string;
+    prompt: string;
+    onEditorText: (text: string) => void;
+    onError: (message: string) => void;
+}) {
+    const runtime = useExternalStoreRuntime<ThreadMessageLike>({
+        messages: [
+            {
+                role: "user",
+                content: [{ type: "text", text: props.prompt }],
+                metadata: { custom: { turnId: props.turnId } },
+            } as ThreadMessageLike,
+        ],
+        convertMessage: (message) => message,
+        onNew: async () => {},
+    } satisfies ExternalStoreAdapter<ThreadMessageLike>);
+    const controller = useAgentRewind({
+        client: props.client,
+        sessionMetadata: props.metadata,
+        sessionRevision: 1,
+        rewindState: props.rewindState,
+        onRevealTurn: async () => true,
+        onEditorText: props.onEditorText,
+        onError: props.onError,
+    });
+    return createElement(
+        AssistantRuntimeProvider,
+        { runtime },
+        createElement(Thread, {
+            rewindableTurnIds: controller.rewindableTurnIds,
+            rewindBusy: controller.busy,
+            onRevertTurn: controller.openRewind,
+        }),
+        createElement(RewindPreviewDialog, {
+            open: controller.preview.open,
+            operation: controller.preview.operation,
+            phase: controller.preview.phase,
+            busy: controller.busy,
+            preview: controller.preview.result,
+            errorMessage: controller.preview.errorMessage,
+            onCancel: controller.cancelPreview,
+            onConfirm: controller.confirmPreview,
+        })
+    );
 }
 
 async function makeFixture() {
@@ -401,15 +564,44 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         const value = await makeFixture();
         const file = join(value.workspaceRoot, "changed.txt");
         await writeFile(file, "before");
-        const turnId = await value.sendTurn("Original user prompt", async () => {
-            await writeFile(file, "after");
-        });
         await value.manager.dispose();
+        const promptHarness = installPromptHarness(async () => await writeFile(file, "after"));
 
         const authoritativePublish = vi.fn(async () => undefined);
         const first = value.makeService(applyCapturedPath, authoritativePublish);
         expect(first.registry.get(value.metadata.path)).toBeUndefined();
         const { client } = value.register(first.service);
+        const sent = await client.send({
+            sessionMetadata: value.metadata,
+            context: {
+                workspaceId: RequestIdentity.workspaceId,
+                workspaceDir: value.workspaceRoot,
+                sessionPath: value.metadata.path,
+                connection: "",
+                environment: {},
+                recentCmds: [],
+            },
+            text: "Original user prompt",
+            provider: "p",
+            model: "m",
+        });
+        const turnId = sent.turnId;
+        await promptHarness.settled;
+        expect(
+            promptHarness.events.filter((type) =>
+                ["session_before_user_turn", "session_user_turn_committed", "session_user_turn_terminal"].includes(type)
+            )
+        ).toEqual(["session_before_user_turn", "session_user_turn_committed", "session_user_turn_terminal"]);
+        expect(await client.getSessionState(value.metadata)).toMatchObject({
+            workspaceRewind: { status: "enabled" },
+        });
+        expect((await value.session.getEntries()).map((entry) => [entry.type, entry.customType])).toContainEqual([
+            "custom",
+            WorkspaceControlCustomTypes.checkpoint,
+        ]);
+        expect(
+            (await value.session.getEntries()).map(decodeWorkspaceCheckpointEntry).filter((entry) => entry != null)
+        ).toEqual([expect.objectContaining({ status: "available", turnId })]);
         const points = await client.listRewindPoints({ sessionMetadata: value.metadata });
         expect(points.points).toEqual([
             expect.objectContaining({ turnId, preview: "Original user prompt", eligible: true }),
@@ -417,35 +609,35 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
 
         const editorText = vi.fn();
         const errors = vi.fn();
+        const applyFromUi = vi.spyOn(client, "rewindTree");
         let state = await value.rewindState();
-        const hook = renderHook(
-            ({ rewindState }) =>
-                useAgentRewind({
-                    client,
-                    sessionMetadata: value.metadata,
-                    sessionRevision: 1,
-                    rewindState,
-                    onRevealTurn: async () => true,
-                    onEditorText: editorText,
-                    onError: errors,
-                }),
-            { initialProps: { rewindState: state } }
+        const rewindUi = render(
+            createElement(RewindMessageUi, {
+                client,
+                metadata: value.metadata,
+                rewindState: state,
+                turnId,
+                prompt: "Original user prompt",
+                onEditorText: editorText,
+                onError: errors,
+            })
         );
-        await act(async () => await hook.result.current.openRewind(turnId));
-        expect(hook.result.current.preview.result).toMatchObject({
-            target: { kind: "rewind", targetTurnId: turnId },
-            hardBlocked: false,
-        });
-        await act(async () => await hook.result.current.confirmPreview("normal"));
-        expect(await readFile(file, "utf8")).toBe("before");
-        expect(editorText).toHaveBeenCalledWith("Original user prompt");
+        fireEvent.click(screen.getByRole("button", { name: "Revert" }));
+        const previewDialog = await screen.findByRole("dialog");
+        expect(await within(previewDialog).findByText("Original user prompt")).not.toBeNull();
+        expect(await readFile(file, "utf8")).toBe("after");
+        fireEvent.click(within(previewDialog).getByRole("button", { name: "Revert" }));
+        await waitFor(() => expect(applyFromUi).toHaveBeenCalledOnce());
+        await act(async () => await applyFromUi.mock.results[0]!.value);
+        expect(applyFromUi).toHaveBeenCalledWith(expect.objectContaining({ mode: "normal", targetTurnId: turnId }));
+        await waitFor(async () => expect(await readFile(file, "utf8")).toBe("before"));
+        await waitFor(() => expect(editorText).toHaveBeenCalledWith("Original user prompt"));
         expect(errors).not.toHaveBeenCalled();
         expect(authoritativePublish).toHaveBeenCalled();
 
         state = await value.rewindState();
-        hook.rerender({ rewindState: state });
         await waitFor(() => expect(state.redo?.targetPrompt).toBe("Original user prompt"));
-        hook.unmount();
+        rewindUi.unmount();
 
         // A reload drops every in-memory confirmation and reconstructs the
         // service/client from the persisted SQLite branch and Git store.
@@ -519,6 +711,57 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
             files: [expect.objectContaining({ path: "changed.txt", conflict: "hard-blocker" })],
         });
         expect(blocked.confirmationToken).toBeUndefined();
+        value.session.close();
+    }, 30_000);
+
+    it("force reverts only the confirmed red-listed drift through production IPC", async () => {
+        const value = await makeFixture();
+        const drifted = join(value.workspaceRoot, "drifted.txt");
+        const clean = join(value.workspaceRoot, "clean.txt");
+        const outside = join(value.workspaceRoot, "outside.txt");
+        await Promise.all([
+            writeFile(drifted, "before-drifted"),
+            writeFile(clean, "before-clean"),
+            writeFile(outside, "before-outside"),
+        ]);
+        const turnId = await value.sendTurn("change two files", async () => {
+            await Promise.all([writeFile(drifted, "agent-drifted"), writeFile(clean, "agent-clean")]);
+        });
+        await value.manager.dispose();
+        await Promise.all([writeFile(drifted, "external-drift"), writeFile(outside, "external-outside")]);
+
+        const running = value.makeService();
+        const { client } = value.register(running.service);
+        const points = await client.listRewindPoints({ sessionMetadata: value.metadata });
+        const preview = await client.previewRewind({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: points.semanticLeafId,
+            target: { kind: "rewind", targetTurnId: turnId },
+        });
+
+        expect(preview).toMatchObject({
+            forceRequired: true,
+            hardBlocked: false,
+            files: expect.arrayContaining([
+                expect.objectContaining({ path: "drifted.txt", conflict: "forceable-drift" }),
+                expect.objectContaining({ path: "clean.txt", conflict: "none" }),
+            ]),
+        });
+        expect(preview.files.filter((file) => file.conflict !== "none").map((file) => file.path)).toEqual([
+            "drifted.txt",
+        ]);
+
+        await client.rewindTree({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: points.semanticLeafId,
+            targetTurnId: turnId,
+            mode: "force-drift",
+            confirmationToken: preview.confirmationToken!,
+        });
+
+        expect(await readFile(drifted, "utf8")).toBe("before-drifted");
+        expect(await readFile(clean, "utf8")).toBe("before-clean");
+        expect(await readFile(outside, "utf8")).toBe("external-outside");
         value.session.close();
     }, 30_000);
 
@@ -698,6 +941,77 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         await expect(client.getWorkspaceRecovery({ sessionMetadata: value.metadata })).resolves.toBeUndefined();
         expect(await readFile(file, "utf8")).toBe("pre-crash");
         value.session.close();
+    }, 30_000);
+
+    it("cleans a real unowned object after production quota classification exceeds the soft limit", async () => {
+        const value = await makeFixture();
+        await value.manager.dispose();
+        const unowned = await value.store.git.run(["hash-object", "-w", "--stdin"], {
+            gitDir: value.store.storeRoot,
+            stdin: randomBytes(64 * 1024),
+            timeoutMs: 5_000,
+        });
+        const unownedOid = unowned.stdout.toString("ascii").trim();
+        const originalRun = WorkspaceGitRunner.prototype.run;
+        let reportQuotaPressure = true;
+        let gcCalls = 0;
+        const gitRun = vi.spyOn(WorkspaceGitRunner.prototype, "run").mockImplementation(async function (args, options) {
+            if (args[0] === "count-objects" && reportQuotaPressure) {
+                return {
+                    stdout: Buffer.from(
+                        [
+                            "count: 1",
+                            `size: ${Math.floor(WorkspaceCheckpointLimits.softQuotaBytes / 1024) + 1}`,
+                            "in-pack: 0",
+                            "packs: 0",
+                            "size-pack: 0",
+                            "prune-packable: 0",
+                            "garbage: 0",
+                            "size-garbage: 0",
+                            "",
+                        ].join("\n")
+                    ),
+                    stderr: Buffer.alloc(0),
+                };
+            }
+            const result = await originalRun.call(this, args, options);
+            if (args[0] === "gc") {
+                gcCalls++;
+                reportQuotaPressure = false;
+            }
+            return result;
+        });
+
+        try {
+            const quotaBefore = await value.store.getQuotaStatus();
+            expect(quotaBefore).toMatchObject({
+                status: "soft-quota-exceeded",
+                referencedBytes: 0,
+                softQuotaBytes: WorkspaceCheckpointLimits.softQuotaBytes,
+            });
+            expect(quotaBefore.usedBytes).toBeGreaterThan(quotaBefore.softQuotaBytes);
+
+            const running = value.makeService();
+            const { client } = value.register(running.service);
+            const cleanup = await client.cleanupWorkspaceCheckpoints({ sessionMetadata: value.metadata });
+
+            expect(gcCalls).toBe(1);
+            expect(cleanup.removedUnownedBytes).toBeGreaterThan(0);
+            expect(cleanup.quota).toMatchObject({
+                status: "ok",
+                cleanupAvailable: false,
+            });
+            expect(cleanup.quota.usedBytes).toBeLessThan(quotaBefore.usedBytes);
+            await expect(
+                value.store.git.run(["cat-file", "blob", unownedOid], {
+                    gitDir: value.store.storeRoot,
+                    timeoutMs: 5_000,
+                })
+            ).rejects.toThrow();
+        } finally {
+            gitRun.mockRestore();
+            value.session.close();
+        }
     }, 30_000);
 
     it("preserves active/archive owners and purges only a confirmed real trash owner", async () => {
