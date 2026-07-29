@@ -3503,19 +3503,24 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         sessionPath: string
     ): Promise<{ canonicalPath: string; canonicalParent: string; lifecycleGeneration: string }> => {
         const sessionsRoot = await fs.realpath(defaultSessionsDir());
-        const trashRoot = await fs.realpath(path.join(sessionsRoot, ".trash"));
         const canonicalPath = await fs.realpath(sessionPath);
-        const relative = path.relative(trashRoot, canonicalPath);
+        const relative = path.relative(sessionsRoot, canonicalPath);
         const segments = relative.split(path.sep);
         if (
             relative === "" ||
             relative.startsWith("..") ||
             path.isAbsolute(relative) ||
-            segments.length !== 2 ||
+            segments.length !== 4 ||
+            segments[1] !== ".trash" ||
             segments.some((segment) => segment === "" || segment === "." || segment === "..")
         ) {
             throw new Error("Session is not a canonical direct trash entry");
         }
+        const projectRoot = await fs.realpath(path.join(sessionsRoot, segments[0]!));
+        if (path.dirname(projectRoot) !== sessionsRoot) {
+            throw new Error("Session trash project root is not canonical");
+        }
+        const trashRoot = await fs.realpath(path.join(projectRoot, ".trash"));
         const canonicalParent = await fs.realpath(path.dirname(canonicalPath));
         if (path.dirname(canonicalParent) !== trashRoot) {
             throw new Error("Session trash lifecycle parent is not canonical");
