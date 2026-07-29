@@ -3,7 +3,7 @@
 
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TracePanel } from "./trace-panel";
@@ -141,23 +141,29 @@ describe("TracePanel compact layout", () => {
         expect(screen.getByRole("tree", { name: "Trace timeline rows" })).not.toBeNull();
     });
 
-    it("opens, closes, focuses, and reopens an observation detail drawer", () => {
+    it("opens, closes, focuses, and reopens an observation detail drawer", async () => {
         render(<TracePanel detail={makeDetail()} layout="compact" />);
         const generation = screen.getByRole("treeitem", { name: /^generation/ });
 
         fireEvent.click(generation);
-        expect(screen.getByRole("region", { name: "Observation detail" })).not.toBeNull();
-        expect(screen.getByRole("region", { name: "Trace detail drawer" }).className).toContain(
-            "bg-[var(--observability-drawer-bg)]"
-        );
+        await waitFor(() => {
+            expect(screen.getByRole("region", { name: "Observation detail" })).not.toBeNull();
+            expect(screen.getByRole("region", { name: "Trace detail drawer" }).className).toContain(
+                "bg-[var(--observability-drawer-bg)]"
+            );
+        });
 
         fireEvent.click(screen.getByRole("button", { name: "Close trace detail" }));
-        expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
-        expect(generation.getAttribute("aria-selected")).toBe("true");
-        expect(document.activeElement).toBe(generation);
+        await waitFor(() => {
+            expect(screen.queryByRole("region", { name: "Trace detail drawer" })).toBeNull();
+            expect(generation.getAttribute("aria-selected")).toBe("true");
+            expect(document.activeElement).toBe(generation);
+        });
 
         fireEvent.click(generation);
-        expect(screen.getByRole("region", { name: "Observation detail" })).not.toBeNull();
+        await waitFor(() => {
+            expect(screen.getByRole("region", { name: "Observation detail" })).not.toBeNull();
+        });
     });
 
     it("opens trace detail after explicitly selecting the trace root", () => {
