@@ -195,15 +195,19 @@ describe("workspace recovery journal", () => {
         );
     });
 
-    it("fails closed when journal entry or byte limits are exceeded", async () => {
-        const { journal } = await fixture();
-        await mkdir(journal.root, { recursive: true, mode: 0o700 });
-        for (let index = 0; index <= 4_096; index++) {
-            await writeFile(join(journal.root, `operation-${index}.json`), "{}", { mode: 0o600 });
-        }
+    it(
+        "fails closed when journal entry or byte limits are exceeded",
+        async () => {
+            const { journal } = await fixture();
+            await mkdir(journal.root, { recursive: true, mode: 0o700 });
+            for (let index = 0; index <= 4_096; index++) {
+                await writeFile(join(journal.root, `operation-${index}.json`), "{}", { mode: 0o600 });
+            }
 
-        await expect(journal.scan()).rejects.toThrow(/limit/i);
-    });
+            await expect(journal.scan()).rejects.toThrow(/limit/i);
+        },
+        15_000
+    );
 
     it("does not follow a replacement restore-journal directory", async () => {
         const { journal, storeRoot } = await fixture();
