@@ -26,10 +26,12 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Wrap `http.Client.Do` with a custom retry layer that buffers the request body once, replays on retry, and respects `Retry-After` headers. Equal-jitter backoff to avoid thundering-herd retries from concurrent users.
 
 **Files:**
+
 - `pkg/aiusechat/httpretry/httpretry.go` — `Do()`, `MakeRetryClient()`
 - Wired into all 4 backends: `pkg/aiusechat/anthropic/anthropic-backend.go`, `pkg/aiusechat/openairesponses/`, `pkg/aiusechat/openaichat/`, `pkg/aiusechat/google/`
 
 **Data flow:**
+
 1. Backend calls `httpretry.Do(client, req)`
 2. Body is read into `[]byte` once, then re-set on each attempt
 3. On 429/500/502/503/504: wait `min(initial * 2^attempt, max) ± jitter`, retry
@@ -47,11 +49,13 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Hard cap on the number of LLM calls per turn. Soft warning injected at 80% so the model can wrap up gracefully.
 
 **Files:**
+
 - `pkg/aiusechat/uctypes/uctypes.go` — `MaxSteps int` field on `WaveChatOpts`
 - `pkg/aiusechat/usechat.go` — `RunAIChat` checks before each step
 - `pkg/agent/agent.go` — sets `DefaultMaxAgentSteps = 50`
 
 **Data flow:**
+
 1. At top of step loop: if `step >= maxSteps`, return `StopKindStepBudget`
 2. At 80%: prepend "you have N steps remaining" to the system prompt for that step only
 3. Frontend renders the stop reason as a visible warning
@@ -67,11 +71,13 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Sliding-window compaction. When the last step's input tokens exceed 80% of the configured budget, drop middle messages and keep only the first user message + last 10 messages. No AI summarization (too slow, too expensive at MVP scale).
 
 **Files:**
+
 - `pkg/aiusechat/uctypes/uctypes.go` — `ContextBudget int` on `WaveChatOpts`
 - `pkg/aiusechat/chatstore/chatstore.go` — `CompactMessages(chatId, keepFirst, keepLast)`
 - `pkg/aiusechat/usechat.go` — checks `Usage.InputTokens > budget * 0.8` and triggers compaction
 
 **Data flow:**
+
 1. After each step, read `metrics.Usage.InputTokens`
 2. If over threshold: `chatstore.CompactMessages(chatId, 1, 10)` drops everything in between
 3. Next step sends the truncated history to the model
@@ -87,12 +93,14 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Pattern-match the command text in `ToolVerifyInput` and override `approval` to `NeedsApproval` regardless of mode policy.
 
 **Files:**
+
 - `pkg/agent/tools/dangerous.go` — `IsDangerousCommand(cmd string) bool`
 - `pkg/agent/tools/shell_exec.go` — `ToolVerifyInput` calls `IsDangerousCommand` and forces approval
 
 **Patterns covered (12):** `rm -rf`, `git push --force`, `git reset --hard`, `dd if=/of=`, `mkfs`, `chmod 777`, `:(){:|:&};:` (fork bomb), `curl ... | sh|bash`, `wget ... | sh`, `eval $(curl)`, `> /dev/sd*`, `kill -9 1`.
 
 **Data flow:**
+
 1. Agent emits `shell_exec` with cmd
 2. `processToolCallInternal` calls `ToolVerifyInput(input, toolUseData)`
 3. `verifyShellExec` runs `IsDangerousCommand(cmd)` — if true, sets `toolUseData.Approval = NeedsApproval`
@@ -109,6 +117,7 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Every tool call appends a `ToolAuditEvent` to `AIMetrics.AuditLog`. A `MetricsCallback` on `WaveChatOpts` lets external consumers (e.g. trajectory writer) persist the log.
 
 **Files:**
+
 - `pkg/aiusechat/uctypes/uctypes.go` — `ToolAuditEvent`, `AIMetrics.AuditLog`, `MetricsCallback`
 - `pkg/aiusechat/usechat.go` — `processToolCall` populates the event, `applyOutcome` appends
 - `pkg/agent/agent.go` — `makeTrajectoryWriter(cwd, chatID)` writes JSON to `.crest-trajectories/<chatid>.json`
@@ -116,6 +125,7 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Event fields:** timestamp, chat_id, tool_name, tool_call_id, input_args (truncated to 200 chars), approval, duration_ms, outcome, error_text.
 
 **Data flow:**
+
 1. Tool starts → `startTs := time.Now()`
 2. Tool finishes → build `ToolAuditEvent` with elapsed time + outcome
 3. Returned in `ToolCallOutcome.Audit`
@@ -133,12 +143,14 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Set `cache_control: {type: "ephemeral"}` on the last system prompt block and the last tool definition. Anthropic caches everything up to those points for 5 minutes.
 
 **Files:**
+
 - `pkg/aiusechat/anthropic/anthropic-convertmessage.go` — applies cache_control during request building
 - `pkg/aiusechat/anthropic/anthropic-types.go` — `anthropicCachedToolDef` wrapper
 
 **Why a wrapper type for tools:** `ToolDefinition` is shared across all backends and shouldn't carry Anthropic-specific cache fields. The wrapper inlines tool fields + adds `cache_control` only when serializing for Anthropic.
 
 **Data flow:**
+
 1. Build system prompt array
 2. Mark last block with cache_control
 3. Build tool array
@@ -156,6 +168,7 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Add a `Parallel bool` field to `ToolDefinition`. If ALL tools in a step have `Parallel: true` AND none need approval, run them concurrently. Otherwise sequential (preserves approval ordering).
 
 **Files:**
+
 - `pkg/aiusechat/uctypes/uctypes.go` — `Parallel bool` on `ToolDefinition`
 - `pkg/aiusechat/usechat.go` — `processAllToolCalls` decides serial vs parallel
 - `pkg/aiusechat/usechat.go` — `processToolCall` returns `ToolCallOutcome` (immutable) for thread safety; `applyOutcome` mutates metrics on the main goroutine
@@ -163,6 +176,7 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Tools marked parallel:** `read_text_file`, `read_dir`, `get_scrollback`, `cmd_history`. (Read-only, no shared state.)
 
 **Data flow:**
+
 1. `processAllToolCalls` checks: `allParallel && noApprovalNeeded`?
 2. If yes: spawn `sync.WaitGroup`, one goroutine per tool, collect outcomes
 3. If no: loop sequentially as before
@@ -179,6 +193,7 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Backend computes original + modified content for write/edit. Frontend uses `jsdiff.structuredPatch` to render unified diff with 3 lines of context. Line-level coloring (green/red/blue) inline in the approval card.
 
 **Files:**
+
 - `pkg/aiusechat/tools_writefile.go` — `verifyWriteTextFileInput`, `verifyEditTextFileInput` populate `OriginalContent` and `ModifiedContent` on `UIMessageDataToolUse`
 - `pkg/aiusechat/uctypes/uctypes.go` — `OriginalContent`, `ModifiedContent` fields
 - `frontend/app/view/term/term-agent.tsx` — `TermAgentInlineDiff` component using jsdiff
@@ -188,6 +203,7 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Why jsdiff over hand-rolled Go diff:** Frontend is the right place — it's where rendering happens. The backend just sends raw content; the diff itself is computed in the browser.
 
 **Data flow:**
+
 1. Tool's `ToolVerifyInput` reads existing file (or returns nil for new file) → sets `OriginalContent`
 2. Same callback computes the modified content → sets `ModifiedContent`
 3. Both included in `data-tooluse` SSE event sent to frontend
@@ -195,6 +211,7 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 5. Renders hunks with `+` (green), `-` (red), `@@` (blue) lines
 
 **Edge cases:**
+
 - New file (no original) → green-tinted preview
 - Identical content → "No changes" badge
 - File too large → diff truncated with "(N more lines)" suffix
@@ -210,12 +227,14 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Frontend detects `write_plan` completion in `data-tooluse` events, shows an "Execute Plan" button. Click switches to `:do` mode and sends "go" trigger. Backend reads the plan file and injects it into the system prompt.
 
 **Files:**
+
 - `pkg/agent/http.go` — `PostAgentMessageRequest.PlanPath`, reads file → `PlanContext` on `AgentOpts`
 - `pkg/agent/agent.go` — appends `## Active Plan\n...` to system prompt when `PlanContext != ""`
 - `frontend/app/view/termblocks/termblocks.tsx` — `termAgentLastPlanPath`, `executePlan()` method
 - Frontend: `useEffect` scans messages for `data-tooluse` parts where `toolname === "write_plan"` and `status === "completed"`
 
 **Data flow:**
+
 1. `:plan build a feature` → agent calls `write_plan` → tool sets `InputFileName = .crest-plans/feature.md`
 2. SSE event with `data-tooluse {toolname: "write_plan", status: "completed", inputfilename: "..."}` reaches frontend
 3. Frontend stores `termAgentLastPlanPath`
@@ -234,10 +253,11 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach (current — §24 ai-config refactor):** Model chip popover in the input bar reads the in-repo catalog + `~/.config/crest/ai.json` and writes the selected `{provider, model, reasoning?}` triple to `block.meta["agent:selection"]`. Each agent request resolves the selection client-side into a complete `AIConfigRequest` and posts it; the backend ingests via `aiusechat.BuildAIOptsFromConfig`. No legacy `:model` slash command.
 
 **Files:**
+
 - `frontend/app/view/cmdblock/model-picker-popover.tsx` — sectioned popover
 - `frontend/app/store/ai-resolver.ts` — `resolveAIConfig` (catalog + user_config → ResolvedAIConfig)
 - `frontend/app/term/render/terminal-view.tsx` — derives `activeSelection` from meta + `userConfig.default`, computes `resolvedAIConfig`, threads to AgentChatHost
-- `pkg/agent/http.go` — `PostAgentMessageRequest.AIConfig`, no longer reads ai:* settings
+- `pkg/agent/http.go` — `PostAgentMessageRequest.AIConfig`, no longer reads ai:\* settings
 - `pkg/aiusechat/aiconfig.go` — `BuildAIOptsFromConfig`
 
 **Trade-offs:** `modeloverride` (the old wire-level escape hatch) still works for eval harnesses that need to override a single field without authoring a full `ai.json` — passed in the request body, overrides `aiOpts.Model` after resolution.
@@ -253,10 +273,12 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Backend sends `data-usage` SSE event after each step with cumulative input/output tokens. Frontend renders the latest counts in the agent area.
 
 **Files:**
+
 - `pkg/aiusechat/usechat.go` — emits `data-usage` event in step loop
 - `frontend/app/view/term/term-agent.tsx` — `TermAgentTokenCounter` component scans message parts for latest `data-usage`
 
 **Data flow:**
+
 1. Step completes → backend reads `metrics.Usage.InputTokens` + `OutputTokens`
 2. Sends `data-usage {input, output, model}` SSE event
 3. ai-sdk pushes it as a message part of type `data-usage` on the assistant message
@@ -274,10 +296,12 @@ frontend/app/view/term/term-agent.tsx  ← reusable agent UI components
 **Approach:** Render agent messages as blocks inline in the termblocks timeline. Two data sources (PTY events + ai-sdk SSE) merge into one timeline atom sorted by timestamp.
 
 **Files:**
+
 - `frontend/app/view/termblocks/termblocks.tsx` — `TimelineEntry` union, `timelineAtom`, `TermAgentChatProvider`, `InlineAgentUserMsg`, `InlineAgentResponse`, `syncAgentMessages()`
 - `frontend/app/view/term/term-agent.tsx` — exported `TermAgentMessagePartView` (reused inline), `TermAgentChatProvider` (hosts useChat invisibly)
 
 **Key decision: derived atom**
+
 ```ts
 timelineAtom = atom((get) => {
   const cmds = get(blocksAtom).filter(visible).map(toCmdEntry);
@@ -287,6 +311,7 @@ timelineAtom = atom((get) => {
 ```
 
 **Data flow:**
+
 1. PTY events update `blocksAtom` (existing pipeline, unchanged)
 2. `useChat` messages update via `syncAgentMessages(messages, status)` → writes `agentEntriesAtom`
 3. `timelineAtom` merges and sorts
@@ -299,40 +324,43 @@ timelineAtom = atom((get) => {
 
 ## 13. File checkpointing + rewind
 
-**Problem:** When the agent makes wrong file changes, the user wants to undo without losing the conversation context that led there.
+> **Superseded architecture.** The deleted Go `CheckpointStore`,
+> `FileChangeCallback`, `ChangeOperation`, `beforeContentHash`, and
+> `filebackup.MakeFileBackup` flow described in older revisions is no longer
+> present or authoritative. Tool write/edit callbacks cannot see bash, hosted
+> PTY, CLI-subagent, or future-tool mutations.
 
-**Approach:** Track every file write/edit per turn into `CheckpointStore`. `:rewind` restores files from backups (created by the existing `filebackup.MakeFileBackup`) without touching conversation history. Modeled after Claude Code's file checkpointing.
+The current Electron/TypeScript Agent captures the whole supported workspace
+scope at durable user-turn boundaries. It stores raw file bytes in a private
+bare object store at
+`<wave-data>/agent-checkpoints/workspaces/<workspace-identity>-<incarnation>/repo.git`
+without touching user Git HEAD/index/stash, and works identically in non-Git
+workspaces. Session entries own before/after descriptors and an exact
+changed-path manifest. The 5 GiB per-workspace soft quota cleans only unowned
+objects; referenced trashed-session data requires an owner-specific confirmed
+purge.
 
-**Files:**
-- `pkg/agent/checkpoint.go` — `CheckpointStore`, `FileChange`, `RewindTo`, `RewindLast`
-- `pkg/aiusechat/uctypes/uctypes.go` — `FileChangeCallback` on `WaveChatOpts`, `ToolCallOutcome.FileChanged/FileBackup/FileIsNew`
-- `pkg/aiusechat/usechat.go` — `applyOutcome` calls callback when tool changed a file
-- `pkg/agent/agent.go` — `makeFileChangeRecorder(chatId, messageId)` records changes per turn
-- `pkg/agent/http.go` — `AgentRewindHandler` at `/api/agent-rewind`
+Revert restores only paths in the selected active-branch suffix. Normal mode
+does no mutation on drift. `Force revert` may overwrite only previewed red
+drift rows and shows the exact warning
+`files changed on disk since the agent last wrote them`; unsafe types,
+directory collisions, missing coverage, stale state, and recovery are never
+forceable. A workspace lock, safety snapshot, durable phase journal, per-path
+verification, and SQLite leaf compare-and-swap make file restore and
+conversation movement one recoverable operation. Unknown bytes freeze recovery
+without whole-workspace reset or Force.
 
-**Why file restore instead of message removal:** Removing messages doesn't undo file changes on disk. Restoring files keeps history intact (the user can see what was tried) while reverting the actual damage. Matches Claude Code's mental model.
+Successful Revert restores the selected prompt to the composer and persists a
+single Redo dock across reload. Redo uses the same checks but never offers
+Force. `/rewind` uses the same preview/apply path as message-side Revert;
+`/tree` remains conversation-only. The feature is currently disabled by
+default and enabled internally only with `CREST_AGENT_WORKSPACE_REWIND=1`.
 
-**Data flow:**
-1. Tool writes/edits a file → `filebackup.MakeFileBackup(path)` returns backup path (with sibling `.json` capturing original perm + mtime)
-2. Tool sets `toolUseData.WriteBackupFileName = backup`, `InputFileName = expandedPath` (absolute, tilde expanded — the path operated on)
-3. `processToolCall` extracts these into `ToolCallOutcome.FileChanged/FileBackup/FileIsNew`
-4. `applyOutcome` calls `FileChangeCallback(path, backup, isNew)`
-5. Callback computes SHA-256 of file content (post-write), writes `FileChange{Path, BackupPath, IsNew, ContentHash}` to `CheckpointStore`
-6. User types `:rewind` → POST `/api/agent-rewind` with chatId
-7. `rewindToLocked` collects changes from rewound turns, **de-duplicates by path keeping the first-recorded entry per path** (so a file written twice in one turn restores to the pre-turn original, not an intermediate state); for each entry it hashes the current file and skips with a log if it doesn't match `ContentHash` (user edited externally); otherwise calls `filebackup.RestoreBackup` (which honors the original mode) or `os.Remove` for created files
-8. Conversation history untouched
-
-**Why the per-path de-dup:** within one turn, a tool may write file A then edit it again. Backup #1 = original A, backup #2 = post-write-1 A. Naive replay applies both in order, leaving A at the post-write-1 state. Keeping only the first-recorded backup per path restores to the true original.
-
-**Why the content-hash guard:** `RestoreBackup` would otherwise silently overwrite manual edits the user made to the file after the agent's last write. Hash mismatch ⇒ skip + log; the user can investigate and decide whether to manually revert.
-
-**Memory:** `MaxCheckpointsPerChat = 100` per chat — when exceeded, oldest checkpoints drop. Prevents long sessions from bloating the in-memory store.
-
-**Limitations:**
-- Only Write/Edit/Delete tool changes tracked. Bash commands (`rm`, `sed -i`) bypass the backup mechanism.
-- Backups are temp files; if the OS clears the cache dir between sessions, rewind fails for stale checkpoints.
-- Directory ops (mkdir/move) aren't undone — empty parent dirs from removed new files are left in place.
-- No persistence: server restart clears the in-memory checkpoint store; backup files on disk become orphaned (cleaned by `filebackup.CleanupOldBackups` after 5 days).
+OpenCode Core v2 is the reference for private snapshot/selective restore and
+the persistent revert surface. Pi/pi-rewind is the reference for user-turn
+checkpoint lifecycle and `/rewind` selection. Multi-session isolation,
+drift/Force behavior, durability, recovery, quota, canonical identity, and
+one-step Redo are Crest-owned.
 
 ---
 
@@ -343,6 +371,7 @@ timelineAtom = atom((get) => {
 **Approach:** `:worktree [name]` command creates `.crest/worktrees/<name>/` with branch `worktree-<name>` (Claude Code model). Opt-in, persistent across turns. When active, agent operations use the worktree as cwd.
 
 **Files:**
+
 - `pkg/agent/sandbox.go` — `MakeWorktree`, `Worktree.HasChanges`, `Worktree.Remove`, random name generator
 - `pkg/agent/http.go` — `AgentWorktreeHandler` at `/api/agent-worktree` (create/remove/status)
 - `frontend/app/view/termblocks/termblocks.tsx` — `:worktree` command, `worktreePath` state, `buildTermAgentContext` returns worktree as cwd
@@ -350,6 +379,7 @@ timelineAtom = atom((get) => {
 **Why per-session not per-task:** Per-task means creating/destroying for every `:do` invocation — too much overhead, lose changes between turns. Per-session matches user mental model (start a feature → work on it → merge or discard).
 
 **Data flow:**
+
 1. User types `:worktree feature-auth`
 2. Frontend POSTs `/api/agent-worktree {action: create, cwd, name: "feature-auth"}`
 3. Backend: `git rev-parse --show-toplevel` → repo root, then `git worktree add .crest/worktrees/feature-auth -b worktree-feature-auth`
@@ -369,12 +399,14 @@ timelineAtom = atom((get) => {
 **Approach:** `spawn_task` tool runs a child agent with isolated chat context, same model + tools, 15-step budget. Returns a completion summary to the parent.
 
 **Files:**
+
 - `pkg/agent/tools/spawn_task.go` — `SpawnTask`, `SpawnTaskConfig`, `runSpawnTask`
 - `pkg/agent/registry.go` — `case "spawn_task"` builds `SpawnTaskConfig` with closure pointers to `SystemPromptForMode` + `ToolsForMode`
 
 **Why closures in config:** `pkg/agent/tools` cannot import `pkg/agent` (would cycle). Closures inject the needed functions at registration time without breaking the dependency rule.
 
 **Data flow:**
+
 1. Agent calls `spawn_task {task: "...", mode: "ask"}`
 2. Tool generates new chatId, builds `WaveChatOpts` with the parent's AI config but isolated chatstore entry; subtask context is derived from parent so cancellation propagates
 3. Uses `MakeDiscardSSEHandlerCh` (not `httptest.NewRecorder`) so SSE writes drain rather than fill a buffer and error out after ~10 messages
@@ -382,7 +414,7 @@ timelineAtom = atom((get) => {
 5. Returns metrics summary (steps, tool calls, tokens) — not the actual response text (would require extracting from chatstore, complex)
 6. `defer chatstore.DefaultChatStore.Delete(subChatId)` cleans up the isolated chat entry
 
-**Approval handling:** Sub-agent auto-approves every tool call by default. *However*, `shell_exec.ToolVerifyInput` overrides `Approval = NeedsApproval` for any command flagged by `IsDangerousCommand` (rm -rf, fork bomb, eval $(curl), etc.) — and the sub-agent has no UI to grant approval. **Dangerous commands inside a sub-agent therefore block until the 120s spawn-task timeout.** This is intentional: a sub-agent silently running `rm -rf /` would be far worse than blocking. Callers should structure sub-tasks to avoid dangerous shell commands; if you genuinely need them, run the sub-task as a foreground turn instead.
+**Approval handling:** Sub-agent auto-approves every tool call by default. _However_, `shell_exec.ToolVerifyInput` overrides `Approval = NeedsApproval` for any command flagged by `IsDangerousCommand` (rm -rf, fork bomb, eval $(curl), etc.) — and the sub-agent has no UI to grant approval. **Dangerous commands inside a sub-agent therefore block until the 120s spawn-task timeout.** This is intentional: a sub-agent silently running `rm -rf /` would be far worse than blocking. Callers should structure sub-tasks to avoid dangerous shell commands; if you genuinely need them, run the sub-task as a foreground turn instead.
 
 **Trade-offs:** Returning summary instead of text means the parent agent gets a thumbs-up but not the answer. For "summarize this file" this is wrong. For "go run a long-running test" this is fine. We chose the simpler implementation; future work could extract the last assistant text from the sub-chatstore.
 
@@ -395,9 +427,11 @@ timelineAtom = atom((get) => {
 **Approach:** Add `background: true` to `shell_exec`. When true, the tool returns immediately after starting the process, without waiting for completion. The block remains visible — user can monitor it.
 
 **Files:**
+
 - `pkg/agent/tools/shell_exec.go` — `shellExecInput.Background`, early-return after `ResyncController`
 
 **Data flow:**
+
 1. Agent calls `shell_exec {cmd: "npm run dev", background: true}`
 2. Tool creates the cmd block, queues layout, starts the controller (same as foreground)
 3. With `Background: true`: skip the poll-wait loop, return `{block_id, stdout_tail: "started in background"}`
@@ -414,17 +448,20 @@ timelineAtom = atom((get) => {
 **Approach:** `web_fetch {url}` tool that GETs the URL, strips HTML to text, returns up to 100KB. Available in all 3 modes.
 
 **Files:**
+
 - `pkg/agent/tools/web_fetch.go` — `WebFetch`, `fetchAndExtract`, `extractText`
 
 **HTML extraction:** Uses `golang.org/x/net/html` tokenizer. Skips `<script>`, `<style>`, `<noscript>`, `<svg>` elements. Preserves block-level breaks (`<p>`, `<div>`, `<li>`, `<h*>`, `<tr>`, `<br>`).
 
 **Limits:**
+
 - 15s timeout
 - 512KB download max (LimitReader)
 - 100KB output max (truncated)
 - User-Agent: `Crest/1.0 (coding agent)`
 
 **Data flow:**
+
 1. Agent calls `web_fetch {url: "https://docs.foo.com/api"}`
 2. Validate URL has http(s) scheme
 3. HTTP GET with timeout
@@ -443,23 +480,25 @@ timelineAtom = atom((get) => {
 **Approach:** Mock `UseChatBackend` that replays recorded LLM responses against real tools running in a temp directory. Assertions check tool call sequence, final text, and file system state.
 
 **Files:**
+
 - `pkg/agent/eval/types.go` — `GoldenTranscript`, `GoldenTurn`, `GoldenResponse`, `GoldenAssertions`
 - `pkg/agent/eval/mock_backend.go` — `MockBackend` implementing `UseChatBackend` with response queue
 - `pkg/agent/eval/replay.go` — `RunGoldenTest`, `setupWorkspace`, `checkAssertions`, `RunAllGoldenTests`
 - `pkg/agent/eval/testdata/*.golden.json` — 21 test cases
 
 **Format:**
+
 ```json
 {
   "name": "ask-read-file",
   "mode": "ask",
-  "setup": {"files": {"hello.txt": "Hello, World!"}},
+  "setup": { "files": { "hello.txt": "Hello, World!" } },
   "turns": [
     {
       "user": "What's in hello.txt?",
       "responses": [
-        {"tool_calls": [{"name": "read_text_file", "input": {"filename": "{{CWD}}/hello.txt"}}]},
-        {"text": "The file contains: \"Hello, World!\""}
+        { "tool_calls": [{ "name": "read_text_file", "input": { "filename": "{{CWD}}/hello.txt" } }] },
+        { "text": "The file contains: \"Hello, World!\"" }
       ]
     }
   ],
@@ -483,11 +522,13 @@ timelineAtom = atom((get) => {
 ## 19. CI workflows
 
 **`.github/workflows/agent-tests.yml`** — runs on PRs touching `pkg/agent/**` or `pkg/aiusechat/**`:
+
 - `go test -race ./pkg/agent/... ./pkg/aiusechat/...`
 - Golden transcripts via `TestGoldenTranscripts`
 - Race detector catches concurrent map access bugs
 
 **`.github/workflows/harbor-nightly.yml`** — runs terminal-bench 2.0 on schedule (3:37 AM UTC daily) + manual trigger:
+
 - Builds `wavesrv` from source
 - Installs Harbor via pip
 - Runs the full benchmark with configurable model + task count
@@ -505,6 +546,7 @@ timelineAtom = atom((get) => {
 **Approach:** Add a `Block.kind` discriminator (`shell` | `agent`) so agent exchanges become first-class blocks alongside command output. Append-only positioning by call order — no timestamp re-sort — mirrors warp's `BlockList::append_item_to_blocklist` semantics (`app/src/terminal/model/blocks.rs:1074`). A new `AgentChatHost` owns ai-sdk's `useChat` hook and bridges its message stream into per-block state on `TerminalModel`, so jotai and useChat each own their natural domain.
 
 **Files:**
+
 - `frontend/app/term/engine/block.ts`, `engine/types.ts`, `engine/blocks.ts` — kind discriminator + `AgentPayload` + `appendAgentBlock` factory
 - `frontend/app/term/engine/block-handler.ts:110-111` — `isAgent()` gate skips ANSI dispatch for agent blocks
 - `frontend/app/term/terminal-model.ts` — `agentVisible/Posture/ChatStatus/ChatId/ModelOverride/Parts` atoms + `submitAgentMessage`/`applyAgentDelta`/`applyAgentStatus`/`applyAgentParts`/`getRecentCommands`
@@ -514,6 +556,7 @@ timelineAtom = atom((get) => {
 - `frontend/app/term/render/terminal-view.tsx:326-339` — onSubmit picks PTY vs useChat by mode
 
 **Data flow:**
+
 1. `cmdblock-input` submits with mode resolved to "agent" (explicit pick or NLD verdict).
 2. `TerminalView.onSubmit` calls the `submit` fn exposed via `AgentChatHost.onReady`.
 3. `submit` mints exchangeId, calls `model.submitAgentMessage(text)` to append an agent block, then `useChat.sendMessage(text, {messageId: exchangeId})`.
@@ -531,6 +574,7 @@ timelineAtom = atom((get) => {
 **Approach:** A `Citation` value attached to tool-use records, rendered as clickable chips beneath each tool-use card. Mirrors warp's `AIAgentCitation` enum (`crates/ai/src/agent/citation.rs:5-11`) but adds `file` and `history` kinds with `LineStart`/`LineEnd` to cover crest's `search` and `cmd_history` tools (warp's three-kind enum doesn't cover those use cases — recorded in `docs/warp-agent-improvement-plan.md` → Audit C-class decisions).
 
 **Files:**
+
 - `pkg/aiusechat/uctypes/uctypes.go` — `Citation` struct + `CitationKind_*` consts + `AddCitation` helper with dedup; mirrored field on `UIMessageDataToolUse` and `ToolAuditEvent`
 - `pkg/aiusechat/usechat.go` — finalize copies `toolusedata.Citations` into the per-call audit row; new fast path so `ToolAnyCallback` returning a plain string passes through raw (no JSON quoting)
 - `pkg/agent/tools/web_fetch.go`, `search.go`, `cmd_history.go` — each populates citations during the callback
@@ -539,6 +583,7 @@ timelineAtom = atom((get) => {
 - `frontend/app/term/render/tool-use-card.tsx` — chips at card bottom
 
 **Data flow:**
+
 1. Tool callback emits citations via `data.AddCitation({kind, url, title, linestart, lineend})`.
 2. usechat finalize copies them into the audit row for trajectory replay.
 3. SSE `data-tooluse` event carries them to the FE.
@@ -555,6 +600,7 @@ timelineAtom = atom((get) => {
 **Approach:** A first-class tool that pauses the turn with a multi-choice card. Schema and data shape mirror warp's `AskUserQuestionItem` (`crates/ai/src/agent/action/mod.rs:611-657`): up to four questions per call, each with a nested `questiontype` discriminator (today only `multiplechoice`); 2–4 options each; optional `supportsother` for free-form fallback; `recommended` flag highlights the agent's default. The user's answers ride back through the existing approval RPC.
 
 **Files:**
+
 - `pkg/aiusechat/uctypes/uctypes.go` — `AskUserQuestion{Option, Type, Item, Payload, Answer}` types
 - `pkg/aiusechat/toolapproval.go` — `ApprovalRequest.askAnswers` + `UpdateToolApprovalWithAnswers` + `WaitForToolApproval` returns `(approval, answers, err)`
 - `pkg/aiusechat/usechat.go:386-404` — dispatcher copies answers onto `toolusedata.AskAnswers` before the tool callback runs
@@ -566,6 +612,7 @@ timelineAtom = atom((get) => {
 - `frontend/app/term/render/tool-use-card.tsx` — dispatch by `needsApproval` between interactive card and summary
 
 **Data flow:**
+
 1. Agent emits `ask_user_question`; `ToolVerifyInput` populates `toolusedata.AskQuestion`.
 2. FE renders `ToolAskCard`; user picks options.
 3. User submits via `WaveAIToolApproveCommand({approval: "user-approved", askanswers: [...]})`.
@@ -584,6 +631,7 @@ timelineAtom = atom((get) => {
 **Approach:** Three new tools that operate on a background block by its `block_id`. Strict ports of warp's `ReadShellCommandOutput`, `WriteToLongRunningShellCommand`, and `TransferShellCommandControlToUser` actions (`crates/ai/src/agent/action/mod.rs:126-129, 61-65, 161-165`). The write tool's three modes (`raw` / `line` / `block`) match warp's `AIAgentPtyWriteMode` byte decoration (`action/mod.rs:762-812`): raw passes through, line wraps with SOH + LF for readline-style editors, block wraps in bracketed-paste markers.
 
 **Files:**
+
 - `pkg/agent/tools/long_running_read.go` — tail + nested `delay` (`{kind:"duration", duration_ms}` or `{kind:"oncompletion"}`) mirroring warp's `ShellCommandDelay::{Duration, OnCompletion}` enum
 - `pkg/agent/tools/long_running_write.go` — `decorateLongRunningWriteBytes` matches warp's `decorate_bytes`; `SendInput` delivers to `blockcontroller`'s input pipe
 - `pkg/agent/tools/transfer_to_user.go` — `wcore.QueueLayoutActionForTab` makes a hidden background block visible; agent is expected to stop driving it on subsequent turns
@@ -592,6 +640,7 @@ timelineAtom = atom((get) => {
 - `frontend/app/view/cmdblock/cmdblock-status.tsx` — exported `AgentWatchingBadge` + `TakeOverButton` scaffolding (not yet mounted into block headers — wiring deferred to a separate design pass)
 
 **Data flow (typical dev-server workflow):**
+
 1. Agent: `shell_exec({cmd: "npm run dev", background: true})` → returns `block_id`.
 2. Agent: `long_running_read({block_id, delay: {kind:"duration", duration_ms: 2000}})` to give the server time to bind.
 3. Reads the tail, confirms "Local: http://localhost:5173"; moves on to verification work.
@@ -609,6 +658,7 @@ timelineAtom = atom((get) => {
 **Approach:** Four-layer architecture. (1) **Catalog** — static in-repo TS describing all known providers + popular models with endpoint, apitype, capabilities, context window, reasoning support. Maintained by crest contributors via PR. Lives in `frontend/app/store/ai-catalog.ts`. (2) **User config** — `~/.config/crest/ai.json` carries only what the user owns: their providers/credentials, default selection, optional saved profiles, optional custom models / custom endpoints not in the catalog. (3) **Selection** — per-pane `{provider, model, reasoning?}` triple persisted to `block.meta["agent:selection"]` by the model picker. (4) **Resolver** — `frontend/app/store/ai-resolver.ts` consumes (selection, user_config, catalog) and produces a `ResolvedAIConfig`. The frontend sends this on every agent request as the `aiconfig` field; backend's `aiusechat.BuildAIOptsFromConfig` ingests it 1:1 with no further catalog or settings lookups.
 
 **Files:**
+
 - `frontend/app/store/ai-catalog.ts` — the catalog (TS source of truth)
 - `frontend/app/store/ai-types.ts` — `AgentSelection`, `UserConfig`, `ResolvedAIConfig`, error types
 - `frontend/app/store/ai-resolver.ts` — `resolveAIConfig(selection, userConfig, catalog)`
@@ -621,6 +671,7 @@ timelineAtom = atom((get) => {
 - `pkg/wshrpc/wshrpctypes.go` — `GetAIUserConfigCommand` + `WriteAIUserConfigCommand` RPCs, `GetAIUserConfigRtnData` (status-tagged: `ok`/`missing`/`malformed`)
 
 **Data flow (per agent message):**
+
 1. User edits `~/.config/crest/ai.json` → backend `wshrpc.GetAIUserConfigCommand` reads it → FE `aiUserConfigAtom` hydrates.
 2. User clicks the model chip → `ModelPickerPopover` renders catalog + profiles + custom entries.
 3. User picks → `block.meta["agent:selection"] = {provider, model, reasoning?}` via `ObjectService.UpdateObjectMeta`.

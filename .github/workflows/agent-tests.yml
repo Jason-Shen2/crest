@@ -5,56 +5,110 @@ name: Agent Tests
 # so this job runs the vitest suite that covers both sides.
 
 on:
-  pull_request:
-    paths:
-      - "emain/aiconfig/**"
-      - "emain/aiconfig-ipc.ts"
-      - "emain/agent-event-routing.ts"
-      - "emain/agent-event-routing.test.ts"
-      - "emain/agent-ipc.ts"
-      - "emain/agent-ipc.test.ts"
-      - "emain/agent-observability-ipc.ts"
-      - "emain/agent-observability-ipc.test.ts"
-      - "emain/agent-tools/**"
-      - "emain/emain-ipc.ts"
-      - "emain/models-dev-overlay.ts"
-      - "emain/preload.ts"
-      - "frontend/app/store/**"
-      - "frontend/app/term/**"
-      - "frontend/app/observability/**"
-      - "frontend/types/custom.d.ts"
-      - "packages/agent/**"
-      - "packages/ai/**"
-      - "packages/boundary.test.ts"
-      - "packages/coding-agent/**"
-      - "electron.vite.config.ts"
-      - "package.json"
-      - "package-lock.json"
-      - "tsconfig.json"
-      - "vitest.config.ts"
-      - "vitest.slim.config.ts"
-  push:
-    branches:
-      - main
-      - "feat/**"
+    pull_request:
+        paths:
+            - "emain/aiconfig/**"
+            - "emain/aiconfig-ipc.ts"
+            - "emain/agent-event-routing.ts"
+            - "emain/agent-event-routing.test.ts"
+            - "emain/agent-ipc.ts"
+            - "emain/agent-ipc.test.ts"
+            - "emain/agent-rewind*.ts"
+            - "emain/agent-observability-ipc.ts"
+            - "emain/agent-observability-ipc.test.ts"
+            - "emain/agent-tools/**"
+            - "emain/emain-ipc.ts"
+            - "emain/models-dev-overlay.ts"
+            - "emain/preload.ts"
+            - "frontend/app/store/**"
+            - "frontend/app/term/**"
+            - "frontend/app/agent/**"
+            - "frontend/app/observability/**"
+            - "frontend/types/custom.d.ts"
+            - "packages/agent/**"
+            - "packages/ai/**"
+            - "packages/boundary.test.ts"
+            - "packages/coding-agent/**"
+            - "electron.vite.config.ts"
+            - "package.json"
+            - "package-lock.json"
+            - "tsconfig.json"
+            - "vitest.config.ts"
+            - "vitest.slim.config.ts"
+    push:
+        branches:
+            - main
+            - "feat/**"
 
 env:
-  NODE_VERSION: 22
+    NODE_VERSION: 22
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
+    test:
+        name: Linux full suite
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: package-lock.json
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
 
-      - name: npm ci
-        run: npm ci --no-audit --no-fund
+            - name: npm ci
+              run: npm ci --no-audit --no-fund
 
-      - name: Run vitest
-        run: npx vitest run
+            - name: Run vitest
+              run: npx vitest run
+
+    workspace-rewind:
+        name: ${{ matrix.os }} (${{ matrix.capability_profile }})
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os: ubuntu-latest
+                      capability_profile: posix-case-sensitive
+                      capability_blockers: "symlink=required;case-only-rename=case-sensitive;atomic-replace=required;directory-fsync=required"
+                    - os: macos-latest
+                      capability_profile: posix-case-runtime
+                      capability_blockers: "symlink=required;case-only-rename=filesystem-dependent;atomic-replace=required;directory-fsync=required"
+                    - os: windows-latest
+                      capability_profile: windows
+                      capability_blockers: "symlink=privilege-dependent;case-only-rename=required;atomic-replace=required;directory-fsync=unsupported-fail-closed"
+        runs-on: ${{ matrix.os }}
+        steps:
+            - uses: actions/checkout@v6
+
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: npm ci
+              run: npm ci --no-audit --no-fund
+
+            - name: Declare workspace-rewind capability blockers
+              shell: bash
+              run: |
+                  echo "Capability profile: ${{ matrix.capability_profile }}"
+                  echo "Expected blockers: ${{ matrix.capability_blockers }}"
+
+            - name: Run workspace-rewind capability contracts
+              run: >-
+                  npx vitest run
+                  packages/coding-agent/workspace-rewind/filesystem-apply.test.ts
+                  packages/coding-agent/workspace-rewind/workspace-identity.test.ts
+                  packages/coding-agent/workspace-rewind/durability.test.ts
+
+            - name: Run focused workspace-rewind, coordinator, and UI gate
+              run: >-
+                  npx vitest run
+                  packages/coding-agent/workspace-rewind
+                  emain/agent-rewind-service.test.ts
+                  emain/agent-rewind.e2e.test.ts
+                  emain/agent-ipc.test.ts
+                  frontend/app/agent/agent-content.test.tsx
+                  frontend/app/agent/agent-chat-host.test.tsx

@@ -1,6 +1,6 @@
 # Agent Workspace Rewind Design
 
-**Status:** Approved for implementation
+**Status:** Implemented behind an internal rollout gate
 
 **Date:** 2026-07-28
 
@@ -1062,6 +1062,19 @@ the Revert and avoids creating a second forward-history stack.
 
 All production behavior is developed test-first.
 
+The final integration gate is split across
+`multi-session.integration.test.ts`,
+`tool-independent.integration.test.ts`, and `emain/agent-rewind.e2e.test.ts`.
+Together they exercise same-workspace multi-session isolation and locking,
+normal/Force/stale-preview behavior, unknown-write recovery freeze, tool-
+independent turn boundaries, active PTY gaps, Git/non-Git parity and untouched
+user Git metadata, renderer-to-main preview/apply/Redo/reload behavior, crash
+gaps, quota owners and purge, and conversation-only `/tree`. The CI matrix runs
+the full rewind package plus coordinator and UI suites on Linux, macOS, and
+Windows. It explicitly declares platform expectations for symlink privilege,
+case-only rename, atomic replace, and directory-fsync support; an unknown
+capability fails closed rather than weakening a restore assertion.
+
 ### Git runner
 
 - argv and environment isolation;
@@ -1182,8 +1195,17 @@ All production behavior is developed test-first.
 
 ## Rollout
 
+The implementation is gated by the exact internal environment value
+`CREST_AGENT_WORKSPACE_REWIND=1`; every other value is disabled. The default
+remains off until the three-platform matrix is consistently green. The store
+path is
+`<wave-data>/agent-checkpoints/workspaces/<workspace-identity>-<incarnation>/repo.git`
+and its 5 GiB soft quota, owner cleanup, confirmed trashed-session purge,
+recovery freeze, no-Force recovery, and one-step Redo behavior are part of the
+rollout contract—not operational suggestions.
+
 1. Land the shadow-store, manifest, checkpoint journal, and restore engine
-   behind an internal feature flag.
+   behind the internal feature flag.
 2. Integrate lifecycle capture and validate checkpoint generation without
    exposing restore.
 3. Add backend preview/apply/redo APIs and failure-injection tests.

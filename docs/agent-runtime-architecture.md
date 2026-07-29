@@ -3,6 +3,7 @@
 **Status:** **Phase 3 implemented for Workspace Agent** · Phase 4A File/Preview/Git Diff automated implementation complete, Electron smoke pending · Browser Top Tab deferred
 **Replaces:** the deleted `pkg/agent/` Go agent loop + `pkg/aiusechat/` four hand-rolled backends
 **Companion docs:**
+
 - [`ai-config-architecture.md`](./ai-config-architecture.md) — model selection, catalog, resolver (Layer 1–4 of the AI stack)
 - [`ai-sdk-provider-migration-eval.md`](./ai-sdk-provider-migration-eval.md) — why Option D (agent loop in Electron main + pi) was chosen over A/B/C
 
@@ -38,6 +39,7 @@ Sections that mention pane/block binding document the pre-Phase-3 design
 history and are retained only as migration context.
 
 References that informed the design are inline. Major sources:
+
 - **warp** AI / agent code at `/Users/mac/projects/warp/app/src/` (read May 2026)
 - **pi-agent-core** in-tree at `emain/agent/` (started from `earendil-works/pi v0.75.5`)
 
@@ -46,11 +48,13 @@ References that informed the design are inline. Major sources:
 ## 1. The premise
 
 crest used to:
+
 - Run the agent loop in a separate Go daemon (`wavesrv`, via `pkg/agent/` + `pkg/aiusechat/`)
 - Use four hand-rolled LLM backends (openaichat, openairesponses, anthropic, gemini, ~3000 LOC Go)
 - Route per-pane conversations by an ephemeral chatId minted in the React renderer
 
 After the [migration eval](./ai-sdk-provider-migration-eval.md), the project committed to **Option D**:
+
 - Agent loop in **Electron main** (Node), not wavesrv (which keeps PTY + block IO duties only)
 - **pi-agent-core + pi-ai** as the underlying agent / LLM stack, integrated in-tree (not vendored)
 - Renderer becomes a pure UI surface that talks to main via IPC
@@ -119,6 +123,7 @@ Three alternatives were considered (see [migration eval](./ai-sdk-provider-migra
 - **Option D** (agent loop in Electron main + pi-agent-core): **chosen**.
 
 Of the libraries that could underlie Option D, **pi-agent-core was chosen** over building from scratch because pi gives us for free:
+
 - Stateful agent class with typed event stream (`AgentHarness`)
 - 13 LLM providers under one interface (`pi-ai`)
 - Compaction + branch summarization (`harness/compaction/`)
@@ -141,13 +146,14 @@ The cost: bus factor 1 (Mario Zechner), mitigated by integrating in-tree so we c
 A "session" is one continuous AI conversation thread, persisted to a JSONL file. The canonical type is **pi's `Session<JsonlSessionMetadata>`** — we do NOT wrap it.
 
 `JsonlSessionMetadata` shape (`emain/agent/harness/types.ts:439`):
+
 ```ts
 interface JsonlSessionMetadata extends SessionMetadata {
-    id: string;              // UUID minted by pi
-    createdAt: string;       // ISO 8601 timestamp
-    cwd: string;             // creation-time cwd, immutable
-    path: string;            // absolute JSONL file path
-    parentSessionPath?: string; // for forks; unused in v1
+  id: string; // UUID minted by pi
+  createdAt: string; // ISO 8601 timestamp
+  cwd: string; // creation-time cwd, immutable
+  path: string; // absolute JSONL file path
+  parentSessionPath?: string; // for forks; unused in v1
 }
 ```
 
@@ -168,6 +174,7 @@ The JSONL file is append-mode: header on line 1, one entry per line. Each entry 
 ```
 
 **Decision rationale** (warp says flat, pi says cwd-grouped):
+
 - warp stores everything in one SQLite DB indexed by id, with no per-cwd discovery API — they don't surface a "recent conversations in this project" UX
 - pi groups by cwd at the filesystem level; `repo.list({cwd})` is one `ls`
 - crest wants the per-cwd discovery affordance (see §6.4 cross-pane behavior), so **pi's layout wins**
@@ -176,6 +183,7 @@ The JSONL file is append-mode: header on line 1, one entry per line. Each entry 
 ### 4.3 Why we don't roll our own SessionStore
 
 An earlier task #8 iteration wrote a flat per-chatId `SessionStore`. This was a mistake — re-justified as "simpler" but actually:
+
 - The "simpler" version cost us discovery, append-mode persistence, fork support, and metadata-without-load APIs (pi has all of these)
 - `JsonlSessionRepo` already takes `NodeExecutionEnv` (already in the tree) for its FileSystem dependency — there is no "complex abstraction" to wrestle with
 - The bare cwd-flat structure is exactly what we need
@@ -215,6 +223,7 @@ This differs from **warp**, which stores the binding in a global `ActiveAgentVie
 A pane has **no session by default**. `agent:session` is null until the user sends their first agent message in that pane.
 
 On first send:
+
 1. IPC `agent:send` arrives at main with no session metadata
 2. Main process: `repo.create({cwd: paneCurrentCwd})` mints a fresh Session
 3. Main returns the new `AgentSessionMeta` to renderer
@@ -227,16 +236,20 @@ On first send:
 ### 5.3 Cwd at session creation vs cwd at send time
 
 Two cwds matter:
+
 - **Session.cwd** — fixed at creation time, drives storage dir and grouping. Immutable.
 - **Pane's current cwd** — mutable, updates when user types `cd`.
 
 When the pane's cwd changes (`cd /other-proj`), the session does NOT move. The session stays grouped under its original cwd's directory. **This matches warp's semantics** (`active_session.rs` updates `current_working_directory` per block event, but `conversation.rs:1491 update_for_new_request_input` keeps the same conversation):
 
 > warp `controller.rs:277`:
+>
 > ```rust
 > let working_directory = active_session.as_ref(app).current_working_directory().cloned();
 > ```
+>
 > warp `conversation.rs:1529` — the cwd lands on the new **exchange** struct, not on the conversation:
+>
 > ```rust
 > let new_exchange = AIAgentExchange {
 >     working_directory: working_directory.clone(),
@@ -262,6 +275,7 @@ interface AgentHarnessHost {
 ```
 
 `update()` does two things:
+
 1. Mutates `env.cwd` so tool execution targets the new directory
 2. Updates the closure that `systemPrompt: () => buildSystemPrompt(...)` reads, so the next turn's prompt reflects the new cwd / gitBranch
 
@@ -369,6 +383,49 @@ See task #11 description. Pi's `beforeToolCall` hook + a per-pane "trusted tools
 
 No active users. `pkg/agent/mcp/` gets deleted in task #13. Can re-add via `@modelcontextprotocol/sdk` TS package on top of pi's tool API later.
 
+### 7.11 Workspace rewind: turn-boundary snapshots, selective restore
+
+Workspace rewind is an internal-gated TypeScript runtime capability
+(`CREST_AGENT_WORKSPACE_REWIND=1`; disabled by default until the rollout gate
+is complete). Its authority is the filesystem snapshot captured before and
+after a durable user turn, not `write`/`edit` tool metadata. Consequently bash,
+hosted PTYs, CLI subagents, and future tools receive the same coverage. An
+active transferred PTY, incomplete capture, or crash before finalization
+records an explicit unavailable checkpoint rather than guessing.
+
+The private store lives under
+`<wave-data>/agent-checkpoints/workspaces/<workspace-identity>-<incarnation>/repo.git`.
+It is a bare internal object store and never changes the user's Git HEAD,
+index, branches, commits, or stash; non-Git workspaces use the same capture and
+restore protocol. The store has a 5 GiB soft quota per canonical workspace.
+Automatic cleanup removes only unowned objects. Referenced bytes remain owned
+by live or trashed sessions, and purging a trashed owner requires its
+server-issued confirmation token.
+
+Revert and `/rewind` share a server-authored preview. Normal Revert fails
+closed if live bytes drifted. Only the displayed red drift paths may be
+overwritten by `Force revert`, with the exact warning
+`files changed on disk since the agent last wrote them`; missing snapshots,
+unsafe path/type or directory collisions, stale leaves, busy state, and
+recovery remain hard blockers. Restore is a selective path transaction—never
+`reset --hard`, `clean -fd`, or a whole-workspace checkout—and conversation
+movement commits only after file verification.
+
+A durable journal and canonical-workspace lock serialize multi-session
+transactions across the filesystem/SQLite boundary. Unknown post-crash or
+post-verification bytes freeze the workspace for explicit Retry,
+Abandon-current, or corrupt-journal quarantine; recovery never offers Force.
+A successful Revert persists a one-step Redo safety snapshot and dock across
+reload. Redo has no Force mode and disappears after Redo, new work, or branch
+navigation. `/tree` remains conversation-only and never restores snapshots.
+
+The storage/selective-restore precedent comes from OpenCode Core v2; turn
+lifecycle and the `/rewind` picker come from Pi/pi-rewind. Drift/Force UX,
+multi-session ownership, workspace identity, locking, durability, recovery,
+quota, and one-step Redo are Crest-owned hardening. The deleted Go
+`CheckpointStore`/`filebackup` and tool-level `FileChange` semantics are
+historical and are not authoritative for this implementation.
+
 ---
 
 ## 8. Open questions and v2 candidates
@@ -387,6 +444,7 @@ Things explicitly out of scope for the current sprint:
 ## 9. References
 
 ### pi source (in-tree at `emain/agent/`)
+
 - `harness/agent-harness.ts:164` — `AgentHarness` class
 - `harness/session/jsonl-repo.ts:38` — `JsonlSessionRepo`
 - `harness/session/session.ts:78` — `Session<TMetadata>` class
@@ -396,6 +454,7 @@ Things explicitly out of scope for the current sprint:
 - `harness/compaction/compaction.ts` — pi's compaction algorithm (auto-fires via `prepareNextTurn`)
 
 ### warp source (read May 2026, at `/Users/mac/projects/warp/app/src/`)
+
 - `ai/agent/conversation.rs:128,273,1491,1529` — `AIConversation` + `update_for_new_request_input` (per-exchange cwd)
 - `ai/agent_conversations_model.rs:513` — global conversation collection
 - `ai/active_agent_views_model.rs:88,142,197` — pane → controller → conversation reverse lookup
@@ -405,6 +464,7 @@ Things explicitly out of scope for the current sprint:
 - `pane_group/mod.rs:6831,7155` — pane lifecycle, startup cwd inheritance
 
 ### Related crest docs
+
 - [`ai-config-architecture.md`](./ai-config-architecture.md) — Layer 1–4 (catalog, ai.json, selection, resolver)
 - [`ai-sdk-provider-migration-eval.md`](./ai-sdk-provider-migration-eval.md) — why Electron-main + pi
 
@@ -435,9 +495,10 @@ Tasks (cross-ref with the task list):
 ### Post-#13 surface
 
 After #13, all AI-related state and IO lives in TypeScript:
+
 - Provider /models listing → `emain/aiconfig/list-provider-models.ts` (IPC: `ai:list-provider-models`)
 - `~/.config/crest/ai.json` read/write → `emain/aiconfig/user-config.ts` (IPC: `ai:get-user-config`, `ai:write-user-config`)
 - Secret resolution (`tokensecretname` → plaintext) → `emain/aiconfig/secrets.ts`, reading `secrets.enc` directly via `safeStorage` (no Go roundtrip)
 - Agent loop, sessions, tools → `emain/agent/` (covered by §2–§9)
 
-Secret *writes* still go through the Go `SetSecretsCommand` wshrpc (general-purpose, not AI-specific — also used by waveconfig and the builder). That's deliberate; the architecture goal was "AI lives in TS", not "all of pkg/secretstore lives in TS".
+Secret _writes_ still go through the Go `SetSecretsCommand` wshrpc (general-purpose, not AI-specific — also used by waveconfig and the builder). That's deliberate; the architecture goal was "AI lives in TS", not "all of pkg/secretstore lives in TS".
