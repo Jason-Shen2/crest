@@ -87,7 +87,6 @@ describe("workspace Agent state helpers", () => {
         const persisted: WorkspaceAgentState = {
             activesession: { ...SessionOne },
             selection: { ...ModelOne },
-            preferredterminaltabid: "term-1",
         };
 
         const hydrated = hydrateWorkspaceAgentState(persisted);
@@ -100,12 +99,10 @@ describe("workspace Agent state helpers", () => {
         expect(cloned).toEqual({
             activeSession: SessionOne,
             selection: ModelOne,
-            preferredTerminalTabId: "term-1",
         });
         expect(serialized).toEqual({
             activesession: SessionOne,
             selection: ModelOne,
-            preferredterminaltabid: "term-1",
         });
         expect(workspaceAgentStatesEqual(cloned, hydrateWorkspaceAgentState(serialized))).toBe(true);
     });
@@ -155,7 +152,6 @@ describe("WorkspaceAgentModel", () => {
         expect(globalStore.get(model.stateAtom)).toEqual({
             activeSession: SessionOne,
             selection: ModelOne,
-            preferredTerminalTabId: "",
         });
         expect(globalStore.get(model.statusAtom)).toBe("dirty");
         expect(saveCheckpoint).not.toHaveBeenCalled();
@@ -216,7 +212,6 @@ describe("WorkspaceAgentModel", () => {
             expectedrevision: 7,
             state: {
                 selection: ModelOne,
-                preferredterminaltabid: "",
             },
         });
         expect(model.revision).toBe(8);
@@ -253,7 +248,6 @@ describe("WorkspaceAgentModel", () => {
             state: {
                 activesession: SessionOne,
                 selection: ModelTwo,
-                preferredterminaltabid: "",
             },
         });
     });
@@ -287,7 +281,6 @@ describe("WorkspaceAgentModel", () => {
             expectedrevision: 1,
             state: {
                 selection: ModelTwo,
-                preferredterminaltabid: "",
             },
         });
         expect(model.revision).toBe(2);
@@ -330,14 +323,12 @@ describe("WorkspaceAgentModel", () => {
                 checkpoint(6, {
                     activesession: SessionTwo,
                     selection: ModelOne,
-                    preferredterminaltabid: "term-2",
                 })
             );
         const reloadCheckpoint = vi.fn().mockResolvedValue(
             checkpoint(5, {
                 activesession: SessionTwo,
                 selection: ModelTwo,
-                preferredterminaltabid: "term-2",
             })
         );
         const model = WorkspaceAgentModel.getInstance({
@@ -348,7 +339,6 @@ describe("WorkspaceAgentModel", () => {
             initialState: {
                 activesession: SessionOne,
                 selection: ModelTwo,
-                preferredterminaltabid: "term-1",
             },
             saveCheckpoint,
             reloadCheckpoint,
@@ -365,13 +355,11 @@ describe("WorkspaceAgentModel", () => {
             state: {
                 activesession: SessionTwo,
                 selection: ModelOne,
-                preferredterminaltabid: "term-2",
             },
         });
         expect(globalStore.get(model.stateAtom)).toEqual({
             activeSession: SessionTwo,
             selection: ModelOne,
-            preferredTerminalTabId: "term-2",
         });
     });
 
@@ -471,7 +459,6 @@ describe("WorkspaceAgentModel", () => {
         expect(globalStore.get(model.stateAtom)).toEqual({
             activeSession: SessionTwo,
             selection: ModelOne,
-            preferredTerminalTabId: "",
         });
         expect(saveCheckpoint).toHaveBeenCalledTimes(2);
         expect(saveCheckpoint.mock.calls[1][0]).toEqual({
@@ -480,7 +467,6 @@ describe("WorkspaceAgentModel", () => {
             state: {
                 activesession: SessionTwo,
                 selection: ModelOne,
-                preferredterminaltabid: "",
             },
         });
     });

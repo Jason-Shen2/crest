@@ -20,22 +20,15 @@ const ModelOne: AgentSelectionMeta = {
     reasoning: "high",
 };
 
-function workspace(
-    oid: string,
-    agentRevision: number,
-    terminalTabIds: string[],
-    preferredTerminalTabId = terminalTabIds[0] ?? "",
-    navigationRevision = 0
-): Workspace {
+function workspace(oid: string, agentRevision: number, terminalTabIds: string[]): Workspace {
     return {
         oid,
         otype: "workspace",
         version: agentRevision + 1,
-        navigationrevision: navigationRevision,
+        navigationrevision: 0,
         agentrevision: agentRevision,
         agentstate: {
             activesession: SessionOne,
-            preferredterminaltabid: preferredTerminalTabId,
         },
         terminaltabids: terminalTabIds,
     } as Workspace;
@@ -47,50 +40,46 @@ afterEach(async () => {
 });
 
 describe("WorkspaceAgentSync", () => {
-    it("projects only Agent state, Agent revision, and terminal inventory", async () => {
+    it("projects only Agent state and Agent revision", async () => {
         const workspaceAtom = jotai.atom(workspace("ws-1", 2, ["term-1"]));
-        const saveCheckpoint = vi.fn().mockResolvedValue({
-            workspaceid: "ws-1",
-            revision: 4,
-            state: {
-                activesession: SessionOne,
-                preferredterminaltabid: "",
-            },
-        });
         const model = WorkspaceAgentModel.getInstance({
             windowId: "win-1",
             workspaceId: "ws-1",
             generation: 3,
             initialRevision: 2,
             initialState: workspace("ws-1", 2, ["term-1"]).agentstate,
-            saveCheckpoint,
         });
         const owner = WorkspaceModel.getInstance({ windowId: "win-1", workspaceId: "ws-1" });
         const sync = new WorkspaceAgentSync(model, owner, workspaceAtom);
         sync.start();
 
         globalStore.set(workspaceAtom, {
-            ...workspace("ws-1", 3, [], "term-1"),
+            ...workspace("ws-1", 3, []),
+            agentstate: {
+                activesession: SessionOne,
+                selection: ModelOne,
+            },
             name: "ignored",
             navigationrevision: 99,
         });
 
         expect(model.revision).toBe(3);
-        expect(globalStore.get(model.stateAtom).preferredTerminalTabId).toBe("");
-        expect(globalStore.get(model.statusAtom)).toBe("dirty");
+        expect(globalStore.get(model.stateAtom)).toEqual({
+            activeSession: SessionOne,
+            selection: ModelOne,
+        });
         expect(owner.revision).toBe(0);
         await sync.dispose();
     });
 
-    it("reconciles trusted terminal inventory even when equal Agent revision rejects dirty local state", async () => {
-        const workspaceAtom = jotai.atom(workspace("ws-1", 5, ["term-1"], "term-1", 1));
+    it("does not let Terminal inventory changes mutate dirty Agent state", async () => {
+        const workspaceAtom = jotai.atom(workspace("ws-1", 5, ["term-1"]));
         const saveCheckpoint = vi.fn().mockResolvedValue({
             workspaceid: "ws-1",
             revision: 6,
             state: {
                 activesession: SessionOne,
                 selection: ModelOne,
-                preferredterminaltabid: "",
             },
         });
         const agentModel = WorkspaceAgentModel.getInstance({
@@ -98,25 +87,23 @@ describe("WorkspaceAgentSync", () => {
             workspaceId: "ws-1",
             generation: 3,
             initialRevision: 5,
-            initialState: workspace("ws-1", 5, ["term-1"], "term-1", 1).agentstate,
+            initialState: workspace("ws-1", 5, ["term-1"]).agentstate,
             saveCheckpoint,
         });
         const owner = WorkspaceModel.getInstance({
             windowId: "win-1",
             workspaceId: "ws-1",
-            initialNavigationRevision: 1,
             initialTerminalTabIds: ["term-1"],
         });
         const sync = new WorkspaceAgentSync(agentModel, owner, workspaceAtom);
         sync.start();
         agentModel.selectModel(ModelOne);
 
-        globalStore.set(workspaceAtom, workspace("ws-1", 5, [], "term-1", 2));
+        globalStore.set(workspaceAtom, workspace("ws-1", 5, []));
 
         expect(globalStore.get(agentModel.stateAtom)).toEqual({
             activeSession: SessionOne,
             selection: ModelOne,
-            preferredTerminalTabId: "",
         });
         await agentModel.flush();
         expect(saveCheckpoint).toHaveBeenCalledWith({
@@ -125,35 +112,8 @@ describe("WorkspaceAgentSync", () => {
             state: {
                 activesession: SessionOne,
                 selection: ModelOne,
-                preferredterminaltabid: "",
             },
         });
-        await sync.dispose();
-    });
-
-    it.each([
-        ["older", 0],
-        ["equal but different", 1],
-    ])("rejects %s terminal inventory", async (_caseName, navigationRevision) => {
-        const workspaceAtom = jotai.atom(workspace("ws-1", 5, [], "term-1", navigationRevision));
-        const agentModel = WorkspaceAgentModel.getInstance({
-            windowId: "win-1",
-            workspaceId: "ws-1",
-            generation: 3,
-            initialRevision: 5,
-            initialState: workspace("ws-1", 5, ["term-1"], "term-1", 1).agentstate,
-        });
-        const owner = WorkspaceModel.getInstance({
-            windowId: "win-1",
-            workspaceId: "ws-1",
-            initialNavigationRevision: 1,
-            initialTerminalTabIds: ["term-1"],
-        });
-        const sync = new WorkspaceAgentSync(agentModel, owner, workspaceAtom);
-
-        sync.start();
-
-        expect(globalStore.get(agentModel.stateAtom).preferredTerminalTabId).toBe("term-1");
         await sync.dispose();
     });
 

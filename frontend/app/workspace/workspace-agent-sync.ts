@@ -14,17 +14,6 @@ function checkpointFromWorkspace(workspace: Workspace): WorkspaceAgentCheckpoint
     };
 }
 
-function isTrustedTerminalInventory(workspace: Workspace, model: WorkspaceModel): boolean {
-    const revision = workspace.navigationrevision ?? 0;
-    if (revision < model.revision) {
-        return false;
-    }
-    if (revision > model.revision) {
-        return true;
-    }
-    return JSON.stringify(workspace.terminaltabids ?? []) === JSON.stringify(globalStore.get(model.terminalTabIdsAtom));
-}
-
 export class WorkspaceAgentSync {
     model: WorkspaceAgentModel;
     workspaceModel: WorkspaceModel;
@@ -47,11 +36,7 @@ export class WorkspaceAgentSync {
             if (workspace?.oid !== this.model.workspaceId) {
                 return;
             }
-            const terminalInventoryTrusted = isTrustedTerminalInventory(workspace, this.workspaceModel);
             this.model.reconcile(checkpointFromWorkspace(workspace), this.model.generation);
-            if (terminalInventoryTrusted) {
-                this.model.reconcileTerminalInventory(workspace.terminaltabids ?? []);
-            }
         };
         this.unsubscribe = globalStore.sub(this.workspaceAtom, reconcile);
         reconcile();
