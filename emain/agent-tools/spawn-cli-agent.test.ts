@@ -74,9 +74,7 @@ describe("createSpawnCliAgentTool", () => {
             getExecutionContext: (cwd) => ({
                 workspaceId: "workspace-1",
                 workspaceDir: cwd,
-                connection: "",
                 environment: { FROM_WORKSPACE: "yes" },
-                recentCmds: [],
             }),
             createSession: async () => ({ getMetadata: async () => ({}) }) as any,
             getApiKeyAndHeaders,
@@ -108,9 +106,7 @@ describe("createSpawnCliAgentTool", () => {
             getExecutionContext: (cwd) => ({
                 workspaceId: "workspace-1",
                 workspaceDir: cwd,
-                connection: "",
                 environment: { FROM_WORKSPACE: "yes" },
-                recentCmds: [],
             }),
             createSession: async () => ({ getMetadata: async () => ({}) }) as any,
         });
@@ -164,9 +160,7 @@ describe("createSpawnCliAgentTool", () => {
             getExecutionContext: (cwd) => ({
                 workspaceId: "workspace-1",
                 workspaceDir: cwd,
-                connection: "",
                 environment: { FROM_WORKSPACE: "yes" },
-                recentCmds: [],
             }),
             createSession: async () => ({ getMetadata: async () => ({}) }) as any,
         });

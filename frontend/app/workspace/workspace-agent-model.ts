@@ -15,7 +15,7 @@ import {
 } from "./workspace-agent-state";
 
 const AgentCheckpointDelayMs = 300;
-const AgentStateFields = ["activeSession", "selection", "preferredTerminalTabId"] as const;
+const AgentStateFields = ["activeSession", "selection"] as const;
 
 type AgentStateField = (typeof AgentStateFields)[number];
 
@@ -100,7 +100,6 @@ export class WorkspaceAgentModel {
     fieldVersions: Record<AgentStateField, number> = {
         activeSession: 0,
         selection: 0,
-        preferredTerminalTabId: 0,
     };
     requestGeneration = 0;
     disposing = false;
@@ -190,10 +189,6 @@ export class WorkspaceAgentModel {
         this.updateField("selection", selection == null ? undefined : { ...selection });
     }
 
-    setPreferredTerminal(tabId: string): void {
-        this.updateField("preferredTerminalTabId", tabId ?? "");
-    }
-
     reconcile(checkpoint: WorkspaceAgentCheckpoint, generation = this.generation): boolean {
         if (
             this.disposing ||
@@ -226,15 +221,6 @@ export class WorkspaceAgentModel {
         this.replaceState(next);
         globalStore.set(this.statusAtom, this.dirtyFields.size > 0 ? "dirty" : "clean");
         globalStore.set(this.errorAtom, "");
-        return true;
-    }
-
-    reconcileTerminalInventory(terminalTabIds: readonly string[]): boolean {
-        const preferredTerminalTabId = globalStore.get(this.stateAtom).preferredTerminalTabId;
-        if (!preferredTerminalTabId || terminalTabIds.includes(preferredTerminalTabId)) {
-            return false;
-        }
-        this.setPreferredTerminal("");
         return true;
     }
 

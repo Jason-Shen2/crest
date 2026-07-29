@@ -49,7 +49,6 @@ describe("WorkspaceAgentContentSlot", () => {
             executionContext: {
                 workspaceId: "workspace-1",
                 workspaceDir: "/repo",
-                connection: "",
                 environment: {},
             },
         };

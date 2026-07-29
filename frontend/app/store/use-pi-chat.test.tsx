@@ -28,10 +28,8 @@ function makeExecutionContext(overrides: Partial<AgentExecutionContext> = {}): A
     return {
         workspaceId: "workspace-a",
         workspaceDir: "/repo",
-        connection: "",
         environment: { CREST: "1" },
         gitBranch: "main",
-        recentCmds: ["npm test"],
         ...overrides,
     };
 }

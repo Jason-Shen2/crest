@@ -69,7 +69,6 @@ function options(client: ReturnType<typeof installApi>) {
         executionContext: {
             workspaceId: "workspace",
             workspaceDir: "/workspace",
-            connection: "",
             environment: {},
         },
         modelSelection: { provider: "provider", model: "model" },

@@ -7,11 +7,8 @@ export interface AgentExecutionContext {
     workspaceId: string;
     workspaceDir: string;
     sessionPath?: string;
-    connection: string;
     environment: Record<string, string>;
-    preferredTerminalTabId?: string;
     gitBranch?: string;
-    recentCmds: string[];
 }
 
 interface WorkspaceSenderView {
@@ -22,9 +19,6 @@ interface WorkspaceSenderView {
 interface WorkspaceSenderWindow {
     waveWindowId: string;
     workspaceView: WorkspaceSenderView;
-    terminalMembership: {
-        validate: (identity: { workspaceId: string; generation: number }, terminalTabId: string) => Promise<boolean>;
-    };
 }
 
 export async function resolveAuthenticatedWorkspaceSender(
@@ -65,8 +59,6 @@ export async function resolveAuthenticatedWorkspaceSender(
     return {
         ...identity,
         workspaceDir,
-        validatePreferredTerminal: (terminalTabId: string) =>
-            window.terminalMembership.validate(identity, terminalTabId),
     };
 }
 
@@ -74,11 +66,8 @@ const AgentExecutionContextKeys = new Set([
     "workspaceId",
     "workspaceDir",
     "sessionPath",
-    "connection",
     "environment",
-    "preferredTerminalTabId",
     "gitBranch",
-    "recentCmds",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -99,10 +88,7 @@ function optionalString(value: unknown, fieldName: string): string | undefined {
     return requireNonEmptyString(value, fieldName);
 }
 
-export async function parseAgentExecutionContext(
-    value: unknown,
-    options: { validatePreferredTerminal: (terminalTabId: string) => Promise<boolean> }
-): Promise<AgentExecutionContext> {
+export async function parseAgentExecutionContext(value: unknown): Promise<AgentExecutionContext> {
     if (!isRecord(value)) {
         throw new Error("agent context: value must be an object");
     }
@@ -120,9 +106,6 @@ export async function parseAgentExecutionContext(
     if (sessionPath && !path.isAbsolute(sessionPath)) {
         throw new Error("agent context: sessionPath must be absolute");
     }
-    if (typeof value.connection !== "string") {
-        throw new Error("agent context: connection must be a string");
-    }
     if (!isRecord(value.environment)) {
         throw new Error("agent context: environment must contain string values");
     }
@@ -133,23 +116,12 @@ export async function parseAgentExecutionContext(
         }
         environment[key] = entry;
     }
-    const preferredTerminalTabId = optionalString(value.preferredTerminalTabId, "preferredTerminalTabId");
-    if (preferredTerminalTabId && !(await options.validatePreferredTerminal(preferredTerminalTabId))) {
-        throw new Error("agent context: preferredTerminalTabId is not in this Workspace");
-    }
     const gitBranch = optionalString(value.gitBranch, "gitBranch");
-    const recentCmds = value.recentCmds ?? [];
-    if (!Array.isArray(recentCmds) || recentCmds.some((command) => typeof command !== "string")) {
-        throw new Error("agent context: recentCmds must contain strings");
-    }
     return {
         workspaceId,
         workspaceDir,
         sessionPath,
-        connection: value.connection,
         environment,
-        preferredTerminalTabId,
         gitBranch,
-        recentCmds: [...recentCmds],
     };
 }

@@ -4,7 +4,6 @@
 export interface LocalWorkspaceAgentState {
     activeSession?: AgentSessionMeta;
     selection?: AgentSelectionMeta;
-    preferredTerminalTabId: string;
 }
 
 function cloneSession(session?: AgentSessionMeta): AgentSessionMeta {
@@ -19,7 +18,6 @@ export function hydrateWorkspaceAgentState(state?: WorkspaceAgentState): LocalWo
     return {
         activeSession: cloneSession(state?.activesession),
         selection: cloneSelection(state?.selection),
-        preferredTerminalTabId: state?.preferredterminaltabid ?? "",
     };
 }
 
@@ -27,7 +25,6 @@ export function cloneWorkspaceAgentState(state: LocalWorkspaceAgentState): Local
     return {
         activeSession: cloneSession(state.activeSession),
         selection: cloneSelection(state.selection),
-        preferredTerminalTabId: state.preferredTerminalTabId,
     };
 }
 
@@ -35,7 +32,6 @@ export function serializeWorkspaceAgentState(state: LocalWorkspaceAgentState): W
     return {
         activesession: cloneSession(state.activeSession),
         selection: cloneSelection(state.selection),
-        preferredterminaltabid: state.preferredTerminalTabId,
     };
 }
 

@@ -105,10 +105,6 @@ func (svc *WorkspaceService) CloseTerminalTab(ctx context.Context, data Terminal
 		}
 		workspace.TabIds = removeString(workspace.TabIds, data.TerminalTabId)
 		workspace.TerminalTabIds = removeStringAt(workspace.TerminalTabIds, tabIndex)
-		if workspace.AgentState.PreferredTerminalTabId == data.TerminalTabId {
-			workspace.AgentState.PreferredTerminalTabId = ""
-			workspace.AgentRevision++
-		}
 		if wasActive {
 			workspace.ActiveTerminalTabId = terminalNeighbor(workspace.TerminalTabIds, tabIndex)
 		}

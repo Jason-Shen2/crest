@@ -256,7 +256,7 @@ func TestTerminalTabInventoryCheckpointIsDeepCopyAndEmptyRoundTrips(t *testing.T
 	}
 }
 
-func TestTerminalTabAgentRevisionChangesOnlyWhenClosingPreferredTerminal(t *testing.T) {
+func TestTerminalTabChangesNeverMutateAgentStateOrRevision(t *testing.T) {
 	ctx := setupCheckpointTestWStore(t)
 	svc := &WorkspaceService{}
 	workspace := insertTerminalDomainWorkspace(t, ctx, "terminal-agent-revision")
@@ -279,10 +279,10 @@ func TestTerminalTabAgentRevisionChangesOnlyWhenClosingPreferredTerminal(t *test
 		WorkspaceId:      workspace.OID,
 		ExpectedRevision: 0,
 		State: waveobj.WorkspaceAgentState{
-			PreferredTerminalTabId: firstId,
+			Selection: &waveobj.AgentSelectionMeta{Provider: "openai", Model: "gpt-5"},
 		},
 	}); err != nil {
-		t.Fatalf("save preferred Terminal: %v", err)
+		t.Fatalf("save Agent state: %v", err)
 	}
 
 	third, err := svc.CreateTerminalTab(ctx, TerminalTabCreateData{
@@ -304,7 +304,7 @@ func TestTerminalTabAgentRevisionChangesOnlyWhenClosingPreferredTerminal(t *test
 		t.Fatalf("navigation revision after reorder = %d", reordered.NavigationRevision)
 	}
 	persisted := mustGetAgentWorkspace(t, ctx, workspace.OID)
-	if persisted.AgentRevision != 1 || persisted.AgentState.PreferredTerminalTabId != firstId {
+	if persisted.AgentRevision != 1 || persisted.AgentState.Selection.Model != "gpt-5" {
 		t.Fatalf("unrelated create/reorder changed Agent state: %#v", persisted)
 	}
 
@@ -316,7 +316,7 @@ func TestTerminalTabAgentRevisionChangesOnlyWhenClosingPreferredTerminal(t *test
 	persisted = mustGetAgentWorkspace(t, ctx, workspace.OID)
 	if persisted.NavigationRevision != 5 ||
 		persisted.AgentRevision != 1 ||
-		persisted.AgentState.PreferredTerminalTabId != firstId {
+		persisted.AgentState.Selection.Model != "gpt-5" {
 		t.Fatalf("unrelated close changed Agent state: %#v", persisted)
 	}
 
@@ -327,9 +327,9 @@ func TestTerminalTabAgentRevisionChangesOnlyWhenClosingPreferredTerminal(t *test
 	}
 	persisted = mustGetAgentWorkspace(t, ctx, workspace.OID)
 	if persisted.NavigationRevision != 6 ||
-		persisted.AgentRevision != 2 ||
-		persisted.AgentState.PreferredTerminalTabId != "" {
-		t.Fatalf("preferred close did not advance both revisions atomically: %#v", persisted)
+		persisted.AgentRevision != 1 ||
+		persisted.AgentState.Selection.Model != "gpt-5" {
+		t.Fatalf("Terminal close changed Agent state: %#v", persisted)
 	}
 }
 

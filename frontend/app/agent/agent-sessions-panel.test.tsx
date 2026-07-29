@@ -36,7 +36,6 @@ function makeModel() {
         stateAtom: atom({
             activeSession: undefined,
             selection: undefined,
-            preferredTerminalTabId: "",
         }),
         selectSession: vi.fn(function (this: { stateAtom: ReturnType<typeof atom> }, session?: AgentSessionMeta) {
             globalStore.set(this.stateAtom, {
@@ -129,7 +128,6 @@ describe("AgentSessionsPanel", () => {
                 path: "/sessions/current.sqlite",
             },
             selection: undefined,
-            preferredTerminalTabId: "",
         });
 
         await screen.findByText("hello");
@@ -151,7 +149,6 @@ describe("AgentSessionsPanel", () => {
                 path: "/sessions/active.sqlite",
             },
             selection: undefined,
-            preferredTerminalTabId: "",
         });
 
         const rows = await screen.findAllByRole("button", { name: /hello/ });
@@ -211,7 +208,6 @@ describe("AgentSessionsPanel", () => {
                 path: "/sessions/current.sqlite",
             },
             selection: { provider: "p", model: "m" } as AgentSelectionMeta,
-            preferredTerminalTabId: "",
         });
 
         await screen.findByText("hello");

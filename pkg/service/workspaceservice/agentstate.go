@@ -56,14 +56,6 @@ func (svc *WorkspaceService) SaveWorkspaceAgentState(
 		if err := validateWorkspaceAgentState(state); err != nil {
 			return err
 		}
-		if state.PreferredTerminalTabId != "" &&
-			!containsString(workspace.TerminalTabIds, state.PreferredTerminalTabId) {
-			return fmt.Errorf(
-				"preferred terminal tab %q is not in workspace inventory",
-				state.PreferredTerminalTabId,
-			)
-		}
-
 		workspace.AgentState = cloneWorkspaceAgentState(state)
 		workspace.AgentRevision++
 		if err := wstore.DBUpdate(tx.Context(), workspace); err != nil {

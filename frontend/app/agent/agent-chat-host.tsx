@@ -228,7 +228,6 @@ const UnavailableAgentRuntimeClient = {
 const MissingAgentExecutionContext: AgentExecutionContext = {
     workspaceId: "",
     workspaceDir: "",
-    connection: "",
     environment: {},
 };
 

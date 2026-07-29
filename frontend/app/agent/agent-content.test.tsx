@@ -98,7 +98,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -126,7 +125,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -152,7 +150,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -194,7 +191,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -221,7 +217,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -248,7 +243,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -275,7 +269,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -301,7 +294,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -330,7 +322,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -353,7 +344,6 @@ describe("AgentContent", () => {
         const executionContext = {
             workspaceId: "workspace-1",
             workspaceDir: "/repo",
-            connection: "",
             environment: {},
         };
         const view = render(
@@ -389,7 +379,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -432,7 +421,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -463,7 +451,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />
@@ -486,7 +473,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />

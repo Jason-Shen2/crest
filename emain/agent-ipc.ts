@@ -270,7 +270,6 @@ export interface WorkspaceAgentRequestContext {
 export interface ResolvedWorkspaceAgentSender extends WorkspaceAgentRequestContext {
     windowId: string;
     workspaceDir: string;
-    validatePreferredTerminal: (terminalTabId: string) => Promise<boolean>;
 }
 
 export interface AgentIpcRegistrationOptions {
@@ -723,8 +722,6 @@ function buildPromptInputs(opts: SendOptions): SystemPromptInputs {
     return {
         cwd: opts.context.workspaceDir,
         gitBranch: opts.context.gitBranch,
-        connection: opts.context.connection,
-        recentCmds: opts.context.recentCmds,
     };
 }
 
@@ -2778,9 +2775,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         ): Promise<ContextIpcEnvelope<{ sessionMetadata: JsonlSessionMetadata; turnId: string }>> => {
             return await contextIpcEnvelope(async () => {
                 const authenticated = await authenticate(event, requestContext);
-                const rendererContext = await parseAgentExecutionContext(input.context, {
-                    validatePreferredTerminal: authenticated.validatePreferredTerminal,
-                });
+                const rendererContext = await parseAgentExecutionContext(input.context);
                 if (
                     rendererContext.workspaceId !== authenticated.workspaceId ||
                     rendererContext.workspaceDir !== authenticated.workspaceDir
