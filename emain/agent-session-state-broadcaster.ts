@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { JsonlSessionMetadata, Session } from "@crest/agent/harness/types";
+import type { JsonlSessionMetadata, Session, SessionTreeEntry } from "@crest/agent/harness/types";
 import type { AgentMessage } from "@crest/agent/types";
 import type { AgentPtySnapshot } from "@crest/coding-agent/agent-pty-host";
 import type { AgentRuntimeRegistry, RetainedSessionMutationLease } from "@crest/coding-agent/agent-runtime-registry";
@@ -15,6 +15,7 @@ import {
     type AgentWorkspaceRewindState,
 } from "@crest/coding-agent/agent-session-runtime";
 import type { ContextProjectionReport } from "@crest/coding-agent/context/types";
+import type { AgentRewindSessionStateView } from "@crest/coding-agent/workspace-rewind/api-types";
 
 export interface AgentAuthoritativeSessionState {
     type: "session_state";
@@ -27,6 +28,7 @@ export interface AgentAuthoritativeSessionState {
     contextReports: ContextProjectionReport[];
     commands: AgentPtySnapshot[];
     workspaceRewind: AgentWorkspaceRewindState;
+    rewindState?: AgentRewindSessionStateView;
 }
 
 export interface AgentSessionStatePublication {
@@ -42,6 +44,10 @@ export interface AgentSessionStateBroadcasterOptions {
     workspaceRewind:
         | AgentWorkspaceRewindState
         | ((metadata: JsonlSessionMetadata) => AgentWorkspaceRewindState | Promise<AgentWorkspaceRewindState>);
+    buildRewindState?: (
+        metadata: JsonlSessionMetadata,
+        entries: SessionTreeEntry[]
+    ) => Promise<AgentRewindSessionStateView>;
 }
 
 export function toAuthoritativeAgentSessionState(state: AgentSessionRuntimeState): AgentAuthoritativeSessionState {
@@ -56,12 +62,14 @@ export function toAuthoritativeAgentSessionState(state: AgentSessionRuntimeState
         contextReports: state.contextReports,
         commands: state.commands,
         workspaceRewind: state.workspaceRewind,
+        ...(state.rewindState == null ? {} : { rewindState: state.rewindState }),
     };
 }
 
 export async function buildPersistedAgentSessionState(
     session: Pick<Session, "buildContext" | "getBranch">,
-    workspaceRewind: AgentWorkspaceRewindState
+    workspaceRewind: AgentWorkspaceRewindState,
+    rewindState?: AgentRewindSessionStateView
 ): Promise<AgentAuthoritativeSessionState> {
     const branch = await session.getBranch();
     const context = await session.buildContext();
@@ -76,6 +84,7 @@ export async function buildPersistedAgentSessionState(
         contextReports: buildContextStateFromSessionEntries(branch).contextReports,
         commands: [],
         workspaceRewind,
+        ...(rewindState == null ? {} : { rewindState }),
     };
 }
 
@@ -90,12 +99,14 @@ export class AgentSessionStateBroadcaster {
     readonly openSession: AgentSessionStateBroadcasterOptions["openSession"];
     readonly publishState: AgentSessionStateBroadcasterOptions["publish"];
     readonly workspaceRewind: AgentSessionStateBroadcasterOptions["workspaceRewind"];
+    readonly buildRewindState: AgentSessionStateBroadcasterOptions["buildRewindState"];
 
     constructor(options: AgentSessionStateBroadcasterOptions) {
         this.registry = options.registry;
         this.openSession = options.openSession;
         this.publishState = options.publish;
         this.workspaceRewind = options.workspaceRewind;
+        this.buildRewindState = options.buildRewindState;
     }
 
     async publishForLease(
@@ -116,11 +127,15 @@ export class AgentSessionStateBroadcaster {
     async buildColdState(sessionMetadata: JsonlSessionMetadata): Promise<AgentAuthoritativeSessionState> {
         const session = await this.openSession(sessionMetadata);
         try {
+            const rewindState = this.buildRewindState
+                ? await this.buildRewindState(sessionMetadata, await session.getEntries())
+                : undefined;
             return buildPersistedAgentSessionState(
                 session,
                 typeof this.workspaceRewind === "function"
                     ? await this.workspaceRewind(sessionMetadata)
-                    : this.workspaceRewind
+                    : this.workspaceRewind,
+                rewindState
             );
         } finally {
             session.close();

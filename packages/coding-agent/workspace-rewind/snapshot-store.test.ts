@@ -999,6 +999,11 @@ describe("workspace snapshots", () => {
         const { ref } = await fixture.store.capture({ profile: "pre-turn" });
 
         await expect(fixture.store.verify(ref)).resolves.toBeUndefined();
+        await expect(fixture.store.verifyOwnedSnapshot(ref)).resolves.toBeUndefined();
+        await fixture.store.deleteCrestRef(fixture.store.ownerRefName(ref.id));
+        await expect(fixture.store.verify(ref)).resolves.toBeUndefined();
+        await expect(fixture.store.verifyOwnedSnapshot(ref)).rejects.toThrow(/owner ref/i);
+        await fixture.store.anchorSnapshot(ref);
         fixture.git.calls.length = 0;
         const quota = await fixture.store.getQuotaStatus();
         expect(quota.status).toBe("ok");

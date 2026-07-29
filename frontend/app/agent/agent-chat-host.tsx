@@ -258,8 +258,16 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         const current = captureSessionDispatchIdentity();
         return current.path === identity.path && current.revision === identity.revision;
     };
+    let latestTree: AgentTreeResult | undefined;
+    let latestTreePath: string | undefined;
+    const loadTree = async (session: AgentSessionMeta): Promise<AgentTreeResult> => {
+        const result = await requireRuntimeApi().listTree(session);
+        latestTree = result;
+        latestTreePath = session.path;
+        return result;
+    };
     const listTree = async (): Promise<AgentTreeResult> => {
-        return await requireRuntimeApi().listTree(requireSessionMetadata());
+        return await loadTree(requireSessionMetadata());
     };
     const listForkPoints = async (): Promise<AgentForkPointView[]> => {
         return await requireRuntimeApi().listForkPoints(requireSessionMetadata());
@@ -279,10 +287,20 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         return await runtimeApi.listReferencePoints({ sourceSessionPath: source.path });
     };
     const navigateTree = async (targetId: string): Promise<AgentNavigateTreeResult> => {
+        const sessionMetadata = requireSessionMetadata();
+        const tree =
+            latestTreePath === sessionMetadata.path && latestTree ? latestTree : await loadTree(sessionMetadata);
+        const target = tree.entries.find((entry) => entry.id === targetId);
         return await requireRuntimeApi().navigateTree({
-            sessionMetadata: requireSessionMetadata(),
+            sessionMetadata,
             targetId,
-        });
+            ...(target || Object.hasOwn(tree, "semanticLeafId")
+                ? {
+                      semanticAnchorId: target?.semanticAnchorId ?? null,
+                      expectedSemanticLeafId: tree.semanticLeafId ?? null,
+                  }
+                : {}),
+        } as AgentNavigateTreeInput);
     };
     const forkSession = async (entryId: string): Promise<AgentForkSessionResult> => {
         const dispatchIdentity = captureSessionDispatchIdentity();
@@ -339,16 +357,24 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
             isCurrent: () => isCurrentSessionDispatch(dispatchIdentity),
             listTree: async () => {
                 const captured = getCapturedSession();
-                const result = await requireRuntimeApi().listTree(captured);
+                const result = await loadTree(captured);
                 getCapturedSession();
                 return result;
             },
             navigateTree: async (targetId) => {
                 const captured = getCapturedSession();
+                const tree = latestTreePath === captured.path && latestTree ? latestTree : await loadTree(captured);
+                const target = tree.entries.find((entry) => entry.id === targetId);
                 const result = await requireRuntimeApi().navigateTree({
                     sessionMetadata: captured,
                     targetId,
-                });
+                    ...(target || Object.hasOwn(tree, "semanticLeafId")
+                        ? {
+                              semanticAnchorId: target?.semanticAnchorId ?? null,
+                              expectedSemanticLeafId: tree.semanticLeafId ?? null,
+                          }
+                        : {}),
+                } as AgentNavigateTreeInput);
                 getCapturedSession();
                 return result;
             },

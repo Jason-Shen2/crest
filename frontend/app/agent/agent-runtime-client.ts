@@ -72,6 +72,42 @@ export class AgentRuntimeClient {
         return getAgentApi(this).runCommand(this.identity, input);
     }
 
+    listRewindPoints(input: AgentListRewindPointsInput) {
+        return getAgentApi(this).listRewindPoints(this.identity, input);
+    }
+
+    previewRewind(input: AgentPreviewRewindInput) {
+        return getAgentApi(this).previewRewind(this.identity, input);
+    }
+
+    rewindTree(input: AgentRewindTreeInput) {
+        return getAgentApi(this).rewindTree(this.identity, input);
+    }
+
+    redoRewind(input: AgentRedoRewindInput) {
+        return getAgentApi(this).redoRewind(this.identity, input);
+    }
+
+    getWorkspaceRecovery(input: AgentGetWorkspaceRecoveryInput) {
+        return getAgentApi(this).getWorkspaceRecovery(this.identity, input);
+    }
+
+    resolveWorkspaceRecovery(input: AgentResolveWorkspaceRecoveryInput) {
+        return getAgentApi(this).resolveWorkspaceRecovery(this.identity, input);
+    }
+
+    cleanupWorkspaceCheckpoints(input: AgentCleanupWorkspaceCheckpointsInput) {
+        return getAgentApi(this).cleanupWorkspaceCheckpoints(this.identity, input);
+    }
+
+    listCheckpointStorageOwners(input: AgentListCheckpointStorageOwnersInput) {
+        return getAgentApi(this).listCheckpointStorageOwners(this.identity, input);
+    }
+
+    purgeTrashedSession(input: AgentPurgeTrashedSessionInput) {
+        return getAgentApi(this).purgeTrashedSession(this.identity, input);
+    }
+
     prepareContextDraft(input: AgentPrepareContextDraftInput) {
         return getAgentApi(this).prepareContextDraft(this.identity, input);
     }

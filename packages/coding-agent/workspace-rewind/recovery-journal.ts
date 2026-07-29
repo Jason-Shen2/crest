@@ -290,7 +290,7 @@ export class WorkspaceRecoveryJournal {
                 continue;
             }
             if (/^\.[0-9a-f]{32}\.tmp$/.test(name)) {
-                const quarantineToken = corruptSourceToken(name);
+                const quarantineToken = recoveryJournalOperationTokenForFilename(name);
                 this.corruptSources.set(quarantineToken, name);
                 results.push({
                     operationId: quarantineToken,
@@ -301,7 +301,7 @@ export class WorkspaceRecoveryJournal {
             }
             const operationId = name.endsWith(".json") ? name.slice(0, -5) : name;
             if (!name.endsWith(".json") || !TokenPattern.test(operationId)) {
-                const quarantineToken = corruptSourceToken(name);
+                const quarantineToken = recoveryJournalOperationTokenForFilename(name);
                 this.corruptSources.set(quarantineToken, name);
                 results.push({
                     operationId: quarantineToken,
@@ -617,7 +617,11 @@ function ownerFromJournal(record: WorkspaceOperationJournalV1): WorkspaceOperati
     };
 }
 
-function corruptSourceToken(name: string): string {
+export function recoveryJournalOperationTokenForFilename(name: string): string {
+    const operationId = name.endsWith(".json") ? name.slice(0, -5) : name;
+    if (name.endsWith(".json") && TokenPattern.test(operationId)) {
+        return operationId;
+    }
     return `corrupt-${createHash("sha1").update(name).digest("hex")}`;
 }
 

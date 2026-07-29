@@ -1,6 +1,7 @@
 // Copyright 2025, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { resolveAuthenticatedWorkspaceSender } from "@crest/coding-agent/agent-execution-context";
 import * as electron from "electron";
 import { FastAverageColor } from "fast-average-color";
 import fs from "fs";
@@ -13,9 +14,13 @@ import { RpcApi } from "../frontend/app/store/wshclientapi";
 import { getWebServerEndpoint } from "../frontend/util/endpoints";
 import * as keyutil from "../frontend/util/keyutil";
 import { fireAndForget, parseDataUrl } from "../frontend/util/util";
-import { registerAgentIpcHandlers } from "./agent-ipc";
+import { makeProductionAgentWorkspaceRecoveryGate, registerAgentIpcHandlers } from "./agent-ipc";
 import { registerAgentObservabilityIpcHandlers } from "./agent-observability-ipc";
-import { resolveAuthenticatedWorkspaceSender } from "@crest/coding-agent/agent-execution-context";
+import {
+    getAgentWorkspaceRecoveryGate,
+    hasInstalledAgentWorkspaceRecoveryGate,
+    installAgentWorkspaceRecoveryGate,
+} from "./agent-workspace-recovery-gate";
 import { registerAiConfigIpcHandlers } from "./aiconfig-ipc";
 import {
     incrementTermCommandsDurable,
@@ -25,7 +30,7 @@ import {
     setWasActive,
 } from "./emain-activity";
 import { createBuilderWindow, getAllBuilderWindows, getBuilderWindowByWebContentsId } from "./emain-builder";
-import { callWithOriginalXdgCurrentDesktopAsync, unamePlatform } from "./emain-platform";
+import { callWithOriginalXdgCurrentDesktopAsync, getWaveDataDir, unamePlatform } from "./emain-platform";
 import { getWaveTabViewByWebContentsId } from "./emain-tabview";
 import { handleCtrlShiftState } from "./emain-util";
 import { getWaveVersion } from "./emain-wavesrv";
@@ -214,12 +219,18 @@ function saveImageFileWithNativeDialog(
         });
 }
 
-export function initIpcHandlers() {
+export async function initIpcHandlers() {
+    if (!hasInstalledAgentWorkspaceRecoveryGate()) {
+        installAgentWorkspaceRecoveryGate(makeProductionAgentWorkspaceRecoveryGate(getWaveDataDir()));
+    }
+    const recoveryGate = getAgentWorkspaceRecoveryGate();
+    await recoveryGate.scanBeforeIpcRegistration();
     // Agent runtime IPC (renderer ↔ Electron-main agent loop).
     // See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
     registerAgentIpcHandlers({
         loadWorkspace: (workspaceId) => WorkspaceService.GetWorkspace(workspaceId),
         saveWorkspaceAgentState: (data) => WorkspaceService.SaveWorkspaceAgentState(data),
+        recoveryGate,
         async resolveWorkspaceSender(senderId) {
             return await resolveAuthenticatedWorkspaceSender(senderId, {
                 getWorkspaceView: getWorkspaceViewByWebContentsId,

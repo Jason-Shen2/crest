@@ -450,6 +450,37 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(() => this.#verifyUnlocked(snapshot));
     }
 
+    verifyOwnedSnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
+        return this.withWorkspaceLock(async () => {
+            await this.#verifyUnlocked(snapshot);
+            const owner = await this.git.run(
+                ["for-each-ref", "--format=%(objectname)", this.ownerRefName(snapshot.id)],
+                {
+                    gitDir: this.storeRoot,
+                    timeoutMs: StoreGitTimeoutMs,
+                    maxStdoutBytes: 256,
+                }
+            );
+            if (owner.stdout.length === 0 || parseOid(owner.stdout) !== snapshot.id) {
+                throw new Error("Workspace snapshot owner ref is missing or changed");
+            }
+        });
+    }
+
+    measureSnapshotUsage(snapshots: readonly WorkspaceSnapshotRefV1[]): Promise<number> {
+        return this.withWorkspaceLock(async () => {
+            const roots = [
+                ...new Set(
+                    snapshots.map((snapshot) => {
+                        this.assertSnapshotIdentity(snapshot);
+                        return snapshot.id;
+                    })
+                ),
+            ];
+            return await this.#objectBytesForRoots(roots, makeMaintenanceRuntime());
+        });
+    }
+
     async #verifyUnlocked(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
         try {
             this.assertSnapshotIdentity(snapshot);
@@ -749,6 +780,11 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(() => this.#getQuotaStatusUnlocked(runtime));
     }
 
+    /** Caller must already own this store's workspace lock. */
+    getQuotaStatusAssumingLock(runtime = makeMaintenanceRuntime()): Promise<WorkspaceSnapshotQuotaStatus> {
+        return this.#getQuotaStatusUnlocked(runtime);
+    }
+
     async #getQuotaStatusUnlocked(runtime = makeMaintenanceRuntime()): Promise<WorkspaceSnapshotQuotaStatus> {
         assertCaptureActive(runtime.deadline, runtime.signal);
         const objectStatus = await this.git.run(["count-objects", "-v"], {
@@ -786,9 +822,11 @@ export class WorkspaceSnapshotStore {
         for (const oid of roots) {
             validateOid(oid);
         }
-        if (roots.length === 0) {
-            return 0;
-        }
+        return await this.#objectBytesForRoots(roots, runtime);
+    }
+
+    async #objectBytesForRoots(roots: readonly string[], runtime: CaptureRuntime): Promise<number> {
+        if (roots.length === 0) return 0;
         assertCaptureActive(runtime.deadline, runtime.signal);
         const objects = await this.git.run(["rev-list", "--objects", "--no-object-names", "--stdin"], {
             gitDir: this.storeRoot,

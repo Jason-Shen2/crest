@@ -34,10 +34,26 @@ export interface WorkspaceRecoveryCoordinator {
     scanKnownJournals(): Promise<void>;
     ensureRecovered(workspace: CanonicalWorkspaceIdentity): Promise<void>;
     getRecoveryState(workspace: CanonicalWorkspaceIdentity): Promise<WorkspaceRecoveryView | undefined>;
-    retry(operationId: string): Promise<void>;
-    abandonKeepingCurrent(operationId: string): Promise<void>;
-    quarantineCorrupt(operationId: string): Promise<void>;
+    retry(operationId: string, assertCurrent?: WorkspaceRecoveryMutationGuard): Promise<void>;
+    abandonKeepingCurrent(
+        operationId: string,
+        binding?: WorkspaceRecoveryOwnerBinding,
+        assertCurrent?: WorkspaceRecoveryMutationGuard
+    ): Promise<void>;
+    quarantineCorrupt(operationId: string, assertCurrent?: WorkspaceRecoveryMutationGuard): Promise<void>;
     assertWorkspaceWritable(workspace: CanonicalWorkspaceIdentity): Promise<void>;
+}
+
+export type WorkspaceRecoveryMutationGuard = () => Promise<void>;
+
+export interface WorkspaceRecoveryOwnerBinding {
+    sessionId: string;
+    locateBoundOwner(): Promise<WorkspaceRecoverySession | undefined>;
+}
+
+interface WorkspaceRecoveryMutationScope {
+    failure?: unknown;
+    assertCurrent(): Promise<void>;
 }
 
 export interface WorkspaceRecoverySession {
@@ -70,6 +86,7 @@ export interface WorkspaceRecoveryOptions {
     repairSessionRefs?: (sessionId: string) => Promise<void>;
     verifyWorkspace?: (workspace: CanonicalWorkspaceIdentity) => Promise<void>;
     withSessionLease?: <T>(sessionId: string, operation: () => Promise<T>) => Promise<T>;
+    assertCurrent?: () => Promise<void>;
 }
 
 interface ClassifiedOperation {
@@ -104,6 +121,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
     readonly repairSessionRefs: NonNullable<WorkspaceRecoveryOptions["repairSessionRefs"]>;
     readonly verifyWorkspace: NonNullable<WorkspaceRecoveryOptions["verifyWorkspace"]>;
     readonly withSessionLease: NonNullable<WorkspaceRecoveryOptions["withSessionLease"]>;
+    readonly assertCurrent: NonNullable<WorkspaceRecoveryOptions["assertCurrent"]>;
     readonly reconcileFilesystemArtifacts: boolean;
     frozen?: WorkspaceRecoveryView;
     operationTails = new Map<string, Promise<void>>();
@@ -121,6 +139,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         this.repairSessionRefs = options.repairSessionRefs ?? (async () => {});
         this.verifyWorkspace = options.verifyWorkspace ?? verifyCanonicalWorkspaceIdentity;
         this.withSessionLease = options.withSessionLease ?? (async (_sessionId, operation) => operation());
+        this.assertCurrent = options.assertCurrent ?? (async () => {});
         this.applyPath =
             options.applyPath ??
             (async ({ operationId, path, expectedCurrent, target, progress }) => {
@@ -156,15 +175,35 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         return this.viewForScanned(scanned[0]!);
     }
 
-    retry(operationId: string): Promise<void> {
+    retry(operationId: string, assertCurrent?: WorkspaceRecoveryMutationGuard): Promise<void> {
         return this.serialize(operationId, async () => {
-            this.frozen = undefined;
-            await this.ensureRecovered(this.workspace);
+            await this.recoverAllWithScope(this.makeMutationScope(assertCurrent));
         });
     }
 
-    abandonKeepingCurrent(operationId: string): Promise<void> {
+    abandonKeepingCurrent(
+        operationId: string,
+        binding?: WorkspaceRecoveryOwnerBinding,
+        assertCurrent?: WorkspaceRecoveryMutationGuard
+    ): Promise<void> {
         return this.serialize(operationId, async () => {
+            const scope = this.makeMutationScope(assertCurrent);
+            if (binding) {
+                await this.withSessionLease(binding.sessionId, () =>
+                    this.withWorkspaceLock(async () => {
+                        const current = await this.findScanned(operationId);
+                        if (current.corrupt || !current.record) {
+                            throw new Error("Workspace recovery journal changed before abandon");
+                        }
+                        if (current.record.sessionId !== binding.sessionId) {
+                            throw new Error("Workspace recovery journal changed owning session before abandon");
+                        }
+                        const session = await binding.locateBoundOwner();
+                        await this.abandonAuthoritativeCurrent(operationId, current.record, scope, { session });
+                    }, scope)
+                );
+                return;
+            }
             const scanned = await this.findScanned(operationId);
             if (scanned.corrupt || !scanned.record) {
                 throw new Error("Corrupt workspace recovery journals cannot be abandoned as decoded operations");
@@ -178,23 +217,38 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
                     if (current.record.sessionId !== scanned.record.sessionId) {
                         throw new Error("Workspace recovery journal changed owning session before abandon");
                     }
-                    const session = await this.requireSession(current.record.sessionId);
-                    const leafId = await session.getLeafId();
-                    const operationLeaf = await this.isExactOperationLeaf(session, current.record, leafId);
-                    if (leafId !== current.record.expectedSemanticLeafId && !operationLeaf) {
-                        throw new Error(
-                            "Workspace recovery operation cannot be abandoned at an unexpected session leaf"
-                        );
-                    }
-                    await this.journal.resolveToAudit(operationId, "abandon-current");
-                    this.clearFrozen(operationId);
-                })
+                    await this.abandonAuthoritativeCurrent(operationId, current.record, scope);
+                }, scope)
             );
         });
     }
 
-    quarantineCorrupt(operationId: string): Promise<void> {
+    async abandonAuthoritativeCurrent(
+        operationId: string,
+        record: WorkspaceOperationJournalV1,
+        scope: WorkspaceRecoveryMutationScope,
+        boundOwner?: { session: WorkspaceRecoverySession | undefined }
+    ): Promise<void> {
+        const session = boundOwner ? boundOwner.session : await this.locateSession(record.sessionId);
+        if (!session) {
+            await scope.assertCurrent();
+            await this.journal.resolveToAuditUnlocked(operationId, "abandon-current", Date.now());
+            this.clearFrozen(operationId);
+            return;
+        }
+        const leafId = await session.getLeafId();
+        const operationLeaf = await this.isExactOperationLeaf(session, record, leafId);
+        if (leafId !== record.expectedSemanticLeafId && !operationLeaf) {
+            throw new Error("Workspace recovery operation cannot be abandoned at an unexpected session leaf");
+        }
+        await scope.assertCurrent();
+        await this.journal.resolveToAuditUnlocked(operationId, "abandon-current", Date.now());
+        this.clearFrozen(operationId);
+    }
+
+    quarantineCorrupt(operationId: string, assertCurrent?: WorkspaceRecoveryMutationGuard): Promise<void> {
         return this.serialize(operationId, async () => {
+            const scope = this.makeMutationScope(assertCurrent);
             const scanned = await this.findScanned(operationId);
             if (!scanned.corrupt) {
                 throw new Error("Only a corrupt workspace recovery journal can be quarantined");
@@ -204,9 +258,10 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
                 if (!current.corrupt) {
                     throw new Error("Workspace recovery journal changed before quarantine");
                 }
-                await this.journal.resolveToAudit(operationId, "quarantine-corrupt");
+                await scope.assertCurrent();
+                await this.journal.resolveToAuditUnlocked(operationId, "quarantine-corrupt", Date.now());
                 this.clearFrozen(operationId);
-            });
+            }, scope);
         });
     }
 
@@ -227,17 +282,27 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
     }
 
     async recoverAll(): Promise<void> {
+        await this.recoverAllWithScope(this.makeMutationScope());
+    }
+
+    async recoverAllWithScope(scope: WorkspaceRecoveryMutationScope): Promise<void> {
         let scanned = await this.journal.scanCandidates();
         if (scanned.length === 0) {
             scanned = await this.withWorkspaceLock(async () => {
                 await this.journal.reconcileOwnership();
                 return this.journal.scan();
-            });
+            }, scope);
         }
         if (scanned.length === 0) {
             this.frozen = undefined;
             return;
         }
+        scanned.sort((left, right) => {
+            const sessionOrder = (left.record?.sessionId ?? "\uffff").localeCompare(
+                right.record?.sessionId ?? "\uffff"
+            );
+            return sessionOrder || left.operationId.localeCompare(right.operationId);
+        });
         try {
             await this.verifyWorkspace(this.workspace);
         } catch (error) {
@@ -248,8 +313,9 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         for (const item of scanned) {
             let candidate = item;
             if (candidate.corrupt || !candidate.record) {
-                const current = await this.withWorkspaceLock(async () =>
-                    (await this.journal.scan()).find((entry) => entry.operationId === item.operationId)
+                const current = await this.withWorkspaceLock(
+                    async () => (await this.journal.scan()).find((entry) => entry.operationId === item.operationId),
+                    scope
                 );
                 if (!current) {
                     continue;
@@ -275,11 +341,16 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
                         if (current.record.sessionId !== candidate.record!.sessionId) {
                             this.freeze(await this.viewForScanned(current));
                         }
+                        await scope.assertCurrent();
                         await this.verifyWorkspace(this.workspace);
+                        await scope.assertCurrent();
                         await this.recoverRecord(current.record);
-                    })
+                    }, scope)
                 );
             } catch (error) {
+                if (error === scope.failure) {
+                    throw error;
+                }
                 if (error instanceof WorkspaceFrozenError) {
                     throw error;
                 }
@@ -523,6 +594,16 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
 
     async viewForRecord(record: WorkspaceOperationJournalV1, error?: unknown): Promise<WorkspaceRecoveryView> {
         try {
+            if (!(await this.locateSession(record.sessionId))) {
+                return {
+                    operationId: record.operationId,
+                    phase: record.phase,
+                    corrupt: false,
+                    message: `Workspace recovery session is missing: ${record.sessionId}`,
+                    paths: record.paths.map((path) => ({ path: path.path })),
+                    allowedActions: ["retry", "abandon-current"],
+                };
+            }
             const classified = await this.classify(record);
             return viewFromClassified(
                 classified,
@@ -553,10 +634,32 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         return scanned;
     }
 
-    async withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
+    makeMutationScope(requestGuard?: WorkspaceRecoveryMutationGuard): WorkspaceRecoveryMutationScope {
+        const recovery = this;
+        const scope: WorkspaceRecoveryMutationScope = {
+            async assertCurrent() {
+                try {
+                    await recovery.assertCurrent();
+                    await requestGuard?.();
+                } catch (error) {
+                    scope.failure = error;
+                    throw error;
+                }
+            },
+        };
+        return scope;
+    }
+
+    async withWorkspaceLock<T>(operation: () => Promise<T>, scope?: WorkspaceRecoveryMutationScope): Promise<T> {
         if (this.store.withWorkspaceLock) {
-            return this.store.withWorkspaceLock(operation);
+            return this.store.withWorkspaceLock(async () => {
+                if (scope) await scope.assertCurrent();
+                else await this.assertCurrent();
+                return await operation();
+            });
         }
+        if (scope) await scope.assertCurrent();
+        else await this.assertCurrent();
         return operation();
     }
 

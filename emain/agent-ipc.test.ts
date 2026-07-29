@@ -84,6 +84,7 @@ vi.mock("@crest/coding-agent/workspace-rewind/checkpoint-manager", () => ({
     registerWorkspaceCheckpointManager: vi.fn(),
 }));
 
+import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import { Session } from "@crest/agent/harness/session/session";
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import { SqliteSessionStorage } from "@crest/agent/harness/session/sqlite-storage";
@@ -96,6 +97,7 @@ import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "@crest/coding-agent/sessions";
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { registerWorkspaceCheckpointManager } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
+import { encodeDurableJson } from "@crest/coding-agent/workspace-rewind/durability";
 import {
     _resetAgentIpcForTests,
     abortAgentSessionForIpc,
@@ -106,6 +108,8 @@ import {
     listAgentCommandsForIpc,
     listAgentForkPointsForIpc,
     listAgentTreeForIpc,
+    makeProductionAgentWorkspaceRecoveryGate,
+    navigateAgentTreeForIpc,
     registerAgentIpcHandlers as registerAgentIpcHandlersImpl,
     runAgentCommandForIpc,
     subscribeAgentSessionForIpc,
@@ -113,6 +117,7 @@ import {
 } from "./agent-ipc";
 import { isAgentRewindFeatureEnabled, openAgentRewindFeature } from "./agent-rewind-feature";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
+import { installAgentWorkspaceRecoveryGate } from "./agent-workspace-recovery-gate";
 
 const TrustedRequestContext = { workspaceId: "workspace-test", generation: 1 };
 
@@ -180,6 +185,48 @@ function user(text: string): AgentMessage {
 
 function assistant(text: string): AgentMessage {
     return { role: "assistant", content: [{ type: "text", text }] } as unknown as AgentMessage;
+}
+
+function startupJournalRecord(
+    workspaceIdentity: string,
+    workspaceIncarnation: string,
+    sessionId: string,
+    operationId: string
+) {
+    const snapshot = {
+        id: "1".repeat(40),
+        workspaceIdentity,
+        workspaceIncarnation,
+        tree: "2".repeat(40),
+        scopeManifest: "3".repeat(40),
+    };
+    return {
+        schemaVersion: 1,
+        phase: "prepared",
+        workspaceIdentity,
+        workspaceIncarnation,
+        sessionId,
+        sessionPath: "/missing/session.db",
+        operationId,
+        kind: "rewind",
+        applyMode: "normal",
+        expectedSemanticLeafId: "leaf-before",
+        targetTurnId: "target-turn",
+        targetBoundaryId: "target-boundary",
+        safetySnapshot: snapshot,
+        confirmedConflictFingerprints: [],
+        paths: [
+            {
+                path: "file.txt",
+                preState: { state: "absent" },
+                target: { state: "file", oid: "4".repeat(40), executable: false },
+                expectedCurrent: { state: "absent" },
+                confirmedLiveFingerprint: "5".repeat(64),
+                createdParentDirectories: [],
+            },
+        ],
+        workspaceStateEntryId: "state-entry",
+    };
 }
 
 function makeHarnessHostMock() {
@@ -310,6 +357,64 @@ describe("agent-ipc command helpers", () => {
         expect(tree.entries.map((entry) => entry.id)).toEqual([userId]);
         expect(tree.leafId).toBe(userId);
     });
+
+    it("navigates a cold transactional user row to its server-derived before boundary", async () => {
+        const { metadata, session } = await createPaneSession("/tmp/agent-ipc-transaction-anchor");
+        const rootId = await session.appendMessage(assistant("root"));
+        const transaction = makeCommittedContextTransaction({
+            parentId: rootId,
+            prefix: "cold-tree-anchor",
+        });
+        await session.appendEntries(transaction);
+        const userId = transaction.at(-1)!.id;
+        await session.appendMessage(assistant("later answer"));
+
+        const tree = await listAgentTreeForIpc(metadata);
+        const row = tree.entries.find((entry) => entry.id === userId)!;
+        const result = await navigateAgentTreeForIpc({
+            sessionMetadata: metadata,
+            targetId: userId,
+            semanticAnchorId: row.semanticAnchorId,
+            expectedSemanticLeafId: tree.semanticLeafId,
+        });
+
+        expect(row.semanticAnchorId).toBe(rootId);
+        expect(result.editorText).toContain("context");
+        expect(await session.getLeafId()).toBe(rootId);
+    });
+
+    it("keeps a hidden semantic leaf when selecting the current display tip", async () => {
+        const { metadata, session } = await createPaneSession("/tmp/agent-ipc-hidden-tip-noop");
+        const userId = await session.appendMessage(user("visible tip"));
+        const checkpointId = await session.appendCustomEntry("workspace_checkpoint", {});
+        const tree = await listAgentTreeForIpc(metadata);
+
+        await navigateAgentTreeForIpc({
+            sessionMetadata: metadata,
+            targetId: userId,
+            semanticAnchorId: tree.entries[0]!.semanticAnchorId,
+            expectedSemanticLeafId: checkpointId,
+        });
+
+        expect(await session.getLeafId()).toBe(checkpointId);
+    });
+
+    it.each(["semanticAnchorId", "expectedSemanticLeafId"] as const)(
+        "rejects navigation when required %s is missing",
+        async (missingKey) => {
+            const { metadata, session } = await createPaneSession(`/tmp/agent-ipc-missing-${missingKey}`);
+            const userId = await session.appendMessage(user("required navigation contract"));
+            const input = {
+                sessionMetadata: metadata,
+                targetId: userId,
+                semanticAnchorId: null,
+                expectedSemanticLeafId: userId,
+            };
+            delete input[missingKey];
+
+            await expect(navigateAgentTreeForIpc(input)).rejects.toThrow(new RegExp(missingKey, "i"));
+        }
+    );
 
     it("forks before a user message and clones the current branch", async () => {
         const { metadata, session } = await createPaneSession("/tmp/agent-ipc-fork");
@@ -861,6 +966,7 @@ describe("agent-ipc command helpers", () => {
                 })
             );
         } finally {
+            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
             sendConfiguredSpy.mockRestore();
         }
     });
@@ -883,7 +989,7 @@ describe("agent-ipc command helpers", () => {
             }),
             dispose: vi.fn(),
         };
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValueOnce(true);
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
             state: "enabled",
             processOwner,
@@ -942,7 +1048,7 @@ describe("agent-ipc command helpers", () => {
                 };
             });
             vi.mocked(buildAgentHarnessHost).mockReturnValue(host as never);
-            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValueOnce(true);
+            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
             vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
                 state: "enabled",
                 processOwner: { pid: 42, processStartToken: "start-a", nonce: "nonce-a" },
@@ -992,6 +1098,7 @@ describe("agent-ipc command helpers", () => {
                 expect(ptyDispose).toHaveBeenCalledOnce();
                 expect(harnessSubscribers).toBe(0);
             } finally {
+                vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
                 buildContext?.mockRestore();
                 ptyDispose.mockRestore();
             }
@@ -1011,8 +1118,8 @@ describe("agent-ipc command helpers", () => {
                 host.session = options.session as never;
                 return host as never;
             });
-            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValueOnce(true);
-            vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
+            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+            vi.mocked(openAgentRewindFeature).mockResolvedValue({
                 state: "enabled",
                 processOwner: { pid: 42, processStartToken: "start-a", nonce: "nonce-a" },
                 store: {
@@ -1100,6 +1207,8 @@ describe("agent-ipc command helpers", () => {
                 releaseFinalizer();
                 await finalization;
             } finally {
+                vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
+                vi.mocked(openAgentRewindFeature).mockReset();
                 releaseFinalizer();
                 moveTo.mockRestore();
                 sendConfiguredSpy.mockRestore();
@@ -1979,6 +2088,82 @@ describe("agent-ipc command helpers", () => {
         }
     });
 
+    it("delivers the live runtime rewind state unchanged in the initial subscription event", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-live-initial-rewind-state-"));
+        const { metadata } = await createPaneSession(cwd);
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValue("entry-1");
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-live-initial-rewind-state",
+            workspaceDir: await fs.realpath(cwd),
+            validatePreferredTerminal: async () => true,
+        };
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async () => identity,
+        });
+        const handlers = registeredHandlers();
+        const ownerEvent = {
+            sender: { id: 50, isDestroyed: () => false, once: vi.fn(), send: vi.fn() },
+        };
+
+        try {
+            await handlers.get("agent:send")?.(ownerEvent, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                context: {
+                    workspaceId: identity.workspaceId,
+                    workspaceDir: identity.workspaceDir,
+                    sessionPath: metadata.path,
+                    connection: "",
+                    environment: {},
+                    recentCmds: [],
+                },
+                text: "first",
+                provider: "p",
+                model: "m",
+            });
+            const originalGetSessionState = AgentSessionRuntime.prototype.getSessionState;
+            const liveRewindState = {
+                enabled: true,
+                busy: false,
+                frozen: true,
+                currentTurnId: "live-current",
+                currentSnapshotId: "a".repeat(64),
+                redoDepth: 1,
+                eligible: [],
+                quota: { status: "ok", usedBytes: 1, softQuotaBytes: 2, cleanupAvailable: false },
+            } as const;
+            const stateSpy = vi.spyOn(AgentSessionRuntime.prototype, "getSessionState").mockImplementation(function (
+                this: AgentSessionRuntime
+            ) {
+                return { ...originalGetSessionState.call(this), rewindState: liveRewindState };
+            });
+            const subscriber = {
+                id: 51,
+                isDestroyed: () => false,
+                once: vi.fn(),
+                send: vi.fn(),
+            };
+            try {
+                await handlers.get("agent:subscribe")?.({ sender: subscriber }, TrustedRequestContext, metadata.path);
+                expect(subscriber.send).toHaveBeenCalledWith(
+                    "agent:event",
+                    expect.objectContaining({
+                        event: expect.objectContaining({ type: "session_state", rewindState: liveRewindState }),
+                    })
+                );
+            } finally {
+                stateSpy.mockRestore();
+            }
+        } finally {
+            sendConfiguredSpy.mockRestore();
+        }
+    });
+
     it("cleans a live subscription when the registered subscribe handler final guard fails", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-live-sub-final-guard-"));
         const { metadata } = await createPaneSession(cwd);
@@ -2300,7 +2485,7 @@ describe("agent-ipc command helpers", () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-write-lease-"));
         const { metadata, session } = await createPaneSession(cwd);
         const targetId = await session.appendMessage(user("navigate target"));
-        await session.appendMessage(assistant("current leaf"));
+        const expectedSemanticLeafId = await session.appendMessage(assistant("current leaf"));
         const moveGate = deferred<void>();
         const originalMoveTo = Session.prototype.moveTo;
         const moveToSpy = vi.spyOn(Session.prototype, "moveTo").mockImplementation(async function (...args) {
@@ -2326,6 +2511,8 @@ describe("agent-ipc command helpers", () => {
         const navigating = handlers.get("agent:navigate-tree")?.(event, TrustedRequestContext, {
             sessionMetadata: metadata,
             targetId,
+            semanticAnchorId: null,
+            expectedSemanticLeafId,
         }) as Promise<unknown>;
         let deleteSettled = false;
 
@@ -3690,5 +3877,761 @@ describe("agent-ipc command helpers", () => {
             /changed during request/
         );
         expect(saveWorkspaceAgentState).toHaveBeenCalledOnce();
+    });
+
+    it.each(["archive", "delete"] as const)(
+        "runs $operation database mutation and owner reconciliation inside the workspace lock",
+        async (operation) => {
+            const cwd = await fs.mkdtemp(path.join(os.tmpdir(), `crest-agent-${operation}-lock-order-`));
+            const { metadata } = await createPaneSession(cwd);
+            const order: string[] = [];
+            const withWorkspaceMutation = async <T>(mutation: () => Promise<T>): Promise<T> => {
+                order.push("workspace-lock");
+                try {
+                    return await mutation();
+                } finally {
+                    order.push("workspace-unlock");
+                }
+            };
+            const reconcileWorkspaceOwners = async () => {
+                order.push("owner-reconcile");
+            };
+
+            if (operation === "archive") {
+                await archiveAgentSessionForIpc(
+                    metadata,
+                    undefined,
+                    undefined,
+                    withWorkspaceMutation,
+                    reconcileWorkspaceOwners
+                );
+            } else {
+                await deleteAgentSessionForIpc(
+                    metadata,
+                    undefined,
+                    undefined,
+                    withWorkspaceMutation,
+                    reconcileWorkspaceOwners
+                );
+            }
+
+            expect(order).toEqual(["workspace-lock", "owner-reconcile", "workspace-unlock"]);
+        }
+    );
+
+    it("registers all rewind and maintenance channels with authorization and the write gate", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-rewind-ipc-contract-"));
+        const { metadata } = await createPaneSession(cwd);
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-rewind-contract",
+            workspaceDir: await fs.realpath(cwd),
+            validatePreferredTerminal: async () => true,
+        };
+        const listPoints = vi.fn(async () => ({
+            points: [],
+            semanticLeafId: null,
+            displayLeafId: null,
+        }));
+        const rewind = vi.fn(async () => ({
+            sessionMetadata: metadata,
+            semanticLeafId: null,
+            displayLeafId: null,
+        }));
+        const assertWorkspaceWritable = vi.fn(async () => {});
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        registerAgentIpcHandlersImpl({
+            resolveWorkspaceSender: async () => identity,
+            loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
+            saveWorkspaceAgentState: async (data) => ({
+                workspaceid: data.workspaceid,
+                revision: data.expectedrevision + 1,
+                state: data.state,
+            }),
+            resolveWorkspaceIdentity: async () =>
+                ({
+                    canonicalRoot: identity.workspaceDir,
+                    workspaceIdentity: "a".repeat(64),
+                    workspaceIncarnation: "b".repeat(64),
+                    storeKey: "workspace",
+                    ancestorIdentityChain: [],
+                }) as never,
+            recoveryGate: {
+                scanBeforeIpcRegistration: async () => {},
+                ensureRecoveredOnce: async () => {},
+                assertWorkspaceWritable,
+            },
+            rewindService: {
+                listPoints,
+                preview: vi.fn(),
+                rewind,
+                redo: vi.fn(),
+            },
+            rewindMaintenance: {
+                getRecovery: vi.fn(),
+                resolveRecovery: vi.fn(),
+                cleanup: vi.fn(),
+                listStorageOwners: vi.fn(),
+                purgeTrashedSession: vi.fn(),
+            },
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 91, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+
+        await handlers.get("agent:list-rewind-points")?.(event, TrustedRequestContext, {
+            sessionMetadata: metadata,
+        });
+        await handlers.get("agent:rewind-tree")?.(event, TrustedRequestContext, {
+            sessionMetadata: metadata,
+            expectedSemanticLeafId: null,
+            targetTurnId: "turn-1",
+            mode: "normal",
+            confirmationToken: "token",
+        });
+
+        expect(listPoints).toHaveBeenCalledOnce();
+        expect(rewind).toHaveBeenCalledOnce();
+        expect(assertWorkspaceWritable).toHaveBeenCalledOnce();
+        expect(
+            [
+                "agent:list-rewind-points",
+                "agent:preview-rewind",
+                "agent:rewind-tree",
+                "agent:redo-rewind",
+                "agent:get-workspace-recovery",
+                "agent:resolve-workspace-recovery",
+                "agent:cleanup-workspace-checkpoints",
+                "agent:list-checkpoint-storage-owners",
+                "agent:purge-trashed-session",
+            ].every((channel) => handlers.has(channel))
+        ).toBe(true);
+    });
+
+    it("merges the asynchronous recovery probe into cold rewind state", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-cold-recovery-probe-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        session.close();
+        const canonicalRoot = await fs.realpath(cwd);
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-cold-recovery-probe",
+            workspaceDir: canonicalRoot,
+            validatePreferredTerminal: async () => true,
+        };
+        const storeIdentity = {
+            canonicalRoot,
+            workspaceIdentity: "e".repeat(64),
+            workspaceIncarnation: "f".repeat(64),
+            storeKey: "probe",
+            ancestorIdentityChain: [],
+        };
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        vi.mocked(openAgentRewindFeature).mockResolvedValue({
+            state: "enabled",
+            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
+            store: {
+                identity: storeIdentity,
+                verifyOwnedSnapshot: vi.fn(async () => {}),
+                getQuotaStatus: vi.fn(async () => ({
+                    status: "ok",
+                    usedBytes: 0,
+                    referencedBytes: 0,
+                    softQuotaBytes: 1,
+                })),
+            },
+        } as never);
+        installAgentWorkspaceRecoveryGate({
+            scanBeforeIpcRegistration: async () => {},
+            ensureRecoveredOnce: async () => {},
+            assertWorkspaceWritable: async () => {},
+            probeFrozenDiagnostic: async () => ({
+                operationId: "internal-operation",
+                message: "internal recovery frozen",
+                corrupt: false,
+                allowedActions: ["retry"],
+            }),
+        });
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async () => identity,
+        });
+        const event = { sender: { id: 95, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+
+        const state = await registeredHandlers().get("agent:get-session-state")?.(
+            event,
+            TrustedRequestContext,
+            metadata
+        );
+
+        expect(state).toMatchObject({
+            type: "session_state",
+            rewindState: { enabled: true, frozen: true },
+        });
+    });
+
+    it("rejects extra and nested renderer fields outside each rewind IPC schema", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-rewind-strict-schema-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        session.close();
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-rewind-schema",
+            workspaceDir: await fs.realpath(cwd),
+            validatePreferredTerminal: async () => true,
+        };
+        const preview = vi.fn();
+        const rewind = vi.fn();
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        registerAgentIpcHandlersImpl({
+            resolveWorkspaceSender: async () => identity,
+            loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
+            saveWorkspaceAgentState: async (data) => ({
+                workspaceid: data.workspaceid,
+                revision: data.expectedrevision + 1,
+                state: data.state,
+            }),
+            recoveryGate: {
+                scanBeforeIpcRegistration: async () => {},
+                ensureRecoveredOnce: async () => {},
+                assertWorkspaceWritable: async () => {},
+            },
+            rewindService: {
+                listPoints: vi.fn(),
+                preview,
+                rewind,
+                redo: vi.fn(),
+            },
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 94, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+
+        await expect(
+            handlers.get("agent:list-rewind-points")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                arbitrary: true,
+            })
+        ).rejects.toThrow(/unexpected.*arbitrary/i);
+        await expect(
+            handlers.get("agent:preview-rewind")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                expectedSemanticLeafId: null,
+                target: { kind: "rewind", targetTurnId: "turn-1", refs: ["forged"] },
+            })
+        ).rejects.toThrow(/unexpected.*refs/i);
+        await expect(
+            handlers.get("agent:rewind-tree")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                expectedSemanticLeafId: null,
+                targetTurnId: "turn-1",
+                mode: "normal",
+                confirmationToken: "token",
+                nested: { conflict: "none" },
+            })
+        ).rejects.toThrow(/unexpected.*nested/i);
+        expect(preview).not.toHaveBeenCalled();
+        expect(rewind).not.toHaveBeenCalled();
+    });
+
+    it("freezes an unknown corrupt startup journal while allowing IPC startup scan to complete", async () => {
+        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-journal-"));
+        const workspaceIdentity = "a".repeat(64);
+        const workspaceIncarnation = "b".repeat(64);
+        const restoresRoot = path.join(
+            dataRoot,
+            "agent-checkpoints",
+            "workspaces",
+            `${workspaceIdentity}-${workspaceIncarnation}`,
+            "repo.git",
+            "journal",
+            "restores"
+        );
+        await fs.mkdir(restoresRoot, { recursive: true });
+        await fs.writeFile(path.join(restoresRoot, "corrupt.json"), "{broken");
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
+        const workspace = {
+            canonicalRoot: "/missing-workspace",
+            workspaceIdentity,
+            workspaceIncarnation,
+            storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
+            ancestorIdentityChain: [],
+        };
+
+        await expect(gate.scanBeforeIpcRegistration()).resolves.toBeUndefined();
+        expect(gate.getFrozenDiagnostic?.(workspace)).toEqual(
+            expect.objectContaining({
+                operationId: "corrupt",
+                message: expect.stringMatching(/corrupt/i),
+            })
+        );
+        await expect(gate.assertWorkspaceWritable(workspace)).rejects.toThrow(/corrupt/i);
+        gate.clearFrozenDiagnostic?.(workspace, "corrupt");
+        expect(gate.getFrozenDiagnostic?.(workspace)).toBeUndefined();
+    });
+
+    it("quarantines an invalid startup filename by its anchored source and stays resolved after restart", async () => {
+        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-invalid-name-"));
+        const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-invalid-name-workspace-"));
+        const workspaceIdentity = "b".repeat(64);
+        const workspaceIncarnation = "d".repeat(64);
+        const storeRoot = path.join(
+            dataRoot,
+            "agent-checkpoints",
+            "workspaces",
+            `${workspaceIdentity}-${workspaceIncarnation}`,
+            "repo.git"
+        );
+        const restoresRoot = path.join(storeRoot, "journal", "restores");
+        await fs.mkdir(restoresRoot, { recursive: true, mode: 0o700 });
+        for (const directory of [storeRoot, path.dirname(restoresRoot), restoresRoot]) {
+            await fs.chmod(directory, 0o700);
+        }
+        const invalidFilename = "invalid journal !.json";
+        const sourcePath = path.join(restoresRoot, invalidFilename);
+        await fs.writeFile(sourcePath, "{broken", { mode: 0o600 });
+        let workspaceLockHeld = false;
+        const store = {
+            storeRoot,
+            identity: {
+                canonicalRoot: await fs.realpath(workspaceRoot),
+                workspaceIdentity,
+                workspaceIncarnation,
+                storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
+                ancestorIdentityChain: [],
+            },
+            withWorkspaceLock: async <T>(operation: () => Promise<T>) => {
+                workspaceLockHeld = true;
+                try {
+                    return await operation();
+                } finally {
+                    workspaceLockHeld = false;
+                }
+            },
+            deleteCrestRef: vi.fn(async () => {}),
+            deleteOperationOwnerRecord: vi.fn(async () => {}),
+        };
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        vi.mocked(openAgentRewindFeature).mockResolvedValue({
+            state: "enabled",
+            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
+            store,
+        } as never);
+        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
+
+        await gate.scanBeforeIpcRegistration();
+        const diagnostic = gate.getFrozenDiagnostic?.(store.identity);
+        expect(diagnostic).toMatchObject({ corrupt: true, allowedActions: ["quarantine-corrupt"] });
+
+        const guardContexts: boolean[] = [];
+        await expect(
+            gate.resolveFrozenDiagnostic?.(store.identity, diagnostic!.operationId, "quarantine-corrupt", async () => {
+                guardContexts.push(workspaceLockHeld);
+            })
+        ).resolves.toBe(true);
+        expect(guardContexts).toContain(true);
+        await expect(fs.access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+        const audits = await fs.readdir(path.join(storeRoot, "journal", "resolved"));
+        expect(audits).toEqual([expect.stringContaining(`${diagnostic!.operationId}-`)]);
+
+        const restarted = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
+        await restarted.scanBeforeIpcRegistration();
+        expect(restarted.getFrozenDiagnostic?.(store.identity)).toBeUndefined();
+    });
+
+    it("reports a decoded startup journal with a missing owner as abandonable instead of corrupt", async () => {
+        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-orphan-"));
+        const workspaceIdentity = "c".repeat(64);
+        const workspaceIncarnation = "d".repeat(64);
+        const restoresRoot = path.join(
+            dataRoot,
+            "agent-checkpoints",
+            "workspaces",
+            `${workspaceIdentity}-${workspaceIncarnation}`,
+            "repo.git",
+            "journal",
+            "restores"
+        );
+        await fs.mkdir(restoresRoot, { recursive: true });
+        await fs.writeFile(
+            path.join(restoresRoot, "orphan-op.json"),
+            JSON.stringify(
+                startupJournalRecord(workspaceIdentity, workspaceIncarnation, "missing-session", "orphan-op")
+            )
+        );
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
+        const workspace = {
+            canonicalRoot: "/missing-workspace",
+            workspaceIdentity,
+            workspaceIncarnation,
+            storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
+            ancestorIdentityChain: [],
+        };
+
+        await gate.scanBeforeIpcRegistration();
+
+        expect(gate.getFrozenDiagnostic?.(workspace)).toMatchObject({
+            operationId: "orphan-op",
+            corrupt: false,
+            allowedActions: ["retry", "abandon-current"],
+        });
+    });
+
+    it("rejects startup orphan abandon when the missing owner is rebound after the diagnostic", async () => {
+        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-orphan-rebind-"));
+        const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-orphan-workspace-"));
+        const workspaceIdentity = "a".repeat(64);
+        const workspaceIncarnation = "c".repeat(64);
+        const storeRoot = path.join(
+            dataRoot,
+            "agent-checkpoints",
+            "workspaces",
+            `${workspaceIdentity}-${workspaceIncarnation}`,
+            "repo.git"
+        );
+        const restoresRoot = path.join(storeRoot, "journal", "restores");
+        await fs.mkdir(restoresRoot, { recursive: true, mode: 0o700 });
+        for (const directory of [storeRoot, path.dirname(restoresRoot), restoresRoot]) {
+            await fs.chmod(directory, 0o700);
+        }
+        const record = startupJournalRecord(
+            workspaceIdentity,
+            workspaceIncarnation,
+            "rebound-session",
+            "orphan-rebind"
+        );
+        const sourcePath = path.join(restoresRoot, "orphan-rebind.json");
+        await fs.writeFile(sourcePath, encodeDurableJson(record), { mode: 0o600 });
+        const store = {
+            storeRoot,
+            identity: {
+                canonicalRoot: await fs.realpath(workspaceRoot),
+                workspaceIdentity,
+                workspaceIncarnation,
+                storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
+                ancestorIdentityChain: [],
+            },
+            withWorkspaceLock: async <T>(operation: () => Promise<T>) => await operation(),
+            deleteCrestRef: vi.fn(async () => {}),
+            deleteOperationOwnerRecord: vi.fn(async () => {}),
+        };
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        vi.mocked(openAgentRewindFeature).mockResolvedValue({
+            state: "enabled",
+            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
+            store,
+        } as never);
+        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
+
+        await gate.scanBeforeIpcRegistration();
+        const diagnostic = gate.getFrozenDiagnostic?.(store.identity);
+        expect(diagnostic).toMatchObject({ operationId: "orphan-rebind", corrupt: false });
+        const rebound = await new SqliteSessionRepo({ sessionsRoot: defaultSessionsDir() }).create({
+            cwd: store.identity.canonicalRoot,
+            id: "rebound-session",
+        });
+        rebound.close();
+
+        await expect(
+            gate.resolveFrozenDiagnostic?.(store.identity, "orphan-rebind", "abandon-current", async () => {})
+        ).rejects.toThrow(/owner|orphan/i);
+        await expect(fs.access(sourcePath)).resolves.toBeUndefined();
+        expect(gate.getFrozenDiagnostic?.(store.identity)).toEqual(diagnostic);
+    });
+
+    it("blocks creation of a missing startup owner between the final absence check and audit", async () => {
+        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-owner-fence-"));
+        const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-owner-fence-workspace-"));
+        const workspaceIdentity = "e".repeat(64);
+        const workspaceIncarnation = "f".repeat(64);
+        const storeRoot = path.join(
+            dataRoot,
+            "agent-checkpoints",
+            "workspaces",
+            `${workspaceIdentity}-${workspaceIncarnation}`,
+            "repo.git"
+        );
+        const restoresRoot = path.join(storeRoot, "journal", "restores");
+        await fs.mkdir(restoresRoot, { recursive: true, mode: 0o700 });
+        for (const directory of [storeRoot, path.dirname(restoresRoot), restoresRoot]) {
+            await fs.chmod(directory, 0o700);
+        }
+        const sessionId = "owner-fence-session";
+        const operationId = "owner-fence-operation";
+        const sourcePath = path.join(restoresRoot, `${operationId}.json`);
+        await fs.writeFile(
+            sourcePath,
+            encodeDurableJson(startupJournalRecord(workspaceIdentity, workspaceIncarnation, sessionId, operationId)),
+            { mode: 0o600 }
+        );
+        const store = {
+            storeRoot,
+            identity: {
+                canonicalRoot: await fs.realpath(workspaceRoot),
+                workspaceIdentity,
+                workspaceIncarnation,
+                storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
+                ancestorIdentityChain: [],
+            },
+            withWorkspaceLock: async <T>(operation: () => Promise<T>) => await operation(),
+            deleteCrestRef: vi.fn(async () => {}),
+            deleteOperationOwnerRecord: vi.fn(async () => {}),
+        };
+        const repo = new SqliteSessionRepo({ sessionsRoot: defaultSessionsDir() });
+        _setSessionsRepoForTests(repo);
+        const finalCheckReached = deferred<void>();
+        const releaseFinalCheck = deferred<void>();
+        const findById = repo.findById.bind(repo);
+        let ownerChecks = 0;
+        vi.spyOn(repo, "findById").mockImplementation(async (id) => {
+            const metadata = await findById(id);
+            if (id === sessionId && ++ownerChecks === 2) {
+                finalCheckReached.resolve();
+                await releaseFinalCheck.promise;
+            }
+            return metadata;
+        });
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        vi.mocked(openAgentRewindFeature).mockResolvedValue({
+            state: "enabled",
+            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
+            store,
+        } as never);
+        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
+        await gate.scanBeforeIpcRegistration();
+
+        const resolving = gate.resolveFrozenDiagnostic?.(
+            store.identity,
+            operationId,
+            "abandon-current",
+            async () => {}
+        );
+        await finalCheckReached.promise;
+        const creating = repo.create({ cwd: store.identity.canonicalRoot, id: sessionId });
+        const createState = await Promise.race([
+            creating.then(() => "created" as const),
+            new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 30)),
+        ]);
+
+        expect(createState).toBe("blocked");
+        releaseFinalCheck.resolve();
+        await expect(resolving).resolves.toBe(true);
+        const created = await creating;
+        created.close();
+        await expect(fs.access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(repo.findById(sessionId)).resolves.toMatchObject({ id: sessionId });
+    });
+
+    it("does not classify a shallow startup object as a decoded orphan", async () => {
+        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-invalid-"));
+        const workspaceIdentity = "6".repeat(64);
+        const workspaceIncarnation = "7".repeat(64);
+        const restoresRoot = path.join(
+            dataRoot,
+            "agent-checkpoints",
+            "workspaces",
+            `${workspaceIdentity}-${workspaceIncarnation}`,
+            "repo.git",
+            "journal",
+            "restores"
+        );
+        await fs.mkdir(restoresRoot, { recursive: true });
+        await fs.writeFile(
+            path.join(restoresRoot, "shallow.json"),
+            JSON.stringify({
+                operationId: "shallow",
+                sessionId: "missing-session",
+                workspaceIdentity,
+                workspaceIncarnation,
+            })
+        );
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
+        const workspace = {
+            canonicalRoot: "/missing-workspace",
+            workspaceIdentity,
+            workspaceIncarnation,
+            storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
+            ancestorIdentityChain: [],
+        };
+
+        await gate.scanBeforeIpcRegistration();
+
+        expect(gate.getFrozenDiagnostic?.(workspace)).toMatchObject({
+            operationId: "shallow",
+            corrupt: true,
+            allowedActions: ["quarantine-corrupt"],
+        });
+    });
+
+    it("clears a process scan diagnostic only after a verified retry succeeds", async () => {
+        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-rescan-"));
+        const workspaceIdentity = "8".repeat(64);
+        const workspaceIncarnation = "9".repeat(64);
+        const restoresRoot = path.join(
+            dataRoot,
+            "agent-checkpoints",
+            "workspaces",
+            `${workspaceIdentity}-${workspaceIncarnation}`,
+            "repo.git",
+            "journal",
+            "restores"
+        );
+        await fs.mkdir(restoresRoot, { recursive: true });
+        const originalReaddir = fs.readdir.bind(fs);
+        let blocked = true;
+        const readdirSpy = vi
+            .spyOn(fs, "readdir")
+            .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+                if (String(args[0]) === restoresRoot && blocked) {
+                    const error = Object.assign(new Error("scan denied"), { code: "EACCES" });
+                    throw error;
+                }
+                return await originalReaddir(...args);
+            });
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
+        const workspace = {
+            canonicalRoot: "/missing-workspace",
+            workspaceIdentity,
+            workspaceIncarnation,
+            storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
+            ancestorIdentityChain: [],
+        };
+
+        try {
+            await gate.scanBeforeIpcRegistration();
+            const diagnostic = gate.getFrozenDiagnostic?.(workspace);
+            expect(diagnostic).toMatchObject({ corrupt: false, allowedActions: ["retry"] });
+            blocked = false;
+
+            await expect(
+                gate.resolveFrozenDiagnostic?.(workspace, diagnostic!.operationId, "retry", async () => {})
+            ).resolves.toBe(true);
+            expect(gate.getFrozenDiagnostic?.(workspace)).toBeUndefined();
+        } finally {
+            readdirSpy.mockRestore();
+        }
+    });
+
+    it("keeps ordinary Agent writes available when workspace rewind is explicitly disabled", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-rewind-disabled-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        const userId = await session.appendMessage(user("navigate while disabled"));
+        const expectedSemanticLeafId = await session.appendMessage(assistant("answer"));
+        session.close();
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-rewind-disabled",
+            workspaceDir: await fs.realpath(cwd),
+            validatePreferredTerminal: async () => true,
+        };
+        const assertWorkspaceWritable = vi.fn(async () => {
+            throw new Error("recovery gate must not run");
+        });
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
+        registerAgentIpcHandlersImpl({
+            resolveWorkspaceSender: async () => identity,
+            loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
+            saveWorkspaceAgentState: async (data) => ({
+                workspaceid: data.workspaceid,
+                revision: data.expectedrevision + 1,
+                state: data.state,
+            }),
+            recoveryGate: {
+                scanBeforeIpcRegistration: async () => {},
+                ensureRecoveredOnce: async () => {},
+                assertWorkspaceWritable,
+            },
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 92, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+
+        await expect(handlers.get("agent:create-session")?.(event, TrustedRequestContext)).resolves.toEqual(
+            expect.objectContaining({ cwd: identity.workspaceDir })
+        );
+        await expect(
+            handlers.get("agent:navigate-tree")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                targetId: userId,
+                semanticAnchorId: null,
+                expectedSemanticLeafId,
+            })
+        ).resolves.toEqual(expect.objectContaining({ sessionMetadata: expect.objectContaining({ id: metadata.id }) }));
+        await expect(
+            handlers.get("agent:list-rewind-points")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+            })
+        ).rejects.toThrow(/rewind is unavailable/i);
+        expect(assertWorkspaceWritable).not.toHaveBeenCalled();
+    });
+
+    it("makes the production recovery gate a precise no-op when workspace rewind is disabled", async () => {
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
+        vi.mocked(openAgentRewindFeature).mockClear();
+        const gate = makeProductionAgentWorkspaceRecoveryGate("/unused");
+        const workspace = {
+            canonicalRoot: "/workspace",
+            workspaceIdentity: "c".repeat(64),
+            workspaceIncarnation: "d".repeat(64),
+            storeKey: "disabled",
+            ancestorIdentityChain: [],
+        };
+
+        await gate.scanBeforeIpcRegistration();
+        await gate.ensureRecoveredOnce(workspace);
+        await gate.assertWorkspaceWritable(workspace);
+
+        expect(openAgentRewindFeature).not.toHaveBeenCalled();
+    });
+
+    it("allows an authorized recovery resolution through a frozen ordinary write gate", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-recovery-resolution-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        session.close();
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-recovery-resolution",
+            workspaceDir: await fs.realpath(cwd),
+            validatePreferredTerminal: async () => true,
+        };
+        const resolveRecovery = vi.fn(async () => {});
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        registerAgentIpcHandlersImpl({
+            resolveWorkspaceSender: async () => identity,
+            loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
+            saveWorkspaceAgentState: async (data) => ({
+                workspaceid: data.workspaceid,
+                revision: data.expectedrevision + 1,
+                state: data.state,
+            }),
+            recoveryGate: {
+                scanBeforeIpcRegistration: async () => {},
+                ensureRecoveredOnce: async () => {
+                    throw new Error("workspace frozen");
+                },
+                assertWorkspaceWritable: async () => {
+                    throw new Error("workspace frozen");
+                },
+            },
+            rewindMaintenance: {
+                getRecovery: vi.fn(),
+                resolveRecovery,
+                cleanup: vi.fn(),
+                listStorageOwners: vi.fn(),
+                purgeTrashedSession: vi.fn(),
+            },
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 93, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+
+        await expect(
+            handlers.get("agent:resolve-workspace-recovery")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                operationId: "restore-1",
+                action: "quarantine-corrupt",
+            })
+        ).resolves.toBeUndefined();
+        expect(resolveRecovery).toHaveBeenCalledOnce();
     });
 });

@@ -3,6 +3,10 @@
 
 import { describe, expect, it } from "vitest";
 
+import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
+import { ContextCustomTypes } from "../context/journal";
+import { WorkspaceControlCustomTypes } from "../workspace-rewind/types";
 import {
     buildAgentForkPointViews,
     buildAgentReferencePointViews,
@@ -11,9 +15,6 @@ import {
     isHiddenTreeEntry,
     previewSessionEntry,
 } from "./session-views";
-import type { SessionTreeEntry } from "@crest/agent/harness/types";
-import { ContextCustomTypes } from "../context/journal";
-import { WorkspaceControlCustomTypes } from "../workspace-rewind/types";
 
 function userMsg(id: string, parentId: string | null, text: string): SessionTreeEntry {
     return {
@@ -35,7 +36,12 @@ function asstMsg(id: string, parentId: string | null, text: string): SessionTree
     } as unknown as SessionTreeEntry;
 }
 
-function toolMsg(id: string, parentId: string | null, text: string, role: "tool" | "toolResult" = "toolResult"): SessionTreeEntry {
+function toolMsg(
+    id: string,
+    parentId: string | null,
+    text: string,
+    role: "tool" | "toolResult" = "toolResult"
+): SessionTreeEntry {
     return {
         type: "message",
         id,
@@ -70,8 +76,30 @@ function contextEntry(id: string, parentId: string | null, customType: string): 
 }
 
 describe("session view helpers", () => {
+    it("derives a semantic anchor for every visible tree row", () => {
+        const user = messageEntry("user-1", null, "user", "hello");
+        const assistant = messageEntry("assistant-1", user.id, "assistant", "world");
+        const rows = buildAgentTreeEntryViews([user, assistant], assistant.id);
+        expect(rows.map((row) => row.semanticAnchorId)).toEqual([null, "assistant-1"]);
+    });
+
+    it("derives a transactional user row anchor from the raw before boundary", () => {
+        const root = messageEntry("root", null, "assistant", "root");
+        const transaction = makeCommittedContextTransaction({ parentId: root.id, prefix: "tree-anchor" });
+        const user = transaction.at(-1)!;
+        const rawEntries = [root, ...transaction];
+        const { entries } = filterTreeForDisplay(rawEntries, user.id);
+
+        const rows = buildAgentTreeEntryViews(entries, user.id, new Map(), rawEntries);
+
+        expect(rows.find((row) => row.id === user.id)?.semanticAnchorId).toBe(root.id);
+    });
+
     it("builds safe tree rows with current leaf marker", () => {
-        const entries = [messageEntry("1", null, "user", "first question"), messageEntry("2", "1", "assistant", "answer")];
+        const entries = [
+            messageEntry("1", null, "user", "first question"),
+            messageEntry("2", "1", "assistant", "answer"),
+        ];
         const rows = buildAgentTreeEntryViews(entries, "2", new Map([["1", "Start"]]));
         expect(rows).toEqual([
             expect.objectContaining({ id: "1", label: "Start", preview: "first question", isCurrent: false }),
@@ -116,7 +144,8 @@ describe("session view helpers", () => {
 
     it("ignores text content parts with non-string text", () => {
         const entry = messageEntry("1", null, "user", "safe");
-        entry.message.content = [
+        if (entry.type !== "message") throw new Error("expected message entry");
+        (entry.message as any).content = [
             { type: "text", text: "safe" },
             { type: "text", text: { unsafe: true } },
             { type: "text", text: " text" },
@@ -153,11 +182,9 @@ describe("session view helpers", () => {
             }
         });
         it("hides only recognized workspace control custom entries", () => {
-            expect(
-                isHiddenTreeEntry(
-                    contextEntry("checkpoint", null, WorkspaceControlCustomTypes.checkpoint)
-                )
-            ).toBe(true);
+            expect(isHiddenTreeEntry(contextEntry("checkpoint", null, WorkspaceControlCustomTypes.checkpoint))).toBe(
+                true
+            );
             expect(isHiddenTreeEntry(contextEntry("state", null, WorkspaceControlCustomTypes.state))).toBe(true);
             expect(isHiddenTreeEntry(contextEntry("unknown", null, "future_workspace_control"))).toBe(false);
         });

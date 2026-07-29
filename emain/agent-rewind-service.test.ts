@@ -292,4 +292,34 @@ describe("AgentRewindService", () => {
             "release-session-lease",
         ]);
     });
+
+    it("revalidates current authorization inside both locks before consuming or mutating", async () => {
+        const value = harness();
+        const token = value.confirmations.issue(plan());
+        const assertCurrent = vi.fn(async () => {
+            throw new Error("stale sender");
+        });
+
+        await expect(
+            value.service.rewind(
+                {
+                    sessionMetadata: Metadata,
+                    expectedSemanticLeafId: "checkpoint-1",
+                    targetTurnId: "turn-1",
+                    mode: "normal",
+                    confirmationToken: token,
+                },
+                assertCurrent
+            )
+        ).rejects.toThrow(/stale sender/);
+
+        expect(value.engine.applyRewind).not.toHaveBeenCalled();
+        expect(value.confirmations.take(token)).toBeDefined();
+        expect(value.order).toEqual([
+            "session-lease",
+            "workspace-lock",
+            "release-workspace-lock",
+            "release-session-lease",
+        ]);
+    });
 });

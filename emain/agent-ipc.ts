@@ -41,11 +41,13 @@
 // strings never end up in channel names).
 
 import * as electron from "electron";
-import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
+import { createReadStream, promises as fs } from "node:fs";
 import * as path from "node:path";
 
 import { convertToLlm } from "@crest/agent/harness/messages";
 import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
+import { withSessionIdMutationFence } from "@crest/agent/harness/session/session-id-mutation-fence";
 import type {
     AgentHarnessTurnPreparation,
     AgentHarnessTurnPreparationInput,
@@ -92,10 +94,11 @@ import type {
     AgentCommandInfo,
     AgentContextStateView,
     AgentForkPointView,
+    AgentNavigateTreeInput,
     AgentPrepareContextDraftInput,
     AgentReferencePointView,
     AgentRunCommandInput,
-    AgentTreeEntryView,
+    AgentTreeResult,
 } from "@crest/coding-agent/commands/types";
 import { ContextDraftRegistry } from "@crest/coding-agent/context/draft-registry";
 import { decorateContextHistory } from "@crest/coding-agent/context/history";
@@ -125,6 +128,7 @@ import {
     createPaneSession,
     defaultSessionsDir,
     forkPaneSession,
+    getSessionsRepo,
     importPaneSessionFromJsonl,
     listSessionDetailsForCwd,
     listSessionsForCwd,
@@ -136,23 +140,438 @@ import {
 } from "@crest/coding-agent/sessions";
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { getDefaultTools } from "@crest/coding-agent/tools";
+import type {
+    AgentCleanupWorkspaceCheckpointsResult,
+    AgentListCheckpointStorageOwnersResult,
+    AgentListRewindPointsResult,
+    AgentPurgeTrashedSessionResult,
+    AgentRewindMutationResult,
+    AgentRewindPreviewResult,
+    AgentWorkspaceRecoveryView,
+} from "@crest/coding-agent/workspace-rewind/api-types";
 import {
     makeDisabledWorkspaceCheckpointManager,
     registerWorkspaceCheckpointManager,
 } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
+import { RewindConfirmationRegistry } from "@crest/coding-agent/workspace-rewind/confirmation-token";
+import { removeDurableFile } from "@crest/coding-agent/workspace-rewind/durability";
+import {
+    decodeWorkspaceOperationJournalV1,
+    recoveryJournalOperationTokenForFilename,
+    WorkspaceRecoveryJournal,
+} from "@crest/coding-agent/workspace-rewind/recovery-journal";
+import { WorkspaceRewindEngine } from "@crest/coding-agent/workspace-rewind/rewind-engine";
+import { buildAgentRewindSessionStateView } from "@crest/coding-agent/workspace-rewind/session-state";
+import {
+    collectSessionSnapshotOwners,
+    reconcileSnapshotRefsLocked,
+} from "@crest/coding-agent/workspace-rewind/snapshot-retention";
+import {
+    resolveCanonicalWorkspaceIdentity,
+    type CanonicalWorkspaceIdentity,
+} from "@crest/coding-agent/workspace-rewind/workspace-identity";
+import { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
 import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
 import { isAgentRewindFeatureEnabled, openAgentRewindFeature, type AgentRewindFeature } from "./agent-rewind-feature";
+import { AgentRewindService } from "./agent-rewind-service";
+import { toAuthoritativeAgentSessionState } from "./agent-session-state-broadcaster";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
 import { createSpawnCliAgentTool } from "./agent-tools/spawn-cli-agent";
+import type { AgentWorkspaceRecoveryGate } from "./agent-workspace-recovery-gate";
+import {
+    getAgentWorkspaceRecoveryGate,
+    makeAgentWorkspaceRecoveryGate,
+    type AgentWorkspaceFrozenDiagnostic,
+    type AgentWorkspaceFrozenDiagnosticSource,
+} from "./agent-workspace-recovery-gate";
 import { getSecret } from "./aiconfig/secrets";
 import { readAIUserConfig } from "./aiconfig/user-config";
+import { CheckpointPurgeConfirmationRegistry } from "./checkpoint-purge-confirmation";
 
 const AgentRuntimeIdleTtlMs = 5 * 60 * 1000;
 const AgentRuntimeSweepIntervalMs = 60 * 1000;
 const runtimeRegistry = new AgentRuntimeRegistry<AgentSessionRuntime>({
     idleTtlMs: AgentRuntimeIdleTtlMs,
 });
+
+function withRecoverySessionMutation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    return withSessionIdMutationFence(sessionId, async () => {
+        const metadata = await getSessionsRepo().findById(sessionId);
+        const mutationKey = metadata?.path ?? `agent-session-id:${sessionId}`;
+        return runtimeRegistry.withRetainedSessionMutation(mutationKey, { rejectIfRunning: true }, operation);
+    });
+}
+
+export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): AgentWorkspaceRecoveryGate {
+    const recoveries = new Map<string, WorkspaceRecovery>();
+    const frozen = new Map<string, AgentWorkspaceFrozenDiagnostic>();
+    const rescanRoots = new Map<string, string>();
+    const workspaceKey = (workspace: { workspaceIdentity: string; workspaceIncarnation: string }) =>
+        `${workspace.workspaceIdentity}\0${workspace.workspaceIncarnation}`;
+    const freeze = (
+        identity: { workspaceIdentity: string; workspaceIncarnation: string },
+        operationId: string,
+        message: string,
+        corrupt = true,
+        allowedActions: AgentWorkspaceFrozenDiagnostic["allowedActions"] = ["quarantine-corrupt"],
+        source?: AgentWorkspaceFrozenDiagnosticSource
+    ) => {
+        frozen.set(`${identity.workspaceIdentity}\0${identity.workspaceIncarnation}`, {
+            operationId,
+            message,
+            corrupt,
+            allowedActions,
+            source,
+        });
+    };
+    const recoveryFor = async (workspace: CanonicalWorkspaceIdentity): Promise<WorkspaceRecovery> => {
+        const key = workspaceKey(workspace);
+        const existing = recoveries.get(key);
+        if (existing) return existing;
+        const feature = await openAgentRewindFeature({
+            workspaceRoot: workspace.canonicalRoot,
+            dataRoot,
+        });
+        if (feature.state !== "enabled") {
+            throw new Error(feature.state === "unavailable" ? feature.message : "Workspace rewind is unavailable");
+        }
+        if (workspaceKey(feature.store.identity) !== key) {
+            throw new Error("Workspace identity changed while opening recovery storage");
+        }
+        const recovery = new WorkspaceRecovery({
+            workspace,
+            store: feature.store,
+            journal: new WorkspaceRecoveryJournal(feature.store),
+            locateSession: async (sessionId) => {
+                const metadata = await getSessionsRepo().findById(sessionId);
+                if (!metadata) return undefined;
+                return {
+                    async getLeafId() {
+                        const session = await openPaneSessionByPath(metadata.path);
+                        try {
+                            return await session.getLeafId();
+                        } finally {
+                            session.close();
+                        }
+                    },
+                    async getEntry(id) {
+                        const session = await openPaneSessionByPath(metadata.path);
+                        try {
+                            return await session.getEntry(id);
+                        } finally {
+                            session.close();
+                        }
+                    },
+                };
+            },
+            withSessionLease: withRecoverySessionMutation,
+        });
+        recoveries.set(key, recovery);
+        return recovery;
+    };
+    const scanKnownJournals = async () => {
+        if (!isAgentRewindFeatureEnabled()) return;
+        const sessions = await getSessionsRepo().scanAllMetadata();
+        const sessionsById = new Map(sessions.map((metadata) => [metadata.id, metadata]));
+        const workspacesRoot = path.join(dataRoot, "agent-checkpoints", "workspaces");
+        const workspaceDirs = await fs.readdir(workspacesRoot, { withFileTypes: true }).catch((error) => {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+            throw error;
+        });
+        const identities = new Map<string, CanonicalWorkspaceIdentity>();
+        for (const dirent of workspaceDirs) {
+            const match = /^([0-9a-f]{64})-([0-9a-f]{64})$/.exec(dirent.name);
+            if (!dirent.isDirectory() || !match) continue;
+            const identityParts = { workspaceIdentity: match[1]!, workspaceIncarnation: match[2]! };
+            const restoresRoot = path.join(workspacesRoot, dirent.name, "repo.git", "journal", "restores");
+            const files = await fs.readdir(restoresRoot).catch((error) => {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+                const operationId = `scan-${createHash("sha256").update(restoresRoot).digest("hex").slice(0, 24)}`;
+                freeze(
+                    identityParts,
+                    operationId,
+                    "Unable to scan startup workspace recovery journals",
+                    false,
+                    ["retry"],
+                    { kind: "process-scan" }
+                );
+                rescanRoots.set(workspaceKey(identityParts), restoresRoot);
+                return [];
+            });
+            for (const filename of files.sort()) {
+                const operationId = recoveryJournalOperationTokenForFilename(filename);
+                let value: unknown;
+                try {
+                    value = JSON.parse(await fs.readFile(path.join(restoresRoot, filename), "utf8"));
+                } catch {
+                    freeze(
+                        identityParts,
+                        operationId,
+                        `Corrupt startup recovery journal: ${filename}`,
+                        true,
+                        ["quarantine-corrupt"],
+                        { kind: "startup-corrupt", filename }
+                    );
+                    continue;
+                }
+                const record = decodeWorkspaceOperationJournalV1(value);
+                if (
+                    !record ||
+                    record.operationId !== operationId ||
+                    record.workspaceIdentity !== identityParts.workspaceIdentity ||
+                    record.workspaceIncarnation !== identityParts.workspaceIncarnation
+                ) {
+                    freeze(
+                        identityParts,
+                        operationId,
+                        `Invalid startup recovery journal: ${filename}`,
+                        true,
+                        ["quarantine-corrupt"],
+                        { kind: "startup-corrupt", filename }
+                    );
+                    continue;
+                }
+                const metadata = sessionsById.get(record.sessionId);
+                if (!metadata) {
+                    freeze(
+                        identityParts,
+                        operationId,
+                        `Recovery owner session is missing: ${record.sessionId}`,
+                        false,
+                        ["retry", "abandon-current"],
+                        { kind: "startup-orphan", reason: "missing-owner", sessionId: record.sessionId }
+                    );
+                    continue;
+                }
+                try {
+                    const identity = await resolveCanonicalWorkspaceIdentity(metadata.cwd);
+                    if (workspaceKey(identity) !== workspaceKey(identityParts)) {
+                        freeze(
+                            identityParts,
+                            operationId,
+                            `Recovery owner workspace does not match: ${record.sessionId}`,
+                            false,
+                            ["retry", "abandon-current"],
+                            {
+                                kind: "startup-orphan",
+                                reason: "mismatched-workspace",
+                                sessionId: record.sessionId,
+                                ownerPath: metadata.path,
+                                ownerCwd: metadata.cwd,
+                            }
+                        );
+                        continue;
+                    }
+                    identities.set(workspaceKey(identity), identity);
+                } catch {
+                    freeze(
+                        identityParts,
+                        operationId,
+                        `Unable to resolve recovery owner workspace: ${record.sessionId}`,
+                        false,
+                        ["retry", "abandon-current"],
+                        {
+                            kind: "startup-orphan",
+                            reason: "unresolvable-workspace",
+                            sessionId: record.sessionId,
+                            ownerPath: metadata.path,
+                            ownerCwd: metadata.cwd,
+                        }
+                    );
+                }
+            }
+        }
+        for (const identity of [...identities.values()].sort((a, b) =>
+            workspaceKey(a).localeCompare(workspaceKey(b))
+        )) {
+            const recovery = await recoveryFor(identity);
+            try {
+                await recovery.scanKnownJournals();
+            } catch (error) {
+                const state = await recovery.getRecoveryState(identity).catch(() => undefined);
+                if (state) {
+                    freeze(identity, state.operationId, state.message, state.corrupt, state.allowedActions, {
+                        kind: "internal-recovery",
+                    });
+                } else {
+                    console.error("[agent-ipc] workspace recovery startup scan failed without a journal:", error);
+                }
+            }
+        }
+    };
+    const mirrorRecoveryDiagnostic = async (
+        workspace: CanonicalWorkspaceIdentity,
+        recovery: WorkspaceRecovery
+    ): Promise<void> => {
+        const state = await recovery.getRecoveryState(workspace).catch(() => undefined);
+        if (state) {
+            freeze(workspace, state.operationId, state.message, state.corrupt, state.allowedActions, {
+                kind: "internal-recovery",
+            });
+        }
+    };
+    const base = makeAgentWorkspaceRecoveryGate({
+        scanKnownJournals,
+        ensureRecovered: async (workspace) => {
+            if (!isAgentRewindFeatureEnabled()) return;
+            const diagnostic = frozen.get(workspaceKey(workspace));
+            if (diagnostic) throw new Error(diagnostic.message);
+            const recovery = await recoveryFor(workspace);
+            try {
+                await recovery.ensureRecovered(workspace);
+            } catch (error) {
+                await mirrorRecoveryDiagnostic(workspace, recovery);
+                throw error;
+            }
+        },
+        assertWorkspaceWritable: async (workspace) => {
+            if (!isAgentRewindFeatureEnabled()) return;
+            const diagnostic = frozen.get(workspaceKey(workspace));
+            if (diagnostic) throw new Error(diagnostic.message);
+            const recovery = await recoveryFor(workspace);
+            try {
+                await recovery.assertWorkspaceWritable(workspace);
+            } catch (error) {
+                await mirrorRecoveryDiagnostic(workspace, recovery);
+                throw error;
+            }
+        },
+    });
+    return {
+        ...base,
+        getFrozenDiagnostic: (workspace) => frozen.get(workspaceKey(workspace)),
+        probeFrozenDiagnostic: async (workspace) => {
+            const startup = frozen.get(workspaceKey(workspace));
+            if (startup) return startup;
+            const recovery = recoveries.get(workspaceKey(workspace));
+            if (!recovery) return undefined;
+            const state = await recovery.getRecoveryState(workspace);
+            return state
+                ? {
+                      operationId: state.operationId,
+                      message: state.message,
+                      corrupt: state.corrupt,
+                      allowedActions: state.allowedActions,
+                      source: { kind: "internal-recovery" },
+                  }
+                : undefined;
+        },
+        resolveFrozenDiagnostic: async (workspace, operationId, action, assertCurrent) => {
+            const key = workspaceKey(workspace);
+            const diagnostic = frozen.get(key);
+            if (diagnostic?.operationId !== operationId) return false;
+            if (!diagnostic.allowedActions.includes(action)) {
+                throw new Error(`Recovery action ${action} is not allowed for ${operationId}`);
+            }
+            if (diagnostic.source?.kind === "process-scan") {
+                const rescanRoot = rescanRoots.get(key);
+                if (!rescanRoot) {
+                    throw new Error(`Process recovery scan binding is missing for ${operationId}`);
+                }
+                if (action !== "retry") {
+                    throw new Error(`Only retry can resolve process diagnostic ${operationId}`);
+                }
+                await assertCurrent();
+                await fs.readdir(rescanRoot);
+                await assertCurrent();
+                rescanRoots.delete(key);
+                frozen.delete(key);
+                return true;
+            }
+            const recovery = await recoveryFor(workspace);
+            if (diagnostic.source?.kind === "internal-recovery") {
+                if (action === "retry") await recovery.retry(operationId, assertCurrent);
+                else if (action === "abandon-current") {
+                    await recovery.abandonKeepingCurrent(operationId, undefined, assertCurrent);
+                } else await recovery.quarantineCorrupt(operationId, assertCurrent);
+                await assertCurrent();
+                frozen.delete(key);
+                return true;
+            }
+            if (diagnostic.source?.kind === "startup-corrupt") {
+                if (action !== "quarantine-corrupt") {
+                    throw new Error(`Only quarantine can resolve corrupt startup diagnostic ${operationId}`);
+                }
+                await recovery.quarantineCorrupt(operationId, assertCurrent);
+                await assertCurrent();
+                frozen.delete(key);
+                return true;
+            }
+            if (diagnostic.source?.kind === "startup-orphan") {
+                if (action === "retry") return false;
+                if (action !== "abandon-current") {
+                    throw new Error(`Only abandon can resolve decoded startup orphan ${operationId}`);
+                }
+                const source = diagnostic.source;
+                await recovery.abandonKeepingCurrent(
+                    operationId,
+                    {
+                        sessionId: source.sessionId,
+                        locateBoundOwner: async () => {
+                            const metadata = await getSessionsRepo().findById(source.sessionId);
+                            if (source.reason === "missing-owner") {
+                                if (metadata) {
+                                    throw new Error(`Startup recovery orphan owner was rebound: ${source.sessionId}`);
+                                }
+                                return undefined;
+                            }
+                            if (!metadata || metadata.path !== source.ownerPath || metadata.cwd !== source.ownerCwd) {
+                                throw new Error(`Startup recovery owner binding changed: ${source.sessionId}`);
+                            }
+                            if (source.reason === "mismatched-workspace") {
+                                const ownerIdentity = await resolveCanonicalWorkspaceIdentity(metadata.cwd);
+                                if (workspaceKey(ownerIdentity) === key) {
+                                    throw new Error(`Startup recovery owner workspace changed: ${source.sessionId}`);
+                                }
+                            } else {
+                                let nowResolvable = false;
+                                try {
+                                    await resolveCanonicalWorkspaceIdentity(metadata.cwd);
+                                    nowResolvable = true;
+                                } catch {}
+                                if (nowResolvable) {
+                                    throw new Error(`Startup recovery owner workspace changed: ${source.sessionId}`);
+                                }
+                            }
+                            return {
+                                async getLeafId() {
+                                    const session = await openPaneSessionByPath(metadata.path);
+                                    try {
+                                        return await session.getLeafId();
+                                    } finally {
+                                        session.close();
+                                    }
+                                },
+                                async getEntry(id) {
+                                    const session = await openPaneSessionByPath(metadata.path);
+                                    try {
+                                        return await session.getEntry(id);
+                                    } finally {
+                                        session.close();
+                                    }
+                                },
+                            };
+                        },
+                    },
+                    assertCurrent
+                );
+                await assertCurrent();
+                frozen.delete(key);
+                return true;
+            }
+            return false;
+        },
+        clearFrozenDiagnostic: async (workspace, operationId) => {
+            const key = workspaceKey(workspace);
+            if (frozen.get(key)?.operationId === operationId) {
+                frozen.delete(key);
+                rescanRoots.delete(key);
+            }
+            recoveries.get(key)?.clearFrozen(operationId);
+        },
+    };
+}
 
 class RegistrySessionMutationBarrier extends SessionMutationBarrier {
     busyCount = 0;
@@ -322,6 +741,24 @@ export interface AgentIpcRegistrationOptions {
     resolveWorkspaceSender: (senderId: number) => Promise<ResolvedWorkspaceAgentSender | undefined>;
     loadWorkspace: (workspaceId: string) => Promise<Workspace>;
     saveWorkspaceAgentState: (data: SaveWorkspaceAgentStateData) => Promise<WorkspaceAgentStateCheckpoint>;
+    recoveryGate?: AgentWorkspaceRecoveryGate;
+    resolveWorkspaceIdentity?: (workspaceRoot: string) => Promise<CanonicalWorkspaceIdentity>;
+    rewindService?: {
+        listPoints(input: unknown): Promise<AgentListRewindPointsResult>;
+        preview(input: unknown): Promise<AgentRewindPreviewResult>;
+        rewind(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentRewindMutationResult>;
+        redo(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentRewindMutationResult>;
+    };
+    rewindMaintenance?: {
+        getRecovery(input: unknown): Promise<AgentWorkspaceRecoveryView | undefined>;
+        resolveRecovery(input: unknown, assertCurrent?: () => Promise<void>): Promise<void>;
+        cleanup(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentCleanupWorkspaceCheckpointsResult>;
+        listStorageOwners(input: unknown): Promise<AgentListCheckpointStorageOwnersResult>;
+        purgeTrashedSession(
+            input: unknown,
+            assertCurrent?: () => Promise<void>
+        ): Promise<AgentPurgeTrashedSessionResult>;
+    };
 }
 
 type AuthenticatedWorkspaceAgentSender = Readonly<ResolvedWorkspaceAgentSender>;
@@ -417,11 +854,6 @@ function imageContentsFromRenderer(images: string[] | undefined): ImageContent[]
     return result.length > 0 ? result : undefined;
 }
 
-interface AgentNavigateTreeInput {
-    sessionMetadata: JsonlSessionMetadata;
-    targetId: string;
-}
-
 interface AgentForkSessionInput {
     sessionMetadata: JsonlSessionMetadata;
     cwd: string;
@@ -431,11 +863,6 @@ interface AgentForkSessionInput {
 interface AgentCloneSessionInput {
     sessionMetadata: JsonlSessionMetadata;
     cwd: string;
-}
-
-interface AgentTreeResult {
-    entries: AgentTreeEntryView[];
-    leafId: string | null;
 }
 
 interface AgentNavigateTreeResult {
@@ -703,14 +1130,28 @@ async function validateNavigateInput(value: unknown): Promise<{
     metadata: JsonlSessionMetadata;
     session: Awaited<ReturnType<typeof openPaneSessionByPath>>;
     targetId: string;
+    semanticAnchorId: string | null;
+    expectedSemanticLeafId: string | null;
     requestedPath: string;
 }> {
     if (!isRecord(value)) throw new Error("agent IPC: navigateTree input must be an object");
     const { metadata, session, requestedPath } = await openValidatedSessionMetadata(value.sessionMetadata);
     try {
         const targetId = requireNonEmptyString(value.targetId, "targetId");
+        if (!Object.hasOwn(value, "semanticAnchorId")) {
+            throw new Error("agent IPC: semanticAnchorId is required");
+        }
+        if (!Object.hasOwn(value, "expectedSemanticLeafId")) {
+            throw new Error("agent IPC: expectedSemanticLeafId is required");
+        }
+        const semanticAnchorId =
+            value.semanticAnchorId === null ? null : requireNonEmptyString(value.semanticAnchorId, "semanticAnchorId");
+        const expectedSemanticLeafId =
+            value.expectedSemanticLeafId === null
+                ? null
+                : requireNonEmptyString(value.expectedSemanticLeafId, "expectedSemanticLeafId");
         await requireSessionEntry(session, targetId, "targetId");
-        return { metadata, session, targetId, requestedPath };
+        return { metadata, session, targetId, semanticAnchorId, expectedSemanticLeafId, requestedPath };
     } catch (error) {
         session.close();
         throw error;
@@ -926,6 +1367,48 @@ async function createAgentRuntimeFromSession(
         }
         const seed = await piSession.buildContext();
         const initialEntries = await piSession.getBranch();
+        const buildRewindState = async () => {
+            const entries = await piSession.getEntries();
+            const recoveryGate = getAgentWorkspaceRecoveryGate();
+            const frozenDiagnostic =
+                rewindFeature.state === "enabled"
+                    ? ((await recoveryGate.probeFrozenDiagnostic?.(rewindFeature.store.identity)) ??
+                      recoveryGate.getFrozenDiagnostic?.(rewindFeature.store.identity))
+                    : undefined;
+            if (rewindFeature.state !== "enabled") {
+                return await buildAgentRewindSessionStateView(entries, metadata.id, {
+                    enabled: false,
+                    busy: checkpointManager.isBusy(),
+                    frozen: rewindFeature.state === "unavailable",
+                    verifySnapshot: async () => {},
+                    getQuota: async () => ({
+                        status: "ok",
+                        usedBytes: 0,
+                        softQuotaBytes: 0,
+                        cleanupAvailable: false,
+                    }),
+                });
+            }
+            return await buildAgentRewindSessionStateView(entries, metadata.id, {
+                enabled: true,
+                busy: checkpointManager.isBusy(),
+                frozen: frozenDiagnostic != null,
+                verifySnapshot: (snapshot) => rewindFeature.store.verifyOwnedSnapshot(snapshot),
+                getQuota: async () => {
+                    if (typeof rewindFeature.store.getQuotaStatus !== "function") {
+                        return { status: "ok", usedBytes: 0, softQuotaBytes: 0, cleanupAvailable: false };
+                    }
+                    const quota = await rewindFeature.store.getQuotaStatus();
+                    return {
+                        status: quota.status,
+                        usedBytes: quota.usedBytes,
+                        softQuotaBytes: quota.softQuotaBytes,
+                        cleanupAvailable: quota.status !== "ok",
+                    };
+                },
+            });
+        };
+        const initialRewindState = await buildRewindState();
         const initialTurns = buildPersistedTurnsFromSessionEntries(initialEntries);
         const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
             const operations = extractChangeOperationsFromMessages(
@@ -952,6 +1435,8 @@ async function createAgentRuntimeFromSession(
             initialContextEntries: initialEntries,
             ptyHost,
             checkpointManager,
+            initialRewindState,
+            buildRewindState,
             workspaceRewind:
                 rewindFeature.state === "unavailable"
                     ? { status: "unavailable", message: rewindFeature.message }
@@ -1223,6 +1708,46 @@ function makeFallbackSubscriptionAuthorization(beforeMutation?: AuthorizationGua
     };
 }
 
+async function buildColdRewindState(
+    metadata: JsonlSessionMetadata,
+    entries: import("@crest/agent/harness/types").SessionTreeEntry[]
+) {
+    let feature: AgentRewindFeature = { state: "disabled" };
+    if (isAgentRewindFeatureEnabled()) {
+        const { getWaveDataDir } = await import("./emain-platform");
+        feature = await openAgentRewindFeature({
+            workspaceRoot: metadata.cwd,
+            dataRoot: getWaveDataDir(),
+        });
+    }
+    const recoveryGate = getAgentWorkspaceRecoveryGate();
+    const frozenDiagnostic =
+        feature.state === "enabled"
+            ? ((await recoveryGate.probeFrozenDiagnostic?.(feature.store.identity)) ??
+              recoveryGate.getFrozenDiagnostic?.(feature.store.identity))
+            : undefined;
+    return await buildAgentRewindSessionStateView(entries, metadata.id, {
+        enabled: feature.state === "enabled",
+        busy: false,
+        frozen: feature.state === "unavailable" || frozenDiagnostic != null,
+        verifySnapshot: async (snapshot) => {
+            if (feature.state === "enabled") await feature.store.verifyOwnedSnapshot(snapshot);
+        },
+        getQuota: async () => {
+            if (feature.state !== "enabled") {
+                return { status: "ok", usedBytes: 0, softQuotaBytes: 0, cleanupAvailable: false };
+            }
+            const quota = await feature.store.getQuotaStatus();
+            return {
+                status: quota.status,
+                usedBytes: quota.usedBytes,
+                softQuotaBytes: quota.softQuotaBytes,
+                cleanupAvailable: quota.status !== "ok",
+            };
+        },
+    });
+}
+
 async function sendPersistedSessionState(
     sender: electron.WebContents,
     sessionPath: string,
@@ -1233,17 +1758,35 @@ async function sendPersistedSessionState(
     let canonicalPath = sessionPath;
     try {
         canonicalPath = await validateSessionPath(sessionPath);
+        const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
+        if (liveRuntime) {
+            await authorization.guardRuntime(liveRuntime);
+            if (sender.isDestroyed()) return;
+            const state = liveRuntime.runtime.getSessionState();
+            sender.send(
+                "agent:event",
+                makeAgentEventPayload(canonicalPath, rendererSessionPath, authorization, {
+                    type: "session_state",
+                    messages: state.messages,
+                    turns: state.turns,
+                    status: state.status,
+                    steer: state.steerQueue,
+                    followUp: state.followUpQueue,
+                    contextReports: state.contextReports,
+                    commands: state.commands,
+                    workspaceRewind: state.workspaceRewind,
+                    ...(state.rewindState == null ? {} : { rewindState: state.rewindState }),
+                })
+            );
+            return;
+        }
         const session = await openPaneSessionByPath(canonicalPath);
         try {
             const context = await session.buildContext();
             const branch = await session.getBranch();
             const contextState = buildContextStateFromSessionEntries(branch);
-            const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
-            if (liveRuntime) {
-                await authorization.guardRuntime(liveRuntime);
-            } else {
-                await authorization.validateCurrent();
-            }
+            const rewindState = await buildColdRewindState(await session.getMetadata(), await session.getEntries());
+            await authorization.validateCurrent();
             if (sender.isDestroyed()) return;
             sender.send(
                 "agent:event",
@@ -1258,6 +1801,7 @@ async function sendPersistedSessionState(
                     workspaceRewind: {
                         status: isAgentRewindFeatureEnabled() ? "enabled" : "disabled",
                     },
+                    rewindState,
                     ...contextState,
                 })
             );
@@ -1284,6 +1828,7 @@ async function buildPersistedSessionState(
     contextReports: ReturnType<typeof buildContextStateFromSessionEntries>["contextReports"];
     commands: ReturnType<AgentSessionRuntime["getSessionState"]>["commands"];
     workspaceRewind: AgentWorkspaceRewindState;
+    rewindState?: import("@crest/coding-agent/workspace-rewind/api-types").AgentRewindSessionStateView;
 }> {
     const canonicalPath = await validateSessionPath(sessionPath);
     const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
@@ -1300,12 +1845,14 @@ async function buildPersistedSessionState(
             contextReports: state.contextReports,
             commands: state.commands,
             workspaceRewind: state.workspaceRewind,
+            ...(state.rewindState == null ? {} : { rewindState: state.rewindState }),
         };
     }
     const session = await openPaneSessionByPath(canonicalPath);
     try {
         const context = await session.buildContext();
         const branch = await session.getBranch();
+        const rewindState = await buildColdRewindState(await session.getMetadata(), await session.getEntries());
         await guardLiveRuntimeIfPresent([canonicalPath], guardRuntime, beforeReturn);
         return {
             type: "session_state",
@@ -1318,6 +1865,7 @@ async function buildPersistedSessionState(
             workspaceRewind: {
                 status: isAgentRewindFeatureEnabled() ? "enabled" : "disabled",
             },
+            rewindState,
             ...buildContextStateFromSessionEntries(branch),
         };
     } finally {
@@ -1434,6 +1982,7 @@ async function subscribeToOwnerAfterValidation(
                 contextReports: sessionState.contextReports,
                 commands: sessionState.commands,
                 workspaceRewind: sessionState.workspaceRewind,
+                ...(sessionState.rewindState == null ? {} : { rewindState: sessionState.rewindState }),
             })
         );
     } catch (error) {
@@ -1470,7 +2019,9 @@ async function getSessionTreeData(
     beforeReturn?: AuthorizationGuard
 ): Promise<{
     entries: Awaited<ReturnType<AgentSessionRuntime["listTreeEntries"]>>["entries"];
-    leafId: string | null;
+    rawEntries: Awaited<ReturnType<AgentSessionRuntime["listTreeEntries"]>>["rawEntries"];
+    semanticLeafId: string | null;
+    displayLeafId: string | null;
     labels: Map<string, string | undefined>;
 }> {
     const { metadata: sessionMetadata, session, requestedPath } = await validateTreeInput(sessionMetadataInput);
@@ -1491,7 +2042,7 @@ async function getSessionTreeData(
             labels.set(entry.id, await session.getLabel(entry.id));
         }
         await guardLiveRuntimeIfPresent([sessionMetadata.path, requestedPath], guardRuntime, beforeReturn);
-        return { entries, leafId: displayLeafId, labels };
+        return { entries, rawEntries: allEntries, semanticLeafId: rawLeafId, displayLeafId, labels };
     } finally {
         session.close();
     }
@@ -1513,12 +2064,19 @@ export async function listAgentTreeForIpc(
             if (runtimeRegistry.isSessionMutationBusy(canonicalPath)) {
                 throw new Error("Agent session is running");
             }
-            const { entries, leafId, labels } = await getSessionTreeData(
+            const { entries, rawEntries, semanticLeafId, displayLeafId, labels } = await getSessionTreeData(
                 { ...input, path: canonicalPath },
                 guardRuntime,
                 beforeReturn
             );
-            return { entries: buildAgentTreeEntryViews(entries, leafId, labels), leafId };
+            return {
+                entries: buildAgentTreeEntryViews(entries, displayLeafId, labels, rawEntries),
+                semanticLeafId,
+                displayLeafId,
+                // Compatibility for older renderers during the contract
+                // migration; new code must use displayLeafId.
+                leafId: displayLeafId,
+            };
         },
         "sessionMetadata.path"
     );
@@ -1896,12 +2454,33 @@ async function navigateAgentTreeWithOpenSession(
     beforeMutation?: AuthorizationGuard,
     guardRuntime?: LiveRuntimeGuard
 ): Promise<AgentNavigateTreeResult> {
-    const { metadata, session, targetId, requestedPath } = opened;
+    const { metadata, session, targetId, semanticAnchorId, expectedSemanticLeafId, requestedPath } = opened;
+    const currentSemanticLeafId = await session.getLeafId();
+    if (currentSemanticLeafId !== expectedSemanticLeafId) {
+        throw new Error("agent IPC: stale semantic leaf");
+    }
+    const currentTree = await getSessionTreeData(metadata, guardRuntime, beforeMutation);
+    const currentRow = buildAgentTreeEntryViews(
+        currentTree.entries,
+        currentTree.displayLeafId,
+        currentTree.labels,
+        currentTree.rawEntries
+    ).find((entry) => entry.id === targetId);
+    if (!currentRow || currentRow.semanticAnchorId !== semanticAnchorId) {
+        throw new Error("agent IPC: stale semantic anchor");
+    }
+    if (targetId === currentTree.displayLeafId) {
+        return { sessionMetadata: metadata };
+    }
     const liveRuntime = lookupLiveAgentRuntime(metadata.path, requestedPath);
 
     if (liveRuntime) {
         await guardRuntime?.(liveRuntime);
-        const result = await liveRuntime.runtime.navigateTree(targetId);
+        const result = await liveRuntime.runtime.navigateTree(
+            targetId,
+            expectedSemanticLeafId,
+            currentRow.semanticAnchorId
+        );
         await guardRuntime?.(liveRuntime);
         return { sessionMetadata: metadata, ...result };
     }
@@ -1918,7 +2497,7 @@ async function navigateAgentTreeWithOpenSession(
     let editorText: string | undefined;
     let newLeafId: string | null;
     if (targetEntry.type === "message" && (targetEntry.message as { role?: string }).role === "user") {
-        newLeafId = targetEntry.parentId ?? targetId;
+        newLeafId = currentRow.semanticAnchorId;
         const content = (targetEntry.message as { content?: unknown }).content;
         editorText =
             typeof content === "string"
@@ -1933,7 +2512,7 @@ async function navigateAgentTreeWithOpenSession(
                         .join("")
                   : undefined;
     } else if (targetEntry.type === "custom_message") {
-        newLeafId = targetEntry.parentId ?? targetId;
+        newLeafId = currentRow.semanticAnchorId;
         const content = (targetEntry as { content?: unknown }).content;
         editorText =
             typeof content === "string"
@@ -1948,7 +2527,7 @@ async function navigateAgentTreeWithOpenSession(
                         .join("")
                   : undefined;
     } else {
-        newLeafId = targetId;
+        newLeafId = currentRow.semanticAnchorId;
     }
     if (oldLeafId !== newLeafId) {
         await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
@@ -1958,6 +2537,7 @@ async function navigateAgentTreeWithOpenSession(
     const branchEntries = await session.getBranch();
     const context = await session.buildContext();
     const turns = buildPersistedTurnsFromSessionEntries(branchEntries);
+    const rewindState = await buildColdRewindState(metadata, await session.getEntries());
     await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
 
     // Broadcast the post-navigate session_state to every sender that has a
@@ -1976,6 +2556,7 @@ async function navigateAgentTreeWithOpenSession(
         workspaceRewind: {
             status: isAgentRewindFeatureEnabled() ? ("enabled" as const) : ("disabled" as const),
         },
+        rewindState,
         ...buildContextStateFromSessionEntries(branchEntries),
     };
     for (const [, pending] of pendingSubscriptions) {
@@ -2549,7 +3130,9 @@ export async function renameAgentSessionForIpc(
 export async function archiveAgentSessionForIpc(
     sessionMetadata: JsonlSessionMetadata,
     beforeMutation?: AuthorizationGuard,
-    persistence?: AgentSessionRemovalPersistence
+    persistence?: AgentSessionRemovalPersistence,
+    withWorkspaceMutation: <T>(operation: () => Promise<T>) => Promise<T> = async (operation) => operation(),
+    reconcileWorkspaceOwners: () => Promise<void> = async () => {}
 ): Promise<JsonlSessionMetadata> {
     const canonicalPath = await validateSessionPath(sessionMetadata.path);
     await beforeMutation?.();
@@ -2584,36 +3167,38 @@ export async function archiveAgentSessionForIpc(
                     }
                 },
             },
-            async () => {
-                await beforeMutation?.();
-                const activeSuspension = suspended!;
-                let archived: JsonlSessionMetadata | undefined;
-                try {
-                    archived = await archivePaneSession(canonicalMetadata);
-                    if (workspace && target && persistence) {
-                        await clearPersistedActiveSession(persistence, workspace, target);
-                    }
-                    commitSuspendedSubscriptions(activeSuspension);
-                    suspensionFinalized = true;
-                    return archived;
-                } catch (error) {
-                    if (!archived) {
+            async () =>
+                withWorkspaceMutation(async () => {
+                    await beforeMutation?.();
+                    const activeSuspension = suspended!;
+                    let archived: JsonlSessionMetadata | undefined;
+                    try {
+                        archived = await archivePaneSession(canonicalMetadata);
+                        if (workspace && target && persistence) {
+                            await clearPersistedActiveSession(persistence, workspace, target);
+                        }
+                        await reconcileWorkspaceOwners();
+                        commitSuspendedSubscriptions(activeSuspension);
+                        suspensionFinalized = true;
+                        return archived;
+                    } catch (error) {
+                        if (!archived) {
+                            await restoreSuspendedSubscriptions(activeSuspension);
+                            suspensionFinalized = true;
+                            throw error;
+                        }
+                        try {
+                            await rollbackMovedSession("archive", archived, canonicalPath, error);
+                        } catch (rollbackError) {
+                            commitSuspendedSubscriptions(activeSuspension);
+                            suspensionFinalized = true;
+                            throw rollbackError;
+                        }
                         await restoreSuspendedSubscriptions(activeSuspension);
                         suspensionFinalized = true;
                         throw error;
                     }
-                    try {
-                        await rollbackMovedSession("archive", archived, canonicalPath, error);
-                    } catch (rollbackError) {
-                        commitSuspendedSubscriptions(activeSuspension);
-                        suspensionFinalized = true;
-                        throw rollbackError;
-                    }
-                    await restoreSuspendedSubscriptions(activeSuspension);
-                    suspensionFinalized = true;
-                    throw error;
-                }
-            }
+                })
         );
     } catch (error) {
         if (suspended && !suspensionFinalized) {
@@ -2626,7 +3211,9 @@ export async function archiveAgentSessionForIpc(
 export async function deleteAgentSessionForIpc(
     sessionMetadata: JsonlSessionMetadata,
     beforeMutation?: AuthorizationGuard,
-    persistence?: AgentSessionRemovalPersistence
+    persistence?: AgentSessionRemovalPersistence,
+    withWorkspaceMutation: <T>(operation: () => Promise<T>) => Promise<T> = async (operation) => operation(),
+    reconcileWorkspaceOwners: () => Promise<void> = async () => {}
 ): Promise<void> {
     const canonicalPath = await validateSessionPath(sessionMetadata.path);
     await beforeMutation?.();
@@ -2661,35 +3248,37 @@ export async function deleteAgentSessionForIpc(
                     }
                 },
             },
-            async () => {
-                await beforeMutation?.();
-                const activeSuspension = suspended!;
-                let staged: JsonlSessionMetadata | undefined;
-                try {
-                    staged = await stageDeletePaneSession(canonicalMetadata);
-                    if (workspace && target && persistence) {
-                        await clearPersistedActiveSession(persistence, workspace, target);
-                    }
-                    commitSuspendedSubscriptions(activeSuspension);
-                    suspensionFinalized = true;
-                } catch (error) {
-                    if (!staged) {
+            async () =>
+                withWorkspaceMutation(async () => {
+                    await beforeMutation?.();
+                    const activeSuspension = suspended!;
+                    let staged: JsonlSessionMetadata | undefined;
+                    try {
+                        staged = await stageDeletePaneSession(canonicalMetadata);
+                        if (workspace && target && persistence) {
+                            await clearPersistedActiveSession(persistence, workspace, target);
+                        }
+                        await reconcileWorkspaceOwners();
+                        commitSuspendedSubscriptions(activeSuspension);
+                        suspensionFinalized = true;
+                    } catch (error) {
+                        if (!staged) {
+                            await restoreSuspendedSubscriptions(activeSuspension);
+                            suspensionFinalized = true;
+                            throw error;
+                        }
+                        try {
+                            await rollbackMovedSession("delete", staged, canonicalPath, error);
+                        } catch (rollbackError) {
+                            commitSuspendedSubscriptions(activeSuspension);
+                            suspensionFinalized = true;
+                            throw rollbackError;
+                        }
                         await restoreSuspendedSubscriptions(activeSuspension);
                         suspensionFinalized = true;
                         throw error;
                     }
-                    try {
-                        await rollbackMovedSession("delete", staged, canonicalPath, error);
-                    } catch (rollbackError) {
-                        commitSuspendedSubscriptions(activeSuspension);
-                        suspensionFinalized = true;
-                        throw rollbackError;
-                    }
-                    await restoreSuspendedSubscriptions(activeSuspension);
-                    suspensionFinalized = true;
-                    throw error;
-                }
-            }
+                })
         );
     } catch (error) {
         if (suspended && !suspensionFinalized) {
@@ -2750,12 +3339,17 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         workspaceId: authenticated.workspaceId,
         generation: authenticated.generation,
         validateCurrent: () => assertCurrent(event, authenticated),
-        guardRuntime: (lookup) =>
-            guardLiveAgentRuntimeAccess({
+        guardRuntime: async (lookup) => {
+            await guardLiveAgentRuntimeAccess({
                 lookup,
                 workspaceId: authenticated.workspaceId,
                 beforeAccess: () => assertCurrent(event, authenticated),
-            }),
+            });
+            lookup.runtime.setWorkspaceWriteGuard(async () => {
+                await assertCurrent(event, authenticated);
+                await assertWorkspaceWritable(authenticated);
+            });
+        },
     });
     const authorizeSession = async (
         event: electron.IpcMainInvokeEvent,
@@ -2767,9 +3361,522 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         await assertCurrent(event, authenticated);
         return { authenticated, metadata };
     };
+    const confirmations = new RewindConfirmationRegistry();
+    const defaultRewindService = new AgentRewindService({
+        registry: runtimeRegistry,
+        confirmations,
+        openSession: (metadata) => openPaneSessionByPath(metadata.path),
+        resolveWorkspace: async ({ sessionMetadata, publishState }) => {
+            const { getWaveDataDir } = await import("./emain-platform");
+            const feature = await openAgentRewindFeature({
+                workspaceRoot: sessionMetadata.cwd,
+                dataRoot: getWaveDataDir(),
+            });
+            if (feature.state !== "enabled") {
+                throw new Error(feature.state === "unavailable" ? feature.message : "Workspace rewind is unavailable");
+            }
+            const journal = new WorkspaceRecoveryJournal(feature.store);
+            const recovery = new WorkspaceRecovery({
+                workspace: feature.store.identity,
+                store: feature.store,
+                journal,
+                locateSession: async (sessionId) => {
+                    if (sessionId !== sessionMetadata.id) return undefined;
+                    return {
+                        async getLeafId() {
+                            const session = await openPaneSessionByPath(sessionMetadata.path);
+                            try {
+                                return await session.getLeafId();
+                            } finally {
+                                session.close();
+                            }
+                        },
+                        async getEntry(id) {
+                            const session = await openPaneSessionByPath(sessionMetadata.path);
+                            try {
+                                return await session.getEntry(id);
+                            } finally {
+                                session.close();
+                            }
+                        },
+                    };
+                },
+            });
+            const engine = new WorkspaceRewindEngine({
+                store: feature.store,
+                journal,
+                recovery,
+                confirmations,
+                onCommitted: async () => await publishState(),
+            });
+            return { workspace: feature.store.identity, store: feature.store, engine };
+        },
+        broadcaster: {
+            publishForLease: async (lease, sessionMetadata) =>
+                await runtimeRegistry.withMutationLeaseAccess(lease, async (runtime) => {
+                    let state;
+                    if (runtime) {
+                        state = toAuthoritativeAgentSessionState(
+                            await runtime.refreshFromPersistedBranch({
+                                discardCompletedPtyHistory: true,
+                            })
+                        );
+                    } else {
+                        const session = await openPaneSessionByPath(sessionMetadata.path);
+                        try {
+                            const branch = await session.getBranch();
+                            const context = await session.buildContext();
+                            state = {
+                                type: "session_state" as const,
+                                messages: context.messages,
+                                turns: buildPersistedTurnsFromSessionEntries(branch),
+                                status: "idle" as const,
+                                errorMessage: undefined,
+                                steer: [],
+                                followUp: [],
+                                contextReports: buildContextStateFromSessionEntries(branch).contextReports,
+                                commands: [],
+                                workspaceRewind: {
+                                    status: isAgentRewindFeatureEnabled()
+                                        ? ("enabled" as const)
+                                        : ("disabled" as const),
+                                },
+                                rewindState: await buildColdRewindState(
+                                    await session.getMetadata(),
+                                    await session.getEntries()
+                                ),
+                            };
+                        } finally {
+                            session.close();
+                        }
+                    }
+                    for (const subscription of subscriptions.values()) {
+                        if (subscription.sessionPath !== sessionMetadata.path || subscription.sender.isDestroyed()) {
+                            continue;
+                        }
+                        await subscription.authorization.validateCurrent();
+                        subscription.sender.send(
+                            "agent:event",
+                            makeAgentEventPayload(
+                                sessionMetadata.path,
+                                subscription.rendererPath,
+                                subscription.authorization,
+                                state
+                            )
+                        );
+                    }
+                    for (const pending of pendingSubscriptions.values()) {
+                        if (pending.canonicalPath !== sessionMetadata.path || pending.sender.isDestroyed()) continue;
+                        await pending.authorization.validateCurrent();
+                        pending.sender.send(
+                            "agent:event",
+                            makeAgentEventPayload(
+                                sessionMetadata.path,
+                                pending.rendererPath,
+                                pending.authorization,
+                                state
+                            )
+                        );
+                    }
+                    return state;
+                }),
+        },
+    });
+    const purgeConfirmations = new CheckpointPurgeConfirmationRegistry();
+    const quotaView = async (
+        store: Extract<AgentRewindFeature, { state: "enabled" }>["store"],
+        lockAlreadyHeld = false
+    ) => {
+        const quota = await (lockAlreadyHeld ? store.getQuotaStatusAssumingLock() : store.getQuotaStatus());
+        return {
+            status: quota.status,
+            usedBytes: quota.usedBytes,
+            softQuotaBytes: quota.softQuotaBytes,
+            cleanupAvailable: quota.status !== "ok",
+            ...(quota.status === "ok"
+                ? {}
+                : {
+                      message:
+                          quota.status === "referenced-over-quota"
+                              ? "Referenced checkpoints exceed the storage quota"
+                              : "Checkpoint storage exceeds the soft quota",
+                  }),
+        } as const;
+    };
+    const openMaintenanceFeature = async (metadata: JsonlSessionMetadata) => {
+        const { getWaveDataDir } = await import("./emain-platform");
+        const feature = await openAgentRewindFeature({
+            workspaceRoot: metadata.cwd,
+            dataRoot: getWaveDataDir(),
+        });
+        if (feature.state !== "enabled") {
+            throw new Error(feature.state === "unavailable" ? feature.message : "Workspace rewind is unavailable");
+        }
+        return feature;
+    };
+    const canonicalTrashLocation = async (
+        sessionPath: string
+    ): Promise<{ canonicalPath: string; canonicalParent: string; lifecycleGeneration: string }> => {
+        const sessionsRoot = await fs.realpath(defaultSessionsDir());
+        const trashRoot = await fs.realpath(path.join(sessionsRoot, ".trash"));
+        const canonicalPath = await fs.realpath(sessionPath);
+        const relative = path.relative(trashRoot, canonicalPath);
+        const segments = relative.split(path.sep);
+        if (
+            relative === "" ||
+            relative.startsWith("..") ||
+            path.isAbsolute(relative) ||
+            segments.length !== 2 ||
+            segments.some((segment) => segment === "" || segment === "." || segment === "..")
+        ) {
+            throw new Error("Session is not a canonical direct trash entry");
+        }
+        const canonicalParent = await fs.realpath(path.dirname(canonicalPath));
+        if (path.dirname(canonicalParent) !== trashRoot) {
+            throw new Error("Session trash lifecycle parent is not canonical");
+        }
+        const parentStat = await fs.stat(canonicalParent, { bigint: true });
+        if (!parentStat.isDirectory()) {
+            throw new Error("Session trash lifecycle parent is unsafe");
+        }
+        return {
+            canonicalPath,
+            canonicalParent,
+            lifecycleGeneration: `${parentStat.dev}:${parentStat.ino}:${parentStat.birthtimeNs}:${parentStat.ctimeNs}`,
+        };
+    };
+    const canonicalDatabaseIdentity = async (sessionPath: string): Promise<string> => {
+        const canonicalPath = await fs.realpath(sessionPath);
+        const stat = await fs.stat(canonicalPath, { bigint: true });
+        if (!stat.isFile() || stat.nlink !== 1n) {
+            throw new Error("Trashed session database is unsafe");
+        }
+        const digest = createHash("sha256");
+        for await (const chunk of createReadStream(canonicalPath)) {
+            digest.update(chunk as Buffer);
+        }
+        return [
+            canonicalPath,
+            stat.dev,
+            stat.ino,
+            stat.birthtimeNs,
+            stat.size,
+            stat.mtimeNs,
+            stat.ctimeNs,
+            digest.digest("hex"),
+        ].join(":");
+    };
+    const locateRecoverySession = (sessionMetadata: JsonlSessionMetadata) => async (sessionId: string) => {
+        const metadata =
+            sessionId === sessionMetadata.id ? sessionMetadata : await getSessionsRepo().findById(sessionId);
+        if (!metadata) return undefined;
+        return {
+            async getLeafId() {
+                const session = await openPaneSessionByPath(metadata.path);
+                try {
+                    return await session.getLeafId();
+                } finally {
+                    session.close();
+                }
+            },
+            async getEntry(id: string) {
+                const session = await openPaneSessionByPath(metadata.path);
+                try {
+                    return await session.getEntry(id);
+                } finally {
+                    session.close();
+                }
+            },
+        };
+    };
+    const makeRecovery = (
+        metadata: JsonlSessionMetadata,
+        feature: Extract<AgentRewindFeature, { state: "enabled" }>,
+        assertCurrent: () => Promise<void> = async () => {}
+    ) => {
+        const journal = new WorkspaceRecoveryJournal(feature.store);
+        return new WorkspaceRecovery({
+            workspace: feature.store.identity,
+            store: feature.store,
+            journal,
+            locateSession: locateRecoverySession(metadata),
+            withSessionLease: withRecoverySessionMutation,
+            assertCurrent,
+        });
+    };
+    const defaultMaintenance: NonNullable<AgentIpcRegistrationOptions["rewindMaintenance"]> = {
+        async getRecovery(input) {
+            if (!isRecord(input)) throw new Error("agent IPC: recovery input must be an object");
+            const metadata = validateSessionMetadataShape(input.sessionMetadata);
+            const feature = await openMaintenanceFeature(metadata);
+            const recoveryGate = options.recoveryGate ?? getAgentWorkspaceRecoveryGate();
+            const startupDiagnostic =
+                (await recoveryGate.probeFrozenDiagnostic?.(feature.store.identity)) ??
+                recoveryGate.getFrozenDiagnostic?.(feature.store.identity);
+            if (startupDiagnostic) {
+                return {
+                    operationId: startupDiagnostic.operationId,
+                    corrupt: startupDiagnostic.corrupt,
+                    message: startupDiagnostic.message,
+                    paths: [],
+                    allowedActions: startupDiagnostic.allowedActions,
+                };
+            }
+            return await makeRecovery(metadata, feature).getRecoveryState(feature.store.identity);
+        },
+        async resolveRecovery(input, assertCurrent = async () => {}) {
+            if (!isRecord(input)) throw new Error("agent IPC: recovery input must be an object");
+            const metadata = validateSessionMetadataShape(input.sessionMetadata);
+            const operationId = requireNonEmptyString(input.operationId, "operationId");
+            const feature = await openMaintenanceFeature(metadata);
+            const action = input.action;
+            if (action !== "retry" && action !== "abandon-current" && action !== "quarantine-corrupt") {
+                throw new Error("agent IPC: invalid recovery action");
+            }
+            const recoveryGate = options.recoveryGate ?? getAgentWorkspaceRecoveryGate();
+            if (
+                await recoveryGate.resolveFrozenDiagnostic?.(feature.store.identity, operationId, action, assertCurrent)
+            ) {
+                return;
+            }
+            const recovery = makeRecovery(metadata, feature, assertCurrent);
+            if (action === "retry") await recovery.retry(operationId);
+            else if (action === "abandon-current") await recovery.abandonKeepingCurrent(operationId);
+            else await recovery.quarantineCorrupt(operationId);
+            await recoveryGate.clearFrozenDiagnostic?.(feature.store.identity, operationId);
+        },
+        async cleanup(input, assertCurrent = async () => {}) {
+            if (!isRecord(input)) throw new Error("agent IPC: cleanup input must be an object");
+            const metadata = validateSessionMetadataShape(input.sessionMetadata);
+            const feature = await openMaintenanceFeature(metadata);
+            return await feature.store.withWorkspaceLock(async () => {
+                await assertCurrent();
+                const before = await feature.store.getQuotaStatusAssumingLock();
+                const report = await reconcileSnapshotRefsLocked({
+                    store: feature.store,
+                    sessionsRoot: defaultSessionsDir(),
+                });
+                if (report.failClosedReason) throw new Error(report.failClosedReason);
+                await assertCurrent();
+                const quota = await quotaView(feature.store, true);
+                return {
+                    removedUnownedBytes: Math.max(0, before.usedBytes - quota.usedBytes),
+                    quota,
+                };
+            });
+        },
+        async listStorageOwners(input) {
+            if (!isRecord(input)) throw new Error("agent IPC: storage owner input must be an object");
+            const metadata = validateSessionMetadataShape(input.sessionMetadata);
+            const feature = await openMaintenanceFeature(metadata);
+            const sessions = await getSessionsRepo().scanAllMetadata();
+            const trashOwners = [];
+            for (const candidate of sessions) {
+                const trash = await canonicalTrashLocation(candidate.path).catch(() => undefined);
+                if (!trash) continue;
+                const candidateRoot = await fs.realpath(candidate.cwd).catch(() => undefined);
+                if (candidateRoot !== feature.store.identity.canonicalRoot) continue;
+                const session = await openPaneSessionByPath(trash.canonicalPath);
+                let snapshots;
+                try {
+                    snapshots = collectSessionSnapshotOwners(await session.getEntries(), feature.store);
+                } finally {
+                    session.close();
+                }
+                if (snapshots.length === 0) continue;
+                const databaseIdentity = await canonicalDatabaseIdentity(candidate.path);
+                trashOwners.push({
+                    sessionId: candidate.id,
+                    referencedBytes: await feature.store.measureSnapshotUsage(snapshots),
+                    confirmationToken: purgeConfirmations.issue({
+                        workspaceIdentity: feature.store.identity.workspaceIdentity,
+                        workspaceIncarnation: feature.store.identity.workspaceIncarnation,
+                        trashedSessionId: candidate.id,
+                        trashLifecycleGeneration: trash.lifecycleGeneration,
+                        canonicalTrashPath: trash.canonicalPath,
+                        canonicalDatabaseIdentity: databaseIdentity,
+                    }),
+                });
+            }
+            return { trashOwners };
+        },
+        async purgeTrashedSession(input, assertCurrent = async () => {}) {
+            if (!isRecord(input)) throw new Error("agent IPC: purge input must be an object");
+            const metadata = validateSessionMetadataShape(input.sessionMetadata);
+            const trashedSessionId = requireNonEmptyString(input.trashedSessionId, "trashedSessionId");
+            const confirmationToken = requireNonEmptyString(input.confirmationToken, "confirmationToken");
+            const feature = await openMaintenanceFeature(metadata);
+            const target = await getSessionsRepo().findById(trashedSessionId);
+            const targetTrash = target ? await canonicalTrashLocation(target.path).catch(() => undefined) : undefined;
+            if (!target || !targetTrash) {
+                throw new Error("Trashed session no longer exists");
+            }
+            if ((await fs.realpath(target.cwd).catch(() => undefined)) !== feature.store.identity.canonicalRoot) {
+                throw new Error("Trashed session belongs to another workspace");
+            }
+            return await runtimeRegistry.withExclusiveSessionMutation(
+                target.path,
+                { rejectIfRunning: true },
+                async () =>
+                    await feature.store.withWorkspaceLock(async () => {
+                        await assertCurrent();
+                        const current = await getSessionsRepo().findById(trashedSessionId);
+                        const currentTrash = current
+                            ? await canonicalTrashLocation(current.path).catch(() => undefined)
+                            : undefined;
+                        if (!current || !currentTrash || current.path !== target.path) {
+                            throw new Error("Trashed session changed before purge");
+                        }
+                        if (
+                            (await fs.realpath(current.cwd).catch(() => undefined)) !==
+                            feature.store.identity.canonicalRoot
+                        ) {
+                            throw new Error("Trashed session workspace changed before purge");
+                        }
+                        const databaseIdentity = await canonicalDatabaseIdentity(current.path);
+                        const binding = purgeConfirmations.take(confirmationToken);
+                        if (
+                            binding.workspaceIdentity !== feature.store.identity.workspaceIdentity ||
+                            binding.workspaceIncarnation !== feature.store.identity.workspaceIncarnation ||
+                            binding.trashedSessionId !== trashedSessionId ||
+                            binding.trashLifecycleGeneration !== currentTrash.lifecycleGeneration ||
+                            binding.canonicalTrashPath !== currentTrash.canonicalPath ||
+                            binding.canonicalDatabaseIdentity !== databaseIdentity
+                        ) {
+                            throw new Error("Purge confirmation does not match the current session database");
+                        }
+                        await assertCurrent();
+                        await removeDurableFile(current.path);
+                        const report = await reconcileSnapshotRefsLocked({
+                            store: feature.store,
+                            sessionsRoot: defaultSessionsDir(),
+                        });
+                        if (report.failClosedReason) throw new Error(report.failClosedReason);
+                        await assertCurrent();
+                        return {
+                            purgedSessionId: trashedSessionId,
+                            quota: await quotaView(feature.store, true),
+                        };
+                    })
+            );
+        },
+    };
+    const removalWorkspaceHooks = async (metadata: JsonlSessionMetadata) => {
+        if (!isAgentRewindFeatureEnabled()) {
+            return {
+                withWorkspaceMutation: async <T>(operation: () => Promise<T>) => operation(),
+                reconcileWorkspaceOwners: async () => {},
+            };
+        }
+        const feature = await openMaintenanceFeature(metadata);
+        return {
+            withWorkspaceMutation: <T>(operation: () => Promise<T>) => feature.store.withWorkspaceLock(operation),
+            reconcileWorkspaceOwners: async () => {
+                const report = await reconcileSnapshotRefsLocked({
+                    store: feature.store,
+                    sessionsRoot: defaultSessionsDir(),
+                });
+                if (report.failClosedReason) throw new Error(report.failClosedReason);
+                await feature.store.getQuotaStatusAssumingLock();
+            },
+        };
+    };
+    const assertWorkspaceWritable = async (authenticated: AuthenticatedWorkspaceAgentSender): Promise<void> => {
+        if (!isAgentRewindFeatureEnabled() || !options.recoveryGate) return;
+        const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
+            authenticated.workspaceDir
+        );
+        await options.recoveryGate.assertWorkspaceWritable(workspace);
+    };
+    type RewindIpcSchema =
+        | "list"
+        | "preview"
+        | "rewind"
+        | "redo"
+        | "get-recovery"
+        | "resolve-recovery"
+        | "cleanup"
+        | "list-owners"
+        | "purge";
+    const RewindIpcKeys: Record<RewindIpcSchema, readonly string[]> = {
+        list: ["sessionMetadata"],
+        preview: ["sessionMetadata", "expectedSemanticLeafId", "target"],
+        rewind: ["sessionMetadata", "expectedSemanticLeafId", "targetTurnId", "mode", "confirmationToken"],
+        redo: ["sessionMetadata", "expectedSemanticLeafId", "confirmationToken"],
+        "get-recovery": ["sessionMetadata"],
+        "resolve-recovery": ["sessionMetadata", "operationId", "action"],
+        cleanup: ["sessionMetadata"],
+        "list-owners": ["sessionMetadata"],
+        purge: ["sessionMetadata", "trashedSessionId", "confirmationToken"],
+    };
+    const assertExactKeys = (value: Record<string, unknown>, allowed: readonly string[], label: string): void => {
+        const allowedKeys = new Set(allowed);
+        const unexpected = Object.keys(value).find((key) => !allowedKeys.has(key));
+        if (unexpected) {
+            throw new Error(`agent IPC: unexpected ${unexpected} in ${label}`);
+        }
+    };
+    const validateRewindIpcSchema = (value: Record<string, unknown>, schema: RewindIpcSchema): void => {
+        assertExactKeys(value, RewindIpcKeys[schema], `${schema} input`);
+        if (!isRecord(value.sessionMetadata)) {
+            throw new Error("agent IPC: sessionMetadata must be an object");
+        }
+        assertExactKeys(
+            value.sessionMetadata,
+            ["id", "createdAt", "path", "cwd", "parentSessionPath"],
+            "sessionMetadata"
+        );
+        if (schema !== "preview") return;
+        if (!isRecord(value.target)) throw new Error("agent IPC: preview target must be an object");
+        const kind = value.target.kind;
+        if (kind === "rewind") {
+            assertExactKeys(value.target, ["kind", "targetTurnId"], "preview target");
+            requireNonEmptyString(value.target.targetTurnId, "target.targetTurnId");
+            return;
+        }
+        if (kind === "redo") {
+            assertExactKeys(value.target, ["kind"], "preview target");
+            return;
+        }
+        throw new Error("agent IPC: invalid preview target kind");
+    };
+    const authorizeRewindInput = async (
+        event: electron.IpcMainInvokeEvent,
+        requestContext: unknown,
+        input: unknown,
+        schema: RewindIpcSchema,
+        writable: boolean
+    ): Promise<{
+        authenticated: AuthenticatedWorkspaceAgentSender;
+        input: Record<string, unknown> & { sessionMetadata: JsonlSessionMetadata };
+    }> => {
+        if (!isRecord(input)) throw new Error("agent IPC: rewind input must be an object");
+        validateRewindIpcSchema(input, schema);
+        const { authenticated, metadata } = await authorizeSession(event, requestContext, input.sessionMetadata);
+        if (writable) await assertWorkspaceWritable(authenticated);
+        return {
+            authenticated,
+            input: { ...input, sessionMetadata: metadata } as Record<string, unknown> & {
+                sessionMetadata: JsonlSessionMetadata;
+            },
+        };
+    };
+    const requireRewindService = () => {
+        if (!isAgentRewindFeatureEnabled()) {
+            throw new Error("Workspace rewind is unavailable");
+        }
+        return options.rewindService ?? defaultRewindService;
+    };
+    const requireRewindMaintenance = () => {
+        if (!isAgentRewindFeatureEnabled()) {
+            throw new Error("Workspace rewind maintenance is unavailable");
+        }
+        return options.rewindMaintenance ?? defaultMaintenance;
+    };
 
     electron.ipcMain.handle("agent:create-session", async (event, requestContext): Promise<JsonlSessionMetadata> => {
         const authenticated = await authenticate(event, requestContext);
+        await assertWorkspaceWritable(authenticated);
         await assertCurrent(event, authenticated);
         const created = await createPaneSession(authenticated.workspaceDir);
         try {
@@ -2817,6 +3924,70 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             return result;
         }
     );
+
+    electron.ipcMain.handle("agent:list-rewind-points", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "list", false);
+        const result = await requireRewindService().listPoints(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:preview-rewind", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "preview", false);
+        const result = await requireRewindService().preview(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:rewind-tree", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "rewind", true);
+        const result = await requireRewindService().rewind(authorized.input, () =>
+            assertCurrent(event, authorized.authenticated)
+        );
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:redo-rewind", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "redo", true);
+        const result = await requireRewindService().redo(authorized.input, () =>
+            assertCurrent(event, authorized.authenticated)
+        );
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:get-workspace-recovery", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "get-recovery", false);
+        const result = await requireRewindMaintenance().getRecovery(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:resolve-workspace-recovery", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "resolve-recovery", false);
+        await requireRewindMaintenance().resolveRecovery(authorized.input, () =>
+            assertCurrent(event, authorized.authenticated)
+        );
+        await assertCurrent(event, authorized.authenticated);
+    });
+    electron.ipcMain.handle("agent:cleanup-workspace-checkpoints", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "cleanup", true);
+        const result = await requireRewindMaintenance().cleanup(authorized.input, () =>
+            assertCurrent(event, authorized.authenticated)
+        );
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:list-checkpoint-storage-owners", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "list-owners", false);
+        const result = await requireRewindMaintenance().listStorageOwners(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:purge-trashed-session", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "purge", true);
+        const result = await requireRewindMaintenance().purgeTrashedSession(authorized.input, () =>
+            assertCurrent(event, authorized.authenticated)
+        );
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
 
     electron.ipcMain.handle("agent:get-session-state", async (event, requestContext, sessionMetadata) => {
         const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
@@ -2875,6 +4046,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         "agent:navigate-tree",
         async (event, requestContext, input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> => {
             const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
+            await assertWorkspaceWritable(authenticated);
             const authorization = makeAuthorization(event, authenticated);
             const result = await navigateAgentTreeForIpc(
                 { ...input, sessionMetadata: metadata },
@@ -2890,6 +4062,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         "agent:fork-session",
         async (event, requestContext, input: AgentForkSessionInput): Promise<AgentForkSessionResult> => {
             const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
+            await assertWorkspaceWritable(authenticated);
             const authorization = makeAuthorization(event, authenticated);
             const result = await forkAgentSessionForIpc(
                 {
@@ -2909,6 +4082,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         "agent:clone-session",
         async (event, requestContext, input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> => {
             const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
+            await assertWorkspaceWritable(authenticated);
             const authorization = makeAuthorization(event, authenticated);
             const result = await cloneAgentSessionForIpc(
                 {
@@ -2928,6 +4102,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         "agent:run-command",
         async (event, requestContext, input: AgentRunCommandInput): Promise<AgentCommandExecutionResult> => {
             const authenticated = await authenticate(event, requestContext);
+            await assertWorkspaceWritable(authenticated);
             let sessionMetadata = input?.sessionMetadata;
             if (sessionMetadata) {
                 sessionMetadata = await requireSessionBelongsToWorkspace(authenticated, sessionMetadata);
@@ -2957,7 +4132,10 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         ): Promise<ContextIpcEnvelope<{ sessionMetadata: JsonlSessionMetadata; turnId: string }>> => {
             return await contextIpcEnvelope(async () => {
                 const authenticated = await authenticate(event, requestContext);
-                const rendererContext = await parseAgentExecutionContext(input.context);
+                await assertWorkspaceWritable(authenticated);
+                const rendererContext = await parseAgentExecutionContext(input.context, {
+                    validatePreferredTerminal: authenticated.validatePreferredTerminal,
+                });
                 if (
                     rendererContext.workspaceId !== authenticated.workspaceId ||
                     rendererContext.workspaceDir !== authenticated.workspaceDir
@@ -3105,6 +4283,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             throw new Error("agent IPC: renameSession input must be an object");
         }
         const { authenticated, metadata } = await authorizeSession(event, requestContext, input.sessionMetadata);
+        await assertWorkspaceWritable(authenticated);
         const name = requireSessionName(input.name);
         await renameAgentSessionForIpc(metadata, name, () => assertCurrent(event, authenticated));
         await assertCurrent(event, authenticated);
@@ -3114,11 +4293,19 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         "agent:archive-session",
         async (event, requestContext, sessionMetadata): Promise<JsonlSessionMetadata> => {
             const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
-            const archived = await archiveAgentSessionForIpc(metadata, () => assertCurrent(event, authenticated), {
-                workspaceId: authenticated.workspaceId,
-                loadWorkspace: options.loadWorkspace,
-                saveWorkspaceAgentState: options.saveWorkspaceAgentState,
-            });
+            await assertWorkspaceWritable(authenticated);
+            const workspaceHooks = await removalWorkspaceHooks(metadata);
+            const archived = await archiveAgentSessionForIpc(
+                metadata,
+                () => assertCurrent(event, authenticated),
+                {
+                    workspaceId: authenticated.workspaceId,
+                    loadWorkspace: options.loadWorkspace,
+                    saveWorkspaceAgentState: options.saveWorkspaceAgentState,
+                },
+                workspaceHooks.withWorkspaceMutation,
+                workspaceHooks.reconcileWorkspaceOwners
+            );
             await assertCurrent(event, authenticated);
             return archived;
         }
@@ -3126,11 +4313,19 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
 
     electron.ipcMain.handle("agent:delete-session", async (event, requestContext, sessionMetadata) => {
         const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
-        await deleteAgentSessionForIpc(metadata, () => assertCurrent(event, authenticated), {
-            workspaceId: authenticated.workspaceId,
-            loadWorkspace: options.loadWorkspace,
-            saveWorkspaceAgentState: options.saveWorkspaceAgentState,
-        });
+        await assertWorkspaceWritable(authenticated);
+        const workspaceHooks = await removalWorkspaceHooks(metadata);
+        await deleteAgentSessionForIpc(
+            metadata,
+            () => assertCurrent(event, authenticated),
+            {
+                workspaceId: authenticated.workspaceId,
+                loadWorkspace: options.loadWorkspace,
+                saveWorkspaceAgentState: options.saveWorkspaceAgentState,
+            },
+            workspaceHooks.withWorkspaceMutation,
+            workspaceHooks.reconcileWorkspaceOwners
+        );
         await assertCurrent(event, authenticated);
     });
 

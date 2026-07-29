@@ -19,6 +19,15 @@ describe("AgentRuntimeClient", () => {
             forkSession: vi.fn(async () => ({})),
             cloneSession: vi.fn(async () => ({})),
             runCommand: vi.fn(async () => ({})),
+            listRewindPoints: vi.fn(async () => ({ points: [], semanticLeafId: null, displayLeafId: null })),
+            previewRewind: vi.fn(async () => ({})),
+            rewindTree: vi.fn(async () => ({})),
+            redoRewind: vi.fn(async () => ({})),
+            getWorkspaceRecovery: vi.fn(async () => undefined),
+            resolveWorkspaceRecovery: vi.fn(async () => undefined),
+            cleanupWorkspaceCheckpoints: vi.fn(async () => ({})),
+            listCheckpointStorageOwners: vi.fn(async () => ({ trashOwners: [] })),
+            purgeTrashedSession: vi.fn(async () => ({})),
             commandRead: vi.fn(async () => ({})),
             commandWrite: vi.fn(async () => {}),
             commandResize: vi.fn(async () => {}),
@@ -43,6 +52,15 @@ describe("AgentRuntimeClient", () => {
         await client.forkSession({ sessionMetadata: { path: "/session" }, entryId: "entry" } as never);
         await client.cloneSession({ sessionMetadata: { path: "/session" } } as never);
         await client.runCommand({ command: "new", argsText: "" } as never);
+        await client.listRewindPoints({ sessionMetadata: { path: "/session" } } as never);
+        await client.previewRewind({ sessionMetadata: { path: "/session" } } as never);
+        await client.rewindTree({ sessionMetadata: { path: "/session" } } as never);
+        await client.redoRewind({ sessionMetadata: { path: "/session" } } as never);
+        await client.getWorkspaceRecovery({ sessionMetadata: { path: "/session" } } as never);
+        await client.resolveWorkspaceRecovery({ sessionMetadata: { path: "/session" } } as never);
+        await client.cleanupWorkspaceCheckpoints({ sessionMetadata: { path: "/session" } } as never);
+        await client.listCheckpointStorageOwners({ sessionMetadata: { path: "/session" } } as never);
+        await client.purgeTrashedSession({ sessionMetadata: { path: "/session" } } as never);
         await client.commandRead({ path: "/session" } as AgentSessionMeta, "cmd-1");
         await client.commandWrite({ path: "/session" } as AgentSessionMeta, "cmd-1", "yes\n");
         await client.commandResize({ path: "/session" } as AgentSessionMeta, "cmd-1", 80, 24);
@@ -66,6 +84,15 @@ describe("AgentRuntimeClient", () => {
         expect(agent.forkSession).toHaveBeenCalledWith(identity, expect.objectContaining({ entryId: "entry" }));
         expect(agent.cloneSession).toHaveBeenCalledWith(identity, expect.any(Object));
         expect(agent.runCommand).toHaveBeenCalledWith(identity, expect.objectContaining({ command: "new" }));
+        expect(agent.listRewindPoints).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.previewRewind).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.rewindTree).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.redoRewind).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.getWorkspaceRecovery).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.resolveWorkspaceRecovery).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.cleanupWorkspaceCheckpoints).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.listCheckpointStorageOwners).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.purgeTrashedSession).toHaveBeenCalledWith(identity, expect.any(Object));
         expect(agent.commandRead).toHaveBeenCalledWith(identity, expect.objectContaining({ path: "/session" }), {
             commandId: "cmd-1",
         });

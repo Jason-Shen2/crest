@@ -4,7 +4,13 @@
 import { filterCommittedTransactionEntries } from "@crest/agent/harness/session/entry-transaction";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { isContextCustomEntry } from "../context/journal";
-import type { FoldedWorkspaceSessionState, WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
+import type { AgentCheckpointQuotaView, AgentRedoView, AgentRewindSessionStateView } from "./api-types";
+import type {
+    FoldedWorkspaceSessionState,
+    WorkspaceCheckpointV1,
+    WorkspaceSnapshotRefV1,
+    WorkspaceStateV1,
+} from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import { decodeWorkspaceCheckpointV1, decodeWorkspaceStateV1 } from "./validation";
 
@@ -189,5 +195,107 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
         displayLeafId: displayLeafId(branch),
         eligibleTurnIds,
         checkpointGaps,
+    };
+}
+
+export interface AgentRewindSessionStateProbe {
+    enabled: boolean;
+    busy: boolean;
+    frozen: boolean;
+    verifySnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void>;
+    getQuota(): Promise<AgentCheckpointQuotaView>;
+}
+
+const DisabledQuota: AgentCheckpointQuotaView = {
+    status: "ok",
+    usedBytes: 0,
+    softQuotaBytes: 0,
+    cleanupAvailable: false,
+};
+
+function userPrompt(entries: SessionTreeEntry[], turnId: string): string {
+    const entry = entries.find((candidate) => candidate.id === turnId);
+    if (entry?.type !== "message") return "";
+    const content = (entry.message as { content?: unknown }).content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+        .filter(
+            (part): part is { type: "text"; text: string } =>
+                part != null &&
+                typeof part === "object" &&
+                "type" in part &&
+                part.type === "text" &&
+                "text" in part &&
+                typeof part.text === "string"
+        )
+        .map((part) => part.text)
+        .join("");
+}
+
+/**
+ * Builds the renderer state from the raw persisted branch and verifies every
+ * advertised snapshot against the store. SQLite metadata alone is never
+ * treated as proof that snapshot objects are still available.
+ */
+export async function buildAgentRewindSessionStateView(
+    entries: SessionTreeEntry[],
+    sessionId: string,
+    probe: AgentRewindSessionStateProbe
+): Promise<AgentRewindSessionStateView> {
+    const folded = foldWorkspaceSessionState(entries, sessionId);
+    if (!probe.enabled) {
+        return {
+            enabled: false,
+            semanticLeafId: folded.semanticLeafId,
+            displayLeafId: folded.displayLeafId,
+            eligibleTurnIds: [],
+            busy: probe.busy,
+            frozen: probe.frozen,
+            quota: DisabledQuota,
+        };
+    }
+
+    const eligibleTurnIds: string[] = [];
+    for (const turnId of folded.eligibleTurnIds) {
+        const checkpoint = folded.checkpointsByTurnId.get(turnId);
+        if (checkpoint?.status !== "available") continue;
+        try {
+            await probe.verifySnapshot(checkpoint.before);
+            await probe.verifySnapshot(checkpoint.after);
+            eligibleTurnIds.push(turnId);
+        } catch {
+            // A corrupt/missing descriptor is a checkpoint gap, not an
+            // invitation for the renderer to attempt a destructive action.
+        }
+    }
+
+    let redo: AgentRedoView | undefined;
+    const state = folded.activeWorkspaceState;
+    if (state?.rewind) {
+        try {
+            await probe.verifySnapshot(state.currentSnapshot);
+            await probe.verifySnapshot(state.rewind.redoSnapshot);
+            redo = {
+                operationId: state.operationId,
+                targetPrompt: userPrompt(entries, state.rewind.targetTurnId),
+                messageCount: 0,
+                fileCount: state.rewind.redoStates.length,
+                files: [],
+            };
+        } catch {
+            redo = undefined;
+        }
+    }
+
+    return {
+        enabled: true,
+        semanticLeafId: folded.semanticLeafId,
+        displayLeafId: folded.displayLeafId,
+        eligibleTurnIds,
+        busy: probe.busy,
+        frozen: probe.frozen,
+        quota: await probe.getQuota(),
+        ...(redo == null ? {} : { redo }),
     };
 }

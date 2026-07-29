@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { getTransactionForkBoundary } from "@crest/agent/harness/session/entry-transaction";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { isContextCustomEntry } from "../context/journal";
 import { isWorkspaceControlEntry } from "../workspace-rewind/session-state";
@@ -54,10 +55,7 @@ function isUserMessageEntry(entry: SessionTreeEntry): entry is Extract<SessionTr
  */
 export function isHiddenTreeEntry(entry: SessionTreeEntry): boolean {
     return (
-        entry.type === "leaf" ||
-        entry.type === "label" ||
-        isContextCustomEntry(entry) ||
-        isWorkspaceControlEntry(entry)
+        entry.type === "leaf" || entry.type === "label" || isContextCustomEntry(entry) || isWorkspaceControlEntry(entry)
     );
 }
 
@@ -67,10 +65,7 @@ export interface FilteredSessionTree {
     displayLeafId: string | null;
 }
 
-export function filterTreeForDisplay(
-    entries: SessionTreeEntry[],
-    leafId: string | null = null
-): FilteredSessionTree {
+export function filterTreeForDisplay(entries: SessionTreeEntry[], leafId: string | null = null): FilteredSessionTree {
     const hiddenIds = new Set(entries.filter(isHiddenTreeEntry).map((e) => e.id));
     const byId = new Map(entries.map((e) => [e.id, e]));
 
@@ -130,7 +125,12 @@ export function buildToolCallArgsMap(entries: SessionTreeEntry[]): ToolCallArgsM
         const content = (entry.message as { content?: unknown }).content;
         if (!Array.isArray(content)) continue;
         for (const block of content) {
-            if (typeof block === "object" && block !== null && "type" in block && (block as { type: unknown }).type === "toolCall") {
+            if (
+                typeof block === "object" &&
+                block !== null &&
+                "type" in block &&
+                (block as { type: unknown }).type === "toolCall"
+            ) {
                 const tc = block as { id: string; name: string; arguments?: Record<string, unknown> };
                 map.set(tc.id, { name: tc.name, arguments: tc.arguments ?? {} });
             }
@@ -170,7 +170,10 @@ export function formatToolCallPreview(name: string, args: Record<string, unknown
             return `edit: ${shortenHomePath(String(args.path || args.file_path || ""))}`;
         case "bash": {
             const rawCmd = String(args.command || "");
-            const cmd = rawCmd.replace(/[\n\t]/g, " ").trim().slice(0, 50);
+            const cmd = rawCmd
+                .replace(/[\n\t]/g, " ")
+                .trim()
+                .slice(0, 50);
             return `bash: ${cmd}${rawCmd.length > 50 ? "..." : ""}`;
         }
         case "grep":
@@ -225,7 +228,8 @@ export function previewSessionEntry(entry: SessionTreeEntry, toolCalls?: ToolCal
 export function buildAgentTreeEntryViews(
     entries: SessionTreeEntry[],
     leafId: string | null,
-    labels: Map<string, string | undefined> = new Map()
+    labels: Map<string, string | undefined> = new Map(),
+    rawEntries: SessionTreeEntry[] = entries
 ): AgentTreeEntryView[] {
     const toolCalls = buildToolCallArgsMap(entries);
     const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
@@ -253,6 +257,9 @@ export function buildAgentTreeEntryViews(
             isLeaf: entry.id === leafId,
             isCurrent: entry.id === leafId,
             ...(activeIds.has(entry.id) && isUserMessageEntry(entry) ? { referenceable: true } : {}),
+            semanticAnchorId: isUserMessageEntry(entry)
+                ? getTransactionForkBoundary(rawEntries, entry.id, "before")
+                : entry.id,
         };
     });
 }

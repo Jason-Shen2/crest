@@ -39,10 +39,12 @@ export interface PreviewRedoInput {
 export interface ApplyRewindInput extends PreviewRewindInput {
     mode: "normal" | "force-drift";
     confirmation: ConfirmedRestorePlanV1;
+    assertCurrent?: () => Promise<void>;
 }
 
 export interface ApplyRedoInput extends PreviewRedoInput {
     confirmation: ConfirmedRestorePlanV1;
+    assertCurrent?: () => Promise<void>;
 }
 
 export interface WorkspaceRewindCommitResult {
@@ -87,6 +89,7 @@ interface ApplyRestoreInput {
     targetTurnId?: string;
     mode: "normal" | "force-drift";
     confirmation: ConfirmedRestorePlanV1;
+    assertCurrent?: () => Promise<void>;
 }
 
 function comparePathBytes(left: string, right: string): number {
@@ -356,6 +359,8 @@ export class WorkspaceRewindEngine {
         input: ApplyRestoreInput,
         planned: PlannedRestore
     ): Promise<WorkspaceRewindCommitResult> {
+        const assertCurrent = input.assertCurrent ?? (async () => {});
+        await assertCurrent();
         const orderedPaths = [...planned.plan.paths].sort((left, right) => comparePathBytes(left.path, right.path));
         const conflictPaths =
             input.mode === "force-drift"
@@ -420,10 +425,12 @@ export class WorkspaceRewindEngine {
         let journalAttempted = false;
         let completed = false;
         try {
+            await assertCurrent();
             journalAttempted = true;
             await this.journal.begin(record);
             record = await this.journal.transition(operationId, "applying_files");
             for (const path of record.paths) {
+                await assertCurrent();
                 const createdParentDirectories = new Set(path.createdParentDirectories);
                 const updateProgress = async () => {
                     record = await this.journal.updatePathProgress(operationId, path.path, [
@@ -467,6 +474,7 @@ export class WorkspaceRewindEngine {
             await this.store.anchorSnapshot(result.ref);
             record = await this.journal.transition(operationId, "committing_session");
 
+            await assertCurrent();
             const state = this.workspaceState(record);
             const entry: SessionTreeEntry = {
                 type: "custom",
@@ -484,6 +492,7 @@ export class WorkspaceRewindEngine {
             }
             record = await this.journal.transition(operationId, "completed");
             completed = true;
+            await assertCurrent();
             await this.onCommitted(input.sessionId);
             await this.journal.completeCleanup(operationId);
             return this.commitResult(input, planned, sessionMetadata);

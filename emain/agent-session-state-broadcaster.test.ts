@@ -66,6 +66,7 @@ function fakeSession(branch = persistedBranch()) {
                 .map((entry) => entry.message),
         })),
         getBranch: vi.fn(async () => branch),
+        getEntries: vi.fn(async () => branch),
         close: vi.fn(),
     };
 }
@@ -188,6 +189,37 @@ describe("AgentSessionStateBroadcaster", () => {
         expect(published[0]).toEqual(
             await buildPersistedAgentSessionState(fakeSession() as never, { status: "enabled" })
         );
+    });
+
+    it("awaits the shared rewind-state builder for cold authoritative publication", async () => {
+        const registry = new AgentRuntimeRegistry<FakeRuntime>({ idleTtlMs: 1_000 });
+        const coldMetadata = metadata("/sessions/cold-rewind.db");
+        const rewindState = {
+            enabled: true,
+            semanticLeafId: "assistant-1",
+            displayLeafId: "assistant-1",
+            eligibleTurnIds: ["user-1"],
+            busy: false,
+            frozen: true,
+            quota: { status: "ok" as const, usedBytes: 1, softQuotaBytes: 2, cleanupAvailable: false },
+        };
+        const buildRewindState = vi.fn(async () => rewindState);
+        const broadcaster = new AgentSessionStateBroadcaster({
+            registry: registry as never,
+            openSession: vi.fn(async () => fakeSession() as never),
+            publish: vi.fn(async () => {}),
+            workspaceRewind: { status: "enabled" },
+            buildRewindState,
+        });
+
+        const state = await registry.withRetainedSessionMutation(
+            coldMetadata.path,
+            { rejectIfRunning: true },
+            (lease) => broadcaster.publishForLease(lease as never, coldMetadata)
+        );
+
+        expect(buildRewindState).toHaveBeenCalledOnce();
+        expect(state.rewindState).toEqual(rewindState);
     });
 
     it("does not release the retained mutation lease until direct publication completes", async () => {

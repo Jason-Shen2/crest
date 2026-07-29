@@ -1,11 +1,12 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import {
+    buildAgentRewindSessionStateView,
     decodeWorkspaceCheckpointEntry,
     decodeWorkspaceStateEntry,
     foldWorkspaceSessionState,
@@ -98,6 +99,35 @@ function workspaceState(sessionId = "session-1", kind: "rewind" | "redo" = "rewi
 }
 
 describe("workspace rewind session state", () => {
+    it("verifies snapshot objects before advertising eligible rewind points", async () => {
+        const u1 = message("u1", null, "user");
+        const a1 = message("a1", "u1", "assistant");
+        const c1 = custom("c1", "a1", WorkspaceControlCustomTypes.checkpoint, checkpoint("u1"));
+        const entries = [u1, a1, c1, leaf("leaf", c1.id, c1.id)];
+        const verifySnapshot = vi.fn(async (ref: { id: string }) => {
+            if (ref.id === OidB) throw new Error("missing object");
+        });
+
+        const view = await buildAgentRewindSessionStateView(entries, "session-1", {
+            enabled: true,
+            busy: false,
+            frozen: false,
+            verifySnapshot,
+            getQuota: async () => ({
+                status: "ok",
+                usedBytes: 10,
+                softQuotaBytes: 100,
+                cleanupAvailable: false,
+            }),
+        });
+
+        expect(verifySnapshot).toHaveBeenCalledTimes(2);
+        expect(view.eligibleTurnIds).toEqual([]);
+        expect(view.quota.usedBytes).toBe(10);
+        expect(view.semanticLeafId).toBe("c1");
+        expect(view.displayLeafId).toBe("a1");
+    });
+
     it("recognizes only the two stable workspace custom entry types", () => {
         const checkpointEntry = custom("checkpoint", null, WorkspaceControlCustomTypes.checkpoint, checkpoint("turn"));
         const stateEntry = custom("state", null, WorkspaceControlCustomTypes.state, workspaceState());

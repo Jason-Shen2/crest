@@ -164,7 +164,7 @@ async function fixture(input: {
         repairSessionRefs: vi.fn(async () => {}),
         verifyWorkspace: vi.fn(async () => {}),
     });
-    return { recovery, durable, apply, states, input, session };
+    return { recovery, durable, apply, states, input, session, store };
 }
 
 describe("workspace recovery", () => {
@@ -530,5 +530,103 @@ describe("workspace recovery", () => {
         await expect(corrupt.recovery.abandonKeepingCurrent("operation-1")).rejects.toThrow(/corrupt/i);
         await corrupt.recovery.quarantineCorrupt("operation-1");
         await expect(corrupt.durable.read("operation-1")).rejects.toThrow(/not found/i);
+    });
+
+    it("abandons a decoded orphan without workspace or session writes and stays resolved after restart", async () => {
+        const value = await fixture({ phase: "prepared", live: "unknown", leaf: "old-leaf" });
+        Object.assign(value.recovery, { locateSession: async () => undefined });
+
+        await expect(value.recovery.ensureRecovered(value.recovery.workspace)).rejects.toThrow(WorkspaceFrozenError);
+        await expect(value.recovery.getRecoveryState(value.recovery.workspace)).resolves.toMatchObject({
+            operationId: "operation-1",
+            corrupt: false,
+            allowedActions: ["retry", "abandon-current"],
+        });
+
+        await value.recovery.abandonKeepingCurrent("operation-1");
+
+        expect(value.apply).not.toHaveBeenCalled();
+        expect(value.recovery.publishState).not.toHaveBeenCalled();
+        await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
+        const restarted = new WorkspaceRecovery({
+            workspace: value.recovery.workspace,
+            store: value.recovery.store,
+            journal: value.durable,
+            locateSession: async () => undefined,
+        });
+        await expect(restarted.ensureRecovered(restarted.workspace)).resolves.toBeUndefined();
+        await expect(restarted.getRecoveryState(restarted.workspace)).resolves.toBeUndefined();
+    });
+
+    it("retains a startup orphan journal when its owner leaf changes before abandon", async () => {
+        const value = await fixture({ phase: "prepared", live: "unknown", leaf: "old-leaf" });
+        await expect(value.recovery.ensureRecovered(value.recovery.workspace)).rejects.toThrow(WorkspaceFrozenError);
+        value.input.leaf = "replacement-leaf";
+
+        await expect(
+            value.recovery.abandonKeepingCurrent("operation-1", {
+                sessionId: "session-1",
+                locateBoundOwner: async () => await value.recovery.locateSession("session-1"),
+            })
+        ).rejects.toThrow(/unexpected session leaf/i);
+
+        await expect(value.durable.read("operation-1")).resolves.toMatchObject({ sessionId: "session-1" });
+        await expect(value.recovery.getRecoveryState(value.recovery.workspace)).resolves.toMatchObject({
+            operationId: "operation-1",
+        });
+    });
+
+    it("checks a request guard after acquiring the workspace lock before quarantine mutation", async () => {
+        const value = await fixture({ phase: "prepared", live: "unknown" });
+        await writeFile(value.durable.path("operation-1"), "{truncated");
+        const stale = new Error("request sender became stale");
+        let lockAcquired = false;
+        Object.assign(value.recovery.store, {
+            withWorkspaceLock: async (operation: () => Promise<unknown>) => {
+                lockAcquired = true;
+                return await operation();
+            },
+        });
+
+        await expect(
+            value.recovery.quarantineCorrupt("operation-1", async () => {
+                if (lockAcquired) throw stale;
+            })
+        ).rejects.toBe(stale);
+
+        await expect(readFile(value.durable.path("operation-1"), "utf8")).resolves.toBe("{truncated");
+        expect(value.store.deleteCrestRef).not.toHaveBeenCalled();
+    });
+
+    it("checks a request guard inside the workspace lock before retry or abandon mutation", async () => {
+        for (const action of ["retry", "abandon"] as const) {
+            const value = await fixture({
+                phase: action === "retry" ? "applying_files" : "prepared",
+                live: action === "retry" ? "unknown" : "unknown",
+                leaf: "old-leaf",
+            });
+            const stale = new Error(`${action} request became stale`);
+            let lockAcquired = false;
+            Object.assign(value.recovery.store, {
+                withWorkspaceLock: async (operation: () => Promise<unknown>) => {
+                    lockAcquired = true;
+                    return await operation();
+                },
+            });
+            const guard = async () => {
+                if (lockAcquired) throw stale;
+            };
+
+            const resolution =
+                action === "retry"
+                    ? value.recovery.retry("operation-1", guard)
+                    : value.recovery.abandonKeepingCurrent("operation-1", undefined, guard);
+            await expect(resolution).rejects.toBe(stale);
+            await expect(value.durable.read("operation-1")).resolves.toMatchObject({
+                operationId: "operation-1",
+            });
+            expect(value.apply).not.toHaveBeenCalled();
+            expect(value.store.deleteCrestRef).not.toHaveBeenCalled();
+        }
     });
 });

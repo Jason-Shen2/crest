@@ -56,6 +56,7 @@ import { foldContextJournal } from "./context/journal";
 import type { ContextProjectionReport } from "./context/types";
 import type { AgentAuthResolver, AgentHarnessHost } from "./harness-factory";
 import type { ToolCallHook } from "./permissions";
+import type { AgentRewindSessionStateView } from "./workspace-rewind/api-types";
 import type { WorkspaceCheckpointManager } from "./workspace-rewind/checkpoint-manager";
 
 export type AgentSessionRuntimeStatus = "idle" | "streaming" | "error";
@@ -91,6 +92,7 @@ export interface AgentSessionRuntimeState {
     contextReports: ContextProjectionReport[];
     commands: AgentPtySnapshot[];
     workspaceRewind: AgentWorkspaceRewindState;
+    rewindState?: AgentRewindSessionStateView;
 }
 
 export interface AgentSessionRefreshOptions {
@@ -110,6 +112,7 @@ interface AgentSessionRuntimeStateEvent {
     contextReports: ContextProjectionReport[];
     commands: AgentPtySnapshot[];
     workspaceRewind: AgentWorkspaceRewindState;
+    rewindState?: AgentRewindSessionStateView;
 }
 
 export interface AgentSessionRuntimeOptions {
@@ -118,6 +121,9 @@ export interface AgentSessionRuntimeOptions {
     ptyHost?: AgentPtyHost;
     checkpointManager?: WorkspaceCheckpointManager;
     workspaceRewind?: AgentWorkspaceRewindState;
+    initialRewindState?: AgentRewindSessionStateView;
+    buildRewindState?: () => Promise<AgentRewindSessionStateView>;
+    assertWorkspaceWritable?: () => Promise<void>;
 }
 
 export interface AgentExecutionConfig {
@@ -234,6 +240,11 @@ export class AgentSessionRuntime {
     ptyHost: AgentPtyHost;
     checkpointManager: WorkspaceCheckpointManager | undefined;
     workspaceRewind: AgentWorkspaceRewindState;
+    rewindState?: AgentRewindSessionStateView;
+    private readonly buildRewindState?: () => Promise<AgentRewindSessionStateView>;
+    assertWorkspaceWritable: () => Promise<void>;
+    private permissionsToolCallHook: ToolCallHook | undefined;
+    private promptDispatch: Promise<void> | undefined;
 
     constructor(
         path: string,
@@ -248,6 +259,9 @@ export class AgentSessionRuntime {
         this.ptyHost = options.ptyHost ?? makeUnavailableAgentPtyHost();
         this.checkpointManager = options.checkpointManager;
         this.workspaceRewind = options.workspaceRewind ?? { status: "disabled" };
+        this.rewindState = options.initialRewindState;
+        this.buildRewindState = options.buildRewindState;
+        this.assertWorkspaceWritable = options.assertWorkspaceWritable ?? (async () => {});
         this.ptyHost.setOnUpdate?.(() => this.emitSessionState());
         // Seed the transcript from the persisted session so a REOPENED
         // conversation shows its history. A fresh session passes []. New
@@ -277,7 +291,11 @@ export class AgentSessionRuntime {
     async syncExecutionConfig(config: AgentExecutionConfig): Promise<void> {
         this.host.update(config.promptInputs);
         this.host.setAuthResolver(config.authResolver);
-        this.host.setToolCallHook(config.toolCallHook);
+        this.permissionsToolCallHook = config.toolCallHook;
+        this.host.setToolCallHook(async (event) => {
+            await this.assertWorkspaceWritableWithStateRefresh();
+            return await this.permissionsToolCallHook?.(event);
+        });
         const currentModel = this.host.harness.getModel();
         const sameModel =
             currentModel.provider === config.model.provider &&
@@ -452,6 +470,7 @@ export class AgentSessionRuntime {
             contextReports: this.contextReports,
             commands: this.ptyHost.snapshots(),
             workspaceRewind: this.workspaceRewind,
+            ...(this.rewindState == null ? {} : { rewindState: this.rewindState }),
         };
     }
 
@@ -482,14 +501,27 @@ export class AgentSessionRuntime {
         const prepare = options?.prepare ? this.wrapPreparation(options.prepare, pending) : undefined;
         const activate = this.wrapActivation(options?.activate, pending, prepare != null);
         if (this.running) {
-            void this.host.harness
-                .followUp(text, harnessFollowUpOptions(options?.images, activate), prepare)
-                .catch((err) => this.rejectPendingSend(pending, err));
+            void (async () => {
+                try {
+                    await this.promptDispatch;
+                    await this.host.harness.followUp(text, harnessFollowUpOptions(options?.images, activate), prepare);
+                } catch (err) {
+                    this.rejectPendingSend(pending, err);
+                }
+            })();
             return promise;
         }
         this.running = true;
         pending.awaitingUserEvent = true;
-        void this.startPromptTurn(text, { ...options, prepare }, pending);
+        let resolveDispatch!: () => void;
+        let rejectDispatch!: (error: unknown) => void;
+        const promptDispatch = new Promise<void>((resolve, reject) => {
+            resolveDispatch = resolve;
+            rejectDispatch = reject;
+        });
+        promptDispatch.catch(() => {});
+        this.promptDispatch = promptDispatch;
+        void this.startPromptTurn(text, { ...options, prepare }, pending, resolveDispatch, rejectDispatch);
         return promise;
     }
 
@@ -501,6 +533,10 @@ export class AgentSessionRuntime {
 
     async listTreeEntries(): Promise<{
         entries: SessionTreeEntry[];
+        rawEntries: SessionTreeEntry[];
+        semanticLeafId: string | null;
+        displayLeafId: string | null;
+        /** @deprecated use displayLeafId */
         leafId: string | null;
         labels: Map<string, string | undefined>;
     }> {
@@ -511,20 +547,62 @@ export class AgentSessionRuntime {
         for (const entry of entries) {
             labels.set(entry.id, await this.host.session.getLabel(entry.id));
         }
-        return { entries, leafId: displayLeafId, labels };
+        return {
+            entries,
+            rawEntries: allEntries,
+            semanticLeafId: leafId,
+            displayLeafId,
+            leafId: displayLeafId,
+            labels,
+        };
     }
 
-    async navigateTree(targetId: string): Promise<{ editorText?: string }> {
-        const result = await this.host.harness.navigateTree(targetId, { summarize: false });
+    async navigateTree(
+        targetId: string,
+        expectedSemanticLeafId: string | null,
+        semanticAnchorId: string | null
+    ): Promise<{ editorText?: string }> {
+        const semanticLeafId = await this.host.session.getLeafId();
+        if (semanticLeafId !== expectedSemanticLeafId) {
+            throw new Error("agent IPC: stale semantic leaf");
+        }
+        const { displayLeafId } = filterTreeForDisplay(await this.host.session.getEntries(), semanticLeafId);
+        if (targetId === displayLeafId) return {};
+        await this.assertWorkspaceWritableWithStateRefresh();
+        const targetEntry = await this.host.session.getEntry(targetId);
+        const navigationTarget = semanticAnchorId;
+        let editorText: string | undefined;
+        if (targetEntry?.type === "message" && targetEntry.message.role === "user") {
+            const content = targetEntry.message.content;
+            editorText =
+                typeof content === "string"
+                    ? content
+                    : content
+                          .filter(
+                              (part): part is { readonly type: "text"; readonly text: string } => part.type === "text"
+                          )
+                          .map((part) => part.text)
+                          .join("");
+        }
+        if (navigationTarget == null) {
+            await this.host.session.moveTo(null);
+            await this.rebuildFromCurrentBranch();
+            await this.refreshRewindState();
+            this.emitSessionState();
+            return { editorText };
+        }
+        const result = await this.host.harness.navigateTree(navigationTarget, { summarize: false });
         if (result.cancelled) {
             return {};
         }
         await this.rebuildFromCurrentBranch();
+        await this.refreshRewindState();
         this.emitSessionState();
-        return { editorText: result.editorText };
+        return { editorText: editorText ?? result.editorText };
     }
 
     async compact(customInstructions?: string): Promise<void> {
+        await this.assertWorkspaceWritableWithStateRefresh();
         await this.host.harness.compact(customInstructions);
         await this.rebuildFromCurrentBranch();
         this.emitSessionState();
@@ -552,6 +630,7 @@ export class AgentSessionRuntime {
 
     async refreshFromPersistedBranch(options: AgentSessionRefreshOptions = {}): Promise<AgentSessionRuntimeState> {
         await this.rebuildFromCurrentBranch();
+        await this.refreshRewindState();
         if (options.discardCompletedPtyHistory) {
             this.ptyHost.clearCompletedHistory();
         }
@@ -559,10 +638,40 @@ export class AgentSessionRuntime {
         return this.getSessionState();
     }
 
+    setRewindState(rewindState: AgentRewindSessionStateView): void {
+        this.rewindState = rewindState;
+        this.emitSessionState();
+    }
+
+    setWorkspaceWriteGuard(assertWorkspaceWritable: () => Promise<void>): void {
+        this.assertWorkspaceWritable = assertWorkspaceWritable;
+    }
+
+    private async assertWorkspaceWritableWithStateRefresh(): Promise<void> {
+        try {
+            await this.assertWorkspaceWritable();
+        } catch (error) {
+            try {
+                await this.refreshRewindState();
+                this.emitSessionState();
+            } catch (refreshError) {
+                console.error(`[agent-session] rewind state refresh error for ${this.path}:`, refreshError);
+            }
+            throw error;
+        }
+    }
+
+    private async refreshRewindState(): Promise<void> {
+        if (this.buildRewindState) {
+            this.rewindState = await this.buildRewindState();
+        }
+    }
+
     async startHostedCommand(
         command: string,
         context: import("./agent-execution-context").AgentExecutionContext
     ): Promise<{ port: AgentPtyCommandPort; snapshot: AgentPtySnapshot }> {
+        await this.assertWorkspaceWritableWithStateRefresh();
         const snapshot = await this.ptyHost.start(command, context);
         const port = this.ptyHost.getCommandPort(snapshot.commandId);
         this.emitSessionState();
@@ -574,6 +683,7 @@ export class AgentSessionRuntime {
     }
 
     async writeHostedCommand(commandId: string, input: string): Promise<void> {
+        await this.assertWorkspaceWritableWithStateRefresh();
         await this.ptyHost.write(commandId, input);
     }
 
@@ -618,14 +728,20 @@ export class AgentSessionRuntime {
     private async startPromptTurn(
         text: string,
         options: InternalAgentSendRuntimeOptions | undefined,
-        pending: PendingSend
+        pending: PendingSend,
+        resolveDispatch: () => void,
+        rejectDispatch: (error: unknown) => void
     ): Promise<void> {
         try {
-            await this.host.harness.prompt(text, {
+            await this.assertWorkspaceWritableWithStateRefresh();
+            const prompt = this.host.harness.prompt(text, {
                 ...(options?.images && options.images.length > 0 ? { images: options.images } : {}),
                 ...(options?.prepare ? { prepare: options.prepare } : {}),
             });
+            resolveDispatch();
+            await prompt;
         } catch (err) {
+            rejectDispatch(err);
             this.onSendError("prompt", err, pending);
         } finally {
             this.running = false;
@@ -675,6 +791,7 @@ export class AgentSessionRuntime {
         return async (signal) => {
             try {
                 if (signal?.aborted) throw new Error("send aborted before activation completed");
+                await this.assertWorkspaceWritableWithStateRefresh();
                 const activatedPreparation = await activate?.(signal);
                 if (signal?.aborted) throw new Error("send aborted before activation completed");
                 pending.awaitingUserEvent = !hasStaticPreparation && typeof activatedPreparation !== "function";
@@ -838,6 +955,7 @@ export class AgentSessionRuntime {
             contextReports: this.contextReports,
             commands: this.ptyHost.snapshots(),
             workspaceRewind: this.workspaceRewind,
+            ...(this.rewindState == null ? {} : { rewindState: this.rewindState }),
         };
         for (const listener of this.listeners) {
             try {

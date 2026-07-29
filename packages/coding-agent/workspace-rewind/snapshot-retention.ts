@@ -46,7 +46,7 @@ export async function reconcileSnapshotRefs(input: {
     return input.store.withWorkspaceLock(() => reconcileSnapshotRefsLocked(input));
 }
 
-async function reconcileSnapshotRefsLocked(input: {
+export async function reconcileSnapshotRefsLocked(input: {
     store: WorkspaceSnapshotStore;
     sessionsRoot: string;
 }): Promise<SnapshotReconcileReport> {
@@ -161,7 +161,7 @@ async function scanOwners(input: { store: WorkspaceSnapshotStore; sessionsRoot: 
 
 function collectSessionOwners(
     entries: SessionTreeEntry[],
-    store: WorkspaceSnapshotStore,
+    store: Pick<WorkspaceSnapshotStore, "identity">,
     owned: Map<string, WorkspaceSnapshotRefV1>
 ): void {
     for (const entry of entries) {
@@ -192,9 +192,18 @@ function collectSessionOwners(
     }
 }
 
+export function collectSessionSnapshotOwners(
+    entries: SessionTreeEntry[],
+    store: Pick<WorkspaceSnapshotStore, "identity">
+): WorkspaceSnapshotRefV1[] {
+    const owned = new Map<string, WorkspaceSnapshotRefV1>();
+    collectSessionOwners(entries, store, owned);
+    return [...owned.values()];
+}
+
 function addOwned(
     snapshot: WorkspaceSnapshotRefV1,
-    store: WorkspaceSnapshotStore,
+    store: Pick<WorkspaceSnapshotStore, "identity">,
     owned: Map<string, WorkspaceSnapshotRefV1>
 ): void {
     if (

@@ -313,6 +313,42 @@ declare global {
                 context: WorkspaceAgentRequestContext,
                 input: AgentRunCommandInput
             ) => Promise<AgentCommandExecutionResult>; // agent:run-command
+            listRewindPoints: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentListRewindPointsInput
+            ) => Promise<AgentListRewindPointsResult>; // agent:list-rewind-points
+            previewRewind: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentPreviewRewindInput
+            ) => Promise<AgentRewindPreviewResult>; // agent:preview-rewind
+            rewindTree: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentRewindTreeInput
+            ) => Promise<AgentRewindMutationResult>; // agent:rewind-tree
+            redoRewind: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentRedoRewindInput
+            ) => Promise<AgentRewindMutationResult>; // agent:redo-rewind
+            getWorkspaceRecovery: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentGetWorkspaceRecoveryInput
+            ) => Promise<AgentWorkspaceRecoveryView | undefined>; // agent:get-workspace-recovery
+            resolveWorkspaceRecovery: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentResolveWorkspaceRecoveryInput
+            ) => Promise<void>; // agent:resolve-workspace-recovery
+            cleanupWorkspaceCheckpoints: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentCleanupWorkspaceCheckpointsInput
+            ) => Promise<AgentCleanupWorkspaceCheckpointsResult>; // agent:cleanup-workspace-checkpoints
+            listCheckpointStorageOwners: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentListCheckpointStorageOwnersInput
+            ) => Promise<AgentListCheckpointStorageOwnersResult>; // agent:list-checkpoint-storage-owners
+            purgeTrashedSession: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentPurgeTrashedSessionInput
+            ) => Promise<AgentPurgeTrashedSessionResult>; // agent:purge-trashed-session
             prepareContextDraft: (
                 context: WorkspaceAgentRequestContext,
                 input: AgentPrepareContextDraftInput
@@ -714,6 +750,7 @@ declare global {
         isLeaf: boolean;
         isCurrent: boolean;
         referenceable?: boolean;
+        semanticAnchorId: string | null;
     };
 
     type AgentForkPointView = {
@@ -733,12 +770,139 @@ declare global {
 
     type AgentTreeResult = {
         entries: AgentTreeEntryView[];
-        leafId: string | null;
+        semanticLeafId: string | null;
+        displayLeafId: string | null;
     };
 
     type AgentNavigateTreeInput = {
         sessionMetadata: AgentSessionMeta;
         targetId: string;
+        semanticAnchorId: string | null;
+        expectedSemanticLeafId: string | null;
+    };
+
+    type AgentRewindConflictClass = "none" | "forceable-drift" | "hard-blocker";
+    type AgentRewindFileOperation = "create" | "write" | "delete" | "rename";
+    type AgentRewindFileRowView = {
+        path: string;
+        oldPath?: string;
+        operation: AgentRewindFileOperation;
+        additions?: number;
+        deletions?: number;
+        diff?: string;
+        coverage: "covered" | "excluded" | "unavailable";
+        conflict: AgentRewindConflictClass;
+        reason?: string;
+    };
+    type AgentRewindPointView = {
+        turnId: string;
+        preview: string;
+        timestamp?: string;
+        eligible: boolean;
+        reason?: string;
+    };
+    type AgentListRewindPointsInput = { sessionMetadata: AgentSessionMeta };
+    type AgentListRewindPointsResult = {
+        points: AgentRewindPointView[];
+        semanticLeafId: string | null;
+        displayLeafId: string | null;
+    };
+    type AgentPreviewRewindInput = {
+        sessionMetadata: AgentSessionMeta;
+        expectedSemanticLeafId: string | null;
+        target: { kind: "rewind"; targetTurnId: string } | { kind: "redo" };
+    };
+    type AgentRewindPreviewResult = {
+        confirmationToken?: string;
+        target: { kind: "rewind"; targetTurnId: string } | { kind: "redo" };
+        targetPrompt?: string;
+        semanticLeafId: string | null;
+        displayLeafId: string | null;
+        expectedSemanticLeafId: string | null;
+        messageCount: number;
+        fileCount: number;
+        files: AgentRewindFileRowView[];
+        coverageWarnings: string[];
+        forceRequired: boolean;
+        hardBlocked: boolean;
+    };
+    type AgentRewindTreeInput = {
+        sessionMetadata: AgentSessionMeta;
+        expectedSemanticLeafId: string | null;
+        targetTurnId: string;
+        mode: "normal" | "force-drift";
+        confirmationToken: string;
+    };
+    type AgentRedoRewindInput = {
+        sessionMetadata: AgentSessionMeta;
+        expectedSemanticLeafId: string | null;
+        confirmationToken: string;
+    };
+    type AgentRewindMutationResult = {
+        sessionMetadata: AgentSessionMeta;
+        semanticLeafId: string | null;
+        displayLeafId: string | null;
+        editorText?: string;
+    };
+    type AgentWorkspaceRecoveryView = {
+        operationId: string;
+        phase?: "prepared" | "applying_files" | "files_verified" | "committing_session" | "completed";
+        corrupt: boolean;
+        message: string;
+        paths: Array<{ path: string; classification?: "pre" | "target" | "unknown" }>;
+        allowedActions: Array<"retry" | "abandon-current" | "quarantine-corrupt">;
+    };
+    type AgentGetWorkspaceRecoveryInput = { sessionMetadata: AgentSessionMeta };
+    type AgentResolveWorkspaceRecoveryInput = {
+        sessionMetadata: AgentSessionMeta;
+        operationId: string;
+        action: "retry" | "abandon-current" | "quarantine-corrupt";
+    };
+    type AgentCheckpointQuotaView = {
+        status: "ok" | "soft-quota-exceeded" | "referenced-over-quota";
+        usedBytes: number;
+        softQuotaBytes: number;
+        cleanupAvailable: boolean;
+        message?: string;
+    };
+    type AgentCleanupWorkspaceCheckpointsInput = { sessionMetadata: AgentSessionMeta };
+    type AgentCleanupWorkspaceCheckpointsResult = {
+        removedUnownedBytes: number;
+        quota: AgentCheckpointQuotaView;
+    };
+    type AgentListCheckpointStorageOwnersInput = { sessionMetadata: AgentSessionMeta };
+    type AgentCheckpointTrashOwnerView = {
+        sessionId: string;
+        title?: string;
+        referencedBytes: number;
+        confirmationToken: string;
+    };
+    type AgentListCheckpointStorageOwnersResult = { trashOwners: AgentCheckpointTrashOwnerView[] };
+    type AgentPurgeTrashedSessionInput = {
+        sessionMetadata: AgentSessionMeta;
+        trashedSessionId: string;
+        confirmationToken: string;
+    };
+    type AgentPurgeTrashedSessionResult = {
+        purgedSessionId: string;
+        quota: AgentCheckpointQuotaView;
+    };
+    type AgentRedoView = {
+        operationId: string;
+        targetPrompt: string;
+        messageCount: number;
+        fileCount: number;
+        files: AgentRewindFileRowView[];
+    };
+    type AgentRewindSessionStateView = {
+        enabled: boolean;
+        semanticLeafId: string | null;
+        displayLeafId: string | null;
+        eligibleTurnIds: string[];
+        busy: boolean;
+        frozen: boolean;
+        quota: AgentCheckpointQuotaView;
+        redo?: AgentRedoView;
     };
 
     type AgentNavigateTreeResult = {

@@ -245,6 +245,21 @@ contextBridge.exposeInMainWorld("api", {
         forkSession: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:fork-session", context, input),
         cloneSession: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:clone-session", context, input),
         runCommand: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:run-command", context, input),
+        listRewindPoints: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:list-rewind-points", context, input),
+        previewRewind: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:preview-rewind", context, input),
+        rewindTree: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:rewind-tree", context, input),
+        redoRewind: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:redo-rewind", context, input),
+        getWorkspaceRecovery: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:get-workspace-recovery", context, input),
+        resolveWorkspaceRecovery: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:resolve-workspace-recovery", context, input),
+        cleanupWorkspaceCheckpoints: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:cleanup-workspace-checkpoints", context, input),
+        listCheckpointStorageOwners: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:list-checkpoint-storage-owners", context, input),
+        purgeTrashedSession: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:purge-trashed-session", context, input),
         commandRead: (context: unknown, sessionMetadata: unknown, input: unknown) =>
             ipcRenderer.invoke("agent:command-read", context, sessionMetadata, input),
         commandWrite: (context: unknown, sessionMetadata: unknown, input: unknown) =>

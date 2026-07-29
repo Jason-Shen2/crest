@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
 import type {
     ContextDeliveryScope,
     ContextDraftView,
@@ -8,7 +9,6 @@ import type {
     ContextRepresentation,
     ContextSourceKind,
 } from "../context/types";
-import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
 
 export type AgentCommandSource = "builtin" | "skill" | "prompt";
 
@@ -80,6 +80,22 @@ export interface AgentTreeEntryView {
     isLeaf: boolean;
     isCurrent: boolean;
     referenceable?: boolean;
+    semanticAnchorId: string | null;
+}
+
+export interface AgentTreeResult {
+    entries: AgentTreeEntryView[];
+    semanticLeafId: string | null;
+    displayLeafId: string | null;
+    /** @deprecated compatibility alias for displayLeafId */
+    leafId?: string | null;
+}
+
+export interface AgentNavigateTreeInput {
+    sessionMetadata: JsonlSessionMetadata;
+    targetId: string;
+    semanticAnchorId: string | null;
+    expectedSemanticLeafId: string | null;
 }
 
 export interface AgentForkPointView {

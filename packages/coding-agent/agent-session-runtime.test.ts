@@ -19,6 +19,7 @@ import type { AgentPtyCommandPort, AgentPtyHost, AgentPtySnapshot } from "./agen
 import { AgentSessionRuntime, buildPersistedTurnsFromSessionEntries } from "./agent-session-runtime";
 import type { ContextProjectionReport } from "./context/types";
 import { buildAgentHarnessHost, type AgentHarnessHost } from "./harness-factory";
+import type { AgentRewindSessionStateView } from "./workspace-rewind/api-types";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
 // test drive the event stream via emit(). Mirrors the only surface
@@ -40,9 +41,11 @@ function makeFakeHarness() {
     const session = {
         close: vi.fn(),
         getEntries: vi.fn().mockResolvedValue([]),
+        getEntry: vi.fn().mockResolvedValue(undefined),
         getBranch: vi.fn().mockResolvedValue([]),
         getLeafId: vi.fn().mockResolvedValue(null),
         getLabel: vi.fn().mockResolvedValue(undefined),
+        moveTo: vi.fn().mockResolvedValue(undefined),
         appendCustomEntry: vi.fn().mockResolvedValue(undefined),
     };
     const model = {
@@ -427,7 +430,7 @@ describe("AgentSessionRuntime — command operations", () => {
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "edit this" }));
         const owner = new AgentSessionRuntime("/s", fake.pane);
 
-        const result = await owner.navigateTree("entry-1");
+        const result = await owner.navigateTree("entry-1", null, "entry-1");
 
         expect(fake.calls.navigateTree).toEqual([{ targetId: "entry-1", options: { summarize: false } }]);
         expect(result).toEqual({ editorText: "edit this" });
@@ -459,7 +462,7 @@ describe("AgentSessionRuntime — command operations", () => {
         const seen: unknown[] = [];
         owner.subscribe((event) => seen.push(event));
 
-        await owner.navigateTree("m2");
+        await owner.navigateTree("m2", null, "m2");
 
         expect(owner.getSessionState().messages).toEqual([q, a]);
         expect(owner.getSessionState().turns).toEqual([
@@ -504,7 +507,7 @@ describe("AgentSessionRuntime — command operations", () => {
         // navigateTree targetId=m2 (a user message); harness returns editorText and
         // has already moved leaf to a1.
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "second question" }));
-        const result = await owner.navigateTree("m2");
+        const result = await owner.navigateTree("m2", null, "m2");
 
         expect(result).toEqual({ editorText: "second question" });
         const state = owner.getSessionState();
@@ -528,7 +531,7 @@ describe("AgentSessionRuntime — command operations", () => {
         owner.subscribe(() => {});
 
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: false, editorText: "first question" }));
-        const result = await owner.navigateTree("m1");
+        const result = await owner.navigateTree("m1", null, "m1");
 
         expect(result).toEqual({ editorText: "first question" });
         const state = owner.getSessionState();
@@ -541,7 +544,7 @@ describe("AgentSessionRuntime — command operations", () => {
         fake.setNavigateTreeResult(() => Promise.resolve({ cancelled: true }));
         const owner = new AgentSessionRuntime("/s", fake.pane);
 
-        await expect(owner.navigateTree("entry-1")).resolves.toEqual({});
+        await expect(owner.navigateTree("entry-1", null, "entry-1")).resolves.toEqual({});
     });
 
     it("reads the active leaf id from the pane harness session", async () => {
@@ -680,7 +683,7 @@ describe("AgentSessionRuntime — authoritative context state", () => {
         fake.session.getBranch.mockResolvedValue([]);
         const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { initialContextEntries: attached });
 
-        await owner.navigateTree("before-attach");
+        await owner.navigateTree("before-attach", null, "before-attach");
 
         expect(owner.getSessionState().contextReports).toEqual([]);
     });
@@ -748,7 +751,7 @@ describe("AgentSessionRuntime — authoritative context state", () => {
         const events: unknown[] = [];
         owner.subscribe((event) => events.push(event));
 
-        await owner.navigateTree("replay-user");
+        await owner.navigateTree("replay-user", null, "replay-user");
 
         expect(events.at(-1)).toEqual(
             expect.objectContaining({
@@ -1329,6 +1332,33 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         );
     });
 
+    it("revalidates the workspace write gate immediately before hosted PTY start and input", async () => {
+        const fake = makeFakeHarness();
+        const { host } = makeHost();
+        const assertWorkspaceWritable = vi.fn(async () => {
+            throw new Error("workspace frozen");
+        });
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], {
+            ptyHost: host,
+            assertWorkspaceWritable,
+        } as any);
+
+        await expect(
+            owner.startHostedCommand("npm run dev", {
+                workspaceId: "w1",
+                workspaceDir: "/tmp",
+                connection: "",
+                environment: {},
+                recentCmds: [],
+            })
+        ).rejects.toThrow(/workspace frozen/);
+        await expect(owner.writeHostedCommand("cmd1", "yes\n")).rejects.toThrow(/workspace frozen/);
+
+        expect(host.start).not.toHaveBeenCalled();
+        expect(host.write).not.toHaveBeenCalled();
+        expect(assertWorkspaceWritable).toHaveBeenCalledTimes(2);
+    });
+
     it("emits updated hosted command snapshots after the PTY host changes", async () => {
         const fake = makeFakeHarness();
         const { host, updateSnapshot } = makeHost();
@@ -1455,6 +1485,44 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
 });
 
 describe("AgentSessionRuntime — execution config", () => {
+    it("rechecks the workspace gate before every tool call and stops before permissions after freeze", async () => {
+        const fake = makeFakeHarness();
+        const frozen = new Error("workspace frozen after prompt");
+        const workspaceGate = vi.fn(async () => {
+            throw frozen;
+        });
+        const permissionsHook = vi.fn(async () => undefined);
+        const refreshedRewindState: AgentRewindSessionStateView = {
+            enabled: true,
+            semanticLeafId: null,
+            displayLeafId: null,
+            eligibleTurnIds: [],
+            busy: false,
+            frozen: true,
+            quota: { status: "ok", usedBytes: 0, softQuotaBytes: 1, cleanupAvailable: false },
+        };
+        const buildRewindState = vi.fn(async () => refreshedRewindState);
+        const runtime = new AgentSessionRuntime("/s", fake.pane, [], [], {
+            initialRewindState: { ...refreshedRewindState, frozen: false },
+            buildRewindState,
+        });
+        runtime.setWorkspaceWriteGuard(workspaceGate);
+
+        await runtime.syncExecutionConfig({
+            promptInputs: { cwd: "/next" },
+            model: fake.model,
+            thinkingLevel: "off",
+            toolCallHook: permissionsHook,
+        });
+        const combinedHook = vi.mocked(fake.pane.setToolCallHook).mock.calls.at(-1)?.[0];
+
+        await expect(combinedHook?.({ toolName: "bash" } as never)).rejects.toBe(frozen);
+        expect(workspaceGate).toHaveBeenCalledOnce();
+        expect(permissionsHook).not.toHaveBeenCalled();
+        expect(buildRewindState).toHaveBeenCalledOnce();
+        expect(runtime.getSessionState().rewindState).toEqual(refreshedRewindState);
+    });
+
     it("applies changed execution config before sending", async () => {
         const fake = makeFakeHarness();
         const runtime = new AgentSessionRuntime("/s", fake.pane);
@@ -1473,7 +1541,11 @@ describe("AgentSessionRuntime — execution config", () => {
 
         expect(fake.pane.update).toHaveBeenCalledWith({ cwd: "/next" });
         expect(fake.pane.setAuthResolver).toHaveBeenCalledWith(authResolver);
-        expect(fake.pane.setToolCallHook).toHaveBeenCalledWith(toolCallHook);
+        expect(fake.pane.setToolCallHook).toHaveBeenCalledWith(expect.any(Function));
+        await vi
+            .mocked(fake.pane.setToolCallHook)
+            .mock.calls.at(-1)?.[0]?.({ toolName: "read" } as never);
+        expect(toolCallHook).toHaveBeenCalledOnce();
         expect(fake.pane.harness.setModel).toHaveBeenCalledWith(nextModel);
         expect(fake.pane.harness.setThinkingLevel).toHaveBeenCalledWith("high");
         expect(send).toHaveBeenCalledWith("hello");
@@ -1541,7 +1613,11 @@ describe("AgentSessionRuntime — execution config", () => {
         expect(fake.pane.harness.setModel).toHaveBeenCalledWith(nextModel);
         expect(fake.pane.harness.setThinkingLevel).toHaveBeenCalledWith("high");
         expect(fake.pane.setAuthResolver).toHaveBeenCalledWith(secondAuth);
-        expect(fake.pane.setToolCallHook).toHaveBeenCalledWith(secondHook);
+        expect(fake.pane.setToolCallHook).toHaveBeenCalledWith(expect.any(Function));
+        await vi
+            .mocked(fake.pane.setToolCallHook)
+            .mock.calls.at(-1)?.[0]?.({ toolName: "read" } as never);
+        expect(secondHook).toHaveBeenCalledOnce();
 
         fake.emit({ type: "message_end", message: user("second"), entryId: "entry-2" });
         await expect(second).resolves.toBe("entry-2");

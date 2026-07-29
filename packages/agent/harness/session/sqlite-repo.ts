@@ -21,6 +21,7 @@
 import { promises as fsp } from "node:fs";
 import * as path from "node:path";
 
+import { NodeExecutionEnv } from "../../node";
 import type {
 	JsonlSessionCreateOptions,
 	JsonlSessionListOptions,
@@ -32,9 +33,15 @@ import type {
 	SessionTreeEntry,
 } from "../types";
 import { SessionError, toError } from "../types";
-import { NodeExecutionEnv } from "../../node";
 import { JsonlSessionStorage } from "./jsonl-storage";
-import { appendCommittedEntryGroups, createSessionId, createTimestamp, getEntriesToFork, toSession } from "./repo-utils";
+import {
+	appendCommittedEntryGroups,
+	createSessionId,
+	createTimestamp,
+	getEntriesToFork,
+	toSession,
+} from "./repo-utils";
+import { withSessionIdMutationFence } from "./session-id-mutation-fence";
 import { SqliteSessionStorage } from "./sqlite-storage";
 
 const SESSION_FILE_EXT = ".db";
@@ -82,16 +89,18 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 
 	async create(options: JsonlSessionCreateOptions): Promise<Session<JsonlSessionMetadata>> {
 		const id = options.id ?? createSessionId();
-		const createdAt = createTimestamp();
-		const sessionDir = this.getSessionDir(options.cwd);
-		await fsp.mkdir(sessionDir, { recursive: true });
-		const filePath = this.createSessionFilePath(options.cwd, id, createdAt);
-		const storage = SqliteSessionStorage.create(filePath, {
-			cwd: options.cwd,
-			sessionId: id,
-			parentSessionPath: options.parentSessionPath,
+		return withSessionIdMutationFence(id, async () => {
+			const createdAt = createTimestamp();
+			const sessionDir = this.getSessionDir(options.cwd);
+			await fsp.mkdir(sessionDir, { recursive: true });
+			const filePath = this.createSessionFilePath(options.cwd, id, createdAt);
+			const storage = SqliteSessionStorage.create(filePath, {
+				cwd: options.cwd,
+				sessionId: id,
+				parentSessionPath: options.parentSessionPath,
+			});
+			return toSession(storage);
 		});
-		return toSession(storage);
 	}
 
 	async open(metadata: JsonlSessionMetadata): Promise<Session<JsonlSessionMetadata>> {
@@ -291,7 +300,7 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 
 	async fork(
 		sourceMetadata: JsonlSessionMetadata,
-		options: JsonlSessionCreateOptions & { entryId?: string; position?: "before" | "at"; id?: string },
+		options: JsonlSessionCreateOptions & { entryId?: string; position?: "before" | "at"; id?: string }
 	): Promise<Session<JsonlSessionMetadata>> {
 		const source = await this.open(sourceMetadata);
 		let forkedEntries: SessionTreeEntry[];
@@ -301,21 +310,23 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 			source.close();
 		}
 		const id = options.id ?? createSessionId();
-		const createdAt = createTimestamp();
-		const sessionDir = this.getSessionDir(options.cwd);
-		await fsp.mkdir(sessionDir, { recursive: true });
-		const storage = SqliteSessionStorage.create(this.createSessionFilePath(options.cwd, id, createdAt), {
-			cwd: options.cwd,
-			sessionId: id,
-			parentSessionPath: options.parentSessionPath ?? sourceMetadata.path,
+		return withSessionIdMutationFence(id, async () => {
+			const createdAt = createTimestamp();
+			const sessionDir = this.getSessionDir(options.cwd);
+			await fsp.mkdir(sessionDir, { recursive: true });
+			const storage = SqliteSessionStorage.create(this.createSessionFilePath(options.cwd, id, createdAt), {
+				cwd: options.cwd,
+				sessionId: id,
+				parentSessionPath: options.parentSessionPath ?? sourceMetadata.path,
+			});
+			try {
+				await appendCommittedEntryGroups(storage, forkedEntries);
+				return toSession(storage);
+			} catch (error) {
+				storage.close();
+				throw error;
+			}
 		});
-		try {
-			await appendCommittedEntryGroups(storage, forkedEntries);
-			return toSession(storage);
-		} catch (error) {
-			storage.close();
-			throw error;
-		}
 	}
 
 	/**
@@ -353,7 +364,10 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 	 * validated via jsonl-storage's parsers and appended into SQLite, so a
 	 * malformed or wrong-version file is rejected instead of silently stored.
 	 */
-	async importFromJsonl(jsonlPath: string, options: { cwd: string; id?: string }): Promise<Session<JsonlSessionMetadata>> {
+	async importFromJsonl(
+		jsonlPath: string,
+		options: { cwd: string; id?: string }
+	): Promise<Session<JsonlSessionMetadata>> {
 		const inputPath = path.resolve(jsonlPath);
 		const env = new NodeExecutionEnv({ cwd: path.dirname(inputPath) });
 		let sourceMetadata: JsonlSessionMetadata;
@@ -366,21 +380,23 @@ export class SqliteSessionRepo implements JsonlSessionRepoApi {
 		}
 
 		const id = options.id ?? sourceMetadata.id ?? createSessionId();
-		const createdAt = createTimestamp();
-		const sessionDir = this.getSessionDir(options.cwd);
-		await fsp.mkdir(sessionDir, { recursive: true });
-		const storage = SqliteSessionStorage.create(this.createSessionFilePath(options.cwd, id, createdAt), {
-			cwd: options.cwd,
-			sessionId: id,
-			parentSessionPath: sourceMetadata.parentSessionPath,
+		return withSessionIdMutationFence(id, async () => {
+			const createdAt = createTimestamp();
+			const sessionDir = this.getSessionDir(options.cwd);
+			await fsp.mkdir(sessionDir, { recursive: true });
+			const storage = SqliteSessionStorage.create(this.createSessionFilePath(options.cwd, id, createdAt), {
+				cwd: options.cwd,
+				sessionId: id,
+				parentSessionPath: sourceMetadata.parentSessionPath,
+			});
+			try {
+				await appendCommittedEntryGroups(storage, entries);
+				return toSession(storage);
+			} catch (error) {
+				storage.close();
+				throw error;
+			}
 		});
-		try {
-			await appendCommittedEntryGroups(storage, entries);
-			return toSession(storage);
-		} catch (error) {
-			storage.close();
-			throw error;
-		}
 	}
 
 	async findById(sessionId: string): Promise<JsonlSessionMetadata | undefined> {

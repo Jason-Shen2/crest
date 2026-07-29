@@ -49,7 +49,6 @@ import {
     getAllWaveWindows,
     getQuakeWindow,
     getWaveWindowById,
-    getWaveWindowByWorkspaceId,
     initGlobalHotkeyEventSubscription,
     registerGlobalHotkey,
     relaunchBrowserWindows,
@@ -58,8 +57,8 @@ import {
 import { ElectronWshClient, initElectronWshClient } from "./emain-wsh";
 import { getLaunchSettings } from "./launchsettings";
 import { LspWebSocketBridge } from "./lsp/lsp-websocket-server";
-import { configureAutoUpdater, updater } from "./updater";
 import { initModelsDevOverlay } from "./models-dev-overlay";
+import { configureAutoUpdater, updater } from "./updater";
 
 const electronApp = electron.app;
 
@@ -395,7 +394,7 @@ async function appMain() {
     console.log("wavesrv ready signal received", ready, Date.now() - startTs, "ms");
     await electronApp.whenReady();
     configureAuthKeyRequestInjection(electron.session.defaultSession);
-    initIpcHandlers();
+    await initIpcHandlers();
     process.env.CREST_LSP_WEBSOCKET_URL = await lspWebSocketBridge.start();
 
     await sleep(10); // wait a bit for wavesrv to be ready

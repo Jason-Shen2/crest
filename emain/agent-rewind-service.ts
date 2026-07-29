@@ -127,37 +127,54 @@ export class AgentRewindService {
         );
     }
 
-    rewind(input: AgentRewindTreeInput): Promise<AgentRewindMutationResult> {
-        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) => {
-            const confirmation = this.confirmations.take(input.confirmationToken);
-            return engine.applyRewind({
-                session,
-                sessionId: input.sessionMetadata.id,
-                workspace,
-                semanticLeafId: input.expectedSemanticLeafId,
-                targetTurnId: input.targetTurnId,
-                mode: input.mode,
-                confirmation,
-            });
-        });
+    rewind(
+        input: AgentRewindTreeInput,
+        assertCurrent: () => Promise<void> = async () => {}
+    ): Promise<AgentRewindMutationResult> {
+        return this.withLockedSession(
+            input.sessionMetadata,
+            ({ session, workspace, engine }) => {
+                const confirmation = this.confirmations.take(input.confirmationToken);
+                return engine.applyRewind({
+                    session,
+                    sessionId: input.sessionMetadata.id,
+                    workspace,
+                    semanticLeafId: input.expectedSemanticLeafId,
+                    targetTurnId: input.targetTurnId,
+                    mode: input.mode,
+                    confirmation,
+                    assertCurrent,
+                });
+            },
+            assertCurrent
+        );
     }
 
-    redo(input: AgentRedoRewindInput): Promise<AgentRewindMutationResult> {
-        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) => {
-            const confirmation = this.confirmations.take(input.confirmationToken);
-            return engine.applyRedo({
-                session,
-                sessionId: input.sessionMetadata.id,
-                workspace,
-                semanticLeafId: input.expectedSemanticLeafId,
-                confirmation,
-            });
-        });
+    redo(
+        input: AgentRedoRewindInput,
+        assertCurrent: () => Promise<void> = async () => {}
+    ): Promise<AgentRewindMutationResult> {
+        return this.withLockedSession(
+            input.sessionMetadata,
+            ({ session, workspace, engine }) => {
+                const confirmation = this.confirmations.take(input.confirmationToken);
+                return engine.applyRedo({
+                    session,
+                    sessionId: input.sessionMetadata.id,
+                    workspace,
+                    semanticLeafId: input.expectedSemanticLeafId,
+                    confirmation,
+                    assertCurrent,
+                });
+            },
+            assertCurrent
+        );
     }
 
     private withLockedSession<T>(
         sessionMetadata: JsonlSessionMetadata,
-        operation: (input: LockedSession) => Promise<T>
+        operation: (input: LockedSession) => Promise<T>,
+        assertCurrent: () => Promise<void> = async () => {}
     ): Promise<T> {
         return this.registry.withRetainedSessionMutation(
             sessionMetadata.path,
@@ -173,13 +190,14 @@ export class AgentRewindService {
                 });
                 const session = await this.openSession(sessionMetadata);
                 try {
-                    return await resolved.store.withWorkspaceLock(() =>
-                        operation({
+                    return await resolved.store.withWorkspaceLock(async () => {
+                        await assertCurrent();
+                        return await operation({
                             session,
                             workspace: resolved.workspace,
                             engine: resolved.engine,
-                        })
-                    );
+                        });
+                    });
                 } finally {
                     session.close();
                 }
