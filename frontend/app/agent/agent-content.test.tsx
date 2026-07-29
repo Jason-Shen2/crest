@@ -919,7 +919,7 @@ describe("AgentContent", () => {
                 expect.objectContaining({ target: { kind: "rewind", targetTurnId: "turn-a" } })
             )
         );
-        expect(screen.getByTestId("rewind-preview").textContent).toContain("rewind:ready");
+        await waitFor(() => expect(screen.getByTestId("rewind-preview").textContent).toContain("rewind:ready"));
 
         act(() => rewindDialogProps.latest.onCancel());
         act(() => {
@@ -932,7 +932,7 @@ describe("AgentContent", () => {
         fireEvent.click(screen.getByRole("button", { name: "Complete reveal" }));
         await waitFor(() => expect(client.previewRewind).toHaveBeenCalledTimes(2));
         expect(threadProps.latest.revealTurnRequest).toBeUndefined();
-        expect(screen.getByTestId("rewind-preview").textContent).toContain("rewind:ready");
+        await waitFor(() => expect(screen.getByTestId("rewind-preview").textContent).toContain("rewind:ready"));
     });
 
     it("cancels a selector reveal whose target never mounts", async () => {
