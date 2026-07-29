@@ -66,9 +66,7 @@ function context(overrides: Partial<AgentExecutionContext> = {}): AgentExecution
         workspaceId: "workspace-1",
         workspaceDir: "/tmp/agent-pty-host",
         sessionPath: "/tmp/session.jsonl",
-        connection: "",
         environment: { FROM_CONTEXT: "yes" },
-        recentCmds: [],
         ...overrides,
     };
 }

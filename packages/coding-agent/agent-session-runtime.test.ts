@@ -1182,9 +1182,7 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         await owner.startHostedCommand("npm run dev", {
             workspaceId: "w1",
             workspaceDir: "/tmp",
-            connection: "",
             environment: {},
-            recentCmds: [],
         });
 
         expect(owner.getSessionState().commands).toEqual([expect.objectContaining({ commandId: "cmd1" })]);

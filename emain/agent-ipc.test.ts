@@ -137,7 +137,6 @@ function registerAgentIpcHandlers(): void {
             ...TrustedRequestContext,
             windowId: "window-test",
             workspaceDir: trustedWorkspaceDir,
-            validatePreferredTerminal: async () => true,
         }),
     });
     const calls = vi.mocked(electron.ipcMain.handle).mock.calls;
@@ -160,9 +159,7 @@ function registerAgentIpcHandlers(): void {
                 const context = {
                     workspaceId: TrustedRequestContext.workspaceId,
                     workspaceDir: trustedWorkspaceDir,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 };
                 return await handler(event, TrustedRequestContext, { ...input, context });
             }
@@ -1249,7 +1246,6 @@ describe("agent-ipc command helpers", () => {
             generation: 2,
             windowId: "window-1",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             ...DefaultAgentIpcRegistrationDependencies,
@@ -1276,9 +1272,7 @@ describe("agent-ipc command helpers", () => {
                             workspaceId: "workspace-other",
                             workspaceDir: identity.workspaceDir,
                             sessionPath: metadata.path,
-                            connection: "",
                             environment: {},
-                            recentCmds: [],
                         },
                         text: "hello",
                         provider: "p",
@@ -1316,7 +1310,6 @@ describe("agent-ipc command helpers", () => {
             generation: 6,
             windowId: "window-1",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         let current = true;
         registerAgentIpcHandlersImpl({
@@ -1348,9 +1341,7 @@ describe("agent-ipc command helpers", () => {
                             workspaceId: "workspace-1",
                             workspaceDir: identity.workspaceDir,
                             sessionPath: metadata.path,
-                            connection: "",
                             environment: {},
-                            recentCmds: [],
                         },
                         text: "hello",
                         provider: "p",
@@ -1391,7 +1382,6 @@ describe("agent-ipc command helpers", () => {
             generation: 4,
             windowId: "window-1",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             ...DefaultAgentIpcRegistrationDependencies,
@@ -1418,7 +1408,6 @@ describe("agent-ipc command helpers", () => {
                         workspaceId: "workspace-1",
                         workspaceDir: identity.workspaceDir,
                         sessionPath: metadata.path,
-                        connection: "",
                         environment: {},
                     },
                     text: "must not run",
@@ -1435,6 +1424,49 @@ describe("agent-ipc command helpers", () => {
         ).rejects.toThrow(/current Workspace renderer/);
     });
 
+    it.each([
+        ["preferredTerminalTabId", "terminal-1"],
+        ["connection", "ssh://host"],
+        ["recentCmds", ["git status"]],
+    ])("rejects removed Terminal-derived send context field %s before runtime mutation", async (field, value) => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-terminal-context-"));
+        const { metadata } = await createPaneSession(cwd);
+        const identity = {
+            workspaceId: "workspace-1",
+            generation: 1,
+            windowId: "window-1",
+            workspaceDir: await fs.realpath(cwd),
+        };
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async () => identity,
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 17, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+
+        vi.mocked(getModel).mockClear();
+        await expect(
+            handlers.get("agent:send")?.(
+                event,
+                { workspaceId: "workspace-1", generation: 1 },
+                {
+                    sessionMetadata: metadata,
+                    context: {
+                        workspaceId: "workspace-1",
+                        workspaceDir: identity.workspaceDir,
+                        sessionPath: metadata.path,
+                        environment: {},
+                        [field]: value,
+                    },
+                    text: "must not run",
+                    provider: "p",
+                    model: "m",
+                }
+            )
+        ).rejects.toThrow(/unexpected key/);
+        expect(getModel).not.toHaveBeenCalled();
+    });
+
     it("revalidates sender identity before reading a live runtime", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-runtime-read-"));
         const { metadata } = await createPaneSession(cwd);
@@ -1449,7 +1481,6 @@ describe("agent-ipc command helpers", () => {
             generation: 3,
             windowId: "window-1",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         let resolveCount = 0;
         let failOnThirdResolve = false;
@@ -1479,9 +1510,7 @@ describe("agent-ipc command helpers", () => {
                         workspaceId: "workspace-1",
                         workspaceDir: identity.workspaceDir,
                         sessionPath: metadata.path,
-                        connection: "",
                         environment: {},
-                        recentCmds: [],
                     },
                     text: "first",
                     provider: "p",
@@ -1514,7 +1543,6 @@ describe("agent-ipc command helpers", () => {
             workspaceId: "workspace-1",
             windowId: "window-1",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         let generation = 1;
         registerAgentIpcHandlersImpl({
@@ -1550,9 +1578,7 @@ describe("agent-ipc command helpers", () => {
                         workspaceId: "workspace-1",
                         workspaceDir: baseIdentity.workspaceDir,
                         sessionPath: metadata.path,
-                        connection: "",
                         environment: {},
-                        recentCmds: [],
                     },
                     text: "first",
                     provider: "p",
@@ -1580,7 +1606,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-live-sub-guard-failure",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         let currentIdentity = identity;
         registerAgentIpcHandlersImpl({
@@ -1600,9 +1625,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "first",
                 provider: "p",
@@ -1643,7 +1666,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-live-sub-send-failure",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             ...DefaultAgentIpcRegistrationDependencies,
@@ -1661,9 +1683,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "first",
                 provider: "p",
@@ -1712,7 +1732,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-live-sub-final-guard",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         let currentIdentity = identity;
         registerAgentIpcHandlersImpl({
@@ -1731,9 +1750,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "first",
                 provider: "p",
@@ -1776,7 +1793,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-pending-sub-final-guard",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         let currentIdentity = identity;
         registerAgentIpcHandlersImpl({
@@ -1812,9 +1828,7 @@ describe("agent-ipc command helpers", () => {
                         workspaceId: identity.workspaceId,
                         workspaceDir: identity.workspaceDir,
                         sessionPath: metadata.path,
-                        connection: "",
                         environment: {},
-                        recentCmds: [],
                     },
                     text: "first",
                     provider: "p",
@@ -1843,7 +1857,6 @@ describe("agent-ipc command helpers", () => {
             generation: 5,
             windowId: "window-1",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         let resolveCount = 0;
         let failOnThirdResolve = false;
@@ -1873,9 +1886,7 @@ describe("agent-ipc command helpers", () => {
                         workspaceId: "workspace-1",
                         workspaceDir: identity.workspaceDir,
                         sessionPath: metadata.path,
-                        connection: "",
                         environment: {},
-                        recentCmds: [],
                     },
                     text: "first",
                     provider: "p",
@@ -1915,7 +1926,6 @@ describe("agent-ipc command helpers", () => {
                 generation: 1,
                 windowId: `window-${activeWorkspaceId}`,
                 workspaceDir,
-                validatePreferredTerminal: async () => true,
             }),
         });
         const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -1929,9 +1939,7 @@ describe("agent-ipc command helpers", () => {
                 workspaceId,
                 workspaceDir,
                 sessionPath: metadata.path,
-                connection: "",
                 environment: {},
-                recentCmds: [],
             },
             text: "hello",
             provider: "p",
@@ -1983,7 +1991,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-read-lease",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const loadWorkspace = vi.fn(async () =>
             workspaceWithAgentState(identity.workspaceId, 0, { activesession: metadata })
@@ -2044,7 +2051,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-write-lease",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -2115,7 +2121,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: `window-late-${liveRuntime ? "live" : "pending"}`,
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -2144,9 +2149,7 @@ describe("agent-ipc command helpers", () => {
                 workspaceId: identity.workspaceId,
                 workspaceDir: identity.workspaceDir,
                 sessionPath: metadata.path,
-                connection: "",
                 environment: {},
-                recentCmds: [],
             },
             text: "create runtime",
             provider: "p",
@@ -2214,7 +2217,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: `window-restore-serialization-${liveRuntime ? "live" : "pending"}`,
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -2245,9 +2247,7 @@ describe("agent-ipc command helpers", () => {
                 workspaceId: identity.workspaceId,
                 workspaceDir: identity.workspaceDir,
                 sessionPath: metadata.path,
-                connection: "",
                 environment: {},
-                recentCmds: [],
             },
             text: "create runtime",
             provider: "p",
@@ -2319,7 +2319,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-live-sub-archive",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -2341,9 +2340,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "first",
                 provider: "p",
@@ -2390,7 +2387,6 @@ describe("agent-ipc command helpers", () => {
                 ...TrustedRequestContext,
                 windowId: `window-${operation}-close-failure`,
                 workspaceDir: await fs.realpath(cwd),
-                validatePreferredTerminal: async () => true,
             };
             const workspace = workspaceWithAgentState(identity.workspaceId, 3, { activesession: metadata });
             const saveWorkspaceAgentState = vi.fn(async (data: SaveWorkspaceAgentStateData) => ({
@@ -2412,9 +2408,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "create runtime",
                 provider: "p",
@@ -2477,7 +2471,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-pending-sub-archive",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -2508,9 +2501,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "reuse path",
                 provider: "p",
@@ -2531,7 +2522,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-archive-checkpoint",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const saveGate = deferred<WorkspaceAgentStateCheckpoint>();
         const saveWorkspaceAgentState = vi.fn(() => saveGate.promise);
@@ -2598,7 +2588,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-archive-load-failure",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const loadFailure = new Error("workspace checkpoint load failed");
         registerAgentIpcHandlersImpl({
@@ -2622,9 +2611,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "first",
                 provider: "p",
@@ -2668,7 +2655,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-sub-preflight-race",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const loadGate = deferred<Workspace>();
         const loadWorkspace = vi.fn(() => loadGate.promise);
@@ -2689,9 +2675,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "first",
                 provider: "p",
@@ -2761,7 +2745,6 @@ describe("agent-ipc command helpers", () => {
                 ...TrustedRequestContext,
                 windowId: `window-${operation}-restore-event-race`,
                 workspaceDir: await fs.realpath(cwd),
-                validatePreferredTerminal: async () => true,
             };
             registerAgentIpcHandlersImpl({
                 resolveWorkspaceSender: async () => identity,
@@ -2792,9 +2775,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "create runtime",
                 provider: "p",
@@ -2889,7 +2870,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-archive-handle-order",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -2906,9 +2886,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "first",
                 provider: "p",
@@ -2954,7 +2932,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-runtime-create-failure",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -2971,9 +2948,7 @@ describe("agent-ipc command helpers", () => {
                         workspaceId: identity.workspaceId,
                         workspaceDir: identity.workspaceDir,
                         sessionPath: metadata.path,
-                        connection: "",
                         environment: {},
-                        recentCmds: [],
                     },
                     text: "first",
                     provider: "p",
@@ -3028,7 +3003,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-archive-rollback",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const failure = new Error("archive checkpoint unavailable");
         registerAgentIpcHandlersImpl({
@@ -3070,7 +3044,6 @@ describe("agent-ipc command helpers", () => {
                 ...TrustedRequestContext,
                 windowId: `window-live-sub-rollback-${channel}`,
                 workspaceDir: await fs.realpath(cwd),
-                validatePreferredTerminal: async () => true,
             };
             const checkpointFailure = new Error(`${channel} checkpoint unavailable`);
             registerAgentIpcHandlersImpl({
@@ -3095,9 +3068,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "resume",
                 provider: "p",
@@ -3149,7 +3120,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-pending-sub-rollback",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const checkpointFailure = new Error("archive checkpoint unavailable");
         registerAgentIpcHandlersImpl({
@@ -3177,9 +3147,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "resume",
                 provider: "p",
@@ -3207,7 +3175,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-archive-partial",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -3232,7 +3199,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-delete-staged",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -3263,7 +3229,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-delete-cas",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const stale = new Error("stale workspace checkpoint: expected Agent revision 1");
         const loadWorkspace = vi
@@ -3308,7 +3273,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-delete-replacement",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const loadWorkspace = vi
             .fn()
@@ -3343,7 +3307,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-delete-same-path-replacement",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const loadWorkspace = vi
             .fn()
@@ -3381,7 +3344,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-archive-symlink-identity",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const saveWorkspaceAgentState = vi.fn();
         registerAgentIpcHandlersImpl({
@@ -3405,7 +3367,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-delete-save-failure",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const failure = new Error("checkpoint unavailable");
         registerAgentIpcHandlersImpl({
@@ -3432,7 +3393,6 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: "window-delete-stale-sender",
             workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
         };
         const saveWorkspaceAgentState = vi.fn(async (data: SaveWorkspaceAgentStateData) => ({
             workspaceid: data.workspaceid,

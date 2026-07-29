@@ -82,7 +82,6 @@ async function main(): Promise<void> {
         promptInputs: {
             cwd: process.cwd(),
             gitBranch: "main",
-            recentCmds: ["git status", "ls"],
         },
     });
 

@@ -621,11 +621,8 @@ declare global {
         workspaceId: string;
         workspaceDir: string;
         sessionPath?: string;
-        connection: string;
         environment: Record<string, string>;
-        preferredTerminalTabId?: string;
         gitBranch?: string;
-        recentCmds?: string[];
     };
 
     type AgentPtySnapshot = {

@@ -93,7 +93,6 @@ async function runScenario(
             }
             return buildSystemPrompt({
                 cwd,
-                recentCmds: [],
                 selectedTools: activeTools.map((tool) => tool.name),
                 toolSnippets,
                 promptGuidelines,
