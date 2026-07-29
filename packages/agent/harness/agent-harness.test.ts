@@ -15,11 +15,11 @@ import {
     type SimpleStreamOptions,
 } from "@crest/ai";
 import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
+import { Type } from "typebox";
+import { NodeExecutionEnv } from "../node";
 import type { AgentMessage, AgentTool } from "../types";
 import { AgentHarness } from "./agent-harness";
 import { InMemorySessionRepo } from "./session/memory-repo";
-import { NodeExecutionEnv } from "../node";
-import { Type } from "typebox";
 import { AgentHarnessTerminalPreparationError } from "./types";
 
 const FAKE_API = "fake-test-api";
@@ -108,9 +108,7 @@ describe("AgentHarness — promptReturningEntryId", () => {
         const result = await harness.promptReturningEntryId("hello");
         expect(result.userEntryId).toBeTruthy();
         const branch = await session.getBranch();
-        const userEntry = branch.find(
-            (e) => e.type === "message" && (e.message as { role?: string }).role === "user",
-        );
+        const userEntry = branch.find((e) => e.type === "message" && (e.message as { role?: string }).role === "user");
         expect(result.userEntryId).toBe(userEntry?.id);
     });
 
@@ -368,16 +366,13 @@ describe("AgentHarness — prepared turns", () => {
                 void (async () => {
                     await options?.onPayload?.({ request: requestCount }, model);
                     const isToolRequest = requestCount++ === 0;
-                    const message =
-                        isToolRequest
-                            ? {
-                                  ...fakeAssistantMessage(model),
-                                  content: [
-                                      { type: "toolCall" as const, id: "call-1", name: "lookup", arguments: {} },
-                                  ],
-                                  stopReason: "toolUse" as const,
-                              }
-                            : fakeAssistantMessage(model);
+                    const message = isToolRequest
+                        ? {
+                              ...fakeAssistantMessage(model),
+                              content: [{ type: "toolCall" as const, id: "call-1", name: "lookup", arguments: {} }],
+                              stopReason: "toolUse" as const,
+                          }
+                        : fakeAssistantMessage(model);
                     stream.push({ type: "start", partial: message });
                     stream.push({ type: "done", reason: isToolRequest ? "toolUse" : "stop", message });
                 })();
@@ -465,7 +460,7 @@ describe("AgentHarness — prepared turns", () => {
             (entry) =>
                 entry.message.role === "user" &&
                 Array.isArray(entry.message.content) &&
-                entry.message.content.some((content) => content.type === "text" && content.text === "hello"),
+                entry.message.content.some((content) => content.type === "text" && content.text === "hello")
         );
         expect(currentUserEntries).toHaveLength(1);
         expect(userEnds).toEqual([{ entryId: currentUserEntries[0]!.id }]);
@@ -512,7 +507,7 @@ describe("AgentHarness — prepared turns", () => {
                 preparedSnapshots.push({ model: input.model.id, systemPrompt: input.systemPrompt });
                 const userEntryId = await session.appendMessage(input.userMessage);
                 return { userEntryId, systemPromptSuffix: "prepared overlay" };
-            },
+            }
         );
 
         streams[0]!.push({ type: "done", reason: "stop", message: fakeAssistantMessage(fakeModel()) });
@@ -535,7 +530,7 @@ describe("AgentHarness — prepared turns", () => {
                 prepare: async () => {
                     throw new Error("cannot prepare");
                 },
-            }),
+            })
         ).rejects.toThrow("cannot prepare");
         expect(contexts).toEqual([]);
     });
@@ -594,7 +589,7 @@ describe("AgentHarness — prepared turns", () => {
 
         expect(contexts).toHaveLength(1);
         expect(contexts[0]!.messages.at(-1)).toEqual(
-            expect.objectContaining({ role: "user", content: "promoted string content" }),
+            expect.objectContaining({ role: "user", content: "promoted string content" })
         );
     });
 
@@ -718,7 +713,7 @@ describe("AgentHarness — prepared turns", () => {
         await prompt;
 
         const userEntries = (await session.getBranch()).filter(
-            (entry) => entry.type === "message" && entry.message.role === "user",
+            (entry) => entry.type === "message" && entry.message.role === "user"
         );
         expect(userEntries).toHaveLength(3);
         expect(userEnds).toEqual(userEntries.map((entry) => ({ entryId: entry.id })));
@@ -804,7 +799,10 @@ describe("AgentHarness — prepared turns", () => {
             eventTexts.push(
                 typeof content === "string"
                     ? content
-                    : content.filter((item) => item.type === "text").map((item) => item.text).join(""),
+                    : content
+                          .filter((item) => item.type === "text")
+                          .map((item) => item.text)
+                          .join("")
             );
         });
         await harness.nextTurn("queued first");
@@ -815,7 +813,7 @@ describe("AgentHarness — prepared turns", () => {
                     userEntryId: await session.appendMessage(input.userMessage),
                     systemPromptSuffix: "overlay",
                 }),
-            }),
+            })
         ).rejects.toMatchObject({ code: "invalid_state" });
 
         expect(contexts).toEqual([]);
@@ -829,14 +827,22 @@ describe("AgentHarness — prepared turns", () => {
             .map((message) =>
                 typeof message.content === "string"
                     ? message.content
-                    : message.content.filter((item) => item.type === "text").map((item) => item.text).join(""),
+                    : message.content
+                          .filter((item) => item.type === "text")
+                          .map((item) => item.text)
+                          .join("")
             );
         const reopened = await repo.open(await session.getMetadata());
         const branchTexts = (await reopened.getBranch()).flatMap((entry) => {
             if (entry.type !== "message" || entry.message.role !== "user") return [];
             return typeof entry.message.content === "string"
                 ? [entry.message.content]
-                : [entry.message.content.filter((item) => item.type === "text").map((item) => item.text).join("")];
+                : [
+                      entry.message.content
+                          .filter((item) => item.type === "text")
+                          .map((item) => item.text)
+                          .join(""),
+                  ];
         });
         expect(providerTexts).toEqual(["queued first", "ordinary second"]);
         expect(eventTexts).toEqual(providerTexts);
@@ -971,7 +977,7 @@ describe("AgentHarness — prepared turns", () => {
                     });
                 },
             },
-            prepare,
+            prepare
         );
         streams[0]!.push({ type: "done", reason: "stop", message: fakeAssistantMessage(fakeModel()) });
         await waitFor(() => activationStarted);
@@ -983,6 +989,403 @@ describe("AgentHarness — prepared turns", () => {
         expect(streams).toHaveLength(1);
         expect(aborted.clearedFollowUp).toHaveLength(1);
         expect((await harness.abort()).clearedFollowUp).toEqual([]);
+    });
+});
+
+describe("AgentHarness — user-turn lifecycle", () => {
+    afterEach(() => {
+        resetApiProviders();
+    });
+
+    it("commits initial and next-turn boundaries before superseding them", async () => {
+        const { harness } = await buildHarness();
+        const events: Array<[string, string, string?]> = [];
+        harness.subscribe((event) => {
+            if (event.type === "session_before_user_turn") {
+                events.push(["before", event.boundaryToken]);
+            } else if (event.type === "session_user_turn_committed") {
+                events.push(["committed", event.boundaryToken, event.userEntryId]);
+            } else if (event.type === "session_user_turn_terminal") {
+                events.push(["terminal", event.boundaryToken, event.reason]);
+            }
+        });
+        await harness.nextTurn("queued");
+
+        await harness.prompt("prompt");
+
+        expect(
+            events.map(([type, token, value]) => [type, token, value && value.startsWith("boundary-") ? value : value])
+        ).toEqual([
+            ["before", "boundary-1", undefined],
+            ["committed", "boundary-1", expect.any(String)],
+            ["terminal", "boundary-1", "superseded"],
+            ["before", "boundary-2", undefined],
+            ["committed", "boundary-2", expect.any(String)],
+            ["terminal", "boundary-2", "agent_end"],
+        ]);
+    });
+
+    it("starts steering and ordinary follow-up boundaries exactly once", async () => {
+        const streams: AssistantMessageEventStream[] = [];
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: () => {
+                const stream = new AssistantMessageEventStream();
+                streams.push(stream);
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+        });
+        const events: Array<[string, string, string?]> = [];
+        harness.subscribe((event) => {
+            if (event.type === "session_before_user_turn") events.push(["before", event.boundaryToken]);
+            if (event.type === "session_user_turn_committed") {
+                events.push(["committed", event.boundaryToken, event.userEntryId]);
+            }
+            if (event.type === "session_user_turn_terminal") {
+                events.push(["terminal", event.boundaryToken, event.reason]);
+            }
+        });
+
+        const prompt = harness.prompt("initial");
+        await waitFor(() => streams.length === 1);
+        await harness.steer("steering");
+        streams[0]!.push({ type: "done", reason: "stop", message: fakeAssistantMessage(fakeModel()) });
+        await waitFor(() => streams.length === 2);
+        await harness.followUp("follow-up");
+        streams[1]!.push({ type: "done", reason: "stop", message: fakeAssistantMessage(fakeModel()) });
+        await waitFor(() => streams.length === 3);
+        streams[2]!.push({ type: "done", reason: "stop", message: fakeAssistantMessage(fakeModel()) });
+        await prompt;
+
+        expect(
+            events.map(([type, token, value]) => [type, token, type === "committed" ? expect.any(String) : value])
+        ).toEqual([
+            ["before", "boundary-1", undefined],
+            ["committed", "boundary-1", expect.any(String)],
+            ["terminal", "boundary-1", "superseded"],
+            ["before", "boundary-2", undefined],
+            ["committed", "boundary-2", expect.any(String)],
+            ["terminal", "boundary-2", "superseded"],
+            ["before", "boundary-3", undefined],
+            ["committed", "boundary-3", expect.any(String)],
+            ["terminal", "boundary-3", "agent_end"],
+        ]);
+    });
+
+    it("commits prepared initial and follow-up messages before message_end without duplicating boundaries", async () => {
+        const streams: AssistantMessageEventStream[] = [];
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: () => {
+                const stream = new AssistantMessageEventStream();
+                streams.push(stream);
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+        });
+        const events: string[] = [];
+        harness.subscribe((event) => {
+            if (event.type === "session_before_user_turn") events.push(`before:${event.boundaryToken}`);
+            if (event.type === "session_user_turn_committed") events.push(`committed:${event.boundaryToken}`);
+            if (event.type === "message_end" && event.message.role === "user") events.push("message_end");
+            if (event.type === "session_user_turn_terminal") {
+                events.push(`terminal:${event.boundaryToken}:${event.reason}`);
+            }
+        });
+        const prepare = async (input: Parameters<NonNullable<Parameters<typeof harness.prompt>[1]>["prepare"]>[0]) => ({
+            userEntryId: await session.appendMessage(input.userMessage),
+            systemPromptSuffix: "prepared",
+        });
+
+        const prompt = harness.prompt("initial", { prepare });
+        await waitFor(() => streams.length === 1);
+        await harness.followUp("follow-up", undefined, prepare);
+        streams[0]!.push({ type: "done", reason: "stop", message: fakeAssistantMessage(fakeModel()) });
+        await waitFor(() => streams.length === 2);
+        streams[1]!.push({ type: "done", reason: "stop", message: fakeAssistantMessage(fakeModel()) });
+        await prompt;
+
+        expect(events).toEqual([
+            "before:boundary-1",
+            "committed:boundary-1",
+            "message_end",
+            "terminal:boundary-1:superseded",
+            "before:boundary-2",
+            "committed:boundary-2",
+            "message_end",
+            "terminal:boundary-2:agent_end",
+        ]);
+    });
+
+    it("terminalizes failed preparation without a commit", async () => {
+        const { harness } = await buildHarness();
+        const events: string[] = [];
+        harness.subscribe((event) => {
+            if (event.type === "session_before_user_turn") events.push(`before:${event.boundaryToken}`);
+            if (event.type === "session_user_turn_committed") events.push(`committed:${event.boundaryToken}`);
+            if (event.type === "session_user_turn_terminal") {
+                events.push(`terminal:${event.boundaryToken}:${event.reason}`);
+            }
+        });
+
+        await expect(
+            harness.prompt("initial", {
+                prepare: async () => {
+                    throw new Error("preparation failed");
+                },
+            })
+        ).rejects.toThrow("preparation failed");
+
+        expect(events).toEqual(["before:boundary-1", "terminal:boundary-1:preparation_failed"]);
+        expect(harness.isIdle()).toBe(true);
+    });
+
+    it.each([
+        ["provider_failed", "error"],
+        ["aborted", "aborted"],
+    ] as const)("terminalizes a committed turn as %s", async (expectedReason, stopReason) => {
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (model: Model<any>) => {
+                const message = {
+                    ...fakeAssistantMessage(model),
+                    stopReason,
+                    errorMessage: stopReason,
+                } as AssistantMessage;
+                const stream = new AssistantMessageEventStream();
+                stream.push({ type: "start", partial: message });
+                stream.push({ type: "error", reason: stopReason, error: message });
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+        });
+        const events: string[] = [];
+        harness.subscribe((event) => {
+            if (event.type === "session_before_user_turn") events.push(`before:${event.boundaryToken}`);
+            if (event.type === "session_user_turn_committed") events.push(`committed:${event.boundaryToken}`);
+            if (event.type === "session_user_turn_terminal") {
+                events.push(`terminal:${event.boundaryToken}:${event.reason}`);
+            }
+        });
+
+        await harness.prompt("initial");
+
+        expect(events).toEqual(["before:boundary-1", "committed:boundary-1", `terminal:boundary-1:${expectedReason}`]);
+    });
+
+    it("awaits an explicit post-commit abort terminal before abort resolves", async () => {
+        let providerStarted = false;
+        let committedStarted = false;
+        let terminalStarted = false;
+        let releaseCommitted!: () => void;
+        let releaseTerminal!: () => void;
+        const committedGate = new Promise<void>((resolve) => {
+            releaseCommitted = resolve;
+        });
+        const terminalGate = new Promise<void>((resolve) => {
+            releaseTerminal = resolve;
+        });
+        const finalizationSignals: AbortSignal[] = [];
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (model: Model<any>, _context: Context, options?: SimpleStreamOptions) => {
+                const stream = new AssistantMessageEventStream();
+                providerStarted = true;
+                const emitAbort = () => {
+                    const message = {
+                        ...fakeAssistantMessage(model),
+                        stopReason: "aborted",
+                        errorMessage: "aborted",
+                    } as AssistantMessage;
+                    stream.push({ type: "error", reason: "aborted", error: message });
+                };
+                if (options?.signal?.aborted) emitAbort();
+                else options?.signal?.addEventListener("abort", emitAbort, { once: true });
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+        });
+        const events: string[] = [];
+        harness.subscribe(async (event, signal) => {
+            if (event.type === "session_before_user_turn") events.push(`before:${event.boundaryToken}`);
+            if (event.type === "session_user_turn_committed") {
+                committedStarted = true;
+                finalizationSignals.push(signal!);
+                await committedGate;
+                expect(signal?.aborted).toBe(false);
+                events.push(`committed:${event.boundaryToken}`);
+            }
+            if (event.type === "session_user_turn_terminal") {
+                terminalStarted = true;
+                finalizationSignals.push(signal!);
+                await terminalGate;
+                expect(signal?.aborted).toBe(false);
+                events.push(`terminal:${event.boundaryToken}:${event.reason}`);
+            }
+        });
+
+        const prompt = harness.prompt("initial");
+        await waitFor(() => committedStarted);
+        const abort = harness.abort();
+        let abortSettled = false;
+        void abort.finally(() => {
+            abortSettled = true;
+        });
+        await Promise.resolve();
+        expect(abortSettled).toBe(false);
+        releaseCommitted();
+        await waitFor(() => providerStarted && terminalStarted);
+        expect(abortSettled).toBe(false);
+        releaseTerminal();
+        await abort;
+        await prompt;
+
+        expect(finalizationSignals).toHaveLength(2);
+        expect(finalizationSignals[0]).toBe(finalizationSignals[1]);
+        expect(events).toEqual(["before:boundary-1", "committed:boundary-1", "terminal:boundary-1:aborted"]);
+        expect(harness.isIdle()).toBe(true);
+    });
+
+    it("uses a live finalization signal for provider-failure committed and terminal listeners", async () => {
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (model: Model<any>) => {
+                const message = {
+                    ...fakeAssistantMessage(model),
+                    stopReason: "error",
+                    errorMessage: "provider failed",
+                } as AssistantMessage;
+                const stream = new AssistantMessageEventStream();
+                stream.push({ type: "error", reason: "error", error: message });
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+        });
+        const signals: AbortSignal[] = [];
+        harness.subscribe(async (event, signal) => {
+            if (event.type !== "session_user_turn_committed" && event.type !== "session_user_turn_terminal") return;
+            await Promise.resolve();
+            expect(signal?.aborted).toBe(false);
+            signals.push(signal!);
+        });
+
+        await harness.prompt("initial");
+
+        expect(signals).toHaveLength(2);
+        expect(signals[0]).toBe(signals[1]);
+    });
+
+    it("dispatches a rejected committed event at most once and does not continue to terminal", async () => {
+        const { harness } = await buildHarness();
+        let successfulCommittedAttempts = 0;
+        let rejectedCommittedAttempts = 0;
+        let terminalAttempts = 0;
+        harness.subscribe((event) => {
+            if (event.type === "session_user_turn_committed") successfulCommittedAttempts++;
+            if (event.type === "session_user_turn_terminal") terminalAttempts++;
+        });
+        harness.subscribe((event) => {
+            if (event.type !== "session_user_turn_committed") return;
+            rejectedCommittedAttempts++;
+            throw new Error("committed persistence failed");
+        });
+
+        await expect(harness.prompt("initial")).rejects.toThrow("committed persistence failed");
+
+        expect(successfulCommittedAttempts).toBe(1);
+        expect(rejectedCommittedAttempts).toBe(1);
+        expect(terminalAttempts).toBe(0);
+        expect(harness.isIdle()).toBe(false);
+    });
+
+    it("dispatches a rejected terminal event at most once and stays non-idle", async () => {
+        const { harness } = await buildHarness();
+        let successfulTerminalAttempts = 0;
+        let rejectedTerminalAttempts = 0;
+        harness.subscribe((event) => {
+            if (event.type === "session_user_turn_terminal") successfulTerminalAttempts++;
+        });
+        harness.subscribe((event) => {
+            if (event.type !== "session_user_turn_terminal") return;
+            rejectedTerminalAttempts++;
+            throw new Error("terminal persistence failed");
+        });
+
+        await expect(harness.prompt("initial")).rejects.toThrow("terminal persistence failed");
+
+        expect(successfulTerminalAttempts).toBe(1);
+        expect(rejectedTerminalAttempts).toBe(1);
+        expect(harness.isIdle()).toBe(false);
+    });
+
+    it("keeps the harness busy until terminal and settled listeners finish", async () => {
+        const { harness } = await buildHarness();
+        let releaseTerminal!: () => void;
+        let releaseSettled!: () => void;
+        const terminalGate = new Promise<void>((resolve) => {
+            releaseTerminal = resolve;
+        });
+        const settledGate = new Promise<void>((resolve) => {
+            releaseSettled = resolve;
+        });
+        let terminalStarted = false;
+        let settledStarted = false;
+        harness.subscribe(async (event) => {
+            if (event.type === "session_user_turn_terminal") {
+                terminalStarted = true;
+                await terminalGate;
+            }
+            if (event.type === "settled") {
+                settledStarted = true;
+                await settledGate;
+            }
+        });
+
+        const prompt = harness.prompt("initial");
+        await waitFor(() => terminalStarted);
+        expect(harness.isIdle()).toBe(false);
+        releaseTerminal();
+        await waitFor(() => settledStarted);
+        expect(harness.isIdle()).toBe(false);
+        releaseSettled();
+        await prompt;
+        expect(harness.isIdle()).toBe(true);
     });
 });
 
@@ -1005,7 +1408,7 @@ describe("AgentHarness — navigateTree to the first message (parentId=null)", (
 
         const branch = await session.getBranch();
         const userMessages = branch.filter(
-            (e) => e.type === "message" && (e.message as { role?: string }).role === "user",
+            (e) => e.type === "message" && (e.message as { role?: string }).role === "user"
         );
         expect(userMessages).toHaveLength(1);
         expect(userMessages[0]?.id).toBe(first.userEntryId);
