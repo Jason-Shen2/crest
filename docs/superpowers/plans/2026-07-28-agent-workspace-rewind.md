@@ -1577,8 +1577,12 @@ git commit -m "feat(agent): plan safe workspace rewinds"
 覆盖：
 
 - regular text/binary、symlink、executable bit、target absent；
-- same-parent exclusive temp、write、chmod、file fsync、atomic rename、
-  parent-directory fsync 的顺序；
+- same-parent deterministic prepared object、write、chmod、file fsync、
+  quarantine CAS、exclusive no-clobber install、parent-directory fsync、callback
+  的顺序；允许 target 短暂 absent；
+- prepared file、prepared symlink、quarantine 路径由
+  `{operationId, canonicalPath, artifactVersion, artifactKind}` 确定性导出，冲突时
+  fail closed，便于 SIGKILL 后在触碰文件系统前确定 recovery scope；
 - 删除只允许 regular file 或 symlink；
 - lexical escape、symlink ancestor、reparse point、FIFO/socket/device 拒绝；
 - parent 一层层 no-follow 创建并记录；
@@ -1634,11 +1638,25 @@ export function verifyCapturedPath(input: {
 }): Promise<void>;
 ```
 
-regular file 使用 `lstat`、exclusive temp、raw bytes、mode、fsync、rename、parent
-fsync；symlink 使用 same-parent temporary symlink + rename；禁止打开 unsupported
-entry。`excluded` 传入 apply 是 programming error。所有 preflight 与 post-write
-分类复用 Task 9 的 `inspectLivePath()` / `classifyLivePath()`，writer 不再另造一套
-live-state 语义。
+regular file 使用 `lstat` 和 same-parent deterministic prepared file，依次完成
+exclusive create、raw bytes、mode、file fsync；随后把旧 target 移入确定性
+quarantine，按 identity、kind、content OID、executable bit 完成 CAS 复验，再用
+hard-link exclusive install 新文件。symlink 同样先创建 same-parent deterministic
+prepared symlink，再以 exclusive symlink create 安装。两者都不得覆盖安装时已经
+存在的目录项。
+
+Node 当前没有 `renameat2` / `openat` 风格的原生 pathname CAS，普通 `rename()` 又会
+覆盖目标，因此第一版明确选择 no-clobber safety，而不承诺路径切换的原子可见性：
+quarantine 与 exclusive install 之间允许 target 短暂 absent。durability 顺序固定为
+prepared object write/chmod/file fsync → quarantine CAS → exclusive no-clobber
+install → parent-directory fsync → `onPathReplaced()` callback。禁止把这一协议描述为
+atomic rename。
+
+禁止打开 unsupported entry。`excluded` 传入 apply 是 programming error。所有
+preflight 与 post-write 分类复用 Task 9 的 `inspectLivePath()` /
+`classifyLivePath()`，writer 不再另造一套 live-state 语义。确定性 artifact 路径必须
+在任何 side effect 前由调用方可导出，并在 typed error 中完整返回；已有 artifact
+collision 必须 fail closed，不得清理或复用无法证明属于本 operation 的对象。
 
 - [ ] **Step 4: 运行 focused tests**
 
