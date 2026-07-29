@@ -2525,14 +2525,14 @@ describe("agent-ipc command helpers", () => {
             ).finally(() => {
                 deleteSettled = true;
             });
-            await Promise.resolve();
-            await Promise.resolve();
 
-            expect(deleteSettled).toBe(false);
-            await expect(fs.stat(metadata.path)).resolves.toBeDefined();
-            await expect(
-                handlers.get("agent:get-session-state")?.(event, TrustedRequestContext, metadata)
-            ).rejects.toThrow(/exclusive session mutation is active/);
+            await vi.waitFor(async () => {
+                expect(deleteSettled).toBe(false);
+                await expect(fs.stat(metadata.path)).resolves.toBeDefined();
+                await expect(
+                    handlers.get("agent:get-session-state")?.(event, TrustedRequestContext, metadata)
+                ).rejects.toThrow(/exclusive session mutation is active/);
+            });
 
             moveGate.resolve();
             await navigating;
