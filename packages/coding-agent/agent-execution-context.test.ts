@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { parseAgentExecutionContext, resolveAuthenticatedWorkspaceSender } from "./agent-execution-context";
 
@@ -10,20 +10,12 @@ describe("parseAgentExecutionContext", () => {
         workspaceId: "workspace-1",
         workspaceDir: "/tmp/project",
         sessionPath: "/tmp/sessions/session.jsonl",
-        connection: "",
         environment: { TERM: "xterm-256color" },
-        preferredTerminalTabId: "terminal-1",
         gitBranch: "main",
     };
 
-    it("strictly parses context and normalizes missing recent commands", async () => {
-        const validatePreferredTerminal = vi.fn(async () => true);
-
-        await expect(parseAgentExecutionContext(valid, { validatePreferredTerminal })).resolves.toEqual({
-            ...valid,
-            recentCmds: [],
-        });
-        expect(validatePreferredTerminal).toHaveBeenCalledWith("terminal-1");
+    it("strictly parses Workspace-owned context", async () => {
+        await expect(parseAgentExecutionContext(valid)).resolves.toEqual(valid);
     });
 
     it.each([
@@ -31,18 +23,21 @@ describe("parseAgentExecutionContext", () => {
         [{ ...valid, workspaceId: "" }, /workspaceId/],
         [{ ...valid, workspaceDir: "relative" }, /workspaceDir/],
         [{ ...valid, environment: { TERM: 3 } }, /environment/],
-        [{ ...valid, recentCmds: ["ok", 3] }, /recentCmds/],
     ])("rejects invalid context %#", async (input, expected) => {
-        await expect(
-            parseAgentExecutionContext(input, { validatePreferredTerminal: async () => true })
-        ).rejects.toThrow(expected);
+        await expect(parseAgentExecutionContext(input)).rejects.toThrow(expected);
     });
 
-    it("rejects a preferred Terminal outside authoritative inventory", async () => {
-        await expect(
-            parseAgentExecutionContext(valid, { validatePreferredTerminal: async () => false })
-        ).rejects.toThrow(/preferredTerminalTabId/);
-    });
+    it.each(["preferredTerminalTabId", "connection", "recentCmds"])(
+        "rejects removed Terminal-derived field %s",
+        async (field) => {
+            await expect(
+                parseAgentExecutionContext({
+                    ...valid,
+                    [field]: field === "recentCmds" ? [] : "terminal-value",
+                })
+            ).rejects.toThrow(/unexpected key/);
+        }
+    );
 });
 
 describe("resolveAuthenticatedWorkspaceSender", () => {
@@ -55,7 +50,6 @@ describe("resolveAuthenticatedWorkspaceSender", () => {
         const window = {
             waveWindowId: "window-1",
             workspaceView: view,
-            terminalMembership: { validate: vi.fn(async () => true) },
         };
         const resolving = resolveAuthenticatedWorkspaceSender(1, {
             getWorkspaceView: () => view,
@@ -79,7 +73,6 @@ describe("resolveAuthenticatedWorkspaceSender", () => {
         const window = {
             waveWindowId: "window-1",
             workspaceView: view,
-            terminalMembership: { validate: vi.fn(async () => true) },
         };
         const resolving = resolveAuthenticatedWorkspaceSender(1, {
             getWorkspaceView: () => view,
