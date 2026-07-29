@@ -188,6 +188,7 @@ describe("live rewind path state", () => {
         expect(classifyLivePath({ live: changed, expected: file, target: { state: "absent" } })).toMatchObject({
             conflict: "forceable-drift",
             liveFingerprint: "changed",
+            reason: "files changed on disk since the agent last wrote them",
         });
         expect(
             classifyLivePath({

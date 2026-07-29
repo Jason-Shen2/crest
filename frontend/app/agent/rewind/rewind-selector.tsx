@@ -33,10 +33,11 @@ function matchesRewindQuery(point: AgentRewindPointView, query: string): boolean
 
 export function RewindSelector({ open, points, loading, errorMessage, onSelect, onClose }: RewindSelectorProps) {
     const optionIdPrefix = useId();
+    const listboxId = `${optionIdPrefix}-rewind-options`;
     const [query, setQuery] = useState("");
     const panelRef = useRef<HTMLDivElement | null>(null);
     const searchRef = useRef<HTMLInputElement | null>(null);
-    const listRef = useRef<HTMLDivElement | null>(null);
+    const listboxRef = useRef<HTMLDivElement | null>(null);
     const filteredPoints = useMemo(() => points.filter((point) => matchesRewindQuery(point, query)), [points, query]);
     const eligiblePoints = useMemo(() => filteredPoints.filter((point) => point.eligible), [filteredPoints]);
     const ready = !loading && !errorMessage;
@@ -63,9 +64,9 @@ export function RewindSelector({ open, points, loading, errorMessage, onSelect, 
         setActiveIdx(Math.max(0, navigablePoints.length - 1));
     }, [eligibleKey, navigablePoints.length, open, setActiveIdx]);
 
-    useFocusOnReady(panelRef, open);
+    useFocusOnReady(listboxRef, open);
     useScrollActiveRowIntoView(
-        listRef,
+        listboxRef,
         activeIdx,
         (index) => `[data-rewind-eligible-index="${index}"]`,
         open && ready && navigablePoints.length > 0
@@ -104,12 +105,7 @@ export function RewindSelector({ open, points, loading, errorMessage, onSelect, 
 
     return (
         <CommandInlineFrame commandName="/rewind" onDismiss={onClose} dismissOnEscape={false}>
-            <CommandSelectorPanel
-                panelRef={panelRef}
-                ariaLabel="Rewind points"
-                aria-activedescendant={activeOptionId}
-                onKeyDown={handleKeyDown}
-            >
+            <CommandSelectorPanel panelRef={panelRef} ariaLabel="Rewind points" role="group">
                 {errorMessage ? (
                     <CommandSelectorMessage tone="error">{errorMessage}</CommandSelectorMessage>
                 ) : loading ? (
@@ -125,59 +121,69 @@ export function RewindSelector({ open, points, loading, errorMessage, onSelect, 
                             onKeyDown={handleSearchKeyDown}
                             placeholder="Search rewind points…"
                             ariaLabel="Search rewind points"
+                            ariaControls={listboxId}
+                            ariaActiveDescendant={activeOptionId}
+                            combobox
                             showShortcutHint={false}
                         />
                         {filteredPoints.length === 0 ? (
                             <CommandSelectorMessage>No matching rewind points.</CommandSelectorMessage>
-                        ) : (
-                            <div ref={listRef} className="max-h-[360px] overflow-y-auto px-1 pb-1">
-                                {filteredPoints.map((point) => {
-                                    const pointEligibleIndex = point.eligible ? ++eligibleIndex : undefined;
-                                    const active = pointEligibleIndex === activeIdx;
-                                    return (
-                                        <button
-                                            key={point.turnId}
-                                            id={
-                                                pointEligibleIndex == null
-                                                    ? undefined
-                                                    : `${optionIdPrefix}-rewind-point-${pointEligibleIndex}`
-                                            }
-                                            type="button"
-                                            role="option"
-                                            aria-selected={active}
-                                            aria-disabled={!point.eligible}
-                                            disabled={!point.eligible}
-                                            data-rewind-eligible-index={pointEligibleIndex}
-                                            onMouseEnter={() => {
-                                                if (pointEligibleIndex != null) setActiveIdx(pointEligibleIndex);
-                                            }}
-                                            onClick={() => {
-                                                if (point.eligible) onSelect(point.turnId);
-                                            }}
-                                            className={cn(
-                                                "flex w-full items-start gap-3 rounded-xl px-3 py-2 text-left",
-                                                point.eligible ? "cursor-pointer hover:bg-white/[0.06]" : "opacity-55",
-                                                active && "bg-white/[0.10]"
-                                            )}
-                                        >
-                                            <span className="min-w-0 flex-1">
-                                                <span className="block truncate text-foreground">{point.preview}</span>
-                                                {point.reason && (
-                                                    <span className="mt-0.5 block text-secondary/70">
-                                                        {point.reason}
-                                                    </span>
-                                                )}
-                                            </span>
-                                            {point.timestamp && (
-                                                <time className="shrink-0 text-secondary/55">{point.timestamp}</time>
-                                            )}
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        )}
+                        ) : null}
                     </>
                 )}
+                <div
+                    ref={listboxRef}
+                    id={listboxId}
+                    role="listbox"
+                    aria-label="Rewind point options"
+                    aria-activedescendant={activeOptionId}
+                    tabIndex={-1}
+                    onKeyDown={handleKeyDown}
+                    className="max-h-[360px] overflow-y-auto px-1 pb-1 outline-none"
+                >
+                    {ready &&
+                        filteredPoints.map((point) => {
+                            const pointEligibleIndex = point.eligible ? ++eligibleIndex : undefined;
+                            const active = pointEligibleIndex === activeIdx;
+                            return (
+                                <button
+                                    key={point.turnId}
+                                    id={
+                                        pointEligibleIndex == null
+                                            ? undefined
+                                            : `${optionIdPrefix}-rewind-point-${pointEligibleIndex}`
+                                    }
+                                    type="button"
+                                    role="option"
+                                    aria-selected={active}
+                                    aria-disabled={!point.eligible}
+                                    disabled={!point.eligible}
+                                    data-rewind-eligible-index={pointEligibleIndex}
+                                    onMouseEnter={() => {
+                                        if (pointEligibleIndex != null) setActiveIdx(pointEligibleIndex);
+                                    }}
+                                    onClick={() => {
+                                        if (point.eligible) onSelect(point.turnId);
+                                    }}
+                                    className={cn(
+                                        "flex w-full items-start gap-3 rounded-xl px-3 py-2 text-left",
+                                        point.eligible ? "cursor-pointer hover:bg-white/[0.06]" : "opacity-55",
+                                        active && "bg-white/[0.10]"
+                                    )}
+                                >
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block truncate text-foreground">{point.preview}</span>
+                                        {point.reason && (
+                                            <span className="mt-0.5 block text-secondary/70">{point.reason}</span>
+                                        )}
+                                    </span>
+                                    {point.timestamp && (
+                                        <time className="shrink-0 text-secondary/55">{point.timestamp}</time>
+                                    )}
+                                </button>
+                            );
+                        })}
+                </div>
                 {ready && points.length > 0 && (
                     <CommandSelectorHintFooter
                         hints={[

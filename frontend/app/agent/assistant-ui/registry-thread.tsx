@@ -1,6 +1,7 @@
 // Based on assistant-ui (MIT): https://r.assistant-ui.com/thread.json
 "use client";
 
+import { ThreadRewindContext, useThreadRewind } from "@/app/agent/rewind/rewind-context";
 import { Button } from "@/shadcn/ui/button";
 import { cn } from "@/util/util";
 import {
@@ -110,9 +111,13 @@ export type ThreadProps = {
     workspaceDir?: string | undefined;
     onOpenFile?: ((path: string) => void) | undefined;
     revealTurnRequest?: { turnId: string; requestId: number } | undefined;
+    rewindableTurnIds?: ReadonlySet<string> | undefined;
+    rewindBusy?: boolean | undefined;
+    onRevertTurn?: ((turnId: string) => void) | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
+const EMPTY_REWINDABLE_TURN_IDS: ReadonlySet<string> = new Set();
 
 export const ComposerContext = createContext<
     Pick<ThreadProps, "modelLabel" | "onOpenModelPicker" | "contextUsage" | "modelContextWindow">
@@ -164,8 +169,20 @@ export const Thread: FC<ThreadProps> = ({
     workspaceDir,
     onOpenFile,
     revealTurnRequest,
+    rewindableTurnIds = EMPTY_REWINDABLE_TURN_IDS,
+    rewindBusy = false,
+    onRevertTurn,
 }) => {
     const isEmpty = useAuiState(isNewChatView);
+    const rewindContext = useMemo(
+        () => ({
+            rewindableTurnIds,
+            latestRewindableTurnId: Array.from(rewindableTurnIds).at(-1),
+            busy: rewindBusy,
+            onRevertTurn,
+        }),
+        [onRevertTurn, rewindBusy, rewindableTurnIds]
+    );
     const revealMessageId = useAuiState((state) => {
         if (!revealTurnRequest) return undefined;
         return state.thread.messages.find(
@@ -181,11 +198,13 @@ export const Thread: FC<ThreadProps> = ({
                 <ThreadExtrasContext.Provider
                     value={{ beforeComposer, composerAnchorRef, hideScrollToBottom, workspaceDir, onOpenFile }}
                 >
-                    <ThreadRoot
-                        isEmpty={isEmpty}
-                        revealMessageId={revealMessageId}
-                        revealTurnRequest={revealTurnRequest}
-                    />
+                    <ThreadRewindContext.Provider value={rewindContext}>
+                        <ThreadRoot
+                            isEmpty={isEmpty}
+                            revealMessageId={revealMessageId}
+                            revealTurnRequest={revealTurnRequest}
+                        />
+                    </ThreadRewindContext.Provider>
                 </ThreadExtrasContext.Provider>
             </ComposerContext.Provider>
         </ThreadComponentsContext.Provider>
@@ -1209,13 +1228,17 @@ const CopyButtonIcon: FC = () => {
 
 const UserActionBar: FC = () => {
     const isLast = useAuiState((s) => s.message.isLast);
+    const turnId = useAuiState((state) => (state.message.metadata.custom as { turnId?: string } | undefined)?.turnId);
+    const rewind = useThreadRewind();
+    const canRevert = !!turnId && !rewind.busy && !!rewind.onRevertTurn && rewind.rewindableTurnIds.has(turnId);
+    const alwaysVisible = isLast || (canRevert && turnId === rewind.latestRewindableTurnId);
 
     return (
         <ActionBarPrimitive.Root
             hideWhenRunning
             className={cn(
                 "aui-user-action-bar-root flex items-center gap-0.5 transition-opacity duration-100",
-                isLast
+                alwaysVisible
                     ? "opacity-100"
                     : "pointer-events-none opacity-0 group-hover/user-message:pointer-events-auto group-hover/user-message:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100"
             )}
@@ -1225,6 +1248,17 @@ const UserActionBar: FC = () => {
                     <CopyButtonIcon />
                 </TooltipIconButton>
             </ActionBarPrimitive.Copy>
+            {canRevert && (
+                <TooltipIconButton
+                    aria-label="Revert"
+                    tooltip="Revert"
+                    side="top"
+                    size="icon-xs"
+                    onClick={() => rewind.onRevertTurn?.(turnId)}
+                >
+                    <RotateCcwIcon />
+                </TooltipIconButton>
+            )}
             <AuiIf condition={(s) => s.thread.capabilities.edit}>
                 <ActionBarPrimitive.Edit asChild>
                     <TooltipIconButton tooltip="Edit" side="top" size="icon-xs" className="aui-user-action-edit">

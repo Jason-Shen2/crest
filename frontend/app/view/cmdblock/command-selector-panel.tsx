@@ -189,6 +189,9 @@ export interface CommandSelectorSearchBarProps {
     py?: string;
     fontFamily?: "mono" | "sans";
     ariaLabel?: string;
+    ariaControls?: string;
+    ariaActiveDescendant?: string;
+    combobox?: boolean;
 }
 
 export const CommandSelectorSearchBar = memo(function CommandSelectorSearchBar({
@@ -203,6 +206,9 @@ export const CommandSelectorSearchBar = memo(function CommandSelectorSearchBar({
     py = "py-1.5",
     fontFamily = "mono",
     ariaLabel,
+    ariaControls,
+    ariaActiveDescendant,
+    combobox = false,
 }: CommandSelectorSearchBarProps) {
     return (
         <div
@@ -221,7 +227,11 @@ export const CommandSelectorSearchBar = memo(function CommandSelectorSearchBar({
             <input
                 ref={inputRef}
                 type="text"
+                role={combobox ? "combobox" : undefined}
                 aria-label={ariaLabel}
+                aria-controls={ariaControls}
+                aria-activedescendant={ariaActiveDescendant}
+                aria-expanded={combobox ? true : undefined}
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
                 onKeyDown={onKeyDown}
@@ -311,9 +321,7 @@ export const CommandSelectorHintFooter = memo(function CommandSelectorHintFooter
             {trailing != null ? (
                 <span className="ml-auto flex items-center">{trailing}</span>
             ) : (
-                countText && (
-                    <span className="ml-auto font-mono tabular-nums text-secondary/50">{countText}</span>
-                )
+                countText && <span className="ml-auto font-mono tabular-nums text-secondary/50">{countText}</span>
             )}
         </div>
     );

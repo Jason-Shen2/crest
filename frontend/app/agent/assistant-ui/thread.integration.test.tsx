@@ -11,7 +11,7 @@ import {
     type QuoteInfo,
     type ThreadMessageLike,
 } from "@assistant-ui/react";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { FC, PropsWithChildren } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,13 +64,12 @@ const messages: ThreadMessageLike[] = [
     },
 ];
 
-const RuntimeProvider: FC<PropsWithChildren<{ messages?: ThreadMessageLike[]; composerQuote?: QuoteInfo }>> = ({
-    children,
-    composerQuote,
-    messages: runtimeMessages = messages,
-}) => {
+const RuntimeProvider: FC<
+    PropsWithChildren<{ messages?: ThreadMessageLike[]; composerQuote?: QuoteInfo; isRunning?: boolean }>
+> = ({ children, composerQuote, messages: runtimeMessages = messages, isRunning }) => {
     const runtime = useExternalStoreRuntime<ThreadMessageLike>({
         messages: runtimeMessages,
+        isRunning,
         convertMessage: (message) => message,
         onNew: async () => {},
     } satisfies ExternalStoreAdapter<ThreadMessageLike>);
@@ -150,6 +149,107 @@ describe("Thread assistant-ui integration", () => {
 
         expect(html).toContain('data-agent-turn-id="turn-[special]-1"');
         expect(html).toContain('tabindex="-1"');
+    });
+
+    it("shows a keyboard-accessible Revert action only for an eligible persisted user turn", async () => {
+        const onRevertTurn = vi.fn();
+        render(
+            <RuntimeProvider
+                messages={[
+                    {
+                        role: "user",
+                        content: [{ type: "text", text: "eligible rewind target" }],
+                        metadata: { custom: { turnId: "turn-eligible" } },
+                    } as ThreadMessageLike,
+                    {
+                        role: "user",
+                        content: [{ type: "text", text: "not eligible" }],
+                        metadata: { custom: { turnId: "turn-unavailable" } },
+                    } as ThreadMessageLike,
+                    {
+                        role: "user",
+                        content: [{ type: "text", text: "missing metadata" }],
+                    } as ThreadMessageLike,
+                ]}
+            >
+                <Thread rewindableTurnIds={new Set(["turn-eligible"])} onRevertTurn={onRevertTurn} />
+            </RuntimeProvider>
+        );
+
+        const revert = screen.getByRole("button", { name: "Revert" });
+        expect(revert.getAttribute("aria-label")).toBe("Revert");
+        fireEvent.focus(revert);
+        expect((await screen.findByRole("tooltip")).textContent).toBe("Revert");
+        fireEvent.click(revert);
+        expect(onRevertTurn).toHaveBeenCalledOnce();
+        expect(onRevertTurn).toHaveBeenCalledWith("turn-eligible");
+    });
+
+    it("hides Revert while rewind work is busy", () => {
+        const html = renderThread(
+            {
+                rewindableTurnIds: new Set(["turn-eligible"]),
+                rewindBusy: true,
+                onRevertTurn: vi.fn(),
+            },
+            [
+                {
+                    role: "user",
+                    content: [{ type: "text", text: "eligible rewind target" }],
+                    metadata: { custom: { turnId: "turn-eligible" } },
+                } as ThreadMessageLike,
+            ]
+        );
+
+        expect(html).not.toContain(">Revert<");
+        expect(html).not.toContain('aria-label="Revert"');
+    });
+
+    it("hides Revert while the thread is running", () => {
+        const { container } = render(
+            <RuntimeProvider
+                isRunning
+                messages={[
+                    {
+                        role: "user",
+                        content: [{ type: "text", text: "eligible rewind target" }],
+                        metadata: { custom: { turnId: "turn-eligible" } },
+                    } as ThreadMessageLike,
+                ]}
+            >
+                <Thread rewindableTurnIds={new Set(["turn-eligible"])} onRevertTurn={vi.fn()} />
+            </RuntimeProvider>
+        );
+
+        expect(container.querySelector('[aria-label="Revert"]')).toBeNull();
+    });
+
+    it("keeps the latest eligible action bar visible and older eligible actions hover-revealed", () => {
+        const { container } = render(
+            <RuntimeProvider
+                messages={[
+                    {
+                        role: "user",
+                        content: [{ type: "text", text: "older eligible" }],
+                        metadata: { custom: { turnId: "turn-old" } },
+                    } as ThreadMessageLike,
+                    {
+                        role: "user",
+                        content: [{ type: "text", text: "latest eligible" }],
+                        metadata: { custom: { turnId: "turn-latest" } },
+                    } as ThreadMessageLike,
+                ]}
+            >
+                <Thread rewindableTurnIds={new Set(["turn-old", "turn-latest"])} onRevertTurn={vi.fn()} />
+            </RuntimeProvider>
+        );
+
+        const rows = container.querySelectorAll<HTMLElement>('[data-testid="crest-user-message"]');
+        const oldBar = rows[0]?.querySelector<HTMLElement>(".aui-user-action-bar-root");
+        const latestBar = rows[1]?.querySelector<HTMLElement>(".aui-user-action-bar-root");
+        expect(oldBar?.className).toContain("group-hover/user-message:opacity-100");
+        expect(latestBar?.className).toContain("opacity-100");
+        expect(latestBar?.className).not.toContain("pointer-events-none");
     });
 
     it("reveals and focuses a matching user turn only inside the requested Thread root", async () => {

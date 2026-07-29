@@ -567,6 +567,6 @@ export function classifyLivePath(input: {
     return {
         conflict: "forceable-drift",
         liveFingerprint,
-        reason: "file changed on disk since the agent last wrote it",
+        reason: "files changed on disk since the agent last wrote them",
     };
 }
