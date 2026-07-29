@@ -1035,7 +1035,26 @@ describe("workspace snapshots", () => {
         }
         fixture.git.calls.length = 0;
 
-        const snapshot = await fixture.store.capture({ profile: "terminal" });
+        // This stress test owns batching/process-count behavior. Fixed capture
+        // deadlines have dedicated tests below; do not let unrelated full-suite
+        // CPU contention turn this authority into a deadline test as well.
+        const captureNow = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+        const realSetTimeout = globalThis.setTimeout;
+        const captureDeadline = vi
+            .spyOn(globalThis, "setTimeout")
+            .mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
+                realSetTimeout(
+                    callback,
+                    delay === WorkspaceCheckpointLimits.terminalTimeoutMs ? 2_147_000_000 : delay,
+                    ...args
+                )) as typeof setTimeout);
+        let snapshot: Awaited<ReturnType<typeof fixture.store.capture>>;
+        try {
+            snapshot = await fixture.store.capture({ profile: "terminal" });
+        } finally {
+            captureDeadline.mockRestore();
+            captureNow.mockRestore();
+        }
 
         expect(snapshot.coverage.eligibleEntryCount).toBe(fileCount);
         expect(
