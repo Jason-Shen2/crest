@@ -596,6 +596,7 @@ describe("WorkspaceApp", () => {
         const init = makeWorkspaceInit();
         render(<WorkspaceApp init={init} />);
 
+        const agentExecutionContext = agentContent.props.executionContext;
         const navigation = layout.terminalListProps.navigation;
         act(() =>
             WOS.primeWaveObject({
@@ -645,6 +646,7 @@ describe("WorkspaceApp", () => {
             })
         );
         await vi.waitFor(() => expect(layout.terminalListProps.terminalTabIds).toEqual(["terminal-1"]));
+        expect(agentContent.props.executionContext).toBe(agentExecutionContext);
         act(() =>
             electronApi.workspaceCommandCallback?.({
                 type: "activate-terminal",
@@ -669,7 +671,11 @@ describe("WorkspaceApp", () => {
         render(<WorkspaceApp init={init} />);
 
         expect(screen.getByTestId("agent-surface").hidden).toBe(false);
-        expect(agentContent.props.executionContext.workspaceDir).toBe("/repo");
+        expect(agentContent.props.executionContext).toEqual({
+            workspaceId: "workspace-1",
+            workspaceDir: "/repo",
+            environment: {},
+        });
         expect(screen.getByTestId("mock-agent-content").textContent).toBe("/repo");
         expect(screen.queryByTestId("terminal-surface")).toBeNull();
         expect(layout.terminalListProps.terminalTabIds).toEqual([]);
