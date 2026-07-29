@@ -15,6 +15,7 @@ import type { CapturedPathStateV1 } from "./types";
 export interface WorkspacePathApplyProgress {
     operationId: string;
     createdParentDirectories: Set<string>;
+    onParentDirectoryCreated?(path: string): Promise<void>;
     onPathReplaced(path: string): Promise<void>;
 }
 
@@ -198,6 +199,106 @@ export async function applyCapturedPath(input: {
     }
 }
 
+export async function recoverInterruptedCapturedPathArtifact(input: {
+    root: string;
+    path: string;
+    expected: CapturedPathStateV1;
+    operationId: string;
+    onPathRecovered(): Promise<void>;
+}): Promise<void> {
+    if (input.expected.state === "excluded" || input.expected.state === "absent") {
+        throw new Error("Interrupted workspace artifact requires a file or symlink pre-state");
+    }
+    validateTargetState(input.expected);
+    validateOperationId(input.operationId);
+    const canonicalRoot = resolve(input.root);
+    validateRelativePath(canonicalRoot, input.path);
+    const rootState = await lstat(canonicalRoot, { bigint: true });
+    if (!rootState.isDirectory() || rootState.isSymbolicLink()) {
+        throw new WorkspacePathApplyError("Workspace root is not a stable directory");
+    }
+    const artifactPaths = deriveWorkspaceApplyArtifactPaths({
+        operationId: input.operationId,
+        path: input.path,
+    });
+    const progress: WorkerProgressState = {
+        pathSideEffect: false,
+        pathDurable: false,
+        createdParentDirectories: [],
+        retainedArtifacts: [],
+        artifactPaths: Object.values(artifactPaths),
+    };
+    await runApplyWorker({
+        root: canonicalRoot,
+        rootIdentity: directoryIdentity(rootState),
+        path: input.path,
+        target: input.expected,
+        expectedLive: { state: "absent" },
+        operationId: input.operationId,
+        artifactPaths,
+        blob: Buffer.alloc(0),
+        recoverQuarantine: true,
+        progress,
+        onCreatedParent: async () => {
+            throw new Error("Interrupted artifact recovery cannot create parent directories");
+        },
+        onPathDurable: input.onPathRecovered,
+    });
+    await verifyCapturedPath({
+        root: canonicalRoot,
+        path: input.path,
+        expected: input.expected,
+    });
+}
+
+export async function reconcileInterruptedCapturedPathArtifacts(input: {
+    root: string;
+    path: string;
+    live: Exclude<CapturedPathStateV1, { state: "excluded" }>;
+    desired: Exclude<CapturedPathStateV1, { state: "excluded" }>;
+    alternate: Exclude<CapturedPathStateV1, { state: "excluded" }>;
+    operationId: string;
+    onPathRecovered(): Promise<void>;
+}): Promise<void> {
+    validateTargetState(input.desired);
+    validateTargetState(input.alternate);
+    validateOperationId(input.operationId);
+    const canonicalRoot = resolve(input.root);
+    validateRelativePath(canonicalRoot, input.path);
+    const rootState = await lstat(canonicalRoot, { bigint: true });
+    if (!rootState.isDirectory() || rootState.isSymbolicLink()) {
+        throw new WorkspacePathApplyError("Workspace root is not a stable directory");
+    }
+    const artifactPaths = deriveWorkspaceApplyArtifactPaths({
+        operationId: input.operationId,
+        path: input.path,
+    });
+    const progress: WorkerProgressState = {
+        pathSideEffect: false,
+        pathDurable: false,
+        createdParentDirectories: [],
+        retainedArtifacts: [],
+        artifactPaths: Object.values(artifactPaths),
+    };
+    await runApplyWorker({
+        root: canonicalRoot,
+        rootIdentity: directoryIdentity(rootState),
+        path: input.path,
+        target: input.desired,
+        expectedLive: input.live,
+        operationId: input.operationId,
+        artifactPaths,
+        artifactAlternateTarget: input.alternate,
+        blob: Buffer.alloc(0),
+        reconcileArtifacts: true,
+        progress,
+        onCreatedParent: async () => {
+            throw new Error("Interrupted artifact reconciliation cannot create parent directories");
+        },
+        onPathDurable: input.onPathRecovered,
+    });
+}
+
 async function applyCapturedPathOperational(
     input: {
         root: string;
@@ -250,6 +351,7 @@ async function applyCapturedPathOperational(
             progress: workerProgress,
             onCreatedParent: async (path) => {
                 input.progress.createdParentDirectories.add(path);
+                await input.progress.onParentDirectoryCreated?.(path);
             },
             onStep: input.testHooks?.onWorkerStep,
             onPathDurable: async () => {
@@ -465,6 +567,9 @@ async function runApplyWorker(input: {
     onCreatedParent(path: string): Promise<void>;
     onStep?(step: WorkspaceFilesystemApplyStep): Promise<void>;
     onPathDurable(): Promise<void>;
+    recoverQuarantine?: boolean;
+    reconcileArtifacts?: boolean;
+    artifactAlternateTarget?: Exclude<CapturedPathStateV1, { state: "excluded" }>;
 }): Promise<void> {
     const serializedHooks = input.testHooks
         ? {
@@ -490,6 +595,9 @@ async function runApplyWorker(input: {
             operationId: input.operationId,
             artifactPaths: input.artifactPaths,
             blobLength: input.blob.length,
+            recoverQuarantine: input.recoverQuarantine ?? false,
+            reconcileArtifacts: input.reconcileArtifacts ?? false,
+            artifactAlternateTarget: input.artifactAlternateTarget,
             testHooks: serializedHooks,
         })
     );
@@ -769,6 +877,7 @@ function validateInput(packet) {
     if (!header || typeof header !== "object" || typeof header.path !== "string" ||
         typeof header.operationId !== "string" || header.operationId.length > 128 ||
         header.blobLength !== blob.length || !header.rootIdentity || !header.target || !header.expectedLive ||
+        typeof header.recoverQuarantine !== "boolean" || typeof header.reconcileArtifacts !== "boolean" ||
         !header.artifactPaths || typeof header.artifactPaths.preparedFile !== "string" ||
         typeof header.artifactPaths.preparedSymlink !== "string" ||
         typeof header.artifactPaths.quarantine !== "string") {
@@ -855,9 +964,43 @@ async function main(packet) {
             );
         }
         const initial = await lstatOptional(originalName);
+        if (input.reconcileArtifacts) {
+            await reconcileArtifacts(input, originalName, initial);
+            return;
+        }
         validateLeaf(initial);
         await verifyExpectedLive(initial, originalName, input.expectedLive);
         const initialIdentity = initial ? entryIdentity(initial) : undefined;
+
+        if (input.recoverQuarantine) {
+            if (initial) throw new Error("workspace leaf was recreated before artifact recovery");
+            quarantineDirectory = artifactLeaf(input.artifactPaths.quarantine);
+            quarantine = quarantineDirectory + "/entry";
+            const quarantineParent = await fsp.lstat(quarantineDirectory, { bigint: true });
+            if (!quarantineParent.isDirectory() || quarantineParent.isSymbolicLink()) {
+                throw new Error("workspace quarantine artifact is unsafe");
+            }
+            const displaced = await fsp.lstat(quarantine, { bigint: true });
+            validateLeaf(displaced);
+            quarantineIdentity = entryIdentity(displaced);
+            await verifyExpectedLive(displaced, quarantine, input.target);
+            const restored = await restoreQuarantine(
+                quarantine,
+                quarantineDirectory,
+                originalName,
+                quarantineIdentity
+            );
+            if (!restored) throw new Error("workspace quarantine artifact could not be restored");
+            quarantine = undefined;
+            quarantineDirectory = undefined;
+            await verifyAnchorChain(directoryStack);
+            await syncCurrentDirectory();
+            operation.pathSideEffect = true;
+            operation.pathDurable = true;
+            emit({ type: "side-effect" });
+            emit({ type: "path-durable" });
+            return;
+        }
 
         if (input.testHooks.swapLeafAfterCheckBase64) {
             await replaceLeafForTest(originalName, input.operationId, input.testHooks.swapLeafAfterCheckBase64);
@@ -1121,6 +1264,185 @@ async function verifyExpectedLive(stat, name, expected) {
         }
     } finally {
         await handle.close();
+    }
+}
+
+async function matchesExpectedLive(stat, name, expected) {
+    try {
+        await verifyExpectedLive(stat, name, expected);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function matchesArtifactExpected(stat, name, expected) {
+    if (expected.state !== "file" || !stat || !stat.isFile()) {
+        return matchesExpectedLive(stat, name, expected);
+    }
+    try {
+        const flags = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
+        const handle = await fsp.open(name, flags);
+        try {
+            const opened = await handle.stat({ bigint: true });
+            if (!sameEntry(opened, entryIdentity(stat))) return false;
+            const bytes = await handle.readFile();
+            const after = await handle.stat({ bigint: true });
+            const named = await fsp.lstat(name, { bigint: true });
+            return sameEntry(after, entryIdentity(stat)) &&
+                sameEntry(named, entryIdentity(stat)) &&
+                gitBlobOid(bytes) === expected.oid &&
+                (((after.mode & 73n) !== 0n) === expected.executable);
+        } finally {
+            await handle.close();
+        }
+    } catch {
+        return false;
+    }
+}
+
+async function reconcileArtifacts(input, originalName, initial) {
+    const desired = input.target;
+    const alternate = input.artifactAlternateTarget;
+    if (!alternate || !["absent", "file", "symlink"].includes(alternate.state)) {
+        throw new Error("invalid interrupted artifact alternate state");
+    }
+    const preparedNames = [
+        artifactLeaf(input.artifactPaths.preparedFile),
+        artifactLeaf(input.artifactPaths.preparedSymlink),
+    ];
+    const prepared = [];
+    for (const name of preparedNames) {
+        const state = await lstatOptional(name);
+        if (!state) continue;
+        if (state.isDirectory() || (!state.isFile() && !state.isSymbolicLink())) {
+            throw new Error("workspace prepared artifact has an unsafe kind");
+        }
+        if (state.isFile() && state.nlink !== 1n) {
+            if (state.nlink !== 2n || !initial || !initial.isFile() || !sameIdentity(state, identity(initial))) {
+                throw new Error("workspace prepared artifact has unsafe hard links");
+            }
+        }
+        const desiredMatch = await matchesArtifactExpected(state, name, desired);
+        const alternateMatch = await matchesArtifactExpected(state, name, alternate);
+        if (!desiredMatch && !alternateMatch) {
+            throw new Error("workspace prepared artifact is unknown");
+        }
+        prepared.push({ name, state, desiredMatch, alternateMatch });
+    }
+    if (prepared.length > 1) {
+        throw new Error("multiple workspace prepared artifacts are ambiguous");
+    }
+    const quarantineDirectory = artifactLeaf(input.artifactPaths.quarantine);
+    const quarantineState = await lstatOptional(quarantineDirectory);
+    let quarantine;
+    if (quarantineState) {
+        if (!quarantineState.isDirectory() || quarantineState.isSymbolicLink()) {
+            throw new Error("workspace quarantine artifact is unsafe");
+        }
+        const names = await fsp.readdir(quarantineDirectory);
+        if (names.length !== 1 || names[0] !== "entry") {
+            throw new Error("workspace quarantine artifact contains unknown entries");
+        }
+        const name = quarantineDirectory + "/entry";
+        const state = await fsp.lstat(name, { bigint: true });
+        validateLeaf(state);
+        const desiredMatch = await matchesExpectedLive(state, name, desired);
+        const alternateMatch = await matchesExpectedLive(state, name, alternate);
+        if (!desiredMatch && !alternateMatch) {
+            throw new Error("workspace quarantine artifact is unknown");
+        }
+        quarantine = { name, state, desiredMatch, alternateMatch };
+    }
+    if (initial && (initial.isDirectory() || (!initial.isFile() && !initial.isSymbolicLink()))) {
+        throw new Error("workspace live path has an unsafe kind during artifact reconciliation");
+    }
+    if (initial?.isFile() && initial.nlink !== 1n) {
+        const linkedPrepared = prepared.some(
+            (item) => item.state.isFile() && sameIdentity(item.state, identity(initial))
+        );
+        if (initial.nlink !== 2n || !linkedPrepared) {
+            throw new Error("hard-linked workspace file is unsafe to reconcile");
+        }
+    }
+    if (!(await matchesArtifactExpected(initial, originalName, input.expectedLive))) {
+        throw new Error("workspace live path changed before artifact reconciliation");
+    }
+    if (!quarantine && prepared.length === 0) {
+        return;
+    }
+    const initialDesired = await matchesArtifactExpected(initial, originalName, desired);
+    const initialAlternate = await matchesArtifactExpected(initial, originalName, alternate);
+    if (quarantine && quarantine.desiredMatch) {
+        if (initialDesired && initial) {
+            throw new Error("workspace quarantine duplicates the desired live path");
+        }
+        if (initialAlternate && initial) {
+            await fsp.unlink(originalName);
+            await syncCurrentDirectory();
+        } else if (!initialDesired && initial) {
+            throw new Error("workspace live path conflicts with quarantine recovery");
+        }
+        if (!initial || initialAlternate) {
+            await fsp.rename(quarantine.name, originalName);
+            await fsp.rmdir(quarantineDirectory);
+            await syncCurrentDirectory();
+            operation.pathSideEffect = true;
+            operation.pathDurable = true;
+            emit({ type: "side-effect" });
+            emit({ type: "path-durable" });
+        }
+    } else if (quarantine) {
+        if (!initial || !initialDesired) {
+            const desiredPrepared = prepared.find((item) => item.desiredMatch);
+            if (desired.state === "absent") {
+                if (initial) throw new Error("workspace live path conflicts with absent recovery");
+            } else if (!initial && desiredPrepared) {
+                if (desired.state === "file") {
+                    await fsp.link(desiredPrepared.name, originalName);
+                } else {
+                    const bytes = await fsp.readlink(desiredPrepared.name, { encoding: "buffer" });
+                    await fsp.symlink(bytes, originalName);
+                }
+                await fsp.unlink(desiredPrepared.name);
+                await syncCurrentDirectory();
+                operation.pathSideEffect = true;
+                operation.pathDurable = true;
+                emit({ type: "side-effect" });
+                emit({ type: "path-durable" });
+            } else {
+                throw new Error("workspace rollback artifact is incomplete");
+            }
+        }
+        await fsp.unlink(quarantine.name);
+        await fsp.rmdir(quarantineDirectory);
+        await syncCurrentDirectory();
+    }
+    if (!quarantine && !initialDesired && !initialAlternate) {
+        const desiredPrepared = prepared.find((item) => item.desiredMatch);
+        if (!initial && desiredPrepared && desired.state !== "absent" && alternate.state === "absent") {
+            if (desired.state === "file") {
+                await fsp.link(desiredPrepared.name, originalName);
+            } else {
+                const bytes = await fsp.readlink(desiredPrepared.name, { encoding: "buffer" });
+                await fsp.symlink(bytes, originalName);
+            }
+            await fsp.unlink(desiredPrepared.name);
+            await syncCurrentDirectory();
+            operation.pathSideEffect = true;
+            operation.pathDurable = true;
+            emit({ type: "side-effect" });
+            emit({ type: "path-durable" });
+        } else if (!(initial === undefined && desired.state === "absent")) {
+            throw new Error("workspace live path is unknown during artifact reconciliation");
+        }
+    }
+    for (const item of prepared) {
+        const remaining = await lstatOptional(item.name);
+        if (remaining) {
+            await fsp.unlink(item.name);
+            await syncCurrentDirectory();
+        }
     }
 }
 

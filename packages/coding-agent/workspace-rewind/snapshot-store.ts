@@ -25,13 +25,14 @@ import {
     type AnchoredReaderEntry,
     type AnchoredReaderEntryIdentity,
 } from "./anchored-reader";
-import { encodeDurableJson, ensureDurableGitObjects, writeDurableJson } from "./durability";
+import { encodeDurableJson, ensureDurableGitObjects, removeDurableFile, writeDurableJson } from "./durability";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import {
     decodePendingWorkspaceBoundaryV1,
     decodeWorkspaceOperationOwnerV1,
     readWorkspaceOperationOwner,
+    scanWorkspaceOperationOwners,
     type PendingWorkspaceBoundaryV1,
     type WorkspaceOperationOwnerV1,
 } from "./pending-boundary-store";
@@ -535,6 +536,17 @@ export class WorkspaceSnapshotStore {
 
     anchorOperation(record: WorkspaceOperationOwnerV1): Promise<void> {
         return this.withWorkspaceLock(() => this.#anchorOperationUnlocked(record));
+    }
+
+    scanOperationOwners(): Promise<WorkspaceOperationOwnerV1[]> {
+        return this.withWorkspaceLock(() => scanWorkspaceOperationOwners(this));
+    }
+
+    deleteOperationOwnerRecord(operationId: string): Promise<void> {
+        return this.withWorkspaceLock(async () => {
+            validateRefToken(operationId, "operation id");
+            await removeDurableFile(join(this.storeRoot, "journal", "operations", `${operationId}.json`));
+        });
     }
 
     async #anchorOperationUnlocked(record: WorkspaceOperationOwnerV1): Promise<void> {
