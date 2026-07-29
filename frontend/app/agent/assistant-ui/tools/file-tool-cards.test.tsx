@@ -19,7 +19,9 @@ vi.mock("@pierre/diffs/react", () => ({
     MultiFileDiff: pierreMocks.multiFileDiff,
 }));
 
+import { getCrestToolRenderer } from "../crest-message";
 import { EditToolCard, WriteToolCard } from "./file-tool-cards";
+import { ToolFallback } from "./tool-fallback";
 
 const Patch = [
     "diff --git a/src/app.ts b/src/app.ts",
@@ -51,6 +53,12 @@ afterEach(() => {
 });
 
 describe("file tool cards", () => {
+    it("selects specialized renderers only for edit and write", () => {
+        expect(getCrestToolRenderer("edit")).toBe(EditToolCard);
+        expect(getCrestToolRenderer("write")).toBe(WriteToolCard);
+        expect(getCrestToolRenderer("read")).toBe(ToolFallback);
+    });
+
     it("renders a completed edit result as a diff card", () => {
         render(
             <EditToolCard

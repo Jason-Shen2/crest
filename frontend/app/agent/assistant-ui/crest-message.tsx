@@ -3,10 +3,16 @@
 
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 
+import { EditToolCard, WriteToolCard } from "./tools/file-tool-cards";
 import { ToolFallback } from "./tools/tool-fallback";
 
-export function getCrestToolRenderer(_toolName: string): ToolCallMessagePartComponent {
-    return ToolFallback;
+export function getCrestToolRenderer(
+    toolName: string,
+    fallback: ToolCallMessagePartComponent = ToolFallback
+): ToolCallMessagePartComponent {
+    if (toolName === "edit") return EditToolCard;
+    if (toolName === "write") return WriteToolCard;
+    return fallback;
 }
 
 export function getCrestImageAlt(filename: string | undefined, role: "user" | "assistant"): string {
