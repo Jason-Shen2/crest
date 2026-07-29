@@ -23,6 +23,18 @@ const BuiltInAgentCommands: AgentCommandInfo[] = [
         action: { type: "backend", command: "clone" },
     },
     {
+        name: "rewind",
+        description: "Revert conversation and workspace to an earlier turn",
+        source: "builtin",
+        action: { type: "backend", command: "rewind" },
+    },
+    {
+        name: "redo",
+        description: "Restore the most recently reverted conversation and files",
+        source: "builtin",
+        action: { type: "backend", command: "redo" },
+    },
+    {
         name: "model",
         description: "Open the model picker",
         source: "builtin",

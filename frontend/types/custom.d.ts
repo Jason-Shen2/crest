@@ -716,6 +716,8 @@ declare global {
         | "tree"
         | "fork"
         | "clone"
+        | "rewind"
+        | "redo"
         | "new"
         | "resume"
         | "compact"

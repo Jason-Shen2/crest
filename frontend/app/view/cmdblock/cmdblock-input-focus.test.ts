@@ -204,6 +204,18 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
                 source: "builtin",
                 action: { type: "backend", command: "compact" },
             },
+            {
+                name: "rewind",
+                description: "Revert conversation and workspace to an earlier turn",
+                source: "builtin",
+                action: { type: "backend", command: "rewind" },
+            },
+            {
+                name: "redo",
+                description: "Restore the most recently reverted conversation and files",
+                source: "builtin",
+                action: { type: "backend", command: "redo" },
+            },
         ]);
 
         expect(commands).toEqual([
@@ -223,6 +235,18 @@ describe("makeSlashCommandsFromAgentRegistry", () => {
                 name: "/compact",
                 description: "Compact the current session context [instructions]",
                 icon: "archive",
+                action: "submitAgentCommand",
+            },
+            {
+                name: "/rewind",
+                description: "Revert conversation and workspace to an earlier turn",
+                icon: "RotateCcw",
+                action: "submitAgentCommand",
+            },
+            {
+                name: "/redo",
+                description: "Restore the most recently reverted conversation and files",
+                icon: "RotateCw",
                 action: "submitAgentCommand",
             },
         ]);
@@ -279,8 +303,30 @@ describe("findSlashCommandAction", () => {
                 [
                     { name: "/tree", action: "submitAgentCommand" },
                     { name: "/model", action: "openModelPicker" },
+                    { name: "/rewind", action: "submitAgentCommand" },
+                    { name: "/redo", action: "submitAgentCommand" },
                 ],
                 "/tree ",
+                "agent"
+            )
+        ).toBe("submitAgentCommand");
+        expect(
+            findSlashCommandAction(
+                [
+                    { name: "/rewind", action: "submitAgentCommand" },
+                    { name: "/redo", action: "submitAgentCommand" },
+                ],
+                "/rewind ",
+                "agent"
+            )
+        ).toBe("submitAgentCommand");
+        expect(
+            findSlashCommandAction(
+                [
+                    { name: "/rewind", action: "submitAgentCommand" },
+                    { name: "/redo", action: "submitAgentCommand" },
+                ],
+                "/redo ",
                 "agent"
             )
         ).toBe("submitAgentCommand");

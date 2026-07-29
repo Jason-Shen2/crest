@@ -17,6 +17,7 @@ import {
     ThreadPrimitive,
     unstable_useComposerInputHistory,
     unstable_useSlashCommandAdapter,
+    unstable_useThreadMessageIds,
     unstable_useTriggerPopoverScopeContext,
     useAui,
     useAuiState,
@@ -44,6 +45,8 @@ import {
     PlusIcon,
     QuoteIcon,
     RefreshCwIcon,
+    RotateCcwIcon,
+    RotateCwIcon,
     Settings2Icon,
     SquareIcon,
     UploadIcon,
@@ -106,6 +109,7 @@ export type ThreadProps = {
     hideScrollToBottom?: boolean | undefined;
     workspaceDir?: string | undefined;
     onOpenFile?: ((path: string) => void) | undefined;
+    revealTurnRequest?: { turnId: string; requestId: number } | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -159,8 +163,17 @@ export const Thread: FC<ThreadProps> = ({
     hideScrollToBottom,
     workspaceDir,
     onOpenFile,
+    revealTurnRequest,
 }) => {
     const isEmpty = useAuiState(isNewChatView);
+    const revealMessageId = useAuiState((state) => {
+        if (!revealTurnRequest) return undefined;
+        return state.thread.messages.find(
+            (message) =>
+                message.role === "user" &&
+                (message.metadata.custom as { turnId?: string } | undefined)?.turnId === revealTurnRequest.turnId
+        )?.id;
+    });
 
     return (
         <ThreadComponentsContext.Provider value={components}>
@@ -168,19 +181,60 @@ export const Thread: FC<ThreadProps> = ({
                 <ThreadExtrasContext.Provider
                     value={{ beforeComposer, composerAnchorRef, hideScrollToBottom, workspaceDir, onOpenFile }}
                 >
-                    <ThreadRoot isEmpty={isEmpty} />
+                    <ThreadRoot
+                        isEmpty={isEmpty}
+                        revealMessageId={revealMessageId}
+                        revealTurnRequest={revealTurnRequest}
+                    />
                 </ThreadExtrasContext.Provider>
             </ComposerContext.Provider>
         </ThreadComponentsContext.Provider>
     );
 };
 
-const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
+const ThreadRoot: FC<{
+    isEmpty: boolean;
+    revealMessageId?: string;
+    revealTurnRequest?: { turnId: string; requestId: number };
+}> = ({ isEmpty, revealMessageId, revealTurnRequest }) => {
     const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
     const { beforeComposer, composerAnchorRef, hideScrollToBottom } = useContext(ThreadExtrasContext);
+    const rootRef = useRef<HTMLDivElement | null>(null);
+    const completedRevealRef = useRef("");
+
+    useEffect(() => {
+        const root = rootRef.current;
+        if (!root || !revealTurnRequest) return;
+        const requestKey = `${revealTurnRequest.requestId}\u0000${revealTurnRequest.turnId}`;
+        if (completedRevealRef.current === requestKey) return;
+
+        const reveal = (): boolean => {
+            const target = Array.from(root.querySelectorAll<HTMLElement>("[data-agent-turn-id]")).find(
+                (element) => element.dataset.agentTurnId === revealTurnRequest.turnId
+            );
+            if (!target) return false;
+            completedRevealRef.current = requestKey;
+            target.scrollIntoView({ block: "center" });
+            target.focus({ preventScroll: true });
+            return true;
+        };
+        if (reveal()) return;
+
+        const observer = new MutationObserver(() => {
+            if (reveal()) observer.disconnect();
+        });
+        observer.observe(root, {
+            attributes: true,
+            attributeFilter: ["data-agent-turn-id"],
+            childList: true,
+            subtree: true,
+        });
+        return () => observer.disconnect();
+    }, [revealMessageId, revealTurnRequest]);
 
     return (
         <ThreadPrimitive.Root
+            ref={rootRef}
             className="aui-root aui-thread-root bg-background @container flex h-full flex-col"
             data-testid="crest-thread"
             style={{
@@ -206,7 +260,10 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
                     </AuiIf>
 
                     <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
-                        <ThreadPrimitive.Messages>{() => <ThreadMessage />}</ThreadPrimitive.Messages>
+                        <ThreadMessageList
+                            revealMessageId={revealMessageId}
+                            revealRequestId={revealTurnRequest?.requestId}
+                        />
                     </div>
 
                     <ThreadPrimitive.ViewportFooter
@@ -260,6 +317,27 @@ const ThreadMessage: FC = () => {
     if (isEditing) return <EditComposer />;
     if (role === "user") return <UserMessage />;
     return <AssistantMessageComponent />;
+};
+
+const ThreadMessageComponents = { Message: ThreadMessage };
+
+const ThreadMessageList: FC<{
+    revealMessageId?: string;
+    revealRequestId?: number;
+}> = ({ revealMessageId, revealRequestId }) => {
+    const messageIds = unstable_useThreadMessageIds();
+
+    return messageIds.map((messageId) => (
+        <ThreadPrimitive.Unstable_MessageById
+            key={
+                messageId === revealMessageId && revealRequestId != null
+                    ? `${messageId}:reveal:${revealRequestId}`
+                    : messageId
+            }
+            messageId={messageId}
+            components={ThreadMessageComponents}
+        />
+    ));
 };
 
 const ThreadScrollToBottom: FC = () => {
@@ -321,6 +399,18 @@ const SLASH_COMMANDS: SlashCommandDef[] = [
     { id: "tree", label: "/tree", description: "Browse and navigate the session tree", icon: "FolderTree" },
     { id: "fork", label: "/fork", description: "Create a fork from a previous message", icon: "GitFork" },
     { id: "clone", label: "/clone", description: "Clone the current session", icon: "Copy" },
+    {
+        id: "rewind",
+        label: "/rewind",
+        description: "Revert conversation and workspace to an earlier turn",
+        icon: "RotateCcw",
+    },
+    {
+        id: "redo",
+        label: "/redo",
+        description: "Restore the most recently reverted conversation and files",
+        icon: "RotateCw",
+    },
     { id: "model", label: "/model", description: "Change the AI model", icon: "Settings2" },
     { id: "new", label: "/new", description: "Start a new session", icon: "Plus" },
     { id: "compact", label: "/compact", description: "Compact the conversation context", icon: "Minimize2" },
@@ -344,6 +434,8 @@ const SLASH_ICON_MAP = {
     Download: DownloadIcon,
     Upload: UploadIcon,
     RefreshCw: RefreshCwIcon,
+    RotateCcw: RotateCcwIcon,
+    RotateCw: RotateCwIcon,
 };
 
 const SlashCommandPopoverClassName =
@@ -437,6 +529,7 @@ function scrollSlashCommandItemIntoView(itemEl: HTMLElement, containerEl: HTMLEl
 
 export const __testing = {
     SlashCommands: SLASH_COMMANDS,
+    SlashIconMap: SLASH_ICON_MAP,
     SlashCommandPopoverClassName,
     SlashCommandScrollAreaClassName,
     SlashCommandItemClassName,
@@ -1062,12 +1155,16 @@ const UserQuoteBlock: FC<{ text: string }> = ({ text }) => {
 };
 
 const UserMessage: FC = () => {
+    const turnId = useAuiState((state) => (state.message.metadata.custom as { turnId?: string } | undefined)?.turnId);
+
     return (
         <MessagePrimitive.Root
             data-slot="aui_user-message-root"
             className="group/user-message fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-0 px-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
             data-role="user"
             data-testid="crest-user-message"
+            data-agent-turn-id={turnId}
+            tabIndex={-1}
         >
             <UserMessageAttachments />
 

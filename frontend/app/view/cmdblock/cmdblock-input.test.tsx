@@ -21,6 +21,18 @@ describe("CmdBlockInput", () => {
             icon: "info-circle",
             description: expect.stringMatching(/current.*session.*information/i),
         });
+        expect(byName.get("/rewind")).toEqual({
+            name: "/rewind",
+            icon: "RotateCcw",
+            description: "Revert conversation and workspace to an earlier turn",
+            action: "submitAgentCommand",
+        });
+        expect(byName.get("/redo")).toEqual({
+            name: "/redo",
+            icon: "RotateCw",
+            description: "Restore the most recently reverted conversation and files",
+            action: "submitAgentCommand",
+        });
         expect(byName.has("/resume")).toBe(false);
     });
 
@@ -93,14 +105,7 @@ describe("CmdBlockInput", () => {
 
     it("does not submit when Enter confirms an IME composition", () => {
         const onSubmit = vi.fn();
-        render(
-            <CmdBlockInput
-                mode="terminal"
-                onModeChange={() => undefined}
-                onSubmit={onSubmit}
-                hideHelpRow
-            />
-        );
+        render(<CmdBlockInput mode="terminal" onModeChange={() => undefined} onSubmit={onSubmit} hideHelpRow />);
         const editor = screen.getByRole("textbox");
 
         editor.textContent = "echo";
@@ -115,14 +120,7 @@ describe("CmdBlockInput", () => {
 
     it("preserves pasted line breaks when submitting terminal input", () => {
         const onSubmit = vi.fn();
-        render(
-            <CmdBlockInput
-                mode="terminal"
-                onModeChange={() => undefined}
-                onSubmit={onSubmit}
-                hideHelpRow
-            />
-        );
+        render(<CmdBlockInput mode="terminal" onModeChange={() => undefined} onSubmit={onSubmit} hideHelpRow />);
         const editor = screen.getByRole("textbox");
 
         editor.innerHTML = "<div>echo TERAX_ML1</div><div>echo TERAX_ML2</div>";

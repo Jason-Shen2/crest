@@ -16,6 +16,8 @@ export type AgentBackendCommandName =
     | "tree"
     | "fork"
     | "clone"
+    | "rewind"
+    | "redo"
     | "new"
     | "resume"
     | "compact"

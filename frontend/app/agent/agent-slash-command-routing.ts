@@ -5,6 +5,8 @@ export type AgentSlashCommandName =
     | "tree"
     | "fork"
     | "clone"
+    | "rewind"
+    | "redo"
     | "model"
     | "new"
     | "resume"
@@ -24,6 +26,8 @@ const RoutedAgentSlashCommands = new Set<AgentSlashCommandName>([
     "tree",
     "fork",
     "clone",
+    "rewind",
+    "redo",
     "model",
     "new",
     "resume",

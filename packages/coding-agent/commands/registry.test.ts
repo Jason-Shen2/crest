@@ -12,6 +12,8 @@ describe("agent command registry", () => {
             "tree",
             "fork",
             "clone",
+            "rewind",
+            "redo",
             "model",
             "new",
             "compact",
@@ -22,6 +24,23 @@ describe("agent command registry", () => {
             "import",
             "reload",
         ]);
+    });
+
+    it.each([
+        {
+            name: "rewind",
+            description: "Revert conversation and workspace to an earlier turn",
+            source: "builtin",
+            action: { type: "backend", command: "rewind" },
+        },
+        {
+            name: "redo",
+            description: "Restore the most recently reverted conversation and files",
+            source: "builtin",
+            action: { type: "backend", command: "redo" },
+        },
+    ] as const)("registers $name with exact rewind command metadata", (expected) => {
+        expect(getBuiltInAgentCommands().find((command) => command.name === expected.name)).toEqual(expected);
     });
 
     it("keeps the deprecated /resume alias out of command discovery", () => {

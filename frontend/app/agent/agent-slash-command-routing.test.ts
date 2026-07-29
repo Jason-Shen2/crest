@@ -15,6 +15,12 @@ describe("resolveAgentSlashCommandRoute", () => {
         });
         expect(resolveAgentSlashCommandRoute("/clone")).toEqual({ handled: true, command: "clone", argsText: "" });
         expect(resolveAgentSlashCommandRoute("/model")).toEqual({ handled: true, command: "model", argsText: "" });
+        expect(resolveAgentSlashCommandRoute("/rewind")).toEqual({
+            handled: true,
+            command: "rewind",
+            argsText: "",
+        });
+        expect(resolveAgentSlashCommandRoute("/redo")).toEqual({ handled: true, command: "redo", argsText: "" });
     });
 
     it.each(["new", "compact", "session", "info", "copy", "export", "import", "reload"] as const)(

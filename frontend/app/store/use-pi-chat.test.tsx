@@ -38,6 +38,31 @@ function makeModel(): UsePiChatModel {
     return { provider: "openai", model: "gpt-test", reasoning: "low", tokenSecretName: "secret" };
 }
 
+function makeRewindState(overrides: Partial<AgentRewindSessionStateView> = {}): AgentRewindSessionStateView {
+    return {
+        enabled: true,
+        semanticLeafId: "state-1",
+        displayLeafId: "user-1",
+        eligibleTurnIds: ["user-1"],
+        busy: false,
+        frozen: false,
+        quota: {
+            status: "ok",
+            usedBytes: 128,
+            softQuotaBytes: 5 * 1024 ** 3,
+            cleanupAvailable: false,
+        },
+        redo: {
+            operationId: "op-1",
+            targetPrompt: "restore this prompt",
+            messageCount: 2,
+            fileCount: 0,
+            files: [],
+        },
+        ...overrides,
+    };
+}
+
 function deferred<T>() {
     let resolve!: (value: T | PromiseLike<T>) => void;
     let reject!: (reason?: unknown) => void;
@@ -66,7 +91,7 @@ function makeClient() {
         summarizeContextDraft: vi.fn(),
         discardContextDraft: vi.fn(),
         listReferencePoints: vi.fn(async () => []),
-        listContextState: vi.fn(async () => ({ contextReports: [] })),
+        listContextState: vi.fn(async () => ({ drafts: [], contextReports: [] })),
         send: vi.fn(async (opts: AgentSendOptions) => ({
             sessionMetadata: opts.sessionMetadata ?? makeSession("/repo/.agent/sent.jsonl"),
             turnId: "turn-1",
@@ -147,6 +172,141 @@ describe("usePiChat lifecycle", () => {
         expect(client.subscribe).toHaveBeenCalledWith(session.path, expect.any(Function));
     });
 
+    it("hydrates and wholesale replaces authoritative rewind state from subscription replay", async () => {
+        const client = makeClient();
+        const session = makeSession("/repo/.agent/a.jsonl");
+        const { result } = renderHook(() =>
+            usePiChat({
+                client,
+                initialSession: session,
+                executionContext: makeExecutionContext({ sessionPath: session.path }),
+                modelSelection: makeModel(),
+            })
+        );
+
+        await waitFor(() => expect(client.subscribe).toHaveBeenCalledOnce());
+        act(() => {
+            client.emit(session.path, {
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+                rewindState: makeRewindState(),
+            });
+        });
+
+        expect(result.current.rewindState).toEqual(makeRewindState());
+
+        const replacement = makeRewindState({
+            semanticLeafId: "state-2",
+            displayLeafId: "assistant-2",
+            eligibleTurnIds: ["user-2", "user-3"],
+            busy: true,
+            frozen: true,
+            redo: undefined,
+        });
+        act(() => {
+            client.emit(session.path, {
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "streaming",
+                steer: [],
+                followUp: [],
+                rewindState: replacement,
+            });
+        });
+
+        expect(result.current.rewindState).toEqual(replacement);
+        expect(result.current.rewindState.redo).toBeUndefined();
+    });
+
+    it("hydrates persisted redo from a cold getSessionState result without starting a competing pull", async () => {
+        const client = makeClient();
+        const session = makeSession("/repo/.agent/resumed.jsonl");
+        const coldState = {
+            type: "session_state",
+            messages: [],
+            turns: [],
+            status: "idle",
+            steer: [],
+            followUp: [],
+            commands: [],
+            rewindState: makeRewindState(),
+        };
+        client.getSessionState.mockResolvedValue(coldState);
+        const { result } = renderHook(() =>
+            usePiChat({
+                client,
+                initialSession: session,
+                executionContext: makeExecutionContext({ sessionPath: session.path }),
+                modelSelection: makeModel(),
+            })
+        );
+
+        await waitFor(() => expect(client.subscribe).toHaveBeenCalledOnce());
+        const persistedReplay = await client.getSessionState(session);
+        act(() => client.emit(session.path, persistedReplay));
+
+        expect(result.current.rewindState.redo).toEqual(
+            expect.objectContaining({
+                operationId: "op-1",
+            })
+        );
+        expect(client.getSessionState).toHaveBeenCalledOnce();
+    });
+
+    it("uses explicit empty rewind state when authoritative replay omits rewindState", async () => {
+        const client = makeClient();
+        const session = makeSession("/repo/.agent/a.jsonl");
+        const { result } = renderHook(() =>
+            usePiChat({
+                client,
+                initialSession: session,
+                executionContext: makeExecutionContext({ sessionPath: session.path }),
+                modelSelection: makeModel(),
+            })
+        );
+
+        await waitFor(() => expect(client.subscribe).toHaveBeenCalledOnce());
+        act(() => {
+            client.emit(session.path, {
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+                rewindState: makeRewindState(),
+            });
+            client.emit(session.path, {
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+            });
+        });
+
+        expect(result.current.rewindState).toEqual({
+            enabled: false,
+            semanticLeafId: null,
+            displayLeafId: null,
+            eligibleTurnIds: [],
+            busy: false,
+            frozen: false,
+            quota: {
+                status: "ok",
+                usedBytes: 0,
+                softQuotaBytes: 5 * 1024 ** 3,
+                cleanupAvailable: false,
+            },
+        });
+    });
+
     it("switching controlled sessions resets A, unsubscribes it, and subscribes B without a competing pull", async () => {
         const client = makeClient();
         const sessionA = makeSession("/repo/.agent/a.jsonl");
@@ -173,6 +333,7 @@ describe("usePiChat lifecycle", () => {
                 steer: [{ role: "user", content: [{ type: "text", text: "queued A" }] }],
                 followUp: [],
                 commands: [{ commandId: "cmd-a" }],
+                rewindState: makeRewindState(),
             });
         });
         rerender({ session: sessionB });
@@ -186,6 +347,7 @@ describe("usePiChat lifecycle", () => {
         expect(result.current.commands).toEqual([]);
         expect(result.current.status).toBe("idle");
         expect(result.current.errorMessage).toBeUndefined();
+        expect(result.current.rewindState.redo).toBeUndefined();
     });
 
     it("explicitly clearing a controlled session resets session-local state and releases its subscription", async () => {
@@ -729,9 +891,11 @@ describe("usePiChat lifecycle", () => {
                 status: "idle",
                 steer: [],
                 followUp: [],
+                rewindState: makeRewindState(),
             });
         });
         rerender({ session: sessionB });
+        expect(result.current.rewindState.redo).toBeUndefined();
         await waitFor(() => expect(client.getSubscriber(sessionB.path)).toBeDefined());
         act(() => {
             client.emit(sessionB.path, {
@@ -741,6 +905,12 @@ describe("usePiChat lifecycle", () => {
                 status: "idle",
                 steer: [],
                 followUp: [],
+                rewindState: makeRewindState({
+                    semanticLeafId: "state-b",
+                    displayLeafId: "user-b",
+                    eligibleTurnIds: ["user-b"],
+                    redo: undefined,
+                }),
             });
         });
 
@@ -752,10 +922,18 @@ describe("usePiChat lifecycle", () => {
                 status: "idle",
                 steer: [],
                 followUp: [],
+                rewindState: makeRewindState(),
             });
         });
 
         expect(result.current.messages[0]?.content?.[0]?.text).toBe(`snapshot:${sessionB.path}`);
+        expect(result.current.rewindState).toEqual(
+            expect.objectContaining({
+                semanticLeafId: "state-b",
+                displayLeafId: "user-b",
+                redo: undefined,
+            })
+        );
     });
 
     it("never starts an independent session-state pull that can race subscribe replay", async () => {

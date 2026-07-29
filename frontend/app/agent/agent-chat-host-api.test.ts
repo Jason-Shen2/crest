@@ -24,6 +24,34 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
+function makeRewindState(hasRedo = false): AgentRewindSessionStateView {
+    return {
+        enabled: true,
+        semanticLeafId: "state-1",
+        displayLeafId: "user-1",
+        eligibleTurnIds: ["user-1"],
+        busy: false,
+        frozen: false,
+        quota: {
+            status: "ok",
+            usedBytes: 0,
+            softQuotaBytes: 5 * 1024 ** 3,
+            cleanupAvailable: false,
+        },
+        ...(hasRedo
+            ? {
+                  redo: {
+                      operationId: "op-1",
+                      targetPrompt: "restore this",
+                      messageCount: 2,
+                      fileCount: 0,
+                      files: [],
+                  },
+              }
+            : {}),
+    };
+}
+
 describe("createAgentChatHostApi", () => {
     it("routes tree and fork slash commands to selector requests without sending prompts", () => {
         const sendPrompt = vi.fn(() => true);
@@ -62,7 +90,7 @@ describe("createAgentChatHostApi", () => {
                 onSelectorRequest,
             });
 
-            let handled = false;
+            let handled: boolean | Promise<boolean> = false;
             expect(() => {
                 handled = api.submit(`/${command}`);
             }).not.toThrow();
@@ -76,6 +104,123 @@ describe("createAgentChatHostApi", () => {
         }
     );
 
+    it("routes rewind and authoritative redo to dedicated callbacks without prompt or run-command dispatch", async () => {
+        const sendPrompt = vi.fn(() => true);
+        const runCommand = vi.fn();
+        const onRewindRequest = vi.fn();
+        const onRedoRequest = vi.fn();
+        const api = createAgentChatHostApi({
+            sendPrompt,
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: makeSession,
+            getRewindState: () => makeRewindState(true),
+            getWorkspaceDir: () => "/repo",
+            runCommand,
+            onRewindRequest,
+            onRedoRequest,
+        });
+
+        expect(api.submit("/rewind")).toBe(true);
+        expect(api.submit("/redo")).toBe(true);
+        await Promise.resolve();
+
+        expect(onRewindRequest).toHaveBeenCalledOnce();
+        expect(onRedoRequest).toHaveBeenCalledOnce();
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(runCommand).not.toHaveBeenCalled();
+    });
+
+    it("reports the existing missing-session error for rewind without dispatching anything else", async () => {
+        const sendPrompt = vi.fn(() => true);
+        const runCommand = vi.fn();
+        const onUserError = vi.fn();
+        const onRewindRequest = vi.fn();
+        const api = createAgentChatHostApi({
+            sendPrompt,
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: () => undefined,
+            getRewindState: () => makeRewindState(),
+            getWorkspaceDir: () => "/repo",
+            runCommand,
+            onUserError,
+            onRewindRequest,
+        });
+
+        expect(api.submit("/rewind")).toBe(true);
+        await Promise.resolve();
+
+        expect(onUserError).toHaveBeenCalledOnce();
+        expect(onUserError).toHaveBeenCalledWith("No agent session yet. Send a prompt before using session commands.");
+        expect(onRewindRequest).not.toHaveBeenCalled();
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(runCommand).not.toHaveBeenCalled();
+    });
+
+    it("opens redo only while the submit-time authoritative rewind state contains redo", async () => {
+        let rewindState = makeRewindState();
+        const sendPrompt = vi.fn(() => true);
+        const runCommand = vi.fn();
+        const onRedoRequest = vi.fn();
+        const api = createAgentChatHostApi({
+            sendPrompt,
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: makeSession,
+            getRewindState: () => rewindState,
+            getWorkspaceDir: () => "/repo",
+            runCommand,
+            onRedoRequest,
+        });
+
+        expect(api.submit("/redo")).toBe(true);
+        await Promise.resolve();
+        expect(onRedoRequest).not.toHaveBeenCalled();
+
+        rewindState = makeRewindState(true);
+        expect(api.submit("/redo")).toBe(true);
+        await Promise.resolve();
+
+        expect(onRedoRequest).toHaveBeenCalledOnce();
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(runCommand).not.toHaveBeenCalled();
+    });
+
+    it("drops rewind and redo callbacks when their captured session revision becomes stale", async () => {
+        let sessionRevision = 0;
+        const sendPrompt = vi.fn(() => true);
+        const runCommand = vi.fn();
+        const onRewindRequest = vi.fn();
+        const onRedoRequest = vi.fn();
+        const api = createAgentChatHostApi({
+            sendPrompt,
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: makeSession,
+            getSessionRevision: () => sessionRevision,
+            getRewindState: () => makeRewindState(true),
+            getWorkspaceDir: () => "/repo",
+            runCommand,
+            onRewindRequest,
+            onRedoRequest,
+        });
+
+        expect(api.submit("/rewind")).toBe(true);
+        expect(api.submit("/redo")).toBe(true);
+        sessionRevision = 1;
+        await Promise.resolve();
+
+        expect(onRewindRequest).not.toHaveBeenCalled();
+        expect(onRedoRequest).not.toHaveBeenCalled();
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(runCommand).not.toHaveBeenCalled();
+    });
+
     it("binds selector requests to the session snapshot and generation that opened them", async () => {
         const sessionA = makeSession();
         const sessionB = { ...sessionA, id: "s2", path: "/tmp/session-b.jsonl" };
@@ -83,7 +228,12 @@ describe("createAgentChatHostApi", () => {
         let currentGeneration = 0;
         const onSelectorRequest = vi.fn();
         const runtimeApi = {
-            listTree: vi.fn(async () => ({ entries: [], leafId: null })),
+            listTree: vi.fn(async () => ({
+                entries: [],
+                semanticLeafId: null,
+                displayLeafId: null,
+                leafId: null,
+            })),
             listForkPoints: vi.fn(async () => []),
             navigateTree: vi.fn(async () => ({ sessionMetadata: sessionA })),
             forkSession: vi.fn(async () => ({ sessionMetadata: sessionA })),
@@ -177,7 +327,12 @@ describe("createAgentChatHostApi", () => {
 
     it("exposes session tree helpers for selector UI consumption", async () => {
         const session = makeSession();
-        const tree = { entries: [], leafId: null };
+        const tree = {
+            entries: [],
+            semanticLeafId: null,
+            displayLeafId: null,
+            leafId: null,
+        };
         const forkPoints: AgentForkPointView[] = [{ entryId: "e1", preview: "first turn" }];
         const runtimeApi = {
             listTree: vi.fn(async () => tree),
@@ -213,7 +368,12 @@ describe("createAgentChatHostApi", () => {
 
         expect(runtimeApi.listTree).toHaveBeenCalledWith(session);
         expect(runtimeApi.listForkPoints).toHaveBeenCalledWith(session);
-        expect(runtimeApi.navigateTree).toHaveBeenCalledWith({ sessionMetadata: session, targetId: "e1" });
+        expect(runtimeApi.navigateTree).toHaveBeenCalledWith({
+            sessionMetadata: session,
+            targetId: "e1",
+            semanticAnchorId: null,
+            expectedSemanticLeafId: null,
+        });
         expect(runtimeApi.forkSession).toHaveBeenCalledWith({ sessionMetadata: session, entryId: "e1" });
         expect(runtimeApi.cloneSession).toHaveBeenCalledWith({ sessionMetadata: session });
         expect(onSessionChange).toHaveBeenCalledWith({ ...session, path: "/tmp/fork.jsonl" });
@@ -286,42 +446,38 @@ describe("createAgentChatHostApi", () => {
         expect(sendPrompt).not.toHaveBeenCalled();
     });
 
-    it.each([
-        "/new",
-        "/compact keep errors",
-        "/copy",
-        "/export /tmp/a.jsonl",
-        "/import /tmp/a.jsonl",
-        "/reload",
-    ])("routes %s to inline command results without sending prompts or toast notifications", async (commandText) => {
-        const sendPrompt = vi.fn(() => true);
-        const runCommand = vi.fn(async () => ({ status: "success" as const, message: "ok" }));
-        const onUserError = vi.fn();
-        const onCommandResult = vi.fn();
-        const api = createAgentChatHostApi({
-            sendPrompt,
-            abort: vi.fn(),
-            getTurns: () => [],
-            getRuntimeApi: vi.fn(),
-            getSessionMetadata: makeSession,
-            getWorkspaceDir: () => "/repo",
-            onUserError,
-            onCommandResult,
-            runCommand,
-        });
+    it.each(["/new", "/compact keep errors", "/copy", "/export /tmp/a.jsonl", "/import /tmp/a.jsonl", "/reload"])(
+        "routes %s to inline command results without sending prompts or toast notifications",
+        async (commandText) => {
+            const sendPrompt = vi.fn(() => true);
+            const runCommand = vi.fn(async () => ({ status: "success" as const, message: "ok" }));
+            const onUserError = vi.fn();
+            const onCommandResult = vi.fn();
+            const api = createAgentChatHostApi({
+                sendPrompt,
+                abort: vi.fn(),
+                getTurns: () => [],
+                getRuntimeApi: vi.fn(),
+                getSessionMetadata: makeSession,
+                getWorkspaceDir: () => "/repo",
+                onUserError,
+                onCommandResult,
+                runCommand,
+            });
 
-        expect(api.submit(commandText)).toBe(true);
-        await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(api.submit(commandText)).toBe(true);
+            await new Promise((resolve) => setTimeout(resolve, 0));
 
-        expect(sendPrompt).not.toHaveBeenCalled();
-        expect(runCommand).toHaveBeenCalledOnce();
-        expect(onUserError).not.toHaveBeenCalled();
-        expect(onCommandResult).toHaveBeenCalledWith({
-            command: commandText.slice(1).split(/\s+/)[0],
-            status: "success",
-            message: "ok",
-        });
-    });
+            expect(sendPrompt).not.toHaveBeenCalled();
+            expect(runCommand).toHaveBeenCalledOnce();
+            expect(onUserError).not.toHaveBeenCalled();
+            expect(onCommandResult).toHaveBeenCalledWith({
+                command: commandText.slice(1).split(/\s+/)[0],
+                status: "success",
+                message: "ok",
+            });
+        }
+    );
 
     it("routes /session to the session manager without running an immediate command", () => {
         const onSelectorRequest = vi.fn();

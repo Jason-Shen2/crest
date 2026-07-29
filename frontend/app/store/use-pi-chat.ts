@@ -120,6 +120,8 @@ export interface PiAgentEvent {
     toolResults?: PiAgentMessage[];
     /** session_state carries committed context state. */
     contextReports?: AgentContextProjectionReportView[];
+    /** session_state carries authoritative workspace rewind availability. */
+    rewindState?: AgentRewindSessionStateView;
     /** context_projection carries the committed per-turn report. */
     report?: AgentContextProjectionReportView;
     /** message_update carries this. */
@@ -260,6 +262,7 @@ export interface UsePiChatReturn {
      */
     queuedMessages: PiAgentMessage[];
     commands: AgentPtySnapshot[];
+    rewindState: AgentRewindSessionStateView;
     send: (text: string, options?: UsePiChatSendOptions) => Promise<void>;
     abort: () => void;
     contextState: ContextReferenceRendererState;
@@ -269,6 +272,21 @@ export interface UsePiChatReturn {
     summarizeContextDraft: (draftId: string) => Promise<void>;
     retryContextSend: () => Promise<void>;
 }
+
+export const EmptyRewindState: AgentRewindSessionStateView = {
+    enabled: false,
+    semanticLeafId: null,
+    displayLeafId: null,
+    eligibleTurnIds: [],
+    busy: false,
+    frozen: false,
+    quota: {
+        status: "ok",
+        usedBytes: 0,
+        softQuotaBytes: 5 * 1024 ** 3,
+        cleanupAvailable: false,
+    },
+};
 
 export interface UsePiChatSendOptions {
     images?: string[];
@@ -389,7 +407,8 @@ function applySessionState(
     setStatus: (status: UsePiChatStatus) => void,
     setErrorMessage: (message: string | undefined) => void,
     setQueuedMessages: (messages: PiAgentMessage[]) => void,
-    setCommands: (commands: AgentPtySnapshot[]) => void
+    setCommands: (commands: AgentPtySnapshot[]) => void,
+    setRewindState: (rewindState: AgentRewindSessionStateView) => void
 ): void {
     const stateStatus = event.status as UsePiChatStatus | undefined;
     if (stateStatus) {
@@ -398,6 +417,7 @@ function applySessionState(
     }
     setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
     setCommands([...(event.commands ?? [])]);
+    setRewindState(event.rewindState ?? EmptyRewindState);
 }
 
 function getErrorMessage(error: unknown): string {
@@ -456,6 +476,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
     const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
     const [commands, setCommands] = useState<AgentPtySnapshot[]>([]);
+    const [rewindState, setRewindState] = useState<AgentRewindSessionStateView>(EmptyRewindState);
     const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(initialSessionMetadata);
     const [contextState, setContextState] = useState<ContextReferenceRendererState>(() => ({
         ...createContextReferenceState(initialSessionMetadata?.path),
@@ -554,16 +575,11 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         setErrorMessage(undefined);
         setQueuedMessages([]);
         setCommands([]);
+        setRewindState(EmptyRewindState);
         setSessionMetadata(next);
         dispatchContext({ type: "target_changed", targetSessionPath: next?.path });
         setContextRecovery(undefined);
-    }, [
-        controlledSessionPath,
-        controlledSessionRevision,
-        dispatchContext,
-        hasControlledSession,
-        setContextRecovery,
-    ]);
+    }, [controlledSessionPath, controlledSessionRevision, dispatchContext, hasControlledSession, setContextRecovery]);
 
     const sessionPath = sessionMetadata?.path;
     useEffect(() => {
@@ -595,10 +611,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             });
         }
         const metadata = await createRequest.promise;
-        if (
-            requestEpoch !== requestEpochRef.current ||
-            !matchesContextTarget(contextStateRef.current, mintTarget)
-        ) {
+        if (requestEpoch !== requestEpochRef.current || !matchesContextTarget(contextStateRef.current, mintTarget)) {
             const current = sessionMetadataRef.current;
             if (current?.path) {
                 dispatchContext({ type: "target_changed", targetSessionPath: current.path });
@@ -653,7 +666,14 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 );
                 switch (event.type) {
                     case "session_state": {
-                        applySessionState(event, setStatus, setErrorMessage, setQueuedMessages, setCommands);
+                        applySessionState(
+                            event,
+                            setStatus,
+                            setErrorMessage,
+                            setQueuedMessages,
+                            setCommands,
+                            setRewindState
+                        );
                         const authoritative = contextStateFromEvent(event);
                         dispatchContext({
                             type: "authoritative_state_received",
@@ -990,6 +1010,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             sessionMetadata,
             queuedMessages,
             commands,
+            rewindState,
             send,
             abort,
             contextState,
@@ -1009,6 +1030,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             messages,
             prepareContextDraft,
             queuedMessages,
+            rewindState,
             retryContextSend,
             send,
             sessionMetadata,

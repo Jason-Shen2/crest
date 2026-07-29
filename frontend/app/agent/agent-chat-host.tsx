@@ -22,6 +22,7 @@ import {
 } from "@/app/store/context-references";
 import {
     composerRestoreTextFromSendError,
+    EmptyRewindState,
     usePiChat,
     type ContextSendRecovery,
     type PiAgentMessage,
@@ -69,6 +70,10 @@ export interface AgentChatHostProps {
     onOpenModelPicker?: () => void;
     /** Selector-first command path for /tree, /fork, and /session. */
     onSelectorRequest?: (request: AgentSelectorRequest) => void;
+    /** Opens the workspace rewind selector for the current session. */
+    onRewindRequest?: () => void | Promise<void>;
+    /** Opens the authoritative redo preview for the current session. */
+    onRedoRequest?: () => void | Promise<void>;
     /** Restores the exact submitted text after an async send failure. */
     onRestoreComposerText?: (text: string) => void;
     /** Renderer config gate; state remains hydrated while context-reference mutations are disabled. */
@@ -84,6 +89,7 @@ export interface AgentHostState {
     context: ContextReferenceRendererState;
     contextSendRecovery?: ContextSendRecovery;
     commands: AgentPtySnapshot[];
+    rewindState: AgentRewindSessionStateView;
 }
 
 export type AgentChatHostContextApi = Pick<
@@ -160,7 +166,7 @@ export interface AgentCommandExecutionResult {
 
 type AgentImmediateCommandName = Exclude<
     AgentSlashCommandName,
-    "tree" | "fork" | "clone" | "model" | "session" | "resume"
+    "tree" | "fork" | "clone" | "model" | "session" | "resume" | "rewind" | "redo"
 >;
 
 const MissingAgentSessionMessage = "No agent session yet. Send a prompt before using session commands.";
@@ -181,6 +187,7 @@ interface AgentChatHostApiDeps {
     getContextState?: () => ContextReferenceRendererState;
     getContextTargetIdentity?: () => ContextReferenceTargetIdentity;
     getSessionRevision?: () => number;
+    getRewindState?: () => AgentRewindSessionStateView;
     getWorkspaceDir: () => string;
     runCommand?: (command: AgentImmediateCommandName, argsText: string) => Promise<AgentCommandExecutionResult>;
     onSessionChange?: (meta: AgentSessionMeta | undefined) => void;
@@ -188,6 +195,8 @@ interface AgentChatHostApiDeps {
     onUserError?: (message: string) => void;
     onOpenModelPicker?: () => void;
     onSelectorRequest?: (request: AgentSelectorRequest) => void;
+    onRewindRequest?: () => void | Promise<void>;
+    onRedoRequest?: () => void | Promise<void>;
     onRestoreComposerText?: (text: string) => void;
     context?: AgentChatHostContextApi;
 }
@@ -203,6 +212,7 @@ const UnavailableAgentRuntimeClient = {
         status: "idle",
         steer: [],
         followUp: [],
+        rewindState: EmptyRewindState,
     }),
     send: async (): Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }> => {
         throw new Error("Workspace Agent runtime client is unavailable");
@@ -550,7 +560,19 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
             command !== "clone" &&
             command !== "model" &&
             command !== "session" &&
-            command !== "resume"
+            command !== "resume" &&
+            command !== "rewind" &&
+            command !== "redo"
+        );
+    };
+    const scheduleSessionCallback = (callback: (() => void | Promise<void>) | undefined): void => {
+        const dispatchIdentity = captureSessionDispatchIdentity();
+        reportAsyncError(
+            Promise.resolve().then(async () => {
+                if (!isCurrentSessionDispatch(dispatchIdentity)) return;
+                await callback?.();
+            }),
+            dispatchIdentity
         );
     };
     const send = (text: string, images?: string[]): boolean | Promise<boolean> => {
@@ -600,6 +622,21 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
                 deps.onSelectorRequest?.(makeSessionSelectorRequest());
                 return true;
             }
+            if (route.command === "rewind") {
+                if (!deps.getSessionMetadata()?.path) {
+                    deps.onUserError?.(MissingAgentSessionMessage);
+                    return true;
+                }
+                scheduleSessionCallback(deps.onRewindRequest);
+                return true;
+            }
+            if (route.command === "redo") {
+                if (!deps.getSessionMetadata()?.path || !deps.getRewindState?.().redo) {
+                    return true;
+                }
+                scheduleSessionCallback(deps.onRedoRequest);
+                return true;
+            }
             if (isImmediateCommand(route.command)) {
                 return runImmediateCommand(route.command, route.argsText);
             }
@@ -638,6 +675,8 @@ export function AgentChatHost({
     onCommandResult,
     onOpenModelPicker,
     onSelectorRequest,
+    onRewindRequest,
+    onRedoRequest,
     onRestoreComposerText,
     contextReferencesEnabled,
 }: AgentChatHostProps) {
@@ -677,6 +716,10 @@ export function AgentChatHost({
     onSessionChangeRef.current = onSessionChange;
     const onSelectorRequestRef = useRef(onSelectorRequest);
     onSelectorRequestRef.current = onSelectorRequest;
+    const onRewindRequestRef = useRef(onRewindRequest);
+    onRewindRequestRef.current = onRewindRequest;
+    const onRedoRequestRef = useRef(onRedoRequest);
+    onRedoRequestRef.current = onRedoRequest;
     const onRestoreComposerTextRef = useRef(onRestoreComposerText);
     onRestoreComposerTextRef.current = onRestoreComposerText;
     useEffect(() => {
@@ -720,6 +763,7 @@ export function AgentChatHost({
             context: chat.contextState,
             contextSendRecovery: chat.contextSendRecovery,
             commands: chat.commands,
+            rewindState: chat.rewindState,
         });
     }, [
         chat.commands,
@@ -727,6 +771,7 @@ export function AgentChatHost({
         chat.contextState,
         chat.errorMessage,
         chat.queuedMessages,
+        chat.rewindState,
         chat.status,
     ]);
 
@@ -762,12 +807,15 @@ export function AgentChatHost({
             getContextState: () => chatRef.current.contextState,
             getContextTargetIdentity: () => contextTargetIdentity(chatRef.current.contextState),
             getSessionRevision: () => sessionRevisionRef.current,
+            getRewindState: () => chatRef.current.rewindState,
             getWorkspaceDir: () => executionContextRef.current?.workspaceDir ?? "",
             onSessionChange: (meta) => onSessionChangeRef.current?.(meta),
             onCommandResult: (result) => onCommandResultRef.current?.(result),
             onUserError: (message) => onUserErrorRef.current?.(message),
             onOpenModelPicker: () => onOpenModelPickerRef.current?.(),
             onSelectorRequest: (request) => onSelectorRequestRef.current?.(request),
+            onRewindRequest: () => onRewindRequestRef.current?.(),
+            onRedoRequest: () => onRedoRequestRef.current?.(),
             onRestoreComposerText: (text) => onRestoreComposerTextRef.current?.(text),
             context: {
                 prepareContextDraft: (input) => chatRef.current.prepareContextDraft(input),

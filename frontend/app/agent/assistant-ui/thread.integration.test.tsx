@@ -2,6 +2,7 @@
 
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+// @vitest-environment jsdom
 
 import {
     AssistantRuntimeProvider,
@@ -10,11 +11,32 @@ import {
     type QuoteInfo,
     type ThreadMessageLike,
 } from "@assistant-ui/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import type { FC, PropsWithChildren } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Thread, __testing as registryThreadTesting, type ThreadProps } from "./registry-thread";
+
+beforeEach(() => {
+    vi.stubGlobal(
+        "ResizeObserver",
+        class {
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
+    );
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+        configurable: true,
+        value: vi.fn(),
+    });
+});
+
+afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+});
 
 const messages: ThreadMessageLike[] = [
     {
@@ -100,7 +122,197 @@ describe("Thread assistant-ui integration", () => {
             icon: "Info",
             description: expect.stringMatching(/current.*session.*information/i),
         });
+        expect(byId.get("rewind")).toEqual({
+            id: "rewind",
+            label: "/rewind",
+            icon: "RotateCcw",
+            description: "Revert conversation and workspace to an earlier turn",
+        });
+        expect(byId.get("redo")).toEqual({
+            id: "redo",
+            label: "/redo",
+            icon: "RotateCw",
+            description: "Restore the most recently reverted conversation and files",
+        });
+        expect(registryThreadTesting.SlashIconMap.RotateCcw).toBeTypeOf("object");
+        expect(registryThreadTesting.SlashIconMap.RotateCw).toBeTypeOf("object");
         expect(byId.has("resume")).toBe(false);
+    });
+
+    it("writes persisted turn ids onto user messages", () => {
+        const html = renderThread(undefined, [
+            {
+                role: "user",
+                content: [{ type: "text", text: "rewind target" }],
+                metadata: { custom: { turnId: "turn-[special]-1" } },
+            } as ThreadMessageLike,
+        ]);
+
+        expect(html).toContain('data-agent-turn-id="turn-[special]-1"');
+        expect(html).toContain('tabindex="-1"');
+    });
+
+    it("reveals and focuses a matching user turn only inside the requested Thread root", async () => {
+        const scrollIntoView = vi.fn();
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+            configurable: true,
+            value: scrollIntoView,
+        });
+        const duplicatedTurn: ThreadMessageLike[] = [
+            {
+                role: "user",
+                content: [{ type: "text", text: "same id in two surfaces" }],
+                metadata: { custom: { turnId: "turn-[special]-1" } },
+            } as ThreadMessageLike,
+        ];
+        const { container, rerender } = render(
+            <div>
+                <RuntimeProvider messages={duplicatedTurn}>
+                    <Thread />
+                </RuntimeProvider>
+                <RuntimeProvider messages={duplicatedTurn}>
+                    <Thread />
+                </RuntimeProvider>
+            </div>
+        );
+
+        rerender(
+            <div>
+                <RuntimeProvider messages={duplicatedTurn}>
+                    <Thread />
+                </RuntimeProvider>
+                <RuntimeProvider messages={duplicatedTurn}>
+                    <Thread revealTurnRequest={{ turnId: "turn-[special]-1", requestId: 1 }} />
+                </RuntimeProvider>
+            </div>
+        );
+
+        const targets = container.querySelectorAll<HTMLElement>('[data-agent-turn-id="turn-[special]-1"]');
+        await waitFor(() => expect(scrollIntoView).toHaveBeenCalledOnce());
+        expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+        expect(document.activeElement).toBe(targets[1]);
+        expect(document.activeElement).not.toBe(targets[0]);
+    });
+
+    it("retries the same reveal request when its target mounts after the request", async () => {
+        const scrollIntoView = vi.fn();
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+            configurable: true,
+            value: scrollIntoView,
+        });
+        const request = { turnId: "late-turn", requestId: 9 };
+        const { container, rerender } = render(
+            <RuntimeProvider messages={[]}>
+                <Thread revealTurnRequest={request} />
+            </RuntimeProvider>
+        );
+
+        rerender(
+            <RuntimeProvider
+                messages={[
+                    {
+                        role: "user",
+                        content: [{ type: "text", text: "mounted later" }],
+                        metadata: { custom: { turnId: "late-turn" } },
+                    } as ThreadMessageLike,
+                ]}
+            >
+                <Thread revealTurnRequest={request} />
+            </RuntimeProvider>
+        );
+
+        const target = await waitFor(() => {
+            const element = container.querySelector<HTMLElement>('[data-agent-turn-id="late-turn"]');
+            expect(element).not.toBeNull();
+            expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+            return element!;
+        });
+        expect(document.activeElement).toBe(target);
+    });
+
+    it("actively remounts a requested turn that is present in runtime state but windowed out", async () => {
+        const scrollIntoView = vi.fn();
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+            configurable: true,
+            value: scrollIntoView,
+        });
+        const runtimeMessages = [
+            {
+                id: "windowed-user-message",
+                role: "user",
+                content: [{ type: "text", text: "windowed target" }],
+                metadata: { custom: { turnId: "windowed-turn" } },
+            } as ThreadMessageLike,
+        ];
+        const { container, rerender } = render(
+            <RuntimeProvider messages={runtimeMessages}>
+                <Thread />
+            </RuntimeProvider>
+        );
+        const windowedTarget = container.querySelector<HTMLElement>('[data-agent-turn-id="windowed-turn"]')!;
+        windowedTarget.hidden = true;
+
+        rerender(
+            <RuntimeProvider messages={runtimeMessages}>
+                <Thread revealTurnRequest={{ turnId: "windowed-turn", requestId: 11 }} />
+            </RuntimeProvider>
+        );
+
+        const target = await waitFor(() => {
+            const element = container.querySelector<HTMLElement>('[data-agent-turn-id="windowed-turn"]');
+            expect(element).not.toBeNull();
+            expect(element).not.toBe(windowedTarget);
+            expect(element?.hidden).toBe(false);
+            expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+            return element!;
+        });
+        expect(document.activeElement).toBe(target);
+    });
+
+    it("completes a pending reveal when same-count metadata hydrates the turn id", async () => {
+        const scrollIntoView = vi.fn();
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+            configurable: true,
+            value: scrollIntoView,
+        });
+        const request = { turnId: "hydrated-turn", requestId: 12 };
+        const { container, rerender } = render(
+            <RuntimeProvider
+                messages={[
+                    {
+                        id: "hydrating-user-message",
+                        role: "user",
+                        content: [{ type: "text", text: "metadata arrives later" }],
+                        metadata: { custom: {} },
+                    } as ThreadMessageLike,
+                ]}
+            >
+                <Thread revealTurnRequest={request} />
+            </RuntimeProvider>
+        );
+
+        rerender(
+            <RuntimeProvider
+                messages={[
+                    {
+                        id: "hydrating-user-message",
+                        role: "user",
+                        content: [{ type: "text", text: "metadata arrives later" }],
+                        metadata: { custom: { turnId: "hydrated-turn" } },
+                    } as ThreadMessageLike,
+                ]}
+            >
+                <Thread revealTurnRequest={request} />
+            </RuntimeProvider>
+        );
+
+        const target = await waitFor(() => {
+            const element = container.querySelector<HTMLElement>('[data-agent-turn-id="hydrated-turn"]');
+            expect(element).not.toBeNull();
+            expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+            return element!;
+        });
+        expect(document.activeElement).toBe(target);
     });
 
     it("renders a persisted context projection before assistant content and omits it when absent", () => {

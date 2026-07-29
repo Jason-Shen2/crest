@@ -31,7 +31,6 @@ import { Icon } from "@/app/icon/Icon";
 import { ProviderEntry } from "@/app/store/ai-catalog";
 import { AgentSelection, AIUserConfig } from "@/app/store/ai-types";
 import { AIUserConfigStatus } from "@/app/store/ai-user-config";
-import { getApi } from "@/app/store/global";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { historyProvider } from "@/app/term/completion/providers/history";
@@ -40,7 +39,7 @@ import type { DirEntry, SuggestionResults } from "@/app/term/completion/types";
 import { createRunner } from "@/app/term/completion/use-completion";
 import { isMacOS } from "@/util/platformutil";
 import { cn } from "@/util/util";
-import { CornerDownLeft } from "lucide-react";
+import { CornerDownLeft, RotateCcw, RotateCw } from "lucide-react";
 import { memo, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ModelPickerInline, ModelPickerPopover } from "./model-picker-popover";
 
@@ -1268,6 +1267,11 @@ export interface InlineCommand {
 
 const LocalSlashCommands: InlineCommand[] = [];
 
+const SlashCommandIconMap = {
+    RotateCcw,
+    RotateCw,
+};
+
 const FallbackAgentSlashCommands: InlineCommand[] = [
     {
         name: "/tree",
@@ -1285,6 +1289,18 @@ const FallbackAgentSlashCommands: InlineCommand[] = [
         name: "/clone",
         icon: "copy-01",
         description: "Clone the current agent session branch",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/rewind",
+        icon: "RotateCcw",
+        description: "Revert conversation and workspace to an earlier turn",
+        action: "submitAgentCommand",
+    },
+    {
+        name: "/redo",
+        icon: "RotateCw",
+        description: "Restore the most recently reverted conversation and files",
         action: "submitAgentCommand",
     },
     { name: "/model", icon: "stars-01", description: "Open the model picker", action: "openModelPicker" },
@@ -1374,6 +1390,8 @@ function iconForAgentCommand(command: AgentCommandInfo): string {
     if (command.action.type === "frontend") return "stars-01";
     if (command.action.command === "tree" || command.action.command === "fork") return "git-branch-01";
     if (command.action.command === "clone") return "copy-01";
+    if (command.action.command === "rewind") return "RotateCcw";
+    if (command.action.command === "redo") return "RotateCw";
     if (command.action.command === "new") return "plus";
     if (command.action.command === "resume") return "clock-rewind";
     if (command.action.command === "compact") return "archive";
@@ -1481,6 +1499,16 @@ interface InlineMenuRowProps {
     onPick: () => void;
 }
 
+const InlineMenuCommandIcon = memo(({ name, selected }: { name: string; selected: boolean }) => {
+    const LucideIcon = SlashCommandIconMap[name as keyof typeof SlashCommandIconMap];
+    const className = cn("shrink-0", selected ? "text-foreground/90" : "text-secondary/75");
+    if (LucideIcon) {
+        return <LucideIcon aria-hidden="true" size={INLINE_MENU_ICON_PX} className={className} />;
+    }
+    return <UIcon name={name} size={INLINE_MENU_ICON_PX} className={className} />;
+});
+InlineMenuCommandIcon.displayName = "InlineMenuCommandIcon";
+
 const InlineMenuRow = memo(({ item, selected, onMouseEnter, onPick }: InlineMenuRowProps) => (
     <button
         type="button"
@@ -1497,11 +1525,7 @@ const InlineMenuRow = memo(({ item, selected, onMouseEnter, onPick }: InlineMenu
             selected ? "bg-fg-overlay-2/70" : "hover:bg-fg-overlay-1/60"
         )}
     >
-        <UIcon
-            name={item.icon}
-            size={INLINE_MENU_ICON_PX}
-            className={cn("shrink-0", selected ? "text-foreground/90" : "text-secondary/75")}
-        />
+        <InlineMenuCommandIcon name={item.icon} selected={selected} />
         <span className="flex shrink-0 items-center gap-2 font-mono text-foreground/90">
             <span>{item.name}</span>
             {selected && item.altKeys && (

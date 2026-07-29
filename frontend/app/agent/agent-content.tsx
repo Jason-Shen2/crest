@@ -12,7 +12,7 @@ import {
     resolveContextReferenceUiConfig,
     type ContextReferenceSendDisabledReason,
 } from "@/app/store/context-references";
-import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
+import { EmptyRewindState, type PiAgentMessage, type PiTurn } from "@/app/store/use-pi-chat";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import type { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
@@ -282,6 +282,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         status: "idle",
         queuedMessages: [],
         commands: [],
+        rewindState: EmptyRewindState,
         context: {
             ...createContextReferenceState(),
             enabled: contextReferencesEnabled,
@@ -345,6 +346,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                 ...next,
                 commands: next.commands ?? previous.commands,
                 context: next.context ?? previous.context,
+                rewindState: next.rewindState ?? EmptyRewindState,
             };
             hostStateRef.current = normalized;
             setHostState(normalized);
