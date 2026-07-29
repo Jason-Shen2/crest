@@ -51,7 +51,7 @@ describe("DiffViewer", () => {
         const header = screen.getByRole("button", { name: /frontend\/app\.tsx/i });
         expect(header.getAttribute("aria-expanded")).toBe("true");
         expect(screen.getByTestId("pierre-file-diff")).toBeTruthy();
-        expect(header.querySelector('[data-slot="diff-viewer-collapse-icon"]')).not.toBeNull();
+        expect(header.querySelector('[data-slot="file-card-collapse-icon"]')).not.toBeNull();
 
         fireEvent.click(header);
 
