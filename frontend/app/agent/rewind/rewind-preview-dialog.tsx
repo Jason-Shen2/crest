@@ -12,6 +12,7 @@ export interface RewindPreviewDialogProps {
     open: boolean;
     operation: "rewind" | "redo";
     phase: "loading" | "ready" | "applying" | "error";
+    busy: boolean;
     preview?: AgentRewindPreviewResult;
     errorMessage?: string;
     onCancel: () => void;
@@ -54,13 +55,14 @@ export function RewindPreviewDialog({
     open,
     operation,
     phase,
+    busy,
     preview,
     errorMessage,
     onCancel,
     onConfirm,
 }: RewindPreviewDialogProps) {
-    const locked = phase === "loading" || phase === "applying";
-    const ready = phase === "ready" && !!preview;
+    const locked = busy || phase === "loading" || phase === "applying";
+    const ready = !busy && phase === "ready" && !!preview;
     const canRewind = ready && operation === "rewind" && !preview.hardBlocked;
     const canRedo = ready && operation === "redo" && !preview.hardBlocked && !preview.forceRequired;
     const title = operation === "rewind" ? "Preview rewind" : "Preview redo";

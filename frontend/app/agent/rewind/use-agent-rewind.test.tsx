@@ -97,7 +97,7 @@ function options(client: AgentRuntimeClient, overrides: Partial<UseAgentRewindOp
         sessionMetadata: makeSession("/sessions/a.jsonl"),
         sessionRevision: 1,
         rewindState: makeRewindState(),
-        onRevealTurn: vi.fn(async () => {}),
+        onRevealTurn: vi.fn(async () => true),
         onEditorText: vi.fn(),
         onError: vi.fn(),
         ...overrides,
@@ -115,7 +115,7 @@ describe("useAgentRewind", () => {
         await act(() => result.current.openSelector());
         await act(() => result.current.selectRewindPoint("turn-a"));
 
-        expect(hookOptions.onRevealTurn).toHaveBeenCalledWith("turn-a");
+        expect(hookOptions.onRevealTurn).toHaveBeenCalledWith("turn-a", expect.any(AbortSignal));
         expect(vi.mocked(hookOptions.onRevealTurn).mock.invocationCallOrder[0]).toBeLessThan(
             vi.mocked(client.previewRewind).mock.invocationCallOrder[1]!
         );
@@ -126,6 +126,103 @@ describe("useAgentRewind", () => {
             expectedSemanticLeafId: "leaf-a",
             target: { kind: "rewind", targetTurnId: "turn-a" },
         });
+    });
+
+    it("supersedes a pending selector reveal when a second point is picked rapidly", async () => {
+        const firstReveal = deferred<boolean>();
+        const secondReveal = deferred<boolean>();
+        const onRevealTurn = vi.fn((turnId: string) =>
+            turnId === "turn-a" ? firstReveal.promise : secondReveal.promise
+        );
+        const client = makeClient({
+            listRewindPoints: vi.fn(async () => ({
+                points: [
+                    { turnId: "turn-a", preview: "First", eligible: true },
+                    { turnId: "turn-b", preview: "Second", eligible: true },
+                ],
+                semanticLeafId: "leaf-a",
+                displayLeafId: "turn-a",
+            })) as never,
+        });
+        const { result } = renderHook(() => useAgentRewind(options(client, { onRevealTurn })));
+
+        await act(() => result.current.openSelector());
+        let firstPick!: Promise<void>;
+        let secondPick!: Promise<void>;
+        act(() => {
+            firstPick = result.current.selectRewindPoint("turn-a");
+            secondPick = result.current.selectRewindPoint("turn-b");
+        });
+        await act(async () => {
+            firstReveal.resolve(true);
+            await firstPick;
+        });
+        expect(client.previewRewind).not.toHaveBeenCalled();
+
+        await act(async () => {
+            secondReveal.resolve(true);
+            await secondPick;
+        });
+        expect(client.previewRewind).toHaveBeenCalledOnce();
+        expect(client.previewRewind).toHaveBeenCalledWith(
+            expect.objectContaining({ target: { kind: "rewind", targetTurnId: "turn-b" } })
+        );
+    });
+
+    it("aborts a never-mounted reveal when the selector closes", async () => {
+        const onRevealTurn = vi.fn(
+            (_turnId: string, signal?: AbortSignal) =>
+                new Promise<boolean>((resolve) =>
+                    signal?.addEventListener("abort", () => resolve(false), { once: true })
+                )
+        );
+        const client = makeClient();
+        const { result } = renderHook(() => useAgentRewind(options(client, { onRevealTurn })));
+
+        await act(() => result.current.openSelector());
+        let pick!: Promise<void>;
+        act(() => {
+            pick = result.current.selectRewindPoint("turn-a");
+        });
+        const signal = onRevealTurn.mock.calls[0]?.[1];
+        expect(signal).toBeInstanceOf(AbortSignal);
+        act(() => result.current.closeSelector());
+        if (signal) {
+            await act(() => pick);
+        }
+
+        expect(signal?.aborted).toBe(true);
+        expect(client.previewRewind).not.toHaveBeenCalled();
+    });
+
+    it("aborts a never-mounted reveal when the controlled session switches", async () => {
+        const onRevealTurn = vi.fn(
+            (_turnId: string, signal?: AbortSignal) =>
+                new Promise<boolean>((resolve) =>
+                    signal?.addEventListener("abort", () => resolve(false), { once: true })
+                )
+        );
+        const client = makeClient();
+        let hookOptions = options(client, { onRevealTurn });
+        const { result, rerender } = renderHook(() => useAgentRewind(hookOptions));
+
+        await act(() => result.current.openSelector());
+        let pick!: Promise<void>;
+        act(() => {
+            pick = result.current.selectRewindPoint("turn-a");
+        });
+        const signal = onRevealTurn.mock.calls[0]?.[1];
+        hookOptions = options(client, {
+            onRevealTurn,
+            sessionMetadata: makeSession("/sessions/b.jsonl"),
+            sessionRevision: 2,
+            rewindState: makeRewindState({ semanticLeafId: "leaf-b", eligibleTurnIds: ["turn-b"] }),
+        });
+        rerender();
+        await act(() => pick);
+
+        expect(signal?.aborted).toBe(true);
+        expect(client.previewRewind).not.toHaveBeenCalled();
     });
 
     it("hydrates selector points only for the captured session revision and semantic leaf", async () => {
@@ -451,7 +548,213 @@ describe("useAgentRewind", () => {
         expect(result.current.preview.open).toBe(false);
     });
 
-    it("does not let a cancelled apply close a newer preview or restore stale editor text", async () => {
+    it("keeps mutations locked after apply resolves until a newer authoritative state arrives", async () => {
+        const client = makeClient();
+        let hookOptions = options(client);
+        const { result, rerender } = renderHook(() => useAgentRewind(hookOptions));
+
+        await act(() => result.current.openRewind("turn-a"));
+        await act(() => result.current.confirmPreview("normal"));
+
+        expect(result.current.busy).toBe(true);
+        await act(() => result.current.openRewind("turn-a"));
+        expect(client.previewRewind).toHaveBeenCalledTimes(1);
+
+        hookOptions = {
+            ...hookOptions,
+            rewindState: makeRewindState({
+                semanticLeafId: "turn-a",
+                displayLeafId: "turn-a",
+                redo: {
+                    operationId: "rewind-operation",
+                    targetPrompt: "First prompt",
+                    messageCount: 2,
+                    fileCount: 1,
+                    files: [],
+                },
+            }),
+        };
+        rerender();
+
+        expect(result.current.busy).toBe(false);
+        await act(() => result.current.openRewind("turn-a"));
+        expect(client.previewRewind).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not unlock an apply for an equivalent or semantically stale state object", async () => {
+        const client = makeClient();
+        let hookOptions = options(client);
+        const { result, rerender } = renderHook(() => useAgentRewind(hookOptions));
+
+        await act(() => result.current.openRewind("turn-a"));
+        await act(() => result.current.confirmPreview("normal"));
+        hookOptions = { ...hookOptions, rewindState: makeRewindState() };
+        rerender();
+
+        expect(result.current.busy).toBe(true);
+    });
+
+    it("accepts a matching authoritative rewind state that arrives before the RPC result", async () => {
+        const apply = deferred<AgentRewindMutationResult>();
+        const onEditorText = vi.fn();
+        const client = makeClient({ rewindTree: vi.fn(() => apply.promise) as never });
+        let hookOptions = options(client, { onEditorText });
+        const { result, rerender } = renderHook(() => useAgentRewind(hookOptions));
+
+        await act(() => result.current.openRewind("turn-a"));
+        let applyRequest!: Promise<void>;
+        act(() => {
+            applyRequest = result.current.confirmPreview("normal");
+        });
+        hookOptions = {
+            ...hookOptions,
+            rewindState: makeRewindState({
+                semanticLeafId: "rewound-leaf",
+                displayLeafId: "rewound-turn",
+                redo: {
+                    operationId: "rewind-operation",
+                    targetPrompt: "First prompt",
+                    messageCount: 2,
+                    fileCount: 1,
+                    files: [],
+                },
+            }),
+        };
+        rerender();
+        await act(async () => {
+            apply.resolve({
+                sessionMetadata: makeSession("/sessions/a.jsonl"),
+                semanticLeafId: "rewound-leaf",
+                displayLeafId: "rewound-turn",
+                editorText: "restored once",
+            });
+            await applyRequest;
+        });
+
+        expect(result.current.busy).toBe(false);
+        expect(onEditorText).toHaveBeenCalledOnce();
+        expect(onEditorText).toHaveBeenCalledWith("restored once");
+    });
+
+    it("unlocks redo only when the result leaf is authoritative and the original redo marker is gone", async () => {
+        const redo = {
+            operationId: "redo-op",
+            targetPrompt: "restore this",
+            messageCount: 2,
+            fileCount: 1,
+            files: [],
+        };
+        const client = makeClient();
+        let hookOptions = options(client, { rewindState: makeRewindState({ redo }) });
+        const { result, rerender } = renderHook(() => useAgentRewind(hookOptions));
+
+        await act(() => result.current.openRedo());
+        await act(() => result.current.confirmPreview("normal"));
+        hookOptions = {
+            ...hookOptions,
+            rewindState: makeRewindState({ semanticLeafId: "leaf-redone", displayLeafId: "turn-redone", redo }),
+        };
+        rerender();
+        expect(result.current.busy).toBe(true);
+
+        hookOptions = {
+            ...hookOptions,
+            rewindState: makeRewindState({
+                semanticLeafId: "leaf-redone",
+                displayLeafId: "turn-redone",
+                redo: { ...redo, operationId: "replacement-redo" },
+            }),
+        };
+        rerender();
+        expect(result.current.busy).toBe(true);
+
+        hookOptions = {
+            ...hookOptions,
+            rewindState: makeRewindState({ semanticLeafId: "leaf-redone", displayLeafId: "turn-redone" }),
+        };
+        rerender();
+        expect(result.current.busy).toBe(false);
+    });
+
+    it("unlocks rewind only when its authoritative redo marker differs from the captured marker", async () => {
+        const priorRedo = {
+            operationId: "prior-redo",
+            targetPrompt: "prior prompt",
+            messageCount: 1,
+            fileCount: 0,
+            files: [],
+        };
+        const client = makeClient();
+        let hookOptions = options(client, { rewindState: makeRewindState({ redo: priorRedo }) });
+        const { result, rerender } = renderHook(() => useAgentRewind(hookOptions));
+
+        await act(() => result.current.openRewind("turn-a"));
+        await act(() => result.current.confirmPreview("normal"));
+        hookOptions = {
+            ...hookOptions,
+            rewindState: makeRewindState({
+                semanticLeafId: "turn-a",
+                displayLeafId: "turn-a",
+                redo: priorRedo,
+            }),
+        };
+        rerender();
+        expect(result.current.busy).toBe(true);
+
+        hookOptions = {
+            ...hookOptions,
+            rewindState: makeRewindState({
+                semanticLeafId: "turn-a",
+                displayLeafId: "turn-a",
+                redo: { ...priorRedo, operationId: "new-rewind" },
+            }),
+        };
+        rerender();
+        expect(result.current.busy).toBe(false);
+    });
+
+    it.each(["busy", "frozen"] as const)("blocks preview and confirm while authoritative state is %s", async (key) => {
+        const client = makeClient();
+        let hookOptions = options(client);
+        const { result, rerender } = renderHook(() => useAgentRewind(hookOptions));
+
+        await act(() => result.current.openRewind("turn-a"));
+        hookOptions = {
+            ...hookOptions,
+            rewindState: makeRewindState({ [key]: true }),
+        };
+        rerender();
+        await act(() => result.current.confirmPreview("normal"));
+        await act(() => result.current.openRewind("turn-a"));
+        await act(() => result.current.openSelector());
+
+        expect(client.rewindTree).not.toHaveBeenCalled();
+        expect(client.previewRewind).toHaveBeenCalledTimes(1);
+        expect(client.listRewindPoints).not.toHaveBeenCalled();
+    });
+
+    it("never applies redo with force-drift even when called programmatically", async () => {
+        const client = makeClient();
+        const hookOptions = options(client, {
+            rewindState: makeRewindState({
+                redo: {
+                    operationId: "redo-op",
+                    targetPrompt: "restore this",
+                    messageCount: 2,
+                    fileCount: 0,
+                    files: [],
+                },
+            }),
+        });
+        const { result } = renderHook(() => useAgentRewind(hookOptions));
+
+        await act(() => result.current.openRedo());
+        await act(() => result.current.confirmPreview("force-drift"));
+
+        expect(client.redoRewind).not.toHaveBeenCalled();
+    });
+
+    it("ignores cancellation and new previews while an apply is in flight", async () => {
         const apply = deferred<AgentRewindMutationResult>();
         const client = makeClient({ rewindTree: vi.fn(() => apply.promise) as never });
         const hookOptions = options(client);
@@ -474,8 +777,9 @@ describe("useAgentRewind", () => {
             await applyRequest;
         });
 
-        expect(result.current.preview.result?.target).toEqual({ kind: "rewind", targetTurnId: "turn-b" });
-        expect(hookOptions.onEditorText).not.toHaveBeenCalled();
+        expect(client.previewRewind).toHaveBeenCalledTimes(1);
+        expect(result.current.preview.open).toBe(false);
+        expect(hookOptions.onEditorText).toHaveBeenCalledWith("stale A");
     });
 
     it("does not call external callbacks after unmount when async work settles", async () => {

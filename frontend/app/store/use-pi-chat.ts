@@ -211,15 +211,19 @@ export interface ContextSendRecovery {
 const ComposerRestoreText = Symbol("composerRestoreText");
 
 type ComposerRestoreMarkedError = {
-    [ComposerRestoreText]?: string;
+    [ComposerRestoreText]?: {
+        text: string;
+        mintedSessionPath?: string;
+    };
 };
 
-export function markSendErrorForComposerRestore(error: unknown, text: string): unknown {
+export function markSendErrorForComposerRestore(error: unknown, text: string, mintedSessionPath?: string): unknown {
+    const restore = { text, ...(mintedSessionPath ? { mintedSessionPath } : {}) };
     if ((typeof error === "object" && error != null) || typeof error === "function") {
         try {
             Object.defineProperty(error, ComposerRestoreText, {
                 configurable: true,
-                value: text,
+                value: restore,
             });
             return error;
         } catch {
@@ -227,7 +231,7 @@ export function markSendErrorForComposerRestore(error: unknown, text: string): u
         }
     }
     const wrapped = new Error(getErrorMessage(error), { cause: error });
-    Object.defineProperty(wrapped, ComposerRestoreText, { value: text });
+    Object.defineProperty(wrapped, ComposerRestoreText, { value: restore });
     return wrapped;
 }
 
@@ -236,7 +240,18 @@ export function composerRestoreTextFromSendError(error: unknown): string | undef
         return undefined;
     }
     try {
-        return (error as ComposerRestoreMarkedError)[ComposerRestoreText];
+        return (error as ComposerRestoreMarkedError)[ComposerRestoreText]?.text;
+    } catch {
+        return undefined;
+    }
+}
+
+export function composerRestoreMintedSessionPathFromSendError(error: unknown): string | undefined {
+    if ((typeof error !== "object" || error == null) && typeof error !== "function") {
+        return undefined;
+    }
+    try {
+        return (error as ComposerRestoreMarkedError)[ComposerRestoreText]?.mintedSessionPath;
     } catch {
         return undefined;
     }
@@ -906,8 +921,11 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             const capture = contextStateRef.current.sendCapturesById[captureId];
             setErrorMessage(undefined);
             let sendSessionMetadata: AgentSessionMeta | undefined;
+            let mintedSessionPath: string | undefined;
             try {
-                sendSessionMetadata = (await ensureSessionResolution()).metadata;
+                const sessionResolution = await ensureSessionResolution();
+                sendSessionMetadata = sessionResolution.metadata;
+                mintedSessionPath = sessionResolution.acceptedMint ? sessionResolution.metadata.path : undefined;
                 if (requestEpoch !== requestEpochRef.current) return;
                 if (!target.targetSessionPath) {
                     target = contextTargetIdentity(contextStateRef.current);
@@ -973,7 +991,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                         });
                     }
                 }
-                throw isCurrentTarget ? markSendErrorForComposerRestore(error, text) : error;
+                throw isCurrentTarget ? markSendErrorForComposerRestore(error, text, mintedSessionPath) : error;
             }
         },
         [dispatchContext, ensureSessionResolution, setContextRecovery]

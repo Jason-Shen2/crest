@@ -111,6 +111,7 @@ export type ThreadProps = {
     workspaceDir?: string | undefined;
     onOpenFile?: ((path: string) => void) | undefined;
     revealTurnRequest?: { turnId: string; requestId: number } | undefined;
+    onRevealTurnComplete?: ((request: { turnId: string; requestId: number }) => void) | undefined;
     rewindableTurnIds?: ReadonlySet<string> | undefined;
     rewindBusy?: boolean | undefined;
     onRevertTurn?: ((turnId: string) => void) | undefined;
@@ -169,6 +170,7 @@ export const Thread: FC<ThreadProps> = ({
     workspaceDir,
     onOpenFile,
     revealTurnRequest,
+    onRevealTurnComplete,
     rewindableTurnIds = EMPTY_REWINDABLE_TURN_IDS,
     rewindBusy = false,
     onRevertTurn,
@@ -203,6 +205,7 @@ export const Thread: FC<ThreadProps> = ({
                             isEmpty={isEmpty}
                             revealMessageId={revealMessageId}
                             revealTurnRequest={revealTurnRequest}
+                            onRevealTurnComplete={onRevealTurnComplete}
                         />
                     </ThreadRewindContext.Provider>
                 </ThreadExtrasContext.Provider>
@@ -215,7 +218,8 @@ const ThreadRoot: FC<{
     isEmpty: boolean;
     revealMessageId?: string;
     revealTurnRequest?: { turnId: string; requestId: number };
-}> = ({ isEmpty, revealMessageId, revealTurnRequest }) => {
+    onRevealTurnComplete?: (request: { turnId: string; requestId: number }) => void;
+}> = ({ isEmpty, revealMessageId, revealTurnRequest, onRevealTurnComplete }) => {
     const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
     const { beforeComposer, composerAnchorRef, hideScrollToBottom } = useContext(ThreadExtrasContext);
     const rootRef = useRef<HTMLDivElement | null>(null);
@@ -235,6 +239,7 @@ const ThreadRoot: FC<{
             completedRevealRef.current = requestKey;
             target.scrollIntoView({ block: "center" });
             target.focus({ preventScroll: true });
+            onRevealTurnComplete?.(revealTurnRequest);
             return true;
         };
         if (reveal()) return;
@@ -249,7 +254,7 @@ const ThreadRoot: FC<{
             subtree: true,
         });
         return () => observer.disconnect();
-    }, [revealMessageId, revealTurnRequest]);
+    }, [onRevealTurnComplete, revealMessageId, revealTurnRequest]);
 
     return (
         <ThreadPrimitive.Root

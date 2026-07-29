@@ -17,10 +17,11 @@ import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import type { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
     AgentChatHost,
     type AgentChatHostApi,
+    type AgentComposerRestorePayload,
     type AgentHostState,
     type AgentInlineCommandResult,
     type AgentSelectorRequest,
@@ -36,6 +37,10 @@ import {
     useCrestAssistantRuntime,
 } from "./assistant-ui";
 import type { CrestContextUsage } from "./assistant-ui/context-display";
+import { RedoDock } from "./rewind/redo-dock";
+import { RewindPreviewDialog } from "./rewind/rewind-preview-dialog";
+import { RewindSelector } from "./rewind/rewind-selector";
+import { useAgentRewind } from "./rewind/use-agent-rewind";
 
 export interface AgentContentProps {
     model: WorkspaceAgentModel;
@@ -49,6 +54,26 @@ interface AgentAttachedPanelState {
     selectorRequest: AgentSelectorRequest | null;
     modelPickerOpen: boolean;
 }
+
+interface AgentComposerTextRequest {
+    text: string;
+    requestId: number;
+    sessionPath?: string;
+    sessionRevision: number;
+}
+
+interface AgentRevealTurnRequest {
+    turnId: string;
+    requestId: number;
+    sessionPath?: string;
+    sessionRevision: number;
+}
+
+interface AgentRevealResolver {
+    finish(revealed: boolean, clearRequest?: boolean): void;
+}
+
+const RevealTurnTimeoutMs = 5_000;
 
 function emptyAttachedPanelState(): AgentAttachedPanelState {
     return {
@@ -199,13 +224,46 @@ function AgentInlineNotification({ message, onDismiss }: { message: string; onDi
     );
 }
 
-function ComposerTextRestore({ request }: { request?: { text: string; requestId: number } }) {
+function ComposerTextRestore({
+    request,
+    sessionPath,
+    sessionRevision,
+}: {
+    request?: AgentComposerTextRequest;
+    sessionPath?: string;
+    sessionRevision: number;
+}) {
     const aui = useAui();
+    const consumedRequestRef = useRef("");
     useEffect(() => {
-        if (!request) return;
+        if (!request || request.sessionPath !== sessionPath || request.sessionRevision !== sessionRevision) {
+            return;
+        }
+        const requestKey = `${request.sessionPath ?? ""}\u0000${request.sessionRevision}\u0000${request.requestId}`;
+        if (consumedRequestRef.current === requestKey) return;
+        consumedRequestRef.current = requestKey;
         aui.composer().setText(request.text);
-    }, [aui, request]);
+    }, [aui, request, sessionPath, sessionRevision]);
     return null;
+}
+
+function makeEmptyHostState(
+    sessionPath: string | undefined,
+    sessionRevision: number,
+    contextReferencesEnabled: boolean
+): AgentHostState {
+    return {
+        sessionPath,
+        sessionRevision,
+        status: "idle",
+        queuedMessages: [],
+        commands: [],
+        rewindState: EmptyRewindState,
+        context: {
+            ...createContextReferenceState(sessionPath),
+            enabled: contextReferencesEnabled,
+        },
+    };
 }
 
 export function agentContextSendGuidance(reason: ContextReferenceSendDisabledReason): string {
@@ -275,21 +333,26 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
     }, [activeSelection, userConfigState.config]);
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
     const composerAnchorRef = useRef<HTMLDivElement>(null);
-    const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
-        { text: string; requestId: number } | undefined
-    >(undefined);
-    const initialHostState: AgentHostState = {
-        status: "idle",
-        queuedMessages: [],
-        commands: [],
-        rewindState: EmptyRewindState,
-        context: {
-            ...createContextReferenceState(),
-            enabled: contextReferencesEnabled,
-        },
-    };
-    const [hostState, setHostState] = useState<AgentHostState>(initialHostState);
-    const hostStateRef = useRef(initialHostState);
+    const activeSessionPath = agentStateValue.activeSession?.path;
+    const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<AgentComposerTextRequest>();
+    const [revealTurnRequest, setRevealTurnRequest] = useState<AgentRevealTurnRequest>();
+    const revealRequestIdRef = useRef(0);
+    const revealResolversRef = useRef(new Map<number, AgentRevealResolver>());
+    const [receivedHostState, setReceivedHostState] = useState<AgentHostState>(() =>
+        makeEmptyHostState(activeSessionPath, sessionRevision, contextReferencesEnabled)
+    );
+    const hostStateRef = useRef(receivedHostState);
+    const hostState = useMemo(
+        () =>
+            receivedHostState.sessionPath === activeSessionPath && receivedHostState.sessionRevision === sessionRevision
+                ? receivedHostState
+                : makeEmptyHostState(activeSessionPath, sessionRevision, contextReferencesEnabled),
+        [activeSessionPath, contextReferencesEnabled, receivedHostState, sessionRevision]
+    );
+    const currentRevealTurnRequest =
+        revealTurnRequest?.sessionPath === activeSessionPath && revealTurnRequest?.sessionRevision === sessionRevision
+            ? { turnId: revealTurnRequest.turnId, requestId: revealTurnRequest.requestId }
+            : undefined;
     const [dismissedHostError, setDismissedHostError] = useState<string>();
     const [dismissedModelError, setDismissedModelError] = useState<string>();
     const [userErrorMessage, setUserErrorMessage] = useState("");
@@ -332,6 +395,63 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
             generation: (current?.generation ?? 0) + 1,
         }));
     }, []);
+    const enqueueComposerText = useCallback((payload: AgentComposerRestorePayload) => {
+        setAgentRestoredTextRequest((previous) => ({
+            ...payload,
+            requestId: (previous?.requestId ?? 0) + 1,
+        }));
+    }, []);
+    const onEditorText = useCallback(
+        (text: string) => {
+            enqueueComposerText({ text, sessionPath: activeSessionPath, sessionRevision });
+        },
+        [activeSessionPath, enqueueComposerText, sessionRevision]
+    );
+    const cancelPendingReveals = useCallback((clearRequest = true): void => {
+        for (const resolver of revealResolversRef.current.values()) resolver.finish(false, clearRequest);
+        revealResolversRef.current.clear();
+    }, []);
+    const onRevealTurn = useCallback(
+        async (turnId: string, signal: AbortSignal): Promise<boolean> => {
+            cancelPendingReveals();
+            if (signal.aborted) return false;
+            const requestId = ++revealRequestIdRef.current;
+            const completion = new Promise<boolean>((resolve) => {
+                let timeout = 0;
+                const finish = (revealed: boolean, clearRequest = true): void => {
+                    const resolver = revealResolversRef.current.get(requestId);
+                    if (!resolver || resolver.finish !== finish) return;
+                    window.clearTimeout(timeout);
+                    signal.removeEventListener("abort", onAbort);
+                    revealResolversRef.current.delete(requestId);
+                    if (clearRequest) {
+                        setRevealTurnRequest((current) => (current?.requestId === requestId ? undefined : current));
+                    }
+                    resolve(revealed);
+                };
+                const onAbort = (): void => finish(false);
+                revealResolversRef.current.set(requestId, { finish });
+                signal.addEventListener("abort", onAbort, { once: true });
+                timeout = window.setTimeout(() => finish(false), RevealTurnTimeoutMs);
+            });
+            setRevealTurnRequest({
+                turnId,
+                requestId,
+                sessionPath: activeSessionPath,
+                sessionRevision,
+            });
+            return await completion;
+        },
+        [activeSessionPath, cancelPendingReveals, sessionRevision]
+    );
+    const onRevealTurnComplete = useCallback((request: { turnId: string; requestId: number }) => {
+        revealResolversRef.current.get(request.requestId)?.finish(true);
+    }, []);
+    useLayoutEffect(() => {
+        cancelPendingReveals();
+        setRevealTurnRequest(undefined);
+    }, [activeSessionPath, cancelPendingReveals, sessionRevision]);
+    useEffect(() => () => cancelPendingReveals(false), [cancelPendingReveals]);
     useEffect(() => {
         if (!userNotification) {
             return;
@@ -342,14 +462,23 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
     const onHostStateChange = useCallback(
         (next: AgentHostState) => {
             const previous = hostStateRef.current;
+            const nextSessionPath = next.sessionPath ?? activeSessionPath;
+            const nextSessionRevision = next.sessionRevision ?? sessionRevision;
+            const sameScope =
+                previous.sessionPath === nextSessionPath && previous.sessionRevision === nextSessionRevision;
+            const scopeFallback = sameScope
+                ? previous
+                : makeEmptyHostState(nextSessionPath, nextSessionRevision, contextReferencesEnabled);
             const normalized: AgentHostState = {
                 ...next,
-                commands: next.commands ?? previous.commands,
-                context: next.context ?? previous.context,
+                sessionPath: nextSessionPath,
+                sessionRevision: nextSessionRevision,
+                commands: next.commands ?? scopeFallback.commands,
+                context: next.context ?? scopeFallback.context,
                 rewindState: next.rewindState ?? EmptyRewindState,
             };
             hostStateRef.current = normalized;
-            setHostState(normalized);
+            setReceivedHostState(normalized);
             if (!normalized.errorMessage) {
                 setDismissedHostError(undefined);
             }
@@ -360,7 +489,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                 onUserError("");
             }
         },
-        [onUserError]
+        [activeSessionPath, contextReferencesEnabled, onUserError, sessionRevision]
     );
     const onSelectionChange = useCallback(
         (next: AgentSelection) => {
@@ -437,6 +566,15 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         }
         return api;
     }, [contextIdentity]);
+    const rewindController = useAgentRewind({
+        client,
+        sessionMetadata: agentStateValue.activeSession,
+        sessionRevision,
+        rewindState: hostState.rewindState,
+        onRevealTurn,
+        onEditorText,
+        onError: onUserError,
+    });
 
     return (
         <section className="h-full w-full" data-testid="agent-content">
@@ -471,11 +609,11 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                 onStateChange={onHostStateChange}
                 onUserError={onUserError}
                 onCommandResult={(result) =>
-                    setAttachedPanelState((prev) => ({
+                    setAttachedPanelState({
                         commandResults: [result],
                         selectorRequest: null,
                         modelPickerOpen: false,
-                    }))
+                    })
                 }
                 onOpenModelPicker={() =>
                     setAttachedPanelState({ commandResults: [], selectorRequest: null, modelPickerOpen: true })
@@ -483,11 +621,18 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                 onSelectorRequest={(request) =>
                     setAttachedPanelState({ commandResults: [], selectorRequest: request, modelPickerOpen: false })
                 }
+                onRewindRequest={rewindController.openSelector}
+                onRedoRequest={rewindController.openRedo}
+                onRestoreComposerText={enqueueComposerText}
                 contextReferencesEnabled={contextReferencesEnabled}
             />
             <div className="flex h-full min-h-0 flex-col">
                 <AssistantRuntimeProvider runtime={assistantRuntime}>
-                    <ComposerTextRestore request={agentRestoredTextRequest} />
+                    <ComposerTextRestore
+                        request={agentRestoredTextRequest}
+                        sessionPath={activeSessionPath}
+                        sessionRevision={sessionRevision}
+                    />
                     <Thread
                         modelLabel={modelDisplayLabel}
                         onOpenModelPicker={() =>
@@ -498,6 +643,11 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         workspaceDir={executionContext.workspaceDir}
                         onOpenFile={onOpenFile}
                         composerAnchorRef={composerAnchorRef}
+                        revealTurnRequest={currentRevealTurnRequest}
+                        onRevealTurnComplete={onRevealTurnComplete}
+                        rewindableTurnIds={rewindController.rewindableTurnIds}
+                        rewindBusy={rewindController.busy}
+                        onRevertTurn={rewindController.openRewind}
                         hideScrollToBottom={
                             attachedPanelState.commandResults.length > 0 ||
                             attachedPanelState.selectorRequest != null ||
@@ -506,6 +656,21 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         }
                         beforeComposer={
                             <>
+                                {hostState.rewindState.redo ? (
+                                    <RedoDock
+                                        redo={hostState.rewindState.redo}
+                                        busy={rewindController.busy}
+                                        onRedo={rewindController.openRedo}
+                                    />
+                                ) : null}
+                                <RewindSelector
+                                    open={rewindController.selector.open}
+                                    points={rewindController.selector.points}
+                                    loading={rewindController.selector.phase === "loading"}
+                                    errorMessage={rewindController.selector.errorMessage}
+                                    onSelect={rewindController.selectRewindPoint}
+                                    onClose={rewindController.closeSelector}
+                                />
                                 {contextTargetMatchesSession &&
                                 (hostState.context.drafts.length > 0 || hostState.contextSendRecovery) ? (
                                     <ContextReferenceBar
@@ -565,12 +730,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                                         setAttachedPanelState((prev) => ({ ...prev, selectorRequest: null }))
                                     }
                                     onUserMessage={onUserMessage}
-                                    onEditorText={(text) =>
-                                        setAgentRestoredTextRequest((prev) => ({
-                                            text,
-                                            requestId: (prev?.requestId ?? 0) + 1,
-                                        }))
-                                    }
+                                    onEditorText={onEditorText}
                                 />
                                 <ModelPickerInline
                                     open={attachedPanelState.modelPickerOpen}
@@ -611,6 +771,16 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                                 <QueuedMessagesPanel messages={hostState.queuedMessages} />
                             </>
                         }
+                    />
+                    <RewindPreviewDialog
+                        open={rewindController.preview.open}
+                        operation={rewindController.preview.operation}
+                        phase={rewindController.preview.phase}
+                        busy={rewindController.busy}
+                        preview={rewindController.preview.result}
+                        errorMessage={rewindController.preview.errorMessage}
+                        onCancel={rewindController.cancelPreview}
+                        onConfirm={rewindController.confirmPreview}
                     />
                 </AssistantRuntimeProvider>
             </div>

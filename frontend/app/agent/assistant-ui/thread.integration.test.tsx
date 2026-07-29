@@ -330,6 +330,41 @@ describe("Thread assistant-ui integration", () => {
         expect(document.activeElement).toBe(target);
     });
 
+    it("acknowledges a reveal only after the target is mounted, scrolled, and focused", async () => {
+        const onRevealTurnComplete = vi.fn();
+        const request = { turnId: "late-ack-turn", requestId: 10 };
+        const { container, rerender } = render(
+            <RuntimeProvider messages={[]}>
+                <Thread {...({ revealTurnRequest: request, onRevealTurnComplete } as ThreadProps)} />
+            </RuntimeProvider>
+        );
+
+        expect(onRevealTurnComplete).not.toHaveBeenCalled();
+
+        rerender(
+            <RuntimeProvider
+                messages={[
+                    {
+                        role: "user",
+                        content: [{ type: "text", text: "mounted for acknowledgement" }],
+                        metadata: { custom: { turnId: "late-ack-turn" } },
+                    } as ThreadMessageLike,
+                ]}
+            >
+                <Thread {...({ revealTurnRequest: request, onRevealTurnComplete } as ThreadProps)} />
+            </RuntimeProvider>
+        );
+
+        const target = await waitFor(() => {
+            const element = container.querySelector<HTMLElement>('[data-agent-turn-id="late-ack-turn"]');
+            expect(document.activeElement).toBe(element);
+            return element!;
+        });
+        expect(target).not.toBeNull();
+        expect(onRevealTurnComplete).toHaveBeenCalledOnce();
+        expect(onRevealTurnComplete).toHaveBeenCalledWith(request);
+    });
+
     it("actively remounts a requested turn that is present in runtime state but windowed out", async () => {
         const scrollIntoView = vi.fn();
         Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {

@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeAgentSurfaceActivityController } from "@/app/agent/agent-surface-activity";
 import {
     adoptInitialSessionMetadata,
+    composerRestoreMintedSessionPathFromSendError,
+    composerRestoreTextFromSendError,
     getOptimisticAbortStatus,
     type PiAgentMessage,
     reducePiChatEvent,
@@ -540,6 +542,35 @@ describe("usePiChat lifecycle", () => {
         expect(result.current.sessionMetadata).toEqual(sessionB);
         expect(result.current.status).toBe("idle");
         expect(result.current.errorMessage).toBeUndefined();
+    });
+
+    it("marks a failed first send with the accepted minted session identity", async () => {
+        const client = makeClient();
+        const mintedSession = makeSession("/repo/.agent/minted.jsonl");
+        client.createSession.mockResolvedValueOnce(mintedSession);
+        client.send.mockRejectedValueOnce(new Error("send failed"));
+        const onSessionChange = vi.fn();
+        const { result } = renderHook(() =>
+            usePiChat({
+                client,
+                executionContext: makeExecutionContext(),
+                modelSelection: makeModel(),
+                onSessionChange,
+            })
+        );
+
+        let failure: unknown;
+        await act(async () => {
+            try {
+                await result.current.send("restore me");
+            } catch (error) {
+                failure = error;
+            }
+        });
+
+        expect(onSessionChange).toHaveBeenCalledWith(mintedSession);
+        expect(composerRestoreTextFromSendError(failure)).toBe("restore me");
+        expect(composerRestoreMintedSessionPathFromSendError(failure)).toBe(mintedSession.path);
     });
 
     it("ignores a pending createSession result after a same-value controlled clear revision", async () => {

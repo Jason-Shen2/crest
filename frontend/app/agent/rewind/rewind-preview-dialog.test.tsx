@@ -28,6 +28,7 @@ function renderDialog(overrides: Partial<RewindPreviewDialogProps> = {}) {
         open: true,
         operation: "rewind",
         phase: "ready",
+        busy: false,
         preview: makePreview(),
         onCancel: vi.fn(),
         onConfirm: vi.fn(),
@@ -58,6 +59,13 @@ describe("RewindPreviewDialog", () => {
         fireEvent.click(screen.getByRole("button", { name: "Revert" }));
         expect(props.onConfirm).toHaveBeenCalledWith("normal");
         expect(screen.queryByRole("button", { name: "Force revert" })).toBeNull();
+    });
+
+    it("locks cancellation and confirmation while the shared rewind controller is busy", () => {
+        renderDialog({ busy: true });
+
+        expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.queryByRole("button", { name: /^(Revert|Force revert|Redo)$/ })).toBeNull();
     });
 
     it("shows only Force revert for a forceable rewind and renders the backend conflict reason in red", () => {

@@ -21,6 +21,7 @@ import {
     type ContextReferenceTargetIdentity,
 } from "@/app/store/context-references";
 import {
+    composerRestoreMintedSessionPathFromSendError,
     composerRestoreTextFromSendError,
     EmptyRewindState,
     usePiChat,
@@ -70,18 +71,20 @@ export interface AgentChatHostProps {
     onOpenModelPicker?: () => void;
     /** Selector-first command path for /tree, /fork, and /session. */
     onSelectorRequest?: (request: AgentSelectorRequest) => void;
-    /** Opens the workspace rewind selector for the current session. */
+    /** Opens the workspace rewind selector through AgentContent's sole rewind controller. */
     onRewindRequest?: () => void | Promise<void>;
-    /** Opens the authoritative redo preview for the current session. */
+    /** Opens the authoritative redo preview through that same controller. */
     onRedoRequest?: () => void | Promise<void>;
     /** Restores the exact submitted text after an async send failure. */
-    onRestoreComposerText?: (text: string) => void;
+    onRestoreComposerText?: (payload: AgentComposerRestorePayload) => void;
     /** Renderer config gate; state remains hydrated while context-reference mutations are disabled. */
     contextReferencesEnabled?: boolean;
 }
 
 /** Reactive agent state surfaced to the parent for the activity bar. */
 export interface AgentHostState {
+    sessionPath?: string;
+    sessionRevision: number;
     status: UsePiChatStatus;
     errorMessage?: string;
     /** Messages queued behind the current run (ordered steer-first). */
@@ -90,6 +93,12 @@ export interface AgentHostState {
     contextSendRecovery?: ContextSendRecovery;
     commands: AgentPtySnapshot[];
     rewindState: AgentRewindSessionStateView;
+}
+
+export interface AgentComposerRestorePayload {
+    text: string;
+    sessionPath?: string;
+    sessionRevision: number;
 }
 
 export type AgentChatHostContextApi = Pick<
@@ -197,7 +206,7 @@ interface AgentChatHostApiDeps {
     onSelectorRequest?: (request: AgentSelectorRequest) => void;
     onRewindRequest?: () => void | Promise<void>;
     onRedoRequest?: () => void | Promise<void>;
-    onRestoreComposerText?: (text: string) => void;
+    onRestoreComposerText?: (payload: AgentComposerRestorePayload) => void;
     context?: AgentChatHostContextApi;
 }
 
@@ -576,19 +585,45 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
         );
     };
     const send = (text: string, images?: string[]): boolean | Promise<boolean> => {
+        const dispatchIdentity = captureSessionDispatchIdentity();
+        const restoreComposerText = (error: unknown): void => {
+            const restoreText = composerRestoreTextFromSendError(error);
+            if (restoreText == null) {
+                return;
+            }
+            const mintedSessionPath = composerRestoreMintedSessionPathFromSendError(error);
+            const currentIdentity = captureSessionDispatchIdentity();
+            const mintedIdentity =
+                !dispatchIdentity.path && mintedSessionPath
+                    ? { path: mintedSessionPath, revision: dispatchIdentity.revision + 1 }
+                    : undefined;
+            const currentIsMint =
+                !!mintedIdentity &&
+                currentIdentity.path === mintedIdentity.path &&
+                currentIdentity.revision === mintedIdentity.revision;
+            const acceptedIdentity = mintedIdentity
+                ? isCurrentSessionDispatch(dispatchIdentity) || currentIsMint
+                    ? mintedIdentity
+                    : undefined
+                : isCurrentSessionDispatch(dispatchIdentity)
+                  ? dispatchIdentity
+                  : undefined;
+            if (!acceptedIdentity) return;
+            deps.onRestoreComposerText?.({
+                text: restoreText,
+                sessionPath: acceptedIdentity.path || undefined,
+                sessionRevision: acceptedIdentity.revision,
+            });
+        };
         try {
             const result = deps.sendPrompt(text, images);
             if (!(result instanceof Promise)) return result;
             return result.catch((error) => {
-                if (composerRestoreTextFromSendError(error) != null) {
-                    deps.onRestoreComposerText?.(text);
-                }
+                restoreComposerText(error);
                 throw error;
             });
         } catch (error) {
-            if (composerRestoreTextFromSendError(error) != null) {
-                deps.onRestoreComposerText?.(text);
-            }
+            restoreComposerText(error);
             throw error;
         }
     };
@@ -631,7 +666,8 @@ export function createAgentChatHostApi(deps: AgentChatHostApiDeps): AgentChatHos
                 return true;
             }
             if (route.command === "redo") {
-                if (!deps.getSessionMetadata()?.path || !deps.getRewindState?.().redo) {
+                const rewindState = deps.getRewindState?.();
+                if (!deps.getSessionMetadata()?.path || !rewindState?.redo || rewindState.busy || rewindState.frozen) {
                     return true;
                 }
                 scheduleSessionCallback(deps.onRedoRequest);
@@ -720,8 +756,6 @@ export function AgentChatHost({
     onRewindRequestRef.current = onRewindRequest;
     const onRedoRequestRef = useRef(onRedoRequest);
     onRedoRequestRef.current = onRedoRequest;
-    const onRestoreComposerTextRef = useRef(onRestoreComposerText);
-    onRestoreComposerTextRef.current = onRestoreComposerText;
     useEffect(() => {
         onTurnsChangeRef.current?.(turns);
     }, [turns]);
@@ -757,6 +791,8 @@ export function AgentChatHost({
     onStateChangeRef.current = onStateChange;
     useEffect(() => {
         onStateChangeRef.current?.({
+            sessionPath: chat.sessionMetadata?.path,
+            sessionRevision,
             status: chat.status,
             errorMessage: chat.errorMessage,
             queuedMessages: chat.queuedMessages,
@@ -772,7 +808,9 @@ export function AgentChatHost({
         chat.errorMessage,
         chat.queuedMessages,
         chat.rewindState,
+        chat.sessionMetadata?.path,
         chat.status,
+        sessionRevision,
     ]);
 
     // One-shot wiring of the API. Stable identity so re-renders don't
@@ -816,7 +854,7 @@ export function AgentChatHost({
             onSelectorRequest: (request) => onSelectorRequestRef.current?.(request),
             onRewindRequest: () => onRewindRequestRef.current?.(),
             onRedoRequest: () => onRedoRequestRef.current?.(),
-            onRestoreComposerText: (text) => onRestoreComposerTextRef.current?.(text),
+            onRestoreComposerText,
             context: {
                 prepareContextDraft: (input) => chatRef.current.prepareContextDraft(input),
                 discardContextDraft: (draftId) => chatRef.current.discardContextDraft(draftId),

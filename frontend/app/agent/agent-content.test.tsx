@@ -14,12 +14,29 @@ const hostProps = vi.hoisted(() => ({
     runtime: null as any,
     skipReady: false,
     simulateMissingSessionSelectorError: false,
+    rejectSubmitWithRestore: false,
     submitResult: true,
     submitError: "",
 }));
 
 const selectorProps = vi.hoisted(() => ({
     latest: null as any,
+}));
+
+const threadProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
+const rewindSelectorProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
+const rewindDialogProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
+const composerProps = vi.hoisted(() => ({
+    setText: vi.fn(),
 }));
 
 vi.mock("./agent-chat-host", () => ({
@@ -31,8 +48,22 @@ vi.mock("./agent-chat-host", () => ({
                     if (hostProps.simulateMissingSessionSelectorError && (text === "/tree" || text === "/fork")) {
                         props.onUserError?.("No agent session yet. Send a prompt before using session commands.");
                     }
+                    if (text === "/rewind") {
+                        void props.onRewindRequest?.();
+                    }
+                    if (text === "/redo") {
+                        void props.onRedoRequest?.();
+                    }
                     if (hostProps.submitError) {
                         props.onUserError?.(hostProps.submitError);
+                    }
+                    if (hostProps.rejectSubmitWithRestore) {
+                        props.onRestoreComposerText?.({
+                            text,
+                            sessionPath: props.sessionMetadata?.path,
+                            sessionRevision: props.sessionRevision,
+                        });
+                        return Promise.reject(new Error("send failed"));
                     }
                     return hostProps.submitResult;
                 }),
@@ -53,18 +84,158 @@ vi.mock("@/app/view/cmdblock/session-selector", () => ({
 
 vi.mock("./assistant-ui", () => ({
     AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    Thread: ({ beforeComposer }: { beforeComposer?: React.ReactNode }) => (
-        <div data-testid="assistant-thread">
-            {beforeComposer}
-            <textarea aria-label="Prompt" />
-        </div>
-    ),
-    useAui: () => ({ composer: () => ({ setText: vi.fn() }) }),
+    Thread: (props: any) => {
+        threadProps.latest = props;
+        return (
+            <div data-testid="assistant-thread">
+                {props.beforeComposer}
+                {props.onRevertTurn ? (
+                    <button type="button" onClick={() => props.onRevertTurn("turn-a")}>
+                        Message Revert
+                    </button>
+                ) : null}
+                {props.revealTurnRequest && props.onRevealTurnComplete ? (
+                    <button type="button" onClick={() => props.onRevealTurnComplete(props.revealTurnRequest)}>
+                        Complete reveal
+                    </button>
+                ) : null}
+                <textarea aria-label="Prompt" />
+            </div>
+        );
+    },
+    useAui: () => ({ composer: () => ({ setText: composerProps.setText }) }),
     useCrestAssistantRuntime: (value: unknown) => {
         hostProps.runtime = value;
         return value;
     },
 }));
+
+vi.mock("./rewind/rewind-selector", () => ({
+    RewindSelector: (props: any) => {
+        rewindSelectorProps.latest = props;
+        return props.open ? (
+            <div data-testid="rewind-selector">
+                <span>{props.loading ? "loading" : "ready"}</span>
+                {props.points.map((point: AgentRewindPointView) => (
+                    <button key={point.turnId} type="button" onClick={() => props.onSelect(point.turnId)}>
+                        {point.preview}
+                    </button>
+                ))}
+            </div>
+        ) : null;
+    },
+}));
+
+vi.mock("./rewind/rewind-preview-dialog", () => ({
+    RewindPreviewDialog: (props: any) => {
+        rewindDialogProps.latest = props;
+        return props.open ? (
+            <div data-testid="rewind-preview">
+                <span>{`${props.operation}:${props.phase}`}</span>
+                <button type="button" onClick={props.onCancel}>
+                    Cancel preview
+                </button>
+                <button type="button" onClick={() => props.onConfirm("normal")}>
+                    Confirm normal
+                </button>
+                <button type="button" onClick={() => props.onConfirm("force-drift")}>
+                    Confirm force
+                </button>
+            </div>
+        ) : null;
+    },
+}));
+
+function makeRewindState(overrides: Partial<AgentRewindSessionStateView> = {}): AgentRewindSessionStateView {
+    return {
+        enabled: true,
+        semanticLeafId: "leaf-a",
+        displayLeafId: "turn-a",
+        eligibleTurnIds: ["turn-a"],
+        busy: false,
+        frozen: false,
+        quota: {
+            status: "ok",
+            usedBytes: 0,
+            softQuotaBytes: 5 * 1024 ** 3,
+            cleanupAvailable: false,
+        },
+        ...overrides,
+    };
+}
+
+function makePreview(
+    target: AgentRewindPreviewResult["target"],
+    overrides: Partial<AgentRewindPreviewResult> = {}
+): AgentRewindPreviewResult {
+    return {
+        confirmationToken: "confirmation-token",
+        target,
+        targetPrompt: "Original prompt",
+        semanticLeafId: "leaf-a",
+        displayLeafId: "turn-a",
+        expectedSemanticLeafId: "leaf-a",
+        messageCount: 2,
+        fileCount: 1,
+        files: [],
+        coverageWarnings: [],
+        forceRequired: false,
+        hardBlocked: false,
+        ...overrides,
+    };
+}
+
+function makeRewindClient(overrides: Record<string, unknown> = {}) {
+    return {
+        listRewindPoints: vi.fn(async () => ({
+            points: [{ turnId: "turn-a", preview: "Original prompt", eligible: true }],
+            semanticLeafId: "leaf-a",
+            displayLeafId: "turn-a",
+        })),
+        previewRewind: vi.fn(async (input: AgentPreviewRewindInput) => makePreview(input.target)),
+        rewindTree: vi.fn(async () => ({
+            sessionMetadata: { id: "a", path: "/sessions/a.db", cwd: "/repo", createdAt: "now" },
+            semanticLeafId: "turn-a",
+            displayLeafId: "turn-a",
+            editorText: "restored draft",
+        })),
+        redoRewind: vi.fn(async () => ({
+            sessionMetadata: { id: "a", path: "/sessions/a.db", cwd: "/repo", createdAt: "now" },
+            semanticLeafId: "leaf-redone",
+            displayLeafId: "turn-redone",
+        })),
+        ...overrides,
+    } as any;
+}
+
+function renderRewindContent(client = makeRewindClient()) {
+    const model = makeModel();
+    const session = { id: "a", path: "/sessions/a.db", cwd: "/repo", createdAt: "now" };
+    act(() => model.selectSession(session));
+    render(
+        <Provider store={globalStore}>
+            <AgentContent
+                model={model}
+                client={client}
+                executionContext={{
+                    workspaceId: "workspace-1",
+                    workspaceDir: "/repo",
+                    connection: "",
+                    environment: {},
+                }}
+            />
+        </Provider>
+    );
+    act(() => {
+        hostProps.latest.onStateChange({
+            status: "idle",
+            queuedMessages: [],
+            commands: [],
+            rewindState: makeRewindState(),
+        });
+    });
+    return { client, model, session };
+}
 
 function makeModel(): WorkspaceAgentModel {
     return WorkspaceAgentModel.getInstance({
@@ -80,14 +251,303 @@ afterEach(async () => {
     cleanup();
     hostProps.skipReady = false;
     hostProps.simulateMissingSessionSelectorError = false;
+    hostProps.rejectSubmitWithRestore = false;
     hostProps.submitResult = true;
     hostProps.submitError = "";
     selectorProps.latest = null;
+    threadProps.latest = null;
+    rewindSelectorProps.latest = null;
+    rewindDialogProps.latest = null;
+    composerProps.setText.mockReset();
     vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
 describe("AgentContent", () => {
+    it("uses one rewind controller for message Revert and the slash selector path", async () => {
+        const { client } = renderRewindContent();
+
+        fireEvent.click(screen.getByRole("button", { name: "Message Revert" }));
+        await waitFor(() =>
+            expect(client.previewRewind).toHaveBeenCalledWith(
+                expect.objectContaining({ target: { kind: "rewind", targetTurnId: "turn-a" } })
+            )
+        );
+        expect(screen.getByTestId("rewind-preview").textContent).toContain("rewind:ready");
+
+        act(() => rewindDialogProps.latest.onCancel());
+        act(() => {
+            expect(hostProps.runtime.submit("/rewind")).toBe(true);
+        });
+        await waitFor(() => expect(screen.getByTestId("rewind-selector").textContent).toContain("Original prompt"));
+        fireEvent.click(screen.getByRole("button", { name: "Original prompt" }));
+
+        expect(client.previewRewind).toHaveBeenCalledTimes(1);
+        fireEvent.click(screen.getByRole("button", { name: "Complete reveal" }));
+        await waitFor(() => expect(client.previewRewind).toHaveBeenCalledTimes(2));
+        expect(threadProps.latest.revealTurnRequest).toBeUndefined();
+        expect(screen.getByTestId("rewind-preview").textContent).toContain("rewind:ready");
+    });
+
+    it("cancels a selector reveal whose target never mounts", async () => {
+        vi.useFakeTimers();
+        const { client } = renderRewindContent();
+
+        act(() => {
+            expect(hostProps.runtime.submit("/rewind")).toBe(true);
+        });
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Original prompt" }));
+        expect(screen.getByRole("button", { name: "Complete reveal" })).not.toBeNull();
+
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(5_000);
+        });
+
+        expect(screen.queryByRole("button", { name: "Complete reveal" })).toBeNull();
+        expect(client.previewRewind).not.toHaveBeenCalled();
+    });
+
+    it("confirms clean and force rewinds, cancels previews, and restores returned editor text", async () => {
+        const { client } = renderRewindContent();
+
+        await act(() => threadProps.latest.onRevertTurn("turn-a"));
+        fireEvent.click(screen.getByRole("button", { name: "Confirm normal" }));
+        await waitFor(() =>
+            expect(client.rewindTree).toHaveBeenCalledWith(expect.objectContaining({ mode: "normal" }))
+        );
+        await waitFor(() => expect(composerProps.setText).toHaveBeenCalledWith("restored draft"));
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    semanticLeafId: "turn-a",
+                    redo: {
+                        operationId: "clean-rewind",
+                        targetPrompt: "Original prompt",
+                        messageCount: 2,
+                        fileCount: 1,
+                        files: [],
+                    },
+                }),
+            });
+        });
+
+        await act(() => threadProps.latest.onRevertTurn("turn-a"));
+        fireEvent.click(screen.getByRole("button", { name: "Confirm force" }));
+        await waitFor(() =>
+            expect(client.rewindTree).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "force-drift" }))
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    semanticLeafId: "turn-a",
+                    redo: {
+                        operationId: "force-rewind",
+                        targetPrompt: "Original prompt",
+                        messageCount: 2,
+                        fileCount: 1,
+                        files: [],
+                    },
+                }),
+            });
+        });
+
+        await act(() => threadProps.latest.onRevertTurn("turn-a"));
+        fireEvent.click(screen.getByRole("button", { name: "Cancel preview" }));
+        expect(screen.queryByTestId("rewind-preview")).toBeNull();
+    });
+
+    it("restores authoritative redo above the composer, shares openRedo with /redo, and waits for session_state removal", async () => {
+        const { client } = renderRewindContent();
+        const redo: AgentRedoView = {
+            operationId: "operation-1",
+            targetPrompt: "Original prompt",
+            messageCount: 4,
+            fileCount: 1,
+            files: [],
+        };
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({ redo }),
+            });
+        });
+
+        const thread = screen.getByTestId("assistant-thread");
+        const dockSummary = screen.getByText("Reverted 4 messages · 1 file");
+        expect(
+            !!(dockSummary.compareDocumentPosition(screen.getByLabelText("Prompt")) & Node.DOCUMENT_POSITION_FOLLOWING)
+        ).toBe(true);
+
+        fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+        await waitFor(() =>
+            expect(client.previewRewind).toHaveBeenCalledWith(expect.objectContaining({ target: { kind: "redo" } }))
+        );
+        fireEvent.click(screen.getByRole("button", { name: "Cancel preview" }));
+
+        act(() => {
+            expect(hostProps.runtime.submit("/redo")).toBe(true);
+        });
+        await waitFor(() => expect(client.previewRewind).toHaveBeenCalledTimes(2));
+        fireEvent.click(screen.getByRole("button", { name: "Confirm normal" }));
+        await waitFor(() => expect(client.redoRewind).toHaveBeenCalledOnce());
+        expect(screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled")).toBe(true);
+        act(() => {
+            expect(hostProps.runtime.submit("/redo")).toBe(true);
+        });
+        expect(client.previewRewind).toHaveBeenCalledTimes(2);
+        expect(thread.contains(dockSummary)).toBe(true);
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState(),
+            });
+        });
+        expect(screen.queryByText("Reverted 4 messages · 1 file")).toBeNull();
+    });
+
+    it("hides session A host state synchronously when the controlled session switches to B", async () => {
+        const { model, session } = renderRewindContent();
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                sessionPath: session.path,
+                sessionRevision: hostProps.latest.sessionRevision,
+                rewindState: makeRewindState({
+                    redo: {
+                        operationId: "operation-a",
+                        targetPrompt: "Session A prompt",
+                        messageCount: 2,
+                        fileCount: 0,
+                        files: [],
+                    },
+                }),
+            });
+        });
+        expect(screen.getByText("Reverted 2 messages · 0 files")).not.toBeNull();
+
+        act(() => model.selectSession({ id: "b", path: "/sessions/b.db", cwd: "/repo", createdAt: "later" }));
+
+        expect(screen.queryByText("Reverted 2 messages · 0 files")).toBeNull();
+        expect(threadProps.latest.rewindableTurnIds.size).toBe(0);
+        await waitFor(() => expect(hostProps.latest.sessionMetadata?.path).toBe("/sessions/b.db"));
+    });
+
+    it("restores each composer request once and never carries a pending request across sessions", async () => {
+        const { model } = renderRewindContent();
+        const sessionPath = hostProps.latest.sessionMetadata.path;
+        const sessionRevision = hostProps.latest.sessionRevision;
+
+        act(() =>
+            hostProps.latest.onRestoreComposerText({
+                text: "session A draft",
+                sessionPath,
+                sessionRevision,
+            })
+        );
+        await waitFor(() => expect(composerProps.setText).toHaveBeenCalledTimes(1));
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "streaming",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState(),
+            });
+        });
+        expect(composerProps.setText).toHaveBeenCalledTimes(1);
+
+        composerProps.setText.mockClear();
+        act(() => {
+            hostProps.latest.onRestoreComposerText({
+                text: "stale session A draft",
+                sessionPath,
+                sessionRevision,
+            });
+            model.selectSession({ id: "b", path: "/sessions/b.db", cwd: "/repo", createdAt: "later" });
+        });
+        await waitFor(() => expect(hostProps.latest.sessionMetadata?.path).toBe("/sessions/b.db"));
+        expect(composerProps.setText).not.toHaveBeenCalled();
+    });
+
+    it("restores an immediately rejected submit using the dispatch-scoped payload", async () => {
+        renderRewindContent();
+        hostProps.rejectSubmitWithRestore = true;
+
+        await act(async () => {
+            await expect(hostProps.runtime.submit("immediate draft")).rejects.toThrow("send failed");
+        });
+
+        expect(composerProps.setText).toHaveBeenCalledOnce();
+        expect(composerProps.setText).toHaveBeenCalledWith("immediate draft");
+    });
+
+    it("consumes an accepted first-mint restore scope after the session selection batches with the failure", async () => {
+        const model = makeModel();
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={makeRewindClient()}
+                    executionContext={{
+                        workspaceId: "workspace-1",
+                        workspaceDir: "/repo",
+                        connection: "",
+                        environment: {},
+                    }}
+                />
+            </Provider>
+        );
+        const mintedSession = { id: "minted", path: "/sessions/minted.db", cwd: "/repo", createdAt: "now" };
+
+        act(() => {
+            hostProps.latest.onSessionChange(mintedSession);
+            hostProps.latest.onRestoreComposerText({
+                text: "first draft",
+                sessionPath: mintedSession.path,
+                sessionRevision: 1,
+            });
+        });
+
+        await waitFor(() => expect(hostProps.latest.sessionMetadata).toEqual(mintedSession));
+        expect(composerProps.setText).toHaveBeenCalledOnce();
+        expect(composerProps.setText).toHaveBeenCalledWith("first draft");
+    });
+
+    it("ignores an old preview result after switching sessions", async () => {
+        let resolvePreview!: (preview: AgentRewindPreviewResult) => void;
+        const previewPromise = new Promise<AgentRewindPreviewResult>((resolve) => {
+            resolvePreview = resolve;
+        });
+        const { client, model } = renderRewindContent(makeRewindClient({ previewRewind: vi.fn(() => previewPromise) }));
+
+        fireEvent.click(screen.getByRole("button", { name: "Message Revert" }));
+        await waitFor(() => expect(client.previewRewind).toHaveBeenCalledOnce());
+        act(() => model.selectSession({ id: "b", path: "/sessions/b.db", cwd: "/repo", createdAt: "later" }));
+        await waitFor(() => expect(hostProps.latest.sessionMetadata?.path).toBe("/sessions/b.db"));
+        await act(async () => {
+            resolvePreview(makePreview({ kind: "rewind", targetTurnId: "turn-a" }));
+            await previewPromise;
+        });
+
+        expect(screen.queryByTestId("rewind-preview")).toBeNull();
+    });
+
     it("writes session changes to the model but keeps user errors component-local", () => {
         const model = makeModel();
         render(

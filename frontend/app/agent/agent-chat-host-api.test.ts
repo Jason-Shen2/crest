@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
 
+import { markSendErrorForComposerRestore } from "@/app/store/use-pi-chat";
 import { act, waitFor } from "@testing-library/react";
 import { createElement, useLayoutEffect } from "react";
 import { flushSync } from "react-dom";
@@ -53,6 +54,117 @@ function makeRewindState(hasRedo = false): AgentRewindSessionStateView {
 }
 
 describe("createAgentChatHostApi", () => {
+    it("does not restore text from a failed send after its session identity becomes stale", async () => {
+        const pending = deferred<boolean>();
+        let sessionRevision = 0;
+        const onRestoreComposerText = vi.fn();
+        const api = createAgentChatHostApi({
+            sendPrompt: vi.fn(() => pending.promise),
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: makeSession,
+            getSessionRevision: () => sessionRevision,
+            getWorkspaceDir: () => "/repo",
+            onRestoreComposerText,
+        });
+
+        const send = api.submit("session A draft") as Promise<boolean>;
+        sessionRevision = 1;
+        pending.reject(markSendErrorForComposerRestore(new Error("send failed"), "session A draft"));
+
+        await expect(send).rejects.toThrow("send failed");
+        expect(onRestoreComposerText).not.toHaveBeenCalled();
+    });
+
+    it("restores an ordinary failed send with its exact dispatch scope", async () => {
+        const pending = deferred<boolean>();
+        const session = makeSession();
+        const onRestoreComposerText = vi.fn();
+        const api = createAgentChatHostApi({
+            sendPrompt: vi.fn(() => pending.promise),
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: () => session,
+            getSessionRevision: () => 4,
+            getWorkspaceDir: () => "/repo",
+            onRestoreComposerText,
+        });
+
+        const send = api.submit("session draft") as Promise<boolean>;
+        pending.reject(markSendErrorForComposerRestore(new Error("send failed"), "session draft"));
+
+        await expect(send).rejects.toThrow("send failed");
+        expect(onRestoreComposerText).toHaveBeenCalledWith({
+            text: "session draft",
+            sessionPath: session.path,
+            sessionRevision: 4,
+        });
+    });
+
+    it("restores text when this send minted the first session before failing", async () => {
+        const pending = deferred<boolean>();
+        const mintedSession = { ...makeSession(), id: "minted", path: "/tmp/minted-session.jsonl" };
+        let currentSession: AgentSessionMeta | undefined;
+        let sessionRevision = 0;
+        const onRestoreComposerText = vi.fn();
+        const api = createAgentChatHostApi({
+            sendPrompt: vi.fn(() => pending.promise),
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: () => currentSession,
+            getSessionRevision: () => sessionRevision,
+            getWorkspaceDir: () => "/repo",
+            onRestoreComposerText,
+        });
+
+        const send = api.submit("first draft") as Promise<boolean>;
+        currentSession = mintedSession;
+        sessionRevision = 1;
+        pending.reject(markSendErrorForComposerRestore(new Error("send failed"), "first draft", mintedSession.path));
+
+        await expect(send).rejects.toThrow("send failed");
+        expect(onRestoreComposerText).toHaveBeenCalledOnce();
+        expect(onRestoreComposerText).toHaveBeenCalledWith({
+            text: "first draft",
+            sessionPath: mintedSession.path,
+            sessionRevision: 1,
+        });
+    });
+
+    it("does not restore a first-session failure after an empty to minted ABA transition", async () => {
+        const pending = deferred<boolean>();
+        const mintedSession = { ...makeSession(), id: "minted", path: "/tmp/minted-session.jsonl" };
+        const otherSession = { ...makeSession(), id: "other", path: "/tmp/other-session.jsonl" };
+        let currentSession: AgentSessionMeta | undefined;
+        let sessionRevision = 0;
+        const onRestoreComposerText = vi.fn();
+        const api = createAgentChatHostApi({
+            sendPrompt: vi.fn(() => pending.promise),
+            abort: vi.fn(),
+            getTurns: () => [],
+            getRuntimeApi: vi.fn(),
+            getSessionMetadata: () => currentSession,
+            getSessionRevision: () => sessionRevision,
+            getWorkspaceDir: () => "/repo",
+            onRestoreComposerText,
+        });
+
+        const send = api.submit("first draft") as Promise<boolean>;
+        currentSession = mintedSession;
+        sessionRevision = 1;
+        currentSession = otherSession;
+        sessionRevision = 2;
+        currentSession = mintedSession;
+        sessionRevision = 3;
+        pending.reject(markSendErrorForComposerRestore(new Error("send failed"), "first draft", mintedSession.path));
+
+        await expect(send).rejects.toThrow("send failed");
+        expect(onRestoreComposerText).not.toHaveBeenCalled();
+    });
+
     it("routes tree and fork slash commands to selector requests without sending prompts", () => {
         const sendPrompt = vi.fn(() => true);
         const onSelectorRequest = vi.fn();
@@ -131,6 +243,30 @@ describe("createAgentChatHostApi", () => {
         expect(sendPrompt).not.toHaveBeenCalled();
         expect(runCommand).not.toHaveBeenCalled();
     });
+
+    it.each(["busy", "frozen"] as const)(
+        "does not dispatch /redo while authoritative rewind state is %s",
+        async (key) => {
+            const rewindState = makeRewindState(true);
+            rewindState[key] = true;
+            const onRedoRequest = vi.fn(async () => {});
+            const api = createAgentChatHostApi({
+                sendPrompt: vi.fn(() => true),
+                abort: vi.fn(),
+                getTurns: () => [],
+                getRuntimeApi: vi.fn(),
+                getSessionMetadata: makeSession,
+                getRewindState: () => rewindState,
+                getWorkspaceDir: () => "/repo",
+                onRedoRequest,
+            });
+
+            expect(api.submit("/redo")).toBe(true);
+            await Promise.resolve();
+
+            expect(onRedoRequest).not.toHaveBeenCalled();
+        }
+    );
 
     it("reports the existing missing-session error for rewind without dispatching anything else", async () => {
         const sendPrompt = vi.fn(() => true);
@@ -935,6 +1071,70 @@ describe("createAgentChatHostApi", () => {
         await Promise.allSettled([freshReject.promise]);
         await Promise.resolve();
         expect(onUserError).toHaveBeenCalledWith("fresh clone error");
+    });
+
+    it("restores a first-send failure to the accepted mint before controlled props rerender", async () => {
+        const mintedSession = { ...makeSession(), id: "minted", path: "/tmp/minted-session.jsonl" };
+        const onSessionChange = vi.fn();
+        const onRestoreComposerText = vi.fn();
+        let hostApi: AgentChatHostApi | undefined;
+        const runtimeClient = {
+            createSession: vi.fn(async () => mintedSession),
+            getSessionState: vi.fn(async () => ({
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+                commands: [],
+            })),
+            send: vi.fn(async () => {
+                throw new Error("send failed");
+            }),
+            abort: vi.fn(),
+            subscribe: vi.fn(() => () => {}),
+            listReferencePoints: vi.fn(async () => []),
+            listContextState: vi.fn(async () => ({ drafts: [], contextReports: [] })),
+        };
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+        const root = createRoot(container);
+        await act(async () => {
+            root.render(
+                createElement(AgentChatHost, {
+                    runtimeClient: runtimeClient as any,
+                    executionContext: {
+                        workspaceId: "workspace-1",
+                        workspaceDir: "/repo",
+                        connection: "",
+                        environment: {},
+                    },
+                    sessionRevision: 0,
+                    modelSelection: { provider: "openai", model: "gpt-test" },
+                    onSessionChange,
+                    onRestoreComposerText,
+                    onReady: (api) => {
+                        hostApi = api;
+                    },
+                })
+            );
+        });
+        await waitFor(() => expect(hostApi).toBeDefined());
+
+        await expect(hostApi?.submit("first draft")).rejects.toThrow("send failed");
+
+        expect(onSessionChange).toHaveBeenCalledWith(mintedSession);
+        expect(onRestoreComposerText).toHaveBeenCalledWith({
+            text: "first draft",
+            sessionPath: mintedSession.path,
+            sessionRevision: 1,
+        });
+
+        await act(async () => {
+            root.unmount();
+        });
+        container.remove();
     });
 
     it("fences a pending command result when a controlled clear commits before passive effects", async () => {
