@@ -89,7 +89,7 @@ This doc takes those decisions as given and specifies the Workspace-scoped runti
 │  │   Each runtime owns one AgentHarnessHost containing:        │  │
 │  │     - pi AgentHarness (the actual stateful agent)            │  │
 │  │     - NodeExecutionEnv (cwd, shell config — mutable)         │  │
-│  │     - prompt-input state (cwd, gitBranch, recentCmds)        │  │
+│  │     - prompt-input state (cwd, gitBranch)                    │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                    │
 │  Tools (task #10) — crest-specific TS tools, ported from           │
@@ -105,7 +105,7 @@ This doc takes those decisions as given and specifies the Workspace-scoped runti
               (via pi-ai providers in emain/ai/providers/)
 ```
 
-The crest-specific integration layer (`emain/agent/sessions.ts`, `build-system-prompt.ts`, `harness-factory.ts`) is intentionally **small** — targeting under 250 LOC total. The bulk of the work lives in pi (vendored as in-tree code) and we wire it to crest's pane / cwd / block model.
+The crest-specific integration layer (`emain/agent/sessions.ts`, `build-system-prompt.ts`, `harness-factory.ts`) is intentionally **small** — targeting under 250 LOC total. The bulk of the work lives in pi (vendored as in-tree code) and we wire it to crest's workspace and session model.
 
 ---
 
@@ -256,14 +256,14 @@ Pi's `NodeExecutionEnv.cwd: string` is a public mutable field (`emain/agent/harn
 ```ts
 interface AgentHarnessHost {
     readonly harness: AgentHarness;
-    /** Update mutable pane state. Call before each send if anything changed. */
+    /** Update mutable workspace state. Call before each send if anything changed. */
     update(inputs: SystemPromptInputs): void;
 }
 ```
 
 `update()` does two things:
 1. Mutates `env.cwd` so tool execution targets the new directory
-2. Updates the closure that `systemPrompt: () => buildSystemPrompt(...)` reads, so the next turn's prompt reflects the new cwd / gitBranch / recentCmds
+2. Updates the closure that `systemPrompt: () => buildSystemPrompt(...)` reads, so the next turn's prompt reflects the new cwd / gitBranch
 
 This is the only "wrapper" we add around AgentHarness, and it exists strictly to expose the env mutation seam that pi otherwise leaves implicit. It is not an "AgentRuntime" — it does not re-implement subscribe / send / abort / message storage. Those are direct AgentHarness methods.
 
@@ -288,7 +288,7 @@ See §5.2.
 
 ### 6.3 Subsequent sends (cwd may have changed)
 
-1. Renderer IPC: `agent:send({sessionMetadata, text, currentContext: {cwd, gitBranch, recentCmds}})`
+1. Renderer IPC: `agent:send({sessionMetadata, text, context: {workspaceId, workspaceDir, sessionPath?, environment, gitBranch?}})`
 2. Main resolves the current model, reasoning level, auth resolver, tool permissions, and prompt inputs
 3. `AgentRuntimeRegistry.getOrCreate(sessionMetadata.path, createRuntime)` reuses or constructs the session runtime
 4. `runtime.sendWithExecutionConfig(text, config)` serializes config application with send dispatch, then routes prompt vs follow-up

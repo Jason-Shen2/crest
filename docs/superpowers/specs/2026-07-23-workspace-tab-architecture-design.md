@@ -648,19 +648,18 @@ Agent 必须在零 Terminal Tab 时也能执行 shell/tool。
 interface AgentExecutionContext {
     workspaceId: string;
     workspaceDir: string;
-    sessionPath: string;
-    connection: string;
+    sessionPath?: string;
     environment: Record<string, string>;
-    preferredTerminalTabId?: string;
+    gitBranch?: string;
 }
 ```
 
 规则：
 
-- `workspaceDir` 和 connection 由 workspace/session 配置决定；
+- `workspaceDir` 由 workspace 配置决定，`gitBranch` 由 workspace-level provider 提供；
 - Agent 自己的 shell/PTY host 归 `AgentSessionRuntime`；
-- `preferredTerminalTabId` 只是可选展示或发送目标；
-- preferred Terminal 被关闭时，Agent 继续运行并清除该引用；
+- Terminal connection、命令历史和选中状态不属于 Agent 执行上下文；
+- Terminal 创建、切换或关闭不得修改 Agent 状态或 revision；
 - Agent 工具不得通过 `staticTabId`、Block meta 或 backing TerminalModel 获取必需上下文。
 
 ### 10.5 移除旧 Agent Tab
