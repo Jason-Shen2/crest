@@ -685,3 +685,11 @@ one-step Redo are Crest-owned.
 **Trade-offs:** Catalog is static (vs warp's proto-served Oz catalog) because crest doesn't have a backend catalog service and adding one would conflict with the BYO-API-key philosophy. Trade-off: model availability isn't backend-validated; a user picking a stale model gets the upstream provider's 404 instead of an early friendly error. Update cadence: in-repo PR to `ai-catalog.ts`. Reasoning is folded into the selection triple rather than a separate axis because most "models with reasoning" are really one model + a hint, not two models. POC stage: no migration script for existing legacy configs — users re-pick after upgrading.
 
 **Reference:** Full design doc at [`docs/ai-config-architecture.md`](./ai-config-architecture.md).
+
+### Workspace rewind rollout platform boundary
+
+Workspace rewind's first release is supported on Linux and macOS. Windows is
+an explicit hard-block, not a partially supported mode: the feature stays
+unavailable until owner-only checkpoint-store ACLs, reparse-safe
+inspection/apply, case-only replacement, and directory-fsync durability have
+production implementations and pass the same coordinator and UI gate.

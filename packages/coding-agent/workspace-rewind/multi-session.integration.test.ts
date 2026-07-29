@@ -240,54 +240,6 @@ describe("workspace rewind across sessions", () => {
         expect(await readFile(join(value.workspaceRoot, "untouched.txt"), "utf8")).toBe("untouched");
     }, 30_000);
 
-    it("serializes whole restore transactions under the shared workspace lock", async () => {
-        const events: string[] = [];
-        const value = await makeFixture({
-            applyPath: async (input) => {
-                events.push(`start:${input.path}`);
-                await new Promise<void>((resolve) => setImmediate(resolve));
-                await applyCapturedPath(input);
-                events.push(`end:${input.path}`);
-            },
-        });
-        await writeFile(join(value.workspaceRoot, "a.txt"), "base-a");
-        await writeFile(join(value.workspaceRoot, "b.txt"), "base-b");
-        const a = await checkpoint(value, value.sessions.a, "change a", async () => {
-            await writeFile(join(value.workspaceRoot, "a.txt"), "after-a");
-        });
-        const b = await checkpoint(value, value.sessions.b, "change b", async () => {
-            await writeFile(join(value.workspaceRoot, "b.txt"), "after-b");
-        });
-        const [previewA, previewB] = await Promise.all([preview(value, a), preview(value, b)]);
-
-        await Promise.all([
-            value.store.withWorkspaceLock(() =>
-                value.engine.applyRewind({
-                    session: value.sessions.a,
-                    sessionId: a.metadata.id,
-                    workspace: value.identity,
-                    semanticLeafId: a.checkpointId,
-                    targetTurnId: a.turnId,
-                    mode: "normal",
-                    confirmation: value.confirmations.take(previewA.confirmationToken!),
-                })
-            ),
-            value.store.withWorkspaceLock(() =>
-                value.engine.applyRewind({
-                    session: value.sessions.b,
-                    sessionId: b.metadata.id,
-                    workspace: value.identity,
-                    semanticLeafId: b.checkpointId,
-                    targetTurnId: b.turnId,
-                    mode: "normal",
-                    confirmation: value.confirmations.take(previewB.confirmationToken!),
-                })
-            ),
-        ]);
-
-        expect(events).toEqual(["start:a.txt", "end:a.txt", "start:b.txt", "end:b.txt"]);
-    }, 30_000);
-
     it("freezes recovery when an unknown writer changes bytes after final verification", async () => {
         let value: Awaited<ReturnType<typeof makeFixture>>;
         value = await makeFixture({

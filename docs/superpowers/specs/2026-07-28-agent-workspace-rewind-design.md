@@ -1070,10 +1070,13 @@ normal/Force/stale-preview behavior, unknown-write recovery freeze, tool-
 independent turn boundaries, active PTY gaps, Git/non-Git parity and untouched
 user Git metadata, renderer-to-main preview/apply/Redo/reload behavior, crash
 gaps, quota owners and purge, and conversation-only `/tree`. The CI matrix runs
-the full rewind package plus coordinator and UI suites on Linux, macOS, and
-Windows. It explicitly declares platform expectations for symlink privilege,
-case-only rename, atomic replace, and directory-fsync support; an unknown
-capability fails closed rather than weakening a restore assertion.
+the full rewind package plus coordinator and UI suites on Linux and macOS.
+Windows runs the platform-neutral contracts and explicit feature-unavailable
+and `windows-reparse-unsupported` assertions. Windows is not a supported
+first-release platform: owner-only store ACLs, reparse-safe inspection/apply,
+case-only replacement, and durable directory fsync must all gain production
+support before its full gate can be enabled. An unknown capability fails closed
+rather than weakening a restore assertion.
 
 ### Git runner
 
@@ -1197,7 +1200,9 @@ capability fails closed rather than weakening a restore assertion.
 
 The implementation is gated by the exact internal environment value
 `CREST_AGENT_WORKSPACE_REWIND=1`; every other value is disabled. The default
-remains off until the three-platform matrix is consistently green. The store
+remains off until the Linux and macOS supported-platform matrix is consistently
+green. Windows remains explicitly unavailable for the first release; setting
+the flag does not bypass its store or filesystem capability hard-blocks. The store
 path is
 `<wave-data>/agent-checkpoints/workspaces/<workspace-identity>-<incarnation>/repo.git`
 and its 5 GiB soft quota, owner cleanup, confirmed trashed-session purge,
@@ -1212,10 +1217,11 @@ rollout contract—not operational suggestions.
 4. Add the message-side Revert action, shared file preview, conflict/Force
    Revert states, persistent Redo dock, `/rewind`, and `/redo` together so every
    entry point ships with identical safety behavior.
-5. Enable by default after storage growth, cross-platform, crash recovery, and
-   multi-session stress tests pass on Linux, macOS, and Windows. The platform
-   matrix explicitly covers symlink support, case-only rename, atomic replace,
-   and directory-fsync differences.
+5. Enable by default on Linux and macOS after storage growth, crash recovery,
+   and multi-session stress tests pass. Keep Windows unavailable until
+   owner-only store ACLs, reparse-safe inspection/apply, case-only rename,
+   atomic replace, and directory-fsync durability have production
+   implementations and a complete supported-platform gate.
 
 ## Alternatives Rejected
 

@@ -154,13 +154,17 @@ function pathChanges(checkpoint: WorkspaceCheckpointV1): string[] {
 }
 
 describe("turn-boundary workspace capture is tool-independent", () => {
-    it("captures bash, hosted PTY, CLI-subagent, and unknown future-tool writes without tool metadata", async () => {
+    it("captures shell, PTY-shaped direct, CLI child-process, and unknown future writes without metadata", async () => {
         const value = await makeFixture("writers");
         const checkpoint = await runTurn(
             value,
             "all-writers",
             async () => {
                 await execFileAsync("sh", ["-c", "printf bash > bash.txt"], { cwd: value.workspaceRoot });
+                // This fixture exercises the checkpoint authority boundary, not
+                // node-pty transport. Production PTY/CLI wiring is covered by
+                // emain/agent-tools/agent-pty-host.test.ts and
+                // emain/agent-tools/spawn-cli-agent.test.ts.
                 await writeFile(join(value.workspaceRoot, "pty.txt"), "hosted-pty");
                 await execFileAsync(process.execPath, ["-e", "require('fs').writeFileSync('cli.txt','subagent')"], {
                     cwd: value.workspaceRoot,
@@ -198,6 +202,9 @@ describe("turn-boundary workspace capture is tool-independent", () => {
     }, 30_000);
 
     it("marks the checkpoint unavailable while a transferred hosted PTY remains active", async () => {
+        // `hasRunningHostedCommands` is the production checkpoint-manager
+        // boundary owned by AgentPtyHost; its runtime wiring has a dedicated
+        // test in emain/agent-tools/agent-pty-host.test.ts.
         const value = await makeFixture("active-pty");
         value.setHostedPtyRunning(true);
         const checkpoint = await runTurn(value, "active-pty", () =>

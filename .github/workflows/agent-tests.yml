@@ -35,6 +35,7 @@ on:
             - "tsconfig.json"
             - "vitest.config.ts"
             - "vitest.slim.config.ts"
+            - ".github/workflows/agent-tests.yml"
     push:
         branches:
             - main
@@ -62,21 +63,14 @@ jobs:
             - name: Run vitest
               run: npx vitest run
 
-    workspace-rewind:
-        name: ${{ matrix.os }} (${{ matrix.capability_profile }})
+    workspace-rewind-posix:
+        name: ${{ matrix.os }} (supported POSIX gate)
         strategy:
             fail-fast: false
             matrix:
-                include:
-                    - os: ubuntu-latest
-                      capability_profile: posix-case-sensitive
-                      capability_blockers: "symlink=required;case-only-rename=case-sensitive;atomic-replace=required;directory-fsync=required"
-                    - os: macos-latest
-                      capability_profile: posix-case-runtime
-                      capability_blockers: "symlink=required;case-only-rename=filesystem-dependent;atomic-replace=required;directory-fsync=required"
-                    - os: windows-latest
-                      capability_profile: windows
-                      capability_blockers: "symlink=privilege-dependent;case-only-rename=required;atomic-replace=required;directory-fsync=unsupported-fail-closed"
+                os:
+                    - ubuntu-latest
+                    - macos-latest
         runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@v6
@@ -90,19 +84,6 @@ jobs:
             - name: npm ci
               run: npm ci --no-audit --no-fund
 
-            - name: Declare workspace-rewind capability blockers
-              shell: bash
-              run: |
-                  echo "Capability profile: ${{ matrix.capability_profile }}"
-                  echo "Expected blockers: ${{ matrix.capability_blockers }}"
-
-            - name: Run workspace-rewind capability contracts
-              run: >-
-                  npx vitest run
-                  packages/coding-agent/workspace-rewind/filesystem-apply.test.ts
-                  packages/coding-agent/workspace-rewind/workspace-identity.test.ts
-                  packages/coding-agent/workspace-rewind/durability.test.ts
-
             - name: Run focused workspace-rewind, coordinator, and UI gate
               run: >-
                   npx vitest run
@@ -112,3 +93,34 @@ jobs:
                   emain/agent-ipc.test.ts
                   frontend/app/agent/agent-content.test.tsx
                   frontend/app/agent/agent-chat-host.test.tsx
+
+    workspace-rewind-windows-capability:
+        name: windows-latest (explicit unsupported capability gate)
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@v6
+
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: package-lock.json
+
+            - name: npm ci
+              run: npm ci --no-audit --no-fund
+
+            - name: Run platform-neutral workspace-rewind contracts
+              run: >-
+                  npx vitest run
+                  packages/coding-agent/workspace-rewind/api-validation.test.ts
+                  packages/coding-agent/workspace-rewind/confirmation-token.test.ts
+                  packages/coding-agent/workspace-rewind/path-codec.test.ts
+                  packages/coding-agent/workspace-rewind/restore-plan.test.ts
+                  packages/coding-agent/workspace-rewind/session-state.test.ts
+                  packages/coding-agent/workspace-rewind/validation.test.ts
+
+            - name: Assert Windows feature and reparse hard-blocks
+              run: >-
+                  npx vitest run
+                  emain/agent-rewind.e2e.test.ts
+                  -t "exposes the typed Windows rollout hard-block before inspect or apply"
