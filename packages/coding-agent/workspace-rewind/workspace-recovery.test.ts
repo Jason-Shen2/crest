@@ -148,9 +148,11 @@ async function fixture(input: {
                     : undefined
         ),
     };
-    const apply = vi.fn(async ({ target: next }: { target: CapturedPathStateV1 }) => {
-        input.live = next;
-    });
+    const apply = vi.fn(
+        async ({ target: next }: { expectedCurrent: CapturedPathStateV1; target: CapturedPathStateV1 }) => {
+            input.live = next;
+        }
+    );
     const recovery = new WorkspaceRecovery({
         workspace: store.identity,
         store,
@@ -204,7 +206,11 @@ describe("workspace recovery", () => {
 
             expect(value.apply).toHaveBeenCalledOnce();
             expect(value.apply).toHaveBeenCalledWith(
-                expect.objectContaining({ path: "file.txt", target: value.states.pre })
+                expect.objectContaining({
+                    path: "file.txt",
+                    expectedCurrent: value.states.target,
+                    target: value.states.pre,
+                })
             );
             await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
         }
@@ -458,7 +464,11 @@ describe("workspace recovery", () => {
         uncommitted.input.live = uncommitted.states.target;
         await uncommitted.recovery.ensureRecovered(uncommitted.recovery.workspace);
         expect(uncommitted.apply).toHaveBeenCalledWith(
-            expect.objectContaining({ path: "file.txt", target: uncommitted.states.pre })
+            expect.objectContaining({
+                path: "file.txt",
+                expectedCurrent: uncommitted.states.target,
+                target: uncommitted.states.pre,
+            })
         );
 
         const unexpected = await fixture({ phase: "committing_session", live: "unknown", leaf: "other-leaf" });

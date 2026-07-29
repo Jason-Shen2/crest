@@ -31,11 +31,23 @@ import {
 } from "./filesystem-apply";
 import type { CapturedPathStateV1 } from "./types";
 
+const AbsentState = { state: "absent" } as const;
+
 function oid(bytes: Buffer): string {
     return createHash("sha1")
         .update(Buffer.from(`blob ${bytes.length}\0`))
         .update(bytes)
         .digest("hex");
+}
+
+function fileState(bytes: Buffer | string, executable = false): CapturedPathStateV1 {
+    const value = typeof bytes === "string" ? Buffer.from(bytes) : bytes;
+    return { state: "file", oid: oid(value), executable };
+}
+
+function symlinkState(bytes: Buffer | string): CapturedPathStateV1 {
+    const value = typeof bytes === "string" ? Buffer.from(bytes) : bytes;
+    return { state: "symlink", oid: oid(value) };
 }
 
 function progress(operationId = "operation-1"): WorkspacePathApplyProgress {
@@ -71,6 +83,7 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "src/run.sh",
+            expectedCurrent: AbsentState,
             target: { state: "file", oid: oid(text), executable: true },
             readBlob: blobReader([text, binary]),
             progress: applyProgress,
@@ -78,6 +91,7 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "asset.bin",
+            expectedCurrent: AbsentState,
             target: { state: "file", oid: oid(binary), executable: false },
             readBlob: blobReader([text, binary]),
             progress: applyProgress,
@@ -100,6 +114,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: AbsentState,
                 target: { state: "file", oid: "a".repeat(64), executable: false },
                 readBlob,
                 progress: progress(),
@@ -116,12 +131,38 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "file",
+            expectedCurrent: fileState("old"),
             target: { state: "file", oid: oid(bytes), executable: false },
             readBlob: blobReader([bytes]),
             progress: progress("../unsafe / id"),
         });
 
         expect(await readFile(join(root, "file"), "utf8")).toBe("new");
+        expect(await readdir(root)).toEqual(["file"]);
+    });
+
+    it("rejects bytes that differ from the caller-confirmed current state before any side effect", async () => {
+        const root = await makeRoot();
+        const expected = Buffer.from("confirmed");
+        const thirdParty = Buffer.from("third party");
+        const target = Buffer.from("target");
+        await writeFile(join(root, "file"), thirdParty);
+        const applyProgress = progress();
+
+        await expect(
+            applyCapturedPath({
+                root,
+                path: "file",
+                expectedCurrent: { state: "file", oid: oid(expected), executable: false },
+                target: { state: "file", oid: oid(target), executable: false },
+                readBlob: blobReader([target]),
+                progress: applyProgress,
+            })
+        ).rejects.toThrow(/changed|expected|confirmed/i);
+
+        expect(await readFile(join(root, "file"))).toEqual(thirdParty);
+        expect(applyProgress.createdParentDirectories).toEqual(new Set());
+        expect(applyProgress.onPathReplaced).not.toHaveBeenCalled();
         expect(await readdir(root)).toEqual(["file"]);
     });
 
@@ -133,6 +174,7 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "link",
+            expectedCurrent: fileState("old"),
             target: { state: "symlink", oid: oid(targetBytes) },
             readBlob: blobReader([targetBytes]),
             progress: progress(),
@@ -152,6 +194,8 @@ describe("workspace filesystem apply", () => {
             await applyCapturedPath({
                 root,
                 path,
+                expectedCurrent:
+                    path === "file" ? fileState("old") : path === "link" ? symlinkState("file") : AbsentState,
                 target: { state: "absent" },
                 readBlob: blobReader([]),
                 progress: applyProgress,
@@ -170,6 +214,7 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "missing/parent/file",
+            expectedCurrent: AbsentState,
             target: { state: "absent" },
             readBlob: blobReader([]),
             progress: applyProgress,
@@ -189,6 +234,7 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "existing/a/b/file",
+            expectedCurrent: AbsentState,
             target: { state: "file", oid: oid(bytes), executable: false },
             readBlob: blobReader([bytes]),
             progress: applyProgress,
@@ -208,6 +254,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: `existing/created/${tooLong}`,
+                expectedCurrent: AbsentState,
                 target: { state: "file", oid: oid(bytes), executable: false },
                 readBlob: blobReader([bytes]),
                 progress: progress(),
@@ -227,6 +274,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "created/parent/file",
+                expectedCurrent: AbsentState,
                 target: { state: "file", oid: oid(bytes), executable: false },
                 readBlob: blobReader([bytes]),
                 progress: applyProgress,
@@ -252,6 +300,7 @@ describe("workspace filesystem apply", () => {
                 applyCapturedPath({
                     root,
                     path,
+                    expectedCurrent: AbsentState,
                     target: { state: "file", oid: oid(bytes), executable: false },
                     readBlob: blobReader([bytes]),
                     progress: progress(),
@@ -262,6 +311,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "ignored",
+                expectedCurrent: AbsentState,
                 target: { state: "excluded", reason: "ignored" },
                 readBlob: blobReader([]),
                 progress: progress(),
@@ -295,6 +345,7 @@ describe("workspace filesystem apply", () => {
                     applyCapturedPath({
                         root,
                         path,
+                        expectedCurrent: AbsentState,
                         target: { state: "file", oid: oid(bytes), executable: false },
                         readBlob: blobReader([bytes]),
                         progress: progress(),
@@ -305,6 +356,7 @@ describe("workspace filesystem apply", () => {
                 applyCapturedPath({
                     root: "/",
                     path: "dev/null",
+                    expectedCurrent: AbsentState,
                     target: { state: "absent" },
                     readBlob: blobReader([]),
                     progress: progress(),
@@ -329,6 +381,7 @@ describe("workspace filesystem apply", () => {
                 applyCapturedPath({
                     root,
                     path,
+                    expectedCurrent: AbsentState,
                     target: { state: "file", oid: oid(bytes), executable: false },
                     readBlob: blobReader([bytes]),
                     progress: progress(),
@@ -338,6 +391,7 @@ describe("workspace filesystem apply", () => {
                 applyCapturedPath({
                     root,
                     path,
+                    expectedCurrent: AbsentState,
                     target: { state: "absent" },
                     readBlob: blobReader([]),
                     progress: progress(),
@@ -357,6 +411,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: fileState(bytes),
                 target: { state: "absent" },
                 readBlob: blobReader([]),
                 progress: progress(),
@@ -375,6 +430,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "oversized",
+                expectedCurrent: AbsentState,
                 target: { state: "file", oid: "a".repeat(40), executable: false },
                 readBlob: async () => oversized,
                 progress: progress(),
@@ -384,6 +440,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "operation",
+                expectedCurrent: AbsentState,
                 target: { state: "absent" },
                 readBlob: blobReader([]),
                 progress: progress("x".repeat(129)),
@@ -405,6 +462,7 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "NAME",
+            expectedCurrent: fileState("probe"),
             target: { state: "file", oid: oid(bytes), executable: false },
             readBlob: blobReader([bytes]),
             progress: progress(),
@@ -423,6 +481,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "NAME",
+                expectedCurrent: fileState("old"),
                 target: { state: "file", oid: oid(bytes), executable: false },
                 readBlob: blobReader([bytes]),
                 progress: progress(),
@@ -450,6 +509,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "parent/file",
+                expectedCurrent: fileState("inside"),
                 target: { state: "file", oid: oid(bytes), executable: false },
                 readBlob: async () => {
                     await rename(join(root, "parent"), held);
@@ -481,6 +541,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: fileState(original),
                 target: target(replacement),
                 readBlob: blobReader([replacement]),
                 progress: progress(),
@@ -507,6 +568,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: fileState(original),
                 target: { state: "file", oid: oid(replacement), executable: false },
                 readBlob: blobReader([replacement]),
                 progress: progress(),
@@ -535,6 +597,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: fileState(original),
                 target: { state: "file", oid: oid(replacement), executable: false },
                 readBlob: blobReader([replacement]),
                 progress: progress(),
@@ -559,6 +622,7 @@ describe("workspace filesystem apply", () => {
             await applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: fileState(original),
                 target: { state: "file", oid: oid(replacement), executable: false },
                 readBlob: blobReader([replacement]),
                 progress: progress(),
@@ -606,6 +670,7 @@ describe("workspace filesystem apply", () => {
             await applyCapturedPath({
                 root,
                 path,
+                expectedCurrent: fileState(original),
                 target: { state: "file", oid: oid(replacement), executable: false },
                 readBlob: blobReader([replacement]),
                 progress: progress(operationId),
@@ -634,6 +699,7 @@ describe("workspace filesystem apply", () => {
             await applyCapturedPath({
                 root,
                 path,
+                expectedCurrent: AbsentState,
                 target: { state: "file", oid: oid(replacement), executable: false },
                 readBlob: blobReader([replacement]),
                 progress: progress(operationId),
@@ -656,6 +722,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "parent/file",
+                expectedCurrent: fileState("inside"),
                 target: { state: "file", oid: oid(bytes), executable: false },
                 readBlob: blobReader([bytes]),
                 progress: progress(),
@@ -682,6 +749,7 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "file",
+            expectedCurrent: AbsentState,
             target: { state: "file", oid: oid(bytes), executable: true },
             readBlob: blobReader([bytes]),
             progress: applyProgress,
@@ -718,6 +786,7 @@ describe("workspace filesystem apply", () => {
         await applyCapturedPath({
             root,
             path: "file",
+            expectedCurrent: fileState(original),
             target: { state: "file", oid: oid(replacement), executable: false },
             readBlob: blobReader([replacement]),
             progress: applyProgress,
@@ -759,6 +828,7 @@ describe("workspace filesystem apply", () => {
                 applyCapturedPath({
                     root,
                     path,
+                    expectedCurrent: AbsentState,
                     target: { state: "absent" as const },
                     readBlob: blobReader([]),
                     progress: progress(operationId),
@@ -768,6 +838,7 @@ describe("workspace filesystem apply", () => {
                 applyCapturedPath({
                     root,
                     path,
+                    expectedCurrent: AbsentState,
                     target: { state: "file" as const, oid: oid(bytes), executable: false },
                     readBlob: blobReader([bytes]),
                     progress: progress(operationId),
@@ -777,6 +848,7 @@ describe("workspace filesystem apply", () => {
                 applyCapturedPath({
                     root,
                     path,
+                    expectedCurrent: AbsentState,
                     target: { state: "file" as const, oid: oid(bytes), executable: false },
                     readBlob: async () => Buffer.from("wrong"),
                     progress: progress(operationId),
@@ -810,6 +882,7 @@ describe("workspace filesystem apply", () => {
             await applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: AbsentState,
                 target: { state: "file", oid: oid(bytes), executable: false },
                 readBlob: blobReader([bytes]),
                 progress: applyProgress,
@@ -837,6 +910,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: AbsentState,
                 target: { state: "file", oid: oid(bytes), executable: false },
                 readBlob: blobReader([bytes]),
                 progress: applyProgress,
@@ -861,6 +935,7 @@ describe("workspace filesystem apply", () => {
             applyCapturedPath({
                 root,
                 path: "file",
+                expectedCurrent: AbsentState,
                 target: { state: "file", oid: oid(bytes), executable: false },
                 readBlob: blobReader([bytes]),
                 progress: applyProgress,

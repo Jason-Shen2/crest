@@ -551,6 +551,110 @@ describe("AgentSessionRuntime — command operations", () => {
 
         await expect(owner.getLeafId()).resolves.toBe("leaf-1");
     });
+
+    it("returns the complete authoritative state while refreshing without replacing runtime subscriptions", async () => {
+        const fake = makeFakeHarness();
+        const question = user("persisted question");
+        const answer = assistant("persisted answer", "stop");
+        fake.session.getBranch.mockResolvedValue([
+            {
+                type: "message",
+                id: "question",
+                parentId: null,
+                timestamp: "2026-07-29T00:00:00.000Z",
+                message: question,
+            },
+            {
+                type: "message",
+                id: "answer",
+                parentId: "question",
+                timestamp: "2026-07-29T00:00:01.000Z",
+                message: answer,
+            },
+        ]);
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], {
+            workspaceRewind: { status: "enabled" },
+        });
+        const seen: unknown[] = [];
+        const unsubscribe = owner.subscribe((event) => seen.push(event));
+        const harnessListenerCount = fake.listenerCount();
+
+        const state = await owner.refreshFromPersistedBranch();
+
+        expect(state).toEqual(owner.getSessionState());
+        expect(state).toMatchObject({
+            messages: [question, answer],
+            turns: [
+                {
+                    turnId: "question",
+                    userMessage: question,
+                    responseMessages: [answer],
+                    status: "done",
+                },
+            ],
+            status: "idle",
+            workspaceRewind: { status: "enabled" },
+        });
+        expect(fake.listenerCount()).toBe(harnessListenerCount);
+        expect(seen).toHaveLength(1);
+        unsubscribe();
+    });
+
+    it("discards non-persisted completed commands only for an idle mutation refresh", async () => {
+        const fake = makeFakeHarness();
+        const completed: AgentPtySnapshot = {
+            commandId: "completed-command",
+            command: "printf done",
+            cwd: "/tmp",
+            tail: "done",
+            screen: {
+                rows: [{ text: "done", cells: [] }],
+                cursor: { row: 0, col: 4, visible: true, shape: "block", blink: false },
+                isAltScreenActive: false,
+            },
+            running: false,
+            exitCode: 0,
+            cols: 80,
+            rows: 24,
+            needsUserInput: false,
+        };
+        let commands = [completed];
+        const clearCompletedHistory = vi.fn(() => {
+            commands = [];
+        });
+        const ptyHost = {
+            start: vi.fn(),
+            read: vi.fn(),
+            write: vi.fn(),
+            resize: vi.fn(),
+            stop: vi.fn(),
+            getCommandPort: vi.fn(),
+            snapshots: vi.fn(() => commands),
+            hasRunningCommands: vi.fn(() => false),
+            clearCompletedHistory,
+            setOnUpdate: vi.fn(),
+            dispose: vi.fn(),
+        } as unknown as AgentPtyHost;
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { ptyHost });
+
+        const ordinaryRefresh = await owner.refreshFromPersistedBranch();
+        expect(clearCompletedHistory).not.toHaveBeenCalled();
+        expect(ordinaryRefresh.commands).toEqual([completed]);
+
+        const listener = vi.fn();
+        const unsubscribe = owner.subscribe(listener);
+        const harnessListenerCount = fake.listenerCount();
+
+        expect(owner.getSessionState().commands).toEqual([completed]);
+        const state = await owner.refreshFromPersistedBranch({ discardCompletedPtyHistory: true });
+
+        expect(clearCompletedHistory).toHaveBeenCalledOnce();
+        expect(state.commands).toEqual([]);
+        expect(owner.getSessionState().commands).toEqual([]);
+        expect(fake.listenerCount()).toBe(harnessListenerCount);
+        expect(listener).toHaveBeenCalledOnce();
+        unsubscribe();
+    });
 });
 
 describe("AgentSessionRuntime — authoritative context state", () => {
@@ -1190,6 +1294,7 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
                 getCommandPort: vi.fn(() => port),
                 snapshots: vi.fn(() => [snapshot]),
                 hasRunningCommands: vi.fn(() => snapshot.running),
+                clearCompletedHistory: vi.fn(),
                 setOnUpdate: vi.fn((listener: (snapshot: AgentPtySnapshot) => void) => {
                     onUpdate = listener;
                 }),

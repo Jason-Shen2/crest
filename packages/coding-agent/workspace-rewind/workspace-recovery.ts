@@ -62,6 +62,7 @@ export interface WorkspaceRecoveryOptions {
     applyPath?: (input: {
         operationId: string;
         path: string;
+        expectedCurrent: CapturedPathStateV1;
         target: CapturedPathStateV1;
         progress: WorkspacePathApplyProgress;
     }) => Promise<void>;
@@ -122,10 +123,11 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         this.withSessionLease = options.withSessionLease ?? (async (_sessionId, operation) => operation());
         this.applyPath =
             options.applyPath ??
-            (async ({ operationId, path, target, progress }) => {
+            (async ({ operationId, path, expectedCurrent, target, progress }) => {
                 await applyCapturedPath({
                     root: this.workspace.canonicalRoot,
                     path,
+                    expectedCurrent,
                     target,
                     readBlob: (oid) => this.store.readBlob(oid),
                     progress: { ...progress, operationId },
@@ -412,6 +414,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
             await this.applyPath({
                 operationId: classified.record.operationId,
                 path: path.journalPath.path,
+                expectedCurrent: path.journalPath.target,
                 target: path.journalPath.preState,
                 progress,
             });

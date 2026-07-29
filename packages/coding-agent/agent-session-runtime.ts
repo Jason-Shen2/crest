@@ -32,6 +32,7 @@
 //
 // See docs/agent-rendering-architecture.md.
 
+import { buildSessionContext } from "@crest/agent/harness/session/session";
 import type {
     AgentHarnessEvent,
     AgentHarnessPreparedTurn,
@@ -90,6 +91,10 @@ export interface AgentSessionRuntimeState {
     contextReports: ContextProjectionReport[];
     commands: AgentPtySnapshot[];
     workspaceRewind: AgentWorkspaceRewindState;
+}
+
+export interface AgentSessionRefreshOptions {
+    discardCompletedPtyHistory?: boolean;
 }
 
 export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
@@ -545,9 +550,13 @@ export class AgentSessionRuntime {
         }
     }
 
-    async refreshFromPersistedBranch(): Promise<void> {
+    async refreshFromPersistedBranch(options: AgentSessionRefreshOptions = {}): Promise<AgentSessionRuntimeState> {
         await this.rebuildFromCurrentBranch();
+        if (options.discardCompletedPtyHistory) {
+            this.ptyHost.clearCompletedHistory();
+        }
         this.emitSessionState();
+        return this.getSessionState();
     }
 
     async startHostedCommand(
@@ -798,9 +807,7 @@ export class AgentSessionRuntime {
 
     private async rebuildFromCurrentBranch(): Promise<void> {
         const entries = await this.host.session.getBranch();
-        this.messages = entries
-            .filter((entry): entry is Extract<SessionTreeEntry, { type: "message" }> => entry.type === "message")
-            .map((entry) => entry.message as AgentMessage);
+        this.messages = buildSessionContext(entries).messages;
         this.turns = buildPersistedTurnsFromSessionEntries(entries);
         this.steerQueue = [];
         this.followUpQueue = [];

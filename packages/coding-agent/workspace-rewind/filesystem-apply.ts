@@ -171,6 +171,7 @@ export function workspaceFilesystemApplyPlatformSupport(
 export async function applyCapturedPath(input: {
     root: string;
     path: string;
+    expectedCurrent: CapturedPathStateV1;
     target: CapturedPathStateV1;
     readBlob: (oid: string) => Promise<Buffer>;
     progress: WorkspacePathApplyProgress;
@@ -183,7 +184,12 @@ export async function applyCapturedPath(input: {
     if (target.state === "excluded") {
         throw new Error("Programming error: excluded workspace paths cannot be applied");
     }
+    const expectedCurrent = input.expectedCurrent;
+    if (expectedCurrent.state === "excluded") {
+        throw new Error("Programming error: excluded workspace paths cannot be an apply precondition");
+    }
     validateTargetState(target);
+    validateTargetState(expectedCurrent);
     validateProgress(input.progress);
     const canonicalRoot = resolve(input.root);
     validateRelativePath(canonicalRoot, input.path);
@@ -193,7 +199,12 @@ export async function applyCapturedPath(input: {
     });
     const artifactPathList = Object.values(artifactPaths);
     try {
-        await applyCapturedPathOperational({ ...input, target }, canonicalRoot, artifactPaths, artifactPathList);
+        await applyCapturedPathOperational(
+            { ...input, target, expectedCurrent },
+            canonicalRoot,
+            artifactPaths,
+            artifactPathList
+        );
     } catch (error) {
         throw withArtifactScope(error, artifactPathList);
     }
@@ -303,6 +314,7 @@ async function applyCapturedPathOperational(
     input: {
         root: string;
         path: string;
+        expectedCurrent: Exclude<CapturedPathStateV1, { state: "excluded" }>;
         target: Exclude<CapturedPathStateV1, { state: "excluded" }>;
         readBlob: (oid: string) => Promise<Buffer>;
         progress: WorkspacePathApplyProgress;
@@ -321,7 +333,7 @@ async function applyCapturedPathOperational(
         : input.path;
     validateRelativePath(canonicalRoot, inspectionPath);
     const live = await inspectLivePath(canonicalRoot, inspectionPath);
-    assertPreflightAllowed(live, input.target, artifactPathList);
+    assertPreflightAllowed(live, input.expectedCurrent, artifactPathList);
     const blob = input.target.state === "absent" ? Buffer.alloc(0) : await input.readBlob(input.target.oid);
     validateBlob(input.target, blob);
     const rootState = await lstat(canonicalRoot, { bigint: true });
@@ -343,7 +355,7 @@ async function applyCapturedPathOperational(
             rootIdentity: directoryIdentity(rootState),
             path: input.path,
             target: input.target,
-            expectedLive: liveAsCaptured(live),
+            expectedLive: input.expectedCurrent,
             operationId: input.progress.operationId,
             artifactPaths,
             blob,
@@ -478,7 +490,7 @@ function validateCanonicalRelativePath(path: string): void {
 
 function assertPreflightAllowed(
     live: LiveCapturedPathState,
-    target: CapturedPathStateV1,
+    expectedCurrent: Exclude<CapturedPathStateV1, { state: "excluded" }>,
     artifactPaths: readonly string[]
 ): void {
     const progress = { artifactPaths };
@@ -491,24 +503,17 @@ function assertPreflightAllowed(
     if (live.state === "directory") {
         throw new WorkspacePathApplyError("Workspace path has a file-directory collision", progress);
     }
-    const expected = liveAsCaptured(live);
-    const classification = classifyLivePath({ live, expected, target });
+    const classification = classifyLivePath({
+        live,
+        expected: expectedCurrent,
+        target: expectedCurrent,
+    });
     if (classification.conflict !== "none") {
-        throw new WorkspacePathApplyError(`Workspace path is blocked: ${classification.reason}`, progress);
+        throw new WorkspacePathApplyError(
+            `Workspace path changed from its caller-confirmed current state: ${classification.reason}`,
+            progress
+        );
     }
-}
-
-function liveAsCaptured(live: LiveCapturedPathState): Exclude<CapturedPathStateV1, { state: "excluded" }> {
-    if (live.state === "absent") {
-        return { state: "absent" };
-    }
-    if (live.state === "file") {
-        return { state: "file", oid: live.oid, executable: live.executable };
-    }
-    if (live.state === "symlink") {
-        return { state: "symlink", oid: live.oid };
-    }
-    throw new WorkspacePathApplyError("Workspace path cannot be represented as a captured path");
 }
 
 function validateBlob(target: Exclude<CapturedPathStateV1, { state: "excluded" }>, blob: Buffer): void {
@@ -917,6 +922,9 @@ async function main(packet) {
             let created = false;
             let before = existing;
             if (!before) {
+                if (input.expectedLive.state !== "absent") {
+                    throw new Error("workspace path disappeared before apply");
+                }
                 if (input.target.state === "absent") return;
                 await fsp.mkdir(segment, { mode: 0o700 });
                 before = await fsp.lstat(segment, { bigint: true });

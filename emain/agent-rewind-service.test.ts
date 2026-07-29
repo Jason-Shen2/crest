@@ -1,0 +1,295 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import type { JsonlSessionMetadata, SessionTreeEntry } from "@crest/agent/harness/types";
+import { describe, expect, it, vi } from "vitest";
+
+import { RewindConfirmationRegistry } from "@crest/coding-agent/workspace-rewind/confirmation-token";
+import type { RestorePlanV1 } from "@crest/coding-agent/workspace-rewind/restore-plan";
+import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "@crest/coding-agent/workspace-rewind/types";
+import { AgentRewindService } from "./agent-rewind-service";
+
+const Identity = "1".repeat(64);
+const Incarnation = "2".repeat(64);
+const Metadata: JsonlSessionMetadata = {
+    id: "session-1",
+    cwd: "/workspace",
+    path: "/sessions/session-1.db",
+    createdAt: "2026-07-29T00:00:00.000Z",
+};
+const Workspace = {
+    canonicalRoot: "/workspace",
+    workspaceIdentity: Identity,
+    workspaceIncarnation: Incarnation,
+    storeKey: "workspace",
+    ancestorIdentityChain: [],
+};
+const Snapshot = {
+    id: "a".repeat(40),
+    tree: "b".repeat(40),
+    scopeManifest: "c".repeat(40),
+    workspaceIdentity: Identity,
+    workspaceIncarnation: Incarnation,
+};
+
+function plan(): RestorePlanV1 {
+    return {
+        kind: "rewind",
+        sessionId: Metadata.id,
+        workspaceIdentity: Identity,
+        workspaceIncarnation: Incarnation,
+        semanticLeafId: "checkpoint-1",
+        targetTurnId: "turn-1",
+        targetBoundaryId: null,
+        paths: [],
+        coverageWarnings: [],
+        forceRequired: false,
+        hardBlocked: false,
+    };
+}
+
+function branch(): SessionTreeEntry[] {
+    const checkpoint: WorkspaceCheckpointV1 = {
+        schemaVersion: 1,
+        status: "available",
+        originSessionId: Metadata.id,
+        turnId: "turn-1",
+        workspaceIdentity: Identity,
+        workspaceIncarnation: Incarnation,
+        before: Snapshot,
+        after: Snapshot,
+        changes: [],
+        coverage: {
+            complete: true,
+            eligibleEntryCount: 1,
+            newlyHashedBytes: 0,
+            exclusions: [],
+        },
+    };
+    return [
+        {
+            type: "message",
+            id: "turn-1",
+            parentId: null,
+            timestamp: "2026-07-29T00:00:00.000Z",
+            message: {
+                role: "user",
+                content: [
+                    { type: "text", text: "original " },
+                    { type: "image", data: "ignored", mimeType: "image/png" },
+                    { type: "text", text: "prompt" },
+                ],
+                timestamp: 0,
+            },
+        } as SessionTreeEntry,
+        {
+            type: "custom",
+            id: "checkpoint-1",
+            parentId: "turn-1",
+            timestamp: "2026-07-29T00:00:01.000Z",
+            customType: WorkspaceControlCustomTypes.checkpoint,
+            data: checkpoint,
+        },
+    ];
+}
+
+function harness() {
+    const order: string[] = [];
+    const confirmations = new RewindConfirmationRegistry();
+    const sessionEntries = branch();
+    const session = {
+        getEntries: vi.fn(async () => sessionEntries),
+        getEntry: vi.fn(async (id: string) => sessionEntries.find((entry) => entry.id === id)),
+        getLeafId: vi.fn(async () => "checkpoint-1"),
+        close: vi.fn(),
+    };
+    const registry = {
+        withRetainedSessionMutation: vi.fn(async (_path, _options, operation) => {
+            order.push("session-lease");
+            try {
+                return await operation({ path: Metadata.path, token: Symbol("lease") });
+            } finally {
+                order.push("release-session-lease");
+            }
+        }),
+    };
+    const store = {
+        withWorkspaceLock: vi.fn(async (operation) => {
+            order.push("workspace-lock");
+            try {
+                return await operation();
+            } finally {
+                order.push("release-workspace-lock");
+            }
+        }),
+    };
+    const previewResult = {
+        confirmationToken: "preview-token",
+        target: { kind: "rewind" as const, targetTurnId: "turn-1" },
+        targetPrompt: "original prompt",
+        semanticLeafId: "checkpoint-1",
+        displayLeafId: "turn-1",
+        expectedSemanticLeafId: "checkpoint-1",
+        messageCount: 1,
+        fileCount: 0,
+        files: [],
+        coverageWarnings: [],
+        forceRequired: false,
+        hardBlocked: false,
+    };
+    let publishState: (() => Promise<void>) | undefined;
+    const engine = {
+        previewRewind: vi.fn(async () => previewResult),
+        previewRedo: vi.fn(async () => ({ ...previewResult, target: { kind: "redo" as const } })),
+        applyRewind: vi.fn(async () => {
+            order.push("engine-apply");
+            await publishState?.();
+            return {
+                sessionMetadata: Metadata,
+                semanticLeafId: "operation-leaf",
+                displayLeafId: null,
+                editorText: "original prompt",
+            };
+        }),
+        applyRedo: vi.fn(async () => {
+            order.push("engine-redo");
+            await publishState?.();
+            return {
+                sessionMetadata: Metadata,
+                semanticLeafId: "redo-leaf",
+                displayLeafId: "checkpoint-1",
+            };
+        }),
+    };
+    const broadcaster = {
+        publishForLease: vi.fn(async () => {
+            order.push("broadcast");
+        }),
+    };
+    const service = new AgentRewindService({
+        registry: registry as never,
+        confirmations,
+        openSession: vi.fn(async () => session as never),
+        resolveWorkspace: vi.fn(async (input) => {
+            publishState = input.publishState;
+            return { workspace: Workspace, store: store as never, engine: engine as never };
+        }),
+        broadcaster: broadcaster as never,
+    });
+    return {
+        service,
+        confirmations,
+        session,
+        registry,
+        store,
+        engine,
+        broadcaster,
+        order,
+    };
+}
+
+describe("AgentRewindService", () => {
+    it("lists transaction-safe points from the authoritative raw leaf under the short lock order", async () => {
+        const value = harness();
+
+        const result = await value.service.listPoints({ sessionMetadata: Metadata });
+
+        expect(result).toEqual({
+            points: [
+                {
+                    turnId: "turn-1",
+                    preview: "original prompt",
+                    timestamp: "2026-07-29T00:00:00.000Z",
+                    eligible: true,
+                },
+            ],
+            semanticLeafId: "checkpoint-1",
+            displayLeafId: "turn-1",
+        });
+        expect(value.order).toEqual([
+            "session-lease",
+            "workspace-lock",
+            "release-workspace-lock",
+            "release-session-lease",
+        ]);
+    });
+
+    it.each(["rewind", "redo"] as const)("previews %s without safety, journal, or mutation writes", async (kind) => {
+        const value = harness();
+
+        await value.service.preview({
+            sessionMetadata: Metadata,
+            expectedSemanticLeafId: "checkpoint-1",
+            target: kind === "rewind" ? { kind, targetTurnId: "turn-1" } : { kind },
+        });
+
+        expect(kind === "rewind" ? value.engine.previewRewind : value.engine.previewRedo).toHaveBeenCalledOnce();
+        expect(value.engine.applyRewind).not.toHaveBeenCalled();
+        expect(value.engine.applyRedo).not.toHaveBeenCalled();
+        expect(value.order).toEqual([
+            "session-lease",
+            "workspace-lock",
+            "release-workspace-lock",
+            "release-session-lease",
+        ]);
+    });
+
+    it("consumes the confirmation inside both locks and broadcasts before releasing either lock", async () => {
+        const value = harness();
+        const token = value.confirmations.issue(plan());
+        const originalTake = value.confirmations.take.bind(value.confirmations);
+        vi.spyOn(value.confirmations, "take").mockImplementation((valueToken, now) => {
+            value.order.push("consume-token");
+            return originalTake(valueToken, now);
+        });
+
+        const result = await value.service.rewind({
+            sessionMetadata: Metadata,
+            expectedSemanticLeafId: "checkpoint-1",
+            targetTurnId: "turn-1",
+            mode: "normal",
+            confirmationToken: token,
+        });
+
+        expect(result.editorText).toBe("original prompt");
+        expect(value.order).toEqual([
+            "session-lease",
+            "workspace-lock",
+            "consume-token",
+            "engine-apply",
+            "broadcast",
+            "release-workspace-lock",
+            "release-session-lease",
+        ]);
+        expect(value.broadcaster.publishForLease).toHaveBeenCalledOnce();
+        expect(value.session.close).toHaveBeenCalledOnce();
+    });
+
+    it("offers redo only in normal mode and uses the same retained publication path", async () => {
+        const value = harness();
+        const redoPlan = { ...plan(), kind: "redo" as const, targetTurnId: undefined };
+        const token = value.confirmations.issue(redoPlan);
+
+        const result = await value.service.redo({
+            sessionMetadata: Metadata,
+            expectedSemanticLeafId: "checkpoint-1",
+            confirmationToken: token,
+        });
+
+        expect(result).toMatchObject({ semanticLeafId: "redo-leaf" });
+        expect(value.engine.applyRedo).toHaveBeenCalledWith(
+            expect.objectContaining({
+                semanticLeafId: "checkpoint-1",
+                confirmation: expect.objectContaining({ plan: expect.objectContaining({ kind: "redo" }) }),
+            })
+        );
+        expect(value.order).toEqual([
+            "session-lease",
+            "workspace-lock",
+            "engine-redo",
+            "broadcast",
+            "release-workspace-lock",
+            "release-session-lease",
+        ]);
+    });
+});

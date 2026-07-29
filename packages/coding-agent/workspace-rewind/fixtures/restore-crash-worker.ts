@@ -115,6 +115,7 @@ async function main(): Promise<void> {
         await applyCapturedPath({
             root: canonicalRoot,
             path: item.path,
+            expectedCurrent: item.preState,
             target: item.target,
             readBlob: (oid) => store.readBlob(oid),
             progress: {

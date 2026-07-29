@@ -74,6 +74,7 @@ describe("restore crash phase oracle", () => {
         await applyCapturedPath({
             root,
             path: "created/parent/file",
+            expectedCurrent: { state: "absent" },
             target,
             readBlob: async () => bytes,
             progress: {

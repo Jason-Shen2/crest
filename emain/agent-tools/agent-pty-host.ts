@@ -13,8 +13,8 @@ import {
     type AgentPtySnapshot,
 } from "@crest/coding-agent/agent-pty-host";
 import { AgentPtyRingBuffer } from "@crest/coding-agent/agent-pty-ring-buffer";
-import { AgentPtyScreen, type AgentPtyCursor, type AgentPtyScreenRow } from "./agent-pty-screen";
 import { getShellConfig, getShellEnv, killProcessTree } from "@crest/coding-agent/tools/_shell";
+import { AgentPtyScreen } from "./agent-pty-screen";
 
 const DefaultCols = 80;
 const DefaultRows = 24;
@@ -209,6 +209,16 @@ export class AgentPtyHost implements AgentPtyHostPort {
 
     hasRunningCommands(): boolean {
         return Array.from(this.entries.values()).some((entry) => entry.running);
+    }
+
+    clearCompletedHistory(): void {
+        if (this.hasRunningCommands()) {
+            throw new Error("completed PTY history can be cleared only while idle");
+        }
+        for (const [commandId, entry] of this.entries) {
+            this.cleanupEntryListeners(entry);
+            this.entries.delete(commandId);
+        }
     }
 
     setOnUpdate(listener: (snapshot: AgentPtySnapshot) => void): void {

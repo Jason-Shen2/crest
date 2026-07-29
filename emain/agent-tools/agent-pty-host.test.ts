@@ -57,8 +57,8 @@ vi.mock("node-pty", () => ({
     }),
 }));
 
-import * as nodePty from "node-pty";
 import type { AgentExecutionContext } from "@crest/coding-agent/agent-execution-context";
+import * as nodePty from "node-pty";
 import { AgentPtyHost } from "./agent-pty-host";
 
 function context(overrides: Partial<AgentExecutionContext> = {}): AgentExecutionContext {
@@ -173,6 +173,28 @@ describe("AgentPtyHost", () => {
         expect(() => host.read(first.commandId)).toThrow(/unknown/i);
         expect(host.read(second.commandId).running).toBe(false);
         expect(host.read(third.commandId).running).toBe(false);
+    });
+
+    it("clears completed command history while idle without killing a process", async () => {
+        const killTree = vi.fn();
+        const host = new AgentPtyHost({ killProcessTree: killTree });
+        const completed = await host.start("done", context());
+        spawned[0].exit(0);
+
+        host.clearCompletedHistory();
+
+        expect(host.snapshots()).toEqual([]);
+        expect(() => host.read(completed.commandId)).toThrow(/unknown/i);
+        expect(killTree).not.toHaveBeenCalled();
+    });
+
+    it("rejects completed-history mutation while a command is running", async () => {
+        const host = new AgentPtyHost({ killProcessTree: vi.fn() });
+        const running = await host.start("still running", context());
+
+        expect(() => host.clearCompletedHistory()).toThrow(/idle|running/i);
+        expect(host.read(running.commandId).running).toBe(true);
+        expect(host.snapshots()).toHaveLength(1);
     });
 
     it("removes failed launches from the registry", async () => {

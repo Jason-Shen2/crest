@@ -58,6 +58,7 @@ export interface AgentPtyHost {
     getCommandPort(commandId: string): AgentPtyCommandPort;
     snapshots(): AgentPtySnapshot[];
     hasRunningCommands(): boolean;
+    clearCompletedHistory(): void;
     setOnUpdate?(listener: (snapshot: AgentPtySnapshot) => void): void;
     dispose(): Promise<void>;
 }
@@ -76,6 +77,7 @@ export function makeUnavailableAgentPtyHost(): AgentPtyHost {
         getCommandPort: unavailable,
         snapshots: () => [],
         hasRunningCommands: () => false,
+        clearCompletedHistory: () => {},
         dispose: async () => {},
     };
 }
