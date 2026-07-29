@@ -1,6 +1,9 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { isAgentBackendCommandReadOnly } from "@crest/coding-agent/commands/registry";
+import type { AgentBackendCommandName } from "@crest/coding-agent/commands/types";
+
 export type AgentSlashCommandName =
     | "tree"
     | "fork"
@@ -65,4 +68,15 @@ export function resolveAgentSlashCommandRoute(input: string): AgentSlashCommandR
         command,
         argsText: (match[2] ?? "").trim(),
     };
+}
+
+export function isAgentSlashCommandReadOnly(input: string): boolean {
+    const route = resolveAgentSlashCommandRoute(input);
+    if (!route.handled) {
+        return false;
+    }
+    if (route.command === "model") {
+        return true;
+    }
+    return isAgentBackendCommandReadOnly(route.command as AgentBackendCommandName);
 }

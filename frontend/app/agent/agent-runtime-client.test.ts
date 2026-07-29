@@ -120,4 +120,68 @@ describe("AgentRuntimeClient", () => {
         expect(Object.isFrozen(client.identity)).toBe(true);
         expect("agent" in client).toBe(false);
     });
+
+    it("forwards only session identity, recovery action, and opaque purge ownership fields", async () => {
+        const agent = {
+            getWorkspaceRecovery: vi.fn(async () => undefined),
+            resolveWorkspaceRecovery: vi.fn(async () => undefined),
+            cleanupWorkspaceCheckpoints: vi.fn(async () => ({
+                removedUnownedBytes: 0,
+                quota: {
+                    status: "referenced-over-quota",
+                    usedBytes: 20,
+                    softQuotaBytes: 10,
+                    cleanupAvailable: true,
+                },
+            })),
+            listCheckpointStorageOwners: vi.fn(async () => ({ trashOwners: [] })),
+            purgeTrashedSession: vi.fn(async () => ({
+                purgedSessionId: "trash-a",
+                quota: {
+                    status: "ok",
+                    usedBytes: 0,
+                    softQuotaBytes: 10,
+                    cleanupAvailable: false,
+                },
+            })),
+        };
+        const identity = { workspaceId: "workspace-17", generation: 17 };
+        const sessionMetadata = { id: "session-a", path: "/sessions/a.db", cwd: "/repo" } as AgentSessionMeta;
+        const client = new AgentRuntimeClient(agent as never, identity);
+
+        await client.getWorkspaceRecovery({ sessionMetadata });
+        await client.resolveWorkspaceRecovery({
+            sessionMetadata,
+            operationId: "operation-a",
+            action: "abandon-current",
+            paths: ["src/renderer-must-not-send.ts"],
+            phase: "applying_files",
+            refName: "refs/crest/ops/renderer-must-not-send",
+        } as never);
+        await client.cleanupWorkspaceCheckpoints({ sessionMetadata });
+        await client.listCheckpointStorageOwners({ sessionMetadata });
+        await client.purgeTrashedSession({
+            sessionMetadata,
+            trashedSessionId: "trash-a",
+            confirmationToken: "opaque-token",
+            databasePath: "/sessions/.trash/a.db",
+            refName: "refs/crest/snapshots/renderer-must-not-send",
+        } as never);
+
+        expect(agent.getWorkspaceRecovery).toHaveBeenCalledWith(identity, { sessionMetadata });
+        expect(agent.resolveWorkspaceRecovery).toHaveBeenCalledWith(identity, {
+            sessionMetadata,
+            operationId: "operation-a",
+            action: "abandon-current",
+        });
+        expect(agent.cleanupWorkspaceCheckpoints).toHaveBeenCalledWith(identity, { sessionMetadata });
+        expect(agent.listCheckpointStorageOwners).toHaveBeenCalledWith(identity, { sessionMetadata });
+        expect(agent.purgeTrashedSession).toHaveBeenCalledWith(identity, {
+            sessionMetadata,
+            trashedSessionId: "trash-a",
+            confirmationToken: "opaque-token",
+        });
+        expect(JSON.stringify(agent.resolveWorkspaceRecovery.mock.calls)).not.toMatch(/phase|paths|classifier|refName/);
+        expect(JSON.stringify(agent.purgeTrashedSession.mock.calls)).not.toMatch(/databasePath|refName|refs\/crest/);
+    });
 });

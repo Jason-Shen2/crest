@@ -1,7 +1,17 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { AgentCommandInfo, ParsedAgentCommandInput } from "./types";
+import type { AgentBackendCommandName, AgentCommandInfo, ParsedAgentCommandInput } from "./types";
+
+const ReadOnlyAgentBackendCommands = new Set<AgentBackendCommandName>([
+    "tree",
+    "session",
+    "resume",
+    "info",
+    "copy",
+    "export",
+    "reload",
+]);
 
 const BuiltInAgentCommands: AgentCommandInfo[] = [
     {
@@ -100,6 +110,10 @@ const BuiltInAgentCommands: AgentCommandInfo[] = [
 
 export function getBuiltInAgentCommands(): AgentCommandInfo[] {
     return BuiltInAgentCommands.map((command) => ({ ...command, action: { ...command.action } }));
+}
+
+export function isAgentBackendCommandReadOnly(command: AgentBackendCommandName): boolean {
+    return ReadOnlyAgentBackendCommands.has(command);
 }
 
 export function parseAgentCommandInput(input: string): ParsedAgentCommandInput | undefined {

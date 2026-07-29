@@ -98,6 +98,8 @@ import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from 
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { registerWorkspaceCheckpointManager } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
 import { encodeDurableJson } from "@crest/coding-agent/workspace-rewind/durability";
+import { AgentRuntimeClient } from "../frontend/app/agent/agent-runtime-client";
+import type { PiAgentEvent } from "../frontend/app/store/use-pi-chat";
 import {
     _resetAgentIpcForTests,
     abortAgentSessionForIpc,
@@ -4597,6 +4599,32 @@ describe("agent-ipc command helpers", () => {
         };
         const resolveRecovery = vi.fn(async () => {});
         vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        vi.mocked(openAgentRewindFeature).mockResolvedValue({
+            state: "enabled",
+            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
+            store: {
+                identity: {
+                    canonicalRoot: identity.workspaceDir,
+                    workspaceIdentity: "7".repeat(64),
+                    workspaceIncarnation: "8".repeat(64),
+                    storeKey: "recovery-resolution",
+                    ancestorIdentityChain: [],
+                },
+                verifyOwnedSnapshot: vi.fn(async () => {}),
+                getQuotaStatus: vi.fn(async () => ({
+                    status: "ok",
+                    usedBytes: 0,
+                    referencedBytes: 0,
+                    softQuotaBytes: 10,
+                })),
+            },
+        } as never);
+        installAgentWorkspaceRecoveryGate({
+            scanBeforeIpcRegistration: async () => {},
+            ensureRecoveredOnce: async () => {},
+            assertWorkspaceWritable: async () => {},
+            probeFrozenDiagnostic: async () => undefined,
+        });
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
             loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
@@ -4633,5 +4661,373 @@ describe("agent-ipc command helpers", () => {
             })
         ).resolves.toBeUndefined();
         expect(resolveRecovery).toHaveBeenCalledOnce();
+    });
+
+    it("allows frozen read commands and tree inspection while rejecting command and navigation mutations", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-frozen-command-access-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        await session.appendMessage(user("inspect while frozen"));
+        session.close();
+        const canonicalRoot = await fs.realpath(cwd);
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-frozen-command-access",
+            workspaceDir: canonicalRoot,
+            validatePreferredTerminal: async () => true,
+        };
+        const storeIdentity = {
+            canonicalRoot,
+            workspaceIdentity: "5".repeat(64),
+            workspaceIncarnation: "6".repeat(64),
+            storeKey: "frozen-command-access",
+            ancestorIdentityChain: [],
+        };
+        const assertWorkspaceWritable = vi.fn(async () => {
+            throw new Error("workspace frozen");
+        });
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async () => identity,
+            resolveWorkspaceIdentity: async () => storeIdentity,
+            recoveryGate: {
+                scanBeforeIpcRegistration: async () => {},
+                ensureRecoveredOnce: async () => {},
+                assertWorkspaceWritable,
+                getFrozenDiagnostic: () => ({
+                    operationId: "frozen-command-access",
+                    message: "workspace frozen",
+                    corrupt: false,
+                    allowedActions: ["retry"],
+                }),
+            },
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 98, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+
+        await expect(
+            handlers.get("agent:run-command")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                cwd: canonicalRoot,
+                command: "info",
+                argsText: "",
+            })
+        ).resolves.toEqual(
+            expect.objectContaining({ status: "success", message: expect.stringContaining("Session Info") })
+        );
+        await expect(handlers.get("agent:list-tree")?.(event, TrustedRequestContext, metadata)).resolves.toEqual(
+            expect.objectContaining({ entries: expect.any(Array) })
+        );
+        const frozenExportPath = path.join(canonicalRoot, "must-not-be-written.jsonl");
+        await expect(
+            handlers.get("agent:run-command")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                cwd: canonicalRoot,
+                command: "export",
+                argsText: frozenExportPath,
+            })
+        ).resolves.toEqual(
+            expect.objectContaining({
+                status: "success",
+                message: expect.stringContaining('"type":"session"'),
+            })
+        );
+        await expect(fs.stat(frozenExportPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+        await expect(
+            handlers.get("agent:run-command")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                cwd: canonicalRoot,
+                command: "compact",
+                argsText: "",
+            })
+        ).rejects.toThrow("workspace frozen");
+        await expect(
+            handlers.get("agent:navigate-tree")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                targetId: "missing",
+                semanticAnchorId: null,
+                expectedSemanticLeafId: null,
+            })
+        ).rejects.toThrow("workspace frozen");
+        expect(assertWorkspaceWritable).toHaveBeenCalledTimes(2);
+    });
+
+    it("publishes authoritative thaw and quota state through the initiating client subscription", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-maintenance-publication-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        session.close();
+        const canonicalRoot = await fs.realpath(cwd);
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-maintenance-publication",
+            workspaceDir: canonicalRoot,
+            validatePreferredTerminal: async () => true,
+        };
+        const storeIdentity = {
+            canonicalRoot,
+            workspaceIdentity: "1".repeat(64),
+            workspaceIncarnation: "2".repeat(64),
+            storeKey: "maintenance-publication",
+            ancestorIdentityChain: [],
+        };
+        let frozen = true;
+        let quota: {
+            status: "ok" | "soft-quota-exceeded" | "referenced-over-quota";
+            usedBytes: number;
+            referencedBytes: number;
+            softQuotaBytes: number;
+        } = {
+            status: "referenced-over-quota",
+            usedBytes: 30,
+            referencedBytes: 30,
+            softQuotaBytes: 10,
+        };
+        const recoveryGate = {
+            scanBeforeIpcRegistration: async () => {},
+            ensureRecoveredOnce: async () => {},
+            assertWorkspaceWritable: async () => {},
+            probeFrozenDiagnostic: async () =>
+                frozen
+                    ? {
+                          operationId: "operation-a",
+                          message: "recovery required",
+                          corrupt: false,
+                          allowedActions: ["retry" as const],
+                      }
+                    : undefined,
+        };
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        vi.mocked(openAgentRewindFeature).mockResolvedValue({
+            state: "enabled",
+            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
+            store: {
+                identity: storeIdentity,
+                verifyOwnedSnapshot: vi.fn(async () => {}),
+                getQuotaStatus: vi.fn(async () => quota),
+            },
+        } as never);
+        installAgentWorkspaceRecoveryGate(recoveryGate);
+        let staleSubscriberCurrent = true;
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async (senderId) =>
+                senderId === 95 && !staleSubscriberCurrent
+                    ? { ...identity, generation: identity.generation + 1 }
+                    : identity,
+            resolveWorkspaceIdentity: async () => storeIdentity,
+            recoveryGate,
+            rewindMaintenance: {
+                getRecovery: vi.fn(),
+                resolveRecovery: vi.fn(async () => {
+                    frozen = false;
+                }),
+                cleanup: vi.fn(async () => {
+                    quota = {
+                        status: "soft-quota-exceeded",
+                        usedBytes: 6,
+                        referencedBytes: 6,
+                        softQuotaBytes: 10,
+                    };
+                    return {
+                        removedUnownedBytes: 24,
+                        quota: { ...quota, cleanupAvailable: true },
+                    };
+                }),
+                listStorageOwners: vi.fn(),
+                purgeTrashedSession: vi.fn(async () => {
+                    quota = {
+                        status: "ok",
+                        usedBytes: 0,
+                        referencedBytes: 0,
+                        softQuotaBytes: 10,
+                    };
+                    return {
+                        purgedSessionId: "trash-a",
+                        quota: { ...quota, cleanupAvailable: false },
+                    };
+                }),
+            },
+        });
+        const handlers = registeredHandlers();
+        const staleSender = { id: 95, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
+        await handlers.get("agent:subscribe")?.({ sender: staleSender }, TrustedRequestContext, metadata.path);
+        const sender = { id: 96, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
+        const event = { sender };
+        const receivedStates: PiAgentEvent[] = [];
+        const client = new AgentRuntimeClient(
+            {
+                subscribe: (_context: unknown, sessionPath: string, callback: (event: unknown) => void) => {
+                    sender.send.mockImplementation((_channel: string, payload: { event: unknown }) => {
+                        callback(payload.event);
+                    });
+                    void handlers.get("agent:subscribe")?.(event, TrustedRequestContext, sessionPath);
+                    return () => {};
+                },
+                resolveWorkspaceRecovery: (_context: unknown, input: unknown) =>
+                    handlers.get("agent:resolve-workspace-recovery")?.(event, TrustedRequestContext, input),
+                cleanupWorkspaceCheckpoints: (_context: unknown, input: unknown) =>
+                    handlers.get("agent:cleanup-workspace-checkpoints")?.(event, TrustedRequestContext, input),
+                purgeTrashedSession: (_context: unknown, input: unknown) =>
+                    handlers.get("agent:purge-trashed-session")?.(event, TrustedRequestContext, input),
+            } as never,
+            TrustedRequestContext
+        );
+        client.subscribe(metadata.path, (state) => {
+            if ((state as PiAgentEvent).type === "session_state") {
+                receivedStates.push(state as PiAgentEvent);
+            }
+        });
+        await vi.waitFor(() => expect(receivedStates).toHaveLength(1));
+        receivedStates.length = 0;
+        sender.send.mockClear();
+        staleSubscriberCurrent = false;
+
+        await client.resolveWorkspaceRecovery({
+            sessionMetadata: metadata,
+            operationId: "operation-a",
+            action: "retry",
+        });
+        expect(sender.send).toHaveBeenLastCalledWith(
+            "agent:event",
+            expect.objectContaining({
+                event: expect.objectContaining({
+                    type: "session_state",
+                    rewindState: expect.objectContaining({ frozen: false }),
+                }),
+            })
+        );
+        expect(receivedStates.at(-1)?.rewindState.frozen).toBe(false);
+
+        await client.cleanupWorkspaceCheckpoints({ sessionMetadata: metadata });
+        expect(sender.send).toHaveBeenLastCalledWith(
+            "agent:event",
+            expect.objectContaining({
+                event: expect.objectContaining({
+                    type: "session_state",
+                    rewindState: expect.objectContaining({
+                        quota: expect.objectContaining({ status: "soft-quota-exceeded", usedBytes: 6 }),
+                    }),
+                }),
+            })
+        );
+        expect(receivedStates.at(-1)?.rewindState.quota).toEqual(
+            expect.objectContaining({ status: "soft-quota-exceeded", usedBytes: 6 })
+        );
+
+        await client.purgeTrashedSession({
+            sessionMetadata: metadata,
+            trashedSessionId: "trash-a",
+            confirmationToken: "opaque-token",
+        });
+        expect(sender.send).toHaveBeenLastCalledWith(
+            "agent:event",
+            expect.objectContaining({
+                event: expect.objectContaining({
+                    type: "session_state",
+                    rewindState: expect.objectContaining({
+                        quota: expect.objectContaining({ status: "ok", usedBytes: 0 }),
+                    }),
+                }),
+            })
+        );
+        expect(receivedStates.at(-1)?.rewindState.quota).toEqual(
+            expect.objectContaining({ status: "ok", usedBytes: 0 })
+        );
+        expect(sender.send).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([
+        {
+            channel: "agent:resolve-workspace-recovery",
+            input: (metadata: JsonlSessionMetadata) => ({
+                sessionMetadata: metadata,
+                operationId: "operation-a",
+                action: "retry",
+            }),
+            method: "resolveRecovery",
+        },
+        {
+            channel: "agent:cleanup-workspace-checkpoints",
+            input: (metadata: JsonlSessionMetadata) => ({ sessionMetadata: metadata }),
+            method: "cleanup",
+        },
+        {
+            channel: "agent:purge-trashed-session",
+            input: (metadata: JsonlSessionMetadata) => ({
+                sessionMetadata: metadata,
+                trashedSessionId: "trash-a",
+                confirmationToken: "opaque-token",
+            }),
+            method: "purgeTrashedSession",
+        },
+    ] as const)("does not publish guessed session state when $method fails", async ({ channel, input, method }) => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), `crest-agent-maintenance-failure-${method}-`));
+        const { metadata, session } = await createPaneSession(cwd);
+        session.close();
+        const canonicalRoot = await fs.realpath(cwd);
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: `window-maintenance-failure-${method}`,
+            workspaceDir: canonicalRoot,
+            validatePreferredTerminal: async () => true,
+        };
+        const failure = new Error(`${method} failed`);
+        const storeIdentity = {
+            canonicalRoot,
+            workspaceIdentity: "3".repeat(64),
+            workspaceIncarnation: "4".repeat(64),
+            storeKey: "maintenance-failure",
+            ancestorIdentityChain: [],
+        };
+        const recoveryGate = {
+            scanBeforeIpcRegistration: async () => {},
+            ensureRecoveredOnce: async () => {},
+            assertWorkspaceWritable: async () => {},
+        };
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
+        vi.mocked(openAgentRewindFeature).mockResolvedValue({
+            state: "enabled",
+            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
+            store: {
+                identity: storeIdentity,
+                verifyOwnedSnapshot: vi.fn(async () => {}),
+                getQuotaStatus: vi.fn(async () => ({
+                    status: "ok",
+                    usedBytes: 0,
+                    referencedBytes: 0,
+                    softQuotaBytes: 10,
+                })),
+            },
+        } as never);
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async () => identity,
+            resolveWorkspaceIdentity: async () => storeIdentity,
+            recoveryGate,
+            rewindMaintenance: {
+                getRecovery: vi.fn(),
+                resolveRecovery: vi.fn(async () => {
+                    throw failure;
+                }),
+                cleanup: vi.fn(async () => {
+                    throw failure;
+                }),
+                listStorageOwners: vi.fn(),
+                purgeTrashedSession: vi.fn(async () => {
+                    throw failure;
+                }),
+            },
+        });
+        const handlers = registeredHandlers();
+        const sender = { id: 97, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
+        const event = { sender };
+        await handlers.get("agent:subscribe")?.(event, TrustedRequestContext, metadata.path);
+        sender.send.mockClear();
+
+        await expect(handlers.get(channel)?.(event, TrustedRequestContext, input(metadata))).rejects.toThrow(
+            `${method} failed`
+        );
+        expect(sender.send).not.toHaveBeenCalled();
     });
 });

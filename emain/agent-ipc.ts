@@ -79,7 +79,7 @@ import {
     extractChangeOperationsFromMessages,
     generateChangeOutline,
 } from "@crest/coding-agent/change-review/change-outline";
-import { getBuiltInAgentCommands } from "@crest/coding-agent/commands/registry";
+import { getBuiltInAgentCommands, isAgentBackendCommandReadOnly } from "@crest/coding-agent/commands/registry";
 import { commandNoop, commandSuccess } from "@crest/coding-agent/commands/session-command-results";
 import {
     buildAgentForkPointViews,
@@ -175,7 +175,7 @@ import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-r
 import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
 import { isAgentRewindFeatureEnabled, openAgentRewindFeature, type AgentRewindFeature } from "./agent-rewind-feature";
 import { AgentRewindService } from "./agent-rewind-service";
-import { toAuthoritativeAgentSessionState } from "./agent-session-state-broadcaster";
+import { AgentSessionStateBroadcaster } from "./agent-session-state-broadcaster";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
 import { createSpawnCliAgentTool } from "./agent-tools/spawn-cli-agent";
 import type { AgentWorkspaceRecoveryGate } from "./agent-workspace-recovery-gate";
@@ -2666,11 +2666,12 @@ async function cloneAgentSessionWithAccess(
 export async function runAgentCommandForIpc(
     input: unknown,
     beforeMutation?: AuthorizationGuard,
-    guardRuntime?: LiveRuntimeGuard
+    guardRuntime?: LiveRuntimeGuard,
+    options?: { exportToMessage?: boolean }
 ): Promise<AgentCommandExecutionResult> {
     const parsed = validateRunCommandInput(input);
     if (!parsed.sessionMetadata?.path) {
-        return await runParsedAgentCommand(parsed, beforeMutation, guardRuntime);
+        return await runParsedAgentCommand(parsed, beforeMutation, guardRuntime, options);
     }
     return await withCanonicalSessionAccess(
         parsed.sessionMetadata.path,
@@ -2681,7 +2682,8 @@ export async function runAgentCommandForIpc(
                     sessionMetadata: { ...parsed.sessionMetadata!, path: canonicalPath },
                 },
                 beforeMutation,
-                guardRuntime
+                guardRuntime,
+                options
             ),
         "sessionMetadata.path"
     );
@@ -2690,7 +2692,8 @@ export async function runAgentCommandForIpc(
 async function runParsedAgentCommand(
     parsed: AgentRunCommandInput,
     beforeMutation?: AuthorizationGuard,
-    guardRuntime?: LiveRuntimeGuard
+    guardRuntime?: LiveRuntimeGuard,
+    options?: { exportToMessage?: boolean }
 ): Promise<AgentCommandExecutionResult> {
     switch (parsed.command) {
         case "new":
@@ -2719,7 +2722,8 @@ async function runParsedAgentCommand(
                 parsed.cwd,
                 parsed.argsText,
                 beforeMutation,
-                guardRuntime
+                guardRuntime,
+                options?.exportToMessage
             );
         case "import":
             await beforeMutation?.();
@@ -2869,7 +2873,8 @@ async function runExportSessionCommand(
     cwd: string,
     argsText: string,
     beforeMutation?: AuthorizationGuard,
-    guardRuntime?: LiveRuntimeGuard
+    guardRuntime?: LiveRuntimeGuard,
+    exportToMessage = false
 ): Promise<AgentCommandExecutionResult> {
     if (!sessionMetadata?.path) return commandNoop("No active agent session yet.");
     const outputArg = getPathCommandArgument(argsText);
@@ -2879,7 +2884,7 @@ async function runExportSessionCommand(
     );
     const opened = await openValidatedSessionMetadata(sessionMetadata);
     try {
-        return await exportOpenSession(opened, outputPath, beforeMutation, guardRuntime);
+        return await exportOpenSession(opened, outputPath, beforeMutation, guardRuntime, exportToMessage);
     } finally {
         opened.session.close();
     }
@@ -2889,7 +2894,8 @@ async function exportOpenSession(
     opened: Awaited<ReturnType<typeof openValidatedSessionMetadata>>,
     outputPath: string,
     beforeMutation?: AuthorizationGuard,
-    guardRuntime?: LiveRuntimeGuard
+    guardRuntime?: LiveRuntimeGuard,
+    exportToMessage = false
 ): Promise<AgentCommandExecutionResult> {
     const { metadata, session, requestedPath } = opened;
     const header: JsonlSessionHeader = {
@@ -2909,6 +2915,9 @@ async function exportOpenSession(
         prevId = entry.id;
     }
     await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
+    if (exportToMessage) {
+        return commandSuccess(lines.join("\n"));
+    }
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await guardLiveRuntimeIfPresent([metadata.path, requestedPath], guardRuntime, beforeMutation);
     await fs.writeFile(outputPath, `${lines.join("\n")}\n`);
@@ -3362,6 +3371,51 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         return { authenticated, metadata };
     };
     const confirmations = new RewindConfirmationRegistry();
+    const sessionStateBroadcaster = new AgentSessionStateBroadcaster({
+        registry: runtimeRegistry,
+        openSession: (metadata) => openPaneSessionByPath(metadata.path),
+        workspaceRewind: () => ({
+            status: isAgentRewindFeatureEnabled() ? "enabled" : "disabled",
+        }),
+        buildRewindState: buildColdRewindState,
+        publish: async ({ sessionMetadata, state }) => {
+            for (const [key, subscription] of [...subscriptions]) {
+                if (subscription.sessionPath !== sessionMetadata.path || subscription.sender.isDestroyed()) {
+                    continue;
+                }
+                try {
+                    await subscription.authorization.validateCurrent();
+                    subscription.sender.send(
+                        "agent:event",
+                        makeAgentEventPayload(
+                            sessionMetadata.path,
+                            subscription.rendererPath,
+                            subscription.authorization,
+                            state
+                        )
+                    );
+                } catch (error) {
+                    releaseSubscription(key);
+                    console.error("[agent-ipc] dropping stale session-state subscription:", error);
+                }
+            }
+            for (const [key, pending] of [...pendingSubscriptions]) {
+                if (pending.canonicalPath !== sessionMetadata.path || pending.sender.isDestroyed()) {
+                    continue;
+                }
+                try {
+                    await pending.authorization.validateCurrent();
+                    pending.sender.send(
+                        "agent:event",
+                        makeAgentEventPayload(sessionMetadata.path, pending.rendererPath, pending.authorization, state)
+                    );
+                } catch (error) {
+                    releaseSubscription(key);
+                    console.error("[agent-ipc] dropping stale pending session-state subscription:", error);
+                }
+            }
+        },
+    });
     const defaultRewindService = new AgentRewindService({
         registry: runtimeRegistry,
         confirmations,
@@ -3411,76 +3465,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             });
             return { workspace: feature.store.identity, store: feature.store, engine };
         },
-        broadcaster: {
-            publishForLease: async (lease, sessionMetadata) =>
-                await runtimeRegistry.withMutationLeaseAccess(lease, async (runtime) => {
-                    let state;
-                    if (runtime) {
-                        state = toAuthoritativeAgentSessionState(
-                            await runtime.refreshFromPersistedBranch({
-                                discardCompletedPtyHistory: true,
-                            })
-                        );
-                    } else {
-                        const session = await openPaneSessionByPath(sessionMetadata.path);
-                        try {
-                            const branch = await session.getBranch();
-                            const context = await session.buildContext();
-                            state = {
-                                type: "session_state" as const,
-                                messages: context.messages,
-                                turns: buildPersistedTurnsFromSessionEntries(branch),
-                                status: "idle" as const,
-                                errorMessage: undefined,
-                                steer: [],
-                                followUp: [],
-                                contextReports: buildContextStateFromSessionEntries(branch).contextReports,
-                                commands: [],
-                                workspaceRewind: {
-                                    status: isAgentRewindFeatureEnabled()
-                                        ? ("enabled" as const)
-                                        : ("disabled" as const),
-                                },
-                                rewindState: await buildColdRewindState(
-                                    await session.getMetadata(),
-                                    await session.getEntries()
-                                ),
-                            };
-                        } finally {
-                            session.close();
-                        }
-                    }
-                    for (const subscription of subscriptions.values()) {
-                        if (subscription.sessionPath !== sessionMetadata.path || subscription.sender.isDestroyed()) {
-                            continue;
-                        }
-                        await subscription.authorization.validateCurrent();
-                        subscription.sender.send(
-                            "agent:event",
-                            makeAgentEventPayload(
-                                sessionMetadata.path,
-                                subscription.rendererPath,
-                                subscription.authorization,
-                                state
-                            )
-                        );
-                    }
-                    for (const pending of pendingSubscriptions.values()) {
-                        if (pending.canonicalPath !== sessionMetadata.path || pending.sender.isDestroyed()) continue;
-                        await pending.authorization.validateCurrent();
-                        pending.sender.send(
-                            "agent:event",
-                            makeAgentEventPayload(
-                                sessionMetadata.path,
-                                pending.rendererPath,
-                                pending.authorization,
-                                state
-                            )
-                        );
-                    }
-                    return state;
-                }),
-        },
+        broadcaster: sessionStateBroadcaster,
     });
     const purgeConfirmations = new CheckpointPurgeConfirmationRegistry();
     const quotaView = async (
@@ -3788,6 +3773,18 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         );
         await options.recoveryGate.assertWorkspaceWritable(workspace);
     };
+    const workspaceFrozenDiagnostic = async (
+        authenticated: AuthenticatedWorkspaceAgentSender
+    ): Promise<AgentWorkspaceFrozenDiagnostic | undefined> => {
+        if (!isAgentRewindFeatureEnabled() || !options.recoveryGate) return undefined;
+        const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
+            authenticated.workspaceDir
+        );
+        return (
+            (await options.recoveryGate.probeFrozenDiagnostic?.(workspace)) ??
+            options.recoveryGate.getFrozenDiagnostic?.(workspace)
+        );
+    };
     type RewindIpcSchema =
         | "list"
         | "preview"
@@ -3872,6 +3869,17 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             throw new Error("Workspace rewind maintenance is unavailable");
         }
         return options.rewindMaintenance ?? defaultMaintenance;
+    };
+    const publishMaintenanceSessionState = async (
+        event: electron.IpcMainInvokeEvent,
+        authenticated: AuthenticatedWorkspaceAgentSender,
+        metadata: JsonlSessionMetadata
+    ): Promise<void> => {
+        await runtimeRegistry.withRetainedSessionMutation(metadata.path, { rejectIfRunning: false }, async (lease) => {
+            await assertCurrent(event, authenticated);
+            await sessionStateBroadcaster.publishForLease(lease, metadata);
+            await assertCurrent(event, authenticated);
+        });
     };
 
     electron.ipcMain.handle("agent:create-session", async (event, requestContext): Promise<JsonlSessionMetadata> => {
@@ -3965,6 +3973,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             assertCurrent(event, authorized.authenticated)
         );
         await assertCurrent(event, authorized.authenticated);
+        await publishMaintenanceSessionState(event, authorized.authenticated, authorized.input.sessionMetadata);
     });
     electron.ipcMain.handle("agent:cleanup-workspace-checkpoints", async (event, requestContext, input) => {
         const authorized = await authorizeRewindInput(event, requestContext, input, "cleanup", true);
@@ -3972,6 +3981,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             assertCurrent(event, authorized.authenticated)
         );
         await assertCurrent(event, authorized.authenticated);
+        await publishMaintenanceSessionState(event, authorized.authenticated, authorized.input.sessionMetadata);
         return result;
     });
     electron.ipcMain.handle("agent:list-checkpoint-storage-owners", async (event, requestContext, input) => {
@@ -3986,6 +3996,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             assertCurrent(event, authorized.authenticated)
         );
         await assertCurrent(event, authorized.authenticated);
+        await publishMaintenanceSessionState(event, authorized.authenticated, authorized.input.sessionMetadata);
         return result;
     });
 
@@ -4102,7 +4113,15 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         "agent:run-command",
         async (event, requestContext, input: AgentRunCommandInput): Promise<AgentCommandExecutionResult> => {
             const authenticated = await authenticate(event, requestContext);
-            await assertWorkspaceWritable(authenticated);
+            const exportToMessage =
+                input?.command === "export" && (await workspaceFrozenDiagnostic(authenticated)) !== undefined;
+            if (
+                !input ||
+                !isAgentBackendCommandReadOnly(input.command) ||
+                (input.command === "export" && !exportToMessage)
+            ) {
+                await assertWorkspaceWritable(authenticated);
+            }
             let sessionMetadata = input?.sessionMetadata;
             if (sessionMetadata) {
                 sessionMetadata = await requireSessionBelongsToWorkspace(authenticated, sessionMetadata);
@@ -4116,7 +4135,8 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                     sessionMetadata,
                 },
                 authorization.validateCurrent,
-                authorization.guardRuntime
+                authorization.guardRuntime,
+                { exportToMessage }
             );
             await assertCurrent(event, authenticated);
             return result;

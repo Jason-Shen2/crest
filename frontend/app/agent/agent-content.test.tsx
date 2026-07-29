@@ -17,6 +17,7 @@ const hostProps = vi.hoisted(() => ({
     rejectSubmitWithRestore: false,
     submitResult: true,
     submitError: "",
+    agentSubmit: vi.fn(),
 }));
 
 const selectorProps = vi.hoisted(() => ({
@@ -35,6 +36,18 @@ const rewindDialogProps = vi.hoisted(() => ({
     latest: null as any,
 }));
 
+const recoveryDialogProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
+const quotaBannerProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
+const quotaDialogProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
 const composerProps = vi.hoisted(() => ({
     setText: vi.fn(),
 }));
@@ -42,31 +55,32 @@ const composerProps = vi.hoisted(() => ({
 vi.mock("./agent-chat-host", () => ({
     AgentChatHost: (props: any) => {
         hostProps.latest = props;
+        hostProps.agentSubmit.mockImplementation((text: string) => {
+            if (hostProps.simulateMissingSessionSelectorError && (text === "/tree" || text === "/fork")) {
+                props.onUserError?.("No agent session yet. Send a prompt before using session commands.");
+            }
+            if (text === "/rewind") {
+                void props.onRewindRequest?.();
+            }
+            if (text === "/redo") {
+                void props.onRedoRequest?.();
+            }
+            if (hostProps.submitError) {
+                props.onUserError?.(hostProps.submitError);
+            }
+            if (hostProps.rejectSubmitWithRestore) {
+                props.onRestoreComposerText?.({
+                    text,
+                    sessionPath: props.sessionMetadata?.path,
+                    sessionRevision: props.sessionRevision,
+                });
+                return Promise.reject(new Error("send failed"));
+            }
+            return hostProps.submitResult;
+        });
         if (!hostProps.skipReady) {
             props.onReady?.({
-                submit: vi.fn((text: string) => {
-                    if (hostProps.simulateMissingSessionSelectorError && (text === "/tree" || text === "/fork")) {
-                        props.onUserError?.("No agent session yet. Send a prompt before using session commands.");
-                    }
-                    if (text === "/rewind") {
-                        void props.onRewindRequest?.();
-                    }
-                    if (text === "/redo") {
-                        void props.onRedoRequest?.();
-                    }
-                    if (hostProps.submitError) {
-                        props.onUserError?.(hostProps.submitError);
-                    }
-                    if (hostProps.rejectSubmitWithRestore) {
-                        props.onRestoreComposerText?.({
-                            text,
-                            sessionPath: props.sessionMetadata?.path,
-                            sessionRevision: props.sessionRevision,
-                        });
-                        return Promise.reject(new Error("send failed"));
-                    }
-                    return hostProps.submitResult;
-                }),
+                submit: hostProps.agentSubmit,
                 abort: vi.fn(),
                 getTurns: vi.fn(() => []),
             });
@@ -146,6 +160,71 @@ vi.mock("./rewind/rewind-preview-dialog", () => ({
     },
 }));
 
+vi.mock("./rewind/recovery-dialog", () => ({
+    RecoveryDialog: (props: any) => {
+        recoveryDialogProps.latest = props;
+        return props.open ? (
+            <div data-testid="recovery-dialog">
+                <span>{props.recovery?.operationId}</span>
+                {props.recovery?.allowedActions.map((action: string) => (
+                    <button key={action} type="button" disabled={props.busy} onClick={() => props.onAction(action)}>
+                        {action}
+                    </button>
+                ))}
+                <button type="button" onClick={props.onClose}>
+                    Close recovery
+                </button>
+            </div>
+        ) : null;
+    },
+}));
+
+vi.mock("./rewind/checkpoint-quota-banner", () => ({
+    CheckpointQuotaBanner: (props: any) => {
+        quotaBannerProps.latest = props;
+        return props.quota.status !== "ok" ? (
+            <div data-testid="quota-banner">
+                <button type="button" disabled={props.busy || props.mutationsDisabled} onClick={props.onCleanup}>
+                    Clean up unreferenced snapshots
+                </button>
+                <button type="button" disabled={props.busy || props.mutationsDisabled} onClick={props.onManage}>
+                    Manage checkpoint storage
+                </button>
+            </div>
+        ) : null;
+    },
+}));
+
+vi.mock("./rewind/checkpoint-quota-dialog", () => ({
+    CheckpointQuotaDialog: (props: any) => {
+        quotaDialogProps.latest = props;
+        return props.open ? (
+            <div data-testid="quota-dialog">
+                {props.owners.map((owner: AgentCheckpointTrashOwnerView) => (
+                    <button
+                        disabled={
+                            props.maintenanceBusy ||
+                            props.phase === "purging" ||
+                            props.mutationsDisabled ||
+                            props.staleOwnerIds?.includes(owner.sessionId)
+                        }
+                        key={owner.sessionId}
+                        type="button"
+                        onClick={() =>
+                            props.onPurge({
+                                trashedSessionId: owner.sessionId,
+                                confirmationToken: owner.confirmationToken,
+                            })
+                        }
+                    >
+                        {owner.sessionId}
+                    </button>
+                ))}
+            </div>
+        ) : null;
+    },
+}));
+
 function makeRewindState(overrides: Partial<AgentRewindSessionStateView> = {}): AgentRewindSessionStateView {
     return {
         enabled: true,
@@ -204,6 +283,24 @@ function makeRewindClient(overrides: Record<string, unknown> = {}) {
             semanticLeafId: "leaf-redone",
             displayLeafId: "turn-redone",
         })),
+        getWorkspaceRecovery: vi.fn(async () => undefined),
+        resolveWorkspaceRecovery: vi.fn(async () => undefined),
+        cleanupWorkspaceCheckpoints: vi.fn(async () => ({
+            removedUnownedBytes: 0,
+            quota: makeRewindState({
+                quota: {
+                    status: "referenced-over-quota",
+                    usedBytes: 6 * 1024 ** 3,
+                    softQuotaBytes: 5 * 1024 ** 3,
+                    cleanupAvailable: true,
+                },
+            }).quota,
+        })),
+        listCheckpointStorageOwners: vi.fn(async () => ({ trashOwners: [] })),
+        purgeTrashedSession: vi.fn(async () => ({
+            purgedSessionId: "trash-a",
+            quota: makeRewindState().quota,
+        })),
         ...overrides,
     } as any;
 }
@@ -258,12 +355,561 @@ afterEach(async () => {
     threadProps.latest = null;
     rewindSelectorProps.latest = null;
     rewindDialogProps.latest = null;
+    recoveryDialogProps.latest = null;
+    quotaBannerProps.latest = null;
+    quotaDialogProps.latest = null;
+    hostProps.agentSubmit.mockReset();
     composerProps.setText.mockReset();
     vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
 describe("AgentContent", () => {
+    it("freezes writes and renders only authoritative recovery actions until session_state thaws", async () => {
+        const recovery: AgentWorkspaceRecoveryView = {
+            operationId: "operation-frozen",
+            phase: "files_verified",
+            corrupt: false,
+            message: "Recovery required",
+            paths: [{ path: "src/frozen.ts", classification: "target" }],
+            allowedActions: ["retry", "abandon-current"],
+        };
+        const { client, session } = renderRewindContent(
+            makeRewindClient({ getWorkspaceRecovery: vi.fn(async () => recovery) })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    frozen: true,
+                    redo: {
+                        operationId: "redo-frozen",
+                        targetPrompt: "Frozen prompt",
+                        messageCount: 1,
+                        fileCount: 1,
+                        files: [],
+                    },
+                }),
+            });
+        });
+
+        await waitFor(() => expect(screen.getByTestId("recovery-dialog").textContent).toContain("operation-frozen"));
+        expect(hostProps.runtime.isSendDisabled).toBe(false);
+        expect(threadProps.latest.rewindBusy).toBe(true);
+        expect((screen.getByRole("button", { name: "Redo" }) as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.queryByText(/force/i)).toBeNull();
+        expect(hostProps.runtime.submit("explain the failure")).toBe(false);
+        expect(hostProps.runtime.submit("/compact")).toBe(false);
+        expect(hostProps.runtime.submit("/tree")).toBe(true);
+        expect(hostProps.agentSubmit).toHaveBeenCalledTimes(1);
+        expect(hostProps.agentSubmit).toHaveBeenCalledWith("/tree", undefined);
+
+        fireEvent.click(screen.getByRole("button", { name: "retry" }));
+        await waitFor(() =>
+            expect(client.resolveWorkspaceRecovery).toHaveBeenCalledWith({
+                sessionMetadata: session,
+                operationId: "operation-frozen",
+                action: "retry",
+            })
+        );
+        expect(screen.getByTestId("recovery-dialog")).not.toBeNull();
+        expect(screen.getByTestId("agent-chat-host")).not.toBeNull();
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState(),
+            });
+        });
+        expect(screen.queryByTestId("recovery-dialog")).toBeNull();
+        expect(hostProps.runtime.isSendDisabled).toBe(false);
+    });
+
+    it("drops stale recovery responses after switching sessions", async () => {
+        let resolveRecovery!: (value: AgentWorkspaceRecoveryView) => void;
+        const recoveryPromise = new Promise<AgentWorkspaceRecoveryView>((resolve) => {
+            resolveRecovery = resolve;
+        });
+        const { model } = renderRewindContent(makeRewindClient({ getWorkspaceRecovery: vi.fn(() => recoveryPromise) }));
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({ frozen: true }),
+            });
+        });
+        await waitFor(() => expect(recoveryDialogProps.latest?.open).toBe(true));
+
+        act(() => model.selectSession({ id: "b", path: "/sessions/b.db", cwd: "/repo", createdAt: "later" }));
+        await waitFor(() => expect(hostProps.latest.sessionMetadata?.path).toBe("/sessions/b.db"));
+        await act(async () => {
+            resolveRecovery({
+                operationId: "stale-operation",
+                corrupt: false,
+                message: "stale",
+                paths: [],
+                allowedActions: ["retry"],
+            });
+            await recoveryPromise;
+        });
+
+        expect(screen.queryByText("stale-operation")).toBeNull();
+    });
+
+    it("keeps quota UI authoritative and purges only backend trash owners with opaque tokens", async () => {
+        const owner: AgentCheckpointTrashOwnerView = {
+            sessionId: "trash-a",
+            title: "Trash A",
+            referencedBytes: 1024,
+            confirmationToken: "opaque-token",
+        };
+        const { client, session } = renderRewindContent(
+            makeRewindClient({
+                listCheckpointStorageOwners: vi.fn(async () => ({ trashOwners: [owner] })),
+            })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    quota: {
+                        status: "referenced-over-quota",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Clean up unreferenced snapshots" }));
+        await waitFor(() =>
+            expect(client.cleanupWorkspaceCheckpoints).toHaveBeenCalledWith({ sessionMetadata: session })
+        );
+        expect(screen.getByTestId("quota-banner")).not.toBeNull();
+
+        fireEvent.click(screen.getByRole("button", { name: "Manage checkpoint storage" }));
+        await waitFor(() => expect(screen.getByTestId("quota-dialog")).not.toBeNull());
+        fireEvent.click(screen.getByRole("button", { name: "trash-a" }));
+        await waitFor(() =>
+            expect(client.purgeTrashedSession).toHaveBeenCalledWith({
+                sessionMetadata: session,
+                trashedSessionId: "trash-a",
+                confirmationToken: "opaque-token",
+            })
+        );
+        expect(quotaDialogProps.latest.owners).toEqual([owner]);
+        expect(Object.keys(client.purgeTrashedSession.mock.calls[0][0]).sort()).toEqual([
+            "confirmationToken",
+            "sessionMetadata",
+            "trashedSessionId",
+        ]);
+    });
+
+    it("blocks owner refresh while checkpoint cleanup is in flight", async () => {
+        let finishCleanup = () => {};
+        const cleanup = new Promise<AgentCleanupWorkspaceCheckpointsResult>((resolve) => {
+            finishCleanup = () =>
+                resolve({
+                    removedUnownedBytes: 0,
+                    quota: makeRewindState().quota,
+                });
+        });
+        const { client } = renderRewindContent(
+            makeRewindClient({
+                cleanupWorkspaceCheckpoints: vi.fn(() => cleanup),
+            })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    quota: {
+                        status: "soft-quota-exceeded",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Clean up unreferenced snapshots" }));
+        expect(quotaBannerProps.latest.busy).toBe(true);
+        fireEvent.click(screen.getByRole("button", { name: "Manage checkpoint storage" }));
+        expect(client.listCheckpointStorageOwners).not.toHaveBeenCalled();
+        await act(async () => quotaBannerProps.latest.onManage());
+        expect(client.listCheckpointStorageOwners).not.toHaveBeenCalled();
+        act(() => finishCleanup());
+        await waitFor(() => expect(quotaBannerProps.latest.busy).toBe(false));
+        fireEvent.click(screen.getByRole("button", { name: "Manage checkpoint storage" }));
+        await waitFor(() => expect(client.listCheckpointStorageOwners).toHaveBeenCalledOnce());
+    });
+
+    it("serializes same-tick cleanup calls through the shared maintenance mutex", async () => {
+        let finishCleanup = () => {};
+        const cleanup = new Promise<AgentCleanupWorkspaceCheckpointsResult>((resolve) => {
+            finishCleanup = () =>
+                resolve({
+                    removedUnownedBytes: 0,
+                    quota: makeRewindState().quota,
+                });
+        });
+        const { client } = renderRewindContent(
+            makeRewindClient({
+                cleanupWorkspaceCheckpoints: vi.fn(() => cleanup),
+            })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    quota: {
+                        status: "soft-quota-exceeded",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+
+        act(() => {
+            void quotaBannerProps.latest.onCleanup();
+            void quotaBannerProps.latest.onCleanup();
+        });
+        expect(client.cleanupWorkspaceCheckpoints).toHaveBeenCalledTimes(1);
+        expect(quotaBannerProps.latest.busy).toBe(true);
+        act(() => finishCleanup());
+        await waitFor(() => expect(quotaBannerProps.latest.busy).toBe(false));
+    });
+
+    it("blocks every quota mutation while recovery is frozen, including stale callbacks", async () => {
+        const owner: AgentCheckpointTrashOwnerView = {
+            sessionId: "trash-a",
+            title: "Trash A",
+            referencedBytes: 1024,
+            confirmationToken: "opaque-token",
+        };
+        const { client } = renderRewindContent(
+            makeRewindClient({
+                listCheckpointStorageOwners: vi.fn(async () => ({ trashOwners: [owner] })),
+            })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    quota: {
+                        status: "referenced-over-quota",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Manage checkpoint storage" }));
+        await waitFor(() => expect(quotaDialogProps.latest.open).toBe(true));
+        client.listCheckpointStorageOwners.mockClear();
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    frozen: true,
+                    quota: {
+                        status: "referenced-over-quota",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+        expect(quotaBannerProps.latest.mutationsDisabled).toBe(true);
+        expect(quotaDialogProps.latest.mutationsDisabled).toBe(true);
+
+        await act(async () => {
+            await quotaBannerProps.latest.onCleanup();
+            await quotaBannerProps.latest.onManage();
+            await quotaDialogProps.latest.onPurge({
+                trashedSessionId: owner.sessionId,
+                confirmationToken: owner.confirmationToken,
+            });
+        });
+        expect(client.cleanupWorkspaceCheckpoints).not.toHaveBeenCalled();
+        expect(client.listCheckpointStorageOwners).not.toHaveBeenCalled();
+        expect(client.purgeTrashedSession).not.toHaveBeenCalled();
+    });
+
+    it("rejects quota callbacks retained from a previous session scope", async () => {
+        const owner: AgentCheckpointTrashOwnerView = {
+            sessionId: "trash-a",
+            title: "Trash A",
+            referencedBytes: 1024,
+            confirmationToken: "opaque-token",
+        };
+        const { client, model } = renderRewindContent(
+            makeRewindClient({
+                listCheckpointStorageOwners: vi.fn(async () => ({ trashOwners: [owner] })),
+            })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    quota: {
+                        status: "referenced-over-quota",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Manage checkpoint storage" }));
+        await waitFor(() => expect(quotaDialogProps.latest.open).toBe(true));
+        const staleCleanup = quotaBannerProps.latest.onCleanup;
+        const staleManage = quotaBannerProps.latest.onManage;
+        const stalePurge = quotaDialogProps.latest.onPurge;
+        const staleClose = quotaDialogProps.latest.onClose;
+        client.cleanupWorkspaceCheckpoints.mockClear();
+        client.listCheckpointStorageOwners.mockClear();
+
+        act(() => model.selectSession({ id: "b", path: "/sessions/b.db", cwd: "/repo", createdAt: "later" }));
+        await waitFor(() => expect(hostProps.latest.sessionMetadata?.path).toBe("/sessions/b.db"));
+        await act(async () => {
+            await staleCleanup();
+            await staleManage();
+            await stalePurge({
+                trashedSessionId: owner.sessionId,
+                confirmationToken: owner.confirmationToken,
+            });
+            staleClose();
+        });
+        expect(client.cleanupWorkspaceCheckpoints).not.toHaveBeenCalled();
+        expect(client.listCheckpointStorageOwners).not.toHaveBeenCalled();
+        expect(client.purgeTrashedSession).not.toHaveBeenCalled();
+
+        await act(async () => quotaBannerProps.latest.onManage());
+        expect(client.listCheckpointStorageOwners).toHaveBeenCalledOnce();
+    });
+
+    it("serializes purge and authoritative owner refresh without reviving stale tokens", async () => {
+        const owner: AgentCheckpointTrashOwnerView = {
+            sessionId: "trash-a",
+            title: "Trash A",
+            referencedBytes: 1024,
+            confirmationToken: "opaque-token",
+        };
+        let finishPurge!: () => void;
+        const purge = new Promise<AgentPurgeTrashedSessionResult>((resolve) => {
+            finishPurge = () =>
+                resolve({
+                    purgedSessionId: owner.sessionId,
+                    quota: makeRewindState().quota,
+                });
+        });
+        const listOwners = vi
+            .fn()
+            .mockResolvedValueOnce({ trashOwners: [owner] })
+            .mockResolvedValueOnce({ trashOwners: [] });
+        const { client } = renderRewindContent(
+            makeRewindClient({
+                listCheckpointStorageOwners: listOwners,
+                purgeTrashedSession: vi.fn(() => purge),
+            })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    quota: {
+                        status: "referenced-over-quota",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Manage checkpoint storage" }));
+        await waitFor(() => expect(quotaDialogProps.latest.owners).toEqual([owner]));
+        const request = {
+            trashedSessionId: owner.sessionId,
+            confirmationToken: owner.confirmationToken,
+        };
+
+        act(() => {
+            void quotaDialogProps.latest.onPurge(request);
+            void quotaDialogProps.latest.onPurge(request);
+            quotaDialogProps.latest.onRefresh();
+            quotaDialogProps.latest.onClose();
+        });
+
+        expect(client.purgeTrashedSession).toHaveBeenCalledTimes(1);
+        expect(listOwners).toHaveBeenCalledTimes(1);
+        expect(quotaDialogProps.latest.open).toBe(true);
+
+        await act(async () => {
+            finishPurge();
+            await purge;
+        });
+        await waitFor(() => expect(listOwners).toHaveBeenCalledTimes(2));
+        expect(quotaDialogProps.latest.owners).toEqual([]);
+        expect(JSON.stringify(quotaDialogProps.latest.owners)).not.toContain("opaque-token");
+    });
+
+    it("prevents cleanup and purge from racing in either same-tick order", async () => {
+        const owner: AgentCheckpointTrashOwnerView = {
+            sessionId: "trash-a",
+            title: "Trash A",
+            referencedBytes: 1024,
+            confirmationToken: "opaque-token",
+        };
+        let finishCleanup = () => {};
+        const cleanup = new Promise<AgentCleanupWorkspaceCheckpointsResult>((resolve) => {
+            finishCleanup = () => resolve({ removedUnownedBytes: 0, quota: makeRewindState().quota });
+        });
+        let finishPurge = () => {};
+        const purge = new Promise<AgentPurgeTrashedSessionResult>((resolve) => {
+            finishPurge = () => resolve({ purgedSessionId: owner.sessionId, quota: makeRewindState().quota });
+        });
+        const { client } = renderRewindContent(
+            makeRewindClient({
+                cleanupWorkspaceCheckpoints: vi.fn(() => cleanup),
+                listCheckpointStorageOwners: vi
+                    .fn()
+                    .mockResolvedValueOnce({ trashOwners: [owner] })
+                    .mockResolvedValueOnce({ trashOwners: [] }),
+                purgeTrashedSession: vi.fn(() => purge),
+            })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    quota: {
+                        status: "referenced-over-quota",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+        await act(async () => quotaBannerProps.latest.onManage());
+        const request = {
+            trashedSessionId: owner.sessionId,
+            confirmationToken: owner.confirmationToken,
+        };
+
+        act(() => {
+            void quotaBannerProps.latest.onCleanup();
+            void quotaDialogProps.latest.onPurge(request);
+        });
+        expect(client.cleanupWorkspaceCheckpoints).toHaveBeenCalledTimes(1);
+        expect(client.purgeTrashedSession).not.toHaveBeenCalled();
+        act(() => finishCleanup());
+        await waitFor(() => expect(quotaBannerProps.latest.busy).toBe(false));
+
+        act(() => {
+            void quotaDialogProps.latest.onPurge(request);
+            void quotaBannerProps.latest.onCleanup();
+        });
+        expect(client.purgeTrashedSession).toHaveBeenCalledTimes(1);
+        expect(client.cleanupWorkspaceCheckpoints).toHaveBeenCalledTimes(1);
+        act(() => finishPurge());
+        await waitFor(() => expect(quotaBannerProps.latest.busy).toBe(false));
+    });
+
+    it("keeps a purge owner stale after purge and authoritative refresh both fail", async () => {
+        const owner: AgentCheckpointTrashOwnerView = {
+            sessionId: "trash-a",
+            title: "Trash A",
+            referencedBytes: 1024,
+            confirmationToken: "opaque-token",
+        };
+        const listOwners = vi
+            .fn()
+            .mockResolvedValueOnce({ trashOwners: [owner] })
+            .mockRejectedValueOnce(new Error("refresh failed"))
+            .mockResolvedValueOnce({
+                trashOwners: [{ ...owner, confirmationToken: "fresh-token" }],
+            })
+            .mockResolvedValueOnce({ trashOwners: [] });
+        const { client } = renderRewindContent(
+            makeRewindClient({
+                listCheckpointStorageOwners: listOwners,
+                purgeTrashedSession: vi.fn().mockRejectedValueOnce(new Error("purge failed")).mockResolvedValueOnce({
+                    purgedSessionId: owner.sessionId,
+                    quota: makeRewindState().quota,
+                }),
+            })
+        );
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    quota: {
+                        status: "referenced-over-quota",
+                        usedBytes: 6 * 1024 ** 3,
+                        softQuotaBytes: 5 * 1024 ** 3,
+                        cleanupAvailable: true,
+                    },
+                }),
+            });
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Manage checkpoint storage" }));
+        await waitFor(() => expect(quotaDialogProps.latest.owners).toEqual([owner]));
+        const request = {
+            trashedSessionId: owner.sessionId,
+            confirmationToken: owner.confirmationToken,
+        };
+
+        await act(async () => quotaDialogProps.latest.onPurge(request));
+        await waitFor(() => expect(quotaDialogProps.latest.phase).toBe("error"));
+        expect(quotaDialogProps.latest.owners).toEqual([owner]);
+        expect(quotaDialogProps.latest.staleOwnerIds).toEqual([owner.sessionId]);
+        await act(async () => quotaDialogProps.latest.onPurge(request));
+        expect(client.purgeTrashedSession).toHaveBeenCalledTimes(1);
+
+        await act(async () => quotaDialogProps.latest.onRefresh());
+        expect(quotaDialogProps.latest.staleOwnerIds).toEqual([]);
+        expect(quotaDialogProps.latest.owners[0].confirmationToken).toBe("fresh-token");
+        await act(async () =>
+            quotaDialogProps.latest.onPurge({
+                trashedSessionId: owner.sessionId,
+                confirmationToken: "fresh-token",
+            })
+        );
+        expect(client.purgeTrashedSession).toHaveBeenCalledTimes(2);
+    });
+
     it("uses one rewind controller for message Revert and the slash selector path", async () => {
         const { client } = renderRewindContent();
 

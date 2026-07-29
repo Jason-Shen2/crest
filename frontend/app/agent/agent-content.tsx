@@ -29,6 +29,7 @@ import {
 import { AgentCommandCard } from "./agent-command-card";
 import { AgentCommandResultList } from "./agent-command-result";
 import type { AgentRuntimeClient } from "./agent-runtime-client";
+import { isAgentSlashCommandReadOnly } from "./agent-slash-command-routing";
 import {
     AssistantRuntimeProvider,
     ContextReferenceBar,
@@ -37,6 +38,9 @@ import {
     useCrestAssistantRuntime,
 } from "./assistant-ui";
 import type { CrestContextUsage } from "./assistant-ui/context-display";
+import { CheckpointQuotaBanner } from "./rewind/checkpoint-quota-banner";
+import { CheckpointQuotaDialog, type CheckpointPurgeRequest } from "./rewind/checkpoint-quota-dialog";
+import { RecoveryDialog } from "./rewind/recovery-dialog";
 import { RedoDock } from "./rewind/redo-dock";
 import { RewindPreviewDialog } from "./rewind/rewind-preview-dialog";
 import { RewindSelector } from "./rewind/rewind-selector";
@@ -73,6 +77,21 @@ interface AgentRevealResolver {
     finish(revealed: boolean, clearRequest?: boolean): void;
 }
 
+interface RecoveryUiState {
+    open: boolean;
+    phase: "idle" | "loading" | "resolving" | "error";
+    recovery?: AgentWorkspaceRecoveryView;
+    errorMessage?: string;
+}
+
+interface CheckpointQuotaUiState {
+    open: boolean;
+    phase: "idle" | "loading" | "ready" | "purging" | "error";
+    owners: AgentCheckpointTrashOwnerView[];
+    staleOwnerIds: string[];
+    errorMessage?: string;
+}
+
 const RevealTurnTimeoutMs = 5_000;
 
 function emptyAttachedPanelState(): AgentAttachedPanelState {
@@ -93,6 +112,10 @@ function usageField(usage: Record<string, unknown>, ...keys: string[]): number |
         if (value != null) return value;
     }
     return undefined;
+}
+
+function uiErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
 }
 
 export function mapPiUsageToContextUsage(usage: unknown): CrestContextUsage | undefined {
@@ -334,6 +357,25 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
     const composerAnchorRef = useRef<HTMLDivElement>(null);
     const activeSessionPath = agentStateValue.activeSession?.path;
+    const operationScopeKey = `${activeSessionPath ?? ""}\u0000${sessionRevision}`;
+    const operationScopeRef = useRef(operationScopeKey);
+    operationScopeRef.current = operationScopeKey;
+    const recoveryEpochRef = useRef(0);
+    const quotaCleanupEpochRef = useRef(0);
+    const quotaDialogEpochRef = useRef(0);
+    const quotaMaintenanceLeaseRef = useRef<{ scopeKey: string; token: symbol } | undefined>(undefined);
+    const consumedPurgeTokensRef = useRef(new Set<string>());
+    const [recoveryUi, setRecoveryUi] = useState<RecoveryUiState>({
+        open: false,
+        phase: "idle",
+    });
+    const [quotaBusy, setQuotaBusy] = useState(false);
+    const [quotaUi, setQuotaUi] = useState<CheckpointQuotaUiState>({
+        open: false,
+        phase: "idle",
+        owners: [],
+        staleOwnerIds: [],
+    });
     const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<AgentComposerTextRequest>();
     const [revealTurnRequest, setRevealTurnRequest] = useState<AgentRevealTurnRequest>();
     const revealRequestIdRef = useRef(0);
@@ -510,6 +552,10 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
     const onAgentSubmit = useCallback(
         (text: string, images?: string[]) => {
             if (!text && (images?.length ?? 0) === 0) return false;
+            if (hostStateRef.current.rewindState.frozen && !isAgentSlashCommandReadOnly(text)) {
+                onUserError("Workspace recovery must finish before sending another prompt.");
+                return false;
+            }
             const api = agentApiRef.current;
             if (!api) {
                 onUserError("Agent is still starting. Try again in a moment.");
@@ -575,6 +621,261 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         onEditorText,
         onError: onUserError,
     });
+    const recoveryFrozen = hostState.rewindState.frozen;
+
+    useLayoutEffect(() => {
+        recoveryEpochRef.current++;
+        quotaCleanupEpochRef.current++;
+        quotaDialogEpochRef.current++;
+        quotaMaintenanceLeaseRef.current = undefined;
+        consumedPurgeTokensRef.current.clear();
+        setRecoveryUi({ open: false, phase: "idle" });
+        setQuotaBusy(false);
+        setQuotaUi({ open: false, phase: "idle", owners: [], staleOwnerIds: [] });
+    }, [client, operationScopeKey]);
+
+    useEffect(() => {
+        const sessionMetadata = agentStateValue.activeSession;
+        if (!recoveryFrozen || !sessionMetadata) {
+            recoveryEpochRef.current++;
+            setRecoveryUi({ open: false, phase: "idle" });
+            return;
+        }
+        const scopeKey = operationScopeKey;
+        const epoch = ++recoveryEpochRef.current;
+        setRecoveryUi({ open: true, phase: "loading" });
+        void client
+            .getWorkspaceRecovery({ sessionMetadata })
+            .then((recovery) => {
+                if (epoch !== recoveryEpochRef.current || operationScopeRef.current !== scopeKey) {
+                    return;
+                }
+                setRecoveryUi({ open: true, phase: "idle", recovery });
+            })
+            .catch((error) => {
+                if (epoch !== recoveryEpochRef.current || operationScopeRef.current !== scopeKey) {
+                    return;
+                }
+                setRecoveryUi({
+                    open: true,
+                    phase: "error",
+                    errorMessage: uiErrorMessage(error),
+                });
+            });
+    }, [agentStateValue.activeSession, client, operationScopeKey, recoveryFrozen]);
+
+    const resolveRecovery = useCallback(
+        async (action: AgentResolveWorkspaceRecoveryInput["action"]): Promise<void> => {
+            const sessionMetadata = agentStateValue.activeSession;
+            const recovery = recoveryUi.recovery;
+            if (!sessionMetadata || !recovery || recoveryUi.phase === "resolving") {
+                return;
+            }
+            const scopeKey = operationScopeKey;
+            const epoch = ++recoveryEpochRef.current;
+            setRecoveryUi((current) => ({ ...current, phase: "resolving", errorMessage: undefined }));
+            try {
+                await client.resolveWorkspaceRecovery({
+                    sessionMetadata,
+                    operationId: recovery.operationId,
+                    action,
+                });
+                if (
+                    epoch !== recoveryEpochRef.current ||
+                    operationScopeRef.current !== scopeKey ||
+                    !hostStateRef.current.rewindState.frozen
+                ) {
+                    return;
+                }
+                const refreshed = await client.getWorkspaceRecovery({ sessionMetadata });
+                if (epoch !== recoveryEpochRef.current || operationScopeRef.current !== scopeKey) {
+                    return;
+                }
+                setRecoveryUi({ open: true, phase: "idle", recovery: refreshed });
+            } catch (error) {
+                if (epoch !== recoveryEpochRef.current || operationScopeRef.current !== scopeKey) {
+                    return;
+                }
+                let refreshed = recovery;
+                try {
+                    refreshed = (await client.getWorkspaceRecovery({ sessionMetadata })) ?? recovery;
+                } catch {}
+                if (epoch !== recoveryEpochRef.current || operationScopeRef.current !== scopeKey) {
+                    return;
+                }
+                setRecoveryUi({
+                    open: true,
+                    phase: "error",
+                    recovery: refreshed,
+                    errorMessage: uiErrorMessage(error),
+                });
+            }
+        },
+        [agentStateValue.activeSession, client, operationScopeKey, recoveryUi.phase, recoveryUi.recovery]
+    );
+
+    const cleanupCheckpoints = useCallback(async (): Promise<void> => {
+        if (operationScopeRef.current !== operationScopeKey) {
+            return;
+        }
+        const sessionMetadata = agentStateValue.activeSession;
+        if (!sessionMetadata || quotaMaintenanceLeaseRef.current || hostStateRef.current.rewindState.frozen) {
+            return;
+        }
+        const scopeKey = operationScopeKey;
+        const lease = { scopeKey, token: Symbol("checkpoint-cleanup") };
+        quotaMaintenanceLeaseRef.current = lease;
+        const epoch = ++quotaCleanupEpochRef.current;
+        setQuotaBusy(true);
+        try {
+            await client.cleanupWorkspaceCheckpoints({ sessionMetadata });
+        } catch (error) {
+            if (epoch === quotaCleanupEpochRef.current && operationScopeRef.current === scopeKey) {
+                onUserError(uiErrorMessage(error));
+            }
+        } finally {
+            if (
+                quotaMaintenanceLeaseRef.current === lease &&
+                epoch === quotaCleanupEpochRef.current &&
+                operationScopeRef.current === scopeKey
+            ) {
+                quotaMaintenanceLeaseRef.current = undefined;
+                setQuotaBusy(false);
+            }
+        }
+    }, [agentStateValue.activeSession, client, onUserError, operationScopeKey]);
+
+    const loadCheckpointOwners = useCallback(async (): Promise<void> => {
+        if (operationScopeRef.current !== operationScopeKey) {
+            return;
+        }
+        const sessionMetadata = agentStateValue.activeSession;
+        if (!sessionMetadata || hostStateRef.current.rewindState.frozen || quotaMaintenanceLeaseRef.current) {
+            return;
+        }
+        const scopeKey = operationScopeKey;
+        const lease = { scopeKey, token: Symbol("checkpoint-owner-refresh") };
+        quotaMaintenanceLeaseRef.current = lease;
+        const epoch = ++quotaDialogEpochRef.current;
+        setQuotaBusy(true);
+        setQuotaUi((current) => ({
+            ...current,
+            open: true,
+            phase: "loading",
+            errorMessage: undefined,
+        }));
+        try {
+            const result = await client.listCheckpointStorageOwners({ sessionMetadata });
+            if (epoch !== quotaDialogEpochRef.current || operationScopeRef.current !== scopeKey) {
+                return;
+            }
+            consumedPurgeTokensRef.current.clear();
+            setQuotaUi({ open: true, phase: "ready", owners: result.trashOwners, staleOwnerIds: [] });
+        } catch (error) {
+            if (epoch !== quotaDialogEpochRef.current || operationScopeRef.current !== scopeKey) {
+                return;
+            }
+            setQuotaUi((current) => ({
+                ...current,
+                open: true,
+                phase: "error",
+                errorMessage: uiErrorMessage(error),
+            }));
+        } finally {
+            if (
+                quotaMaintenanceLeaseRef.current === lease &&
+                epoch === quotaDialogEpochRef.current &&
+                operationScopeRef.current === scopeKey
+            ) {
+                quotaMaintenanceLeaseRef.current = undefined;
+                setQuotaBusy(false);
+            }
+        }
+    }, [agentStateValue.activeSession, client, operationScopeKey]);
+
+    const purgeCheckpointOwner = useCallback(
+        async (request: CheckpointPurgeRequest): Promise<void> => {
+            if (
+                operationScopeRef.current !== operationScopeKey ||
+                consumedPurgeTokensRef.current.has(request.confirmationToken) ||
+                quotaMaintenanceLeaseRef.current
+            ) {
+                return;
+            }
+            const sessionMetadata = agentStateValue.activeSession;
+            if (!sessionMetadata || hostStateRef.current.rewindState.frozen) {
+                return;
+            }
+            const scopeKey = operationScopeKey;
+            const lease = { scopeKey, token: Symbol("checkpoint-owner-purge") };
+            quotaMaintenanceLeaseRef.current = lease;
+            const epoch = ++quotaDialogEpochRef.current;
+            consumedPurgeTokensRef.current.add(request.confirmationToken);
+            setQuotaBusy(true);
+            setQuotaUi((current) => ({ ...current, phase: "purging", errorMessage: undefined }));
+            try {
+                let errorMessage: string | undefined;
+                try {
+                    await client.purgeTrashedSession({
+                        sessionMetadata,
+                        trashedSessionId: request.trashedSessionId,
+                        confirmationToken: request.confirmationToken,
+                    });
+                } catch (error) {
+                    errorMessage = uiErrorMessage(error);
+                }
+                if (epoch !== quotaDialogEpochRef.current || operationScopeRef.current !== scopeKey) {
+                    return;
+                }
+                try {
+                    const result = await client.listCheckpointStorageOwners({ sessionMetadata });
+                    if (epoch !== quotaDialogEpochRef.current || operationScopeRef.current !== scopeKey) {
+                        return;
+                    }
+                    consumedPurgeTokensRef.current.clear();
+                    setQuotaUi({
+                        open: true,
+                        phase: errorMessage ? "error" : "ready",
+                        owners: result.trashOwners,
+                        staleOwnerIds: [],
+                        errorMessage,
+                    });
+                } catch (refreshError) {
+                    if (epoch !== quotaDialogEpochRef.current || operationScopeRef.current !== scopeKey) {
+                        return;
+                    }
+                    const refreshErrorMessage = uiErrorMessage(refreshError);
+                    setQuotaUi((current) => ({
+                        ...current,
+                        open: true,
+                        phase: "error",
+                        staleOwnerIds: current.staleOwnerIds.includes(request.trashedSessionId)
+                            ? current.staleOwnerIds
+                            : [...current.staleOwnerIds, request.trashedSessionId],
+                        errorMessage: errorMessage
+                            ? `${errorMessage} Storage diagnostics refresh also failed: ${refreshErrorMessage}`
+                            : refreshErrorMessage,
+                    }));
+                }
+            } finally {
+                if (
+                    quotaMaintenanceLeaseRef.current === lease &&
+                    epoch === quotaDialogEpochRef.current &&
+                    operationScopeRef.current === scopeKey
+                ) {
+                    quotaMaintenanceLeaseRef.current = undefined;
+                    setQuotaBusy(false);
+                }
+            }
+        },
+        [agentStateValue.activeSession, client, operationScopeKey]
+    );
+    const closeCheckpointOwners = useCallback((): void => {
+        if (operationScopeRef.current !== operationScopeKey || quotaMaintenanceLeaseRef.current) {
+            return;
+        }
+        setQuotaUi((current) => ({ ...current, open: false }));
+    }, [operationScopeKey]);
 
     return (
         <section className="h-full w-full" data-testid="agent-content">
@@ -656,6 +957,33 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         }
                         beforeComposer={
                             <>
+                                {recoveryFrozen ? (
+                                    <section
+                                        className="flex items-center gap-3 rounded-2xl border border-red-400/30 bg-red-500/10 px-3 py-2.5 text-sm"
+                                        role="status"
+                                    >
+                                        <div className="min-w-0 flex-1">
+                                            <p className="font-medium text-red-200">Workspace recovery required</p>
+                                            <p className="text-xs text-red-200/75">
+                                                Agent writes are frozen. Read-only conversation tools remain available.
+                                            </p>
+                                        </div>
+                                        <button
+                                            className="cursor-pointer rounded-lg border border-red-300/30 px-2.5 py-1 text-xs"
+                                            onClick={() => setRecoveryUi((current) => ({ ...current, open: true }))}
+                                            type="button"
+                                        >
+                                            Review recovery
+                                        </button>
+                                    </section>
+                                ) : null}
+                                <CheckpointQuotaBanner
+                                    quota={hostState.rewindState.quota}
+                                    busy={quotaBusy || hostState.rewindState.busy || recoveryFrozen}
+                                    mutationsDisabled={recoveryFrozen}
+                                    onCleanup={cleanupCheckpoints}
+                                    onManage={loadCheckpointOwners}
+                                />
                                 {hostState.rewindState.redo ? (
                                     <RedoDock
                                         redo={hostState.rewindState.redo}
@@ -781,6 +1109,26 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         errorMessage={rewindController.preview.errorMessage}
                         onCancel={rewindController.cancelPreview}
                         onConfirm={rewindController.confirmPreview}
+                    />
+                    <RecoveryDialog
+                        open={recoveryFrozen && recoveryUi.open}
+                        recovery={recoveryUi.recovery}
+                        busy={recoveryUi.phase === "loading" || recoveryUi.phase === "resolving"}
+                        errorMessage={recoveryUi.errorMessage}
+                        onAction={resolveRecovery}
+                        onClose={() => setRecoveryUi((current) => ({ ...current, open: false }))}
+                    />
+                    <CheckpointQuotaDialog
+                        open={quotaUi.open}
+                        owners={quotaUi.owners}
+                        phase={quotaUi.phase}
+                        errorMessage={quotaUi.errorMessage}
+                        maintenanceBusy={quotaBusy}
+                        mutationsDisabled={recoveryFrozen}
+                        onClose={closeCheckpointOwners}
+                        onPurge={purgeCheckpointOwner}
+                        onRefresh={loadCheckpointOwners}
+                        staleOwnerIds={quotaUi.staleOwnerIds}
                     />
                 </AssistantRuntimeProvider>
             </div>

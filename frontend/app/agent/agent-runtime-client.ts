@@ -89,23 +89,37 @@ export class AgentRuntimeClient {
     }
 
     getWorkspaceRecovery(input: AgentGetWorkspaceRecoveryInput) {
-        return getAgentApi(this).getWorkspaceRecovery(this.identity, input);
+        return getAgentApi(this).getWorkspaceRecovery(this.identity, {
+            sessionMetadata: input.sessionMetadata,
+        });
     }
 
     resolveWorkspaceRecovery(input: AgentResolveWorkspaceRecoveryInput) {
-        return getAgentApi(this).resolveWorkspaceRecovery(this.identity, input);
+        return getAgentApi(this).resolveWorkspaceRecovery(this.identity, {
+            sessionMetadata: input.sessionMetadata,
+            operationId: input.operationId,
+            action: input.action,
+        });
     }
 
     cleanupWorkspaceCheckpoints(input: AgentCleanupWorkspaceCheckpointsInput) {
-        return getAgentApi(this).cleanupWorkspaceCheckpoints(this.identity, input);
+        return getAgentApi(this).cleanupWorkspaceCheckpoints(this.identity, {
+            sessionMetadata: input.sessionMetadata,
+        });
     }
 
     listCheckpointStorageOwners(input: AgentListCheckpointStorageOwnersInput) {
-        return getAgentApi(this).listCheckpointStorageOwners(this.identity, input);
+        return getAgentApi(this).listCheckpointStorageOwners(this.identity, {
+            sessionMetadata: input.sessionMetadata,
+        });
     }
 
     purgeTrashedSession(input: AgentPurgeTrashedSessionInput) {
-        return getAgentApi(this).purgeTrashedSession(this.identity, input);
+        return getAgentApi(this).purgeTrashedSession(this.identity, {
+            sessionMetadata: input.sessionMetadata,
+            trashedSessionId: input.trashedSessionId,
+            confirmationToken: input.confirmationToken,
+        });
     }
 
     prepareContextDraft(input: AgentPrepareContextDraftInput) {

@@ -222,6 +222,37 @@ describe("AgentSessionStateBroadcaster", () => {
         expect(state.rewindState).toEqual(rewindState);
     });
 
+    it("keeps the cold session open until asynchronous authoritative state construction finishes", async () => {
+        const registry = new AgentRuntimeRegistry<FakeRuntime>({ idleTtlMs: 1_000 });
+        const coldMetadata = metadata("/sessions/cold-lifecycle.db");
+        const branchEntered = deferred();
+        const branchGate = deferred();
+        const session = fakeSession();
+        session.getBranch.mockImplementation(async () => {
+            branchEntered.resolve();
+            await branchGate.promise;
+            return persistedBranch();
+        });
+        const broadcaster = new AgentSessionStateBroadcaster({
+            registry: registry as never,
+            openSession: vi.fn(async () => session as never),
+            publish: vi.fn(async () => {}),
+            workspaceRewind: { status: "enabled" },
+        });
+
+        const publication = registry.withRetainedSessionMutation(
+            coldMetadata.path,
+            { rejectIfRunning: true },
+            (lease) => broadcaster.publishForLease(lease as never, coldMetadata)
+        );
+        await branchEntered.promise;
+
+        expect(session.close).not.toHaveBeenCalled();
+        branchGate.resolve();
+        await publication;
+        expect(session.close).toHaveBeenCalledOnce();
+    });
+
     it("does not release the retained mutation lease until direct publication completes", async () => {
         const registry = new AgentRuntimeRegistry<FakeRuntime>({ idleTtlMs: 1_000 });
         const liveMetadata = metadata("/sessions/live.db");

@@ -130,7 +130,7 @@ export class AgentSessionStateBroadcaster {
             const rewindState = this.buildRewindState
                 ? await this.buildRewindState(sessionMetadata, await session.getEntries())
                 : undefined;
-            return buildPersistedAgentSessionState(
+            return await buildPersistedAgentSessionState(
                 session,
                 typeof this.workspaceRewind === "function"
                     ? await this.workspaceRewind(sessionMetadata)

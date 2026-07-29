@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { resolveAgentSlashCommandRoute } from "./agent-slash-command-routing";
+import { isAgentSlashCommandReadOnly, resolveAgentSlashCommandRoute } from "./agent-slash-command-routing";
 
 describe("resolveAgentSlashCommandRoute", () => {
     it("routes builtin agent slash commands before prompt submission", () => {
@@ -54,5 +54,32 @@ describe("resolveAgentSlashCommandRoute", () => {
         expect(resolveAgentSlashCommandRoute("explain /tree")).toEqual({ handled: false });
         expect(resolveAgentSlashCommandRoute("/unknown")).toEqual({ handled: false });
         expect(resolveAgentSlashCommandRoute("/")).toEqual({ handled: false });
+    });
+
+    it("reuses backend command access metadata for frozen slash routing", () => {
+        for (const command of [
+            "/tree",
+            "/session",
+            "/resume",
+            "/info",
+            "/copy",
+            "/export out.jsonl",
+            "/reload",
+            "/model",
+        ]) {
+            expect(isAgentSlashCommandReadOnly(command)).toBe(true);
+        }
+        for (const command of [
+            "plain prompt",
+            "/fork",
+            "/clone",
+            "/rewind",
+            "/redo",
+            "/new",
+            "/compact",
+            "/import in.jsonl",
+        ]) {
+            expect(isAgentSlashCommandReadOnly(command)).toBe(false);
+        }
     });
 });

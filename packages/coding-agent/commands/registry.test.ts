@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { getBuiltInAgentCommands, parseAgentCommandInput } from "./registry";
+import { getBuiltInAgentCommands, isAgentBackendCommandReadOnly, parseAgentCommandInput } from "./registry";
 
 describe("agent command registry", () => {
     it("includes the implemented Pi command baseline", () => {
@@ -83,5 +83,14 @@ describe("agent command registry", () => {
             commandName: "import",
             argsText: "/tmp/session.jsonl",
         });
+    });
+
+    it("classifies frozen-safe inspection commands separately from session mutations", () => {
+        for (const command of ["tree", "session", "resume", "info", "copy", "export", "reload"] as const) {
+            expect(isAgentBackendCommandReadOnly(command)).toBe(true);
+        }
+        for (const command of ["fork", "clone", "rewind", "redo", "new", "compact", "import"] as const) {
+            expect(isAgentBackendCommandReadOnly(command)).toBe(false);
+        }
     });
 });
