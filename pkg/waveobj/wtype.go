@@ -211,9 +211,8 @@ type WorkspaceContentState struct {
 }
 
 type WorkspaceAgentState struct {
-	ActiveSession          *AgentSessionMeta   `json:"activesession,omitempty"`
-	Selection              *AgentSelectionMeta `json:"selection,omitempty"`
-	PreferredTerminalTabId string              `json:"preferredterminaltabid,omitempty"`
+	ActiveSession *AgentSessionMeta   `json:"activesession,omitempty"`
+	Selection     *AgentSelectionMeta `json:"selection,omitempty"`
 }
 
 type ActiveTabUpdate struct {

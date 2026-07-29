@@ -2505,7 +2505,6 @@ declare global {
     type WorkspaceAgentState = {
         activesession?: AgentSessionMeta;
         selection?: AgentSelectionMeta;
-        preferredterminaltabid?: string;
     };
 
     // workspaceservice.WorkspaceAgentStateCheckpoint

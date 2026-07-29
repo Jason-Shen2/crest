@@ -31,14 +31,7 @@ func TestWorkspaceAgentStateSaveUsesExactRevisionAndDeepCopies(t *testing.T) {
 	ctx := setupCheckpointTestWStore(t)
 	svc := &WorkspaceService{}
 	workspace := insertTerminalDomainWorkspace(t, ctx, "agent-state-save")
-	terminal, err := svc.CreateTerminalTab(ctx, TerminalTabCreateData{
-		WorkspaceId: workspace.OID, ExpectedRevision: 0, Name: "Preferred",
-	})
-	if err != nil {
-		t.Fatalf("create Terminal: %v", err)
-	}
-	terminalTabId := terminal.TerminalTabIds[0]
-	state := populatedAgentState(terminalTabId)
+	state := populatedAgentState()
 
 	checkpoint, err := svc.SaveWorkspaceAgentState(ctx, SaveWorkspaceAgentStateData{
 		WorkspaceId: workspace.OID, ExpectedRevision: 0, State: state,
@@ -50,7 +43,7 @@ func TestWorkspaceAgentStateSaveUsesExactRevisionAndDeepCopies(t *testing.T) {
 		t.Fatalf("checkpoint = %#v", checkpoint)
 	}
 	persisted := mustGetAgentWorkspace(t, ctx, workspace.OID)
-	if persisted.NavigationRevision != 1 || persisted.AgentRevision != 1 || !reflect.DeepEqual(persisted.AgentState, state) {
+	if persisted.NavigationRevision != 0 || persisted.AgentRevision != 1 || !reflect.DeepEqual(persisted.AgentState, state) {
 		t.Fatalf("persisted workspace = %#v", persisted)
 	}
 
@@ -59,7 +52,7 @@ func TestWorkspaceAgentStateSaveUsesExactRevisionAndDeepCopies(t *testing.T) {
 	checkpoint.State.ActiveSession.Path = "/mutated-checkpoint"
 	checkpoint.State.Selection.Provider = "mutated-checkpoint"
 	persisted = mustGetAgentWorkspace(t, ctx, workspace.OID)
-	expected := populatedAgentState(terminalTabId)
+	expected := populatedAgentState()
 	if !reflect.DeepEqual(persisted.AgentState, expected) {
 		t.Fatalf("persisted Agent state aliases caller or checkpoint: %#v", persisted.AgentState)
 	}
@@ -68,8 +61,7 @@ func TestWorkspaceAgentStateSaveUsesExactRevisionAndDeepCopies(t *testing.T) {
 		WorkspaceId:      workspace.OID,
 		ExpectedRevision: 0,
 		State: waveobj.WorkspaceAgentState{
-			PreferredTerminalTabId: terminalTabId,
-			Selection:              &waveobj.AgentSelectionMeta{Model: "invalid-stale"},
+			Selection: &waveobj.AgentSelectionMeta{Model: "invalid-stale"},
 		},
 	})
 	if !errors.Is(err, ErrStaleWorkspaceCheckpoint) {
@@ -123,10 +115,6 @@ func TestWorkspaceAgentStateRejectsInvalidDescriptorsWithoutPartialWrites(t *tes
 			state: waveobj.WorkspaceAgentState{Selection: &waveobj.AgentSelectionMeta{
 				Provider: "provider", Model: "model", Reasoning: "extreme",
 			}},
-		},
-		{
-			name:  "preferred Terminal membership",
-			state: waveobj.WorkspaceAgentState{PreferredTerminalTabId: "missing-terminal"},
 		},
 	}
 
@@ -190,7 +178,7 @@ func TestWorkspaceAgentStateRejectsLegacyWorkspaceBeforeStateValidation(t *testi
 	}
 }
 
-func populatedAgentState(terminalTabId string) waveobj.WorkspaceAgentState {
+func populatedAgentState() waveobj.WorkspaceAgentState {
 	return waveobj.WorkspaceAgentState{
 		ActiveSession: &waveobj.AgentSessionMeta{
 			Id:        "session-1",
@@ -203,7 +191,6 @@ func populatedAgentState(terminalTabId string) waveobj.WorkspaceAgentState {
 			Model:     "claude-sonnet",
 			Reasoning: "high",
 		},
-		PreferredTerminalTabId: terminalTabId,
 	}
 }
 
