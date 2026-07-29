@@ -170,50 +170,46 @@ test("retains checkpoint owners in archive trash and forks through aggressive Gi
     ]);
 });
 
-test(
-    "retains bound and unbound pending plus operation journal owners without consulting quota",
-    async () => {
-        const { store, sessionsRoot, snapshot } = await makeStore();
-        const pending = new PendingBoundaryStore(store);
-        const owner = await makeProcessOwnerIdentity();
-        await pending.begin({
-            boundaryToken: "pending-owner",
-            sessionId: "session-pending",
-            workspaceIdentity: store.identity.workspaceIdentity,
-            workspaceIncarnation: store.identity.workspaceIncarnation,
-            processOwner: owner,
-            nonce: "a".repeat(64),
-            before: snapshot,
-        });
-        await pending.begin({
-            boundaryToken: "bound-owner",
-            sessionId: "session-bound",
-            workspaceIdentity: store.identity.workspaceIdentity,
-            workspaceIncarnation: store.identity.workspaceIncarnation,
-            processOwner: owner,
-            nonce: "b".repeat(64),
-            before: snapshot,
-        });
-        await pending.bind("bound-owner", "user-bound");
-        await store.anchorOperation({
-            operationId: "operation-owner",
-            sessionId: "session-operation",
-            workspaceIdentity: store.identity.workspaceIdentity,
-            workspaceIncarnation: store.identity.workspaceIncarnation,
-            snapshot,
-        });
-        const quota = vi.spyOn(store, "getQuotaStatus").mockRejectedValue(new Error("soft quota"));
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date("2026-03-01T00:00:00Z"));
+test("retains bound and unbound pending plus operation journal owners without consulting quota", async () => {
+    const { store, sessionsRoot, snapshot } = await makeStore();
+    const pending = new PendingBoundaryStore(store);
+    const owner = await makeProcessOwnerIdentity();
+    await pending.begin({
+        boundaryToken: "pending-owner",
+        sessionId: "session-pending",
+        workspaceIdentity: store.identity.workspaceIdentity,
+        workspaceIncarnation: store.identity.workspaceIncarnation,
+        processOwner: owner,
+        nonce: "a".repeat(64),
+        before: snapshot,
+    });
+    await pending.begin({
+        boundaryToken: "bound-owner",
+        sessionId: "session-bound",
+        workspaceIdentity: store.identity.workspaceIdentity,
+        workspaceIncarnation: store.identity.workspaceIncarnation,
+        processOwner: owner,
+        nonce: "b".repeat(64),
+        before: snapshot,
+    });
+    await pending.bind("bound-owner", "user-bound");
+    await store.anchorOperation({
+        operationId: "operation-owner",
+        sessionId: "session-operation",
+        workspaceIdentity: store.identity.workspaceIdentity,
+        workspaceIncarnation: store.identity.workspaceIncarnation,
+        snapshot,
+    });
+    const quota = vi.spyOn(store, "getQuotaStatus").mockRejectedValue(new Error("soft quota"));
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-01T00:00:00Z"));
 
-        expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
-        vi.advanceTimersByTime(SnapshotRetentionLimits.orphanGraceMs * 2);
-        expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
-        expect(quota).not.toHaveBeenCalled();
-        await store.verify(snapshot);
-    },
-    15_000
-);
+    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
+    vi.advanceTimersByTime(SnapshotRetentionLimits.orphanGraceMs * 2);
+    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
+    expect(quota).not.toHaveBeenCalled();
+    await store.verify(snapshot);
+}, 15_000);
 
 test("retains workspace state current and redo snapshots through aggressive Git GC", async () => {
     const { store, sessionsRoot, snapshot: currentSnapshot } = await makeStore();
