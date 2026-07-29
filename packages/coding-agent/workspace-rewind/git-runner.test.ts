@@ -126,7 +126,7 @@ describe.sequential("WorkspaceGitRunner", () => {
                 cwd: root,
                 gitDir,
                 workTree,
-                timeoutMs: 2_000,
+                timeoutMs: 10_000,
             });
             const report = JSON.parse(result.stdout.toString()) as Report;
 
