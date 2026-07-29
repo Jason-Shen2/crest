@@ -32,6 +32,15 @@
 //
 // See docs/agent-rendering-architecture.md.
 
+import type {
+    AgentHarnessEvent,
+    AgentHarnessPreparedTurn,
+    AgentHarnessTurnPreparation,
+    AgentHarnessTurnPreparationInput,
+    SessionTreeEntry,
+} from "@crest/agent/harness/types";
+import { AgentHarnessTerminalPreparationError } from "@crest/agent/harness/types";
+import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
 import type { Api, ImageContent, Model } from "@crest/ai";
 import {
     makeUnavailableAgentPtyHost,
@@ -45,19 +54,15 @@ import { filterTreeForDisplay } from "./commands/session-views";
 import { foldContextJournal } from "./context/journal";
 import type { ContextProjectionReport } from "./context/types";
 import type { AgentAuthResolver, AgentHarnessHost } from "./harness-factory";
-import type {
-    AgentHarnessEvent,
-    AgentHarnessPreparedTurn,
-    AgentHarnessTurnPreparation,
-    AgentHarnessTurnPreparationInput,
-    SessionTreeEntry,
-} from "@crest/agent/harness/types";
-import { AgentHarnessTerminalPreparationError } from "@crest/agent/harness/types";
 import type { ToolCallHook } from "./permissions";
-import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
+import type { WorkspaceCheckpointManager } from "./workspace-rewind/checkpoint-manager";
 
 export type AgentSessionRuntimeStatus = "idle" | "streaming" | "error";
 export type AgentTurnStatus = "streaming" | "done" | "error";
+export type AgentWorkspaceRewindState =
+    | { status: "disabled" }
+    | { status: "enabled" }
+    | { status: "unavailable"; message: string };
 
 export interface AgentTurn {
     // Identity of the turn = the session entry id of the user message that
@@ -84,6 +89,7 @@ export interface AgentSessionRuntimeState {
     errorMessage?: string;
     contextReports: ContextProjectionReport[];
     commands: AgentPtySnapshot[];
+    workspaceRewind: AgentWorkspaceRewindState;
 }
 
 export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
@@ -98,12 +104,15 @@ interface AgentSessionRuntimeStateEvent {
     followUp: AgentMessage[];
     contextReports: ContextProjectionReport[];
     commands: AgentPtySnapshot[];
+    workspaceRewind: AgentWorkspaceRewindState;
 }
 
 export interface AgentSessionRuntimeOptions {
     onTurnFinished?: AgentTurnFinishedHook;
     initialContextEntries?: SessionTreeEntry[];
     ptyHost?: AgentPtyHost;
+    checkpointManager?: WorkspaceCheckpointManager;
+    workspaceRewind?: AgentWorkspaceRewindState;
 }
 
 export interface AgentExecutionConfig {
@@ -218,6 +227,8 @@ export class AgentSessionRuntime {
     unsubscribeHarness: () => void;
     onTurnFinished: AgentTurnFinishedHook | undefined;
     ptyHost: AgentPtyHost;
+    checkpointManager: WorkspaceCheckpointManager | undefined;
+    workspaceRewind: AgentWorkspaceRewindState;
 
     constructor(
         path: string,
@@ -230,6 +241,8 @@ export class AgentSessionRuntime {
         this.host = host;
         this.onTurnFinished = options.onTurnFinished;
         this.ptyHost = options.ptyHost ?? makeUnavailableAgentPtyHost();
+        this.checkpointManager = options.checkpointManager;
+        this.workspaceRewind = options.workspaceRewind ?? { status: "disabled" };
         this.ptyHost.setOnUpdate?.(() => this.emitSessionState());
         // Seed the transcript from the persisted session so a REOPENED
         // conversation shows its history. A fresh session passes []. New
@@ -249,7 +262,11 @@ export class AgentSessionRuntime {
     }
 
     isRunning(): boolean {
-        return !this.host.harness.isIdle() || this.ptyHost.hasRunningCommands();
+        return (
+            !this.host.harness.isIdle() ||
+            this.ptyHost.hasRunningCommands() ||
+            (this.checkpointManager?.isBusy() ?? false)
+        );
     }
 
     async syncExecutionConfig(config: AgentExecutionConfig): Promise<void> {
@@ -429,6 +446,7 @@ export class AgentSessionRuntime {
             errorMessage: this.errorMessage,
             contextReports: this.contextReports,
             commands: this.ptyHost.snapshots(),
+            workspaceRewind: this.workspaceRewind,
         };
     }
 
@@ -520,10 +538,16 @@ export class AgentSessionRuntime {
         this.rejectPendingSends(new Error("session disposed before the user message was committed"));
         this.ignoredCommittedEntryIds.clear();
         try {
-            await Promise.allSettled([this.host.harness.abort(), this.ptyHost.dispose()]);
+            await Promise.allSettled([this.host.harness.abort()]);
+            await Promise.allSettled([this.ptyHost.dispose(), this.checkpointManager?.dispose()]);
         } finally {
             this.host.session.close();
         }
+    }
+
+    async refreshFromPersistedBranch(): Promise<void> {
+        await this.rebuildFromCurrentBranch();
+        this.emitSessionState();
     }
 
     async startHostedCommand(
@@ -806,6 +830,7 @@ export class AgentSessionRuntime {
             followUp: this.followUpQueue,
             contextReports: this.contextReports,
             commands: this.ptyHost.snapshots(),
+            workspaceRewind: this.workspaceRewind,
         };
         for (const listener of this.listeners) {
             try {

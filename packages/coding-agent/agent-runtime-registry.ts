@@ -29,17 +29,25 @@ interface SessionAccessState {
     waiters: Array<() => void>;
 }
 
+export interface SessionAccessLease {
+    readonly path: string;
+    readonly token: symbol;
+}
+
 interface SessionMutationBarrierEntry {
     barrier: SessionMutationBarrier;
     usageCount: number;
 }
 
-export interface ExclusiveSessionMutationOptions {
+export interface ExclusiveSessionMutationOptions<TRuntime extends ManagedAgentRuntime = ManagedAgentRuntime> {
     rejectIfRunning?: boolean;
     onExclusiveStart?: () => void;
     afterSessionAccessDrained?: () => void;
     beforeRuntimeDisposal?: () => void | Promise<void>;
-    onFailureBeforeRelease?: (error: unknown) => void | Promise<void>;
+    onFailureBeforeRelease?: (
+        error: unknown,
+        lease: RetainedSessionMutationLease<TRuntime> | undefined
+    ) => void | Promise<void>;
 }
 
 export interface RetainedSessionMutationLease<TRuntime> {
@@ -68,6 +76,7 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
     private sessionMutationBarriers = new Map<string, SessionMutationBarrierEntry>();
     activeRetainedLeases = new Map<symbol, RetainedSessionMutationLease<TRuntime>>();
     sessionAccess = new Map<string, SessionAccessState>();
+    activeSessionAccessLeases = new Map<symbol, SessionAccessLease>();
 
     constructor(options: AgentRuntimeRegistryOptions) {
         this.idleTtlMs = options.idleTtlMs;
@@ -146,25 +155,43 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         return trackedCreation;
     }
 
-    async withSessionAccess<T>(path: string, fn: () => Promise<T> | T): Promise<T> {
+    async withSessionAccess<T>(path: string, fn: (lease: SessionAccessLease) => Promise<T> | T): Promise<T> {
         this.assertSessionAccessible(path);
         const state = this.getOrCreateSessionAccessState(path);
         state.activeCount++;
+        const lease: SessionAccessLease = { path, token: Symbol(path) };
+        this.activeSessionAccessLeases.set(lease.token, lease);
         try {
-            return await fn();
+            return await fn(lease);
         } finally {
+            this.activeSessionAccessLeases.delete(lease.token);
             this.releaseSessionAccess(path, state);
         }
     }
 
+    getRuntimeForSessionAccess(lease: SessionAccessLease): TRuntime | undefined {
+        if (this.activeSessionAccessLeases.get(lease.token) !== lease) {
+            throw new Error("Agent runtime registry session access lease is not active");
+        }
+        const entry = this.entries.get(lease.path);
+        if (!entry || entry.cleanupFailed || this.pathCleanups.has(lease.path)) {
+            return undefined;
+        }
+        entry.lastUsedAt = this.now();
+        return entry.runtime;
+    }
+
     async withExclusiveSessionMutation<T>(
         path: string,
-        options: ExclusiveSessionMutationOptions,
+        options: ExclusiveSessionMutationOptions<TRuntime>,
         fn: () => Promise<T> | T
     ): Promise<T> {
         assertWorkspaceLockNotHeld();
         if (this.disposing) {
             throw new Error("Agent runtime registry disposal is in progress");
+        }
+        if (options.rejectIfRunning && this.sessionMutationBarriers.get(path)?.barrier.isBusy()) {
+            throw new Error("Agent session is running");
         }
         this.addMutationTombstone(path);
         const operation = this.runWithSessionMutationBarrier(path, async () => {
@@ -190,13 +217,24 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
                 }
                 return await fn();
             } catch (error) {
+                const entry = this.entries.get(path);
+                const runtime =
+                    entry && !entry.cleanupFailed && !this.pathCleanups.has(path) ? entry.runtime : undefined;
+                const lease = runtime ? { path, runtime, token: Symbol(path) } : undefined;
+                if (lease) {
+                    this.activeRetainedLeases.set(lease.token, lease);
+                }
                 try {
-                    await options.onFailureBeforeRelease?.(error);
+                    await options.onFailureBeforeRelease?.(error, lease);
                 } catch (recoveryError) {
                     throw new AggregateError(
                         [error, recoveryError],
                         `Agent runtime registry exclusive session mutation recovery failed for ${path}`
                     );
+                } finally {
+                    if (lease) {
+                        this.activeRetainedLeases.delete(lease.token);
+                    }
                 }
                 throw error;
             }
@@ -212,6 +250,9 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         assertWorkspaceLockNotHeld();
         if (this.disposing) {
             return Promise.reject(new Error("Agent runtime registry disposal is in progress"));
+        }
+        if (options.rejectIfRunning && this.sessionMutationBarriers.get(path)?.barrier.isBusy()) {
+            return Promise.reject(new Error("Agent session is running"));
         }
         this.addMutationTombstone(path);
         const operation = this.runWithSessionMutationBarrier(path, async () => {
@@ -277,6 +318,10 @@ export class AgentRuntimeRegistry<TRuntime extends ManagedAgentRuntime> {
         } finally {
             this.releaseSessionMutationBarrierEntry(path, entry);
         }
+    }
+
+    isSessionMutationBusy(path: string): boolean {
+        return this.sessionMutationBarriers.get(path)?.barrier.isBusy() ?? false;
     }
 
     getSessionMutationBarrierCountForTest(): number {

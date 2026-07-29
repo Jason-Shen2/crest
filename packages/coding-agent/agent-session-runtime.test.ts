@@ -4,20 +4,8 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-    type AssistantMessage,
-    type Model,
-    registerApiProvider,
-    resetApiProviders,
-    type UserMessage,
-} from "@crest/ai";
-import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
-import type { ContextProjectionReport } from "./context/types";
-import type { AgentPtyCommandPort, AgentPtyHost, AgentPtySnapshot } from "./agent-pty-host";
-import { AgentSessionRuntime, buildPersistedTurnsFromSessionEntries } from "./agent-session-runtime";
-import { buildAgentHarnessHost, type AgentHarnessHost } from "./harness-factory";
-import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
+import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
 import type {
     AgentHarnessPromptOptions,
     AgentHarnessTurnPreparation,
@@ -25,6 +13,12 @@ import type {
     SessionTreeEntry,
 } from "@crest/agent/harness/types";
 import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
+import { registerApiProvider, resetApiProviders, type AssistantMessage, type Model, type UserMessage } from "@crest/ai";
+import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
+import type { AgentPtyCommandPort, AgentPtyHost, AgentPtySnapshot } from "./agent-pty-host";
+import { AgentSessionRuntime, buildPersistedTurnsFromSessionEntries } from "./agent-session-runtime";
+import type { ContextProjectionReport } from "./context/types";
+import { buildAgentHarnessHost, type AgentHarnessHost } from "./harness-factory";
 
 // Minimal harness double: records prompt/followUp/abort calls and lets a
 // test drive the event stream via emit(). Mirrors the only surface
@@ -616,9 +610,12 @@ describe("AgentSessionRuntime — authoritative context state", () => {
         const fake = makeFakeHarness();
         const owner = new AgentSessionRuntime("/s", fake.pane);
         const branch = makeCommittedContextTransaction({ prefix: "new-context" });
-        const report = (branch.find(
-            (entry) => entry.type === "custom" && entry.customType === "context_projection"
-        ) as Extract<SessionTreeEntry, { type: "custom" }>).data as ContextProjectionReport;
+        const report = (
+            branch.find((entry) => entry.type === "custom" && entry.customType === "context_projection") as Extract<
+                SessionTreeEntry,
+                { type: "custom" }
+            >
+        ).data as ContextProjectionReport;
         const send = owner.send("hello", {
             prepare: async () => {
                 fake.session.getBranch.mockResolvedValue(branch);
@@ -749,10 +746,12 @@ describe("AgentSessionRuntime — owned turns", () => {
         await flush();
         fake.emit({ type: "message_end", message: user("active"), entryId: "active-user" });
         const seen: string[][] = [];
-        const prepare = (draftIds: string[], userEntryId: string): AgentHarnessTurnPreparation => async () => {
-            seen.push(draftIds);
-            return { userEntryId, systemPromptSuffix: userEntryId };
-        };
+        const prepare =
+            (draftIds: string[], userEntryId: string): AgentHarnessTurnPreparation =>
+            async () => {
+                seen.push(draftIds);
+                return { userEntryId, systemPromptSuffix: userEntryId };
+            };
 
         const second = owner.send("second", { prepare: prepare(["draft-2"], "user-2") });
         const third = owner.send("third", { prepare: prepare(["draft-3a", "draft-3b"], "user-3") });
@@ -866,9 +865,7 @@ describe("AgentSessionRuntime — owned turns", () => {
         });
         await flush();
 
-        await expect(fake.preparePrompt()).resolves.toEqual(
-            expect.objectContaining({ userEntryId: "committed-user" })
-        );
+        await expect(fake.preparePrompt()).resolves.toEqual(expect.objectContaining({ userEntryId: "committed-user" }));
         await expect(send).resolves.toBe("committed-user");
         expect(owner.getSessionState().contextReports).toEqual([
             expect.objectContaining({ targetTurnId: "committed-user" }),
@@ -908,9 +905,7 @@ describe("AgentSessionRuntime — owned turns", () => {
         expect(owner.getSessionState().contextReports).toEqual([
             expect.objectContaining({ targetTurnId: "late-user" }),
         ]);
-        expect(
-            (owner as unknown as { ignoredCommittedEntryIds: Set<string> }).ignoredCommittedEntryIds.size
-        ).toBe(0);
+        expect((owner as unknown as { ignoredCommittedEntryIds: Set<string> }).ignoredCommittedEntryIds.size).toBe(0);
     });
 
     it("rejects queued uncommitted prepared sends on abort", async () => {
@@ -1237,7 +1232,12 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         owner.subscribe(listener);
         listener.mockClear();
 
-        updateSnapshot(makeSnapshot({ tail: "listening", screen: { ...makeSnapshot().screen, rows: [{ text: "listening", cells: [] }] } }));
+        updateSnapshot(
+            makeSnapshot({
+                tail: "listening",
+                screen: { ...makeSnapshot().screen, rows: [{ text: "listening", cells: [] }] },
+            })
+        );
 
         expect(listener).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -1256,6 +1256,60 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         await owner.dispose();
 
         expect(host.dispose).toHaveBeenCalledOnce();
+    });
+
+    it("stays running while checkpoint finalization is busy and awaits manager disposal", async () => {
+        const fake = makeFakeHarness();
+        const checkpointManager = {
+            isBusy: vi.fn(() => true),
+            recover: vi.fn(),
+            dispose: vi.fn(async () => undefined),
+        };
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { checkpointManager });
+
+        expect(owner.isRunning()).toBe(true);
+        await owner.dispose();
+
+        expect(checkpointManager.dispose).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the checkpoint manager subscribed until abort terminal finalization settles", async () => {
+        const fake = makeFakeHarness();
+        let releaseAbort!: () => void;
+        const abortGate = new Promise<void>((resolve) => {
+            releaseAbort = resolve;
+        });
+        fake.pane.harness.abort = vi.fn(async () => {
+            await abortGate;
+        }) as never;
+        const checkpointManager = {
+            isBusy: vi.fn(() => true),
+            recover: vi.fn(),
+            dispose: vi.fn(async () => undefined),
+        };
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { checkpointManager });
+
+        const disposal = owner.dispose();
+        await vi.waitFor(() => expect(fake.pane.harness.abort).toHaveBeenCalledOnce());
+        expect(checkpointManager.dispose).not.toHaveBeenCalled();
+
+        releaseAbort();
+        await disposal;
+
+        expect(checkpointManager.dispose).toHaveBeenCalledOnce();
+    });
+
+    it("exposes disabled and unavailable workspace rewind state", () => {
+        const disabled = new AgentSessionRuntime("/disabled", makeFakeHarness().pane);
+        const unavailable = new AgentSessionRuntime("/unavailable", makeFakeHarness().pane, [], [], {
+            workspaceRewind: { status: "unavailable", message: "unsupported workspace" },
+        });
+
+        expect(disabled.getSessionState().workspaceRewind).toEqual({ status: "disabled" });
+        expect(unavailable.getSessionState().workspaceRewind).toEqual({
+            status: "unavailable",
+            message: "unsupported workspace",
+        });
     });
 
     it("closes the owned session after abort and PTY cleanup settle", async () => {
@@ -1426,10 +1480,11 @@ describe("AgentSessionRuntime — execution config", () => {
         await flush();
         fake.emit({ type: "message_end", message: user("active"), entryId: "active-user" });
         let includeContext = false;
-        const activatePreparation = vi.fn(async (): Promise<AgentHarnessTurnPreparation | undefined> =>
-            includeContext
-                ? async () => ({ userEntryId: "queued-context-user", systemPromptSuffix: "fresh overlay" })
-                : undefined
+        const activatePreparation = vi.fn(
+            async (): Promise<AgentHarnessTurnPreparation | undefined> =>
+                includeContext
+                    ? async () => ({ userEntryId: "queued-context-user", systemPromptSuffix: "fresh overlay" })
+                    : undefined
         );
 
         const queued = runtime.sendWithExecutionConfig(
@@ -1643,9 +1698,7 @@ describe("AgentSessionRuntime — real prepared follow-up integration", () => {
         expect(runtime.getSessionState().contextReports).toEqual([
             expect.objectContaining({ targetTurnId: committedUserId }),
         ]);
-        expect(
-            (runtime as unknown as { ignoredCommittedEntryIds: Set<string> }).ignoredCommittedEntryIds.size
-        ).toBe(0);
+        expect((runtime as unknown as { ignoredCommittedEntryIds: Set<string> }).ignoredCommittedEntryIds.size).toBe(0);
     });
 
     it("promotes an innocent queued send after an initial terminal failure", async () => {

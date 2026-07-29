@@ -53,6 +53,27 @@ describe("AgentRuntimeRegistry", () => {
         expect(registry.get("/a.db")).toBe(runtime);
     });
 
+    it("lets a pre-existing session access lease retain its runtime after a mutation tombstone", async () => {
+        const runtime = makeRuntime(false);
+        const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+        await registry.getOrCreate("/a.db", async () => runtime);
+        const accessStarted = deferred<void>();
+        const releaseAccess = deferred<void>();
+        const access = registry.withSessionAccess("/a.db", async (lease) => {
+            accessStarted.resolve();
+            await releaseAccess.promise;
+            expect(registry.get("/a.db")).toBeUndefined();
+            expect(registry.getRuntimeForSessionAccess(lease)).toBe(runtime);
+        });
+        await accessStarted.promise;
+        const mutation = registry.withExclusiveSessionMutation("/a.db", { rejectIfRunning: true }, async () => {});
+
+        await expect(registry.withSessionAccess("/a.db", async () => undefined)).rejects.toThrow(/session mutation/i);
+        releaseAccess.resolve();
+        await access;
+        await mutation;
+    });
+
     it("queues same-session retained mutations while allowing different sessions to run", async () => {
         const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
         const release = deferred<void>();
@@ -98,6 +119,37 @@ describe("AgentRuntimeRegistry", () => {
         expect(calls).toEqual(["old", "retained"]);
         expect(registry.getSessionMutationBarrierCountForTest()).toBe(0);
     });
+
+    it.each(["exclusive", "retained"] as const)(
+        "rejects a reject-if-running %s mutation while checkpoint finalization owns the barrier",
+        async (kind) => {
+            const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });
+            const started = deferred<void>();
+            const release = deferred<void>();
+            const finalization = registry.runWithSessionMutationBarrier("/a.db", async () => {
+                started.resolve();
+                await release.promise;
+            });
+            await started.promise;
+
+            const mutation =
+                kind === "exclusive"
+                    ? registry.withExclusiveSessionMutation("/a.db", { rejectIfRunning: true }, async () => undefined)
+                    : registry.withRetainedSessionMutation("/a.db", { rejectIfRunning: true }, async () => undefined);
+            const disposition = await Promise.race([
+                mutation.then(
+                    () => "resolved",
+                    () => "rejected"
+                ),
+                new Promise<"queued">((resolve) => setImmediate(() => resolve("queued"))),
+            ]);
+
+            expect(disposition).toBe("rejected");
+            await expect(mutation).rejects.toThrow(/running/i);
+            release.resolve();
+            await finalization;
+        }
+    );
 
     it("preserves one barrier and FIFO across queued registry-owned operations", async () => {
         const registry = new AgentRuntimeRegistry({ idleTtlMs: 100 });

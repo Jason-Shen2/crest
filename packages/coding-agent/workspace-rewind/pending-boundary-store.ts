@@ -104,16 +104,46 @@ export class PendingBoundaryStore {
         if (!record.userEntryId || !record.after) {
             throw new Error("Pending boundary cannot complete before finalization");
         }
-        await this.store.deleteCrestRef(this.store.pendingRefName(record));
-        await removeDurableFile(this.path(boundaryToken));
+        await this.remove(record);
     }
 
-    async recover(sessionEntries: SessionTreeEntry[]): Promise<RecoveredPendingBoundary[]> {
-        const userIds = new Set(
-            sessionEntries
-                .filter((entry) => entry.type === "message" && entry.message.role === "user")
-                .map((entry) => entry.id)
-        );
+    async retireUnavailable(boundaryToken: string): Promise<void> {
+        const record = await this.read(boundaryToken);
+        if (!record.userEntryId) {
+            throw new Error("Only a bound pending boundary can retire unavailable");
+        }
+        await this.remove(record);
+    }
+
+    async retireUnbound(boundaryToken: string, processOwner: ProcessOwnerIdentity): Promise<void> {
+        const record = await this.read(boundaryToken);
+        if (record.userEntryId || record.after) {
+            throw new Error("Only an unbound pending boundary can retire unbound");
+        }
+        if (!sameProcessOwner(record.processOwner, processOwner)) {
+            throw new Error("Pending boundary belongs to another process owner");
+        }
+        await this.remove(record);
+    }
+
+    async retireRecoveredUnbound(boundaryToken: string): Promise<void> {
+        const record = await this.read(boundaryToken);
+        if (record.userEntryId || record.after) {
+            throw new Error("Only an unbound pending boundary can retire after recovery");
+        }
+        const ownerStatus = await probeProcessOwner(record.processOwner, this.processOwnerProbe);
+        if (ownerStatus !== "dead") {
+            throw new Error("Pending boundary process owner is not proven dead");
+        }
+        await this.remove(record);
+    }
+
+    async remove(record: PendingWorkspaceBoundaryV1): Promise<void> {
+        await this.store.deleteCrestRef(this.store.pendingRefName(record));
+        await removeDurableFile(this.path(record.boundaryToken));
+    }
+
+    async recover(_sessionEntries: SessionTreeEntry[]): Promise<RecoveredPendingBoundary[]> {
         const records = await scanPendingBoundaryRecords(this.store);
         const recovered: RecoveredPendingBoundary[] = [];
         for (const record of records) {
@@ -124,8 +154,7 @@ export class PendingBoundaryStore {
             } else if (!record.userEntryId) {
                 disposition = "retire-unbound";
             } else {
-                disposition =
-                    userIds.has(record.userEntryId) || record.after ? "resume-finalization" : "retire-unbound";
+                disposition = "resume-finalization";
             }
             recovered.push({ record, disposition });
         }
@@ -164,6 +193,10 @@ export class PendingBoundaryStore {
             throw new Error("Pending boundary belongs to another workspace incarnation");
         }
     }
+}
+
+function sameProcessOwner(left: ProcessOwnerIdentity, right: ProcessOwnerIdentity): boolean {
+    return left.pid === right.pid && left.processStartToken === right.processStartToken && left.nonce === right.nonce;
 }
 
 export async function scanPendingBoundaryRecords(store: WorkspaceSnapshotStore): Promise<PendingWorkspaceBoundaryV1[]> {

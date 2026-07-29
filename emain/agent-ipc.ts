@@ -44,14 +44,24 @@ import * as electron from "electron";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
-import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
-import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
-import { AgentPtyHost } from "./agent-tools/agent-pty-host";
+import { convertToLlm } from "@crest/agent/harness/messages";
+import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
+import type {
+    AgentHarnessTurnPreparation,
+    AgentHarnessTurnPreparationInput,
+    JsonlSessionMetadata,
+    SessionDetailInfo,
+} from "@crest/agent/harness/types";
+import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
+import type { Api, ImageContent, Message, Model } from "@crest/ai";
+import { getModel } from "@crest/ai";
 import { parseAgentExecutionContext, type AgentExecutionContext } from "@crest/coding-agent/agent-execution-context";
 import { MaxAgentPtyCols, MaxAgentPtyRows } from "@crest/coding-agent/agent-pty-host";
 import {
     AgentRuntimeRegistry,
     AgentSessionMutationActiveError,
+    type RetainedSessionMutationLease,
+    type SessionAccessLease,
 } from "@crest/coding-agent/agent-runtime-registry";
 import {
     AgentSessionRuntime,
@@ -60,9 +70,13 @@ import {
     type AgentExecutionConfig,
     type AgentSessionRuntimeStatus,
     type AgentTurn,
+    type AgentWorkspaceRewindState,
 } from "@crest/coding-agent/agent-session-runtime";
 import type { SystemPromptInputs } from "@crest/coding-agent/build-system-prompt";
-import { extractChangeOperationsFromMessages, generateChangeOutline } from "@crest/coding-agent/change-review/change-outline";
+import {
+    extractChangeOperationsFromMessages,
+    generateChangeOutline,
+} from "@crest/coding-agent/change-review/change-outline";
 import { getBuiltInAgentCommands } from "@crest/coding-agent/commands/registry";
 import { commandNoop, commandSuccess } from "@crest/coding-agent/commands/session-command-results";
 import {
@@ -86,23 +100,26 @@ import type {
 import { ContextDraftRegistry } from "@crest/coding-agent/context/draft-registry";
 import { decorateContextHistory } from "@crest/coding-agent/context/history";
 import type { ContextProviderRequest } from "@crest/coding-agent/context/projector";
-import { createContextProviderAdapter, type ContextProviderAdapter } from "@crest/coding-agent/context/provider-adapter";
+import {
+    createContextProviderAdapter,
+    type ContextProviderAdapter,
+} from "@crest/coding-agent/context/provider-adapter";
 import { captureContextArtifactDraft } from "@crest/coding-agent/context/snapshot";
 import { summarizeContextDraft, type ContextSummaryCompletion } from "@crest/coding-agent/context/summary";
-import { createContextTurnPreparation, type ContextTurnDraftAttachmentInput } from "@crest/coding-agent/context/turn-preparer";
-import type { ContextBudgetResult, ContextReferenceConfig, ContextRepresentation } from "@crest/coding-agent/context/types";
+import {
+    createContextTurnPreparation,
+    type ContextTurnDraftAttachmentInput,
+} from "@crest/coding-agent/context/turn-preparer";
+import type {
+    ContextBudgetResult,
+    ContextReferenceConfig,
+    ContextRepresentation,
+} from "@crest/coding-agent/context/types";
 import { ContextReferenceError } from "@crest/coding-agent/context/types";
 import { buildAgentHarnessHost, type AgentHarnessHost } from "@crest/coding-agent/harness-factory";
-import { convertToLlm } from "@crest/agent/harness/messages";
-import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
-import type {
-    AgentHarnessTurnPreparation,
-    AgentHarnessTurnPreparationInput,
-    JsonlSessionMetadata,
-    SessionDetailInfo,
-} from "@crest/agent/harness/types";
 import { buildPermissionsHook, isBenchMode } from "@crest/coding-agent/permissions";
 import { loadProjectContextFiles } from "@crest/coding-agent/resource-loader";
+import { SessionMutationBarrier } from "@crest/coding-agent/session-mutation-barrier";
 import {
     archivePaneSession,
     createPaneSession,
@@ -119,10 +136,15 @@ import {
 } from "@crest/coding-agent/sessions";
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { getDefaultTools } from "@crest/coding-agent/tools";
+import {
+    makeDisabledWorkspaceCheckpointManager,
+    registerWorkspaceCheckpointManager,
+} from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
+import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
+import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
+import { isAgentRewindFeatureEnabled, openAgentRewindFeature, type AgentRewindFeature } from "./agent-rewind-feature";
+import { AgentPtyHost } from "./agent-tools/agent-pty-host";
 import { createSpawnCliAgentTool } from "./agent-tools/spawn-cli-agent";
-import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
-import type { Api, ImageContent, Message, Model } from "@crest/ai";
-import { getModel } from "@crest/ai";
 import { getSecret } from "./aiconfig/secrets";
 import { readAIUserConfig } from "./aiconfig/user-config";
 
@@ -131,6 +153,30 @@ const AgentRuntimeSweepIntervalMs = 60 * 1000;
 const runtimeRegistry = new AgentRuntimeRegistry<AgentSessionRuntime>({
     idleTtlMs: AgentRuntimeIdleTtlMs,
 });
+
+class RegistrySessionMutationBarrier extends SessionMutationBarrier {
+    busyCount = 0;
+
+    constructor(readonly sessionPath: string) {
+        super();
+    }
+
+    override isBusy(): boolean {
+        return this.busyCount > 0;
+    }
+
+    override run<T>(operation: () => Promise<T>): Promise<T> {
+        this.busyCount++;
+        return runtimeRegistry.runWithSessionMutationBarrier(this.sessionPath, operation).finally(() => {
+            this.busyCount--;
+        });
+    }
+
+    override waitForIdle(): Promise<void> {
+        return runtimeRegistry.waitForSessionMutationIdle(this.sessionPath);
+    }
+}
+
 let contextDraftRegistry = new ContextDraftRegistry();
 let contextSummaryCompletion: ContextSummaryCompletion | undefined;
 const runtimeWorkspaceBindings = new WeakMap<AgentSessionRuntime, string>();
@@ -580,11 +626,11 @@ async function validateSessionPath(value: unknown, fieldName = "sessionPath"): P
 
 async function withCanonicalSessionAccess<T>(
     sessionPath: unknown,
-    fn: (canonicalPath: string) => Promise<T> | T,
+    fn: (canonicalPath: string, lease: SessionAccessLease) => Promise<T> | T,
     fieldName = "sessionPath"
 ): Promise<T> {
     const canonicalPath = await validateSessionPath(sessionPath, fieldName);
-    return await runtimeRegistry.withSessionAccess(canonicalPath, () => fn(canonicalPath));
+    return await runtimeRegistry.withSessionAccess(canonicalPath, (lease) => fn(canonicalPath, lease));
 }
 
 function validateSessionMetadataShape(value: unknown): JsonlSessionMetadata {
@@ -847,41 +893,93 @@ async function createAgentRuntimeFromSession(
             }),
     });
     getRuntimeCwd = () => host.getCwd();
-    // Wrap the harness in the per-session owner. Its constructor attaches
-    // the harness subscription NOW (before any prompt() runs), so it owns
-    // the authoritative transcript + queue state from the first event on —
-    // never missing a turn that finishes before a renderer subscribes.
-    // Seed it with the persisted transcript so a reopened session shows its
-    // history (a fresh session's buildContext is empty).
-    const seed = await piSession.buildContext();
-    const initialEntries = await piSession.getBranch();
-    const initialTurns = buildPersistedTurnsFromSessionEntries(initialEntries);
-    const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
-        const operations = extractChangeOperationsFromMessages(turn.responseMessages.filter(isToolResultModelMessage), {
-            turnId: turn.turnId,
+    const ptyHost = new AgentPtyHost();
+    let rewindFeature: AgentRewindFeature = { state: "disabled" };
+    if (isAgentRewindFeatureEnabled()) {
+        const { getWaveDataDir } = await import("./emain-platform");
+        rewindFeature = await openAgentRewindFeature({
+            workspaceRoot: opts.context.workspaceDir,
+            dataRoot: getWaveDataDir(),
         });
-        if (operations.length === 0) return;
-        const model = host.harness.getModel();
-        const auth = await host.resolveAuth(model);
-        const changeOutline = await generateChangeOutline({
-            model,
-            operations,
-            turnId: turn.turnId,
-            apiKey: auth?.apiKey,
-        });
-        if (changeOutline) {
-            owner.setTurnChangeOutline(turn.turnId, changeOutline);
-        }
-    };
-    owner = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, {
-        onTurnFinished,
-        initialContextEntries: initialEntries,
-        ptyHost: new AgentPtyHost(),
-    });
-    if (options.attachObservability !== false) {
-        attachAgentObservability(metadata.path, host.harness);
     }
-    return owner;
+    const mutationBarrier = new RegistrySessionMutationBarrier(metadata.path);
+    const checkpointManager =
+        rewindFeature.state === "enabled"
+            ? registerWorkspaceCheckpointManager({
+                  harness: host.harness,
+                  session: piSession,
+                  sessionId: metadata.id,
+                  workspaceRoot: rewindFeature.store.identity.canonicalRoot,
+                  store: rewindFeature.store,
+                  mutationBarrier,
+                  hasRunningHostedCommands: () => ptyHost.hasRunningCommands(),
+                  processOwner: rewindFeature.processOwner,
+                  onCheckpointCommitted: async () => {
+                      await owner?.refreshFromPersistedBranch();
+                  },
+              })
+            : makeDisabledWorkspaceCheckpointManager();
+    let runtime: AgentSessionRuntime | undefined;
+    try {
+        if (rewindFeature.state === "enabled") {
+            await checkpointManager.recover();
+        }
+        const seed = await piSession.buildContext();
+        const initialEntries = await piSession.getBranch();
+        const initialTurns = buildPersistedTurnsFromSessionEntries(initialEntries);
+        const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
+            const operations = extractChangeOperationsFromMessages(
+                turn.responseMessages.filter(isToolResultModelMessage),
+                {
+                    turnId: turn.turnId,
+                }
+            );
+            if (operations.length === 0) return;
+            const model = host.harness.getModel();
+            const auth = await host.resolveAuth(model);
+            const changeOutline = await generateChangeOutline({
+                model,
+                operations,
+                turnId: turn.turnId,
+                apiKey: auth?.apiKey,
+            });
+            if (changeOutline) {
+                owner?.setTurnChangeOutline(turn.turnId, changeOutline);
+            }
+        };
+        runtime = new AgentSessionRuntime(metadata.path, host, seed.messages ?? [], initialTurns, {
+            onTurnFinished,
+            initialContextEntries: initialEntries,
+            ptyHost,
+            checkpointManager,
+            workspaceRewind:
+                rewindFeature.state === "unavailable"
+                    ? { status: "unavailable", message: rewindFeature.message }
+                    : { status: rewindFeature.state },
+        });
+        owner = runtime;
+        if (options.attachObservability !== false) {
+            attachAgentObservability(metadata.path, host.harness);
+        }
+        return runtime;
+    } catch (error) {
+        if (runtime) {
+            await runtime.dispose();
+            throw error;
+        }
+        const cleanup = await Promise.allSettled([checkpointManager.dispose(), ptyHost.dispose()]);
+        const cleanupErrors = cleanup
+            .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+            .map((result) => result.reason);
+        if (cleanupErrors.length > 0) {
+            throw new AggregateError(
+                [error, ...cleanupErrors],
+                `Agent runtime construction cleanup failed for ${metadata.path}`,
+                { cause: error }
+            );
+        }
+        throw error;
+    }
 }
 
 async function ensureAgentRuntime(
@@ -1002,7 +1100,10 @@ function commitSuspendedSubscriptions(suspended: SuspendedAgentSubscriptions): v
     }
 }
 
-async function restoreSuspendedSubscriptions(suspended: SuspendedAgentSubscriptions): Promise<void> {
+async function restoreSuspendedSubscriptions(
+    suspended: SuspendedAgentSubscriptions,
+    mutationLease?: RetainedSessionMutationLease<AgentSessionRuntime>
+): Promise<void> {
     for (const [key, intent] of suspended.intents) {
         if (intent.sender.isDestroyed()) {
             releaseSubscription(key);
@@ -1016,6 +1117,26 @@ async function restoreSuspendedSubscriptions(suspended: SuspendedAgentSubscripti
         }
         pendingSubscriptions.set(key, intent);
         trackSenderKey(intent.sender, key);
+        if (mutationLease) {
+            try {
+                await runtimeRegistry.withMutationLeaseAccess(mutationLease, async (runtime) => {
+                    if (!runtime) {
+                        return;
+                    }
+                    await subscribeToOwnerWithMutationLease(
+                        intent.sender,
+                        intent.canonicalPath,
+                        runtime,
+                        intent.rendererPath,
+                        intent.authorization,
+                        mutationLease
+                    );
+                });
+            } catch {
+                releaseSubscription(key);
+            }
+            continue;
+        }
         const liveRuntime = lookupLiveAgentRuntime(intent.canonicalPath);
         if (liveRuntime) {
             try {
@@ -1134,6 +1255,9 @@ async function sendPersistedSessionState(
                     steer: [],
                     followUp: [],
                     commands: [],
+                    workspaceRewind: {
+                        status: isAgentRewindFeatureEnabled() ? "enabled" : "disabled",
+                    },
                     ...contextState,
                 })
             );
@@ -1159,6 +1283,7 @@ async function buildPersistedSessionState(
     followUp: AgentMessage[];
     contextReports: ReturnType<typeof buildContextStateFromSessionEntries>["contextReports"];
     commands: ReturnType<AgentSessionRuntime["getSessionState"]>["commands"];
+    workspaceRewind: AgentWorkspaceRewindState;
 }> {
     const canonicalPath = await validateSessionPath(sessionPath);
     const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
@@ -1174,6 +1299,7 @@ async function buildPersistedSessionState(
             followUp: state.followUpQueue,
             contextReports: state.contextReports,
             commands: state.commands,
+            workspaceRewind: state.workspaceRewind,
         };
     }
     const session = await openPaneSessionByPath(canonicalPath);
@@ -1189,6 +1315,9 @@ async function buildPersistedSessionState(
             steer: [],
             followUp: [],
             commands: [],
+            workspaceRewind: {
+                status: isAgentRewindFeatureEnabled() ? "enabled" : "disabled",
+            },
             ...buildContextStateFromSessionEntries(branch),
         };
     } finally {
@@ -1209,6 +1338,50 @@ async function subscribeToOwner(
     if (subscriptions.has(key)) return;
     const lookup = { path: sessionPath, runtime: session };
     await authorization.guardRuntime(lookup);
+    await subscribeToOwnerAfterValidation(sender, sessionPath, session, rendererSessionPath, authorization, () =>
+        authorization.guardRuntime(lookup)
+    );
+}
+
+async function subscribeToOwnerWithMutationLease(
+    sender: electron.WebContents,
+    sessionPath: string,
+    session: AgentSessionRuntime,
+    rendererSessionPath: string,
+    authorization: AgentSubscriptionAuthorization,
+    mutationLease: RetainedSessionMutationLease<AgentSessionRuntime>
+): Promise<void> {
+    await subscribeToOwnerAfterValidation(
+        sender,
+        sessionPath,
+        session,
+        rendererSessionPath,
+        authorization,
+        async () => {
+            await authorization.validateCurrent();
+            await runtimeRegistry.withMutationLeaseAccess(mutationLease, async (runtime) => {
+                if (runtime !== session) {
+                    throw new Error("Agent runtime changed during subscription recovery");
+                }
+            });
+        }
+    );
+}
+
+async function subscribeToOwnerAfterValidation(
+    sender: electron.WebContents,
+    sessionPath: string,
+    session: AgentSessionRuntime,
+    rendererSessionPath: string,
+    authorization: AgentSubscriptionAuthorization,
+    validateRuntime: () => Promise<void>
+): Promise<void> {
+    const key: SubKey = makeAgentSubscriptionKey(sender.id, sessionPath, rendererSessionPath, authorization);
+    pendingSubscriptions.delete(key);
+    if (sender.isDestroyed() || subscriptions.has(key)) {
+        return;
+    }
+    const lookup = { path: sessionPath, runtime: session };
     const unsub = session.subscribe((agentEvent) => {
         void runtimeRegistry
             .withSessionAccess(sessionPath, async () => {
@@ -1243,7 +1416,7 @@ async function subscribeToOwner(
     runtimeRegistry.acquire(sessionPath, key);
     trackSenderKey(sender, key);
     try {
-        await authorization.guardRuntime(lookup);
+        await validateRuntime();
         const sessionState = session.getSessionState();
         if (sender.isDestroyed()) {
             releaseSubscription(key);
@@ -1260,6 +1433,7 @@ async function subscribeToOwner(
                 followUp: sessionState.followUpQueue,
                 contextReports: sessionState.contextReports,
                 commands: sessionState.commands,
+                workspaceRewind: sessionState.workspaceRewind,
             })
         );
     } catch (error) {
@@ -1336,6 +1510,9 @@ export async function listAgentTreeForIpc(
     return await withCanonicalSessionAccess(
         input.path,
         async (canonicalPath) => {
+            if (runtimeRegistry.isSessionMutationBusy(canonicalPath)) {
+                throw new Error("Agent session is running");
+            }
             const { entries, leafId, labels } = await getSessionTreeData(
                 { ...input, path: canonicalPath },
                 guardRuntime,
@@ -1449,7 +1626,8 @@ export async function prepareContextDraftForIpc(input: unknown) {
                 throw new ContextReferenceError("invalid_input", "sourceTurnId is not valid for session context");
             }
             const sourceEntries = await source.session.getBranch();
-            const sourceTitle = (await source.session.getSessionName()) || path.basename(source.metadata.cwd) || undefined;
+            const sourceTitle =
+                (await source.session.getSessionName()) || path.basename(source.metadata.cwd) || undefined;
             const draft = captureContextArtifactDraft({
                 sourceMetadata: source.metadata,
                 sourceEntries,
@@ -1795,6 +1973,9 @@ async function navigateAgentTreeWithOpenSession(
         steer: [] as AgentMessage[],
         followUp: [] as AgentMessage[],
         errorMessage: undefined as string | undefined,
+        workspaceRewind: {
+            status: isAgentRewindFeatureEnabled() ? ("enabled" as const) : ("disabled" as const),
+        },
         ...buildContextStateFromSessionEntries(branchEntries),
     };
     for (const [, pending] of pendingSubscriptions) {
@@ -2200,11 +2381,12 @@ export async function subscribeAgentSessionForIpc(
             ? makeFallbackSubscriptionAuthorization(authorizationOrBeforeMutation)
             : (authorizationOrBeforeMutation ?? makeFallbackSubscriptionAuthorization());
     const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
-    await withCanonicalSessionAccess(rendererPath, async (canonicalPath) => {
+    await withCanonicalSessionAccess(rendererPath, async (canonicalPath, lease) => {
         await authorization.validateCurrent();
         if (sender.isDestroyed()) return;
         releaseStaleSubscriptionsForSender(sender.id, authorization);
-        const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
+        const runtime = runtimeRegistry.getRuntimeForSessionAccess(lease);
+        const liveRuntime = runtime ? { path: canonicalPath, runtime } : undefined;
         if (!liveRuntime) {
             const key: SubKey = makeAgentSubscriptionKey(sender.id, canonicalPath, rendererPath, authorization);
             if (!pendingSubscriptions.has(key)) {
@@ -2395,9 +2577,9 @@ export async function archiveAgentSessionForIpc(
                             ? await preparePersistedSessionTarget(workspace, persistence.workspaceId, canonicalMetadata)
                             : undefined;
                 },
-                onFailureBeforeRelease: async () => {
+                onFailureBeforeRelease: async (_error, mutationLease) => {
                     if (suspended && !suspensionFinalized) {
-                        await restoreSuspendedSubscriptions(suspended);
+                        await restoreSuspendedSubscriptions(suspended, mutationLease);
                         suspensionFinalized = true;
                     }
                 },
@@ -2472,9 +2654,9 @@ export async function deleteAgentSessionForIpc(
                             ? await preparePersistedSessionTarget(workspace, persistence.workspaceId, canonicalMetadata)
                             : undefined;
                 },
-                onFailureBeforeRelease: async () => {
+                onFailureBeforeRelease: async (_error, mutationLease) => {
                     if (suspended && !suspensionFinalized) {
-                        await restoreSuspendedSubscriptions(suspended);
+                        await restoreSuspendedSubscriptions(suspended, mutationLease);
                         suspensionFinalized = true;
                     }
                 },
@@ -2816,11 +2998,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                     const { metadata } = await ensureSession(opts);
                     return await runtimeRegistry.withSessionAccess(metadata.path, async () => {
                         await assertCurrent(event, authenticated);
-                        const { runtime, config } = await ensureAgentRuntime(
-                            metadata,
-                            opts,
-                            authenticated.workspaceId
-                        );
+                        const { runtime, config } = await ensureAgentRuntime(metadata, opts, authenticated.workspaceId);
                         const authorization = makeAuthorization(event, authenticated);
                         await authorization.guardRuntime({ path: metadata.path, runtime });
                         await attachPendingSubscribers(metadata.path, runtime);
@@ -2847,6 +3025,9 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                                 });
                             };
                             await authorization.guardRuntime({ path: metadata.path, runtime });
+                            if (runtimeRegistry.isSessionMutationBusy(metadata.path)) {
+                                throw new Error("Agent session is running");
+                            }
                             const userEntryId = await runtime.sendWithExecutionConfig(opts.text, config, {
                                 ...(images ? { images } : {}),
                                 activatePreparation: async () => await resolveContextPreparation(),

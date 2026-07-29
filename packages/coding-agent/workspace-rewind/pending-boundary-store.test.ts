@@ -60,6 +60,36 @@ test("persists strict begin bind after complete transitions and recovers owner d
     expect((await store.listCrestRefs()).map((ref) => ref.name)).not.toContain(store.pendingRefName(record));
 });
 
+test("retires unavailable and current-owner unbound records without weakening complete", async () => {
+    const { store, snapshot } = await makeStore();
+    const pending = new PendingBoundaryStore(store);
+    const owner = await makeProcessOwnerIdentity();
+    const record: UnboundPendingBoundaryV1 = {
+        boundaryToken: "boundary-retire",
+        sessionId: "session-a",
+        workspaceIdentity: store.identity.workspaceIdentity,
+        workspaceIncarnation: store.identity.workspaceIncarnation,
+        processOwner: owner,
+        nonce: "d".repeat(64),
+        before: snapshot,
+    };
+    await pending.begin(record);
+
+    await expect(pending.retireUnavailable(record.boundaryToken)).rejects.toThrow(/bound/i);
+    await expect(
+        pending.retireUnbound(record.boundaryToken, { ...owner, processStartToken: "reused-process" })
+    ).rejects.toThrow(/owner/i);
+    await pending.retireUnbound(record.boundaryToken, owner);
+    await expect(pending.read(record.boundaryToken)).rejects.toThrow();
+
+    const unavailable = { ...record, boundaryToken: "boundary-unavailable", nonce: "e".repeat(64) };
+    await pending.begin(unavailable);
+    await pending.bind(unavailable.boundaryToken, "user-a");
+    await expect(pending.complete(unavailable.boundaryToken)).rejects.toThrow(/finalization/i);
+    await pending.retireUnavailable(unavailable.boundaryToken);
+    await expect(pending.read(unavailable.boundaryToken)).rejects.toThrow();
+});
+
 test("retires an unbound record whose process owner is dead", async () => {
     const { store, snapshot } = await makeStore();
     const pending = new PendingBoundaryStore(store);
@@ -76,6 +106,31 @@ test("retires an unbound record whose process owner is dead", async () => {
     const recovered = await pending.recover([] as SessionTreeEntry[]);
 
     expect(recovered[0]?.disposition).toBe("retire-unbound");
+});
+
+test("resumes a dead-owner bound record even when its user entry is absent", async () => {
+    const { store, snapshot } = await makeStore();
+    const pending = new PendingBoundaryStore(store);
+    const record: UnboundPendingBoundaryV1 = {
+        boundaryToken: "boundary-bound-missing",
+        sessionId: "session-dead",
+        workspaceIdentity: store.identity.workspaceIdentity,
+        workspaceIncarnation: store.identity.workspaceIncarnation,
+        processOwner: { pid: 2 ** 30, processStartToken: "gone", nonce: "f".repeat(64) },
+        nonce: "1".repeat(64),
+        before: snapshot,
+    };
+    await pending.begin(record);
+    await pending.bind(record.boundaryToken, "missing-user");
+
+    const recovered = await pending.recover([]);
+
+    expect(recovered).toEqual([
+        {
+            record: { ...record, userEntryId: "missing-user" },
+            disposition: "resume-finalization",
+        },
+    ]);
 });
 
 test("rejects unknown fields and unsafe boundary tokens before publishing refs", async () => {

@@ -12,16 +12,10 @@ vi.mock("electron", () => {
     const handle = vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
         const wrapped = async (...args: unknown[]) => {
             const result = await handler(...args);
-            if (
-                !result ||
-                typeof result !== "object" ||
-                !Object.hasOwn(result, "ok")
-            ) {
+            if (!result || typeof result !== "object" || !Object.hasOwn(result, "ok")) {
                 return result;
             }
-            const envelope = result as
-                | { ok: true; value: unknown }
-                | { ok: false; error: { message: string } };
+            const envelope = result as { ok: true; value: unknown } | { ok: false; error: { message: string } };
             if (envelope.ok) return envelope.value;
             throw new Error("error" in envelope ? envelope.error.message : "Agent IPC failed");
         };
@@ -77,7 +71,31 @@ vi.mock("../frontend/app/store/wshclientapi", () => ({
     },
 }));
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
+vi.mock("./agent-rewind-feature", () => ({
+    isAgentRewindFeatureEnabled: vi.fn(() => false),
+    openAgentRewindFeature: vi.fn(),
+}));
+vi.mock("@crest/coding-agent/workspace-rewind/checkpoint-manager", () => ({
+    makeDisabledWorkspaceCheckpointManager: vi.fn(() => ({
+        isBusy: () => false,
+        recover: vi.fn(),
+        dispose: vi.fn(),
+    })),
+    registerWorkspaceCheckpointManager: vi.fn(),
+}));
 
+import { Session } from "@crest/agent/harness/session/session";
+import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
+import { SqliteSessionStorage } from "@crest/agent/harness/session/sqlite-storage";
+import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
+import type { AgentMessage } from "@crest/agent/types";
+import { getModel } from "@crest/ai";
+import { AgentRuntimeRegistry } from "@crest/coding-agent/agent-runtime-registry";
+import { AgentSessionRuntime } from "@crest/coding-agent/agent-session-runtime";
+import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
+import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "@crest/coding-agent/sessions";
+import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
+import { registerWorkspaceCheckpointManager } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
 import {
     _resetAgentIpcForTests,
     abortAgentSessionForIpc,
@@ -93,20 +111,8 @@ import {
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
-import { AgentRuntimeRegistry } from "@crest/coding-agent/agent-runtime-registry";
-import { AgentSessionRuntime } from "@crest/coding-agent/agent-session-runtime";
-import { foldContextJournal } from "@crest/coding-agent/context/journal";
-import { ContextReferenceError } from "@crest/coding-agent/context/types";
-import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
-import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
-import { Session } from "@crest/agent/harness/session/session";
-import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
-import { SqliteSessionStorage } from "@crest/agent/harness/session/sqlite-storage";
-import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
-import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir, openPaneSession } from "@crest/coding-agent/sessions";
-import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
-import type { AgentMessage } from "@crest/agent/types";
-import { getModel } from "@crest/ai";
+import { isAgentRewindFeatureEnabled, openAgentRewindFeature } from "./agent-rewind-feature";
+import { AgentPtyHost } from "./agent-tools/agent-pty-host";
 
 const TrustedRequestContext = { workspaceId: "workspace-test", generation: 1 };
 
@@ -858,6 +864,248 @@ describe("agent-ipc command helpers", () => {
             sendConfiguredSpy.mockRestore();
         }
     });
+
+    it("constructs and recovers the enabled checkpoint manager before the runtime sends", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-rewind-order");
+        const order: string[] = [];
+        const processOwner = { pid: 42, processStartToken: "start-a", nonce: "nonce-a" };
+        const store = {
+            identity: {
+                canonicalRoot: "/tmp/agent-ipc-rewind-order",
+                workspaceIdentity: "workspace-a",
+                workspaceIncarnation: "incarnation-a",
+            },
+        };
+        const manager = {
+            isBusy: () => false,
+            recover: vi.fn(async () => {
+                order.push("recover");
+            }),
+            dispose: vi.fn(),
+        };
+        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValueOnce(true);
+        vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
+            state: "enabled",
+            processOwner,
+            store,
+        } as never);
+        vi.mocked(registerWorkspaceCheckpointManager).mockReturnValueOnce(manager);
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockImplementation(async () => {
+                order.push("send");
+                return "entry-1";
+            });
+
+        registerAgentIpcHandlers();
+        const handlers = registeredHandlers();
+        try {
+            await handlers.get("agent:send")?.(
+                {},
+                {
+                    sessionMetadata: metadata,
+                    blockId: "block-1",
+                    cwd: metadata.cwd,
+                    text: "first",
+                    provider: "p",
+                    model: "m",
+                }
+            );
+
+            expect(order).toEqual(["recover", "send"]);
+            expect(registerWorkspaceCheckpointManager).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    processOwner,
+                    store,
+                    hasRunningHostedCommands: expect.any(Function),
+                    onCheckpointCommitted: expect.any(Function),
+                })
+            );
+        } finally {
+            sendConfiguredSpy.mockRestore();
+        }
+    });
+
+    it.each(["recover", "post-recover"] as const)(
+        "cleans checkpoint and PTY ownership when runtime construction fails at $stage",
+        async (stage) => {
+            const { metadata } = await createPaneSession(`/tmp/agent-ipc-rewind-cleanup-${stage}`);
+            const failure = new Error(`${stage} failed`);
+            const host = makeHarnessHostMock();
+            let harnessSubscribers = 0;
+            host.harness.subscribe.mockImplementation(() => {
+                harnessSubscribers++;
+                return () => {
+                    harnessSubscribers--;
+                };
+            });
+            vi.mocked(buildAgentHarnessHost).mockReturnValue(host as never);
+            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValueOnce(true);
+            vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
+                state: "enabled",
+                processOwner: { pid: 42, processStartToken: "start-a", nonce: "nonce-a" },
+                store: {
+                    identity: {
+                        canonicalRoot: metadata.cwd,
+                        workspaceIdentity: "workspace-a",
+                        workspaceIncarnation: "incarnation-a",
+                    },
+                },
+            } as never);
+            const managerDispose = vi.fn(async () => undefined);
+            vi.mocked(registerWorkspaceCheckpointManager).mockImplementationOnce((input) => {
+                const unsubscribe = input.harness.subscribe(() => undefined);
+                managerDispose.mockImplementationOnce(async () => {
+                    unsubscribe();
+                });
+                return {
+                    isBusy: () => false,
+                    recover: stage === "recover" ? vi.fn(async () => Promise.reject(failure)) : vi.fn(),
+                    dispose: managerDispose,
+                };
+            });
+            const ptyDispose = vi.spyOn(AgentPtyHost.prototype, "dispose").mockResolvedValue(undefined);
+            const buildContext =
+                stage === "post-recover"
+                    ? vi.spyOn(Session.prototype, "buildContext").mockRejectedValueOnce(failure)
+                    : undefined;
+            vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+
+            registerAgentIpcHandlers();
+            try {
+                await expect(
+                    registeredHandlers().get("agent:send")?.(
+                        {},
+                        {
+                            sessionMetadata: metadata,
+                            blockId: "block-1",
+                            cwd: metadata.cwd,
+                            text: "first",
+                            provider: "p",
+                            model: "m",
+                        }
+                    )
+                ).rejects.toThrow(failure.message);
+                expect(managerDispose).toHaveBeenCalledOnce();
+                expect(ptyDispose).toHaveBeenCalledOnce();
+                expect(harnessSubscribers).toBe(0);
+            } finally {
+                buildContext?.mockRestore();
+                ptyDispose.mockRestore();
+            }
+        }
+    );
+
+    it.each([
+        { channel: "agent:archive-session", operation: "archive", senderId: 81 },
+        { channel: "agent:delete-session", operation: "delete", senderId: 82 },
+    ] as const)(
+        "rejects $operation while checkpoint finalization owns the session barrier",
+        async ({ channel, operation, senderId }) => {
+            const cwd = await fs.mkdtemp(path.join(os.tmpdir(), `crest-agent-${operation}-finalizer-busy-`));
+            const { metadata } = await createPaneSession(cwd);
+            const host = makeHarnessHostMock();
+            vi.mocked(buildAgentHarnessHost).mockImplementation((options) => {
+                host.session = options.session as never;
+                return host as never;
+            });
+            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValueOnce(true);
+            vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
+                state: "enabled",
+                processOwner: { pid: 42, processStartToken: "start-a", nonce: "nonce-a" },
+                store: {
+                    identity: {
+                        canonicalRoot: await fs.realpath(cwd),
+                        workspaceIdentity: "workspace-a",
+                        workspaceIncarnation: "incarnation-a",
+                    },
+                },
+            } as never);
+            let runFinalizer!: <T>(operation: () => Promise<T>) => Promise<T>;
+            vi.mocked(registerWorkspaceCheckpointManager).mockImplementationOnce((input) => {
+                runFinalizer = (operation) => input.mutationBarrier.run(operation);
+                return {
+                    isBusy: () => input.mutationBarrier.isBusy(),
+                    recover: vi.fn(),
+                    dispose: vi.fn(),
+                };
+            });
+            vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+            const sendConfiguredSpy = vi
+                .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+                .mockResolvedValue("entry-1");
+            const moveTo = vi.spyOn(Session.prototype, "moveTo");
+            const identity = {
+                ...TrustedRequestContext,
+                windowId: `window-${operation}-finalizer-busy`,
+                workspaceDir: await fs.realpath(cwd),
+                validatePreferredTerminal: async () => true,
+            };
+            registerAgentIpcHandlersImpl({
+                resolveWorkspaceSender: async () => identity,
+                ...DefaultAgentIpcRegistrationDependencies,
+            });
+            const handlers = registeredHandlers();
+            const event = { sender: { id: senderId, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+            let releaseFinalizer!: () => void;
+            const finalizerGate = new Promise<void>((resolve) => {
+                releaseFinalizer = resolve;
+            });
+
+            try {
+                await handlers.get("agent:send")?.(event, TrustedRequestContext, {
+                    sessionMetadata: metadata,
+                    context: {
+                        workspaceId: identity.workspaceId,
+                        workspaceDir: identity.workspaceDir,
+                        sessionPath: metadata.path,
+                        connection: "",
+                        environment: {},
+                        recentCmds: [],
+                    },
+                    text: "first",
+                    provider: "p",
+                    model: "m",
+                });
+                const finalization = runFinalizer(async () => finalizerGate);
+
+                await expect(handlers.get(channel)?.(event, TrustedRequestContext, metadata)).rejects.toThrow(
+                    /running/i
+                );
+                await expect(
+                    handlers.get("agent:send")?.(event, TrustedRequestContext, {
+                        sessionMetadata: metadata,
+                        context: {
+                            workspaceId: identity.workspaceId,
+                            workspaceDir: identity.workspaceDir,
+                            sessionPath: metadata.path,
+                            connection: "",
+                            environment: {},
+                            recentCmds: [],
+                        },
+                        text: "blocked",
+                        provider: "p",
+                        model: "m",
+                    })
+                ).rejects.toThrow(/running/i);
+                await expect(handlers.get("agent:list-tree")?.(event, TrustedRequestContext, metadata)).rejects.toThrow(
+                    /running/i
+                );
+                expect(moveTo).not.toHaveBeenCalled();
+                expect(sendConfiguredSpy).toHaveBeenCalledOnce();
+                await expect(fs.stat(metadata.path)).resolves.toBeDefined();
+
+                releaseFinalizer();
+                await finalization;
+            } finally {
+                releaseFinalizer();
+                moveTo.mockRestore();
+                sendConfiguredSpy.mockRestore();
+            }
+        }
+    );
 
     it("keeps a subscribed runtime alive until release and the idle TTL expires", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-subscribed-runtime");
@@ -2110,95 +2358,103 @@ describe("agent-ipc command helpers", () => {
     it.each([
         { kind: "pending", liveRuntime: false, senderId: 62 },
         { kind: "live-runtime", liveRuntime: true, senderId: 63 },
-    ])("removes a late $kind subscription captured after the initial archive snapshot", async ({ liveRuntime, senderId }) => {
-        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), `crest-agent-late-${liveRuntime ? "live" : "pending"}-`));
-        const created = await createPaneSession(cwd);
-        const metadata = created.metadata;
-        created.session.close();
-        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
-        vi.mocked(buildAgentHarnessHost).mockImplementation((options) => {
-            const host = makeHarnessHostMock();
-            host.session = options.session as never;
-            return host as never;
-        });
-        const sendConfiguredSpy = vi
-            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
-            .mockResolvedValue("entry-1");
-        const lateUnsubscribe = vi.fn();
-        const runtimeSubscribeSpy = vi
-            .spyOn(AgentSessionRuntime.prototype, "subscribe")
-            .mockReturnValue(lateUnsubscribe);
-        const exclusiveSpy = vi.spyOn(AgentRuntimeRegistry.prototype, "withExclusiveSessionMutation");
-        const identity = {
-            ...TrustedRequestContext,
-            windowId: `window-late-${liveRuntime ? "live" : "pending"}`,
-            workspaceDir: await fs.realpath(cwd),
-        };
-        registerAgentIpcHandlersImpl({
-            resolveWorkspaceSender: async () => identity,
-            ...DefaultAgentIpcRegistrationDependencies,
-        });
-        const handlers = registeredHandlers();
-        const runtimeSender = { id: 64, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
-        const oldSender = { id: senderId, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
-        const authorizationStarted = deferred<void>();
-        const releaseAuthorization = deferred<void>();
-        let validationCount = 0;
-        const authorization = {
-            workspaceId: identity.workspaceId,
-            generation: identity.generation,
-            validateCurrent: vi.fn(async () => {
-                if (validationCount++ === 0) {
-                    authorizationStarted.resolve();
-                    await releaseAuthorization.promise;
-                }
-            }),
-            guardRuntime: vi.fn(async () => {}),
-        };
-        const sendInput = {
-            sessionMetadata: metadata,
-            context: {
-                workspaceId: identity.workspaceId,
-                workspaceDir: identity.workspaceDir,
-                sessionPath: metadata.path,
-                environment: {},
-            },
-            text: "create runtime",
-            provider: "p",
-            model: "m",
-        };
-
-        try {
-            if (liveRuntime) {
-                await handlers.get("agent:send")?.({ sender: runtimeSender }, TrustedRequestContext, sendInput);
-            }
-            const subscribing = subscribeAgentSessionForIpc(
-                oldSender as unknown as electron.WebContents,
-                metadata.path,
-                authorization as never
+    ])(
+        "removes a late $kind subscription captured after the initial archive snapshot",
+        async ({ liveRuntime, senderId }) => {
+            const cwd = await fs.mkdtemp(
+                path.join(os.tmpdir(), `crest-agent-late-${liveRuntime ? "live" : "pending"}-`)
             );
-            await authorizationStarted.promise;
+            const created = await createPaneSession(cwd);
+            const metadata = created.metadata;
+            created.session.close();
+            vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+            vi.mocked(buildAgentHarnessHost).mockImplementation((options) => {
+                const host = makeHarnessHostMock();
+                host.session = options.session as never;
+                return host as never;
+            });
+            const sendConfiguredSpy = vi
+                .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+                .mockResolvedValue("entry-1");
+            const lateUnsubscribe = vi.fn();
+            const runtimeSubscribeSpy = vi
+                .spyOn(AgentSessionRuntime.prototype, "subscribe")
+                .mockReturnValue(lateUnsubscribe);
+            const exclusiveSpy = vi.spyOn(AgentRuntimeRegistry.prototype, "withExclusiveSessionMutation");
+            const identity = {
+                ...TrustedRequestContext,
+                windowId: `window-late-${liveRuntime ? "live" : "pending"}`,
+                workspaceDir: await fs.realpath(cwd),
+                validatePreferredTerminal: async () => true,
+            };
+            registerAgentIpcHandlersImpl({
+                resolveWorkspaceSender: async () => identity,
+                ...DefaultAgentIpcRegistrationDependencies,
+            });
+            const handlers = registeredHandlers();
+            const runtimeSender = { id: 64, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
+            const oldSender = { id: senderId, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
+            const authorizationStarted = deferred<void>();
+            const releaseAuthorization = deferred<void>();
+            let validationCount = 0;
+            const authorization = {
+                workspaceId: identity.workspaceId,
+                generation: identity.generation,
+                validateCurrent: vi.fn(async () => {
+                    if (validationCount++ === 0) {
+                        authorizationStarted.resolve();
+                        await releaseAuthorization.promise;
+                    }
+                }),
+                guardRuntime: vi.fn(async () => {}),
+            };
+            const sendInput = {
+                sessionMetadata: metadata,
+                context: {
+                    workspaceId: identity.workspaceId,
+                    workspaceDir: identity.workspaceDir,
+                    sessionPath: metadata.path,
+                    connection: "",
+                    environment: {},
+                    recentCmds: [],
+                },
+                text: "create runtime",
+                provider: "p",
+                model: "m",
+            };
 
-            const archiving = archiveAgentSessionForIpc(metadata);
-            await vi.waitFor(() => expect(exclusiveSpy).toHaveBeenCalledOnce());
-            releaseAuthorization.resolve();
-            await subscribing;
-            oldSender.send.mockClear();
-            const archived = await archiving;
-            await fs.copyFile(archived.path, metadata.path);
+            try {
+                if (liveRuntime) {
+                    await handlers.get("agent:send")?.({ sender: runtimeSender }, TrustedRequestContext, sendInput);
+                }
+                const subscribing = subscribeAgentSessionForIpc(
+                    oldSender as unknown as electron.WebContents,
+                    metadata.path,
+                    authorization as never
+                );
+                await authorizationStarted.promise;
 
-            await handlers.get("agent:send")?.({ sender: runtimeSender }, TrustedRequestContext, sendInput);
+                const archiving = archiveAgentSessionForIpc(metadata);
+                await vi.waitFor(() => expect(exclusiveSpy).toHaveBeenCalledOnce());
+                releaseAuthorization.resolve();
+                await subscribing;
+                oldSender.send.mockClear();
+                const archived = await archiving;
+                await fs.copyFile(archived.path, metadata.path);
 
-            expect(runtimeSubscribeSpy).toHaveBeenCalledTimes(liveRuntime ? 1 : 0);
-            expect(lateUnsubscribe).toHaveBeenCalledTimes(liveRuntime ? 1 : 0);
-            expect(oldSender.send).not.toHaveBeenCalled();
-        } finally {
-            releaseAuthorization.resolve();
-            exclusiveSpy.mockRestore();
-            runtimeSubscribeSpy.mockRestore();
-            sendConfiguredSpy.mockRestore();
+                await handlers.get("agent:send")?.({ sender: runtimeSender }, TrustedRequestContext, sendInput);
+
+                expect(runtimeSubscribeSpy).toHaveBeenCalledTimes(liveRuntime ? 1 : 0);
+                expect(lateUnsubscribe).toHaveBeenCalledTimes(liveRuntime ? 1 : 0);
+                expect(oldSender.send).not.toHaveBeenCalled();
+            } finally {
+                releaseAuthorization.resolve();
+                exclusiveSpy.mockRestore();
+                runtimeSubscribeSpy.mockRestore();
+                sendConfiguredSpy.mockRestore();
+            }
         }
-    });
+    );
 
     it.each([
         { kind: "pending", liveRuntime: false, senderId: 67 },
@@ -2229,6 +2485,7 @@ describe("agent-ipc command helpers", () => {
             ...TrustedRequestContext,
             windowId: `window-restore-serialization-${liveRuntime ? "live" : "pending"}`,
             workspaceDir: await fs.realpath(cwd),
+            validatePreferredTerminal: async () => true,
         };
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
@@ -2259,7 +2516,9 @@ describe("agent-ipc command helpers", () => {
                 workspaceId: identity.workspaceId,
                 workspaceDir: identity.workspaceDir,
                 sessionPath: metadata.path,
+                connection: "",
                 environment: {},
+                recentCmds: [],
             },
             text: "create runtime",
             provider: "p",
@@ -2287,6 +2546,7 @@ describe("agent-ipc command helpers", () => {
                 metadata.path,
                 authorization as never
             );
+
             oldSender.send.mockClear();
             gateRestoration = true;
 
@@ -2459,9 +2719,7 @@ describe("agent-ipc command helpers", () => {
                 expect(closeSpy).toHaveBeenCalledTimes(2);
                 expect(mutationSpy).toHaveBeenCalledOnce();
                 expect(saveWorkspaceAgentState).toHaveBeenCalledOnce();
-                expect(closeSpy.mock.invocationCallOrder[1]).toBeLessThan(
-                    mutationSpy.mock.invocationCallOrder[0]
-                );
+                expect(closeSpy.mock.invocationCallOrder[1]).toBeLessThan(mutationSpy.mock.invocationCallOrder[0]);
             } finally {
                 archiveSpy.mockRestore();
                 stageDeleteSpy.mockRestore();
@@ -2731,12 +2989,12 @@ describe("agent-ipc command helpers", () => {
             vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
             const host = makeHarnessHostMock();
             const harnessListeners: Array<(event: { type: "status"; status: "idle" }) => void> = [];
-            host.harness.subscribe.mockImplementation(
-                ((listener: (event: { type: "status"; status: "idle" }) => void) => {
-                    harnessListeners.push(listener);
-                    return vi.fn();
-                }) as never
-            );
+            host.harness.subscribe.mockImplementation(((
+                listener: (event: { type: "status"; status: "idle" }) => void
+            ) => {
+                harnessListeners.push(listener);
+                return vi.fn();
+            }) as never);
             vi.mocked(buildAgentHarnessHost).mockImplementation((options) => {
                 host.session = options.session as never;
                 return host as never;
@@ -2768,18 +3026,18 @@ describe("agent-ipc command helpers", () => {
             const restorationListenerReady = deferred<void>();
             const releaseRestorationGuard = deferred<void>();
             let gateRestoration = false;
-            let restorationGuardCalls = 0;
+            let restorationValidationCalls = 0;
             const authorization = {
                 workspaceId: identity.workspaceId,
                 generation: identity.generation,
-                validateCurrent: vi.fn(async () => {}),
-                guardRuntime: vi.fn(async () => {
+                validateCurrent: vi.fn(async () => {
                     if (!gateRestoration) return;
-                    if (++restorationGuardCalls === 2) {
+                    if (++restorationValidationCalls === 2) {
                         restorationListenerReady.resolve();
                         await releaseRestorationGuard.promise;
                     }
                 }),
+                guardRuntime: vi.fn(async () => {}),
             };
             const sendInput = {
                 sessionMetadata: metadata,
@@ -2829,7 +3087,9 @@ describe("agent-ipc command helpers", () => {
                 releaseRestorationGuard.resolve();
                 const removalError = await removalResult;
                 if (runningFailure) {
-                    expect(removalError).toEqual(expect.objectContaining({ message: expect.stringMatching(/running/i) }));
+                    expect(removalError).toEqual(
+                        expect.objectContaining({ message: expect.stringMatching(/running/i) })
+                    );
                 } else {
                     expect(removalError).toBe(preflightFailure);
                 }
