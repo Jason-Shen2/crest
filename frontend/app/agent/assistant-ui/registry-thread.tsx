@@ -68,7 +68,7 @@ import {
 import { ComposerAddAttachment, ComposerAttachments, UserMessageAttachments } from "./attachment";
 import { ContextDisplayRing, type CrestContextUsage } from "./context-display";
 import { ContextProjectionBadge } from "./context-projection-badge";
-import { getCrestImageAlt } from "./crest-message";
+import { getCrestImageAlt, getCrestToolRenderer } from "./crest-message";
 import { ThreadFollowupSuggestions } from "./follow-up-suggestions";
 import { MarkdownText } from "./markdown-text";
 import { Reasoning, ReasoningContent, ReasoningRoot, ReasoningText, ReasoningTrigger } from "./reasoning";
@@ -113,6 +113,19 @@ const ThreadComponentsContext = createContext<ThreadComponents>(EMPTY_COMPONENTS
 const ThreadExtrasContext = createContext<
     Pick<ThreadProps, "beforeComposer" | "composerAnchorRef" | "hideScrollToBottom">
 >({});
+const DefaultAssistantPartGrouping = groupPartByType<"group-chainOfThought" | "group-reasoning" | "group-tool">({
+    reasoning: ["group-chainOfThought", "group-reasoning"],
+    "tool-call": ["group-chainOfThought", "group-tool"],
+    "standalone-tool-call": [],
+});
+
+function groupCrestAssistantPart(
+    part: Parameters<typeof DefaultAssistantPartGrouping>[0],
+    context?: Parameters<typeof DefaultAssistantPartGrouping>[1]
+) {
+    if (part.type === "tool-call" && (part.toolName === "edit" || part.toolName === "write")) return [];
+    return DefaultAssistantPartGrouping(part, context);
+}
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -888,13 +901,7 @@ const AssistantMessage: FC = () => {
                 className="text-foreground px-2 leading-relaxed wrap-break-word"
             >
                 {contextProjection && <ContextProjectionBadge report={contextProjection} />}
-                <MessagePrimitive.GroupedParts
-                    groupBy={groupPartByType<"group-chainOfThought" | "group-reasoning" | "group-tool">({
-                        reasoning: ["group-chainOfThought", "group-reasoning"],
-                        "tool-call": ["group-chainOfThought", "group-tool"],
-                        "standalone-tool-call": [],
-                    })}
-                >
+                <MessagePrimitive.GroupedParts groupBy={groupCrestAssistantPart}>
                     {({ part, children }) => {
                         switch (part.type) {
                             case "group-chainOfThought":
@@ -930,8 +937,11 @@ const AssistantMessage: FC = () => {
                                 return <MarkdownText />;
                             case "reasoning":
                                 return <Reasoning {...part} />;
-                            case "tool-call":
-                                return part.toolUI ?? <ToolFallbackComponent {...part} />;
+                            case "tool-call": {
+                                if (part.toolUI) return part.toolUI;
+                                const ToolRenderer = getCrestToolRenderer(part.toolName, ToolFallbackComponent);
+                                return <ToolRenderer {...part} />;
+                            }
                             case "image":
                                 return <ImagePart {...part} role="assistant" />;
                             case "data":

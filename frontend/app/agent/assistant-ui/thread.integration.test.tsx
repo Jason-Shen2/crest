@@ -223,10 +223,75 @@ describe("Thread assistant-ui integration", () => {
         ]);
 
         expect(html).toContain('data-slot="diff-viewer"');
-        expect(html).toContain('data-slot="diff-viewer-header"');
-        expect(html).toContain('data-slot="diff-viewer-collapse-icon"');
+        expect(html).toContain('data-slot="file-card-header"');
+        expect(html).toContain('data-slot="file-card-collapse-icon"');
         expect(html).toContain("<diffs-container");
         expect(html).toContain("frontend/app.tsx");
+    });
+
+    it("renders a completed edit tool result as a diff file card", () => {
+        const patch = [
+            "diff --git a/src/app.ts b/src/app.ts",
+            "--- a/src/app.ts",
+            "+++ b/src/app.ts",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+        ].join("\n");
+        const html = renderThread(undefined, [
+            {
+                role: "assistant",
+                content: [
+                    {
+                        type: "tool-call",
+                        toolCallId: "call-edit",
+                        toolName: "edit",
+                        args: { path: "src/app.ts", edits: [] },
+                        argsText: JSON.stringify({ path: "src/app.ts", edits: [] }),
+                        result: {
+                            content: [{ type: "text", text: "ok" }],
+                            details: {
+                                patch,
+                                changeOperation: { path: "src/app.ts" },
+                            },
+                        },
+                        isError: false,
+                    },
+                ],
+                status: { type: "complete", reason: "stop" },
+            } as ThreadMessageLike,
+        ]);
+
+        expect(html).toContain('data-slot="diff-viewer"');
+        expect(html).toContain("src/app.ts");
+        expect(html).not.toContain("Used tool: <b>edit</b>");
+    });
+
+    it("renders a completed write tool result as a full-file card", () => {
+        const html = renderThread(undefined, [
+            {
+                role: "assistant",
+                content: [
+                    {
+                        type: "tool-call",
+                        toolCallId: "call-write",
+                        toolName: "write",
+                        args: { path: "src/new.ts", content: "export const value = 1;\n" },
+                        argsText: JSON.stringify({ path: "src/new.ts", content: "export const value = 1;\n" }),
+                        result: {
+                            content: [{ type: "text", text: "ok" }],
+                            details: {},
+                        },
+                        isError: false,
+                    },
+                ],
+                status: { type: "complete", reason: "stop" },
+            } as ThreadMessageLike,
+        ]);
+
+        expect(html).toContain('data-slot="write-file-card"');
+        expect(html).toContain("src/new.ts");
+        expect(html).toContain("export const value = 1");
     });
 
     it("renders beforeComposer content directly above the composer", () => {
