@@ -1,7 +1,8 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterEach, expect, test, vi } from "vitest";
@@ -387,7 +388,7 @@ test("fails closed on a corrupt pending or operation owner record", async () => 
 });
 
 async function makeStore(git: WorkspaceGitRunner = new WorkspaceGitRunner()) {
-    const root = await mkdtemp(join(process.cwd(), ".crest-retention-"));
+    const root = await realpath(await mkdtemp(join(tmpdir(), "crest-retention-")));
     CleanupRoots.push(root);
     const workspace = join(root, "workspace");
     const sessionsRoot = join(root, "sessions");
