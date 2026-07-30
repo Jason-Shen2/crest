@@ -3,24 +3,22 @@
 
 "use client";
 
-import { ChevronDownIcon, FileTextIcon, LoaderIcon, SearchIcon } from "lucide-react";
 import { useAuiState } from "@assistant-ui/react";
+import { ChevronDownIcon, FileTextIcon, LoaderIcon, SearchIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useShallow } from "zustand/shallow";
 
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/shadcn/ui/collapsible";
 import { cn } from "@/util/util";
-import {
-    buildReadActivityModel,
-    buildSearchActivityModel,
-    type ToolActivityPart,
-} from "./tool-activity-model";
+import { buildReadActivityModel, buildSearchActivityModel, type ToolActivityPart } from "./tool-activity-model";
 
 const ChipClassName = "rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[0.92em] text-foreground/85";
 
 function ActivityIcon({ active, kind }: { active: boolean; kind: "search" | "read" }) {
     if (active) {
-        return <LoaderIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 animate-spin [animation-duration:0.6s]" />;
+        return (
+            <LoaderIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 animate-spin [animation-duration:0.6s]" />
+        );
     }
     const Icon = kind === "search" ? SearchIcon : FileTextIcon;
     return <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />;

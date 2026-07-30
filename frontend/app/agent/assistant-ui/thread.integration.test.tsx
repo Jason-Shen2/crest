@@ -295,31 +295,28 @@ describe("Thread assistant-ui integration", () => {
     });
 
     it("coalesces adjacent read calls into one semantic Read activity", () => {
-        const html = renderThread(
-            { workspaceDir: "/repo", onOpenFile: () => {} },
-            [
-                {
-                    role: "assistant",
-                    content: [
-                        {
-                            type: "tool-call",
-                            toolCallId: "read-1",
-                            toolName: "read",
-                            args: { path: "src/app.ts" },
-                            argsText: "{}",
-                        },
-                        {
-                            type: "tool-call",
-                            toolCallId: "read-2",
-                            toolName: "read",
-                            args: { path: "src/util.ts" },
-                            argsText: "{}",
-                        },
-                    ],
-                    status: { type: "complete", reason: "stop" },
-                } as ThreadMessageLike,
-            ]
-        );
+        const html = renderThread({ workspaceDir: "/repo", onOpenFile: () => {} }, [
+            {
+                role: "assistant",
+                content: [
+                    {
+                        type: "tool-call",
+                        toolCallId: "read-1",
+                        toolName: "read",
+                        args: { path: "src/app.ts" },
+                        argsText: "{}",
+                    },
+                    {
+                        type: "tool-call",
+                        toolCallId: "read-2",
+                        toolName: "read",
+                        args: { path: "src/util.ts" },
+                        argsText: "{}",
+                    },
+                ],
+                status: { type: "complete", reason: "stop" },
+            } as ThreadMessageLike,
+        ]);
 
         expect(html.match(/data-slot="tool-activity-read"/g) ?? []).toHaveLength(1);
         expect(html).toContain("app.ts and util.ts");

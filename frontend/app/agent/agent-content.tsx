@@ -397,8 +397,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         },
         [onUserError]
     );
-    const contextTargetMatchesSession =
-        hostState.context.targetSessionPath === agentStateValue.activeSession?.path;
+    const contextTargetMatchesSession = hostState.context.targetSessionPath === agentStateValue.activeSession?.path;
     const contextHydrating = !!agentStateValue.activeSession?.path && !contextTargetMatchesSession;
     const contextSendGate = contextSendDisabledReason(
         contextReferencesEnabled ? hostState.context : { ...hostState.context, enabled: false }
