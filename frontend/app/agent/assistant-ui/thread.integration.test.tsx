@@ -294,6 +294,88 @@ describe("Thread assistant-ui integration", () => {
         expect(html).toContain("export const value = 1");
     });
 
+    it("coalesces adjacent read calls into one semantic Read activity", () => {
+        const html = renderThread(
+            { workspaceDir: "/repo", onOpenFile: () => {} },
+            [
+                {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "tool-call",
+                            toolCallId: "read-1",
+                            toolName: "read",
+                            args: { path: "src/app.ts" },
+                            argsText: "{}",
+                        },
+                        {
+                            type: "tool-call",
+                            toolCallId: "read-2",
+                            toolName: "read",
+                            args: { path: "src/util.ts" },
+                            argsText: "{}",
+                        },
+                    ],
+                    status: { type: "complete", reason: "stop" },
+                } as ThreadMessageLike,
+            ]
+        );
+
+        expect(html.match(/data-slot="tool-activity-read"/g) ?? []).toHaveLength(1);
+        expect(html).toContain("app.ts and util.ts");
+        expect(html).not.toContain("Used tool: <b>read</b>");
+    });
+
+    it("coalesces adjacent find and grep calls but text splits Search groups", () => {
+        const html = renderThread(undefined, [
+            {
+                role: "assistant",
+                content: [
+                    {
+                        type: "tool-call",
+                        toolCallId: "find-1",
+                        toolName: "find",
+                        args: { pattern: "*.md" },
+                        argsText: "{}",
+                    },
+                    {
+                        type: "tool-call",
+                        toolCallId: "grep-1",
+                        toolName: "grep",
+                        args: { pattern: "TODO", glob: "*.ts" },
+                        argsText: "{}",
+                    },
+                    { type: "text", text: "Checking another area." },
+                    {
+                        type: "tool-call",
+                        toolCallId: "find-2",
+                        toolName: "find",
+                        args: { pattern: "*.json" },
+                        argsText: "{}",
+                    },
+                ],
+                status: { type: "complete", reason: "stop" },
+            } as ThreadMessageLike,
+        ]);
+
+        expect(html.match(/data-slot="tool-activity-search"/g) ?? []).toHaveLength(2);
+        expect(html).toContain("*.md");
+        expect(html).toContain("TODO");
+        expect(html).toContain("*.json");
+    });
+
+    it("leaves malformed semantic calls on the existing generic grouping path", () => {
+        const group = (registryThreadTesting as any).groupCrestAssistantPart({
+            type: "tool-call",
+            toolCallId: "bad",
+            toolName: "read",
+            args: {},
+            status: { type: "complete" },
+        });
+
+        expect(group).not.toContain("group-read-activity");
+    });
+
     it("renders beforeComposer content directly above the composer", () => {
         const html = renderThread({ beforeComposer: <div data-testid="before-composer">Panel</div> });
 

@@ -73,6 +73,8 @@ import { ThreadFollowupSuggestions } from "./follow-up-suggestions";
 import { MarkdownText } from "./markdown-text";
 import { Reasoning, ReasoningContent, ReasoningRoot, ReasoningText, ReasoningTrigger } from "./reasoning";
 import { ToolGroupContent, ToolGroupRoot, ToolGroupTrigger } from "./tool-group";
+import { ReadToolActivityGroup, SearchToolActivityGroup } from "./tools/tool-activity";
+import { getToolActivityKind, type ToolActivityPart } from "./tools/tool-activity-model";
 import { ToolFallback } from "./tools/tool-fallback";
 import { TooltipIconButton } from "./tooltip-icon-button";
 
@@ -102,6 +104,8 @@ export type ThreadProps = {
     beforeComposer?: ReactNode | undefined;
     composerAnchorRef?: RefObject<HTMLDivElement | null> | undefined;
     hideScrollToBottom?: boolean | undefined;
+    workspaceDir?: string | undefined;
+    onOpenFile?: ((path: string) => void) | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -111,9 +115,16 @@ export const ComposerContext = createContext<
 >({});
 const ThreadComponentsContext = createContext<ThreadComponents>(EMPTY_COMPONENTS);
 const ThreadExtrasContext = createContext<
-    Pick<ThreadProps, "beforeComposer" | "composerAnchorRef" | "hideScrollToBottom">
+    Pick<ThreadProps, "beforeComposer" | "composerAnchorRef" | "hideScrollToBottom" | "workspaceDir" | "onOpenFile">
 >({});
-const DefaultAssistantPartGrouping = groupPartByType<"group-chainOfThought" | "group-reasoning" | "group-tool">({
+type CrestAssistantGroup =
+    | "group-chainOfThought"
+    | "group-reasoning"
+    | "group-tool"
+    | "group-read-activity"
+    | "group-search-activity";
+
+const DefaultAssistantPartGrouping = groupPartByType<CrestAssistantGroup>({
     reasoning: ["group-chainOfThought", "group-reasoning"],
     "tool-call": ["group-chainOfThought", "group-tool"],
     "standalone-tool-call": [],
@@ -124,6 +135,11 @@ function groupCrestAssistantPart(
     context?: Parameters<typeof DefaultAssistantPartGrouping>[1]
 ) {
     if (part.type === "tool-call" && (part.toolName === "edit" || part.toolName === "write")) return [];
+    if (part.type === "tool-call" && !context?.toolUIs?.[part.toolName]?.length) {
+        const kind = getToolActivityKind(part as ToolActivityPart);
+        if (kind === "read") return ["group-chainOfThought", "group-read-activity"] as const;
+        if (kind === "search") return ["group-chainOfThought", "group-search-activity"] as const;
+    }
     return DefaultAssistantPartGrouping(part, context);
 }
 
@@ -141,13 +157,17 @@ export const Thread: FC<ThreadProps> = ({
     beforeComposer,
     composerAnchorRef,
     hideScrollToBottom,
+    workspaceDir,
+    onOpenFile,
 }) => {
     const isEmpty = useAuiState(isNewChatView);
 
     return (
         <ThreadComponentsContext.Provider value={components}>
             <ComposerContext.Provider value={{ modelLabel, onOpenModelPicker, contextUsage, modelContextWindow }}>
-                <ThreadExtrasContext.Provider value={{ beforeComposer, composerAnchorRef, hideScrollToBottom }}>
+                <ThreadExtrasContext.Provider
+                    value={{ beforeComposer, composerAnchorRef, hideScrollToBottom, workspaceDir, onOpenFile }}
+                >
                     <ThreadRoot isEmpty={isEmpty} />
                 </ThreadExtrasContext.Provider>
             </ComposerContext.Provider>
@@ -430,6 +450,7 @@ export const __testing = {
     ComposerDropzoneShellClassName,
     getNextComposerDragDepth,
     getSlashCommandScrollTop,
+    groupCrestAssistantPart,
 };
 
 const SlashCommandPopoverDismiss: FC = () => {
@@ -879,6 +900,7 @@ const AssistantMessage: FC = () => {
         ToolGroup,
         ReasoningGroup,
     } = useContext(ThreadComponentsContext);
+    const { workspaceDir = "", onOpenFile } = useContext(ThreadExtrasContext);
     const contextProjection = useAuiState(
         (state) =>
             (state.message.metadata.custom as { contextProjection?: AgentContextProjectionReportView } | undefined)
@@ -906,6 +928,16 @@ const AssistantMessage: FC = () => {
                         switch (part.type) {
                             case "group-chainOfThought":
                                 return <div data-slot="aui_chain-of-thought">{children}</div>;
+                            case "group-search-activity":
+                                return <SearchToolActivityGroup indices={part.indices} />;
+                            case "group-read-activity":
+                                return (
+                                    <ReadToolActivityGroup
+                                        indices={part.indices}
+                                        workspaceDir={workspaceDir}
+                                        onOpenFile={onOpenFile}
+                                    />
+                                );
                             case "group-tool":
                                 if (ToolGroup) {
                                     return <ToolGroup group={part}>{children}</ToolGroup>;
