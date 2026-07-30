@@ -117,6 +117,12 @@ export function WorkspaceMainContent({
             tab.kind === "file" && editorRegistry ? editorRegistry.open(tab.id, tab.path) : topTabRuntimeFactory(tab),
         [editorRegistry, topTabRuntimeFactory]
     );
+    const openAgentFile = useCallback(
+        (path: string) => {
+            topTabController?.openFile(path);
+        },
+        [topTabController]
+    );
     const registryDisposal = useRef<{ registry: WorkspaceTopTabRuntimeRegistry; cancelled: boolean } | undefined>(
         undefined
     );
@@ -220,6 +226,7 @@ export function WorkspaceMainContent({
                     model={agentModel}
                     client={agentClient}
                     executionContext={agentExecutionContext}
+                    onOpenFile={topTabController ? openAgentFile : undefined}
                 />
                 {activeContent.kind === "terminal" ? (
                     <section

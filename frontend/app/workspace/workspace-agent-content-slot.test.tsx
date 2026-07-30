@@ -9,13 +9,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceAgentContentSlot } from "./workspace-agent-content-slot";
 
 const agentContentMock = vi.hoisted(() => ({
+    props: undefined as Record<string, unknown> | undefined,
     rootRenderCount: 0,
     consumerRenderCount: 0,
     activityEvents: vi.fn(),
 }));
 
 vi.mock("@/app/agent/agent-content", () => ({
-    AgentContent: () => {
+    AgentContent: (props: Record<string, unknown>) => {
+        agentContentMock.props = props;
         agentContentMock.rootRenderCount++;
         return <ActivityLifecycleProbe />;
     },
@@ -33,6 +35,7 @@ afterEach(() => {
     agentContentMock.rootRenderCount = 0;
     agentContentMock.consumerRenderCount = 0;
     agentContentMock.activityEvents.mockClear();
+    agentContentMock.props = undefined;
 });
 
 describe("WorkspaceAgentContentSlot", () => {
@@ -73,5 +76,25 @@ describe("WorkspaceAgentContentSlot", () => {
     it("renders a fallback label when Agent dependencies are not ready", () => {
         render(<WorkspaceAgentContentSlot active={true} mounted={true} />);
         expect(screen.getByTestId("agent-surface").textContent).toBe("Agent");
+    });
+
+    it("passes the workspace file callback into AgentContent", () => {
+        const onOpenFile = vi.fn();
+        render(
+            <WorkspaceAgentContentSlot
+                active={true}
+                mounted={true}
+                model={{} as any}
+                client={{} as any}
+                executionContext={{
+                    workspaceId: "workspace-1",
+                    workspaceDir: "/repo",
+                    environment: {},
+                }}
+                onOpenFile={onOpenFile}
+            />
+        );
+
+        expect(agentContentMock.props?.onOpenFile).toBe(onOpenFile);
     });
 });

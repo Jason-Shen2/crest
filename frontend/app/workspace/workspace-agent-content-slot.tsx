@@ -14,6 +14,7 @@ export interface WorkspaceAgentContentSlotProps {
     model?: WorkspaceAgentModel;
     client?: AgentRuntimeClient;
     executionContext?: AgentExecutionContext;
+    onOpenFile?: (path: string) => void;
 }
 
 const StableAgentContent = memo(AgentContent);
@@ -25,6 +26,7 @@ export function WorkspaceAgentContentSlot({
     model,
     client,
     executionContext,
+    onOpenFile,
 }: WorkspaceAgentContentSlotProps) {
     const [activityController] = useState(() => makeAgentSurfaceActivityController(active));
 
@@ -39,7 +41,12 @@ export function WorkspaceAgentContentSlot({
         <WorkspaceContentSlot active={active} testId="agent-surface">
             <AgentSurfaceActivityProvider controller={activityController}>
                 {model && client && executionContext ? (
-                    <StableAgentContent model={model} client={client} executionContext={executionContext} />
+                    <StableAgentContent
+                        model={model}
+                        client={client}
+                        executionContext={executionContext}
+                        onOpenFile={onOpenFile}
+                    />
                 ) : (
                     "Agent"
                 )}

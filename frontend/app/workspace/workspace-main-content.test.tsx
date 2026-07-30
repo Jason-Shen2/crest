@@ -11,8 +11,19 @@ const apiMocks = vi.hoisted(() => ({
     setWorkspaceSurface: vi.fn(),
 }));
 
+const agentContentMock = vi.hoisted(() => ({
+    props: undefined as Record<string, unknown> | undefined,
+}));
+
 vi.mock("@/app/store/global", () => ({
     getApi: () => apiMocks,
+}));
+
+vi.mock("@/app/agent/agent-content", () => ({
+    AgentContent: (props: Record<string, unknown>) => {
+        agentContentMock.props = props;
+        return <div>Agent content</div>;
+    },
 }));
 
 vi.mock("./file-top-tab", () => ({
@@ -43,6 +54,7 @@ function makeProps(overrides: Partial<WorkspaceMainContentProps> = {}): Workspac
 afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    agentContentMock.props = undefined;
 });
 
 describe("WorkspaceMainContent identity", () => {
@@ -154,6 +166,28 @@ describe("WorkspaceMainContent identity", () => {
         view.rerender(<WorkspaceMainContent {...makeProps({ activeContent: { kind: "agent" } })} />);
 
         expect(screen.getByTestId("agent-surface").getAttribute("aria-hidden")).toBe("false");
+    });
+
+    it("opens Agent Read files through the authoritative top-tab controller", () => {
+        const openFile = vi.fn(() => "file-tab-1");
+        render(
+            <WorkspaceMainContent
+                {...makeProps({
+                    agentModel: {} as any,
+                    agentClient: {} as any,
+                    agentExecutionContext: {
+                        workspaceId: "workspace-1",
+                        workspaceDir: "/repo",
+                        environment: {},
+                    },
+                    topTabController: { openFile } as any,
+                })}
+            />
+        );
+
+        (agentContentMock.props?.onOpenFile as ((path: string) => void) | undefined)?.("/repo/src/app.ts");
+
+        expect(openFile).toHaveBeenCalledWith("/repo/src/app.ts");
     });
 
     it("keeps Terminal navigation out of the top tabs and renders no Phase 2 placeholder copy", () => {

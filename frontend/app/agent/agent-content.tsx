@@ -41,6 +41,7 @@ export interface AgentContentProps {
     model: WorkspaceAgentModel;
     client: AgentRuntimeClient;
     executionContext: AgentExecutionContext;
+    onOpenFile?: (path: string) => void;
 }
 
 interface AgentAttachedPanelState {
@@ -220,7 +221,7 @@ export function agentContextSendGuidance(reason: ContextReferenceSendDisabledRea
     return "";
 }
 
-export function AgentContent({ model, client, executionContext }: AgentContentProps) {
+export function AgentContent({ model, client, executionContext, onOpenFile }: AgentContentProps) {
     const [attachedPanelState, setAttachedPanelState] = useState<AgentAttachedPanelState>(emptyAttachedPanelState);
     const userConfigState = useAtomValue(aiUserConfigAtom);
     const contextReferenceUiConfig = useMemo(() => resolveContextReferenceUiConfig(userConfigState), [userConfigState]);
@@ -493,6 +494,8 @@ export function AgentContent({ model, client, executionContext }: AgentContentPr
                         }
                         modelContextWindow={resolved.resolvedAIConfig?.contextwindow}
                         contextUsage={contextUsage}
+                        workspaceDir={executionContext.workspaceDir}
+                        onOpenFile={onOpenFile}
                         composerAnchorRef={composerAnchorRef}
                         hideScrollToBottom={
                             attachedPanelState.commandResults.length > 0 ||
