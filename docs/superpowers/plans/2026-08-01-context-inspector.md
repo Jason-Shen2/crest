@@ -347,16 +347,16 @@ git commit -m "feat: expose agent context inspection"
 - Modify: `frontend/app/workspace/workspace-agent-model.ts`
 - Modify: `frontend/app/workspace/workspace-agent-model.test.ts`
 
-- [ ] Add failing reducer and model tests proving session-state/live snapshots are accepted only when session path, model key, leaf ID, and revision match the current identity.
-- [ ] Add tests that a selected session/model change immediately sets the view to `updating` with no old inventory, while a same-identity refresh failure keeps the prior inventory as `out_of_date`.
-- [ ] Run `npx vitest run frontend/app/store/use-pi-chat.test.tsx frontend/app/agent/agent-chat-host.test.tsx frontend/app/agent/agent-content.test.tsx frontend/app/workspace/workspace-agent-model.test.ts` and verify failure.
-- [ ] Add `contextSnapshot?: AgentContextSnapshotView` to `PiAgentEvent`, `UsePiChatReturn`, and `AgentHostState`.
-- [ ] On session/model/execution-context changes, call `client.inspectContext` through an abortable effect keyed by the complete identity. Do not call it on composer keystrokes.
-- [ ] Add a transient `contextSnapshotAtom` to `WorkspaceAgentModel`. Do not add it to `AgentStateFields`, serialization, or checkpoint persistence.
-- [ ] Add model methods `beginContextSnapshotUpdate(identity)`, `publishContextSnapshot(snapshot)`, and `failContextSnapshotUpdate(identity, message)` using `globalStore.get/set` and strict identity matching.
-- [ ] Publish host snapshots into the workspace model from `AgentContent`; clear them on controlled-session generation changes and invalid model selection.
-- [ ] Remove `getLatestAgentContextUsage` and `mapPiUsageToContextUsage` from the ring data path after snapshot transport is complete.
-- [ ] Run the targeted tests and expect all to pass.
+- [x] Add failing reducer and model tests proving session-state/live snapshots are accepted only when session path, model key, leaf ID, and revision match the current identity.
+- [x] Add tests that a selected session/model change immediately sets the view to `updating` with no old inventory, while a same-identity refresh failure keeps the prior inventory as `out_of_date`.
+- [x] Run `npx vitest run frontend/app/store/use-pi-chat.test.tsx frontend/app/agent/agent-chat-host.test.tsx frontend/app/agent/agent-content.test.tsx frontend/app/workspace/workspace-agent-model.test.ts` and verify failure.
+- [x] Add `contextSnapshot?: AgentContextSnapshotView` to `PiAgentEvent`, `UsePiChatReturn`, and `AgentHostState`.
+- [x] On session/model/execution-context changes, call `client.inspectContext` through an abortable effect keyed by the complete identity. Do not call it on composer keystrokes.
+- [x] Add a transient `contextSnapshotAtom` to `WorkspaceAgentModel`. Do not add it to `AgentStateFields`, serialization, or checkpoint persistence.
+- [x] Add model methods `beginContextSnapshotUpdate(identity)`, `publishContextSnapshot(snapshot)`, and `failContextSnapshotUpdate(identity, message)` using `globalStore.get/set` and strict identity matching.
+- [x] Publish host snapshots into the workspace model from `AgentContent`; clear them on controlled-session generation changes and invalid model selection.
+- [x] Remove `getLatestAgentContextUsage` and `mapPiUsageToContextUsage` from the ring data path after snapshot transport is complete.
+- [x] Run the targeted tests and expect all to pass.
 - [ ] Commit:
 
 ```bash

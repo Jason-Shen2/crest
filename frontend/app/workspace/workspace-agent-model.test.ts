@@ -34,6 +34,24 @@ const ModelTwo: AgentSelectionMeta = {
     reasoning: "medium",
 };
 
+function contextSnapshot(sessionPath: string | undefined, modelKey = "openai/gpt-5"): AgentContextSnapshotView {
+    return {
+        schemaVersion: 1,
+        identity: { sessionPath, leafId: null, modelKey, revision: 1 },
+        generatedAt: "2026-08-01T00:00:00Z",
+        lifecycle: "ready",
+        accuracy: "estimated",
+        modelLabel: modelKey,
+        contextWindow: 100_000,
+        outputReserve: 10_000,
+        inputCapacity: 90_000,
+        effectiveInputTokens: 12,
+        remainingInputTokens: 89_988,
+        categories: [],
+        items: [],
+    };
+}
+
 class FakeEventTarget implements WorkspaceAgentModelEventTarget {
     visibilityState = "visible";
     listeners = new Map<string, Set<() => void>>();
@@ -109,6 +127,70 @@ describe("workspace Agent state helpers", () => {
 });
 
 describe("WorkspaceAgentModel", () => {
+    it("keeps context inspection transient and rejects stale session or model results", () => {
+        const model = WorkspaceAgentModel.getInstance({
+            windowId: "win-1",
+            workspaceId: "ws-1",
+            generation: 4,
+            initialState: { activesession: SessionOne },
+        });
+        const first = model.beginContextInspection({
+            workspaceGeneration: 4,
+            sessionGeneration: 0,
+            sessionPath: SessionOne.path,
+            modelKey: "openai/gpt-5",
+        });
+        const second = model.beginContextInspection({
+            workspaceGeneration: 4,
+            sessionGeneration: 1,
+            sessionPath: SessionTwo.path,
+            modelKey: "anthropic/claude",
+        });
+
+        expect(model.publishContextSnapshot(first, contextSnapshot(SessionOne.path))).toBe(false);
+        expect(model.publishContextSnapshot(second, contextSnapshot(SessionTwo.path))).toBe(false);
+        expect(model.publishContextSnapshot(second, contextSnapshot(SessionTwo.path, "anthropic/claude"))).toBe(true);
+        expect(globalStore.get(model.contextSnapshotAtom)).toMatchObject({
+            status: "ready",
+            identity: second,
+            snapshot: { identity: { sessionPath: SessionTwo.path, modelKey: "anthropic/claude" } },
+        });
+        expect(serializeWorkspaceAgentState(globalStore.get(model.stateAtom))).toEqual({
+            activesession: SessionOne,
+        });
+    });
+
+    it("keeps same-identity inventory out of date after refresh failure and rejects older leaves", () => {
+        const model = WorkspaceAgentModel.getInstance({
+            windowId: "win-1",
+            workspaceId: "ws-1",
+            generation: 4,
+        });
+        const identity = model.beginContextInspection({
+            workspaceGeneration: 4,
+            sessionGeneration: 0,
+            sessionPath: SessionOne.path,
+            modelKey: "openai/gpt-5",
+        });
+        const current = contextSnapshot(SessionOne.path);
+        current.identity.leafId = "leaf-new";
+        current.identity.revision = 3;
+        expect(model.publishContextSnapshot(identity, current)).toBe(true);
+
+        model.beginContextInspection(identity);
+        expect(model.failContextInspection(identity, "refresh failed")).toBe(true);
+        expect(globalStore.get(model.contextSnapshotAtom)).toMatchObject({
+            status: "out_of_date",
+            errorMessage: "refresh failed",
+            snapshot: { identity: { leafId: "leaf-new", revision: 3 } },
+        });
+
+        const stale = contextSnapshot(SessionOne.path);
+        stale.identity.leafId = "leaf-old";
+        stale.identity.revision = 2;
+        expect(model.publishContextSnapshot(identity, stale)).toBe(false);
+    });
+
     it("owns one model per exact window, workspace, and generation identity", async () => {
         const first = WorkspaceAgentModel.getInstance({
             windowId: "win-1",

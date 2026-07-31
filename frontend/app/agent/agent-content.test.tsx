@@ -88,6 +88,54 @@ afterEach(async () => {
 });
 
 describe("AgentContent", () => {
+    it("publishes only the host context snapshot matching the current renderer identity", () => {
+        const model = makeModel();
+        model.selectModel({ provider: "openai", model: "gpt-test", reasoning: "low" });
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+        const inspection = globalStore.get(model.contextSnapshotAtom);
+        expect(inspection?.status).toBe("loading");
+        const persistedStateBeforeSnapshot = globalStore.get(model.stateAtom);
+        const snapshot = {
+            schemaVersion: 1,
+            identity: {
+                leafId: null,
+                modelKey: inspection.identity.modelKey,
+                revision: 1,
+            },
+            generatedAt: "2026-08-01T00:00:00Z",
+            lifecycle: "ready",
+            accuracy: "estimated",
+            modelLabel: inspection.identity.modelKey,
+            contextWindow: 100_000,
+            outputReserve: 10_000,
+            inputCapacity: 90_000,
+            effectiveInputTokens: 20,
+            remainingInputTokens: 89_980,
+            categories: [],
+            items: [],
+        } satisfies AgentContextSnapshotView;
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                contextSnapshot: snapshot,
+            });
+        });
+
+        expect(globalStore.get(model.contextSnapshotAtom)).toMatchObject({ status: "ready", snapshot });
+        expect(globalStore.get(model.stateAtom)).toEqual(persistedStateBeforeSnapshot);
+    });
+
     it("writes session changes to the model but keeps user errors component-local", () => {
         const model = makeModel();
         render(

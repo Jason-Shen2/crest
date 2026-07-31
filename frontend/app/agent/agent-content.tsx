@@ -17,7 +17,7 @@ import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import type { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
 import { useAtomValue } from "jotai";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
     AgentChatHost,
     type AgentChatHostApi,
@@ -56,55 +56,6 @@ function emptyAttachedPanelState(): AgentAttachedPanelState {
         selectorRequest: null,
         modelPickerOpen: false,
     };
-}
-
-function finiteNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function usageField(usage: Record<string, unknown>, ...keys: string[]): number | undefined {
-    for (const key of keys) {
-        const value = finiteNumber(usage[key]);
-        if (value != null) return value;
-    }
-    return undefined;
-}
-
-export function mapPiUsageToContextUsage(usage: unknown): CrestContextUsage | undefined {
-    if (!usage || typeof usage !== "object") return undefined;
-    const value = usage as Record<string, unknown>;
-    const inputTokens = usageField(value, "inputTokens", "input");
-    const outputTokens = usageField(value, "outputTokens", "output");
-    const cacheRead = usageField(value, "cachedInputTokens", "cacheRead") ?? 0;
-    const cacheWrite = usageField(value, "cacheWrite") ?? 0;
-    const cachedInputTokens = cacheRead + cacheWrite;
-    const reasoningTokens = usageField(value, "reasoningTokens");
-    const totalTokens =
-        usageField(value, "totalTokens") ??
-        (inputTokens ?? 0) + (outputTokens ?? 0) + cachedInputTokens + (reasoningTokens ?? 0);
-
-    if (!inputTokens && !outputTokens && !cachedInputTokens && !reasoningTokens && !totalTokens) return undefined;
-    return {
-        inputTokens: inputTokens ?? 0,
-        outputTokens: outputTokens ?? 0,
-        cachedInputTokens,
-        ...(reasoningTokens != null ? { reasoningTokens } : {}),
-        totalTokens,
-    };
-}
-
-export function getLatestAgentContextUsage(turns: PiTurn[]): CrestContextUsage | undefined {
-    for (let i = turns.length - 1; i >= 0; i--) {
-        const turn = turns[i];
-        for (let j = turn.responseMessages.length - 1; j >= 0; j--) {
-            const message = turn.responseMessages[j];
-            if (message.role !== "assistant") continue;
-            if (message.stopReason === "aborted" || message.stopReason === "error") continue;
-            const usage = mapPiUsageToContextUsage(message.usage);
-            if (usage) return usage;
-        }
-    }
-    return undefined;
 }
 
 function stripVendorPrefix(modelId: string): string {
@@ -228,6 +179,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
     const contextReferencesEnabled = contextReferenceUiConfig.enabled;
     const agentStateValue = useAtomValue(model.stateAtom);
     const sessionRevision = useAtomValue(model.sessionGenerationAtom);
+    const contextSnapshotState = useAtomValue(model.contextSnapshotAtom);
     const modelErrorMessage = useAtomValue(model.errorAtom);
     const providerModelsMap = useAtomValue(providerModelsMapAtom);
     const activeSelection = useMemo<AgentSelection | null>(() => {
@@ -273,6 +225,27 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         if ("config" in result) return { resolvedAIConfig: result.config, aiConfigError: null };
         return { resolvedAIConfig: null, aiConfigError: result.error };
     }, [activeSelection, userConfigState.config]);
+    const contextInspectionIdentity = useMemo(
+        () =>
+            activeSelection
+                ? {
+                      workspaceGeneration: model.generation,
+                      sessionGeneration: sessionRevision,
+                      sessionPath: agentStateValue.activeSession?.path,
+                      modelKey: `${activeSelection.provider}/${activeSelection.model}`,
+                  }
+                : undefined,
+        [activeSelection, agentStateValue.activeSession?.path, model.generation, sessionRevision]
+    );
+    const contextInspectionIdentityRef = useRef(contextInspectionIdentity);
+    contextInspectionIdentityRef.current = contextInspectionIdentity;
+    useLayoutEffect(() => {
+        if (!contextInspectionIdentity) {
+            model.clearContextInspection();
+            return;
+        }
+        model.beginContextInspection(contextInspectionIdentity);
+    }, [contextInspectionIdentity, model]);
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
     const composerAnchorRef = useRef<HTMLDivElement>(null);
     const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
@@ -348,6 +321,12 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
             };
             hostStateRef.current = normalized;
             setHostState(normalized);
+            const inspectionIdentity = contextInspectionIdentityRef.current;
+            if (inspectionIdentity && normalized.contextSnapshot) {
+                model.publishContextSnapshot(inspectionIdentity, normalized.contextSnapshot);
+            } else if (inspectionIdentity && normalized.contextInspectionError) {
+                model.failContextInspection(inspectionIdentity, normalized.contextInspectionError);
+            }
             if (!normalized.errorMessage) {
                 setDismissedHostError(undefined);
             }
@@ -358,7 +337,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                 onUserError("");
             }
         },
-        [onUserError]
+        [model, onUserError]
     );
     const onSelectionChange = useCallback(
         (next: AgentSelection) => {
@@ -414,7 +393,10 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         abort: () => agentApiRef.current?.abort(),
         isSendDisabled: contextHydrating || contextSendGate != null,
     });
-    const contextUsage = useMemo(() => getLatestAgentContextUsage(agentTurns), [agentTurns]);
+    const contextUsage = useMemo<CrestContextUsage | undefined>(() => {
+        const tokens = contextSnapshotState?.snapshot?.effectiveInputTokens;
+        return tokens == null ? undefined : { inputTokens: tokens, totalTokens: tokens };
+    }, [contextSnapshotState?.snapshot?.effectiveInputTokens]);
     const contextIdentity = useMemo(
         () => ({
             targetSessionPath: hostState.context.targetSessionPath,
@@ -491,7 +473,9 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         onOpenModelPicker={() =>
                             setAttachedPanelState({ commandResults: [], selectorRequest: null, modelPickerOpen: true })
                         }
-                        modelContextWindow={resolved.resolvedAIConfig?.contextwindow}
+                        modelContextWindow={
+                            contextSnapshotState?.snapshot?.contextWindow ?? resolved.resolvedAIConfig?.contextwindow
+                        }
                         contextUsage={contextUsage}
                         workspaceDir={executionContext.workspaceDir}
                         onOpenFile={onOpenFile}

@@ -120,6 +120,8 @@ export interface PiAgentEvent {
     toolResults?: PiAgentMessage[];
     /** session_state carries committed context state. */
     contextReports?: AgentContextProjectionReportView[];
+    /** session_state and live runtime events may carry the next-call effective context. */
+    contextSnapshot?: AgentContextSnapshotView;
     /** context_projection carries the committed per-turn report. */
     report?: AgentContextProjectionReportView;
     /** message_update carries this. */
@@ -260,6 +262,8 @@ export interface UsePiChatReturn {
      */
     queuedMessages: PiAgentMessage[];
     commands: AgentPtySnapshot[];
+    contextSnapshot?: AgentContextSnapshotView;
+    contextInspectionError?: string;
     send: (text: string, options?: UsePiChatSendOptions) => Promise<void>;
     abort: () => void;
     contextState: ContextReferenceRendererState;
@@ -277,6 +281,7 @@ export interface UsePiChatSendOptions {
 interface AgentApiSurface {
     createSession: () => Promise<AgentSessionMeta>;
     getSessionState: (sessionMetadata: AgentSessionMeta) => Promise<PiAgentEvent>;
+    inspectContext: (options: AgentInspectContextOptions) => Promise<AgentInspectContextResult>;
     prepareContextDraft: (input: AgentPrepareContextDraftInput) => Promise<AgentPrepareContextDraftResult>;
     summarizeContextDraft: (input: AgentSummarizeContextDraftInput) => Promise<AgentSummarizeContextDraftResult>;
     discardContextDraft: (input: AgentDiscardContextDraftInput) => Promise<AgentDiscardContextDraftResult>;
@@ -456,6 +461,8 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
     const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
     const [commands, setCommands] = useState<AgentPtySnapshot[]>([]);
+    const [contextSnapshot, setContextSnapshot] = useState<AgentContextSnapshotView | undefined>();
+    const [contextInspectionError, setContextInspectionError] = useState<string | undefined>();
     const [sessionMetadata, setSessionMetadata] = useState<AgentSessionMeta | undefined>(initialSessionMetadata);
     const [contextState, setContextState] = useState<ContextReferenceRendererState>(() => ({
         ...createContextReferenceState(initialSessionMetadata?.path),
@@ -554,6 +561,8 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         setErrorMessage(undefined);
         setQueuedMessages([]);
         setCommands([]);
+        setContextSnapshot(undefined);
+        setContextInspectionError(undefined);
         setSessionMetadata(next);
         dispatchContext({ type: "target_changed", targetSessionPath: next?.path });
         setContextRecovery(undefined);
@@ -570,6 +579,68 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         sessionMetadataRef.current = sessionMetadata;
         activeSessionPathRef.current = sessionMetadata?.path ?? "";
     }, [sessionMetadata]);
+
+    useEffect(() => {
+        const api = runtimeClientRef.current;
+        const selection = modelSelectionRef.current;
+        if (!api || !selection.provider || !selection.model) {
+            setContextSnapshot(undefined);
+            setContextInspectionError(undefined);
+            return;
+        }
+        const expectedSessionPath = sessionPath;
+        const expectedModelKey = `${selection.provider}/${selection.model}`;
+        const requestEpoch = requestEpochRef.current;
+        let cancelled = false;
+        setContextSnapshot(undefined);
+        setContextInspectionError(undefined);
+        void api
+            .inspectContext({
+                context: {
+                    ...executionContextRef.current,
+                    sessionPath: expectedSessionPath,
+                },
+                sessionMetadata: sessionMetadataRef.current,
+                provider: selection.provider,
+                model: selection.model,
+                reasoning: selection.reasoning,
+                token: selection.token,
+                tokenSecretName: selection.tokenSecretName,
+                allowedTools: allowedToolsRef.current,
+            })
+            .then(({ snapshot }) => {
+                if (
+                    cancelled ||
+                    requestEpoch !== requestEpochRef.current ||
+                    sessionMetadataRef.current?.path !== expectedSessionPath ||
+                    modelSelectionRef.current.provider !== selection.provider ||
+                    modelSelectionRef.current.model !== selection.model ||
+                    snapshot.identity.modelKey !== expectedModelKey ||
+                    (snapshot.identity.sessionPath ?? undefined) !== expectedSessionPath
+                ) {
+                    return;
+                }
+                setContextSnapshot(snapshot);
+            })
+            .catch((error) => {
+                if (cancelled || requestEpoch !== requestEpochRef.current) return;
+                setContextInspectionError(getErrorMessage(error));
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        controlledSessionRevision,
+        opts.allowedTools?.join("\u0000"),
+        opts.executionContext.workspaceDir,
+        opts.executionContext.workspaceId,
+        opts.modelSelection.model,
+        opts.modelSelection.provider,
+        opts.modelSelection.reasoning,
+        opts.modelSelection.token,
+        opts.modelSelection.tokenSecretName,
+        sessionPath,
+    ]);
 
     const ensureSessionResolution = useCallback(async (): Promise<{
         metadata: AgentSessionMeta;
@@ -640,6 +711,16 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             unsubscribeSession = api.subscribe(sessionPath, (raw) => {
                 if (!isCurrentSubscription()) return;
                 const event = raw as PiAgentEvent;
+                if (event.contextSnapshot) {
+                    const expectedModel = modelSelectionRef.current;
+                    if (
+                        event.contextSnapshot.identity.modelKey === `${expectedModel.provider}/${expectedModel.model}` &&
+                        (event.contextSnapshot.identity.sessionPath ?? undefined) === sessionPath
+                    ) {
+                        setContextSnapshot(event.contextSnapshot);
+                        setContextInspectionError(undefined);
+                    }
+                }
                 setMessages((prev) => reducePiChatEvent(prev, event));
                 const reportMap = { ...contextStateRef.current.reportsByTurn };
                 if (event.type === "session_state" && event.contextReports) {
@@ -990,6 +1071,8 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             sessionMetadata,
             queuedMessages,
             commands,
+            contextSnapshot,
+            contextInspectionError,
             send,
             abort,
             contextState,
@@ -1002,6 +1085,8 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         [
             abort,
             commands,
+            contextInspectionError,
+            contextSnapshot,
             contextSendRecovery,
             contextState,
             discardContextDraft,
