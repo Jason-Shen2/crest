@@ -4158,9 +4158,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             return await contextIpcEnvelope(async () => {
                 const authenticated = await authenticate(event, requestContext);
                 await assertWorkspaceWritable(authenticated);
-                const rendererContext = await parseAgentExecutionContext(input.context, {
-                    validatePreferredTerminal: authenticated.validatePreferredTerminal,
-                });
+                const rendererContext = await parseAgentExecutionContext(input.context);
                 if (
                     rendererContext.workspaceId !== authenticated.workspaceId ||
                     rendererContext.workspaceDir !== authenticated.workspaceDir

@@ -1170,9 +1170,7 @@ describe("agent-ipc command helpers", () => {
                         workspaceId: identity.workspaceId,
                         workspaceDir: identity.workspaceDir,
                         sessionPath: metadata.path,
-                        connection: "",
                         environment: {},
-                        recentCmds: [],
                     },
                     text: "first",
                     provider: "p",
@@ -1190,9 +1188,7 @@ describe("agent-ipc command helpers", () => {
                             workspaceId: identity.workspaceId,
                             workspaceDir: identity.workspaceDir,
                             sessionPath: metadata.path,
-                            connection: "",
                             environment: {},
-                            recentCmds: [],
                         },
                         text: "blocked",
                         provider: "p",
@@ -2120,9 +2116,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "first",
                 provider: "p",
@@ -2603,9 +2597,7 @@ describe("agent-ipc command helpers", () => {
                     workspaceId: identity.workspaceId,
                     workspaceDir: identity.workspaceDir,
                     sessionPath: metadata.path,
-                    connection: "",
                     environment: {},
-                    recentCmds: [],
                 },
                 text: "create runtime",
                 provider: "p",
@@ -2648,123 +2640,114 @@ describe("agent-ipc command helpers", () => {
     it.each([
         { kind: "pending", liveRuntime: false, senderId: 67 },
         { kind: "live-runtime", liveRuntime: true, senderId: 68 },
-    ])("serializes failed $kind restoration before a concurrent archive reuses the path", async ({
-        liveRuntime,
-        senderId,
-    }) => {
-        const cwd = await fs.mkdtemp(
-            path.join(os.tmpdir(), `crest-agent-restore-serialization-${liveRuntime ? "live" : "pending"}-`)
-        );
-        const created = await createPaneSession(cwd);
-        const metadata = created.metadata;
-        created.session.close();
-        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
-        vi.mocked(buildAgentHarnessHost).mockImplementation((options) => {
-            const host = makeHarnessHostMock();
-            host.session = options.session as never;
-            return host as never;
-        });
-        const sendConfiguredSpy = vi
-            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
-            .mockResolvedValue("entry-1");
-        const runtimeSubscribeSpy = vi
-            .spyOn(AgentSessionRuntime.prototype, "subscribe")
-            .mockReturnValue(vi.fn());
-        const identity = {
-            ...TrustedRequestContext,
-            windowId: `window-restore-serialization-${liveRuntime ? "live" : "pending"}`,
-            workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
-        };
-        registerAgentIpcHandlersImpl({
-            resolveWorkspaceSender: async () => identity,
-            ...DefaultAgentIpcRegistrationDependencies,
-        });
-        const handlers = registeredHandlers();
-        const runtimeSender = { id: 69, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
-        const oldSender = { id: senderId, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
-        const restorationStarted = deferred<void>();
-        const releaseRestoration = deferred<void>();
-        let gateRestoration = false;
-        let restorationGated = false;
-        const authorization = {
-            workspaceId: identity.workspaceId,
-            generation: identity.generation,
-            validateCurrent: vi.fn(async () => {
-                if (gateRestoration && !restorationGated) {
-                    restorationGated = true;
-                    restorationStarted.resolve();
-                    await releaseRestoration.promise;
-                }
-            }),
-            guardRuntime: vi.fn(async () => {}),
-        };
-        const sendInput = {
-            sessionMetadata: metadata,
-            context: {
-                workspaceId: identity.workspaceId,
-                workspaceDir: identity.workspaceDir,
-                sessionPath: metadata.path,
-                connection: "",
-                environment: {},
-                recentCmds: [],
-            },
-            text: "create runtime",
-            provider: "p",
-            model: "m",
-        };
-        const firstFailure = new Error("first archive preflight failed");
-        let firstGuardCalls = 0;
-        const failFirstPreflight = vi.fn(async () => {
-            if (++firstGuardCalls === 2) throw firstFailure;
-        });
-        const secondInitialGuard = deferred<void>();
-        let secondGuardCalls = 0;
-        const secondGuard = vi.fn(async () => {
-            if (++secondGuardCalls === 1) secondInitialGuard.resolve();
-        });
-        let first: Promise<JsonlSessionMetadata> | undefined;
-        let second: Promise<JsonlSessionMetadata> | undefined;
-
-        try {
-            if (liveRuntime) {
-                await handlers.get("agent:send")?.({ sender: runtimeSender }, TrustedRequestContext, sendInput);
-            }
-            await subscribeAgentSessionForIpc(
-                oldSender as unknown as electron.WebContents,
-                metadata.path,
-                authorization as never
+    ])(
+        "rejects a concurrent archive while failed $kind restoration still owns the path",
+        async ({ liveRuntime, senderId }) => {
+            const cwd = await fs.mkdtemp(
+                path.join(os.tmpdir(), `crest-agent-restore-serialization-${liveRuntime ? "live" : "pending"}-`)
             );
+            const created = await createPaneSession(cwd);
+            const metadata = created.metadata;
+            created.session.close();
+            vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+            vi.mocked(buildAgentHarnessHost).mockImplementation((options) => {
+                const host = makeHarnessHostMock();
+                host.session = options.session as never;
+                return host as never;
+            });
+            const sendConfiguredSpy = vi
+                .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+                .mockResolvedValue("entry-1");
+            const runtimeSubscribeSpy = vi.spyOn(AgentSessionRuntime.prototype, "subscribe").mockReturnValue(vi.fn());
+            const identity = {
+                ...TrustedRequestContext,
+                windowId: `window-restore-serialization-${liveRuntime ? "live" : "pending"}`,
+                workspaceDir: await fs.realpath(cwd),
+                validatePreferredTerminal: async () => true,
+            };
+            registerAgentIpcHandlersImpl({
+                resolveWorkspaceSender: async () => identity,
+                ...DefaultAgentIpcRegistrationDependencies,
+            });
+            const handlers = registeredHandlers();
+            const runtimeSender = { id: 69, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
+            const oldSender = { id: senderId, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
+            const restorationStarted = deferred<void>();
+            const releaseRestoration = deferred<void>();
+            let gateRestoration = false;
+            let restorationGated = false;
+            const authorization = {
+                workspaceId: identity.workspaceId,
+                generation: identity.generation,
+                validateCurrent: vi.fn(async () => {
+                    if (gateRestoration && !restorationGated) {
+                        restorationGated = true;
+                        restorationStarted.resolve();
+                        await releaseRestoration.promise;
+                    }
+                }),
+                guardRuntime: vi.fn(async () => {}),
+            };
+            const sendInput = {
+                sessionMetadata: metadata,
+                context: {
+                    workspaceId: identity.workspaceId,
+                    workspaceDir: identity.workspaceDir,
+                    sessionPath: metadata.path,
+                    environment: {},
+                },
+                text: "create runtime",
+                provider: "p",
+                model: "m",
+            };
+            const firstFailure = new Error("first archive preflight failed");
+            let firstGuardCalls = 0;
+            const failFirstPreflight = vi.fn(async () => {
+                if (++firstGuardCalls === 2) throw firstFailure;
+            });
+            const secondInitialGuard = deferred<void>();
+            let secondGuardCalls = 0;
+            const secondGuard = vi.fn(async () => {
+                if (++secondGuardCalls === 1) secondInitialGuard.resolve();
+            });
+            let first: Promise<JsonlSessionMetadata> | undefined;
+            let second: Promise<JsonlSessionMetadata> | undefined;
 
-            oldSender.send.mockClear();
-            gateRestoration = true;
+            try {
+                if (liveRuntime) {
+                    await handlers.get("agent:send")?.({ sender: runtimeSender }, TrustedRequestContext, sendInput);
+                }
+                await subscribeAgentSessionForIpc(
+                    oldSender as unknown as electron.WebContents,
+                    metadata.path,
+                    authorization as never
+                );
 
-            first = archiveAgentSessionForIpc(metadata, failFirstPreflight);
-            await restorationStarted.promise;
-            second = archiveAgentSessionForIpc(metadata, secondGuard);
-            await secondInitialGuard.promise;
-            await new Promise<void>((resolve) => setImmediate(resolve));
+                oldSender.send.mockClear();
+                gateRestoration = true;
 
-            expect(secondGuard).toHaveBeenCalledOnce();
-            releaseRestoration.resolve();
-            await expect(first).rejects.toBe(firstFailure);
-            const archived = await second;
-            expect(secondGuard).toHaveBeenCalledTimes(3);
+                first = archiveAgentSessionForIpc(metadata, failFirstPreflight);
+                await restorationStarted.promise;
+                second = archiveAgentSessionForIpc(metadata, secondGuard);
+                const secondRejected = expect(second).rejects.toThrow(/running/i);
+                await secondInitialGuard.promise;
+                await secondRejected;
+                expect(secondGuard).toHaveBeenCalledOnce();
+                releaseRestoration.resolve();
+                await expect(first).rejects.toBe(firstFailure);
 
-            oldSender.send.mockClear();
-            await fs.copyFile(archived.path, metadata.path);
-            await handlers.get("agent:send")?.({ sender: runtimeSender }, TrustedRequestContext, sendInput);
-
-            expect(runtimeSubscribeSpy).toHaveBeenCalledTimes(liveRuntime ? 2 : 0);
-            expect(oldSender.send).not.toHaveBeenCalled();
-        } finally {
-            releaseRestoration.resolve();
-            await first?.catch(() => {});
-            await second?.catch(() => {});
-            runtimeSubscribeSpy.mockRestore();
-            sendConfiguredSpy.mockRestore();
+                expect(runtimeSubscribeSpy).toHaveBeenCalledTimes(liveRuntime ? 2 : 0);
+                expect(oldSender.send).toHaveBeenCalledTimes(liveRuntime ? 1 : 0);
+                await expect(fs.stat(metadata.path)).resolves.toBeDefined();
+            } finally {
+                releaseRestoration.resolve();
+                await first?.catch(() => {});
+                await second?.catch(() => {});
+                runtimeSubscribeSpy.mockRestore();
+                sendConfiguredSpy.mockRestore();
+            }
         }
-    });
+    );
 
     it("releases a live runtime subscription before archiving its session", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-live-sub-archive-"));
