@@ -380,12 +380,12 @@ git commit -m "feat: mirror current context snapshots"
 - Modify: `frontend/app/agent/assistant-ui/thread.integration.test.tsx`
 - Modify: `frontend/app/agent/agent-content.tsx`
 
-- [ ] Add failing tests that `context` is a valid persisted right-tool ID, metadata labels it `Context`, and clicking the ring calls `WorkspaceLayoutModel.openRightTool("context")`.
-- [ ] Add ring tests for `effectiveInputTokens / inputCapacity`, first-prompt visibility, exact/estimated labeling, and no output/cache/reasoning rows.
-- [ ] Run `npx vitest run frontend/app/workspace/right-tool-panel-state.test.ts frontend/app/workspace/right-tool-panel.test.tsx frontend/app/workspace/workspace-right-panel-host.test.tsx frontend/app/agent/assistant-ui/context-display.test.tsx frontend/app/agent/assistant-ui/thread.integration.test.tsx` and verify failure.
-- [ ] Add `context` to `RightToolId`, `RightToolIds`, metadata, normalization, launcher menu, and `RightToolContent` routing.
-- [ ] Pass `agentModel` or its snapshot atom into `RightToolPanel` so the Context content subscribes directly to the same immutable snapshot used by AgentContent.
-- [ ] Replace `CrestContextUsage` with a focused ring value derived from `AgentContextSnapshotView`:
+- [x] Add failing tests that `context` is a valid persisted right-tool ID, metadata labels it `Context`, and clicking the ring calls `WorkspaceLayoutModel.openRightTool("context")`.
+- [x] Add ring tests for `effectiveInputTokens / inputCapacity`, first-prompt visibility, exact/estimated labeling, and no output/cache/reasoning rows.
+- [x] Run `npx vitest run frontend/app/workspace/right-tool-panel-state.test.ts frontend/app/workspace/right-tool-panel.test.tsx frontend/app/workspace/workspace-right-panel-host.test.tsx frontend/app/agent/assistant-ui/context-display.test.tsx frontend/app/agent/assistant-ui/thread.integration.test.tsx` and verify failure.
+- [x] Add `context` to `RightToolId`, `RightToolIds`, metadata, normalization, launcher menu, and `RightToolContent` routing.
+- [x] Pass `agentModel` or its snapshot atom into `RightToolPanel` so the Context content subscribes directly to the same immutable snapshot used by AgentContent.
+- [x] Replace `CrestContextUsage` with a focused ring value derived from `AgentContextSnapshotView`:
 
 ```ts
 export type CrestContextDisplayValue = Pick<
@@ -394,9 +394,9 @@ export type CrestContextDisplayValue = Pick<
 >;
 ```
 
-- [ ] Add `onOpen` to `ContextDisplayRing`, preserve tooltip behavior, and use an accessible label such as `Open Context Inspector, 13 percent used`.
-- [ ] Wire the ring click to `WorkspaceLayoutModel.getInstance().openRightTool("context")` through an explicit callback supplied by `AgentContent`.
-- [ ] Run the targeted tests and expect all to pass.
+- [x] Add `onOpen` to `ContextDisplayRing`, preserve tooltip behavior, and use an accessible label such as `Open Context Inspector, 13 percent used`.
+- [x] Wire the ring click to `WorkspaceLayoutModel.getInstance().openRightTool("context")` through an explicit callback supplied by `AgentContent`.
+- [x] Run the targeted tests and expect all to pass.
 - [ ] Commit:
 
 ```bash
@@ -415,15 +415,15 @@ git commit -m "feat: open context inspector from composer"
 - Create: `frontend/app/agent/context-inspector/context-format.test.ts`
 - Modify: `frontend/app/workspace/right-tool-panel.tsx`
 
-- [ ] Write failing UI tests for ready, in-use, waiting, updating, out-of-date, unavailable, exact, estimated, and token-count-unavailable combinations.
-- [ ] Add assertions for model label, used/capacity, full window, output reserve, remaining input, four fixed categories, request overhead, and signed attribution diagnostic.
-- [ ] Run `npx vitest run frontend/app/agent/context-inspector/context-inspector.test.tsx frontend/app/agent/context-inspector/context-format.test.ts` and verify failure.
-- [ ] Implement pure format helpers for token counts, percentages, timestamps, lifecycle labels, and accuracy labels.
-- [ ] Implement `ContextInspector` with a compact sticky header, capacity card, semantic composition bar, category summary rows, and explicit empty/unavailable states.
-- [ ] Use category colors consistently between the composition bar, rows, and ring tooltip. Ensure color is not the only carrier of meaning.
-- [ ] Render request overhead as a separate neutral segment only when positive; render `attributionDeltaTokens` as an explanatory diagnostic rather than changing category values.
-- [ ] Add narrow-panel tests at 320 px-equivalent container width and keyboard-focus assertions for interactive disclosure controls.
-- [ ] Run the targeted tests and expect all to pass.
+- [x] Write failing UI tests for ready, in-use, waiting, updating, out-of-date, unavailable, exact, estimated, and token-count-unavailable combinations.
+- [x] Add assertions for model label, used/capacity, full window, output reserve, remaining input, four fixed categories, request overhead, and signed attribution diagnostic.
+- [x] Run `npx vitest run frontend/app/agent/context-inspector/context-inspector.test.tsx frontend/app/agent/context-inspector/context-format.test.ts` and verify failure.
+- [x] Implement pure format helpers for token counts, percentages, timestamps, lifecycle labels, and accuracy labels.
+- [x] Implement `ContextInspector` with a compact sticky header, capacity card, semantic composition bar, category summary rows, and explicit empty/unavailable states.
+- [x] Use category colors consistently between the composition bar, rows, and ring tooltip. Ensure color is not the only carrier of meaning.
+- [x] Render request overhead as a separate neutral segment only when positive; render `attributionDeltaTokens` as an explanatory diagnostic rather than changing category values.
+- [x] Add narrow-panel tests at 320 px-equivalent container width and keyboard-focus assertions for interactive disclosure controls.
+- [x] Run the targeted tests and expect all to pass.
 - [ ] Commit:
 
 ```bash
@@ -441,11 +441,11 @@ git commit -m "feat: render context capacity and composition"
 - Modify: `frontend/app/agent/context-inspector/context-inspector.tsx`
 - Modify: `frontend/app/agent/context-inspector/context-inspector.test.tsx`
 
-- [ ] Write failing tests for category expansion, turn expansion, user/assistant/tool labels, paired tool call/result display, compact summary coverage, instruction provenance, tool schema preview, Added context provenance, and source diagnostics.
-- [ ] Add a long-list test with 1,000 conversation items proving only the visible window plus overscan is mounted while category totals remain unchanged.
-- [ ] Run `npx vitest run frontend/app/agent/context-inspector/context-inventory.test.tsx frontend/app/agent/context-inspector/context-inspector.test.tsx` and verify failure.
-- [ ] Implement native button-based disclosure rows with `aria-expanded`, visible focus, keyboard activation, and stable keys from `item.id`.
-- [ ] Render category-specific detail without exposing raw provider payload JSON by default:
+- [x] Write failing tests for category expansion, turn expansion, user/assistant/tool labels, paired tool call/result display, compact summary coverage, instruction provenance, tool schema preview, Added context provenance, and source diagnostics.
+- [x] Add a long-list test with 1,000 conversation items proving only the visible window plus overscan is mounted while category totals remain unchanged.
+- [x] Run `npx vitest run frontend/app/agent/context-inspector/context-inventory.test.tsx frontend/app/agent/context-inspector/context-inspector.test.tsx` and verify failure.
+- [x] Implement native button-based disclosure rows with `aria-expanded`, visible focus, keyboard activation, and stable keys from `item.id`.
+- [x] Render category-specific detail without exposing raw provider payload JSON by default:
 
 ```ts
 const ItemLabels: Record<ContextSnapshotItemKindView, string> = {
@@ -461,10 +461,10 @@ const ItemLabels: Record<ContextSnapshotItemKindView, string> = {
 };
 ```
 
-- [ ] Use `@tanstack/react-virtual` only for the Conversation item list; keep category and detail state outside the virtual rows so expansion survives scrolling.
-- [ ] Display compaction coverage using durable entry IDs resolved to concise turn labels. Never include replaced turns in active item or token totals.
-- [ ] Display tool result status and pairing but do not create standalone top-level tool-result items.
-- [ ] Run the targeted tests and expect all to pass.
+- [x] Use `@tanstack/react-virtual` only for the Conversation item list; keep category and detail state outside the virtual rows so expansion survives scrolling.
+- [x] Display compaction coverage using durable entry IDs resolved to concise turn labels. Never include replaced turns in active item or token totals.
+- [x] Display tool result status and pairing but do not create standalone top-level tool-result items.
+- [x] Run the targeted tests and expect all to pass.
 - [ ] Commit:
 
 ```bash

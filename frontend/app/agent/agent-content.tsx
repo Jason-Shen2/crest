@@ -16,6 +16,7 @@ import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import type { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
+import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { useAtomValue } from "jotai";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -35,7 +36,6 @@ import {
     useAui,
     useCrestAssistantRuntime,
 } from "./assistant-ui";
-import type { CrestContextUsage } from "./assistant-ui/context-display";
 
 export interface AgentContentProps {
     model: WorkspaceAgentModel;
@@ -393,10 +393,17 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         abort: () => agentApiRef.current?.abort(),
         isSendDisabled: contextHydrating || contextSendGate != null,
     });
-    const contextUsage = useMemo<CrestContextUsage | undefined>(() => {
-        const tokens = contextSnapshotState?.snapshot?.effectiveInputTokens;
-        return tokens == null ? undefined : { inputTokens: tokens, totalTokens: tokens };
-    }, [contextSnapshotState?.snapshot?.effectiveInputTokens]);
+    const contextDisplayValue = contextSnapshotState?.snapshot
+        ? {
+              effectiveInputTokens: contextSnapshotState.snapshot.effectiveInputTokens,
+              inputCapacity: contextSnapshotState.snapshot.inputCapacity,
+              accuracy: contextSnapshotState.snapshot.accuracy,
+              lifecycle: contextSnapshotState.snapshot.lifecycle,
+          }
+        : undefined;
+    const openContextInspector = useCallback(() => {
+        WorkspaceLayoutModel.getInstance().openRightTool("context");
+    }, []);
     const contextIdentity = useMemo(
         () => ({
             targetSessionPath: hostState.context.targetSessionPath,
@@ -473,10 +480,8 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         onOpenModelPicker={() =>
                             setAttachedPanelState({ commandResults: [], selectorRequest: null, modelPickerOpen: true })
                         }
-                        modelContextWindow={
-                            contextSnapshotState?.snapshot?.contextWindow ?? resolved.resolvedAIConfig?.contextwindow
-                        }
-                        contextUsage={contextUsage}
+                        contextDisplayValue={contextDisplayValue}
+                        onOpenContextInspector={openContextInspector}
                         workspaceDir={executionContext.workspaceDir}
                         onOpenFile={onOpenFile}
                         composerAnchorRef={composerAnchorRef}

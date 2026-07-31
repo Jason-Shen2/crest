@@ -10,30 +10,26 @@ import { cn } from "@/util/util";
 import type { ComponentProps, FC, ReactNode } from "react";
 import { createContext, useContext, useMemo } from "react";
 
-export type CrestContextUsage = {
-    inputTokens?: number;
-    cachedInputTokens?: number;
-    outputTokens?: number;
-    reasoningTokens?: number;
-    totalTokens?: number;
-};
+export type CrestContextDisplayValue = Pick<
+    AgentContextSnapshotView,
+    "effectiveInputTokens" | "inputCapacity" | "accuracy" | "lifecycle"
+>;
 
 type ContextDisplayContextValue = {
-    usage: CrestContextUsage | undefined;
-    totalTokens: number;
+    value: CrestContextDisplayValue | undefined;
+    usedTokens: number;
     percent: number;
-    modelContextWindow: number;
+    inputCapacity: number;
 };
 
 type ContextDisplayRootProps = {
-    modelContextWindow: number;
-    usage?: CrestContextUsage | undefined;
+    value?: CrestContextDisplayValue | undefined;
     children: ReactNode;
 };
 
 type ContextDisplayPresetProps = {
-    modelContextWindow: number;
-    usage?: CrestContextUsage | undefined;
+    value?: CrestContextDisplayValue | undefined;
+    onOpen?: (() => void) | undefined;
     className?: string;
     side?: "top" | "bottom" | "left" | "right";
 };
@@ -51,20 +47,9 @@ export function formatContextTokenCount(tokens: number): string {
     return `${tokens}`;
 }
 
-export function getContextUsagePercent(totalTokens: number | undefined, modelContextWindow: number): number {
-    if (!totalTokens || modelContextWindow <= 0) return 0;
-    return Math.min((totalTokens / modelContextWindow) * 100, 100);
-}
-
-function getUsageTotalTokens(usage: CrestContextUsage | undefined): number {
-    if (!usage) return 0;
-    if (usage.totalTokens && usage.totalTokens > 0) return usage.totalTokens;
-    return (
-        (usage.inputTokens ?? 0) +
-        (usage.cachedInputTokens ?? 0) +
-        (usage.outputTokens ?? 0) +
-        (usage.reasoningTokens ?? 0)
-    );
+export function getContextUsagePercent(usedTokens: number | undefined, inputCapacity: number): number {
+    if (!usedTokens || inputCapacity <= 0) return 0;
+    return Math.min((usedTokens / inputCapacity) * 100, 100);
 }
 
 function getStrokeColor(percent: number): string {
@@ -81,12 +66,13 @@ function useContextDisplay(): ContextDisplayContextValue {
     return ctx;
 }
 
-function ContextDisplayRoot({ modelContextWindow, usage, children }: ContextDisplayRootProps) {
-    const totalTokens = getUsageTotalTokens(usage);
-    const percent = getContextUsagePercent(totalTokens, modelContextWindow);
+function ContextDisplayRoot({ value, children }: ContextDisplayRootProps) {
+    const usedTokens = value?.effectiveInputTokens ?? 0;
+    const inputCapacity = value?.inputCapacity ?? 0;
+    const percent = getContextUsagePercent(usedTokens, inputCapacity);
     const contextValue = useMemo(
-        () => ({ usage, totalTokens, percent, modelContextWindow }),
-        [usage, totalTokens, percent, modelContextWindow]
+        () => ({ value, usedTokens, percent, inputCapacity }),
+        [value, usedTokens, percent, inputCapacity]
     );
 
     return (
@@ -116,18 +102,8 @@ function ContextDisplayTrigger({ className, children, ...props }: ComponentProps
     );
 }
 
-function UsageRow({ label, value }: { label: string; value: number | undefined }) {
-    if (value == null || value <= 0) return null;
-    return (
-        <div className="flex items-center justify-between gap-4">
-            <span className="text-secondary/80">{label}</span>
-            <span className="font-mono tabular-nums text-foreground">{formatContextTokenCount(value)}</span>
-        </div>
-    );
-}
-
 function ContextDisplayContent({ side = "top" }: { side?: "top" | "bottom" | "left" | "right" | undefined }) {
-    const { usage, totalTokens, percent, modelContextWindow } = useContextDisplay();
+    const { value, usedTokens, percent, inputCapacity } = useContextDisplay();
 
     return (
         <TooltipContent
@@ -138,20 +114,19 @@ function ContextDisplayContent({ side = "top" }: { side?: "top" | "bottom" | "le
         >
             <div className="grid min-w-40 gap-1.5">
                 <div className="flex items-center justify-between gap-4">
-                    <span className="text-secondary/80">Usage</span>
+                    <span className="text-secondary/80">Next call input</span>
                     <span className="font-mono tabular-nums">{Math.round(percent)}%</span>
                 </div>
-                <UsageRow label="Input" value={usage?.inputTokens} />
-                <UsageRow label="Cached" value={usage?.cachedInputTokens} />
-                <UsageRow label="Output" value={usage?.outputTokens} />
-                <UsageRow label="Reasoning" value={usage?.reasoningTokens} />
                 <div className="mt-0.5 border-t border-white/[0.08] pt-1.5">
                     <div className="flex items-center justify-between gap-4">
-                        <span className="text-secondary/80">Total</span>
+                        <span className="text-secondary/80">Used / capacity</span>
                         <span className="font-mono tabular-nums">
-                            {formatContextTokenCount(totalTokens)} / {formatContextTokenCount(modelContextWindow)}
+                            {formatContextTokenCount(usedTokens)} / {formatContextTokenCount(inputCapacity)}
                         </span>
                     </div>
+                </div>
+                <div className="text-[11px] text-secondary/70">
+                    {value?.accuracy === "exact" ? "Exact provider count" : "Estimated before provider request"}
                 </div>
             </div>
         </TooltipContent>
@@ -196,11 +171,14 @@ function RingVisual() {
     );
 }
 
-export const ContextDisplayRing: FC<ContextDisplayPresetProps> = ({ modelContextWindow, usage, className, side }) => (
-    <ContextDisplayRoot modelContextWindow={modelContextWindow} usage={usage}>
+export const ContextDisplayRing: FC<ContextDisplayPresetProps> = ({ value, onOpen, className, side }) => (
+    <ContextDisplayRoot value={value}>
         <ContextDisplayTrigger
             className={cn("aui-context-display-ring-trigger size-6 justify-center", className)}
-            aria-label="Context usage"
+            aria-label={`Open Context Inspector, ${Math.round(
+                getContextUsagePercent(value?.effectiveInputTokens, value?.inputCapacity ?? 0)
+            )} percent used`}
+            onClick={onOpen}
         >
             <RingVisual />
         </ContextDisplayTrigger>

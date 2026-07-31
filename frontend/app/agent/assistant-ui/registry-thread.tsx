@@ -66,7 +66,7 @@ import {
     type RefObject,
 } from "react";
 import { ComposerAddAttachment, ComposerAttachments, UserMessageAttachments } from "./attachment";
-import { ContextDisplayRing, type CrestContextUsage } from "./context-display";
+import { ContextDisplayRing, type CrestContextDisplayValue } from "./context-display";
 import { ContextProjectionBadge } from "./context-projection-badge";
 import { getCrestImageAlt, getCrestToolRenderer } from "./crest-message";
 import { ThreadFollowupSuggestions } from "./follow-up-suggestions";
@@ -99,8 +99,8 @@ export type ThreadProps = {
     components?: ThreadComponents | undefined;
     modelLabel?: string | undefined;
     onOpenModelPicker?: (() => void) | undefined;
-    contextUsage?: CrestContextUsage | undefined;
-    modelContextWindow?: number | undefined;
+    contextDisplayValue?: CrestContextDisplayValue | undefined;
+    onOpenContextInspector?: (() => void) | undefined;
     beforeComposer?: ReactNode | undefined;
     composerAnchorRef?: RefObject<HTMLDivElement | null> | undefined;
     hideScrollToBottom?: boolean | undefined;
@@ -111,7 +111,7 @@ export type ThreadProps = {
 const EMPTY_COMPONENTS: ThreadComponents = {};
 
 export const ComposerContext = createContext<
-    Pick<ThreadProps, "modelLabel" | "onOpenModelPicker" | "contextUsage" | "modelContextWindow">
+    Pick<ThreadProps, "modelLabel" | "onOpenModelPicker" | "contextDisplayValue" | "onOpenContextInspector">
 >({});
 const ThreadComponentsContext = createContext<ThreadComponents>(EMPTY_COMPONENTS);
 const ThreadExtrasContext = createContext<
@@ -152,8 +152,8 @@ export const Thread: FC<ThreadProps> = ({
     components = EMPTY_COMPONENTS,
     modelLabel,
     onOpenModelPicker,
-    contextUsage,
-    modelContextWindow,
+    contextDisplayValue,
+    onOpenContextInspector,
     beforeComposer,
     composerAnchorRef,
     hideScrollToBottom,
@@ -164,7 +164,9 @@ export const Thread: FC<ThreadProps> = ({
 
     return (
         <ThreadComponentsContext.Provider value={components}>
-            <ComposerContext.Provider value={{ modelLabel, onOpenModelPicker, contextUsage, modelContextWindow }}>
+            <ComposerContext.Provider
+                value={{ modelLabel, onOpenModelPicker, contextDisplayValue, onOpenContextInspector }}
+            >
                 <ThreadExtrasContext.Provider
                     value={{ beforeComposer, composerAnchorRef, hideScrollToBottom, workspaceDir, onOpenFile }}
                 >
@@ -788,9 +790,9 @@ export const Composer: FC = () => {
 };
 
 const ComposerAction: FC = () => {
-    const { modelLabel, onOpenModelPicker, contextUsage, modelContextWindow } = useContext(ComposerContext);
+    const { modelLabel, onOpenModelPicker, contextDisplayValue, onOpenContextInspector } = useContext(ComposerContext);
     const hasModelPicker = onOpenModelPicker != null;
-    const showContextRing = (contextUsage?.totalTokens ?? 0) > 0 && (modelContextWindow ?? 0) > 0;
+    const showContextRing = (contextDisplayValue?.inputCapacity ?? 0) > 0;
 
     return (
         <div className="aui-composer-action-wrapper relative flex items-center justify-between">
@@ -817,7 +819,7 @@ const ComposerAction: FC = () => {
                     </button>
                 )}
                 {showContextRing && (
-                    <ContextDisplayRing usage={contextUsage} modelContextWindow={modelContextWindow!} side="top" />
+                    <ContextDisplayRing value={contextDisplayValue} onOpen={onOpenContextInspector} side="top" />
                 )}
                 <AuiIf condition={(s) => s.thread.capabilities.dictation}>
                     <AuiIf condition={(s) => s.composer.dictation == null}>

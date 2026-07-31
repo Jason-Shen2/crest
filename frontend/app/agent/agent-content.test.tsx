@@ -22,6 +22,13 @@ const selectorProps = vi.hoisted(() => ({
     latest: null as any,
 }));
 
+const threadProps = vi.hoisted(() => ({ latest: null as any }));
+const layoutProps = vi.hoisted(() => ({ openRightTool: vi.fn() }));
+
+vi.mock("@/app/workspace/workspace-layout-model", () => ({
+    WorkspaceLayoutModel: { getInstance: () => layoutProps },
+}));
+
 vi.mock("./agent-chat-host", () => ({
     AgentChatHost: (props: any) => {
         hostProps.latest = props;
@@ -53,12 +60,15 @@ vi.mock("@/app/view/cmdblock/session-selector", () => ({
 
 vi.mock("./assistant-ui", () => ({
     AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    Thread: ({ beforeComposer }: { beforeComposer?: React.ReactNode }) => (
-        <div data-testid="assistant-thread">
-            {beforeComposer}
-            <textarea aria-label="Prompt" />
-        </div>
-    ),
+    Thread: (props: { beforeComposer?: React.ReactNode }) => {
+        threadProps.latest = props;
+        return (
+            <div data-testid="assistant-thread">
+                {props.beforeComposer}
+                <textarea aria-label="Prompt" />
+            </div>
+        );
+    },
     useAui: () => ({ composer: () => ({ setText: vi.fn() }) }),
     useCrestAssistantRuntime: (value: unknown) => {
         hostProps.runtime = value;
@@ -83,11 +93,28 @@ afterEach(async () => {
     hostProps.submitResult = true;
     hostProps.submitError = "";
     selectorProps.latest = null;
+    layoutProps.openRightTool.mockClear();
     vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
 describe("AgentContent", () => {
+    it("opens the Context right tool through the composer ring callback", () => {
+        const model = makeModel();
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+
+        act(() => threadProps.latest.onOpenContextInspector());
+        expect(layoutProps.openRightTool).toHaveBeenCalledWith("context");
+    });
+
     it("publishes only the host context snapshot matching the current renderer identity", () => {
         const model = makeModel();
         model.selectModel({ provider: "openai", model: "gpt-test", reasoning: "low" });
