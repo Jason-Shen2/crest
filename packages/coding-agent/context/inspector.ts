@@ -13,6 +13,7 @@ import type {
 import type { SessionContext, SessionTreeEntry } from "@crest/agent/harness/types";
 import type { AgentMessage, AgentTool } from "@crest/agent/types";
 import type { SystemPromptManifest } from "../build-system-prompt";
+import { stripHistoricalReferences } from "./history";
 import { foldContextJournal } from "./journal";
 
 export interface BuildContextInventoryInput {
@@ -225,14 +226,15 @@ function childItem(
     const role = (message as { role?: string }).role;
     const stableId = entryId ?? `synthetic:${index}`;
     if (role === "user" || role === "custom" || role === "bashExecution") {
+        const conversationMessage = stripHistoricalReferences(message);
         return [
             {
                 id: `message:${stableId}`,
                 category: "conversation",
                 kind: "user_message",
                 title: "User",
-                preview: messagePreview(message),
-                tokens: messageTokens(message),
+                preview: messagePreview(conversationMessage),
+                tokens: messageTokens(conversationMessage),
                 tokenAccuracy: "estimated",
                 source: { entryIds: entryId == null ? [] : [entryId] },
             },
@@ -346,12 +348,13 @@ function conversationItems(input: BuildContextInventoryInput): ContextSnapshotIt
         }
         if (message.role === "user") {
             flushTurn();
+            const conversationMessage = stripHistoricalReferences(message);
             currentTurn = {
                 id: `turn:${entryId ?? index}`,
                 category: "conversation",
                 kind: "turn",
-                title: messagePreview(message) || "Conversation turn",
-                preview: messagePreview(message),
+                title: messagePreview(conversationMessage) || "Conversation turn",
+                preview: messagePreview(conversationMessage),
                 tokenAccuracy: "estimated",
                 source: { entryIds: [] },
                 children: [],

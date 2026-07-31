@@ -60,4 +60,13 @@ describe("ContextDisplayRing", () => {
         fireEvent.click(screen.getByRole("button", { name: "Open Context Inspector, 0 percent used" }));
         expect(onOpen).toHaveBeenCalledOnce();
     });
+
+    it("announces unavailable usage without inventing a zero percent count", () => {
+        const html = renderToStaticMarkup(<ContextDisplayRing />);
+
+        expect(html).toContain('aria-label="Open Context Inspector, token count unavailable"');
+        expect(html).toContain("Token count unavailable");
+        expect(html).not.toContain("0 percent used");
+        expect(html).not.toContain("Estimated before provider request");
+    });
 });

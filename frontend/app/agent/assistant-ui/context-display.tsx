@@ -20,6 +20,7 @@ type ContextDisplayContextValue = {
     usedTokens: number;
     percent: number;
     inputCapacity: number;
+    available: boolean;
 };
 
 type ContextDisplayRootProps = {
@@ -58,6 +59,17 @@ function getStrokeColor(percent: number): string {
     return "stroke-emerald-500";
 }
 
+function isContextUsageAvailable(value: CrestContextDisplayValue | undefined): boolean {
+    return (
+        value?.accuracy !== "unavailable" &&
+        typeof value?.effectiveInputTokens === "number" &&
+        Number.isFinite(value.effectiveInputTokens) &&
+        value.effectiveInputTokens >= 0 &&
+        typeof value.inputCapacity === "number" &&
+        value.inputCapacity > 0
+    );
+}
+
 function useContextDisplay(): ContextDisplayContextValue {
     const ctx = useContext(ContextDisplayContext);
     if (!ctx) {
@@ -67,12 +79,13 @@ function useContextDisplay(): ContextDisplayContextValue {
 }
 
 function ContextDisplayRoot({ value, children }: ContextDisplayRootProps) {
+    const available = isContextUsageAvailable(value);
     const usedTokens = value?.effectiveInputTokens ?? 0;
     const inputCapacity = value?.inputCapacity ?? 0;
     const percent = getContextUsagePercent(usedTokens, inputCapacity);
     const contextValue = useMemo(
-        () => ({ value, usedTokens, percent, inputCapacity }),
-        [value, usedTokens, percent, inputCapacity]
+        () => ({ value, usedTokens, percent, inputCapacity, available }),
+        [value, usedTokens, percent, inputCapacity, available]
     );
 
     return (
@@ -103,7 +116,7 @@ function ContextDisplayTrigger({ className, children, ...props }: ComponentProps
 }
 
 function ContextDisplayContent({ side = "top" }: { side?: "top" | "bottom" | "left" | "right" | undefined }) {
-    const { value, usedTokens, percent, inputCapacity } = useContextDisplay();
+    const { value, usedTokens, percent, inputCapacity, available } = useContextDisplay();
 
     return (
         <TooltipContent
@@ -115,18 +128,24 @@ function ContextDisplayContent({ side = "top" }: { side?: "top" | "bottom" | "le
             <div className="grid min-w-40 gap-1.5">
                 <div className="flex items-center justify-between gap-4">
                     <span className="text-secondary/80">Next call input</span>
-                    <span className="font-mono tabular-nums">{Math.round(percent)}%</span>
+                    <span className="font-mono tabular-nums">{available ? `${Math.round(percent)}%` : "—"}</span>
                 </div>
                 <div className="mt-0.5 border-t border-white/[0.08] pt-1.5">
                     <div className="flex items-center justify-between gap-4">
                         <span className="text-secondary/80">Used / capacity</span>
                         <span className="font-mono tabular-nums">
-                            {formatContextTokenCount(usedTokens)} / {formatContextTokenCount(inputCapacity)}
+                            {available
+                                ? `${formatContextTokenCount(usedTokens)} / ${formatContextTokenCount(inputCapacity)}`
+                                : "—"}
                         </span>
                     </div>
                 </div>
                 <div className="text-[11px] text-secondary/70">
-                    {value?.accuracy === "exact" ? "Exact provider count" : "Estimated before provider request"}
+                    {available
+                        ? value?.accuracy === "exact"
+                            ? "Exact provider count"
+                            : "Estimated before provider request"
+                        : "Token count unavailable"}
                 </div>
             </div>
         </TooltipContent>
@@ -134,7 +153,7 @@ function ContextDisplayContent({ side = "top" }: { side?: "top" | "bottom" | "le
 }
 
 function RingVisual() {
-    const { percent } = useContextDisplay();
+    const { percent, available } = useContextDisplay();
     const roundedPercent = Math.round(percent);
 
     return (
@@ -163,10 +182,13 @@ function RingVisual() {
                     strokeLinecap="round"
                     strokeDasharray={RingCircumference}
                     strokeDashoffset={RingCircumference - (percent / 100) * RingCircumference}
-                    className={cn("transition-[stroke-dashoffset,stroke] duration-300", getStrokeColor(percent))}
+                    className={cn(
+                        "transition-[stroke-dashoffset,stroke] duration-300",
+                        available ? getStrokeColor(percent) : "stroke-white/25"
+                    )}
                 />
             </svg>
-            <span className="sr-only">Context usage {roundedPercent}%</span>
+            <span className="sr-only">{available ? `Context usage ${roundedPercent}%` : "Token count unavailable"}</span>
         </span>
     );
 }
@@ -175,9 +197,13 @@ export const ContextDisplayRing: FC<ContextDisplayPresetProps> = ({ value, onOpe
     <ContextDisplayRoot value={value}>
         <ContextDisplayTrigger
             className={cn("aui-context-display-ring-trigger size-6 justify-center", className)}
-            aria-label={`Open Context Inspector, ${Math.round(
-                getContextUsagePercent(value?.effectiveInputTokens, value?.inputCapacity ?? 0)
-            )} percent used`}
+            aria-label={
+                isContextUsageAvailable(value)
+                    ? `Open Context Inspector, ${Math.round(
+                          getContextUsagePercent(value?.effectiveInputTokens, value?.inputCapacity ?? 0)
+                      )} percent used`
+                    : "Open Context Inspector, token count unavailable"
+            }
             onClick={onOpen}
         >
             <RingVisual />

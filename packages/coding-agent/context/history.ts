@@ -13,6 +13,18 @@ export function renderHistoricalReference(items: Array<{ value: unknown }>): str
     return `${HistoricalReferenceHeader}\n${items.map((item) => serializeContextValue(item.value)).join("\n")}\n${HistoricalReferenceFooter}`;
 }
 
+export function isHistoricalReferenceText(value: string): boolean {
+    return value.startsWith(`${HistoricalReferenceHeader}\n`) && value.endsWith(`\n${HistoricalReferenceFooter}`);
+}
+
+export function stripHistoricalReferences(message: AgentMessage): AgentMessage {
+    if (message.role !== "user" || !Array.isArray(message.content)) return message;
+    const content = message.content.filter(
+        (part) => part.type !== "text" || typeof part.text !== "string" || !isHistoricalReferenceText(part.text)
+    );
+    return content.length === message.content.length ? message : ({ ...message, content } as AgentMessage);
+}
+
 export function appendHistoricalReference(message: AgentMessage, text: string): AgentMessage {
     if (message.role !== "user" || !Array.isArray(message.content)) return message;
     return { ...message, content: [...message.content, { type: "text", text }] } as AgentMessage;

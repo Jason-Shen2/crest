@@ -749,9 +749,11 @@ describe("agent-ipc command helpers", () => {
 
         expect(result.snapshot).toMatchObject({
             lifecycle: "ready",
-            identity: { sessionPath: `preview:${TrustedRequestContext.workspaceId}`, modelKey: "p/m" },
+            identity: { leafId: null, modelKey: "p/m" },
             inputCapacity: 900,
         });
+        expect(result.snapshot.identity).not.toHaveProperty("sessionPath");
+        expect(result.snapshot.identity).not.toHaveProperty("sessionId");
         expect(await listSessionsForCwd(cwd)).toEqual(before);
     });
 

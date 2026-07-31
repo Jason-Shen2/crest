@@ -20,7 +20,7 @@ import { AgentHarness } from "./agent-harness";
 import { InMemorySessionRepo } from "./session/memory-repo";
 import { NodeExecutionEnv } from "../node";
 import { Type } from "typebox";
-import { AgentHarnessTerminalPreparationError } from "./types";
+import { AgentHarnessTerminalPreparationError, type AgentHarnessProviderContextObservation } from "./types";
 
 const FAKE_API = "fake-test-api";
 
@@ -412,6 +412,48 @@ describe("AgentHarness — prepared turns", () => {
         expect(observation.messages.at(-1)).toMatchObject({ role: "user", content: [{ text: "synthetic" }] });
         expect(observation.messageEntryIds).toContain(priorEntryId);
         expect(observation.messageEntryIds.at(-1)).toBeUndefined();
+    });
+
+    it("observes entries committed by semantic turn preparation", async () => {
+        const observations: AgentHarnessProviderContextObservation[] = [];
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (model: Model<any>, _context: Context, options?: SimpleStreamOptions) => {
+                const stream = new AssistantMessageEventStream();
+                void (async () => {
+                    await options?.onPayload?.({ provider: "built" }, model);
+                    stream.push({ type: "done", reason: "stop", message: fakeAssistantMessage(model) });
+                })();
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+            observeProviderContext: (observation) => {
+                observations.push(observation);
+            },
+        });
+        let markerId = "";
+        let userEntryId = "";
+
+        await harness.prompt("prepared", {
+            prepare: async (input) => {
+                markerId = await session.appendCustomEntry("context_attachment", { source: "prepared" });
+                userEntryId = await session.appendMessage(input.userMessage);
+                return { userEntryId, systemPromptSuffix: "prepared context" };
+            },
+        });
+        await Promise.resolve();
+
+        expect(observations).toHaveLength(1);
+        expect(observations[0]!.entries.map((entry) => entry.id)).toEqual(
+            expect.arrayContaining([markerId, userEntryId])
+        );
     });
 
     it("isolates provider-context observation failures from the provider stream", async () => {

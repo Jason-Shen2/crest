@@ -13,6 +13,8 @@ import type { BuildContextSnapshotInput, ContextSnapshotItem } from "./inspector
 import { buildSessionContext } from "@crest/agent/harness/session/session";
 import { createTransactionManifestData } from "@crest/agent/harness/session/entry-transaction";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
+import type { AgentMessage } from "@crest/agent/types";
+import { appendHistoricalReference, renderHistoricalReference } from "./history";
 import { ContextCustomTypes } from "./journal";
 
 const GeneratedAt = "2026-08-01T00:00:00.000Z";
@@ -179,6 +181,38 @@ function customEntry(
 }
 
 describe("Context Inspector semantic inventory", () => {
+    it("attributes generated historical reference blocks only to Added context", () => {
+        const userMessage = { role: "user", content: [{ type: "text", text: "Use the reference" }] } as AgentMessage;
+        const decoratedMessage = appendHistoricalReference(
+            userMessage,
+            renderHistoricalReference([{ value: { source: "historical", content: "large injected value" } }])
+        );
+        const plain = buildContextInventory({
+            entries: [],
+            context: {
+                messages: [userMessage],
+                messageEntryIds: ["user-1"],
+                thinkingLevel: "off",
+                model: null,
+            },
+            tools: [],
+        });
+        const decorated = buildContextInventory({
+            entries: [],
+            context: {
+                messages: [decoratedMessage],
+                messageEntryIds: ["user-1"],
+                thinkingLevel: "off",
+                model: null,
+            },
+            tools: [],
+        });
+
+        expect(decorated.find((item) => item.id === "turn:user-1")?.tokens).toBe(
+            plain.find((item) => item.id === "turn:user-1")?.tokens
+        );
+    });
+
     it("groups a complete conversation turn and pairs tool calls with their results", () => {
         const entries = [
             entry("user-1", null, { role: "user", content: [{ type: "text", text: "Read package.json" }] }),

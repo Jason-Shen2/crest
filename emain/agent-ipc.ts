@@ -2735,7 +2735,16 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                 await assertCurrent(event, authenticated);
                 const snapshot = runtime.getSessionState().contextSnapshot;
                 if (!snapshot) throw new Error("agent context inspection is unavailable");
-                return { snapshot };
+                return {
+                    snapshot: {
+                        ...snapshot,
+                        identity: {
+                            leafId: null,
+                            modelKey: snapshot.identity.modelKey,
+                            revision: snapshot.identity.revision,
+                        },
+                    },
+                };
             } finally {
                 await runtime.dispose();
             }

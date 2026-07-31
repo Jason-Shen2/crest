@@ -661,6 +661,16 @@ export class AgentHarness<
 			const observeFinalPayload = async (payload: unknown): Promise<unknown> => {
 				const observedState = getTurnState();
 				let leafId = observedState.leafId;
+				let entries = observedState.entries;
+				try {
+					entries = await this.session.getBranch();
+				} catch (error) {
+					try {
+						this.onProviderContextObservationError?.(toError(error));
+					} catch {
+						// Inspection diagnostics are isolated from provider execution too.
+					}
+				}
 				try {
 					leafId = await this.session.getLeafId();
 				} catch (error) {
@@ -686,7 +696,7 @@ export class AgentHarness<
 					systemPromptMetadata: observedState.systemPromptMetadata,
 					messages: [...context.messages],
 					messageEntryIds,
-					entries: [...observedState.entries],
+					entries: [...entries],
 					activeTools: [...observedState.activeTools],
 					requestOptions: cloneStreamOptions(requestOptions),
 					payload,
