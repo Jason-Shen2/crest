@@ -19,7 +19,7 @@
 - Keep provider calls operational if inspection, counting, transport, or rendering fails.
 - Use stable source identities: session entry IDs, tool names and call IDs, resource paths, skill names, attachment/artifact IDs, and compaction entry IDs.
 - Follow `.kilocode/skills/electron-api/SKILL.md` for the new preview IPC method, including the preview-environment stub.
-- Run all commands from `/Users/bytedance/Documents/crest`.
+- Run all commands from the active Context Inspector worktree root. For this execution that root is `/Users/bytedance/Documents/crest/.worktrees/context-inspector`.
 
 ## Snapshot contract
 
@@ -121,9 +121,8 @@ export interface AgentContextSnapshot {
 - Create: `packages/coding-agent/context/inspector.ts`
 - Create: `packages/coding-agent/context/inspector.test.ts`
 - Modify: `packages/coding-agent/context/types.ts`
-- Modify: `packages/coding-agent/index.ts`
 
-- [ ] Write failing tests for capacity and total semantics:
+- [x] Write failing tests for capacity and total semantics:
 
 ```ts
 it("subtracts output reserve from usable input capacity", () => {
@@ -137,15 +136,15 @@ it("uses provider input without adding cache, output, or reasoning usage", () =>
 });
 ```
 
-- [ ] Run `npx vitest run packages/coding-agent/context/inspector.test.ts` and verify failure because the module does not exist.
-- [ ] Add the contract shown above and export it from `packages/coding-agent/context/types.ts` and `packages/coding-agent/index.ts`.
-- [ ] Implement `buildContextSnapshot`, `summarizeContextCategories`, `reconcileContextAttribution`, and `markContextSnapshotLifecycle` as pure functions.
-- [ ] Add tests proving fixed category order, stable IDs, non-negative request overhead, explicit attribution delta, estimated fallback, unavailable counts, and `remainingInputTokens = max(0, inputCapacity - effectiveInputTokens)`.
-- [ ] Run `npx vitest run packages/coding-agent/context/inspector.test.ts` and expect all tests to pass.
+- [x] Run `npx vitest run packages/coding-agent/context/inspector.test.ts` and verify failure because the module does not exist.
+- [x] Add the contract shown above and export it from `packages/coding-agent/context/types.ts`; the package wildcard export already exposes `context/inspector-types` directly.
+- [x] Implement `buildContextSnapshot`, `summarizeContextCategories`, `reconcileContextAttribution`, and `markContextSnapshotLifecycle` as pure functions.
+- [x] Add tests proving fixed category order, stable IDs, non-negative request overhead, explicit attribution delta, estimated fallback, unavailable counts, and `remainingInputTokens = max(0, inputCapacity - effectiveInputTokens)`.
+- [x] Run `npx vitest run packages/coding-agent/context/inspector.test.ts` and expect all tests to pass.
 - [ ] Commit:
 
 ```bash
-git add packages/coding-agent/context/inspector-types.ts packages/coding-agent/context/inspector.ts packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/types.ts packages/coding-agent/index.ts
+git add packages/coding-agent/context/inspector-types.ts packages/coding-agent/context/inspector.ts packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/types.ts
 git commit -m "feat: define agent context snapshots"
 ```
 
