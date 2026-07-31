@@ -72,8 +72,7 @@ vi.mock("../frontend/app/store/wshclientapi", () => ({
 }));
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 vi.mock("./agent-rewind-feature", () => ({
-    isAgentRewindFeatureEnabled: vi.fn(() => false),
-    openAgentRewindFeature: vi.fn(),
+    openAgentRewindFeature: vi.fn(async () => ({ state: "unavailable", message: "test unavailable" })),
 }));
 vi.mock("@crest/coding-agent/workspace-rewind/checkpoint-manager", () => ({
     makeDisabledWorkspaceCheckpointManager: vi.fn(() => ({
@@ -117,7 +116,7 @@ import {
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
-import { isAgentRewindFeatureEnabled, openAgentRewindFeature } from "./agent-rewind-feature";
+import { openAgentRewindFeature } from "./agent-rewind-feature";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
 import { installAgentWorkspaceRecoveryGate } from "./agent-workspace-recovery-gate";
 
@@ -968,7 +967,6 @@ describe("agent-ipc command helpers", () => {
                 })
             );
         } finally {
-            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
             sendConfiguredSpy.mockRestore();
         }
     });
@@ -991,7 +989,6 @@ describe("agent-ipc command helpers", () => {
             }),
             dispose: vi.fn(),
         };
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
             state: "enabled",
             processOwner,
@@ -1050,7 +1047,6 @@ describe("agent-ipc command helpers", () => {
                 };
             });
             vi.mocked(buildAgentHarnessHost).mockReturnValue(host as never);
-            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
             vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
                 state: "enabled",
                 processOwner: { pid: 42, processStartToken: "start-a", nonce: "nonce-a" },
@@ -1100,7 +1096,6 @@ describe("agent-ipc command helpers", () => {
                 expect(ptyDispose).toHaveBeenCalledOnce();
                 expect(harnessSubscribers).toBe(0);
             } finally {
-                vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
                 buildContext?.mockRestore();
                 ptyDispose.mockRestore();
             }
@@ -1120,7 +1115,6 @@ describe("agent-ipc command helpers", () => {
                 host.session = options.session as never;
                 return host as never;
             });
-            vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
             vi.mocked(openAgentRewindFeature).mockResolvedValue({
                 state: "enabled",
                 processOwner: { pid: 42, processStartToken: "start-a", nonce: "nonce-a" },
@@ -1205,7 +1199,6 @@ describe("agent-ipc command helpers", () => {
                 releaseFinalizer();
                 await finalization;
             } finally {
-                vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
                 vi.mocked(openAgentRewindFeature).mockReset();
                 releaseFinalizer();
                 moveTo.mockRestore();
@@ -3924,7 +3917,6 @@ describe("agent-ipc command helpers", () => {
             displayLeafId: null,
         }));
         const assertWorkspaceWritable = vi.fn(async () => {});
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
             loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
@@ -4010,7 +4002,6 @@ describe("agent-ipc command helpers", () => {
             storeKey: "probe",
             ancestorIdentityChain: [],
         };
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
@@ -4066,7 +4057,6 @@ describe("agent-ipc command helpers", () => {
         };
         const preview = vi.fn();
         const rewind = vi.fn();
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
             loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
@@ -4132,7 +4122,6 @@ describe("agent-ipc command helpers", () => {
         );
         await fs.mkdir(restoresRoot, { recursive: true });
         await fs.writeFile(path.join(restoresRoot, "corrupt.json"), "{broken");
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
         const workspace = {
             canonicalRoot: "/missing-workspace",
@@ -4195,7 +4184,6 @@ describe("agent-ipc command helpers", () => {
             deleteCrestRef: vi.fn(async () => {}),
             deleteOperationOwnerRecord: vi.fn(async () => {}),
         };
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
@@ -4243,7 +4231,6 @@ describe("agent-ipc command helpers", () => {
                 startupJournalRecord(workspaceIdentity, workspaceIncarnation, "missing-session", "orphan-op")
             )
         );
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
         const workspace = {
             canonicalRoot: "/missing-workspace",
@@ -4300,7 +4287,6 @@ describe("agent-ipc command helpers", () => {
             deleteCrestRef: vi.fn(async () => {}),
             deleteOperationOwnerRecord: vi.fn(async () => {}),
         };
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
@@ -4376,7 +4362,6 @@ describe("agent-ipc command helpers", () => {
             }
             return metadata;
         });
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
@@ -4430,7 +4415,6 @@ describe("agent-ipc command helpers", () => {
                 workspaceIncarnation,
             })
         );
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
         const workspace = {
             canonicalRoot: "/missing-workspace",
@@ -4474,7 +4458,6 @@ describe("agent-ipc command helpers", () => {
                 }
                 return await originalReaddir(...args);
             });
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
         const workspace = {
             canonicalRoot: "/missing-workspace",
@@ -4499,77 +4482,6 @@ describe("agent-ipc command helpers", () => {
         }
     });
 
-    it("keeps ordinary Agent writes available when workspace rewind is explicitly disabled", async () => {
-        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-rewind-disabled-"));
-        const { metadata, session } = await createPaneSession(cwd);
-        const userId = await session.appendMessage(user("navigate while disabled"));
-        const expectedSemanticLeafId = await session.appendMessage(assistant("answer"));
-        session.close();
-        const identity = {
-            ...TrustedRequestContext,
-            windowId: "window-rewind-disabled",
-            workspaceDir: await fs.realpath(cwd),
-            validatePreferredTerminal: async () => true,
-        };
-        const assertWorkspaceWritable = vi.fn(async () => {
-            throw new Error("recovery gate must not run");
-        });
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
-        registerAgentIpcHandlersImpl({
-            resolveWorkspaceSender: async () => identity,
-            loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
-            saveWorkspaceAgentState: async (data) => ({
-                workspaceid: data.workspaceid,
-                revision: data.expectedrevision + 1,
-                state: data.state,
-            }),
-            recoveryGate: {
-                scanBeforeIpcRegistration: async () => {},
-                ensureRecoveredOnce: async () => {},
-                assertWorkspaceWritable,
-            },
-        });
-        const handlers = registeredHandlers();
-        const event = { sender: { id: 92, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
-
-        await expect(handlers.get("agent:create-session")?.(event, TrustedRequestContext)).resolves.toEqual(
-            expect.objectContaining({ cwd: identity.workspaceDir })
-        );
-        await expect(
-            handlers.get("agent:navigate-tree")?.(event, TrustedRequestContext, {
-                sessionMetadata: metadata,
-                targetId: userId,
-                semanticAnchorId: null,
-                expectedSemanticLeafId,
-            })
-        ).resolves.toEqual(expect.objectContaining({ sessionMetadata: expect.objectContaining({ id: metadata.id }) }));
-        await expect(
-            handlers.get("agent:list-rewind-points")?.(event, TrustedRequestContext, {
-                sessionMetadata: metadata,
-            })
-        ).rejects.toThrow(/rewind is unavailable/i);
-        expect(assertWorkspaceWritable).not.toHaveBeenCalled();
-    });
-
-    it("makes the production recovery gate a precise no-op when workspace rewind is disabled", async () => {
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(false);
-        vi.mocked(openAgentRewindFeature).mockClear();
-        const gate = makeProductionAgentWorkspaceRecoveryGate("/unused");
-        const workspace = {
-            canonicalRoot: "/workspace",
-            workspaceIdentity: "c".repeat(64),
-            workspaceIncarnation: "d".repeat(64),
-            storeKey: "disabled",
-            ancestorIdentityChain: [],
-        };
-
-        await gate.scanBeforeIpcRegistration();
-        await gate.ensureRecoveredOnce(workspace);
-        await gate.assertWorkspaceWritable(workspace);
-
-        expect(openAgentRewindFeature).not.toHaveBeenCalled();
-    });
-
     it("allows an authorized recovery resolution through a frozen ordinary write gate", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-recovery-resolution-"));
         const { metadata, session } = await createPaneSession(cwd);
@@ -4581,7 +4493,6 @@ describe("agent-ipc command helpers", () => {
             validatePreferredTerminal: async () => true,
         };
         const resolveRecovery = vi.fn(async () => {});
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
@@ -4668,7 +4579,6 @@ describe("agent-ipc command helpers", () => {
         const assertWorkspaceWritable = vi.fn(async () => {
             throw new Error("workspace frozen");
         });
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         registerAgentIpcHandlersImpl({
             ...DefaultAgentIpcRegistrationDependencies,
             resolveWorkspaceSender: async () => identity,
@@ -4780,7 +4690,6 @@ describe("agent-ipc command helpers", () => {
                       }
                     : undefined,
         };
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
@@ -4968,7 +4877,6 @@ describe("agent-ipc command helpers", () => {
             ensureRecoveredOnce: async () => {},
             assertWorkspaceWritable: async () => {},
         };
-        vi.mocked(isAgentRewindFeatureEnabled).mockReturnValue(true);
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },

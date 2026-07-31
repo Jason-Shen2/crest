@@ -173,7 +173,7 @@ import {
 import { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
 import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
-import { isAgentRewindFeatureEnabled, openAgentRewindFeature, type AgentRewindFeature } from "./agent-rewind-feature";
+import { openAgentRewindFeature, type AgentRewindFeature } from "./agent-rewind-feature";
 import { AgentRewindService } from "./agent-rewind-service";
 import { AgentSessionStateBroadcaster } from "./agent-session-state-broadcaster";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
@@ -271,7 +271,6 @@ export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): Agen
         return recovery;
     };
     const scanKnownJournals = async () => {
-        if (!isAgentRewindFeatureEnabled()) return;
         const sessions = await getSessionsRepo().scanAllMetadata();
         const sessionsById = new Map(sessions.map((metadata) => [metadata.id, metadata]));
         const workspacesRoot = path.join(dataRoot, "agent-checkpoints", "workspaces");
@@ -414,7 +413,6 @@ export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): Agen
     const base = makeAgentWorkspaceRecoveryGate({
         scanKnownJournals,
         ensureRecovered: async (workspace) => {
-            if (!isAgentRewindFeatureEnabled()) return;
             const diagnostic = frozen.get(workspaceKey(workspace));
             if (diagnostic) throw new Error(diagnostic.message);
             const recovery = await recoveryFor(workspace);
@@ -426,7 +424,6 @@ export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): Agen
             }
         },
         assertWorkspaceWritable: async (workspace) => {
-            if (!isAgentRewindFeatureEnabled()) return;
             const diagnostic = frozen.get(workspaceKey(workspace));
             if (diagnostic) throw new Error(diagnostic.message);
             const recovery = await recoveryFor(workspace);
@@ -1335,14 +1332,11 @@ async function createAgentRuntimeFromSession(
     });
     getRuntimeCwd = () => host.getCwd();
     const ptyHost = new AgentPtyHost();
-    let rewindFeature: AgentRewindFeature = { state: "disabled" };
-    if (isAgentRewindFeatureEnabled()) {
-        const { getWaveDataDir } = await import("./emain-platform");
-        rewindFeature = await openAgentRewindFeature({
-            workspaceRoot: opts.context.workspaceDir,
-            dataRoot: getWaveDataDir(),
-        });
-    }
+    const { getWaveDataDir } = await import("./emain-platform");
+    const rewindFeature = await openAgentRewindFeature({
+        workspaceRoot: opts.context.workspaceDir,
+        dataRoot: getWaveDataDir(),
+    });
     const mutationBarrier = new RegistrySessionMutationBarrier(metadata.path);
     const checkpointManager =
         rewindFeature.state === "enabled"
@@ -1440,7 +1434,7 @@ async function createAgentRuntimeFromSession(
             workspaceRewind:
                 rewindFeature.state === "unavailable"
                     ? { status: "unavailable", message: rewindFeature.message }
-                    : { status: rewindFeature.state },
+                    : { status: "enabled" },
         });
         owner = runtime;
         if (options.attachObservability !== false) {
@@ -1712,14 +1706,11 @@ async function buildColdRewindState(
     metadata: JsonlSessionMetadata,
     entries: import("@crest/agent/harness/types").SessionTreeEntry[]
 ) {
-    let feature: AgentRewindFeature = { state: "disabled" };
-    if (isAgentRewindFeatureEnabled()) {
-        const { getWaveDataDir } = await import("./emain-platform");
-        feature = await openAgentRewindFeature({
-            workspaceRoot: metadata.cwd,
-            dataRoot: getWaveDataDir(),
-        });
-    }
+    const { getWaveDataDir } = await import("./emain-platform");
+    const feature = await openAgentRewindFeature({
+        workspaceRoot: metadata.cwd,
+        dataRoot: getWaveDataDir(),
+    });
     const recoveryGate = getAgentWorkspaceRecoveryGate();
     const frozenDiagnostic =
         feature.state === "enabled"
@@ -1799,7 +1790,7 @@ async function sendPersistedSessionState(
                     followUp: [],
                     commands: [],
                     workspaceRewind: {
-                        status: isAgentRewindFeatureEnabled() ? "enabled" : "disabled",
+                        status: "enabled",
                     },
                     rewindState,
                     ...contextState,
@@ -1863,7 +1854,7 @@ async function buildPersistedSessionState(
             followUp: [],
             commands: [],
             workspaceRewind: {
-                status: isAgentRewindFeatureEnabled() ? "enabled" : "disabled",
+                status: "enabled",
             },
             rewindState,
             ...buildContextStateFromSessionEntries(branch),
@@ -2554,7 +2545,7 @@ async function navigateAgentTreeWithOpenSession(
         followUp: [] as AgentMessage[],
         errorMessage: undefined as string | undefined,
         workspaceRewind: {
-            status: isAgentRewindFeatureEnabled() ? ("enabled" as const) : ("disabled" as const),
+            status: "enabled" as const,
         },
         rewindState,
         ...buildContextStateFromSessionEntries(branchEntries),
@@ -3375,7 +3366,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         registry: runtimeRegistry,
         openSession: (metadata) => openPaneSessionByPath(metadata.path),
         workspaceRewind: () => ({
-            status: isAgentRewindFeatureEnabled() ? "enabled" : "disabled",
+            status: "enabled",
         }),
         buildRewindState: buildColdRewindState,
         publish: async ({ sessionMetadata, state }) => {
@@ -3752,13 +3743,17 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         },
     };
     const removalWorkspaceHooks = async (metadata: JsonlSessionMetadata) => {
-        if (!isAgentRewindFeatureEnabled()) {
+        const { getWaveDataDir } = await import("./emain-platform");
+        const feature = await openAgentRewindFeature({
+            workspaceRoot: metadata.cwd,
+            dataRoot: getWaveDataDir(),
+        });
+        if (feature.state !== "enabled") {
             return {
                 withWorkspaceMutation: async <T>(operation: () => Promise<T>) => operation(),
                 reconcileWorkspaceOwners: async () => {},
             };
         }
-        const feature = await openMaintenanceFeature(metadata);
         return {
             withWorkspaceMutation: <T>(operation: () => Promise<T>) => feature.store.withWorkspaceLock(operation),
             reconcileWorkspaceOwners: async () => {
@@ -3772,7 +3767,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         };
     };
     const assertWorkspaceWritable = async (authenticated: AuthenticatedWorkspaceAgentSender): Promise<void> => {
-        if (!isAgentRewindFeatureEnabled() || !options.recoveryGate) return;
+        if (!options.recoveryGate) return;
         const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
             authenticated.workspaceDir
         );
@@ -3781,7 +3776,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     const workspaceFrozenDiagnostic = async (
         authenticated: AuthenticatedWorkspaceAgentSender
     ): Promise<AgentWorkspaceFrozenDiagnostic | undefined> => {
-        if (!isAgentRewindFeatureEnabled() || !options.recoveryGate) return undefined;
+        if (!options.recoveryGate) return undefined;
         const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
             authenticated.workspaceDir
         );
@@ -3863,18 +3858,8 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             },
         };
     };
-    const requireRewindService = () => {
-        if (!isAgentRewindFeatureEnabled()) {
-            throw new Error("Workspace rewind is unavailable");
-        }
-        return options.rewindService ?? defaultRewindService;
-    };
-    const requireRewindMaintenance = () => {
-        if (!isAgentRewindFeatureEnabled()) {
-            throw new Error("Workspace rewind maintenance is unavailable");
-        }
-        return options.rewindMaintenance ?? defaultMaintenance;
-    };
+    const requireRewindService = () => options.rewindService ?? defaultRewindService;
+    const requireRewindMaintenance = () => options.rewindMaintenance ?? defaultMaintenance;
     const publishMaintenanceSessionState = async (
         event: electron.IpcMainInvokeEvent,
         authenticated: AuthenticatedWorkspaceAgentSender,

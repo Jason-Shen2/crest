@@ -353,8 +353,9 @@ without whole-workspace reset or Force.
 Successful Revert restores the selected prompt to the composer and persists a
 single Redo dock across reload. Redo uses the same checks but never offers
 Force. `/rewind` uses the same preview/apply path as message-side Revert;
-`/tree` remains conversation-only. The feature is currently disabled by
-default and enabled internally only with `CREST_AGENT_WORKSPACE_REWIND=1`.
+`/tree` remains conversation-only. Workspace rewind initializes by default on
+supported platforms; real platform, identity, storage, and recovery failures
+remain explicit hard blocks.
 
 OpenCode Core v2 is the reference for private snapshot/selective restore and
 the persistent revert surface. Pi/pi-rewind is the reference for user-turn

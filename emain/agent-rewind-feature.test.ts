@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     _resetAgentRewindProcessOwnerForTests,
     getAgentRewindProcessOwner,
-    isAgentRewindFeatureEnabled,
     openAgentRewindFeature,
 } from "./agent-rewind-feature";
 
@@ -14,13 +13,7 @@ afterEach(() => {
     _resetAgentRewindProcessOwnerForTests();
 });
 
-describe("agent rewind feature gate", () => {
-    it("enables only for the exact rollout value", () => {
-        expect(isAgentRewindFeatureEnabled({ CREST_AGENT_WORKSPACE_REWIND: "1" })).toBe(true);
-        expect(isAgentRewindFeatureEnabled({ CREST_AGENT_WORKSPACE_REWIND: "true" })).toBe(false);
-        expect(isAgentRewindFeatureEnabled({})).toBe(false);
-    });
-
+describe("agent rewind feature", () => {
     it("shares the exact process owner object across concurrent runtimes", async () => {
         const owner = { pid: 42, processStartToken: "start-a", nonce: "nonce-a" };
         const factory = vi.fn(async () => owner);
@@ -35,16 +28,27 @@ describe("agent rewind feature gate", () => {
         expect(factory).toHaveBeenCalledTimes(1);
     });
 
-    it("does no identity or storage work while disabled", async () => {
-        const resolveIdentity = vi.fn();
+    it("opens identity and storage without a rollout environment variable", async () => {
+        const owner = { pid: 42, processStartToken: "start-a", nonce: "nonce-a" };
+        await getAgentRewindProcessOwner(async () => owner);
+        const identity = {
+            canonicalRoot: "/workspace",
+            workspaceIdentity: "a".repeat(64),
+            workspaceIncarnation: "b".repeat(64),
+            storeKey: "workspace",
+            ancestorIdentityChain: [],
+        };
+        const store = { identity };
+        const resolveIdentity = vi.fn(async () => identity);
+        const openStore = vi.fn(async () => store as never);
         const result = await openAgentRewindFeature({
             workspaceRoot: "/workspace",
             dataRoot: "/data",
-            env: {},
-            dependencies: { resolveIdentity },
+            dependencies: { resolveIdentity, openStore },
         });
 
-        expect(result).toEqual({ state: "disabled" });
-        expect(resolveIdentity).not.toHaveBeenCalled();
+        expect(result).toEqual({ state: "enabled", processOwner: owner, store });
+        expect(resolveIdentity).toHaveBeenCalledWith("/workspace");
+        expect(openStore).toHaveBeenCalledOnce();
     });
 });

@@ -385,10 +385,8 @@ No active users. `pkg/agent/mcp/` gets deleted in task #13. Can re-add via `@mod
 
 ### 7.11 Workspace rewind: turn-boundary snapshots, selective restore
 
-Workspace rewind is an internal-gated TypeScript runtime capability
-(`CREST_AGENT_WORKSPACE_REWIND=1`; disabled by default until the rollout gate
-is complete). The first release supports Linux and macOS only. Windows remains
-feature-unavailable even with the flag set until owner-only checkpoint-store
+Workspace rewind is a default-on TypeScript runtime capability on Linux and
+macOS. Windows remains feature-unavailable until owner-only checkpoint-store
 ACLs, reparse-safe inspection/apply, case-only replacement, and directory
 fsync durability are implemented and pass the full gate. Its authority is the filesystem snapshot captured before and
 after a durable user turn, not `write`/`edit` tool metadata. Consequently bash,

@@ -120,18 +120,15 @@ import { AgentRewindService } from "./agent-rewind-service";
 
 const RequestIdentity = Object.freeze({ workspaceId: "workspace-e2e", generation: 1 });
 const cleanupRoots: string[] = [];
-let previousFeatureFlag: string | undefined;
 let previousConfigHome: string | undefined;
 let previousDataHome: string | undefined;
 
 beforeEach(async () => {
-    previousFeatureFlag = process.env.CREST_AGENT_WORKSPACE_REWIND;
     previousConfigHome = process.env.WAVETERM_CONFIG_HOME;
     previousDataHome = process.env.WAVETERM_DATA_HOME;
     const configHome = await realpath(await mkdtemp(join(tmpdir(), "crest-agent-rewind-e2e-config-")));
     cleanupRoots.push(configHome);
     process.env.WAVETERM_CONFIG_HOME = configHome;
-    process.env.CREST_AGENT_WORKSPACE_REWIND = "1";
     vi.mocked(electron.ipcMain.handle).mockClear();
     vi.mocked(electron.ipcMain.on).mockClear();
     vi.stubGlobal(
@@ -153,8 +150,6 @@ afterEach(async () => {
     vi.useRealTimers();
     await _resetAgentIpcForTests();
     _setSessionsRepoForTests(undefined);
-    if (previousFeatureFlag == null) delete process.env.CREST_AGENT_WORKSPACE_REWIND;
-    else process.env.CREST_AGENT_WORKSPACE_REWIND = previousFeatureFlag;
     if (previousConfigHome == null) delete process.env.WAVETERM_CONFIG_HOME;
     else process.env.WAVETERM_CONFIG_HOME = previousConfigHome;
     if (previousDataHome == null) delete process.env.WAVETERM_DATA_HOME;
@@ -534,7 +529,6 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         const feature = await openAgentRewindFeature({
             workspaceRoot: "C:\\workspace",
             dataRoot: "C:\\data",
-            env: { CREST_AGENT_WORKSPACE_REWIND: "1" },
             dependencies: {
                 resolveIdentity: async () =>
                     ({

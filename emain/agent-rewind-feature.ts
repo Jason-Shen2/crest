@@ -19,7 +19,6 @@ interface AgentRewindFeatureDependencies {
 }
 
 export type AgentRewindFeature =
-    | { state: "disabled" }
     | { state: "unavailable"; message: string }
     | {
           state: "enabled";
@@ -28,10 +27,6 @@ export type AgentRewindFeature =
       };
 
 let ProcessOwnerPromise: Promise<ProcessOwnerIdentity> | undefined;
-
-export function isAgentRewindFeatureEnabled(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
-    return env.CREST_AGENT_WORKSPACE_REWIND === "1";
-}
 
 export function getAgentRewindProcessOwner(
     factory: () => Promise<ProcessOwnerIdentity> = makeProcessOwnerIdentity
@@ -45,12 +40,8 @@ export function getAgentRewindProcessOwner(
 export async function openAgentRewindFeature(input: {
     workspaceRoot: string;
     dataRoot: string;
-    env?: Readonly<Record<string, string | undefined>>;
     dependencies?: AgentRewindFeatureDependencies;
 }): Promise<AgentRewindFeature> {
-    if (!isAgentRewindFeatureEnabled(input.env)) {
-        return { state: "disabled" };
-    }
     try {
         const processOwner = await getAgentRewindProcessOwner();
         const identity = await (input.dependencies?.resolveIdentity ?? resolveCanonicalWorkspaceIdentity)(
