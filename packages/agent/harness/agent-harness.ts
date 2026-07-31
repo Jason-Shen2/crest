@@ -266,6 +266,7 @@ export class AgentHarness<
 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
 	private messageEntryIds = new WeakMap<object, string>();
 	private observeProviderContext?: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>["observeProviderContext"];
+	private providerContextObservationQueue: Promise<void> = Promise.resolve();
 	private onProviderContextObservationError?: AgentHarnessOptions<
 		TSkill,
 		TPromptTemplate,
@@ -622,10 +623,11 @@ export class AgentHarness<
 		const observer = this.observeProviderContext;
 		if (!observer) return;
 		queueMicrotask(() => {
-			void Promise.resolve()
-				.then(buildObservation)
-				.then(observer)
-				.catch((error) => {
+			const queued = this.providerContextObservationQueue.then(async () => {
+				const observation = await buildObservation();
+				await observer(observation);
+			});
+			this.providerContextObservationQueue = queued.catch((error) => {
 					try {
 						this.onProviderContextObservationError?.(toError(error));
 					} catch {

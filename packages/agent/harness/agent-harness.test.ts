@@ -480,6 +480,62 @@ describe("AgentHarness — prepared turns", () => {
         );
     });
 
+    it("serializes background provider observations in request order", async () => {
+        const observedPayloads: string[] = [];
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+            observeProviderContext: (observation) => {
+                observedPayloads.push(observation.payload as string);
+            },
+        });
+        let releaseFirst!: () => void;
+        const firstGate = new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+        });
+        let firstStarted = false;
+        let secondStarted = false;
+        const queueObservation = (
+            harness as unknown as {
+                queueProviderContextObservation(
+                    build: () => Promise<AgentHarnessProviderContextObservation>
+                ): void;
+            }
+        ).queueProviderContextObservation.bind(harness);
+        const observation = (payload: string): AgentHarnessProviderContextObservation => ({
+            model: fakeModel(),
+            sessionId: "session",
+            leafId: null,
+            systemPrompt: "system",
+            messages: [],
+            messageEntryIds: [],
+            entries: [],
+            activeTools: [],
+            requestOptions: {},
+            payload,
+        });
+
+        queueObservation(async () => {
+            firstStarted = true;
+            await firstGate;
+            return observation("first");
+        });
+        queueObservation(async () => {
+            secondStarted = true;
+            return observation("second");
+        });
+        await waitFor(() => firstStarted);
+
+        expect(secondStarted).toBe(false);
+        expect(observedPayloads).toEqual([]);
+        releaseFirst();
+        await waitFor(() => observedPayloads.length === 2);
+        expect(observedPayloads).toEqual(["first", "second"]);
+    });
+
     it("isolates provider-context observation failures from the provider stream", async () => {
         const diagnostic = vi.fn();
         registerApiProvider({
