@@ -940,6 +940,18 @@ export interface AgentHarnessProviderContextObservation {
 	payload: unknown;
 }
 
+export interface AgentHarnessContextInspection {
+	model: Model<any>;
+	sessionId: string;
+	leafId: string | null;
+	systemPrompt: string;
+	systemPromptMetadata?: unknown;
+	messages: AgentMessage[];
+	messageEntryIds: Array<string | undefined>;
+	entries: SessionTreeEntry[];
+	activeTools: AgentTool[];
+}
+
 export interface AgentHarnessOptions<
 	TSkill extends Skill = Skill,
 	TPromptTemplate extends PromptTemplate = PromptTemplate,

@@ -878,6 +878,9 @@ async function createAgentRuntimeFromSession(
         initialContextEntries: initialEntries,
         ptyHost: new AgentPtyHost(),
     });
+    if (typeof host.harness.inspectCurrentContext === "function") {
+        void owner.refreshContextSnapshot("initial context");
+    }
     if (options.attachObservability !== false) {
         attachAgentObservability(metadata.path, host.harness);
     }

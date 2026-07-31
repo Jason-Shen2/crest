@@ -275,19 +275,19 @@ git commit -m "feat: observe provider context requests"
 - Modify: `packages/coding-agent/agent-session-runtime.test.ts`
 - Modify: `packages/coding-agent/harness-factory.ts`
 
-- [ ] Add failing runtime tests for these transitions: `updating → ready`, `ready → in_use`, `in_use → waiting_for_tool`, tool result completion back to `in_use`, settled run back to `ready`, same-identity failure to `out_of_date`, and identity-changing failure to `unavailable`.
-- [ ] Add tests proving cached input, provider output, and reasoning usage never enter `effectiveInputTokens`.
-- [ ] Add an adapter test proving a provider-compatible counter receives the already-finalized payload rather than rebuilding a second payload.
-- [ ] Run `npx vitest run packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/provider-adapter.test.ts packages/coding-agent/agent-session-runtime.test.ts` and verify failure.
-- [ ] Add `contextSnapshot?: AgentContextSnapshot` and a monotonic `contextSnapshotRevision` to `AgentSessionRuntimeState`.
-- [ ] Implement `refreshContextSnapshot(config, reason)` for idle previews using the harness's effective branch context, current prompt manifest, tools, and current model without a user draft.
-- [ ] Build live `in_use` snapshots from the provider observer's final payload; call `countFinalRequest` only when the provider adapter supports it, otherwise use the documented estimator and mark accuracy `estimated`.
-- [ ] On `tool_execution_start`, publish `waiting_for_tool` from the last matching snapshot; on completed tool result, allow the next provider observation to include that result exactly once.
-- [ ] Rebuild after compact, tree navigation, model selection, resource reload, and settled runs. Coalesce duplicate idle refresh requests by identity and revision.
-- [ ] Catch all inspector failures outside the send promise and preserve runtime execution. Same-identity failures retain the prior snapshot with `out_of_date`; model/session/leaf changes clear it first.
-- [ ] Include `contextSnapshot` in `getSessionState()` and emitted `session_state` events.
-- [ ] Run the targeted tests and expect all to pass.
-- [ ] Commit:
+- [x] Add failing runtime tests for these transitions: `updating → ready`, `ready → in_use`, `in_use → waiting_for_tool`, tool result completion back to `in_use`, settled run back to `ready`, same-identity failure to `out_of_date`, and identity-changing failure to `unavailable`.
+- [x] Add tests proving cached input, provider output, and reasoning usage never enter `effectiveInputTokens`.
+- [x] Add an adapter test proving a provider-compatible counter receives the already-finalized payload rather than rebuilding a second payload.
+- [x] Run `npx vitest run packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/provider-adapter.test.ts packages/coding-agent/agent-session-runtime.test.ts` and verify failure.
+- [x] Add `contextSnapshot?: AgentContextSnapshot` and a monotonic `contextSnapshotRevision` to `AgentSessionRuntimeState`.
+- [x] Implement `refreshContextSnapshot(config, reason)` for idle previews using the harness's effective branch context, current prompt manifest, tools, and current model without a user draft.
+- [x] Build live `in_use` snapshots from the provider observer's final payload; call `countFinalRequest` only when the provider adapter supports it, otherwise use the documented estimator and mark accuracy `estimated`.
+- [x] On `tool_execution_start`, publish `waiting_for_tool` from the last matching snapshot; on completed tool result, allow the next provider observation to include that result exactly once.
+- [x] Rebuild after compact, tree navigation, model selection, resource reload, and settled runs. Coalesce duplicate idle refresh requests by identity and revision.
+- [x] Catch all inspector failures outside the send promise and preserve runtime execution. Same-identity failures retain the prior snapshot with `out_of_date`; model/session/leaf changes clear it first.
+- [x] Include `contextSnapshot` in `getSessionState()` and emitted `session_state` events.
+- [x] Run the targeted tests and expect all to pass.
+- [x] Commit:
 
 ```bash
 git add packages/coding-agent/context/inspector.ts packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/provider-adapter.ts packages/coding-agent/context/provider-adapter.test.ts packages/coding-agent/agent-session-runtime.ts packages/coding-agent/agent-session-runtime.test.ts packages/coding-agent/harness-factory.ts

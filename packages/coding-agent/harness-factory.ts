@@ -88,6 +88,10 @@ export interface AgentHarnessHost {
     promptWithCustomEntry(customType: string, data: unknown, text: string): Promise<unknown>;
     setAuthResolver(resolver?: AgentAuthResolver): void;
     setToolCallHook(hook?: ToolCallHook): void;
+    setProviderContextObserver?(
+        observer?: (observation: AgentHarnessProviderContextObservation) => void | Promise<void>,
+        onError?: (error: Error) => void
+    ): void;
     resolveAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
     runToolCallHook(event: ToolCallEvent): Promise<ToolCallResult | undefined>;
     getCwd(): string;
@@ -154,6 +158,9 @@ export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): Agent
         },
         setToolCallHook(next): void {
             toolCallHook = next;
+        },
+        setProviderContextObserver(observer, onError): void {
+            harness.setProviderContextObserver(observer, onError);
         },
         async resolveAuth(model): Promise<{ apiKey: string; headers?: Record<string, string> } | undefined> {
             return authResolver?.(model);

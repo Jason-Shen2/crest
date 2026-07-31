@@ -39,14 +39,20 @@ import {
     type AgentPtyHost,
     type AgentPtySnapshot,
 } from "./agent-pty-host";
-import type { SystemPromptInputs } from "./build-system-prompt";
+import type { SystemPromptInputs, SystemPromptManifest } from "./build-system-prompt";
 import type { ChangeOutline } from "./change-review/change-outline";
 import { filterTreeForDisplay } from "./commands/session-views";
 import { foldContextJournal } from "./context/journal";
+import { buildContextInventory, buildContextSnapshot, markContextSnapshotLifecycle } from "./context/inspector";
+import type { AgentContextSnapshot, ContextSnapshotIdentity } from "./context/inspector-types";
+import { createContextProviderAdapter } from "./context/provider-adapter";
+import type { ContextProviderRequest } from "./context/projector";
 import type { ContextProjectionReport } from "./context/types";
 import type { AgentAuthResolver, AgentHarnessHost } from "./harness-factory";
 import type {
     AgentHarnessEvent,
+    AgentHarnessContextInspection,
+    AgentHarnessProviderContextObservation,
     AgentHarnessPreparedTurn,
     AgentHarnessTurnPreparation,
     AgentHarnessTurnPreparationInput,
@@ -84,6 +90,7 @@ export interface AgentSessionRuntimeState {
     errorMessage?: string;
     contextReports: ContextProjectionReport[];
     commands: AgentPtySnapshot[];
+    contextSnapshot?: AgentContextSnapshot;
 }
 
 export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
@@ -98,6 +105,7 @@ interface AgentSessionRuntimeStateEvent {
     followUp: AgentMessage[];
     contextReports: ContextProjectionReport[];
     commands: AgentPtySnapshot[];
+    contextSnapshot?: AgentContextSnapshot;
 }
 
 export interface AgentSessionRuntimeOptions {
@@ -190,6 +198,27 @@ export function buildContextStateFromSessionEntries(entries: SessionTreeEntry[])
     return { contextReports: journal.projectionReports };
 }
 
+function isSystemPromptManifest(value: unknown): value is SystemPromptManifest {
+    return Boolean(
+        value &&
+            typeof value === "object" &&
+            typeof (value as { text?: unknown }).text === "string" &&
+            Array.isArray((value as { segments?: unknown }).segments)
+    );
+}
+
+function estimateSerializedTokens(value: unknown): number {
+    try {
+        return Math.max(0, Math.ceil(JSON.stringify(value).length / 4));
+    } catch {
+        return 0;
+    }
+}
+
+function snapshotIdentityKey(identity: Pick<ContextSnapshotIdentity, "sessionId" | "leafId" | "modelKey">): string {
+    return `${identity.sessionId ?? ""}\u0000${identity.leafId ?? ""}\u0000${identity.modelKey}`;
+}
+
 export class AgentSessionRuntime {
     readonly path: string;
     host: AgentHarnessHost;
@@ -201,11 +230,14 @@ export class AgentSessionRuntime {
     status: AgentSessionRuntimeStatus = "idle";
     errorMessage: string | undefined;
     contextReports: ContextProjectionReport[] = [];
+    contextSnapshot: AgentContextSnapshot | undefined;
+    contextSnapshotRevision = 0;
     activeTurnId: string | undefined;
     // Per-send completion records. Prepared sends settle at their atomic
     // commit; ordinary sends settle from the matching user message event.
     private pendingSends: PendingSend[] = [];
     private ignoredCommittedEntryIds = new Set<string>();
+    private contextRefreshGeneration = 0;
     configQueue: Promise<void> = Promise.resolve();
 
     // Synchronous send-routing gate. Flipped true the instant we call
@@ -237,6 +269,10 @@ export class AgentSessionRuntime {
         this.messages = initialMessages;
         this.turns = initialTurns;
         this.applyContextEntries(options.initialContextEntries ?? []);
+        this.host.setProviderContextObserver?.(
+            (observation) => this.applyProviderContextObservation(observation),
+            (error) => this.applyContextSnapshotFailure(error)
+        );
         // Attach BEFORE any prompt() runs so we never miss events — this is
         // what closes the "fast turn finished before the renderer
         // subscribed" race; the owner has the history regardless.
@@ -246,6 +282,7 @@ export class AgentSessionRuntime {
     /** Refresh execution context (cwd / git / recent cmds) for the next turn. */
     update(inputs: SystemPromptInputs): void {
         this.host.update(inputs);
+        if (!this.running) void this.refreshContextSnapshot("resources changed");
     }
 
     isRunning(): boolean {
@@ -263,11 +300,188 @@ export class AgentSessionRuntime {
             currentModel.api === config.model.api &&
             currentModel.baseUrl === config.model.baseUrl;
         if (!sameModel) {
+            this.clearContextSnapshot();
             await this.host.harness.setModel(config.model);
         }
         if (this.host.harness.getThinkingLevel() !== config.thinkingLevel) {
             await this.host.harness.setThinkingLevel(config.thinkingLevel);
         }
+    }
+
+    async refreshContextSnapshot(reason = "idle refresh"): Promise<void> {
+        const generation = ++this.contextRefreshGeneration;
+        if (this.contextSnapshot) {
+            this.contextSnapshot = markContextSnapshotLifecycle(this.contextSnapshot, "updating", reason);
+            this.emitSessionState();
+        }
+        try {
+            const inspection = await this.host.harness.inspectCurrentContext();
+            const identity = this.contextIdentity(inspection);
+            if (this.contextSnapshot && snapshotIdentityKey(this.contextSnapshot.identity) !== snapshotIdentityKey(identity)) {
+                this.contextSnapshot = undefined;
+                this.emitSessionState();
+            }
+            const snapshot = await this.buildContextSnapshotFromInspection(inspection, "ready");
+            if (generation !== this.contextRefreshGeneration) return;
+            this.contextSnapshot = snapshot;
+            this.emitSessionState();
+        } catch (error) {
+            if (generation !== this.contextRefreshGeneration) return;
+            this.applyContextSnapshotFailure(error);
+        }
+    }
+
+    private contextIdentity(
+        inspection: Pick<AgentHarnessContextInspection, "model" | "sessionId" | "leafId">
+    ): ContextSnapshotIdentity {
+        return {
+            sessionPath: this.path,
+            sessionId: inspection.sessionId,
+            leafId: inspection.leafId,
+            modelKey: `${inspection.model.provider}/${inspection.model.id}`,
+            revision: this.contextSnapshotRevision + 1,
+        };
+    }
+
+    private async buildContextSnapshotFromInspection(
+        inspection: AgentHarnessContextInspection,
+        lifecycle: "ready" | "in_use",
+        providerPayload?: unknown,
+        requestOptions?: AgentHarnessProviderContextObservation["requestOptions"]
+    ): Promise<AgentContextSnapshot> {
+        const identity = this.contextIdentity(inspection);
+        const context = {
+            messages: inspection.messages,
+            messageEntryIds: inspection.messageEntryIds,
+            thinkingLevel: this.host.harness.getThinkingLevel(),
+            model: { provider: inspection.model.provider, modelId: inspection.model.id },
+        };
+        const items = buildContextInventory({
+            entries: inspection.entries,
+            context,
+            tools: inspection.activeTools,
+            systemPromptManifest: isSystemPromptManifest(inspection.systemPromptMetadata)
+                ? inspection.systemPromptMetadata
+                : undefined,
+            activeTurnId: this.activeTurnId,
+        });
+        const maxOutputTokens = Math.max(0, inspection.model.maxTokens ?? 0);
+        const request: ContextProviderRequest = {
+            systemPrompt: inspection.systemPrompt,
+            tools: inspection.activeTools,
+            history: inspection.messages,
+            currentUserContent: null,
+        };
+        let payload = providerPayload;
+        let providerInputTokens: number | undefined;
+        let accuracy: AgentContextSnapshot["accuracy"] = "estimated";
+        let diagnostic: string | undefined;
+        try {
+            const auth = await this.host.resolveAuth(inspection.model);
+            const adapter = createContextProviderAdapter(
+                inspection.model,
+                auth?.apiKey,
+                this.host.harness.getThinkingLevel()
+            );
+            if (adapter) {
+                if (payload === undefined) {
+                    payload = await adapter.preparePayload({
+                        model: inspection.model,
+                        request,
+                        maxOutputTokens,
+                        requestOptions,
+                    });
+                }
+                const count = await adapter.tokenCounter.countFinalRequest({
+                    provider: inspection.model.provider,
+                    modelKey: identity.modelKey,
+                    contextWindow: inspection.model.contextWindow,
+                    maxOutputTokens,
+                    payload,
+                });
+                providerInputTokens = count.inputTokens;
+                accuracy = count.accuracy === "exact" ? "exact" : "estimated";
+            }
+        } catch (error) {
+            diagnostic = `Provider token count unavailable: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        if (providerInputTokens == null) {
+            providerInputTokens = estimateSerializedTokens(payload ?? request);
+            accuracy = "estimated";
+        }
+        this.contextSnapshotRevision += 1;
+        identity.revision = this.contextSnapshotRevision;
+        return buildContextSnapshot({
+            identity,
+            generatedAt: new Date().toISOString(),
+            lifecycle,
+            accuracy,
+            modelLabel: inspection.model.name ?? inspection.model.id,
+            contextWindow: inspection.model.contextWindow,
+            outputReserve: maxOutputTokens,
+            providerInputTokens,
+            items,
+            diagnostic,
+        });
+    }
+
+    private async applyProviderContextObservation(observation: AgentHarnessProviderContextObservation): Promise<void> {
+        const generation = ++this.contextRefreshGeneration;
+        const identity = this.contextIdentity(observation);
+        if (this.contextSnapshot && snapshotIdentityKey(this.contextSnapshot.identity) !== snapshotIdentityKey(identity)) {
+            this.contextSnapshot = undefined;
+        } else if (this.contextSnapshot) {
+            this.contextSnapshot = markContextSnapshotLifecycle(this.contextSnapshot, "updating", "Counting provider request");
+        }
+        this.emitSessionState();
+        try {
+            const snapshot = await this.buildContextSnapshotFromInspection(
+                observation,
+                "in_use",
+                observation.payload,
+                observation.requestOptions
+            );
+            if (generation !== this.contextRefreshGeneration) return;
+            this.contextSnapshot = snapshot;
+            this.emitSessionState();
+        } catch (error) {
+            if (generation !== this.contextRefreshGeneration) return;
+            this.applyContextSnapshotFailure(error, identity);
+        }
+    }
+
+    private applyContextSnapshotFailure(error: unknown, identity?: ContextSnapshotIdentity): void {
+        const diagnostic = error instanceof Error ? error.message : String(error);
+        if (
+            this.contextSnapshot &&
+            (identity == null || snapshotIdentityKey(this.contextSnapshot.identity) === snapshotIdentityKey(identity))
+        ) {
+            this.contextSnapshot = markContextSnapshotLifecycle(this.contextSnapshot, "out_of_date", diagnostic);
+        } else if (identity) {
+            const model = this.host.harness.getModel();
+            this.contextSnapshotRevision += 1;
+            this.contextSnapshot = buildContextSnapshot({
+                identity: { ...identity, revision: this.contextSnapshotRevision },
+                generatedAt: new Date().toISOString(),
+                lifecycle: "unavailable",
+                accuracy: "unavailable",
+                modelLabel: model.name ?? model.id,
+                contextWindow: model.contextWindow,
+                outputReserve: Math.max(0, model.maxTokens ?? 0),
+                items: [],
+                diagnostic,
+            });
+        } else {
+            this.contextSnapshot = undefined;
+        }
+        this.emitSessionState();
+    }
+
+    private clearContextSnapshot(): void {
+        this.contextRefreshGeneration += 1;
+        if (!this.contextSnapshot) return;
+        this.contextSnapshot = undefined;
+        this.emitSessionState();
     }
 
     async createTurnPreparationSnapshot(
@@ -333,6 +547,25 @@ export class AgentSessionRuntime {
             case "turn_start":
                 this.status = "streaming";
                 this.errorMessage = undefined;
+                if (this.contextSnapshot) {
+                    this.contextSnapshot = markContextSnapshotLifecycle(this.contextSnapshot, "in_use");
+                }
+                return;
+            case "tool_execution_start":
+                if (this.contextSnapshot) {
+                    this.contextSnapshot = markContextSnapshotLifecycle(
+                        this.contextSnapshot,
+                        "waiting_for_tool",
+                        `Waiting for ${event.toolName}`
+                    );
+                    this.emitSessionState();
+                }
+                return;
+            case "tool_execution_end":
+                if (this.contextSnapshot) {
+                    this.contextSnapshot = markContextSnapshotLifecycle(this.contextSnapshot, "in_use");
+                    this.emitSessionState();
+                }
                 return;
             case "message_start": {
                 const message = (event as { message?: AgentMessage }).message;
@@ -380,6 +613,7 @@ export class AgentSessionRuntime {
                 // tombstones left by a terminal path can no longer match a
                 // late event and must not accumulate across runs.
                 this.ignoredCommittedEntryIds.clear();
+                void this.refreshContextSnapshot("run settled");
                 return;
             }
             case "queue_update": {
@@ -412,6 +646,7 @@ export class AgentSessionRuntime {
                 // emitting this event, so no user message event from that run
                 // can arrive after this lifecycle boundary.
                 this.ignoredCommittedEntryIds.clear();
+                void this.refreshContextSnapshot("run aborted");
                 return;
             }
             default:
@@ -429,6 +664,7 @@ export class AgentSessionRuntime {
             errorMessage: this.errorMessage,
             contextReports: this.contextReports,
             commands: this.ptyHost.snapshots(),
+            contextSnapshot: this.contextSnapshot,
         };
     }
 
@@ -497,6 +733,7 @@ export class AgentSessionRuntime {
             return {};
         }
         await this.rebuildFromCurrentBranch();
+        await this.refreshContextSnapshot("branch changed");
         this.emitSessionState();
         return { editorText: result.editorText };
     }
@@ -504,6 +741,7 @@ export class AgentSessionRuntime {
     async compact(customInstructions?: string): Promise<void> {
         await this.host.harness.compact(customInstructions);
         await this.rebuildFromCurrentBranch();
+        await this.refreshContextSnapshot("session compacted");
         this.emitSessionState();
     }
 
@@ -512,6 +750,7 @@ export class AgentSessionRuntime {
     }
 
     async dispose(): Promise<void> {
+        this.host.setProviderContextObserver?.(undefined, undefined);
         this.unsubscribeHarness();
         this.listeners.clear();
         // Reject any send() promises still awaiting a userEntryId — the
@@ -806,6 +1045,7 @@ export class AgentSessionRuntime {
             followUp: this.followUpQueue,
             contextReports: this.contextReports,
             commands: this.ptyHost.snapshots(),
+            contextSnapshot: this.contextSnapshot,
         };
         for (const listener of this.listeners) {
             try {

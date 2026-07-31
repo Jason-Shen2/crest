@@ -26,6 +26,7 @@ import type {
 	AbortResult,
 	AgentHarnessEvent,
 	AgentHarnessEventResultMap,
+	AgentHarnessContextInspection,
 	AgentHarnessFollowUpOptions,
 	AgentHarnessOptions,
 	AgentHarnessOwnEvent,
@@ -289,6 +290,14 @@ export class AgentHarness<
 		this.activeToolNames = options.activeToolNames ?? (options.tools ?? []).map((tool) => tool.name);
 		this.steeringQueueMode = options.steeringMode ?? "one-at-a-time";
 		this.followUpQueueMode = options.followUpMode ?? "one-at-a-time";
+	}
+
+	setProviderContextObserver(
+		observer?: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>["observeProviderContext"],
+		onError?: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>["onProviderContextObservationError"],
+	): void {
+		this.observeProviderContext = observer;
+		this.onProviderContextObservationError = onError;
 	}
 
 	private getHandlers(type: string): Set<AgentHarnessHandler> | undefined {
@@ -571,6 +580,28 @@ export class AgentHarness<
 				return result?.messages ?? contextMessages;
 			},
 			transformProviderPayload: async (payload) => await this.emitBeforeProviderPayload(this.model, payload),
+		};
+	}
+
+	async inspectCurrentContext(): Promise<AgentHarnessContextInspection> {
+		const turnState = await this.createTurnState();
+		const result = await this.emitHook({ type: "context", messages: [...turnState.messages] });
+		const messages = result?.messages ?? turnState.messages;
+		return {
+			model: turnState.model,
+			sessionId: turnState.sessionId,
+			leafId: turnState.leafId,
+			systemPrompt: turnState.systemPrompt,
+			systemPromptMetadata: turnState.systemPromptMetadata,
+			messages: [...messages],
+			messageEntryIds: alignMessageEntryIds(
+				turnState.messages,
+				turnState.messageEntryIds,
+				messages,
+				this.messageEntryIds,
+			),
+			entries: [...turnState.entries],
+			activeTools: [...turnState.activeTools],
 		};
 	}
 
