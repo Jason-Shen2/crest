@@ -483,20 +483,20 @@ git commit -m "feat: render context source inventory"
 - Modify: `frontend/app/workspace/workspace-app.test.tsx`
 - Modify: `frontend/app/agent/context-inspector/context-inspector.test.tsx`
 
-- [ ] Add an integration fixture that opens a new Agent with a selected model and verifies instructions/tools appear before the first prompt without creating a session.
-- [ ] Add a two-turn fixture and verify Conversation updates after each completed turn.
-- [ ] Add a tool-loop fixture and verify `waiting_for_tool`, one completed tool result, and the subsequent `in_use` snapshot.
-- [ ] Add compact and branch-navigation fixtures and verify replaced turns disappear and stale inventory never crosses leaf identity.
-- [ ] Add model-switch and session-switch fixtures and verify the prior snapshot clears before the replacement arrives.
-- [ ] Add counter rejection and snapshot-builder rejection fixtures and verify send, tool execution, persistence, and final assistant rendering still complete.
-- [ ] Run:
+- [x] Add an integration fixture that opens a new Agent with a selected model and verifies instructions/tools appear before the first prompt without creating a session.
+- [x] Add a two-turn fixture and verify Conversation updates after each completed turn.
+- [x] Add a tool-loop fixture and verify `waiting_for_tool`, one completed tool result, and the subsequent `in_use` snapshot.
+- [x] Add compact and branch-navigation fixtures and verify replaced turns disappear and stale inventory never crosses leaf identity.
+- [x] Add model-switch and session-switch fixtures and verify the prior snapshot clears before the replacement arrives.
+- [x] Add counter rejection and snapshot-builder rejection fixtures and verify send, tool execution, persistence, and final assistant rendering still complete.
+- [x] Run:
 
 ```bash
 npx vitest run packages/coding-agent/agent-session-runtime.test.ts emain/agent-ipc.test.ts frontend/app/store/use-pi-chat.test.tsx frontend/app/agent/agent-content.test.tsx frontend/app/workspace/workspace-app.test.tsx frontend/app/agent/context-inspector/context-inspector.test.tsx
 ```
 
-- [ ] Expect all integration tests to pass with no unhandled promise rejections.
-- [ ] Commit:
+- [x] Expect all integration tests to pass with no unhandled promise rejections.
+- [x] Commit:
 
 ```bash
 git add packages/coding-agent/agent-session-runtime.test.ts emain/agent-ipc.test.ts frontend/app/store/use-pi-chat.test.tsx frontend/app/agent/agent-content.test.tsx frontend/app/workspace/workspace-app.test.tsx frontend/app/agent/context-inspector/context-inspector.test.tsx
@@ -511,26 +511,26 @@ git commit -m "test: cover context inspector lifecycle"
 - Modify: `docs/agent-runtime-architecture.md`
 - Modify: `docs/superpowers/plans/2026-08-01-context-inspector.md`
 
-- [ ] Update the runtime architecture with the preview path, provider observation boundary, runtime ownership, session-state transport, and renderer identity rejection.
-- [ ] Check the implementation against every acceptance criterion in the design spec and mark this plan's completed checkboxes as tasks finish.
-- [ ] Scan for forbidden placeholders and accidental mutation UI:
+- [x] Update the runtime architecture with the preview path, provider observation boundary, runtime ownership, session-state transport, and renderer identity rejection.
+- [x] Check the implementation against every acceptance criterion in the design spec and mark this plan's completed checkboxes as tasks finish.
+- [x] Scan for forbidden placeholders and accidental mutation UI:
 
 ```bash
 rg -n "TODO|TBD|placeholder|exclude|restore|delete context|edit context" packages/coding-agent/context frontend/app/agent/context-inspector frontend/app/agent/assistant-ui emain/agent-ipc.ts
 ```
 
-- [ ] Review every hit. Existing unrelated comments may remain; new Context Inspector code must contain no placeholder behavior or context mutation controls.
-- [ ] Run focused Context Inspector coverage:
+- [x] Review every hit. Existing unrelated comments may remain; new Context Inspector code contains no placeholder behavior or context mutation controls.
+- [x] Run focused Context Inspector coverage:
 
 ```bash
 npx vitest run packages/coding-agent/context/inspector.test.ts packages/coding-agent/build-system-prompt.test.ts packages/agent/harness/agent-harness.test.ts packages/coding-agent/agent-session-runtime.test.ts emain/agent-ipc.test.ts frontend/app/store/use-pi-chat.test.tsx frontend/app/workspace/right-tool-panel-state.test.ts frontend/app/agent/assistant-ui/context-display.test.tsx frontend/app/agent/context-inspector/context-inspector.test.tsx frontend/app/agent/context-inspector/context-inventory.test.tsx
 ```
 
-- [ ] Run the full test suite with `npm test -- --run` and expect exit code 0.
-- [ ] Run the production type/build check with `npm run build:prod` and expect exit code 0.
+- [ ] Run the full test suite with `npm test -- --run` and expect exit code 0. Attempted on 2026-08-01: 2400 tests passed; remaining failures are existing Electron/module fixture failures and tests that require localhost listening, which the managed sandbox rejects with `EPERM`.
+- [x] Run the production type/build check with `npm run build:prod` and expect exit code 0.
 - [ ] Manually verify in the desktop app: no-session preview, first send, normal second turn, tool call pending/completed, model switch, session switch, compact, narrow panel, and keyboard-only disclosure.
-- [ ] Confirm the ring and panel show identical numerator, denominator, lifecycle, and accuracy.
-- [ ] Commit documentation and any verification-only test corrections:
+- [x] Confirm the ring and panel show identical numerator, denominator, lifecycle, and accuracy.
+- [x] Commit documentation and any verification-only test corrections:
 
 ```bash
 git add docs/superpowers/specs/2026-08-01-context-inspector-design.md docs/agent-runtime-architecture.md docs/superpowers/plans/2026-08-01-context-inspector.md
@@ -539,15 +539,15 @@ git commit -m "docs: finalize context inspector architecture"
 
 ## Completion checklist
 
-- [ ] The Context tab is read-only and opens from the context ring.
-- [ ] Ring usage is effective input divided by model window minus output reserve.
-- [ ] A no-session Agent shows instructions and tools before the first prompt.
-- [ ] The panel inventories Agent instructions, Tools, Conversation, and Added context in fixed order.
-- [ ] Conversation uses complete turns, paired tool activity, and effective compact summaries.
-- [ ] Added context remains semantically Added context across provider rendering.
-- [ ] Exact, estimated, waiting, updating, out-of-date, and unavailable states are distinguishable.
-- [ ] Request overhead and attribution discrepancy are explicit; category counts are never silently rescaled.
-- [ ] Session, leaf, model, and revision identity prevent stale cross-session display.
-- [ ] Inspector failures never block Agent execution.
-- [ ] Long Conversation inventories virtualize rows without changing totals.
+- [x] The Context tab is read-only and opens from the context ring.
+- [x] Ring usage is effective input divided by model window minus output reserve.
+- [x] A no-session Agent shows instructions and tools before the first prompt.
+- [x] The panel inventories Agent instructions, Tools, Conversation, and Added context in fixed order.
+- [x] Conversation uses complete turns, paired tool activity, and effective compact summaries.
+- [x] Added context remains semantically Added context across provider rendering.
+- [x] Exact, estimated, waiting, updating, out-of-date, and unavailable states are distinguishable.
+- [x] Request overhead and attribution discrepancy are explicit; category counts are never silently rescaled.
+- [x] Session, leaf, model, and revision identity prevent stale cross-session display.
+- [x] Inspector failures never block Agent execution.
+- [x] Long Conversation inventories virtualize rows without changing totals.
 - [ ] All targeted tests, full tests, and production build pass.

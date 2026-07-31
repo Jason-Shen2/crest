@@ -93,10 +93,9 @@ export interface AgentSessionRuntimeState {
     contextSnapshot?: AgentContextSnapshot;
 }
 
-export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
 export type AgentTurnFinishedHook = (turn: AgentTurn) => void | Promise<void>;
 
-interface AgentSessionRuntimeStateEvent {
+export interface AgentSessionRuntimeStateEvent {
     type: "session_state";
     messages: AgentMessage[];
     turns: AgentTurn[];
@@ -107,6 +106,9 @@ interface AgentSessionRuntimeStateEvent {
     commands: AgentPtySnapshot[];
     contextSnapshot?: AgentContextSnapshot;
 }
+
+export type AgentSessionRuntimeEvent = AgentHarnessEvent | AgentSessionRuntimeStateEvent;
+export type AgentSessionRuntimeListener = (event: AgentSessionRuntimeEvent) => void;
 
 export interface AgentSessionRuntimeOptions {
     onTurnFinished?: AgentTurnFinishedHook;
@@ -1049,7 +1051,7 @@ export class AgentSessionRuntime {
         };
         for (const listener of this.listeners) {
             try {
-                listener(event as unknown as AgentHarnessEvent);
+                listener(event);
             } catch (err) {
                 console.error(`[agent-session] listener error for ${this.path}:`, err);
             }

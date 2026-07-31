@@ -1,6 +1,8 @@
 # Context Inspector Design
 
-**Status:** Approved for implementation
+**Status:** Implemented in `codex/context-inspector`
+
+The implementation follows this design without changing its product boundary: the first release is read-only, runtime-owned, and represents the next effective model input rather than cumulative usage or the durable transcript.
 
 ## Goal
 
