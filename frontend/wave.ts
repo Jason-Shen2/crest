@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import "./renderer-styles";
+import { initAIUserConfig } from "@/app/store/ai-user-config";
 import { GlobalModel } from "@/app/store/global-model";
 import { WshClient } from "@/app/store/wshclient";
 import { RpcApi } from "@/app/store/wshclientapi";
@@ -21,6 +21,7 @@ import { loadFonts } from "@/util/fontutil";
 import { setKeyUtilPlatform } from "@/util/keyutil";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import "./renderer-styles";
 
 const Platform = getApi().getPlatform();
 const WorkspaceInit = new WorkspaceInitCoordinator();
@@ -128,6 +129,7 @@ async function initializeCurrentWorkspace(initOpts: WorkspaceInitOpts, isCurrent
         return;
     }
     globalStore.set(atoms.fullConfigAtom, fullConfig);
+    initAIUserConfig();
     ThemeModel.getInstance().initialize();
     document.title = workspace.name ? `Wave Terminal - ${workspace.name}` : "Wave Terminal";
 
