@@ -48,6 +48,10 @@ export class AgentRuntimeClient {
         return getAgentApi(this).getSessionState(this.identity, sessionMetadata) as Promise<PiAgentEvent>;
     }
 
+    inspectContext(options: AgentInspectContextOptions): Promise<AgentInspectContextResult> {
+        return getAgentApi(this).inspectContext(this.identity, options);
+    }
+
     listTree(sessionMetadata: AgentSessionMeta) {
         return getAgentApi(this).listTree(this.identity, sessionMetadata);
     }

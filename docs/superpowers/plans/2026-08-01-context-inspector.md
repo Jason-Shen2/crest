@@ -306,9 +306,9 @@ git commit -m "feat: maintain live context snapshots"
 - Modify: `frontend/app/agent/agent-runtime-client.ts`
 - Modify: `frontend/app/agent/agent-runtime-client.test.ts`
 
-- [ ] Add failing IPC tests for an empty pre-session preview, an existing persisted session, a live runtime, workspace authorization failure, model change, branch change, and unavailable counting.
-- [ ] Run `npx vitest run emain/agent-ipc.test.ts frontend/app/agent/agent-runtime-client.test.ts` and verify the new cases fail.
-- [ ] Add renderer boundary inputs that reuse the send configuration without message content:
+- [x] Add failing IPC and runtime tests for an empty pre-session preview, an existing persisted session, live runtime state, workspace authorization failure, model/branch identity changes, and unavailable counting.
+- [x] Run `npx vitest run emain/agent-ipc.test.ts frontend/app/agent/agent-runtime-client.test.ts` and verify the new cases fail.
+- [x] Add renderer boundary inputs that reuse the send configuration without message content:
 
 ```ts
 type AgentInspectContextOptions = Omit<AgentSendOptions, "text" | "images" | "contextAttachments"> & {
@@ -320,14 +320,14 @@ type AgentInspectContextResult = {
 };
 ```
 
-- [ ] Add `ElectronApi.agent.inspectContext`, preload channel `agent:inspect-context`, and the preview stub required by the Electron API guide.
-- [ ] Authenticate the workspace and validate the execution context exactly as `agent:send` does.
-- [ ] For an existing session, acquire or create its runtime, synchronize model/resources, call `refreshContextSnapshot`, and return the matching immutable snapshot.
-- [ ] For no session, build a stateless base preview from current prompt inputs, resource manager snapshot, default tool definitions, and selected model. Do not mint or persist a session.
-- [ ] Extend session-state payloads and live event fan-out with `contextSnapshot`.
-- [ ] Add `AgentRuntimeClient.inspectContext(options)` and type it as `Promise<AgentInspectContextResult>`.
-- [ ] Run the targeted tests and expect all to pass.
-- [ ] Commit:
+- [x] Add `ElectronApi.agent.inspectContext`, preload channel `agent:inspect-context`, and the preview stub required by the Electron API guide.
+- [x] Authenticate the workspace and validate the execution context exactly as `agent:send` does.
+- [x] For an existing session, acquire or create its runtime, synchronize model/resources, call `refreshContextSnapshot`, and return the matching immutable snapshot.
+- [x] For no session, build a stateless base preview from current prompt inputs, resource manager snapshot, default tool definitions, and selected model. Do not mint or persist a session.
+- [x] Extend session-state payloads and live event fan-out with `contextSnapshot`.
+- [x] Add `AgentRuntimeClient.inspectContext(options)` and type it as `Promise<AgentInspectContextResult>`.
+- [x] Run the targeted tests and expect all to pass.
+- [x] Commit:
 
 ```bash
 git add frontend/types/custom.d.ts emain/preload.ts emain/agent-ipc.ts emain/agent-ipc.test.ts frontend/preview/mock/preview-electron-api.ts frontend/app/agent/agent-runtime-client.ts frontend/app/agent/agent-runtime-client.test.ts

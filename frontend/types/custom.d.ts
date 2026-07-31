@@ -289,6 +289,10 @@ declare global {
                 context: WorkspaceAgentRequestContext,
                 sessionMetadata: AgentSessionMeta
             ) => Promise<unknown>; // agent:get-session-state
+            inspectContext: (
+                context: WorkspaceAgentRequestContext,
+                options: AgentInspectContextOptions
+            ) => Promise<AgentInspectContextResult>; // agent:inspect-context
             listTree: (
                 context: WorkspaceAgentRequestContext,
                 sessionMetadata: AgentSessionMeta
@@ -673,6 +677,67 @@ declare global {
         /** Ordered composer references. Main validates ownership and representation. */
         contextAttachments?: AgentContextAttachmentDraftInput[];
     };
+
+    type AgentInspectContextOptions = Omit<AgentSendOptions, "text" | "images" | "contextAttachments"> & {
+        sessionMetadata?: AgentSessionMeta;
+    };
+
+    type AgentContextSnapshotLifecycleView =
+        | "ready"
+        | "in_use"
+        | "waiting_for_tool"
+        | "updating"
+        | "out_of_date"
+        | "unavailable";
+    type AgentContextSnapshotAccuracyView = "exact" | "estimated" | "unavailable";
+    type AgentContextSnapshotCategoryView = "agent_instructions" | "tools" | "conversation" | "added_context";
+    type AgentContextSnapshotItemView = {
+        id: string;
+        category: AgentContextSnapshotCategoryView;
+        kind: string;
+        title: string;
+        preview: string;
+        tokens?: number;
+        tokenAccuracy: "estimated" | "unavailable";
+        source: {
+            entryIds?: string[];
+            path?: string;
+            skillName?: string;
+            toolName?: string;
+            toolCallId?: string;
+            pairedResultEntryId?: string;
+            coveredEntryIds?: string[];
+            attachmentEntryId?: string;
+            artifactEntryId?: string;
+        };
+        children?: AgentContextSnapshotItemView[];
+        diagnostic?: string;
+    };
+    type AgentContextSnapshotView = {
+        schemaVersion: 1;
+        identity: {
+            sessionPath?: string;
+            sessionId?: string;
+            leafId: string | null;
+            modelKey: string;
+            revision: number;
+        };
+        generatedAt: string;
+        lifecycle: AgentContextSnapshotLifecycleView;
+        accuracy: AgentContextSnapshotAccuracyView;
+        modelLabel: string;
+        contextWindow: number;
+        outputReserve: number;
+        inputCapacity: number;
+        effectiveInputTokens?: number;
+        remainingInputTokens?: number;
+        requestOverheadTokens?: number;
+        attributionDeltaTokens?: number;
+        categories: Array<{ category: AgentContextSnapshotCategoryView; tokens?: number; itemCount: number }>;
+        items: AgentContextSnapshotItemView[];
+        diagnostic?: string;
+    };
+    type AgentInspectContextResult = { snapshot: AgentContextSnapshotView };
 
     type AgentCommandSource = "builtin" | "skill" | "prompt";
 

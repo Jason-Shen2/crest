@@ -97,6 +97,7 @@ const previewElectronApi: ElectronApi = {
                 steer: [],
                 followUp: [],
             }),
+        inspectContext: () => Promise.reject(new Error("agent not available in preview env")),
         listTree: () => Promise.resolve({ entries: [], leafId: null }),
         listForkPoints: () => Promise.resolve([]),
         navigateTree: () => Promise.reject(new Error("agent not available in preview env")),
