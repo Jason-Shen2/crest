@@ -1,6 +1,6 @@
 # Context Inspector Design
 
-**Status:** Design approved; written-spec review pending
+**Status:** Approved for implementation
 
 ## Goal
 
