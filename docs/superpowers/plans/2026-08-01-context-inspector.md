@@ -159,10 +159,11 @@ git commit -m "feat: define agent context snapshots"
 - Modify: `packages/agent/harness/types.ts`
 - Modify: `packages/agent/harness/agent-harness.ts`
 - Modify: `packages/agent/harness/agent-harness.test.ts`
+- Modify: `packages/agent/harness/system-prompt.ts`
 
-- [ ] Add failing prompt tests for separate base prompt, runtime guidance, each project file, each skill, custom/append prompt content, and deterministic source IDs.
-- [ ] Run `npx vitest run packages/coding-agent/build-system-prompt.test.ts packages/coding-agent/harness-factory.test.ts` and verify the manifest assertions fail.
-- [ ] Add this focused prompt return type:
+- [x] Add failing prompt tests for separate base prompt, runtime guidance, each project file, each skill, custom/append prompt content, and deterministic source IDs.
+- [x] Run `npx vitest run packages/coding-agent/build-system-prompt.test.ts packages/coding-agent/harness-factory.test.ts` and verify the manifest assertions fail.
+- [x] Add this focused prompt return type:
 
 ```ts
 export interface SystemPromptSegment {
@@ -180,16 +181,16 @@ export interface SystemPromptManifest {
 }
 ```
 
-- [ ] Implement `buildSystemPromptManifest(inputs)` by assembling the final text from the same segment strings used for provenance; retain `buildSystemPrompt(inputs)` as `return buildSystemPromptManifest(inputs).text`.
-- [ ] Add `AgentHarnessSystemPrompt { text: string; metadata?: unknown }` to the harness contract and allow the system-prompt callback to return either a string or that object.
-- [ ] Normalize both forms in `AgentHarness.createTurnState`; carry `systemPromptMetadata` in turn state while continuing to pass only `text` to the model.
-- [ ] Make `harness-factory.ts` return `{ text: manifest.text, metadata: manifest }` from the callback.
-- [ ] Add a harness regression test proving string callbacks still work and structured callbacks retain metadata without changing the provider-visible prompt.
-- [ ] Run `npx vitest run packages/coding-agent/build-system-prompt.test.ts packages/coding-agent/harness-factory.test.ts packages/agent/harness/agent-harness.test.ts` and expect all tests to pass.
+- [x] Implement `buildSystemPromptManifest(inputs)` by assembling the final text from the same segment strings used for provenance; retain `buildSystemPrompt(inputs)` as `return buildSystemPromptManifest(inputs).text`.
+- [x] Add `AgentHarnessSystemPrompt { text: string; metadata?: unknown }` to the harness contract and allow the system-prompt callback to return either a string or that object.
+- [x] Normalize both forms in `AgentHarness.createTurnState`; carry `systemPromptMetadata` in turn state while continuing to pass only `text` to the model.
+- [x] Make `harness-factory.ts` return `{ text: manifest.text, metadata: manifest }` from the callback.
+- [x] Add a harness regression test proving string callbacks still work and structured callbacks retain metadata without changing the provider-visible prompt.
+- [x] Run `npx vitest run packages/coding-agent/build-system-prompt.test.ts packages/coding-agent/harness-factory.test.ts packages/agent/harness/agent-harness.test.ts` and expect all tests to pass.
 - [ ] Commit:
 
 ```bash
-git add packages/coding-agent/build-system-prompt.ts packages/coding-agent/build-system-prompt.test.ts packages/coding-agent/harness-factory.ts packages/coding-agent/harness-factory.test.ts packages/agent/harness/types.ts packages/agent/harness/agent-harness.ts packages/agent/harness/agent-harness.test.ts
+git add packages/coding-agent/build-system-prompt.ts packages/coding-agent/build-system-prompt.test.ts packages/coding-agent/harness-factory.ts packages/coding-agent/harness-factory.test.ts packages/agent/harness/types.ts packages/agent/harness/agent-harness.ts packages/agent/harness/agent-harness.test.ts packages/agent/harness/system-prompt.ts
 git commit -m "feat: preserve system prompt provenance"
 ```
 

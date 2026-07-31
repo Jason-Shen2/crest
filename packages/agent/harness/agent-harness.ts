@@ -175,6 +175,7 @@ interface AgentHarnessTurnState<
 	streamOptions: AgentHarnessStreamOptions;
 	sessionId: string;
 	systemPrompt: string;
+	systemPromptMetadata?: unknown;
 	model: Model<any>;
 	thinkingLevel: ThinkingLevel;
 	tools: TTool[];
@@ -346,6 +347,7 @@ export class AgentHarness<
 		return await prepare({
 			userMessage,
 			systemPrompt: turnState.systemPrompt,
+			systemPromptMetadata: turnState.systemPromptMetadata,
 			messages: turnState.messages.slice(),
 			model: turnState.model,
 			activeTools: turnState.activeTools.slice(),
@@ -438,10 +440,11 @@ export class AgentHarness<
 			.map((name) => this.tools.get(name))
 			.filter((tool): tool is TTool => tool !== undefined);
 		let systemPrompt = "You are a helpful assistant.";
+		let systemPromptMetadata: unknown;
 		if (typeof this.systemPrompt === "string") {
 			systemPrompt = this.systemPrompt;
 		} else if (this.systemPrompt) {
-			systemPrompt = await this.systemPrompt({
+			const result = await this.systemPrompt({
 				env: this.env,
 				session: this.session,
 				model: this.model,
@@ -449,6 +452,12 @@ export class AgentHarness<
 				activeTools,
 				resources,
 			});
+			if (typeof result === "string") {
+				systemPrompt = result;
+			} else {
+				systemPrompt = result.text;
+				systemPromptMetadata = result.metadata;
+			}
 		}
 		return {
 			messages: context.messages,
@@ -456,6 +465,7 @@ export class AgentHarness<
 			streamOptions: cloneStreamOptions(this.streamOptions),
 			sessionId: sessionMetadata.id,
 			systemPrompt,
+			systemPromptMetadata,
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
 			tools,
@@ -488,6 +498,7 @@ export class AgentHarness<
 		return {
 			userMessage,
 			systemPrompt,
+			systemPromptMetadata: beforeResult?.systemPrompt == null ? turnState.systemPromptMetadata : undefined,
 			messages: [...turnState.messages, ...messages],
 			model: this.model,
 			activeTools,
@@ -867,6 +878,7 @@ export class AgentHarness<
 			resources: this.getResources(),
 			streamOptions: cloneStreamOptions(this.streamOptions),
 			systemPrompt: beforeResult?.systemPrompt ?? turnState.systemPrompt,
+			systemPromptMetadata: beforeResult?.systemPrompt == null ? turnState.systemPromptMetadata : undefined,
 			model: this.model,
 			thinkingLevel: this.thinkingLevel,
 			tools: currentTools,

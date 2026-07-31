@@ -14,7 +14,7 @@
 // (crest is not the pi CLI). crest's pane state (git branch / remote
 // connection / recent commands) is appended as an extra section.
 
-import { formatSkillsForSystemPrompt } from "@crest/agent/harness/system-prompt";
+import { formatSkillForSystemPrompt, formatSkillsForSystemPrompt } from "@crest/agent/harness/system-prompt";
 import type { Skill } from "@crest/agent/harness/types";
 
 export interface SystemPromptInputs {
@@ -42,6 +42,20 @@ export interface SystemPromptInputs {
     skills?: Skill[];
 }
 
+export interface SystemPromptSegment {
+    id: string;
+    kind: "base_prompt" | "runtime_guidance" | "project_instruction" | "skill";
+    title: string;
+    text: string;
+    path?: string;
+    skillName?: string;
+}
+
+export interface SystemPromptManifest {
+    text: string;
+    segments: SystemPromptSegment[];
+}
+
 /** Render crest's pane-state section (git branch / connection / recent commands). */
 function buildPaneContextSection(inputs: SystemPromptInputs): string {
     const lines: string[] = [];
@@ -57,7 +71,7 @@ function buildPaneContextSection(inputs: SystemPromptInputs): string {
 }
 
 /** Build the system prompt with tools, guidelines, project context, skills, and pane state. */
-export function buildSystemPrompt(inputs: SystemPromptInputs): string {
+function buildSystemPromptText(inputs: SystemPromptInputs): string {
     const {
         customPrompt,
         selectedTools,
@@ -158,4 +172,91 @@ ${guidelines}`;
     prompt += `\nCurrent working directory: ${promptCwd}`;
 
     return prompt;
+}
+
+function environmentSegment(inputs: SystemPromptInputs): SystemPromptSegment {
+    const now = new Date();
+    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    return {
+        id: "runtime:environment",
+        kind: "runtime_guidance",
+        title: "Runtime environment",
+        text: `\nCurrent date: ${date}\nCurrent working directory: ${inputs.cwd.replace(/\\/g, "/")}`,
+    };
+}
+
+function buildProjectSegments(contextFiles: Array<{ path: string; content: string }>): SystemPromptSegment[] {
+    return contextFiles.map(({ path, content }, index) => ({
+        id: `project:${path}`,
+        kind: "project_instruction",
+        title: path,
+        text: `${
+            index === 0 ? "\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n" : ""
+        }<project_instructions path="${path}">\n${content}\n</project_instructions>\n\n${
+            index === contextFiles.length - 1 ? "</project_context>\n" : ""
+        }`,
+        path,
+    }));
+}
+
+function buildSkillSegments(skills: Skill[]): SystemPromptSegment[] {
+    const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
+    if (visibleSkills.length === 0) return [];
+    const fullBlock = formatSkillsForSystemPrompt(visibleSkills);
+    const firstEntry = formatSkillForSystemPrompt(visibleSkills[0]!);
+    const intro = fullBlock.slice(0, fullBlock.indexOf(firstEntry));
+    return visibleSkills.map((skill, index) => ({
+        id: `skill:${skill.filePath}`,
+        kind: "skill",
+        title: skill.name,
+        text: `${index === 0 ? intro : ""}${formatSkillForSystemPrompt(skill)}${
+            index === visibleSkills.length - 1 ? "\n</available_skills>" : "\n"
+        }`,
+        path: skill.filePath,
+        skillName: skill.name,
+    }));
+}
+
+export function buildSystemPromptManifest(inputs: SystemPromptInputs): SystemPromptManifest {
+    const text = buildSystemPromptText(inputs);
+    const environment = environmentSegment(inputs);
+    const baseText = buildSystemPromptText({
+        ...inputs,
+        gitBranch: undefined,
+        connection: undefined,
+        recentCmds: undefined,
+        appendSystemPrompt: undefined,
+        contextFiles: [],
+        skills: [],
+    }).slice(0, -environment.text.length);
+    const segments: SystemPromptSegment[] = [
+        {
+            id: inputs.customPrompt ? "agent:custom" : "agent:base",
+            kind: "base_prompt",
+            title: inputs.customPrompt ? "Custom instructions" : "Crest base instructions",
+            text: baseText,
+        },
+    ];
+    if (inputs.appendSystemPrompt) {
+        segments.push({
+            id: "agent:append",
+            kind: "base_prompt",
+            title: "Appended instructions",
+            text: `\n\n${inputs.appendSystemPrompt}`,
+        });
+    }
+    const pane = buildPaneContextSection(inputs);
+    if (pane) {
+        segments.push({ id: "runtime:pane", kind: "runtime_guidance", title: "Pane context", text: pane });
+    }
+    segments.push(...buildProjectSegments(inputs.contextFiles ?? []));
+    const tools = inputs.selectedTools ?? ["read", "bash", "edit", "write"];
+    if (tools.includes("read")) segments.push(...buildSkillSegments(inputs.skills ?? []));
+    segments.push(environment);
+    return { text, segments };
+}
+
+/** Build the provider-visible system prompt. */
+export function buildSystemPrompt(inputs: SystemPromptInputs): string {
+    return buildSystemPromptManifest(inputs).text;
 }

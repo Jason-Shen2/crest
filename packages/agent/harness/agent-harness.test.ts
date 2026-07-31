@@ -130,6 +130,49 @@ describe("AgentHarness — promptReturningEntryId", () => {
     });
 });
 
+describe("AgentHarness — structured system prompt", () => {
+    afterEach(() => {
+        resetApiProviders();
+    });
+
+    it("retains prompt metadata while exposing only text to turn preparation", async () => {
+        registerFakeProvider();
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+            systemPrompt: () => ({
+                text: "structured prompt",
+                metadata: { source: "manifest" },
+            }),
+        });
+
+        const snapshot = await harness.createTurnPreparationSnapshot("hello");
+
+        expect(snapshot.systemPrompt).toBe("structured prompt");
+        expect(snapshot.systemPromptMetadata).toEqual({ source: "manifest" });
+    });
+
+    it("keeps string prompt callbacks compatible", async () => {
+        registerFakeProvider();
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+            systemPrompt: () => "plain prompt",
+        });
+
+        const snapshot = await harness.createTurnPreparationSnapshot("hello");
+
+        expect(snapshot.systemPrompt).toBe("plain prompt");
+        expect(snapshot.systemPromptMetadata).toBeUndefined();
+    });
+});
+
 describe("AgentHarness — lifecycle state", () => {
     afterEach(() => {
         resetApiProviders();

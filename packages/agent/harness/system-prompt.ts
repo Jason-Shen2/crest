@@ -12,16 +12,20 @@ export function formatSkillsForSystemPrompt(skills: Skill[]): string {
 		"<available_skills>",
 	];
 
-	for (const skill of visibleSkills) {
-		lines.push("  <skill>");
-		lines.push(`    <name>${escapeXml(skill.name)}</name>`);
-		lines.push(`    <description>${escapeXml(skill.description)}</description>`);
-		lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
-		lines.push("  </skill>");
-	}
+	for (const skill of visibleSkills) lines.push(formatSkillForSystemPrompt(skill));
 
 	lines.push("</available_skills>");
 	return lines.join("\n");
+}
+
+export function formatSkillForSystemPrompt(skill: Skill): string {
+	return [
+		"  <skill>",
+		`    <name>${escapeXml(skill.name)}</name>`,
+		`    <description>${escapeXml(skill.description)}</description>`,
+		`    <location>${escapeXml(skill.filePath)}</location>`,
+		"  </skill>",
+	].join("\n");
 }
 
 function escapeXml(value: string): string {

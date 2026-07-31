@@ -25,6 +25,26 @@ function fakeModel(): Model<any> {
 }
 
 describe("AgentHarnessHost", () => {
+    it("exposes the generated system-prompt manifest on preparation snapshots", async () => {
+        const session = await new InMemorySessionRepo().create({});
+        const host = buildAgentHarnessHost({
+            session,
+            model: fakeModel(),
+            promptInputs: { cwd: "/first" },
+            contextFiles: [{ path: "/first/AGENTS.md", content: "Project rule" }],
+        });
+
+        const snapshot = await host.harness.createTurnPreparationSnapshot("hello");
+
+        expect(snapshot.systemPrompt).toContain("Project rule");
+        expect(snapshot.systemPromptMetadata).toMatchObject({
+            text: snapshot.systemPrompt,
+            segments: expect.arrayContaining([
+                expect.objectContaining({ id: "project:/first/AGENTS.md", kind: "project_instruction" }),
+            ]),
+        });
+    });
+
     it("threads the session-context transformer into the harness", async () => {
         const session = await new InMemorySessionRepo().create({});
         const transformSessionContext = vi.fn(async ({ context }) => context);

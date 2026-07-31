@@ -816,6 +816,7 @@ export interface AgentHarnessPromptOptions {
 export interface AgentHarnessTurnPreparationInput {
 	userMessage: UserMessage;
 	systemPrompt: string;
+	systemPromptMetadata?: unknown;
 	messages: AgentMessage[];
 	model: Model<Api>;
 	activeTools: AgentTool[];
@@ -920,6 +921,11 @@ export interface BranchSummaryResult {
 	modifiedFiles: string[];
 }
 
+export interface AgentHarnessSystemPrompt {
+	text: string;
+	metadata?: unknown;
+}
+
 export interface AgentHarnessOptions<
 	TSkill extends Skill = Skill,
 	TPromptTemplate extends PromptTemplate = PromptTemplate,
@@ -942,7 +948,7 @@ export interface AgentHarnessOptions<
 				thinkingLevel: ThinkingLevel;
 				activeTools: TTool[];
 				resources: AgentHarnessResources<TSkill, TPromptTemplate>;
-		  }) => string | Promise<string>);
+		  }) => string | AgentHarnessSystemPrompt | Promise<string | AgentHarnessSystemPrompt>);
 	getApiKeyAndHeaders?: (
 		model: Model<any>,
 	) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
