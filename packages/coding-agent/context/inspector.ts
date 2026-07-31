@@ -10,6 +10,18 @@ import type {
     ContextSnapshotItem,
     ContextSnapshotLifecycle,
 } from "./inspector-types";
+import type { SessionContext, SessionTreeEntry } from "@crest/agent/harness/types";
+import type { AgentMessage, AgentTool } from "@crest/agent/types";
+import type { SystemPromptManifest } from "../build-system-prompt";
+import { foldContextJournal } from "./journal";
+
+export interface BuildContextInventoryInput {
+    entries: SessionTreeEntry[];
+    context: SessionContext;
+    tools: AgentTool[];
+    systemPromptManifest?: SystemPromptManifest;
+    activeTurnId?: string;
+}
 
 export const ContextSnapshotCategoryOrder: readonly ContextSnapshotCategory[] = [
     "agent_instructions",
@@ -112,4 +124,295 @@ export function markContextSnapshotLifecycle(
         lifecycle,
         diagnostic,
     };
+}
+
+function estimateTextTokens(value: string): number {
+    return Math.ceil(value.length / 4);
+}
+
+function messageContent(message: AgentMessage): unknown[] {
+    const content = (message as { content?: unknown }).content;
+    if (typeof content === "string") return [{ type: "text", text: content }];
+    return Array.isArray(content) ? content : [];
+}
+
+function previewValue(value: unknown, limit = 180): string {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    const normalized = (text ?? "").replace(/\s+/g, " ").trim();
+    return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`;
+}
+
+function messagePreview(message: AgentMessage): string {
+    const role = (message as { role?: string }).role;
+    if (role === "compactionSummary" || role === "branchSummary") {
+        return previewValue((message as { summary?: string }).summary ?? "");
+    }
+    const blocks = messageContent(message);
+    const text = blocks
+        .filter((block): block is { type: string; text: string } =>
+            Boolean(block && typeof block === "object" && (block as { type?: string }).type === "text")
+        )
+        .map((block) => block.text)
+        .join(" ");
+    return previewValue(text || blocks);
+}
+
+function messageTokens(message: AgentMessage): number {
+    return estimateTextTokens(JSON.stringify(message));
+}
+
+function instructionItems(manifest?: SystemPromptManifest): ContextSnapshotItem[] {
+    if (!manifest) return [];
+    return manifest.segments.map((segment) => ({
+        id: segment.id,
+        category: "agent_instructions",
+        kind: segment.kind,
+        title: segment.title,
+        preview: previewValue(segment.text),
+        tokens: estimateTextTokens(segment.text),
+        tokenAccuracy: "estimated",
+        source: {
+            ...(segment.path == null ? {} : { path: segment.path }),
+            ...(segment.skillName == null ? {} : { skillName: segment.skillName }),
+        },
+    }));
+}
+
+function toolItems(tools: AgentTool[]): ContextSnapshotItem[] {
+    return tools.map((tool) => {
+        const serialized = JSON.stringify({
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters,
+        });
+        return {
+            id: `tool:${tool.name}`,
+            category: "tools",
+            kind: "tool_definition",
+            title: tool.name,
+            preview: previewValue(tool.description ?? serialized),
+            tokens: estimateTextTokens(serialized),
+            tokenAccuracy: "estimated",
+            source: { toolName: tool.name },
+        };
+    });
+}
+
+function latestCompaction(entries: SessionTreeEntry[]): Extract<SessionTreeEntry, { type: "compaction" }> | undefined {
+    for (let index = entries.length - 1; index >= 0; index--) {
+        if (entries[index]?.type === "compaction") {
+            return entries[index] as Extract<SessionTreeEntry, { type: "compaction" }>;
+        }
+    }
+    return undefined;
+}
+
+function coveredCompactionEntryIds(entries: SessionTreeEntry[], firstKeptEntryId: string): string[] {
+    const firstKeptIndex = entries.findIndex((entry) => entry.id === firstKeptEntryId);
+    if (firstKeptIndex <= 0) return [];
+    return entries
+        .slice(0, firstKeptIndex)
+        .filter((entry) => entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary")
+        .map((entry) => entry.id);
+}
+
+function childItem(
+    message: AgentMessage,
+    entryId: string | undefined,
+    index: number,
+    resultIdsByCall: Map<string, string>
+): ContextSnapshotItem[] {
+    const role = (message as { role?: string }).role;
+    const stableId = entryId ?? `synthetic:${index}`;
+    if (role === "user" || role === "custom" || role === "bashExecution") {
+        return [
+            {
+                id: `message:${stableId}`,
+                category: "conversation",
+                kind: "user_message",
+                title: "User",
+                preview: messagePreview(message),
+                tokens: messageTokens(message),
+                tokenAccuracy: "estimated",
+                source: { entryIds: entryId == null ? [] : [entryId] },
+            },
+        ];
+    }
+    if (role === "toolResult") {
+        const toolCallId = (message as { toolCallId?: string }).toolCallId;
+        return [
+            {
+                id: `tool-result:${toolCallId ?? stableId}`,
+                category: "conversation",
+                kind: "tool_result",
+                title: (message as { toolName?: string }).toolName ?? "Tool result",
+                preview: messagePreview(message),
+                tokens: messageTokens(message),
+                tokenAccuracy: "estimated",
+                source: {
+                    entryIds: entryId == null ? [] : [entryId],
+                    ...(toolCallId == null ? {} : { toolCallId }),
+                },
+            },
+        ];
+    }
+    if (role !== "assistant") return [];
+    const children: ContextSnapshotItem[] = [];
+    for (const [blockIndex, block] of messageContent(message).entries()) {
+        if (!block || typeof block !== "object") continue;
+        const value = block as { type?: string; text?: string; id?: string; name?: string; arguments?: unknown };
+        if (value.type === "toolCall") {
+            const callId = value.id ?? `${stableId}:${blockIndex}`;
+            children.push({
+                id: `tool-call:${callId}`,
+                category: "conversation",
+                kind: "tool_call",
+                title: value.name ?? "Tool call",
+                preview: previewValue(value.arguments),
+                tokens: estimateTextTokens(JSON.stringify(value)),
+                tokenAccuracy: "estimated",
+                source: {
+                    entryIds: entryId == null ? [] : [entryId],
+                    toolCallId: callId,
+                    toolName: value.name,
+                    pairedResultEntryId: resultIdsByCall.get(callId),
+                },
+            });
+        } else if (value.type === "text" && value.text?.trim()) {
+            children.push({
+                id: `assistant:${stableId}:${blockIndex}`,
+                category: "conversation",
+                kind: "assistant_message",
+                title: "Assistant",
+                preview: previewValue(value.text),
+                tokens: estimateTextTokens(value.text),
+                tokenAccuracy: "estimated",
+                source: { entryIds: entryId == null ? [] : [entryId] },
+            });
+        }
+    }
+    return children;
+}
+
+function conversationItems(input: BuildContextInventoryInput): ContextSnapshotItem[] {
+    const items: ContextSnapshotItem[] = [];
+    const resultIdsByCall = new Map<string, string>();
+    input.context.messages.forEach((message, index) => {
+        if (message.role !== "toolResult") return;
+        const callId = message.toolCallId;
+        const entryId = input.context.messageEntryIds[index];
+        if (callId && entryId) resultIdsByCall.set(callId, entryId);
+    });
+    const compaction = latestCompaction(input.entries);
+    let currentTurn: ContextSnapshotItem | undefined;
+    const flushTurn = (): void => {
+        if (!currentTurn) return;
+        currentTurn.tokens = currentTurn.children?.reduce((total, child) => total + (child.tokens ?? 0), 0);
+        items.push(currentTurn);
+        currentTurn = undefined;
+    };
+    input.context.messages.forEach((message, index) => {
+        const entryId = input.context.messageEntryIds[index];
+        if (message.role === "compactionSummary") {
+            flushTurn();
+            items.push({
+                id: `compaction:${entryId ?? index}`,
+                category: "conversation",
+                kind: "compaction_summary",
+                title: "Compacted history",
+                preview: messagePreview(message),
+                tokens: messageTokens(message),
+                tokenAccuracy: "estimated",
+                source: {
+                    entryIds: entryId == null ? [] : [entryId],
+                    coveredEntryIds: compaction ? coveredCompactionEntryIds(input.entries, compaction.firstKeptEntryId) : [],
+                },
+            });
+            return;
+        }
+        if (message.role === "branchSummary") {
+            flushTurn();
+            items.push({
+                id: `branch-summary:${entryId ?? index}`,
+                category: "conversation",
+                kind: "branch_summary",
+                title: "Branch summary",
+                preview: messagePreview(message),
+                tokens: messageTokens(message),
+                tokenAccuracy: "estimated",
+                source: { entryIds: entryId == null ? [] : [entryId] },
+            });
+            return;
+        }
+        if (message.role === "user") {
+            flushTurn();
+            currentTurn = {
+                id: `turn:${entryId ?? index}`,
+                category: "conversation",
+                kind: "turn",
+                title: messagePreview(message) || "Conversation turn",
+                preview: messagePreview(message),
+                tokenAccuracy: "estimated",
+                source: { entryIds: [] },
+                children: [],
+            };
+        }
+        if (!currentTurn) {
+            currentTurn = {
+                id: `turn:synthetic:${index}`,
+                category: "conversation",
+                kind: "turn",
+                title: "Conversation turn",
+                preview: messagePreview(message),
+                tokenAccuracy: "estimated",
+                source: { entryIds: [] },
+                children: [],
+            };
+        }
+        if (entryId) currentTurn.source.entryIds!.push(entryId);
+        currentTurn.children!.push(...childItem(message, entryId, index, resultIdsByCall));
+    });
+    flushTurn();
+    return items;
+}
+
+function addedContextItems(input: BuildContextInventoryInput): ContextSnapshotItem[] {
+    const journal = foldContextJournal(input.entries);
+    const visibleIds = new Set(input.context.messageEntryIds.filter((id): id is string => id != null));
+    const attachments = [...journal.attachmentsByTurn.values()]
+        .flat()
+        .filter(
+            (attachment) =>
+                visibleIds.has(attachment.data.targetTurnId) &&
+                (attachment.data.deliveryScope === "conversation" || attachment.data.targetTurnId === input.activeTurnId)
+        );
+    const reportItems = journal.projectionReports.flatMap((report) => report.items);
+    return attachments.map((attachment) => {
+        const report = reportItems.find((item) => item.attachmentEntryId === attachment.attachmentEntryId);
+        const artifact = attachment.artifact;
+        return {
+            id: `context:${attachment.attachmentEntryId}`,
+            category: "added_context",
+            kind: "context_reference",
+            title: artifact?.provenance.sourceSessionTitle ?? "Added context",
+            preview: artifact?.provenance.preview ?? "Context source unavailable",
+            tokens: report?.advisoryTokens,
+            tokenAccuracy: report == null ? "unavailable" : "estimated",
+            source: {
+                attachmentEntryId: attachment.attachmentEntryId,
+                artifactEntryId: attachment.data.artifactEntryId,
+                entryIds: artifact?.provenance.sourceMessageEntryIds ?? [],
+            },
+            ...(artifact == null ? { diagnostic: "Context attachment source is unavailable." } : {}),
+        } satisfies ContextSnapshotItem;
+    });
+}
+
+export function buildContextInventory(input: BuildContextInventoryInput): ContextSnapshotItem[] {
+    return [
+        ...instructionItems(input.systemPromptManifest),
+        ...toolItems(input.tools),
+        ...conversationItems(input),
+        ...addedContextItems(input),
+    ];
 }

@@ -206,16 +206,16 @@ git commit -m "feat: preserve system prompt provenance"
 - Modify: `packages/agent/harness/types.ts`
 - Modify: `packages/agent/harness/agent-harness.test.ts`
 
-- [ ] Write failing fixtures for a normal turn, an assistant tool call paired with its tool result, a compacted branch, a branch summary, a conversation-scoped context reference, and a message-scoped context reference.
-- [ ] Assert that Conversation groups complete turns, tool call/result pairs remain children of the same turn, compacted source turns disappear, and the compaction item records its covered entry IDs.
-- [ ] Assert that both reference scopes remain `added_context` even when `decorateContextHistory` renders their text into a user or system representation.
-- [ ] Run `npx vitest run packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/history.test.ts` and verify the new cases fail.
-- [ ] Preserve `SessionContext.messageEntryIds`, the active branch entries, and leaf ID in the harness's inspection input instead of reducing them to message array positions.
-- [ ] Implement `buildConversationItems` against the effective `SessionContext`, using entry IDs to resolve durable metadata from the active branch.
-- [ ] Use the committed context journal to create Added context items keyed by `attachmentEntryId` and `artifactEntryId`; do not classify by final message role.
-- [ ] Add malformed-source handling that emits an item diagnostic and unavailable attribution without dropping the remaining inventory.
-- [ ] Run `npx vitest run packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/history.test.ts packages/agent/harness/agent-harness.test.ts` and expect all tests to pass.
-- [ ] Commit:
+- [x] Write failing fixtures for a normal turn, an assistant tool call paired with its tool result, a compacted branch, a branch summary, a conversation-scoped context reference, and a message-scoped context reference.
+- [x] Assert that Conversation groups complete turns, tool call/result pairs remain children of the same turn, compacted source turns disappear, and the compaction item records its covered entry IDs.
+- [x] Assert that both reference scopes remain `added_context` even when `decorateContextHistory` renders their text into a user or system representation.
+- [x] Run `npx vitest run packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/history.test.ts` and verify the new cases fail.
+- [x] Consume `SessionContext.messageEntryIds` and active branch entries instead of reducing durable provenance to message array positions. Provider observation carries the leaf ID in Task 4.
+- [x] Implement `buildConversationItems` against the effective `SessionContext`, using entry IDs to resolve durable metadata from the active branch.
+- [x] Use the committed context journal to create Added context items keyed by `attachmentEntryId` and `artifactEntryId`; do not classify by final message role.
+- [x] Add malformed-source handling that emits an item diagnostic and unavailable attribution without dropping the remaining inventory.
+- [x] Run `npx vitest run packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/history.test.ts packages/agent/harness/agent-harness.test.ts` and expect all tests to pass.
+- [x] Commit:
 
 ```bash
 git add packages/coding-agent/context/inspector.ts packages/coding-agent/context/inspector.test.ts packages/coding-agent/context/history.ts packages/coding-agent/context/history.test.ts packages/agent/harness/agent-harness.ts packages/agent/harness/types.ts packages/agent/harness/agent-harness.test.ts

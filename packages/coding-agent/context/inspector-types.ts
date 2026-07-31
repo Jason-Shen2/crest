@@ -22,7 +22,11 @@ export type ContextSnapshotItemKind =
     | "turn"
     | "compaction_summary"
     | "branch_summary"
-    | "context_reference";
+    | "context_reference"
+    | "user_message"
+    | "assistant_message"
+    | "tool_call"
+    | "tool_result";
 
 export interface ContextSnapshotIdentity {
     sessionPath?: string;
