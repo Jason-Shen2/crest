@@ -616,25 +616,22 @@ export class AgentHarness<
 		};
 	}
 
-	private queueProviderContextObservation(observation: AgentHarnessProviderContextObservation): void {
+	private queueProviderContextObservation(
+		buildObservation: () => Promise<AgentHarnessProviderContextObservation> | AgentHarnessProviderContextObservation,
+	): void {
 		const observer = this.observeProviderContext;
 		if (!observer) return;
 		queueMicrotask(() => {
-			try {
-				void Promise.resolve(observer(observation)).catch((error) => {
+			void Promise.resolve()
+				.then(buildObservation)
+				.then(observer)
+				.catch((error) => {
 					try {
 						this.onProviderContextObservationError?.(toError(error));
 					} catch {
 						// Inspection diagnostics are isolated from provider execution too.
 					}
 				});
-			} catch (error) {
-				try {
-					this.onProviderContextObservationError?.(toError(error));
-				} catch {
-					// Inspection diagnostics are isolated from provider execution too.
-				}
-			}
 		});
 	}
 
@@ -658,28 +655,8 @@ export class AgentHarness<
 			const requestOptions = preparedRequest
 				? this.preparedProviderRequests.shift()!.options
 				: await this.emitBeforeProviderRequest(model, turnState.sessionId, snapshotOptions);
-			const observeFinalPayload = async (payload: unknown): Promise<unknown> => {
+			const observeFinalPayload = (payload: unknown): unknown => {
 				const observedState = getTurnState();
-				let leafId = observedState.leafId;
-				let entries = observedState.entries;
-				try {
-					entries = await this.session.getBranch();
-				} catch (error) {
-					try {
-						this.onProviderContextObservationError?.(toError(error));
-					} catch {
-						// Inspection diagnostics are isolated from provider execution too.
-					}
-				}
-				try {
-					leafId = await this.session.getLeafId();
-				} catch (error) {
-					try {
-						this.onProviderContextObservationError?.(toError(error));
-					} catch {
-						// Inspection diagnostics are isolated from provider execution too.
-					}
-				}
 				const messageEntryIds =
 					observedState.providerMessageEntryIds ??
 					alignMessageEntryIds(
@@ -688,18 +665,21 @@ export class AgentHarness<
 						context.messages,
 						this.messageEntryIds,
 					);
-				this.queueProviderContextObservation({
-					model,
-					sessionId: observedState.sessionId,
-					leafId,
-					systemPrompt: context.systemPrompt,
-					systemPromptMetadata: observedState.systemPromptMetadata,
-					messages: [...context.messages],
-					messageEntryIds,
-					entries: [...entries],
-					activeTools: [...observedState.activeTools],
-					requestOptions: cloneStreamOptions(requestOptions),
-					payload,
+				this.queueProviderContextObservation(async () => {
+					const [entries, leafId] = await Promise.all([this.session.getBranch(), this.session.getLeafId()]);
+					return {
+						model,
+						sessionId: observedState.sessionId,
+						leafId,
+						systemPrompt: context.systemPrompt,
+						systemPromptMetadata: observedState.systemPromptMetadata,
+						messages: [...context.messages],
+						messageEntryIds,
+						entries: [...entries],
+						activeTools: [...observedState.activeTools],
+						requestOptions: cloneStreamOptions(requestOptions),
+						payload,
+					};
 				});
 				return payload;
 			};

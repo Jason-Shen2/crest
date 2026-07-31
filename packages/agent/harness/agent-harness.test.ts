@@ -416,13 +416,22 @@ describe("AgentHarness — prepared turns", () => {
 
     it("observes entries committed by semantic turn preparation", async () => {
         const observations: AgentHarnessProviderContextObservation[] = [];
+        let blockObservationRead = false;
+        let observationReadStarted = false;
+        let providerPayloadReturned = false;
+        let releaseObservationRead!: () => void;
+        const observationReadGate = new Promise<void>((resolve) => {
+            releaseObservationRead = resolve;
+        });
         registerApiProvider({
             api: FAKE_API,
             stream: () => new AssistantMessageEventStream(),
             streamSimple: (model: Model<any>, _context: Context, options?: SimpleStreamOptions) => {
                 const stream = new AssistantMessageEventStream();
                 void (async () => {
+                    blockObservationRead = true;
                     await options?.onPayload?.({ provider: "built" }, model);
+                    providerPayloadReturned = true;
                     stream.push({ type: "done", reason: "stop", message: fakeAssistantMessage(model) });
                 })();
                 return stream;
@@ -438,17 +447,32 @@ describe("AgentHarness — prepared turns", () => {
                 observations.push(observation);
             },
         });
+        const originalGetBranch = session.getBranch.bind(session);
+        vi.spyOn(session, "getBranch").mockImplementation(async () => {
+            if (blockObservationRead) {
+                observationReadStarted = true;
+                await observationReadGate;
+            }
+            return await originalGetBranch();
+        });
         let markerId = "";
         let userEntryId = "";
 
-        await harness.prompt("prepared", {
+        const prompt = harness.prompt("prepared", {
             prepare: async (input) => {
                 markerId = await session.appendCustomEntry("context_attachment", { source: "prepared" });
                 userEntryId = await session.appendMessage(input.userMessage);
                 return { userEntryId, systemPromptSuffix: "prepared context" };
             },
         });
-        await Promise.resolve();
+        try {
+            await waitFor(() => observationReadStarted);
+            expect(providerPayloadReturned).toBe(true);
+        } finally {
+            releaseObservationRead();
+            await prompt;
+        }
+        await waitFor(() => observations.length === 1);
 
         expect(observations).toHaveLength(1);
         expect(observations[0]!.entries.map((entry) => entry.id)).toEqual(
