@@ -350,6 +350,104 @@ describe("AgentHarness — prepared turns", () => {
         expect(sentPayloads[0]).toBe(countedPayload);
     });
 
+    it("observes the final provider context and payload with durable message identities", async () => {
+        const observations: unknown[] = [];
+        const contextHook = vi.fn(async ({ messages }: { messages: AgentMessage[] }) => ({
+            messages: [
+                ...messages.map((message) => ({ ...message })),
+                { role: "user" as const, content: [{ type: "text" as const, text: "synthetic" }], timestamp: 2 },
+            ],
+        }));
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (model: Model<any>, _context: Context, options?: SimpleStreamOptions) => {
+                const stream = new AssistantMessageEventStream();
+                void (async () => {
+                    await options?.onPayload?.({ provider: "built" }, model);
+                    const message = fakeAssistantMessage(model);
+                    stream.push({ type: "start", partial: message });
+                    stream.push({ type: "done", reason: "stop", message });
+                })();
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const priorEntryId = await session.appendMessage({
+            role: "user",
+            content: [{ type: "text", text: "prior" }],
+            timestamp: 1,
+        });
+        await session.appendMessage(fakeAssistantMessage(fakeModel()));
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+            systemPrompt: () => ({ text: "structured prompt", metadata: { source: "manifest" } }),
+            streamOptions: { metadata: { request: "final" } },
+            observeProviderContext: (observation) => {
+                observations.push(observation);
+            },
+        });
+        harness.on("context", contextHook);
+        harness.on("before_provider_payload", async ({ payload }: { payload: unknown }) => ({
+            payload: { ...(payload as object), transformed: true },
+        }));
+
+        await harness.prompt("current");
+        await Promise.resolve();
+
+        expect(observations).toHaveLength(1);
+        expect(observations[0]).toMatchObject({
+            model: { id: "fake-model" },
+            sessionId: expect.any(String),
+            leafId: expect.any(String),
+            systemPrompt: "structured prompt",
+            systemPromptMetadata: { source: "manifest" },
+            requestOptions: { metadata: { request: "final" } },
+            payload: { provider: "built", transformed: true },
+        });
+        const observation = observations[0] as { messages: AgentMessage[]; messageEntryIds: Array<string | undefined> };
+        expect(observation.messages.at(-1)).toMatchObject({ role: "user", content: [{ text: "synthetic" }] });
+        expect(observation.messageEntryIds).toContain(priorEntryId);
+        expect(observation.messageEntryIds.at(-1)).toBeUndefined();
+    });
+
+    it("isolates provider-context observation failures from the provider stream", async () => {
+        const diagnostic = vi.fn();
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (model: Model<any>, _context: Context, options?: SimpleStreamOptions) => {
+                const stream = new AssistantMessageEventStream();
+                void (async () => {
+                    await options?.onPayload?.({ provider: "built" }, model);
+                    const message = fakeAssistantMessage(model);
+                    stream.push({ type: "start", partial: message });
+                    stream.push({ type: "done", reason: "stop", message });
+                })();
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+            observeProviderContext: () => {
+                throw new Error("inspection failed");
+            },
+            onProviderContextObservationError: diagnostic,
+        });
+
+        await expect(harness.prompt("hello")).resolves.toMatchObject({ role: "assistant" });
+        await Promise.resolve();
+
+        expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({ message: "inspection failed" }));
+    });
+
     it("consumes generic prepared request and payload receipts without a transformed context receipt", async () => {
         const sentRequestMetadata: unknown[] = [];
         const sentPayloads: unknown[] = [];

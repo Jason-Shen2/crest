@@ -232,10 +232,10 @@ git commit -m "feat: inventory effective agent context"
 - Modify: `packages/coding-agent/harness-factory.ts`
 - Modify: `packages/coding-agent/harness-factory.test.ts`
 
-- [ ] Add failing harness tests proving inspection occurs after the `context` and `before_provider_payload` transformations and sees exactly the model, system prompt, messages, tools, request options, and final payload used by `streamSimple`.
-- [ ] Add a failure-isolation test proving an inspection callback exception does not prevent the provider stream from starting.
-- [ ] Run `npx vitest run packages/agent/harness/agent-harness.test.ts packages/coding-agent/harness-factory.test.ts` and verify failure.
-- [ ] Add an optional non-blocking `observeProviderContext` callback to `AgentHarnessOptions`:
+- [x] Add failing harness tests proving inspection occurs after the `context` and `before_provider_payload` transformations and sees exactly the model, system prompt, messages, tools, request options, and final payload used by `streamSimple`.
+- [x] Add a failure-isolation test proving an inspection callback exception does not prevent the provider stream from starting.
+- [x] Run `npx vitest run packages/agent/harness/agent-harness.test.ts packages/coding-agent/harness-factory.test.ts` and verify failure.
+- [x] Add an optional non-blocking `observeProviderContext` callback to `AgentHarnessOptions`:
 
 ```ts
 export interface AgentHarnessProviderContextObservation {
@@ -252,11 +252,11 @@ export interface AgentHarnessProviderContextObservation {
 }
 ```
 
-- [ ] Invoke the observer in `createStreamFn` after the final payload transformation and before dispatch, catching and reporting inspection failure through a dedicated diagnostic callback rather than the harness hook chain.
-- [ ] Preserve message-entry identity when context transforms replace message objects: entry IDs remain aligned for unchanged messages, while injected messages receive `undefined` and an explicit synthetic source identity from the preparation result.
-- [ ] Wire the optional observer through `buildAgentHarnessHost` without importing coding-agent snapshot types into the generic harness.
-- [ ] Run the targeted tests and expect all to pass.
-- [ ] Commit:
+- [x] Invoke the observer in `createStreamFn` after the final payload transformation and before dispatch, catching and reporting inspection failure through a dedicated diagnostic callback rather than the harness hook chain.
+- [x] Preserve message-entry identity when context transforms replace message objects: entry IDs remain aligned for unchanged messages, while injected messages receive `undefined` and the inventory builder assigns a stable synthetic position identity.
+- [x] Wire the optional observer through `buildAgentHarnessHost` without importing coding-agent snapshot types into the generic harness.
+- [x] Run the targeted tests and expect all to pass.
+- [x] Commit:
 
 ```bash
 git add packages/agent/harness/types.ts packages/agent/harness/agent-harness.ts packages/agent/harness/agent-harness.test.ts packages/coding-agent/harness-factory.ts packages/coding-agent/harness-factory.test.ts

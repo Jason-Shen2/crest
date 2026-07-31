@@ -32,6 +32,7 @@ import type {
 	AgentHarnessPhase,
 	AgentHarnessPreparedTurn,
 	AgentHarnessPromptOptions,
+	AgentHarnessProviderContextObservation,
 	AgentHarnessResources,
 	AgentHarnessStreamOptions,
 	AgentHarnessStreamOptionsPatch,
@@ -42,6 +43,7 @@ import type {
 	PendingSessionWrite,
 	PromptTemplate,
 	Session,
+	SessionTreeEntry,
 	Skill,
 } from "./types";
 import { buildSessionContext } from "./session/session";
@@ -104,6 +106,39 @@ function joinSystemPrompt(systemPrompt: string, suffix: string): string {
 	if (suffix.length === 0) return systemPrompt;
 	if (systemPrompt.length === 0) return suffix;
 	return `${systemPrompt}\n\n${suffix}`;
+}
+
+function messageFingerprint(message: AgentMessage): string | undefined {
+	try {
+		return JSON.stringify(message);
+	} catch {
+		return undefined;
+	}
+}
+
+function alignMessageEntryIds(
+	sourceMessages: readonly AgentMessage[],
+	sourceEntryIds: readonly (string | undefined)[],
+	targetMessages: readonly AgentMessage[],
+	knownEntryIds: WeakMap<object, string>,
+): Array<string | undefined> {
+	const consumed = new Set<number>();
+	return targetMessages.map((target) => {
+		const known = knownEntryIds.get(target as object);
+		if (known) return known;
+		let sourceIndex = sourceMessages.findIndex((source, index) => !consumed.has(index) && source === target);
+		if (sourceIndex < 0) {
+			const targetFingerprint = messageFingerprint(target);
+			if (targetFingerprint != null) {
+				sourceIndex = sourceMessages.findIndex(
+					(source, index) => !consumed.has(index) && messageFingerprint(source) === targetFingerprint,
+				);
+			}
+		}
+		if (sourceIndex < 0) return undefined;
+		consumed.add(sourceIndex);
+		return sourceEntryIds[sourceIndex];
+	});
 }
 
 function applyStreamOptionsPatch(
@@ -170,7 +205,11 @@ interface AgentHarnessTurnState<
 	TPromptTemplate extends PromptTemplate = PromptTemplate,
 	TTool extends AgentTool = AgentTool,
 > {
+	entries: SessionTreeEntry[];
 	messages: AgentMessage[];
+	messageEntryIds: Array<string | undefined>;
+	providerMessageEntryIds?: Array<string | undefined>;
+	leafId: string | null;
 	resources: AgentHarnessResources<TSkill, TPromptTemplate>;
 	streamOptions: AgentHarnessStreamOptions;
 	sessionId: string;
@@ -224,6 +263,13 @@ export class AgentHarness<
 	private nextTurnQueue: AgentMessage[] = [];
 	private preparedUserEntryIds: Array<string | undefined> = [];
 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
+	private messageEntryIds = new WeakMap<object, string>();
+	private observeProviderContext?: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>["observeProviderContext"];
+	private onProviderContextObservationError?: AgentHarnessOptions<
+		TSkill,
+		TPromptTemplate,
+		TTool
+	>["onProviderContextObservationError"];
 
 	constructor(options: AgentHarnessOptions<TSkill, TPromptTemplate, TTool>) {
 		this.env = options.env;
@@ -233,6 +279,8 @@ export class AgentHarness<
 		this.transformSessionContext = options.transformSessionContext;
 		this.systemPrompt = options.systemPrompt;
 		this.getApiKeyAndHeaders = options.getApiKeyAndHeaders;
+		this.observeProviderContext = options.observeProviderContext;
+		this.onProviderContextObservationError = options.onProviderContextObservationError;
 		for (const tool of options.tools ?? []) {
 			this.tools.set(tool.name, tool);
 		}
@@ -435,6 +483,11 @@ export class AgentHarness<
 		}
 		const resources = this.getResources();
 		const sessionMetadata = await this.session.getMetadata();
+		const leafId = await this.session.getLeafId();
+		context.messages.forEach((message, index) => {
+			const entryId = context.messageEntryIds[index];
+			if (entryId) this.messageEntryIds.set(message as object, entryId);
+		});
 		const tools = [...this.tools.values()];
 		const activeTools = this.activeToolNames
 			.map((name) => this.tools.get(name))
@@ -460,7 +513,10 @@ export class AgentHarness<
 			}
 		}
 		return {
+			entries,
 			messages: context.messages,
+			messageEntryIds: [...context.messageEntryIds],
+			leafId,
 			resources,
 			streamOptions: cloneStreamOptions(this.streamOptions),
 			sessionId: sessionMetadata.id,
@@ -529,6 +585,28 @@ export class AgentHarness<
 		};
 	}
 
+	private queueProviderContextObservation(observation: AgentHarnessProviderContextObservation): void {
+		const observer = this.observeProviderContext;
+		if (!observer) return;
+		queueMicrotask(() => {
+			try {
+				void Promise.resolve(observer(observation)).catch((error) => {
+					try {
+						this.onProviderContextObservationError?.(toError(error));
+					} catch {
+						// Inspection diagnostics are isolated from provider execution too.
+					}
+				});
+			} catch (error) {
+				try {
+					this.onProviderContextObservationError?.(toError(error));
+				} catch {
+					// Inspection diagnostics are isolated from provider execution too.
+				}
+			}
+		});
+	}
+
 	private createStreamFn(getTurnState: () => AgentHarnessTurnState<TSkill, TPromptTemplate, TTool>): StreamFn {
 		return async (model, context, streamOptions) => {
 			const turnState = getTurnState();
@@ -549,6 +627,41 @@ export class AgentHarness<
 			const requestOptions = preparedRequest
 				? this.preparedProviderRequests.shift()!.options
 				: await this.emitBeforeProviderRequest(model, turnState.sessionId, snapshotOptions);
+			const observeFinalPayload = async (payload: unknown): Promise<unknown> => {
+				const observedState = getTurnState();
+				let leafId = observedState.leafId;
+				try {
+					leafId = await this.session.getLeafId();
+				} catch (error) {
+					try {
+						this.onProviderContextObservationError?.(toError(error));
+					} catch {
+						// Inspection diagnostics are isolated from provider execution too.
+					}
+				}
+				const messageEntryIds =
+					observedState.providerMessageEntryIds ??
+					alignMessageEntryIds(
+						observedState.messages,
+						observedState.messageEntryIds,
+						context.messages,
+						this.messageEntryIds,
+					);
+				this.queueProviderContextObservation({
+					model,
+					sessionId: observedState.sessionId,
+					leafId,
+					systemPrompt: context.systemPrompt,
+					systemPromptMetadata: observedState.systemPromptMetadata,
+					messages: [...context.messages],
+					messageEntryIds,
+					entries: [...observedState.entries],
+					activeTools: [...observedState.activeTools],
+					requestOptions: cloneStreamOptions(requestOptions),
+					payload,
+				});
+				return payload;
+			};
 			return streamSimple(model, context, {
 				cacheRetention: requestOptions.cacheRetention,
 				headers: requestOptions.headers,
@@ -564,11 +677,11 @@ export class AgentHarness<
 						}
 						const preparedPayload = this.preparedProviderPayloads.shift()!.payload;
 						this.activePreparedProviderUserEntryId = undefined;
-						return preparedPayload;
+						return await observeFinalPayload(preparedPayload);
 					}
 					const transformedPayload = await this.emitBeforeProviderPayload(model, payload);
 					if (expectedUserEntryId != null) this.activePreparedProviderUserEntryId = undefined;
-					return transformedPayload;
+					return await observeFinalPayload(transformedPayload);
 				},
 				onResponse: async (response) => {
 					const headers = { ...(response.headers as Record<string, string>) };
@@ -626,6 +739,7 @@ export class AgentHarness<
 			reasoning: turnState.thinkingLevel === "off" ? undefined : turnState.thinkingLevel,
 			convertToLlm,
 			transformContext: async (messages) => {
+				let transformedMessages: AgentMessage[] | undefined;
 				const receipt = this.preparedProviderReceipts[0];
 				if (receipt) {
 					const prepared = this.preparedContextTransforms[0];
@@ -635,13 +749,30 @@ export class AgentHarness<
 					}
 					this.preparedProviderReceipts.shift();
 					this.activePreparedProviderUserEntryId = receipt.userEntryId;
-					if (prepared) return this.preparedContextTransforms.shift()!.messages;
+					if (prepared) transformedMessages = this.preparedContextTransforms.shift()!.messages;
 				} else if (this.preparedContextTransforms.length > 0) {
 					this.preparedContextTransforms = [];
 					throw new AgentHarnessError("invalid_state", "Prepared context transform has no matching receipt");
 				}
-				const result = await this.emitHook({ type: "context", messages: [...messages] });
-				return result?.messages ?? messages;
+				if (!transformedMessages) {
+					const result = await this.emitHook({ type: "context", messages: [...messages] });
+					transformedMessages = result?.messages ?? messages;
+				}
+				const current = getTurnState();
+				const inputEntryIds = alignMessageEntryIds(
+					current.messages,
+					current.messageEntryIds,
+					messages,
+					this.messageEntryIds,
+				);
+				const providerMessageEntryIds = alignMessageEntryIds(
+					messages,
+					inputEntryIds,
+					transformedMessages,
+					this.messageEntryIds,
+				);
+				setTurnState({ ...current, providerMessageEntryIds });
+				return transformedMessages;
 			},
 			beforeToolCall: async ({ toolCall, args }) => {
 				const result = await this.emitHook({
@@ -793,11 +924,13 @@ export class AgentHarness<
 			if (event.message.role === "user" && this.preparedUserEntryIds.length > 0) {
 				const entryId = this.preparedUserEntryIds.shift();
 				if (entryId) {
+					this.messageEntryIds.set(event.message as object, entryId);
 					await this.emitAny({ ...event, entryId }, signal);
 					return;
 				}
 			}
 			const entryId = await this.session.appendMessage(event.message);
+			this.messageEntryIds.set(event.message as object, entryId);
 			await this.emitAny({ ...event, entryId }, signal);
 			return;
 		}

@@ -14,6 +14,7 @@
 import type { Api, Model } from "@crest/ai";
 import { AgentHarness } from "@crest/agent/harness/agent-harness";
 import type {
+    AgentHarnessProviderContextObservation,
     Session,
     SessionContext,
     SessionTreeEntry,
@@ -22,9 +23,9 @@ import type {
     ToolCallResult,
 } from "@crest/agent/harness/types";
 import { NodeExecutionEnv } from "@crest/agent/node";
+import type { AgentTool, ThinkingLevel } from "@crest/agent/types";
 import type { ToolCallHook } from "./permissions";
 import type { ProjectContextFile } from "./resource-loader";
-import type { AgentTool, ThinkingLevel } from "@crest/agent/types";
 import { buildSystemPromptManifest, type SystemPromptInputs } from "./build-system-prompt";
 
 export type AgentAuthResolver = (
@@ -75,6 +76,8 @@ export interface BuildAgentHarnessHostOptions {
         entries: SessionTreeEntry[];
         context: SessionContext;
     }) => Promise<SessionContext>;
+    observeProviderContext?: (observation: AgentHarnessProviderContextObservation) => void | Promise<void>;
+    onProviderContextObservationError?: (error: Error) => void;
 }
 
 export interface AgentHarnessHost {
@@ -136,6 +139,8 @@ export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): Agent
         },
         getApiKeyAndHeaders: async (model) => authResolver?.(model),
         transformSessionContext: opts.transformSessionContext,
+        observeProviderContext: opts.observeProviderContext,
+        onProviderContextObservationError: opts.onProviderContextObservationError,
     });
     harness.on("tool_call", async (event) => toolCallHook?.(event));
     return {
