@@ -4,7 +4,7 @@
 import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
 
 export type AgentRewindConflictClass = "none" | "forceable-drift" | "hard-blocker";
-export type AgentRewindFileOperation = "create" | "write" | "delete" | "rename";
+export type AgentRewindFileOperation = "create" | "write" | "delete";
 
 export interface AgentRewindPointView {
     turnId: string;
@@ -26,14 +26,28 @@ export interface AgentListRewindPointsResult {
 
 export interface AgentRewindFileRowView {
     path: string;
-    oldPath?: string;
     operation: AgentRewindFileOperation;
     additions?: number;
     deletions?: number;
     diff?: string;
+    previewUnavailableReason?: string;
     coverage: "covered" | "excluded" | "unavailable";
     conflict: AgentRewindConflictClass;
     reason?: string;
+}
+
+export interface AgentTurnFileDiffView {
+    turnId: string;
+    path: string;
+    operation: "create" | "write" | "delete";
+    additions: number;
+    deletions: number;
+    originalContent: string;
+    modifiedContent: string;
+    isBinary: boolean;
+    fallbackPatch: string;
+    truncated: boolean;
+    previewUnavailableReason?: string;
 }
 
 export interface AgentRewindPreviewResult {
