@@ -1043,7 +1043,7 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(value.store.readBlob).toHaveBeenNthCalledWith(2, NewOid);
     });
 
-    it("reports unavailable summary statistics explicitly and isolates preview budgets per file", async () => {
+    it("reports unavailable summary statistics explicitly and caps aggregate review input", async () => {
         const binary = Buffer.alloc(900_000, 1);
         binary[0] = 0;
         const changes = Array.from({ length: 5 }, (_, index) => ({
@@ -1104,6 +1104,12 @@ describe("WorkspaceRewindEngine transaction", () => {
                 deletions: null,
             }))
         );
-        expect(review.files.map((file) => file.previewUnavailableReason)).toEqual(Array(5).fill("binary file"));
+        expect(review.files.map((file) => file.previewUnavailableReason)).toEqual([
+            "binary file",
+            "binary file",
+            "binary file",
+            "binary file",
+            "request exceeds preview input limit",
+        ]);
     });
 });

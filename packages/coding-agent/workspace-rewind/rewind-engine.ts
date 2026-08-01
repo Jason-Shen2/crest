@@ -383,6 +383,7 @@ export class WorkspaceRewindEngine {
         files: ProjectedTurnFile[];
     }> {
         const loaded = await this.loadTurnCheckpoint(input);
+        const budget = new WorkspaceDiffPreviewBudget();
         const files: ProjectedTurnFile[] = [];
         for (const change of loaded.checkpoint.changes) {
             files.push(
@@ -391,7 +392,7 @@ export class WorkspaceRewindEngine {
                     before: change.before,
                     after: change.after,
                     readBlob: (oid) => this.store.readBlob(oid),
-                    budget: new WorkspaceDiffPreviewBudget(),
+                    budget,
                 })
             );
         }
