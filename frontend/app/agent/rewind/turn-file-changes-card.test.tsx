@@ -8,7 +8,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TurnFileChangesCard } from "./turn-file-changes-card";
 
-afterEach(cleanup);
+const fileIconCalls = vi.hoisted(() => [] as string[]);
+
+vi.mock("@/app/fileexplorer/file-icon", () => ({
+    getFileIcon: (path: string) => {
+        fileIconCalls.push(path);
+        return (props: { className?: string }) => <span data-testid={`file-icon:${path}`} {...props} />;
+    },
+}));
+
+afterEach(() => {
+    cleanup();
+    fileIconCalls.length = 0;
+});
 
 const Summary: AgentTurnChangeSummaryView = {
     turnId: "turn-1",
@@ -64,6 +76,8 @@ describe("TurnFileChangesCard", () => {
         expect(file.className).toContain("hover:bg-muted/40");
         expect(file.className).not.toContain("bg-accent");
         expect(screen.getByText("docs/superpowers/specs/").className).toContain("text-muted-foreground");
+        expect(fileIconCalls).toEqual(["docs/superpowers/specs/agent-rewind-design.md", "frontend/app/agent/card.tsx"]);
+        expect(screen.getByTestId("file-icon:docs/superpowers/specs/agent-rewind-design.md")).toBeTruthy();
 
         fireEvent.click(file);
         fireEvent.click(screen.getByRole("button", { name: "审核" }));

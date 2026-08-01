@@ -272,6 +272,38 @@ function makePreview(
     };
 }
 
+function makeTurnPreview(
+    kind: "turn-undo" | "turn-redo",
+    overrides: Partial<AgentTurnMutationPreviewResult> = {}
+): AgentTurnMutationPreviewResult {
+    return {
+        confirmationToken: "turn-confirmation-token",
+        target:
+            kind === "turn-undo"
+                ? { kind, sourceTurnId: "turn-a" }
+                : { kind, sourceTurnId: "turn-a", undoOperationId: "undo-a" },
+        semanticLeafId: "leaf-a",
+        displayLeafId: "turn-a",
+        expectedSemanticLeafId: "leaf-a",
+        fileCount: 1,
+        files: [
+            {
+                path: "frontend/card.tsx",
+                operation: "write",
+                additions: 4,
+                deletions: 2,
+                conflict: "none",
+                coverage: "covered",
+                diff: "@@ -1 +1 @@\n-old\n+new",
+            },
+        ],
+        coverageWarnings: [],
+        forceRequired: false,
+        hardBlocked: false,
+        ...overrides,
+    };
+}
+
 function makeRewindClient(overrides: Record<string, unknown> = {}) {
     return {
         listRewindPoints: vi.fn(async () => ({
@@ -433,6 +465,98 @@ describe("AgentContent", () => {
         expect(turnDialogProps.latest.files[0].diff).toContain("-old\n+new");
         expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
         expect(screen.queryByRole("button", { name: /Undo .*file/ })).toBeNull();
+    });
+
+    it("locks live mutation footer controls when running, workspace-busy, or recovery-frozen", async () => {
+        const { client } = renderRewindContent(
+            makeRewindClient({ previewTurnUndo: vi.fn(async () => makeTurnPreview("turn-undo")) })
+        );
+        act(() => {
+            hostProps.latest.onTurnsChange([{ turnId: "turn-a", responseMessages: [], status: "done" }]);
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({ turnChanges: [{ turnId: "turn-a", action: "undo" }] }),
+            });
+        });
+        await waitFor(() => expect(threadProps.latest.turnChanges.cards.has("turn-a")).toBe(true));
+        await act(async () => threadProps.latest.turnChanges.openMutation("turn-a"));
+        expect(client.previewTurnUndo).toHaveBeenCalledOnce();
+        expect(screen.getByRole("button", { name: "Undo 1 file" }).hasAttribute("disabled")).toBe(false);
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "streaming",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({ turnChanges: [{ turnId: "turn-a", action: "undo" }] }),
+            });
+        });
+        expect(turnDialogProps.latest.locked).toBe(true);
+        expect(screen.getByRole("button", { name: "Undo 1 file" }).hasAttribute("disabled")).toBe(true);
+        expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    turnChanges: [{ turnId: "turn-a", action: "undo" }],
+                    busy: true,
+                    frozen: true,
+                }),
+            });
+        });
+        expect(turnDialogProps.latest.locked).toBe(true);
+        expect(screen.getByRole("button", { name: "Undo 1 file" }).hasAttribute("disabled")).toBe(true);
+    });
+
+    it("shows force only for undo, hard blockers only cancel, and never force-redoes drift", async () => {
+        const previewTurnUndo = vi
+            .fn()
+            .mockResolvedValueOnce(makeTurnPreview("turn-undo", { forceRequired: true }))
+            .mockResolvedValueOnce(makeTurnPreview("turn-undo", { hardBlocked: true }));
+        const previewTurnRedo = vi.fn(async () => makeTurnPreview("turn-redo", { forceRequired: true }));
+        renderRewindContent(makeRewindClient({ previewTurnUndo, previewTurnRedo }));
+        act(() => {
+            hostProps.latest.onTurnsChange([{ turnId: "turn-a", responseMessages: [], status: "done" }]);
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({ turnChanges: [{ turnId: "turn-a", action: "undo" }] }),
+            });
+        });
+        await waitFor(() => expect(threadProps.latest.turnChanges.cards.has("turn-a")).toBe(true));
+
+        await act(async () => threadProps.latest.turnChanges.openMutation("turn-a"));
+        expect(screen.getByRole("button", { name: "Force undo" })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "Undo 1 file" })).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+        await act(async () => threadProps.latest.turnChanges.openMutation("turn-a"));
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "Force undo" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Undo 1 file" })).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    turnChanges: [{ turnId: "turn-a", action: "redo", undoOperationId: "undo-a" }],
+                }),
+            });
+        });
+        await act(async () => threadProps.latest.turnChanges.openMutation("turn-a"));
+        expect(turnDialogProps.latest.description).toBe("Red will be removed · Green will be restored");
+        expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: /Force/ })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Redo 1 file" })).toBeNull();
     });
 
     it("freezes writes and renders only authoritative recovery actions until session_state thaws", async () => {

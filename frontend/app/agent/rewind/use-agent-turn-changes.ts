@@ -36,6 +36,7 @@ export interface AgentTurnChangesController {
     cards: ReadonlyMap<string, AgentTurnChangesCardState>;
     dialog: AgentTurnChangesDialogState;
     awaitingAuthoritativeAck: boolean;
+    controlsDisabled: boolean;
     openReview(turnId: string): Promise<void>;
     openMutation(turnId: string): Promise<void>;
     confirmMutation(mode: "normal" | "force-drift"): Promise<void>;
@@ -60,10 +61,14 @@ interface TurnConfirmation {
 
 interface PendingAck {
     identity: RequestIdentity;
+    operationEpoch: number;
     turnId: string;
     expectedAction: "undo" | "redo";
     resultReceived: boolean;
 }
+
+const SummaryRetryLimit = 3;
+const SummaryRetryDelayMs = 50;
 
 const ClosedDialog: AgentTurnChangesDialogState = {
     open: false,
@@ -86,6 +91,15 @@ function sameIdentity(left: RequestIdentity | undefined, right: RequestIdentity 
     );
 }
 
+function sameSessionIdentity(left: RequestIdentity | undefined, right: RequestIdentity | undefined): boolean {
+    return (
+        !!left &&
+        !!right &&
+        left.sessionPath === right.sessionPath &&
+        left.sessionMetadata.id === right.sessionMetadata.id
+    );
+}
+
 function cacheKey(identity: RequestIdentity, turnId: string): string {
     return `${identity.sessionPath}\u0000${identity.semanticLeafId ?? ""}\u0000${turnId}`;
 }
@@ -94,9 +108,13 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
     const [summaryCache, setSummaryCache] = useState<ReadonlyMap<string, AgentTurnChangeSummaryView | null>>(new Map());
     const [dialog, setDialog] = useState<AgentTurnChangesDialogState>(ClosedDialog);
     const [awaitingAuthoritativeAck, setAwaitingAuthoritativeAck] = useState(false);
+    const [summaryRetryRevision, setSummaryRetryRevision] = useState(0);
     const requestedSummariesRef = useRef(new Set<string>());
+    const summaryAttemptsRef = useRef(new Map<string, number>());
+    const summaryRetryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
     const identityEpochRef = useRef(0);
     const dialogEpochRef = useRef(0);
+    const mutationEpochRef = useRef(0);
     const confirmationRef = useRef<TurnConfirmation | undefined>(undefined);
     const pendingAckRef = useRef<PendingAck | undefined>(undefined);
     const applyInFlightRef = useRef(false);
@@ -114,7 +132,8 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
         : undefined;
     const identityRef = useRef<RequestIdentity | undefined>(undefined);
     identityRef.current = currentIdentity;
-    const identityKey = `${currentIdentity?.sessionPath ?? ""}\u0000${currentIdentity?.sessionRevision ?? 0}\u0000${currentIdentity?.semanticLeafId ?? ""}`;
+    const sessionIdentityKey = `${currentIdentity?.sessionPath ?? ""}\u0000${currentIdentity?.sessionMetadata.id ?? ""}`;
+    const readScopeKey = `${sessionIdentityKey}\u0000${currentIdentity?.sessionRevision ?? 0}\u0000${currentIdentity?.semanticLeafId ?? ""}`;
 
     const authorityByTurn = useMemo(
         () => new Map(options.rewindState.turnChanges.map((authority) => [authority.turnId, authority])),
@@ -131,6 +150,9 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
             mountedRef.current = false;
             identityEpochRef.current++;
             dialogEpochRef.current++;
+            mutationEpochRef.current++;
+            for (const timer of summaryRetryTimersRef.current.values()) clearTimeout(timer);
+            summaryRetryTimersRef.current.clear();
             confirmationRef.current = undefined;
             pendingAckRef.current = undefined;
             applyInFlightRef.current = false;
@@ -138,16 +160,27 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
     }, []);
 
     useLayoutEffect(() => {
-        identityEpochRef.current++;
+        mutationEpochRef.current++;
         dialogEpochRef.current++;
-        requestedSummariesRef.current = new Set();
         confirmationRef.current = undefined;
         pendingAckRef.current = undefined;
         applyInFlightRef.current = false;
         setAwaitingAuthoritativeAck(false);
-        setSummaryCache(new Map());
         setDialog(ClosedDialog);
-    }, [identityKey]);
+    }, [sessionIdentityKey]);
+
+    useLayoutEffect(() => {
+        identityEpochRef.current++;
+        for (const timer of summaryRetryTimersRef.current.values()) clearTimeout(timer);
+        summaryRetryTimersRef.current.clear();
+        requestedSummariesRef.current = new Set();
+        summaryAttemptsRef.current = new Map();
+        setSummaryCache(new Map());
+        if (applyInFlightRef.current || pendingAckRef.current) return;
+        dialogEpochRef.current++;
+        confirmationRef.current = undefined;
+        setDialog(ClosedDialog);
+    }, [readScopeKey]);
 
     useEffect(() => {
         const identity = identityRef.current;
@@ -179,6 +212,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                         next.set(key, summary.fileCount > 0 && summary.files.length > 0 ? summary : null);
                         return next;
                     });
+                    summaryAttemptsRef.current.delete(key);
                 })
                 .catch((error) => {
                     if (
@@ -188,19 +222,46 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                     ) {
                         return;
                     }
-                    setSummaryCache((current) => {
-                        const next = new Map(current);
-                        next.set(key, null);
-                        return next;
-                    });
+                    const attempt = (summaryAttemptsRef.current.get(key) ?? 0) + 1;
+                    summaryAttemptsRef.current.set(key, attempt);
+                    if (attempt < SummaryRetryLimit) {
+                        const timer = setTimeout(() => {
+                            summaryRetryTimersRef.current.delete(key);
+                            if (
+                                !mountedRef.current ||
+                                epoch !== identityEpochRef.current ||
+                                !sameIdentity(identity, identityRef.current)
+                            ) {
+                                return;
+                            }
+                            requestedSummariesRef.current.delete(key);
+                            setSummaryRetryRevision((current) => current + 1);
+                        }, SummaryRetryDelayMs);
+                        summaryRetryTimersRef.current.set(key, timer);
+                        return;
+                    }
+                    setSummaryCache((current) => new Map(current).set(key, null));
                     optionsRef.current.onError(messageFromError(error));
                 });
         }
-    }, [doneTurnIds, options.client, options.rewindState.enabled, options.rewindState.turnChanges]);
+    }, [
+        doneTurnIds,
+        options.client,
+        options.rewindState.enabled,
+        options.rewindState.turnChanges,
+        summaryRetryRevision,
+    ]);
 
     useLayoutEffect(() => {
         const pending = pendingAckRef.current;
-        if (!pending || !pending.resultReceived || !sameIdentity(pending.identity, identityRef.current)) return;
+        if (
+            !pending ||
+            !pending.resultReceived ||
+            pending.operationEpoch !== mutationEpochRef.current ||
+            !sameSessionIdentity(pending.identity, identityRef.current)
+        ) {
+            return;
+        }
         const authority = authorityByTurn.get(pending.turnId);
         if (authority?.action !== pending.expectedAction) return;
         pendingAckRef.current = undefined;
@@ -237,6 +298,14 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
 
     const requestIsCurrent = useCallback((identity: RequestIdentity, epoch: number): boolean => {
         return mountedRef.current && epoch === dialogEpochRef.current && sameIdentity(identity, identityRef.current);
+    }, []);
+
+    const mutationIsCurrent = useCallback((identity: RequestIdentity, operationEpoch: number): boolean => {
+        return (
+            mountedRef.current &&
+            operationEpoch === mutationEpochRef.current &&
+            sameSessionIdentity(identity, identityRef.current)
+        );
     }, []);
 
     const openReview = useCallback(
@@ -340,11 +409,12 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
             ) {
                 return;
             }
-            const epoch = dialogEpochRef.current;
+            const operationEpoch = ++mutationEpochRef.current;
             applyInFlightRef.current = true;
             setAwaitingAuthoritativeAck(true);
             pendingAckRef.current = {
                 identity: confirmation.identity,
+                operationEpoch,
                 turnId: confirmation.turnId,
                 expectedAction: confirmation.action === "undo" ? "redo" : "undo",
                 resultReceived: false,
@@ -365,7 +435,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                 } else {
                     await optionsRef.current.client.applyTurnRedo(input);
                 }
-                if (!requestIsCurrent(confirmation.identity, epoch)) return;
+                if (!mutationIsCurrent(confirmation.identity, operationEpoch)) return;
                 applyInFlightRef.current = false;
                 const pending = pendingAckRef.current;
                 if (pending) pending.resultReceived = true;
@@ -380,7 +450,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                 }
                 setDialog((current) => ({ ...current, phase: "applying" }));
             } catch (error) {
-                if (!requestIsCurrent(confirmation.identity, epoch)) return;
+                if (!mutationIsCurrent(confirmation.identity, operationEpoch)) return;
                 applyInFlightRef.current = false;
                 pendingAckRef.current = undefined;
                 setAwaitingAuthoritativeAck(false);
@@ -389,7 +459,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                 optionsRef.current.onError(errorMessage);
             }
         },
-        [globallyDisabled, requestIsCurrent]
+        [globallyDisabled, mutationIsCurrent]
     );
 
     const closeDialog = useCallback(() => {
@@ -407,6 +477,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
         cards,
         dialog,
         awaitingAuthoritativeAck,
+        controlsDisabled: globallyDisabled,
         openReview,
         openMutation,
         confirmMutation,

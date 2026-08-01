@@ -3,6 +3,7 @@
 
 "use client";
 
+import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { Button } from "@/shadcn/ui/button";
 import { FileDiffIcon, Redo2Icon, Undo2Icon } from "lucide-react";
 
@@ -113,6 +114,7 @@ export function TurnFileChangesCard({
             <div className="border-t border-border py-0.5">
                 {summary.files.map((file) => {
                     const { directory, basename } = splitPath(file.path);
+                    const FileIcon = getFileIcon(file.path, false, false);
                     return (
                         <button
                             key={file.path}
@@ -121,9 +123,12 @@ export function TurnFileChangesCard({
                             className="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-3 text-left hover:bg-muted/40 focus-visible:bg-muted/40"
                             onClick={() => onOpenFile(file.path)}
                         >
-                            <span className="min-w-0 break-all">
-                                {directory && <span className="text-muted-foreground">{directory}</span>}
-                                <span>{basename}</span>
+                            <span className="flex min-w-0 items-center gap-2 break-all">
+                                <FileIcon size={16} className="shrink-0 text-muted-foreground" />
+                                <span className="min-w-0">
+                                    {directory && <span className="text-muted-foreground">{directory}</span>}
+                                    <span>{basename}</span>
+                                </span>
                             </span>
                             <span className="flex shrink-0 gap-1.5 tabular-nums">
                                 <Addition value={file.additions} />

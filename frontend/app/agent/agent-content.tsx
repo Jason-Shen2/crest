@@ -649,6 +649,12 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
     const rewindWarnings = (rewindPreview?.coverageWarnings ?? []).filter(
         (warning, index, allWarnings) => allWarnings.indexOf(warning) === index
     );
+    const turnMutationDialog = turnChangesController.dialog.kind !== "review";
+    const turnMutationControlsLocked =
+        turnMutationDialog &&
+        (turnChangesController.controlsDisabled ||
+            turnChangesController.dialog.phase === "applying" ||
+            turnChangesController.awaitingAuthoritativeAck);
 
     useEffect(() => {
         setRewindSelectedPath(undefined);
@@ -1199,19 +1205,16 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                                   : "Redo turn changes?"
                         }
                         description={
-                            turnChangesController.dialog.kind === "undo"
-                                ? "Red will be removed · Green will be restored"
-                                : "Red was removed · Green was added"
+                            turnChangesController.dialog.kind === "review"
+                                ? "Red was removed · Green was added"
+                                : "Red will be removed · Green will be restored"
                         }
                         files={turnChangesController.dialog.files}
                         selectedPath={turnChangesController.dialog.selectedPath}
                         loading={turnChangesController.dialog.phase === "loading"}
                         errorMessage={turnChangesController.dialog.errorMessage}
                         warnings={turnChangesController.dialog.preview?.coverageWarnings ?? []}
-                        locked={
-                            turnChangesController.dialog.phase === "applying" ||
-                            turnChangesController.awaitingAuthoritativeAck
-                        }
+                        locked={turnMutationControlsLocked}
                         emptyMessage="No workspace files will change."
                         footer={
                             turnChangesController.dialog.kind === "review" ? (
@@ -1227,10 +1230,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                                     <Button
                                         className="cursor-pointer"
                                         variant="outline"
-                                        disabled={
-                                            turnChangesController.dialog.phase === "applying" ||
-                                            turnChangesController.awaitingAuthoritativeAck
-                                        }
+                                        disabled={turnMutationControlsLocked}
                                         onClick={turnChangesController.closeDialog}
                                     >
                                         Cancel
@@ -1242,6 +1242,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                                             <Button
                                                 className="cursor-pointer"
                                                 variant="destructive"
+                                                disabled={turnMutationControlsLocked}
                                                 onClick={() =>
                                                     void turnChangesController.confirmMutation("force-drift")
                                                 }
@@ -1254,6 +1255,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                                         !turnChangesController.dialog.preview?.forceRequired && (
                                             <Button
                                                 className="cursor-pointer"
+                                                disabled={turnMutationControlsLocked}
                                                 onClick={() => void turnChangesController.confirmMutation("normal")}
                                             >
                                                 {turnChangesController.dialog.kind === "undo" ? "Undo" : "Redo"}{" "}

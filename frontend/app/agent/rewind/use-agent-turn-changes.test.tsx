@@ -120,6 +120,57 @@ function options(overrides: Partial<UseAgentTurnChangesOptions> = {}): UseAgentT
 }
 
 describe("useAgentTurnChanges", () => {
+    it("retries a transient summary failure without caching a permanent absence", async () => {
+        const getTurnChangeSummary = vi
+            .fn()
+            .mockRejectedValueOnce(new Error("temporary read failure"))
+            .mockResolvedValueOnce(summary("turn-1"));
+        const runtime = client({ getTurnChangeSummary });
+        const onError = vi.fn();
+        const { result } = renderHook(() => useAgentTurnChanges(options({ client: runtime, onError })));
+
+        await waitFor(() => expect(getTurnChangeSummary).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(result.current.cards.has("turn-1")).toBe(true));
+        expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("bounds summary retries and reports only the terminal failure", async () => {
+        const getTurnChangeSummary = vi.fn(async () => Promise.reject(new Error("snapshot temporarily busy")));
+        const runtime = client({ getTurnChangeSummary });
+        const onError = vi.fn();
+        const initial = options({ client: runtime, onError });
+        const { result } = renderHook((props: UseAgentTurnChangesOptions) => useAgentTurnChanges(props), {
+            initialProps: initial,
+        });
+
+        await waitFor(() => expect(getTurnChangeSummary).toHaveBeenCalledTimes(3));
+        await waitFor(() => expect(onError).toHaveBeenCalledOnce());
+        expect(result.current.cards.size).toBe(0);
+    });
+
+    it("cancels a scheduled summary retry when the session changes", async () => {
+        const first = deferred<AgentTurnChangeSummaryView>();
+        const getTurnChangeSummary = vi.fn(() => first.promise);
+        const runtime = client({ getTurnChangeSummary });
+        const initial = options({ client: runtime });
+        const { rerender } = renderHook((props: UseAgentTurnChangesOptions) => useAgentTurnChanges(props), {
+            initialProps: initial,
+        });
+        await waitFor(() => expect(getTurnChangeSummary).toHaveBeenCalledOnce());
+        await act(async () => first.reject(new Error("temporary read failure")));
+
+        const sessionTwo = {
+            ...initial,
+            sessionMetadata: { id: "session-2", path: "/repo/other.jsonl", cwd: "/repo", createdAt: "now" },
+            sessionRevision: 2,
+            rewindState: rewindState([], { semanticLeafId: "leaf-2" }),
+            turns: [],
+        };
+        rerender(sessionTwo);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(getTurnChangeSummary).toHaveBeenCalledOnce();
+    });
+
     it("loads only available completed turns and omits zero-change summaries", async () => {
         const runtime = client({
             getTurnChangeSummary: vi.fn(async (input: AgentTurnTargetInput) => summary(input.turnId, 0)),
@@ -205,6 +256,7 @@ describe("useAgentTurnChanges", () => {
             expect.objectContaining({ turnId: "turn-1", confirmationToken: "confirm-1" })
         );
         expect(result.current.awaitingAuthoritativeAck).toBe(true);
+        expect(result.current.controlsDisabled).toBe(true);
         expect(result.current.cards.get("turn-1")?.action).toBe("undo");
         expect(result.current.cards.get("turn-2")?.action).toBe("undo");
 
@@ -218,6 +270,107 @@ describe("useAgentTurnChanges", () => {
         await waitFor(() => expect(result.current.awaitingAuthoritativeAck).toBe(false));
         expect(result.current.cards.get("turn-1")?.action).toBe("redo");
         expect(result.current.cards.get("turn-2")?.action).toBe("undo");
+    });
+
+    it("preserves an in-flight apply across leaf and revision advance until its turn action is acknowledged", async () => {
+        const apply = deferred<AgentRewindMutationResult>();
+        const runtime = client({ applyTurnUndo: vi.fn(() => apply.promise) });
+        const initial = options({ client: runtime });
+        const { result, rerender } = renderHook((props: UseAgentTurnChangesOptions) => useAgentTurnChanges(props), {
+            initialProps: initial,
+        });
+        await waitFor(() => expect(result.current.cards.has("turn-1")).toBe(true));
+        await act(async () => result.current.openMutation("turn-1"));
+        let applying!: Promise<void>;
+        act(() => {
+            applying = result.current.confirmMutation("normal");
+        });
+        await waitFor(() => expect(runtime.applyTurnUndo).toHaveBeenCalledOnce());
+
+        rerender({
+            ...initial,
+            sessionRevision: 2,
+            rewindState: rewindState(undefined, { semanticLeafId: "leaf-2", displayLeafId: "display-2" }),
+        });
+        expect(result.current.awaitingAuthoritativeAck).toBe(true);
+        expect(result.current.dialog.phase).toBe("applying");
+
+        await act(async () => {
+            apply.resolve({
+                sessionMetadata: initial.sessionMetadata!,
+                semanticLeafId: "leaf-2",
+                displayLeafId: "display-2",
+            });
+            await applying;
+        });
+        expect(result.current.awaitingAuthoritativeAck).toBe(true);
+        expect(result.current.dialog.open).toBe(true);
+
+        rerender({
+            ...initial,
+            sessionRevision: 2,
+            rewindState: rewindState([{ turnId: "turn-1", action: "redo", undoOperationId: "undo-1" }], {
+                semanticLeafId: "leaf-2",
+                displayLeafId: "display-2",
+            }),
+        });
+        await waitFor(() => expect(result.current.awaitingAuthoritativeAck).toBe(false));
+        expect(result.current.dialog.open).toBe(false);
+    });
+
+    it("does not unlock after an unrelated leaf advance and safely ignores completion after a session switch", async () => {
+        const apply = deferred<AgentRewindMutationResult>();
+        const runtime = client({ applyTurnUndo: vi.fn(() => apply.promise) });
+        const initial = options({ client: runtime });
+        const { result, rerender } = renderHook((props: UseAgentTurnChangesOptions) => useAgentTurnChanges(props), {
+            initialProps: initial,
+        });
+        await waitFor(() => expect(result.current.cards.has("turn-1")).toBe(true));
+        await act(async () => result.current.openMutation("turn-1"));
+        act(() => void result.current.confirmMutation("normal"));
+        await waitFor(() => expect(runtime.applyTurnUndo).toHaveBeenCalledOnce());
+
+        rerender({ ...initial, rewindState: rewindState(undefined, { semanticLeafId: "unrelated-leaf" }) });
+        expect(result.current.awaitingAuthoritativeAck).toBe(true);
+        expect(result.current.controlsDisabled).toBe(true);
+
+        rerender({
+            ...initial,
+            sessionMetadata: { id: "session-2", path: "/repo/other.jsonl", cwd: "/repo", createdAt: "now" },
+            sessionRevision: 3,
+            rewindState: rewindState([], { semanticLeafId: "other-leaf" }),
+            turns: [],
+        });
+        expect(result.current.awaitingAuthoritativeAck).toBe(false);
+        expect(result.current.dialog.open).toBe(false);
+        await act(async () => apply.reject(new Error("old session apply failed after switch")));
+        expect(initial.onError).not.toHaveBeenCalledWith("old session apply failed after switch");
+    });
+
+    it("fences a rapidly replaced review dialog and executes redo with its authoritative undo id", async () => {
+        const review = deferred<AgentReviewTurnChangesResult>();
+        const runtime = client({ reviewTurnChanges: vi.fn(() => review.promise) });
+        const state = rewindState([{ turnId: "turn-1", action: "redo", undoOperationId: "undo-1" }]);
+        const { result } = renderHook(() => useAgentTurnChanges(options({ client: runtime, rewindState: state })));
+        await waitFor(() => expect(result.current.cards.has("turn-1")).toBe(true));
+
+        act(() => void result.current.openReview("turn-1"));
+        await waitFor(() => expect(runtime.reviewTurnChanges).toHaveBeenCalledOnce());
+        await act(async () => result.current.openMutation("turn-1"));
+        expect(runtime.previewTurnRedo).toHaveBeenCalledWith(
+            expect.objectContaining({ turnId: "turn-1", undoOperationId: "undo-1" })
+        );
+        expect(result.current.dialog.kind).toBe("redo");
+
+        await act(async () => review.resolve({ turnId: "turn-1", semanticLeafId: "leaf-1", files: [fileRow()] }));
+        expect(result.current.dialog.kind).toBe("redo");
+
+        await act(async () => result.current.confirmMutation("force-drift"));
+        expect(runtime.applyTurnRedo).not.toHaveBeenCalled();
+        await act(async () => result.current.confirmMutation("normal"));
+        expect(runtime.applyTurnRedo).toHaveBeenCalledWith(
+            expect.objectContaining({ turnId: "turn-1", undoOperationId: "undo-1", mode: "normal" })
+        );
     });
 
     it("keeps the mutation dialog open with its error and disables controls during unsafe states", async () => {
