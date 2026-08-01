@@ -981,4 +981,129 @@ describe("WorkspaceRewindEngine transaction", () => {
             })
         ).rejects.toThrow(/semantic leaf changed/i);
     });
+
+    it("projects only the requested checkpoint path for a single-file diff", async () => {
+        const checkpoint: WorkspaceCheckpointV1 = {
+            schemaVersion: 1,
+            status: "available",
+            originSessionId: "session-1",
+            turnId: "turn-1",
+            workspaceIdentity: Identity,
+            workspaceIncarnation: Incarnation,
+            before: snapshot("1".repeat(40)),
+            after: snapshot("2".repeat(40)),
+            changes: [
+                {
+                    path: "unrelated.txt",
+                    before: { state: "file", oid: MissingOid, executable: false },
+                    after: { state: "file", oid: SecondOldOid, executable: false },
+                },
+                {
+                    path: "target.txt",
+                    before: { state: "file", oid: OldOid, executable: false },
+                    after: { state: "file", oid: NewOid, executable: false },
+                },
+            ],
+            coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 0, exclusions: [] },
+        };
+        const session = {
+            getEntries: vi.fn(async () => [
+                { ...userEntry(), parentId: null },
+                {
+                    type: "custom",
+                    id: "checkpoint-1",
+                    parentId: "turn-1",
+                    timestamp: "2026-07-29T00:00:01.000Z",
+                    customType: WorkspaceControlCustomTypes.checkpoint,
+                    data: checkpoint,
+                },
+            ]),
+        };
+        const value = makeHarness({
+            blobs: {
+                [MissingOid]: new Error("unrelated blob must not be read"),
+                [SecondOldOid]: "unrelated\n",
+                [OldOid]: "old\n",
+                [NewOid]: "new\n",
+            },
+        });
+
+        const file = await value.engine.getTurnFileDiff({
+            session: session as never,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "checkpoint-1",
+            sourceTurnId: "turn-1",
+            path: "target.txt",
+        });
+
+        expect(file).toMatchObject({ path: "target.txt", originalContent: "old\n", modifiedContent: "new\n" });
+        expect(value.store.readBlob).toHaveBeenCalledTimes(2);
+        expect(value.store.readBlob).toHaveBeenNthCalledWith(1, OldOid);
+        expect(value.store.readBlob).toHaveBeenNthCalledWith(2, NewOid);
+    });
+
+    it("reports unavailable summary statistics explicitly and isolates preview budgets per file", async () => {
+        const binary = Buffer.alloc(900_000, 1);
+        binary[0] = 0;
+        const changes = Array.from({ length: 5 }, (_, index) => ({
+            path: `binary-${index}.dat`,
+            before: { state: "file" as const, oid: (index + 1).toString(16).repeat(40), executable: false },
+            after: { state: "file" as const, oid: (index + 6).toString(16).repeat(40), executable: false },
+        }));
+        const checkpoint: WorkspaceCheckpointV1 = {
+            schemaVersion: 1,
+            status: "available",
+            originSessionId: "session-1",
+            turnId: "turn-1",
+            workspaceIdentity: Identity,
+            workspaceIncarnation: Incarnation,
+            before: snapshot("1".repeat(40)),
+            after: snapshot("2".repeat(40)),
+            changes,
+            coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 0, exclusions: [] },
+        };
+        const session = {
+            getEntries: vi.fn(async () => [
+                { ...userEntry(), parentId: null },
+                {
+                    type: "custom",
+                    id: "checkpoint-1",
+                    parentId: "turn-1",
+                    timestamp: "2026-07-29T00:00:01.000Z",
+                    customType: WorkspaceControlCustomTypes.checkpoint,
+                    data: checkpoint,
+                },
+            ]),
+        };
+        const blobs = Object.fromEntries(
+            changes.flatMap((change) => [
+                [change.before.oid, binary],
+                [change.after.oid, binary],
+            ])
+        );
+        const value = makeHarness({ blobs });
+        const input = {
+            session: session as never,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "checkpoint-1",
+            sourceTurnId: "turn-1",
+        };
+
+        const summary = await value.engine.getTurnChangeSummary(input);
+        const review = await value.engine.reviewTurnChanges(input);
+
+        expect(summary.additions).toBeNull();
+        expect(summary.deletions).toBeNull();
+        expect(summary.files).toEqual(
+            changes.map((change) => ({
+                path: change.path,
+                operation: "write",
+                additions: null,
+                deletions: null,
+            }))
+        );
+        expect(review.files.map((file) => file.previewUnavailableReason)).toEqual(Array(5).fill("binary file"));
+    });
 });

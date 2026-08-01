@@ -61,13 +61,13 @@ export interface AgentTurnChangeSummaryView {
     turnId: string;
     semanticLeafId: string | null;
     fileCount: number;
-    additions: number;
-    deletions: number;
+    additions: number | null;
+    deletions: number | null;
     files: Array<{
         path: string;
         operation: "create" | "write" | "delete";
-        additions: number;
-        deletions: number;
+        additions: number | null;
+        deletions: number | null;
     }>;
 }
 

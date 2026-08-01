@@ -3422,7 +3422,8 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         registry: runtimeRegistry,
         confirmations,
         openSession: (metadata) => openPaneSessionByPath(metadata.path),
-        resolveWorkspace: async ({ sessionMetadata, publishState }) => {
+        resolveWorkspace: async (input) => {
+            const { sessionMetadata } = input;
             const { getWaveDataDir } = await import("./emain-platform");
             const feature = await openAgentRewindFeature({
                 workspaceRoot: sessionMetadata.cwd,
@@ -3463,7 +3464,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                 journal,
                 recovery,
                 confirmations,
-                onCommitted: async () => await publishState(),
+                ...(input.mode === "mutation" ? { onCommitted: async () => await input.publishState() } : {}),
             });
             return { workspace: feature.store.identity, store: feature.store, engine };
         },
@@ -3856,6 +3857,9 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             "sessionMetadata"
         );
         if (schema.startsWith("turn-")) {
+            if (value.expectedSemanticLeafId !== null && typeof value.expectedSemanticLeafId !== "string") {
+                throw new Error("agent IPC: expectedSemanticLeafId must be a string or null");
+            }
             requireNonEmptyString(value.turnId, "turnId");
             if (schema === "turn-diff") requireNonEmptyString(value.path, "path");
             if (schema === "turn-redo-preview" || schema === "turn-redo-apply") {

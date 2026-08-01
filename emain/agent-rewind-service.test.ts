@@ -103,6 +103,14 @@ function harness() {
         close: vi.fn(),
     };
     const registry = {
+        withSessionAccess: vi.fn(async (_path, operation) => {
+            order.push("session-access");
+            try {
+                return await operation({ path: Metadata.path, token: Symbol("access") });
+            } finally {
+                order.push("release-session-access");
+            }
+        }),
         withRetainedSessionMutation: vi.fn(async (_path, _options, operation) => {
             order.push("session-lease");
             try {
@@ -165,18 +173,26 @@ function harness() {
         })),
         previewRewind: vi.fn(async () => previewResult),
         previewRedo: vi.fn(async () => ({ ...previewResult, target: { kind: "redo" as const } })),
-        previewTurnUndo: vi.fn(async () => ({
-            ...previewResult,
-            target: { kind: "turn-undo" as const, sourceTurnId: "turn-1" },
-        })),
-        previewTurnRedo: vi.fn(async () => ({
-            ...previewResult,
-            target: {
+        previewTurnUndo: vi.fn(async () => {
+            const target = { kind: "turn-undo" as const, sourceTurnId: "turn-1" };
+            return {
+                ...previewResult,
+                confirmationToken: confirmations.issue({ ...plan(), target }),
+                target,
+            };
+        }),
+        previewTurnRedo: vi.fn(async () => {
+            const target = {
                 kind: "turn-redo" as const,
                 sourceTurnId: "turn-1",
                 undoOperationId: "undo-1",
-            },
-        })),
+            };
+            return {
+                ...previewResult,
+                confirmationToken: confirmations.issue({ ...plan(), target }),
+                target,
+            };
+        }),
         applyRewind: vi.fn(async () => {
             order.push("engine-apply");
             await publishState?.();
@@ -225,7 +241,7 @@ function harness() {
         confirmations,
         openSession: vi.fn(async () => session as never),
         resolveWorkspace: vi.fn(async (input) => {
-            publishState = input.publishState;
+            if ("publishState" in input) publishState = input.publishState;
             return { workspace: Workspace, store: store as never, engine: engine as never };
         }),
         broadcaster: broadcaster as never,
@@ -400,12 +416,8 @@ describe("AgentRewindService", () => {
             expect(value.engine.reviewTurnChanges).toHaveBeenCalledTimes(kind === "review" ? 1 : 0);
             expect(issue).not.toHaveBeenCalled();
             expect(take).not.toHaveBeenCalled();
-            expect(value.order).toEqual([
-                "session-lease",
-                "workspace-lock",
-                "release-workspace-lock",
-                "release-session-lease",
-            ]);
+            expect(value.order).toEqual(["session-access", "release-session-access"]);
+            expect(value.store.withWorkspaceLock).not.toHaveBeenCalled();
         }
     );
 
@@ -423,17 +435,7 @@ describe("AgentRewindService", () => {
                 kind === "undo"
                     ? await value.service.previewTurnUndo(previewInput)
                     : await value.service.previewTurnRedo(previewInput);
-            const token = value.confirmations.issue({
-                ...plan(),
-                target:
-                    kind === "undo"
-                        ? { kind: "turn-undo", sourceTurnId: "turn-1" }
-                        : {
-                              kind: "turn-redo",
-                              sourceTurnId: "turn-1",
-                              undoOperationId: "undo-1",
-                          },
-            });
+            const token = preview.confirmationToken!;
             const applyInput = {
                 ...previewInput,
                 mode: "normal" as const,
@@ -450,6 +452,14 @@ describe("AgentRewindService", () => {
             expect(preview).not.toHaveProperty("targetPrompt");
             expect(result.semanticLeafId).toBe(kind === "undo" ? "turn-undo-leaf" : "turn-redo-leaf");
             expect(value.broadcaster.publishForLease).toHaveBeenCalledOnce();
+            const applied = kind === "undo" ? value.engine.applyTurnUndo : value.engine.applyTurnRedo;
+            expect(applied).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    confirmation: expect.objectContaining({
+                        binding: expect.objectContaining({ target: preview.target }),
+                    }),
+                })
+            );
             expect(() => value.confirmations.take(token)).toThrow(/already consumed/i);
             expect(value.order).toEqual([
                 "session-lease",

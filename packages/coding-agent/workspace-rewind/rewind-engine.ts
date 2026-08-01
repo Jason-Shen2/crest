@@ -31,7 +31,7 @@ import {
 import { foldWorkspaceSessionState } from "./session-state";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoInput } from "./turn-restore-plan";
-import type { WorkspaceStateV1 } from "./types";
+import type { WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import type { WorkspaceRecovery } from "./workspace-recovery";
 import { WorkspaceRestoreExecutor, workspaceStateFromJournal } from "./workspace-restore-executor";
@@ -127,6 +127,12 @@ interface PlannedRestore {
     rewindState?: WorkspaceRewindMarkerV1;
     targetEntry?: Extract<SessionTreeEntry, { type: "message" }>;
 }
+
+type AvailableCheckpoint = Extract<WorkspaceCheckpointV1, { status: "available" }>;
+type ProjectedTurnFile = AgentRewindFileRowView & {
+    originalContent?: string;
+    modifiedContent?: string;
+};
 
 interface ApplyRestoreInput {
     session: Session<JsonlSessionMetadata>;
@@ -294,15 +300,16 @@ export class WorkspaceRewindEngine {
         const files = projected.files.map((file) => ({
             path: file.path,
             operation: file.operation as "create" | "write" | "delete",
-            additions: file.additions ?? 0,
-            deletions: file.deletions ?? 0,
+            additions: file.additions ?? null,
+            deletions: file.deletions ?? null,
         }));
+        const statisticsAvailable = files.every((file) => file.additions != null && file.deletions != null);
         return {
             turnId: input.sourceTurnId,
             semanticLeafId: projected.semanticLeafId,
             fileCount: files.length,
-            additions: files.reduce((total, file) => total + file.additions, 0),
-            deletions: files.reduce((total, file) => total + file.deletions, 0),
+            additions: statisticsAvailable ? files.reduce((total, file) => total + (file.additions ?? 0), 0) : null,
+            deletions: statisticsAvailable ? files.reduce((total, file) => total + (file.deletions ?? 0), 0) : null,
             files,
         };
     }
@@ -317,9 +324,16 @@ export class WorkspaceRewindEngine {
     }
 
     async getTurnFileDiff(input: ReadTurnFileDiffInput): Promise<AgentTurnFileDiffView> {
-        const projected = await this.projectTurnChanges(input);
-        const file = projected.files.find((candidate) => candidate.path === input.path);
-        if (!file) throw new Error("Turn file is not present in the workspace checkpoint");
+        const loaded = await this.loadTurnCheckpoint(input);
+        const change = loaded.checkpoint.changes.find((candidate) => candidate.path === input.path);
+        if (!change) throw new Error("Turn file is not present in the workspace checkpoint");
+        const file = await projectWorkspacePathDiff({
+            path: change.path,
+            before: change.before,
+            after: change.after,
+            readBlob: (oid) => this.store.readBlob(oid),
+            budget: new WorkspaceDiffPreviewBudget(),
+        });
         const originalContent = file.originalContent ?? "";
         const modifiedContent = file.modifiedContent ?? "";
         return {
@@ -366,12 +380,27 @@ export class WorkspaceRewindEngine {
 
     private async projectTurnChanges(input: ReadTurnChangesInput): Promise<{
         semanticLeafId: string | null;
-        files: Array<
-            AgentRewindFileRowView & {
-                originalContent?: string;
-                modifiedContent?: string;
-            }
-        >;
+        files: ProjectedTurnFile[];
+    }> {
+        const loaded = await this.loadTurnCheckpoint(input);
+        const files: ProjectedTurnFile[] = [];
+        for (const change of loaded.checkpoint.changes) {
+            files.push(
+                await projectWorkspacePathDiff({
+                    path: change.path,
+                    before: change.before,
+                    after: change.after,
+                    readBlob: (oid) => this.store.readBlob(oid),
+                    budget: new WorkspaceDiffPreviewBudget(),
+                })
+            );
+        }
+        return { semanticLeafId: loaded.semanticLeafId, files };
+    }
+
+    private async loadTurnCheckpoint(input: ReadTurnChangesInput): Promise<{
+        semanticLeafId: string | null;
+        checkpoint: AvailableCheckpoint;
     }> {
         this.assertWorkspace(input.workspace);
         const entries = await input.session.getEntries();
@@ -391,20 +420,7 @@ export class WorkspaceRewindEngine {
         }
         await this.store.verify(checkpoint.before);
         await this.store.verify(checkpoint.after);
-        const budget = new WorkspaceDiffPreviewBudget();
-        const files = [];
-        for (const change of checkpoint.changes) {
-            files.push(
-                await projectWorkspacePathDiff({
-                    path: change.path,
-                    before: change.before,
-                    after: change.after,
-                    readBlob: (oid) => this.store.readBlob(oid),
-                    budget,
-                })
-            );
-        }
-        return { semanticLeafId: folded.semanticLeafId, files };
+        return { semanticLeafId: folded.semanticLeafId, checkpoint };
     }
 
     private async preview(planned: PlannedRestore): Promise<WorkspaceRestorePreviewResult> {

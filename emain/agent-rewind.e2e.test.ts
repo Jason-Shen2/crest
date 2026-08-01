@@ -413,7 +413,7 @@ async function makeFixture() {
             confirmations,
             openSession: (input) => repo.open(input),
             resolveWorkspace: async (input) => {
-                publishState = input.publishState;
+                if (input.mode === "mutation") publishState = input.publishState;
                 return { workspace: identity, store, engine };
             },
             broadcaster: { publishForLease },

@@ -39,14 +39,20 @@ export interface AgentRewindResolvedWorkspace {
     engine: WorkspaceRewindEngine;
 }
 
-export interface ResolveAgentRewindWorkspaceInput {
-    sessionMetadata: JsonlSessionMetadata;
-    lease: RetainedSessionMutationLease<AgentSessionRuntime>;
-    publishState(): Promise<void>;
-}
+export type ResolveAgentRewindWorkspaceInput =
+    | {
+          mode: "read";
+          sessionMetadata: JsonlSessionMetadata;
+      }
+    | {
+          mode: "mutation";
+          sessionMetadata: JsonlSessionMetadata;
+          lease: RetainedSessionMutationLease<AgentSessionRuntime>;
+          publishState(): Promise<void>;
+      };
 
 export interface AgentRewindServiceOptions {
-    registry: Pick<AgentRuntimeRegistry<AgentSessionRuntime>, "withRetainedSessionMutation">;
+    registry: Pick<AgentRuntimeRegistry<AgentSessionRuntime>, "withRetainedSessionMutation" | "withSessionAccess">;
     confirmations: RewindConfirmationRegistry;
     openSession(metadata: JsonlSessionMetadata): Promise<Session<JsonlSessionMetadata>>;
     resolveWorkspace(input: ResolveAgentRewindWorkspaceInput): Promise<AgentRewindResolvedWorkspace>;
@@ -157,7 +163,7 @@ export class AgentRewindService {
     }
 
     getTurnChangeSummary(input: AgentTurnTargetInput): Promise<AgentTurnChangeSummaryView> {
-        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) =>
+        return this.withReadSession(input.sessionMetadata, ({ session, workspace, engine }) =>
             engine.getTurnChangeSummary({
                 session,
                 sessionId: input.sessionMetadata.id,
@@ -169,7 +175,7 @@ export class AgentRewindService {
     }
 
     getTurnFileDiff(input: AgentGetTurnFileDiffInput): Promise<AgentTurnFileDiffView> {
-        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) =>
+        return this.withReadSession(input.sessionMetadata, ({ session, workspace, engine }) =>
             engine.getTurnFileDiff({
                 session,
                 sessionId: input.sessionMetadata.id,
@@ -182,7 +188,7 @@ export class AgentRewindService {
     }
 
     reviewTurnChanges(input: AgentTurnTargetInput): Promise<AgentReviewTurnChangesResult> {
-        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) =>
+        return this.withReadSession(input.sessionMetadata, ({ session, workspace, engine }) =>
             engine.reviewTurnChanges({
                 session,
                 sessionId: input.sessionMetadata.id,
@@ -328,6 +334,7 @@ export class AgentRewindService {
                     await this.broadcaster.publishForLease(lease, sessionMetadata);
                 };
                 const resolved = await this.resolveWorkspace({
+                    mode: "mutation",
                     sessionMetadata,
                     lease,
                     publishState,
@@ -347,5 +354,24 @@ export class AgentRewindService {
                 }
             }
         );
+    }
+
+    private withReadSession<T>(
+        sessionMetadata: JsonlSessionMetadata,
+        operation: (input: LockedSession) => Promise<T>
+    ): Promise<T> {
+        return this.registry.withSessionAccess(sessionMetadata.path, async () => {
+            const resolved = await this.resolveWorkspace({ mode: "read", sessionMetadata });
+            const session = await this.openSession(sessionMetadata);
+            try {
+                return await operation({
+                    session,
+                    workspace: resolved.workspace,
+                    engine: resolved.engine,
+                });
+            } finally {
+                session.close();
+            }
+        });
     }
 }

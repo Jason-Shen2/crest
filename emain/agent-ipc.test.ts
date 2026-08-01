@@ -4155,6 +4155,27 @@ describe("agent-ipc command helpers", () => {
             turnId: "turn-1",
         };
 
+        const invalidLeafRequests = [
+            ["agent:get-turn-change-summary", base],
+            ["agent:get-turn-file-diff", { ...base, path: "file.txt" }],
+            ["agent:review-turn-changes", base],
+            ["agent:preview-turn-undo", base],
+            ["agent:apply-turn-undo", { ...base, mode: "normal", confirmationToken: "token" }],
+            ["agent:preview-turn-redo", { ...base, undoOperationId: "undo-1" }],
+            [
+                "agent:apply-turn-redo",
+                { ...base, undoOperationId: "undo-1", mode: "normal", confirmationToken: "token" },
+            ],
+        ] as const;
+        for (const [channel, request] of invalidLeafRequests) {
+            await expect(
+                handlers.get(channel)?.(event, TrustedRequestContext, {
+                    ...request,
+                    expectedSemanticLeafId: 42,
+                })
+            ).rejects.toThrow(/expectedSemanticLeafId/i);
+        }
+        for (const method of Object.values(methods)) expect(method).not.toHaveBeenCalled();
         await handlers.get("agent:get-turn-change-summary")?.(event, TrustedRequestContext, base);
         await handlers.get("agent:get-turn-file-diff")?.(event, TrustedRequestContext, { ...base, path: "file.txt" });
         await handlers.get("agent:review-turn-changes")?.(event, TrustedRequestContext, base);
