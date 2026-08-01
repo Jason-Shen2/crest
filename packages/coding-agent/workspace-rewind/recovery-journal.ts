@@ -15,6 +15,7 @@ import {
     type AnchoredJournalEntry,
 } from "./journal-directory";
 import type { WorkspaceOperationOwnerV1 } from "./pending-boundary-store";
+import type { RestoreTargetV1 } from "./restore-plan";
 import type { CapturedPathStateV1, WorkspaceCoverageReason, WorkspaceSnapshotRefV1 } from "./types";
 import { decodeWorkspaceSnapshotRefV1 } from "./validation";
 
@@ -42,11 +43,10 @@ export interface WorkspaceOperationJournalV1 {
     sessionId: string;
     sessionPath: string;
     operationId: string;
-    kind: "rewind" | "redo";
+    target: RestoreTargetV1;
+    commitParentId: string | null;
     applyMode: "normal" | "force-drift";
     expectedSemanticLeafId: string | null;
-    targetTurnId: string | null;
-    targetBoundaryId: string | null;
     safetySnapshot: WorkspaceSnapshotRefV1;
     confirmedConflictFingerprints: Array<{ path: string; fingerprint: string }>;
     paths: WorkspaceOperationPathV1[];
@@ -637,11 +637,10 @@ export function decodeWorkspaceOperationJournalV1(value: unknown): WorkspaceOper
         "sessionId",
         "sessionPath",
         "operationId",
-        "kind",
+        "target",
+        "commitParentId",
         "applyMode",
         "expectedSemanticLeafId",
-        "targetTurnId",
-        "targetBoundaryId",
         "safetySnapshot",
         "confirmedConflictFingerprints",
         "paths",
@@ -658,11 +657,9 @@ export function decodeWorkspaceOperationJournalV1(value: unknown): WorkspaceOper
         !isSafeString(value.sessionId) ||
         !isAbsoluteSafePath(value.sessionPath) ||
         !TokenPattern.test(String(value.operationId ?? "")) ||
-        (value.kind !== "rewind" && value.kind !== "redo") ||
         (value.applyMode !== "normal" && value.applyMode !== "force-drift") ||
         (value.expectedSemanticLeafId != null && !isSafeString(value.expectedSemanticLeafId)) ||
-        (value.targetTurnId != null && !isSafeString(value.targetTurnId)) ||
-        (value.targetBoundaryId != null && !isSafeString(value.targetBoundaryId)) ||
+        (value.commitParentId != null && !isSafeString(value.commitParentId)) ||
         !isSafeString(value.workspaceStateEntryId) ||
         !Array.isArray(value.confirmedConflictFingerprints) ||
         !Array.isArray(value.paths) ||
@@ -670,10 +667,11 @@ export function decodeWorkspaceOperationJournalV1(value: unknown): WorkspaceOper
     ) {
         return undefined;
     }
-    if (
-        (value.kind === "rewind" && value.targetTurnId == null) ||
-        (value.kind === "redo" && value.targetTurnId != null)
-    ) {
+    const target = decodeRestoreTargetV1(value.target);
+    if (!target) {
+        return undefined;
+    }
+    if (value.applyMode === "force-drift" && target.kind !== "rewind" && target.kind !== "turn-undo") {
         return undefined;
     }
     const safetySnapshot = decodeWorkspaceSnapshotRefV1(value.safetySnapshot);
@@ -734,17 +732,46 @@ export function decodeWorkspaceOperationJournalV1(value: unknown): WorkspaceOper
         sessionId: value.sessionId as string,
         sessionPath: value.sessionPath as string,
         operationId: value.operationId as string,
-        kind: value.kind,
+        target,
+        commitParentId: value.commitParentId as string | null,
         applyMode: value.applyMode,
         expectedSemanticLeafId: value.expectedSemanticLeafId as string | null,
-        targetTurnId: value.targetTurnId as string | null,
-        targetBoundaryId: value.targetBoundaryId as string | null,
         safetySnapshot,
         confirmedConflictFingerprints: conflicts,
         paths,
         workspaceStateEntryId: value.workspaceStateEntryId as string,
         ...(resultSnapshot == null ? {} : { resultSnapshot }),
     };
+}
+
+function decodeRestoreTargetV1(value: unknown): RestoreTargetV1 | undefined {
+    if (!isRecord(value)) return undefined;
+    if (value.kind === "rewind" && hasExactKeys(value, ["kind", "targetTurnId"]) && isSafeString(value.targetTurnId)) {
+        return { kind: "rewind", targetTurnId: value.targetTurnId };
+    }
+    if (value.kind === "redo" && hasExactKeys(value, ["kind"])) {
+        return { kind: "redo" };
+    }
+    if (
+        value.kind === "turn-undo" &&
+        hasExactKeys(value, ["kind", "sourceTurnId"]) &&
+        isSafeString(value.sourceTurnId)
+    ) {
+        return { kind: "turn-undo", sourceTurnId: value.sourceTurnId };
+    }
+    if (
+        value.kind === "turn-redo" &&
+        hasExactKeys(value, ["kind", "sourceTurnId", "undoOperationId"]) &&
+        isSafeString(value.sourceTurnId) &&
+        isSafeString(value.undoOperationId)
+    ) {
+        return {
+            kind: "turn-redo",
+            sourceTurnId: value.sourceTurnId,
+            undoOperationId: value.undoOperationId,
+        };
+    }
+    return undefined;
 }
 
 function decodeOperationPath(value: unknown): WorkspaceOperationPathV1 | undefined {

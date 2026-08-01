@@ -20,6 +20,7 @@ import {
 import { decodeWorkspaceStateEntry } from "./session-state";
 import type { CapturedPathStateV1, WorkspaceSnapshotRefV1 } from "./types";
 import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
+import { workspaceStateFromJournal } from "./workspace-restore-executor";
 
 export interface WorkspaceRecoveryView {
     operationId: string;
@@ -540,34 +541,15 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         if (leafId !== record.workspaceStateEntryId) {
             return false;
         }
+        if (!record.resultSnapshot) {
+            return false;
+        }
         const entry = await session.getEntry(record.workspaceStateEntryId);
         const state = entry == null ? undefined : decodeWorkspaceStateEntry(entry);
-        const expectedCurrentStates = record.paths.map((path) => ({ path: path.path, state: path.target }));
-        const expectedForcedPaths = record.confirmedConflictFingerprints.map((item) => item.path);
-        const exactRewind =
-            record.kind === "rewind"
-                ? state?.kind === "rewind" &&
-                  state.rewind.fromLeafId === record.expectedSemanticLeafId &&
-                  state.rewind.targetTurnId === record.targetTurnId &&
-                  state.rewind.targetBoundaryId === record.targetBoundaryId &&
-                  sameDurableValue(state.rewind.redoSnapshot, record.safetySnapshot) &&
-                  sameDurableValue(
-                      state.rewind.redoStates,
-                      record.paths.map((path) => ({ path: path.path, state: path.preState }))
-                  )
-                : state?.kind === "redo";
         return (
-            entry?.parentId === record.targetBoundaryId &&
-            state?.operationId === record.operationId &&
-            state.sessionId === record.sessionId &&
-            state.workspaceIdentity === record.workspaceIdentity &&
-            state.workspaceIncarnation === record.workspaceIncarnation &&
-            state.kind === record.kind &&
-            state.applyMode === record.applyMode &&
-            sameDurableValue(state.forcedPaths, expectedForcedPaths) &&
-            sameDurableValue(state.currentSnapshot, record.resultSnapshot) &&
-            sameDurableValue(state.currentStates, expectedCurrentStates) &&
-            exactRewind
+            entry?.parentId === record.commitParentId &&
+            state != null &&
+            sameDurableValue(state, workspaceStateFromJournal(record))
         );
     }
 
@@ -635,11 +617,10 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
     }
 
     makeMutationScope(requestGuard?: WorkspaceRecoveryMutationGuard): WorkspaceRecoveryMutationScope {
-        const recovery = this;
         const scope: WorkspaceRecoveryMutationScope = {
-            async assertCurrent() {
+            assertCurrent: async () => {
                 try {
-                    await recovery.assertCurrent();
+                    await this.assertCurrent();
                     await requestGuard?.();
                 } catch (error) {
                     scope.failure = error;

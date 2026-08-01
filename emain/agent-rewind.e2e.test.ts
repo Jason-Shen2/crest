@@ -878,11 +878,10 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
             sessionId: value.metadata.id,
             sessionPath: value.metadata.path,
             operationId: "operation-e2e-crash",
-            kind: "rewind",
+            target: { kind: "rewind", targetTurnId: expectedLeaf },
+            commitParentId: null,
             applyMode: "normal",
             expectedSemanticLeafId: expectedLeaf,
-            targetTurnId: expectedLeaf,
-            targetBoundaryId: null,
             safetySnapshot: safety.ref,
             confirmedConflictFingerprints: [],
             paths: [

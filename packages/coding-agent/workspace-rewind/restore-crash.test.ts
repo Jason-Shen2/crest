@@ -132,13 +132,57 @@ describe("restore crash phase oracle", () => {
         await expect(recovery.journal.read("operation-1")).resolves.toMatchObject({ phase: "applying_files" });
         recovery.session.close();
     }, 30_000);
+
+    it.each(["turn-undo", "turn-redo"] as const)(
+        "recovers %s at every durable phase boundary",
+        async (kind) => {
+            for (const boundary of [
+                "after-prepared",
+                "after-applying_files",
+                "after-files_verified",
+                "after-committing_session",
+                "sqlite-cas-after",
+            ] as const) {
+                const fixture = await crashAt(boundary, kind);
+                const recovery = await openRecovery(fixture.metadata);
+
+                await recovery.coordinator.ensureRecovered(fixture.metadata.identity);
+
+                expect(await readRecoveredState(fixture.metadata)).toEqual(expectedRecovery(boundary));
+                await expect(recovery.journal.read("operation-1")).rejects.toThrow(/not found/i);
+                recovery.session.close();
+            }
+        },
+        30_000
+    );
+
+    it.each(["turn-undo", "turn-redo"] as const)("freezes %s without replacing third-party bytes", async (kind) => {
+        const fixture = await crashAt("path-rename-after-0", kind);
+        const manual = Buffer.from(`manual ${kind}`);
+        await writeFile(join(fixture.metadata.identity.canonicalRoot, "first.txt"), manual);
+        const recovery = await openRecovery(fixture.metadata);
+
+        await expect(recovery.coordinator.ensureRecovered(fixture.metadata.identity)).rejects.toThrow(
+            WorkspaceFrozenError
+        );
+
+        expect(await readFile(join(fixture.metadata.identity.canonicalRoot, "first.txt"))).toEqual(manual);
+        await expect(recovery.journal.read("operation-1")).resolves.toMatchObject({
+            phase: "applying_files",
+            target: expect.objectContaining({ kind }),
+        });
+        recovery.session.close();
+    });
 });
 
-async function crashAt(boundary: Boundary): Promise<{ root: string; metadata: CrashFixtureMetadata }> {
+async function crashAt(
+    boundary: Boundary,
+    kind: "rewind" | "turn-undo" | "turn-redo" = "rewind"
+): Promise<{ root: string; metadata: CrashFixtureMetadata }> {
     const root = await mkdtemp(join(tmpdir(), "crest-restore-crash-"));
     cleanupRoots.push(root);
     const workerPath = resolve("packages/coding-agent/workspace-rewind/fixtures/restore-crash-worker.ts");
-    const child = fork(workerPath, [root, boundary], {
+    const child = fork(workerPath, [root, boundary, kind], {
         execArgv: ["--import", "tsx"],
         stdio: ["ignore", "ignore", "pipe", "ipc"],
     });

@@ -16,13 +16,9 @@ import {
     type WorkspaceRecoveryJournalBoundary,
 } from "../recovery-journal";
 import { WorkspaceSnapshotStore } from "../snapshot-store";
-import {
-    WorkspaceControlCustomTypes,
-    type CapturedPathStateV1,
-    type WorkspaceSnapshotRefV1,
-    type WorkspaceStateV1,
-} from "../types";
+import { WorkspaceControlCustomTypes, type CapturedPathStateV1, type WorkspaceSnapshotRefV1 } from "../types";
 import type { CanonicalWorkspaceIdentity, WorkspaceDirectoryIdentityToken } from "../workspace-identity";
+import { workspaceStateFromJournal } from "../workspace-restore-executor";
 
 const Identity = "1".repeat(64);
 const Incarnation = "2".repeat(64);
@@ -33,9 +29,12 @@ const PreContents = [Buffer.from("pre first"), Buffer.from("pre second")] as con
 const TargetContents = [Buffer.from("target first"), Buffer.from("target second")] as const;
 
 async function main(): Promise<void> {
-    const [root, boundary] = process.argv.slice(2);
+    const [root, boundary, requestedKind = "rewind"] = process.argv.slice(2);
     if (!root || !boundary) {
         throw new Error("restore crash worker arguments are invalid");
+    }
+    if (requestedKind !== "rewind" && requestedKind !== "turn-undo" && requestedKind !== "turn-redo") {
+        throw new Error("restore crash worker kind is invalid");
     }
     const workspaceRoot = join(root, "workspace");
     const dataRoot = join(root, "data");
@@ -105,10 +104,10 @@ async function main(): Promise<void> {
             await pause(value);
         },
     });
-    const record = operation(identity, sessionPath, safetySnapshot, pathStates);
+    let record = operation(identity, sessionPath, safetySnapshot, pathStates, requestedKind);
 
     await journal.begin(record);
-    await journal.transition(OperationId, "applying_files");
+    record = await journal.transition(OperationId, "applying_files");
     for (let index = 0; index < pathStates.length; index++) {
         const item = pathStates[index]!;
         const createdParentDirectories = new Set<string>();
@@ -131,10 +130,10 @@ async function main(): Promise<void> {
             },
         });
     }
-    await journal.transition(OperationId, "files_verified", { resultSnapshot });
-    await journal.transition(OperationId, "committing_session");
+    record = await journal.transition(OperationId, "files_verified", { resultSnapshot });
+    record = await journal.transition(OperationId, "committing_session");
     await pause("sqlite-cas-before");
-    await session.appendEntries([workspaceStateEntry(identity, safetySnapshot, resultSnapshot, pathStates)], {
+    await session.appendEntries([workspaceStateEntry(record)], {
         expectedLeafId: "old-leaf",
     });
     await pause("sqlite-cas-after");
@@ -147,8 +146,19 @@ function operation(
     identity: CanonicalWorkspaceIdentity,
     sessionPath: string,
     safetySnapshot: WorkspaceSnapshotRefV1,
-    paths: Array<{ path: string; preState: CapturedPathStateV1; target: CapturedPathStateV1 }>
+    paths: Array<{ path: string; preState: CapturedPathStateV1; target: CapturedPathStateV1 }>,
+    kind: "rewind" | "turn-undo" | "turn-redo"
 ): WorkspaceOperationJournalV1 {
+    const target =
+        kind === "rewind"
+            ? ({ kind: "rewind", targetTurnId: "target-turn" } as const)
+            : kind === "turn-undo"
+              ? ({ kind: "turn-undo", sourceTurnId: "source-turn" } as const)
+              : ({
+                    kind: "turn-redo",
+                    sourceTurnId: "source-turn",
+                    undoOperationId: "undo-operation",
+                } as const);
     return {
         schemaVersion: 1,
         phase: "prepared",
@@ -157,11 +167,10 @@ function operation(
         sessionId: SessionId,
         sessionPath,
         operationId: OperationId,
-        kind: "rewind",
+        target,
+        commitParentId: kind === "rewind" ? "target-boundary" : "old-leaf",
         applyMode: "normal",
         expectedSemanticLeafId: "old-leaf",
-        targetTurnId: "target-turn",
-        targetBoundaryId: "target-boundary",
         safetySnapshot,
         confirmedConflictFingerprints: [],
         paths: paths.map((item, index) => ({
@@ -196,38 +205,14 @@ function initialSessionEntries(): SessionTreeEntry[] {
     ];
 }
 
-function workspaceStateEntry(
-    identity: CanonicalWorkspaceIdentity,
-    safetySnapshot: WorkspaceSnapshotRefV1,
-    resultSnapshot: WorkspaceSnapshotRefV1,
-    paths: Array<{ path: string; preState: CapturedPathStateV1; target: CapturedPathStateV1 }>
-): SessionTreeEntry {
-    const state: WorkspaceStateV1 = {
-        schemaVersion: 1,
-        sessionId: SessionId,
-        operationId: OperationId,
-        workspaceIdentity: identity.workspaceIdentity,
-        workspaceIncarnation: identity.workspaceIncarnation,
-        kind: "rewind",
-        applyMode: "normal",
-        forcedPaths: [],
-        currentSnapshot: resultSnapshot,
-        currentStates: paths.map((item) => ({ path: item.path, state: item.target })),
-        rewind: {
-            fromLeafId: "old-leaf",
-            targetTurnId: "target-turn",
-            targetBoundaryId: "target-boundary",
-            redoSnapshot: safetySnapshot,
-            redoStates: paths.map((item) => ({ path: item.path, state: item.preState })),
-        },
-    };
+function workspaceStateEntry(record: WorkspaceOperationJournalV1): SessionTreeEntry {
     return {
         type: "custom",
         id: "operation-leaf",
-        parentId: "target-boundary",
+        parentId: record.commitParentId,
         timestamp: new Date(1).toISOString(),
         customType: WorkspaceControlCustomTypes.state,
-        data: state,
+        data: workspaceStateFromJournal(record),
     };
 }
 

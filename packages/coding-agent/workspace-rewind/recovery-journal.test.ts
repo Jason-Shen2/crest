@@ -37,11 +37,10 @@ function operation(phase: WorkspaceOperationJournalV1["phase"] = "prepared"): Wo
         sessionId: "session-1",
         sessionPath: "/diagnostic/session.sqlite",
         operationId: "operation-1",
-        kind: "rewind",
+        target: { kind: "rewind", targetTurnId: "target-turn" },
         applyMode: "normal",
         expectedSemanticLeafId: "leaf-before",
-        targetTurnId: "target-turn",
-        targetBoundaryId: "target-boundary",
+        commitParentId: "target-boundary",
         safetySnapshot: snapshot(),
         confirmedConflictFingerprints: [],
         paths: [
@@ -116,6 +115,25 @@ describe("workspace recovery journal", () => {
 
     it("validates exact schema, identity, states, paths, and canonical JSON", async () => {
         expect(decodeWorkspaceOperationJournalV1(operation())).toEqual(operation());
+        expect(
+            decodeWorkspaceOperationJournalV1({
+                ...operation(),
+                kind: "rewind",
+            })
+        ).toBeUndefined();
+        expect(
+            decodeWorkspaceOperationJournalV1({
+                ...operation(),
+                target: { kind: "turn-redo", sourceTurnId: "turn-1" },
+            })
+        ).toBeUndefined();
+        expect(
+            decodeWorkspaceOperationJournalV1({
+                ...operation(),
+                target: { kind: "redo" },
+                applyMode: "force-drift",
+            })
+        ).toBeUndefined();
         expect(decodeWorkspaceOperationJournalV1({ ...operation(), extra: true })).toBeUndefined();
         expect(
             decodeWorkspaceOperationJournalV1({

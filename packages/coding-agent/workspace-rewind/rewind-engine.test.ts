@@ -143,6 +143,8 @@ function makeSession(options: { appendError?: Error; appendErrorAfterCommit?: Er
 function makeHarness(input: {
     plan?: RestorePlanV1;
     redoPlan?: RestorePlanV1;
+    turnUndoPlan?: RestorePlanV1;
+    turnRedoPlan?: RestorePlanV1;
     blobs?: Record<string, Buffer | string | Error>;
     preStates?: Record<string, CapturedPathStateV1>;
     failApplyAt?: string;
@@ -245,6 +247,8 @@ function makeHarness(input: {
             return structuredClone(plan);
         }),
         planRedo: input.useRealPlanRedo ? planRedo : vi.fn(async () => structuredClone(input.redoPlan ?? plan)),
+        planTurnUndo: vi.fn(async () => structuredClone(input.turnUndoPlan ?? plan)),
+        planTurnRedo: vi.fn(async () => structuredClone(input.turnRedoPlan ?? plan)),
         inspectLivePath: vi.fn(
             async (path: string) =>
                 ({
@@ -799,5 +803,82 @@ describe("WorkspaceRewindEngine transaction", () => {
         );
         expect(redoPreview.hardBlocked).toBe(true);
         expect(redoPreview.confirmationToken).toBeUndefined();
+    });
+
+    it("keeps turn Undo and Redo on the current semantic branch while preserving the display leaf", async () => {
+        const undoPlan = restorePlan({
+            target: { kind: "turn-undo", sourceTurnId: "turn-1" },
+            commitParentId: "old-leaf",
+            paths: [],
+        });
+        const value = makeHarness({ turnUndoPlan: undoPlan });
+        const undoPreview = await value.engine.previewTurnUndo({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            sourceTurnId: "turn-1",
+        });
+        const undo = await value.engine.applyTurnUndo({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            sourceTurnId: "turn-1",
+            mode: "normal",
+            confirmation: value.confirmations.take(undoPreview.confirmationToken!),
+        });
+
+        expect(value.session.entries.at(-1)).toMatchObject({
+            parentId: "old-leaf",
+            data: { kind: "turn-undo", sourceTurnId: "turn-1" },
+        });
+        expect(undo).toMatchObject({
+            semanticLeafId: "operation-leaf-1",
+            displayLeafId: undoPreview.displayLeafId,
+        });
+
+        const redoPlan = restorePlan({
+            target: {
+                kind: "turn-redo",
+                sourceTurnId: "turn-1",
+                undoOperationId: "operation-1",
+            },
+            semanticLeafId: "operation-leaf-1",
+            commitParentId: "operation-leaf-1",
+            paths: [],
+        });
+        Object.assign(value.options, { planTurnRedo: vi.fn(async () => structuredClone(redoPlan)) });
+        const redoEngine = new WorkspaceRewindEngine(value.options);
+        const redoPreview = await redoEngine.previewTurnRedo({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "operation-leaf-1",
+            sourceTurnId: "turn-1",
+            undoOperationId: "operation-1",
+        });
+        const redo = await redoEngine.applyTurnRedo({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "operation-leaf-1",
+            sourceTurnId: "turn-1",
+            undoOperationId: "operation-1",
+            confirmation: value.confirmations.take(redoPreview.confirmationToken!),
+        });
+
+        expect(value.session.entries.at(-1)).toMatchObject({
+            parentId: "operation-leaf-1",
+            data: {
+                kind: "turn-redo",
+                sourceTurnId: "turn-1",
+                undoOperationId: "operation-1",
+            },
+        });
+        expect(redo).toMatchObject({
+            semanticLeafId: "operation-leaf-2",
+            displayLeafId: undoPreview.displayLeafId,
+        });
     });
 });

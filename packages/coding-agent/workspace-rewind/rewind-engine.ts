@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { JsonlSessionMetadata, Session, SessionTreeEntry } from "@crest/agent/harness/types";
-import { createHash, randomUUID } from "node:crypto";
 
 import { textFromContent } from "../commands/session-views";
 import type { AgentRewindFileRowView, AgentRewindPreviewResult } from "./api-types";
@@ -12,20 +11,24 @@ import {
     type RewindConfirmationRegistry,
 } from "./confirmation-token";
 import { projectWorkspacePathDiff, WorkspaceDiffPreviewBudget } from "./diff-preview";
-import { applyCapturedPath, verifyCapturedPath, type WorkspacePathApplyProgress } from "./filesystem-apply";
+import { applyCapturedPath, verifyCapturedPath } from "./filesystem-apply";
 import { inspectLivePath, inspectLivePaths, type LiveCapturedPathState } from "./live-path-state";
-import type { WorkspaceOperationJournalV1, WorkspaceRecoveryJournal } from "./recovery-journal";
-import { planRedo, planRewind, type PlanRedoInput, type PlanRewindInput, type RestorePlanV1 } from "./restore-plan";
+import type { WorkspaceRecoveryJournal } from "./recovery-journal";
+import {
+    planRedo,
+    planRewind,
+    type PlanRedoInput,
+    type PlanRewindInput,
+    type RestorePlanV1,
+    type RestoreTargetV1,
+} from "./restore-plan";
 import { foldWorkspaceSessionState } from "./session-state";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
-import {
-    WorkspaceControlCustomTypes,
-    type CapturedPathStateV1,
-    type WorkspaceStateBaseV1,
-    type WorkspaceStateV1,
-} from "./types";
+import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoInput } from "./turn-restore-plan";
+import type { WorkspaceStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import type { WorkspaceRecovery } from "./workspace-recovery";
+import { WorkspaceRestoreExecutor, workspaceStateFromJournal } from "./workspace-restore-executor";
 
 type WorkspaceRewindMarkerV1 = Extract<WorkspaceStateV1, { kind: "rewind" }>;
 
@@ -55,6 +58,29 @@ export interface ApplyRedoInput extends PreviewRedoInput {
     assertCurrent?: () => Promise<void>;
 }
 
+export interface PreviewTurnUndoInput extends PreviewRedoInput {
+    sourceTurnId: string;
+}
+
+export interface PreviewTurnRedoInput extends PreviewTurnUndoInput {
+    undoOperationId: string;
+}
+
+export interface ApplyTurnUndoInput extends PreviewTurnUndoInput {
+    mode: "normal" | "force-drift";
+    confirmation: ConfirmedRestorePlanV1;
+    assertCurrent?: () => Promise<void>;
+}
+
+export interface ApplyTurnRedoInput extends PreviewTurnRedoInput {
+    confirmation: ConfirmedRestorePlanV1;
+    assertCurrent?: () => Promise<void>;
+}
+
+export type WorkspaceRestorePreviewResult = Omit<AgentRewindPreviewResult, "target"> & {
+    target: RestoreTargetV1;
+};
+
 export interface WorkspaceRewindCommitResult {
     sessionMetadata: JsonlSessionMetadata;
     semanticLeafId: string | null;
@@ -72,6 +98,8 @@ export interface WorkspaceRewindEngineOptions {
     confirmations: RewindConfirmationRegistry;
     planRewind?: (input: PlanRewindInput) => Promise<RestorePlanV1>;
     planRedo?: (input: PlanRedoInput) => Promise<RestorePlanV1>;
+    planTurnUndo?: (input: PlanTurnUndoInput) => Promise<RestorePlanV1>;
+    planTurnRedo?: (input: PlanTurnRedoInput) => Promise<RestorePlanV1>;
     inspectLivePath?: (path: string) => Promise<LiveCapturedPathState>;
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
     applyPath?: ApplyPath;
@@ -98,42 +126,6 @@ interface ApplyRestoreInput {
     mode: "normal" | "force-drift";
     confirmation: ConfirmedRestorePlanV1;
     assertCurrent?: () => Promise<void>;
-}
-
-function comparePathBytes(left: string, right: string): number {
-    return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
-}
-
-function sameCapturedState(left: CapturedPathStateV1, right: CapturedPathStateV1): boolean {
-    if (left.state !== right.state) return false;
-    if (left.state === "file" && right.state === "file") {
-        return left.oid === right.oid && left.executable === right.executable;
-    }
-    if (left.state === "symlink" && right.state === "symlink") {
-        return left.oid === right.oid;
-    }
-    if (left.state === "excluded" && right.state === "excluded") {
-        return left.reason === right.reason;
-    }
-    return true;
-}
-
-function capturedFromLive(live: LiveCapturedPathState): CapturedPathStateV1 | undefined {
-    if (live.state === "absent") return { state: "absent" };
-    if (live.state === "file") {
-        return { state: "file", oid: live.oid, executable: live.executable };
-    }
-    if (live.state === "symlink") return { state: "symlink", oid: live.oid };
-    return undefined;
-}
-
-function fingerprintCaptured(state: CapturedPathStateV1): string | undefined {
-    let value: unknown;
-    if (state.state === "absent") value = ["absent"];
-    else if (state.state === "file") value = ["file", state.oid, state.executable];
-    else if (state.state === "symlink") value = ["symlink", state.oid];
-    else return undefined;
-    return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function rawActiveBranch(entries: SessionTreeEntry[], leafId: string | null): SessionTreeEntry[] {
@@ -233,13 +225,11 @@ export class WorkspaceRewindEngine {
     private readonly confirmations: RewindConfirmationRegistry;
     private readonly planRewindImpl: NonNullable<WorkspaceRewindEngineOptions["planRewind"]>;
     private readonly planRedoImpl: NonNullable<WorkspaceRewindEngineOptions["planRedo"]>;
+    private readonly planTurnUndoImpl: NonNullable<WorkspaceRewindEngineOptions["planTurnUndo"]>;
+    private readonly planTurnRedoImpl: NonNullable<WorkspaceRewindEngineOptions["planTurnRedo"]>;
     private readonly inspectPath: NonNullable<WorkspaceRewindEngineOptions["inspectLivePath"]>;
     private readonly inspectPaths: NonNullable<WorkspaceRewindEngineOptions["inspectLivePaths"]>;
-    private readonly applyPath: ApplyPath;
-    private readonly verifyPath: VerifyPath;
-    private readonly createOperationId: () => string;
-    private readonly now: () => Date;
-    private readonly onCommitted: NonNullable<WorkspaceRewindEngineOptions["onCommitted"]>;
+    readonly executor: WorkspaceRestoreExecutor;
 
     constructor(options: WorkspaceRewindEngineOptions) {
         this.store = options.store;
@@ -248,25 +238,43 @@ export class WorkspaceRewindEngine {
         this.confirmations = options.confirmations;
         this.planRewindImpl = options.planRewind ?? planRewind;
         this.planRedoImpl = options.planRedo ?? planRedo;
+        this.planTurnUndoImpl = options.planTurnUndo ?? planTurnUndo;
+        this.planTurnRedoImpl = options.planTurnRedo ?? planTurnRedo;
         this.inspectPath =
             options.inspectLivePath ?? ((path) => inspectLivePath(this.store.identity.canonicalRoot, path));
         this.inspectPaths =
             options.inspectLivePaths ?? ((paths) => inspectLivePaths(this.store.identity.canonicalRoot, paths));
-        this.applyPath = options.applyPath ?? applyCapturedPath;
-        this.verifyPath = options.verifyPath ?? verifyCapturedPath;
-        this.createOperationId = options.createOperationId ?? randomUUID;
-        this.now = options.now ?? (() => new Date());
-        this.onCommitted = options.onCommitted ?? (async () => {});
+        this.executor = new WorkspaceRestoreExecutor({
+            store: options.store,
+            journal: options.journal,
+            recovery: options.recovery,
+            inspectLivePaths: this.inspectPaths,
+            applyPath: options.applyPath,
+            verifyPath: options.verifyPath,
+            createOperationId: options.createOperationId,
+            now: options.now,
+            onCommitted: options.onCommitted,
+        });
     }
 
     async previewRewind(input: PreviewRewindInput): Promise<AgentRewindPreviewResult> {
         this.assertWorkspace(input.workspace);
-        return this.preview(await this.computeRewind(input));
+        return (await this.preview(await this.computeRewind(input))) as AgentRewindPreviewResult;
     }
 
     async previewRedo(input: PreviewRedoInput): Promise<AgentRewindPreviewResult> {
         this.assertWorkspace(input.workspace);
-        return this.preview(await this.computeRedo(input));
+        return (await this.preview(await this.computeRedo(input))) as AgentRewindPreviewResult;
+    }
+
+    async previewTurnUndo(input: PreviewTurnUndoInput): Promise<WorkspaceRestorePreviewResult> {
+        this.assertWorkspace(input.workspace);
+        return this.preview(await this.computeTurnUndo(input));
+    }
+
+    async previewTurnRedo(input: PreviewTurnRedoInput): Promise<WorkspaceRestorePreviewResult> {
+        this.assertWorkspace(input.workspace);
+        return this.preview(await this.computeTurnRedo(input));
     }
 
     async applyRewind(input: ApplyRewindInput): Promise<WorkspaceRewindCommitResult> {
@@ -284,7 +292,15 @@ export class WorkspaceRewindEngine {
         });
     }
 
-    private async preview(planned: PlannedRestore): Promise<AgentRewindPreviewResult> {
+    async applyTurnUndo(input: ApplyTurnUndoInput): Promise<WorkspaceRewindCommitResult> {
+        return this.applyTurn(input, () => this.computeTurnUndo(input));
+    }
+
+    async applyTurnRedo(input: ApplyTurnRedoInput): Promise<WorkspaceRewindCommitResult> {
+        return this.applyTurn({ ...input, mode: "normal" }, () => this.computeTurnRedo(input));
+    }
+
+    private async preview(planned: PlannedRestore): Promise<WorkspaceRestorePreviewResult> {
         const { plan, entries, rewindState } = planned;
         const targetTurnId =
             plan.target.kind === "rewind" ? plan.target.targetTurnId : rewindState?.rewind.targetTurnId;
@@ -297,7 +313,7 @@ export class WorkspaceRewindEngine {
         const files = await fileRows(plan, (oid) => this.store.readBlob(oid));
         return {
             ...(confirmationToken == null ? {} : { confirmationToken }),
-            target: plan.target.kind === "rewind" ? plan.target : { kind: "redo" },
+            target: plan.target,
             ...(targetEntry == null
                 ? {}
                 : { targetPrompt: textFromContent((targetEntry.message as { content?: unknown }).content) }),
@@ -375,267 +391,128 @@ export class WorkspaceRewindEngine {
         };
     }
 
+    private async computeTurnUndo(input: PreviewTurnUndoInput): Promise<PlannedRestore> {
+        const entries = await input.session.getEntries();
+        const plan = await this.planTurnUndoImpl({
+            sessionId: input.sessionId,
+            workspace: input.workspace,
+            rawEntries: entries,
+            semanticLeafId: input.semanticLeafId,
+            sourceTurnId: input.sourceTurnId,
+            inspectLivePath: this.inspectPath,
+            inspectLivePaths: this.inspectPaths,
+            verifySnapshot: (snapshot) => this.store.verify(snapshot),
+        });
+        return { entries, plan };
+    }
+
+    private async computeTurnRedo(input: PreviewTurnRedoInput): Promise<PlannedRestore> {
+        const entries = await input.session.getEntries();
+        const plan = await this.planTurnRedoImpl({
+            sessionId: input.sessionId,
+            workspace: input.workspace,
+            rawEntries: entries,
+            semanticLeafId: input.semanticLeafId,
+            sourceTurnId: input.sourceTurnId,
+            undoOperationId: input.undoOperationId,
+            inspectLivePath: this.inspectPath,
+            inspectLivePaths: this.inspectPaths,
+            verifySnapshot: (snapshot) => this.store.verify(snapshot),
+        });
+        return { entries, plan };
+    }
+
+    private async applyTurn(
+        input: ApplyTurnUndoInput | (ApplyTurnRedoInput & { mode: "normal" }),
+        compute: () => Promise<PlannedRestore>
+    ): Promise<WorkspaceRewindCommitResult> {
+        this.assertWorkspace(input.workspace);
+        const operation = async () => {
+            const planned = await compute();
+            assertRestorePlanMatchesConfirmation({
+                confirmation: input.confirmation,
+                plan: planned.plan,
+                mode: input.mode,
+            });
+            return this.executor.execute({
+                session: input.session,
+                workspace: input.workspace,
+                plan: planned.plan,
+                confirmation: input.confirmation,
+                mode: input.mode,
+                assertCurrent: input.assertCurrent,
+                commit: {
+                    makeWorkspaceState: workspaceStateFromJournal,
+                    makeResult: ({ folded, sessionMetadata }) => ({
+                        sessionMetadata,
+                        semanticLeafId: folded.semanticLeafId,
+                        displayLeafId: folded.displayLeafId,
+                    }),
+                },
+            });
+        };
+        return this.store.withWorkspaceLock ? this.store.withWorkspaceLock(operation) : operation();
+    }
+
     private async apply(input: ApplyRestoreInput): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
-        const planned =
-            input.kind === "rewind"
-                ? await this.computeRewind({
-                      session: input.session,
-                      sessionId: input.sessionId,
-                      workspace: input.workspace,
-                      semanticLeafId: input.semanticLeafId,
-                      targetTurnId: input.targetTurnId!,
-                  })
-                : await this.computeRedo({
-                      session: input.session,
-                      sessionId: input.sessionId,
-                      workspace: input.workspace,
-                      semanticLeafId: input.semanticLeafId,
-                  });
-        assertRestorePlanMatchesConfirmation({
-            confirmation: input.confirmation,
-            plan: planned.plan,
-            mode: input.mode,
-        });
-        return this.applyPlanned(input, planned);
+        const operation = async () => {
+            const planned =
+                input.kind === "rewind"
+                    ? await this.computeRewind({
+                          session: input.session,
+                          sessionId: input.sessionId,
+                          workspace: input.workspace,
+                          semanticLeafId: input.semanticLeafId,
+                          targetTurnId: input.targetTurnId!,
+                      })
+                    : await this.computeRedo({
+                          session: input.session,
+                          sessionId: input.sessionId,
+                          workspace: input.workspace,
+                          semanticLeafId: input.semanticLeafId,
+                      });
+            assertRestorePlanMatchesConfirmation({
+                confirmation: input.confirmation,
+                plan: planned.plan,
+                mode: input.mode,
+            });
+            return this.applyPlanned(input, planned);
+        };
+        return this.store.withWorkspaceLock ? this.store.withWorkspaceLock(operation) : operation();
     }
 
     private async applyPlanned(
         input: ApplyRestoreInput,
         planned: PlannedRestore
     ): Promise<WorkspaceRewindCommitResult> {
-        const assertCurrent = input.assertCurrent ?? (async () => {});
-        await assertCurrent();
-        const orderedPaths = [...planned.plan.paths].sort((left, right) => comparePathBytes(left.path, right.path));
-        const conflictPaths =
-            input.mode === "force-drift"
-                ? orderedPaths.filter((path) => path.conflict === "forceable-drift").map((path) => path.path)
-                : [];
-        const safety = await this.store.capture({
-            profile: "safety",
-            requiredPaths: conflictPaths,
-        });
-        const preStates = new Map<string, CapturedPathStateV1>();
-        for (const path of orderedPaths) {
-            const state = await this.store.readPathState(safety.ref, path.path);
-            if (state.state === "excluded") {
-                throw new Error(`Safety snapshot could not capture the full path state: ${path.path}`);
-            }
-            preStates.set(path.path, state);
-        }
-        await this.verifySafetyCapture(orderedPaths, preStates, new Set(conflictPaths));
-
-        const operationId = this.createOperationId();
-        const workspaceStateEntryId = await input.session.getStorage().createEntryId();
-        const sessionMetadata = await input.session.getMetadata();
-        const redoBoundary =
-            input.kind === "redo" ? planned.rewindState?.rewind.fromLeafId : planned.plan.commitParentId;
-        if (input.kind === "redo" && !planned.rewindState) {
-            throw new Error("Redo requires an authoritative rewind marker");
-        }
-        let record: WorkspaceOperationJournalV1 = {
-            schemaVersion: 1,
-            phase: "prepared",
-            workspaceIdentity: input.workspace.workspaceIdentity,
-            workspaceIncarnation: input.workspace.workspaceIncarnation,
-            sessionId: input.sessionId,
-            sessionPath: sessionMetadata.path,
-            operationId,
-            kind: input.kind,
-            applyMode: input.mode,
-            expectedSemanticLeafId: input.semanticLeafId,
-            targetTurnId: input.kind === "rewind" ? input.targetTurnId! : null,
-            targetBoundaryId: redoBoundary ?? null,
-            safetySnapshot: safety.ref,
-            confirmedConflictFingerprints: conflictPaths.map((path) => ({
-                path,
-                fingerprint: orderedPaths.find((item) => item.path === path)!.liveFingerprint,
-            })),
-            paths: orderedPaths.map((path) => {
-                const preState = preStates.get(path.path)!;
-                if (sameCapturedState(preState, path.target)) {
-                    throw new Error(`Safety pre-state already equals the restore target: ${path.path}`);
-                }
-                return {
-                    path: path.path,
-                    target: path.target,
-                    preState,
-                    expectedCurrent: path.expectedCurrent,
-                    confirmedLiveFingerprint: path.liveFingerprint,
-                    createdParentDirectories: [],
-                };
-            }),
-            workspaceStateEntryId,
-        };
-        let journalAttempted = false;
-        let completed = false;
-        try {
-            await assertCurrent();
-            journalAttempted = true;
-            await this.journal.begin(record);
-            record = await this.journal.transition(operationId, "applying_files");
-            for (const path of record.paths) {
-                await assertCurrent();
-                const createdParentDirectories = new Set(path.createdParentDirectories);
-                const updateProgress = async () => {
-                    record = await this.journal.updatePathProgress(operationId, path.path, [
-                        ...createdParentDirectories,
-                    ]);
-                };
-                const progress: WorkspacePathApplyProgress = {
-                    operationId,
-                    createdParentDirectories,
-                    onParentDirectoryCreated: updateProgress,
-                    onPathReplaced: updateProgress,
-                };
-                await this.applyPath({
-                    root: input.workspace.canonicalRoot,
-                    path: path.path,
-                    expectedCurrent: path.preState,
-                    target: path.target,
-                    readBlob: (oid) => this.store.readBlob(oid),
-                    progress,
-                });
-            }
-            const result = await this.store.capture({
-                profile: "safety",
-                requiredPaths: record.paths.map((path) => path.path),
-            });
-            for (const path of record.paths) {
-                const captured = await this.store.readPathState(result.ref, path.path);
-                if (!sameCapturedState(captured, path.target)) {
-                    throw new Error(`Post-apply snapshot verification failed: ${path.path}`);
-                }
-                await this.verifyPath({
-                    root: input.workspace.canonicalRoot,
-                    path: path.path,
-                    expected: path.target,
-                });
-            }
-            record = await this.journal.transition(operationId, "files_verified", {
-                resultSnapshot: result.ref,
-            });
-            await this.store.anchorSnapshot(safety.ref);
-            await this.store.anchorSnapshot(result.ref);
-            record = await this.journal.transition(operationId, "committing_session");
-
-            await assertCurrent();
-            const state = this.workspaceState(record);
-            const entry: SessionTreeEntry = {
-                type: "custom",
-                id: workspaceStateEntryId,
-                parentId: record.targetBoundaryId,
-                timestamp: this.now().toISOString(),
-                customType: WorkspaceControlCustomTypes.state,
-                data: state,
-            };
-            await input.session.appendEntries([entry], {
-                expectedLeafId: input.semanticLeafId,
-            });
-            if (!(await this.recovery.isExactOperationLeaf(input.session, record, await input.session.getLeafId()))) {
-                throw new Error("Committed workspace state is not the exact operation leaf");
-            }
-            record = await this.journal.transition(operationId, "completed");
-            completed = true;
-            await assertCurrent();
-            await this.onCommitted(input.sessionId);
-            await this.journal.completeCleanup(operationId);
-            return this.commitResult(input, planned, sessionMetadata);
-        } catch (error) {
-            if (journalAttempted && !completed) {
-                let current: WorkspaceOperationJournalV1;
-                try {
-                    current = await this.journal.read(operationId);
-                } catch {
-                    throw error;
-                }
-                await this.recovery.recoverRecord(current);
-                if (await this.recovery.isExactOperationLeaf(input.session, current, await input.session.getLeafId())) {
-                    return this.commitResult(input, planned, sessionMetadata);
-                }
-            }
-            throw error;
-        }
-    }
-
-    private async verifySafetyCapture(
-        paths: RestorePlanV1["paths"],
-        preStates: ReadonlyMap<string, CapturedPathStateV1>,
-        conflictPaths: ReadonlySet<string>
-    ): Promise<void> {
-        const inspected = await this.inspectPaths(paths.map((path) => path.path));
-        for (const path of paths) {
-            const preState = preStates.get(path.path)!;
-            const live = inspected.get(path.path);
-            const liveCaptured = live == null ? undefined : capturedFromLive(live);
-            if (
-                !live ||
-                !liveCaptured ||
-                live.fingerprint !== path.liveFingerprint ||
-                !sameCapturedState(liveCaptured, preState)
-            ) {
-                throw new Error(`Workspace changed after restore confirmation: ${path.path}`);
-            }
-            if (!conflictPaths.has(path.path) && !sameCapturedState(preState, path.expectedCurrent)) {
-                throw new Error(`Workspace changed after restore confirmation: ${path.path}`);
-            }
-            if (conflictPaths.has(path.path) && fingerprintCaptured(preState) !== path.liveFingerprint) {
-                throw new Error(`Force safety snapshot does not match the confirmed bytes: ${path.path}`);
-            }
-        }
-    }
-
-    private workspaceState(record: WorkspaceOperationJournalV1): WorkspaceStateV1 {
-        const currentStates = record.paths.map((path) => ({ path: path.path, state: path.target }));
-        const base = {
-            schemaVersion: 1,
-            sessionId: record.sessionId,
-            operationId: record.operationId,
-            workspaceIdentity: record.workspaceIdentity,
-            workspaceIncarnation: record.workspaceIncarnation,
-            applyMode: record.applyMode,
-            forcedPaths: record.confirmedConflictFingerprints.map((item) => item.path),
-            currentSnapshot: record.resultSnapshot!,
-            currentStates,
-        } satisfies WorkspaceStateBaseV1;
-        if (record.kind === "redo") {
-            return { ...base, kind: "redo" };
-        }
-        return {
-            ...base,
-            kind: "rewind",
-            rewind: {
-                fromLeafId: record.expectedSemanticLeafId,
-                targetTurnId: record.targetTurnId!,
-                targetBoundaryId: record.targetBoundaryId,
-                redoSnapshot: record.safetySnapshot,
-                redoStates: record.paths.map((path) => ({
-                    path: path.path,
-                    state: path.preState,
-                })),
+        return this.executor.execute({
+            session: input.session,
+            workspace: input.workspace,
+            plan: planned.plan,
+            confirmation: input.confirmation,
+            mode: input.mode,
+            assertCurrent: input.assertCurrent,
+            commit: {
+                makeWorkspaceState: (record) => workspaceStateFromJournal(record),
+                makeResult: ({ entries, folded, sessionMetadata }) => {
+                    const targetEntry =
+                        input.kind === "rewind"
+                            ? (planned.targetEntry ?? selectedUserEntry(entries, input.targetTurnId))
+                            : undefined;
+                    return {
+                        sessionMetadata,
+                        semanticLeafId: folded.semanticLeafId,
+                        displayLeafId: folded.displayLeafId,
+                        ...(targetEntry == null
+                            ? {}
+                            : {
+                                  editorText: textFromContent((targetEntry.message as { content?: unknown }).content),
+                              }),
+                    };
+                },
             },
-        };
-    }
-
-    private async commitResult(
-        input: ApplyRestoreInput,
-        planned: PlannedRestore,
-        sessionMetadata: JsonlSessionMetadata
-    ): Promise<WorkspaceRewindCommitResult> {
-        const entries = await input.session.getEntries();
-        const folded = foldWorkspaceSessionState(entries, input.sessionId);
-        const targetEntry =
-            input.kind === "rewind"
-                ? (planned.targetEntry ?? selectedUserEntry(entries, input.targetTurnId))
-                : undefined;
-        return {
-            sessionMetadata,
-            semanticLeafId: folded.semanticLeafId,
-            displayLeafId: folded.displayLeafId,
-            ...(targetEntry == null
-                ? {}
-                : { editorText: textFromContent((targetEntry.message as { content?: unknown }).content) }),
-        };
+        });
     }
 
     private assertWorkspace(workspace: CanonicalWorkspaceIdentity): void {

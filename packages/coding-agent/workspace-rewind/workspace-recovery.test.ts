@@ -11,6 +11,7 @@ import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { encodeDurableJson } from "./durability";
 import { deriveWorkspaceApplyArtifactPaths } from "./filesystem-apply";
 import { WorkspaceRecoveryJournal, type WorkspaceOperationJournalV1 } from "./recovery-journal";
+import type { RestoreTargetV1 } from "./restore-plan";
 import type {
     CapturedPathStateV1,
     WorkspaceRewindStateV1,
@@ -24,6 +25,7 @@ import {
     classifyWorkspaceRecoveryPath,
     type WorkspaceRecoverySession,
 } from "./workspace-recovery";
+import { workspaceStateFromJournal } from "./workspace-restore-executor";
 
 const Identity = "1".repeat(64);
 const Incarnation = "2".repeat(64);
@@ -48,7 +50,8 @@ function snapshot(id = "3".repeat(40)): WorkspaceSnapshotRefV1 {
 function journalRecord(
     phase: WorkspaceOperationJournalV1["phase"],
     preState: CapturedPathStateV1,
-    target: CapturedPathStateV1
+    target: CapturedPathStateV1,
+    restoreTarget: RestoreTargetV1 = { kind: "rewind", targetTurnId: "turn-1" }
 ): WorkspaceOperationJournalV1 {
     return {
         schemaVersion: 1,
@@ -58,11 +61,10 @@ function journalRecord(
         sessionId: "session-1",
         sessionPath: "/old/path.sqlite",
         operationId: "operation-1",
-        kind: "rewind",
+        target: restoreTarget,
         applyMode: "normal",
         expectedSemanticLeafId: "old-leaf",
-        targetTurnId: "turn-1",
-        targetBoundaryId: "target",
+        commitParentId: "target",
         safetySnapshot: snapshot(),
         confirmedConflictFingerprints: [],
         paths: [
@@ -91,6 +93,7 @@ async function fixture(input: {
         undoOperationId?: string;
     };
     entryParentId?: string;
+    target?: RestoreTargetV1;
 }) {
     const root = await mkdtemp(join(tmpdir(), "crest-workspace-recovery-"));
     const storeRoot = join(root, "store", "repo.git");
@@ -116,7 +119,7 @@ async function fixture(input: {
         verify: vi.fn(async () => {}),
     };
     const durable = new WorkspaceRecoveryJournal(store);
-    await durable.begin(journalRecord("prepared", states.pre, states.target));
+    await durable.begin(journalRecord("prepared", states.pre, states.target, input.target));
     const phases = ["prepared", "applying_files", "files_verified", "committing_session", "completed"] as const;
     for (const phase of phases.slice(1, phases.indexOf(input.phase) + 1)) {
         await durable.transition("operation-1", phase, {
@@ -124,23 +127,10 @@ async function fixture(input: {
         });
     }
     const stateEntry = {
-        schemaVersion: 1,
-        sessionId: "session-1",
-        operationId: "operation-1",
-        workspaceIdentity: Identity,
-        workspaceIncarnation: Incarnation,
-        kind: "rewind",
-        applyMode: "normal",
-        forcedPaths: [],
-        currentSnapshot: snapshot("7".repeat(40)),
-        currentStates: [{ path: "file.txt", state: states.target }],
-        rewind: {
-            fromLeafId: "old-leaf",
-            targetTurnId: "turn-1",
-            targetBoundaryId: "target",
-            redoSnapshot: snapshot(),
-            redoStates: [{ path: "file.txt", state: states.pre }],
-        },
+        ...workspaceStateFromJournal({
+            ...journalRecord("completed", states.pre, states.target, input.target),
+            resultSnapshot: snapshot("7".repeat(40)),
+        }),
         ...input.stateOverrides,
     };
     const session: WorkspaceRecoverySession = {
@@ -487,6 +477,26 @@ describe("workspace recovery", () => {
         await expect(unexpected.recovery.ensureRecovered(unexpected.recovery.workspace)).rejects.toThrow(
             WorkspaceFrozenError
         );
+    });
+
+    it.each([
+        { kind: "rewind", targetTurnId: "turn-1" },
+        { kind: "redo" },
+        { kind: "turn-undo", sourceTurnId: "turn-1" },
+        { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-operation-1" },
+    ] satisfies RestoreTargetV1[])("finishes an exact committed $kind marker", async (target) => {
+        const value = await fixture({
+            phase: "committing_session",
+            live: "unknown",
+            leaf: "operation-leaf",
+            target,
+        });
+        value.input.live = value.states.target;
+
+        await value.recovery.ensureRecovered(value.recovery.workspace);
+
+        await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
+        expect(value.apply).not.toHaveBeenCalled();
     });
 
     it("freezes a forged operation leaf whose marker or parent does not exactly match the journal", async () => {
