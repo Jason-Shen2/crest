@@ -139,6 +139,72 @@ async function preview(value: Awaited<ReturnType<typeof makeFixture>>, item: Awa
 }
 
 describe("workspace rewind across sessions", () => {
+    it("turn Undo in session A restores only A's disjoint path and leaves session B bytes intact", async () => {
+        const value = await makeFixture();
+        await writeFile(join(value.workspaceRoot, "a.txt"), "base-a");
+        await writeFile(join(value.workspaceRoot, "b.txt"), "base-b");
+        const a = await checkpoint(value, value.sessions.a, "change a", async () => {
+            await writeFile(join(value.workspaceRoot, "a.txt"), "session-a");
+        });
+        await checkpoint(value, value.sessions.b, "change b", async () => {
+            await writeFile(join(value.workspaceRoot, "b.txt"), "session-b");
+        });
+
+        const planned = await value.engine.previewTurnUndo({
+            session: value.sessions.a,
+            sessionId: a.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: a.checkpointId,
+            sourceTurnId: a.turnId,
+        });
+        expect(planned.files.map((file) => file.path)).toEqual(["a.txt"]);
+        await value.engine.applyTurnUndo({
+            session: value.sessions.a,
+            sessionId: a.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: a.checkpointId,
+            sourceTurnId: a.turnId,
+            mode: "normal",
+            confirmation: value.confirmations.take(planned.confirmationToken!),
+        });
+
+        expect(await readFile(join(value.workspaceRoot, "a.txt"), "utf8")).toBe("base-a");
+        expect(await readFile(join(value.workspaceRoot, "b.txt"), "utf8")).toBe("session-b");
+    }, 30_000);
+
+    it("blocks normal turn Undo when another session replaced the same path", async () => {
+        const value = await makeFixture();
+        await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
+        const a = await checkpoint(value, value.sessions.a, "change shared in A", async () => {
+            await writeFile(join(value.workspaceRoot, "shared.txt"), "session-a");
+        });
+        await checkpoint(value, value.sessions.b, "change shared in B", async () => {
+            await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b");
+        });
+
+        const planned = await value.engine.previewTurnUndo({
+            session: value.sessions.a,
+            sessionId: a.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: a.checkpointId,
+            sourceTurnId: a.turnId,
+        });
+        expect(planned).toMatchObject({ forceRequired: true, hardBlocked: false });
+        expect(planned.files).toEqual([expect.objectContaining({ path: "shared.txt", conflict: "forceable-drift" })]);
+        await expect(
+            value.engine.applyTurnUndo({
+                session: value.sessions.a,
+                sessionId: a.metadata.id,
+                workspace: value.identity,
+                semanticLeafId: a.checkpointId,
+                sourceTurnId: a.turnId,
+                mode: "normal",
+                confirmation: value.confirmations.take(planned.confirmationToken!),
+            })
+        ).rejects.toThrow(/force/i);
+        expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("session-b");
+    }, 30_000);
+
     it("rewinds only session A paths while preserving later session B bytes", async () => {
         const value = await makeFixture();
         await writeFile(join(value.workspaceRoot, "a.txt"), "base-a");

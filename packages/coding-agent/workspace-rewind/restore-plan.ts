@@ -526,7 +526,7 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
 }
 
 export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
-    const plan = emptyPlan(input, { kind: "redo" }, input.rewindState.rewind.targetBoundaryId);
+    const plan = emptyPlan(input, { kind: "redo" }, input.rewindState.rewind.fromLeafId);
     const active = activeBranch(input.rawEntries, input.semanticLeafId);
     if (!active.branch) {
         return hardBlock(plan, active.reason!);

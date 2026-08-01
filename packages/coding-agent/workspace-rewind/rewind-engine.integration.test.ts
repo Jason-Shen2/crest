@@ -122,7 +122,81 @@ async function fixture(
     };
 }
 
+async function appendAvailableCheckpoint(
+    value: Awaited<ReturnType<typeof fixture>>,
+    prompt: string,
+    mutate: () => Promise<void>
+) {
+    const before = await value.store.capture({ profile: "pre-turn" });
+    const turnId = await value.session.appendMessage({
+        role: "user",
+        content: prompt,
+        timestamp: Date.now(),
+    } as never);
+    await mutate();
+    const after = await value.store.capture({ profile: "terminal" });
+    const checkpoint: WorkspaceCheckpointV1 = {
+        schemaVersion: 1,
+        status: "available",
+        originSessionId: value.metadata.id,
+        turnId,
+        workspaceIdentity: value.identity.workspaceIdentity,
+        workspaceIncarnation: value.identity.workspaceIncarnation,
+        before: before.ref,
+        after: after.ref,
+        changes: await value.store.diff(before.ref, after.ref),
+        coverage: after.coverage,
+    };
+    const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, checkpoint);
+    return { turnId, checkpointId };
+}
+
 describe("WorkspaceRewindEngine real filesystem transaction", () => {
+    it("composes turn Undo state into a later conversation Revert without restoring stale turn bytes", async () => {
+        const value = await fixture();
+        const file = join(value.workspaceRoot, "sequence.txt");
+        await writeFile(file, "0");
+        const turn1 = await appendAvailableCheckpoint(value, "turn one", async () => await writeFile(file, "1"));
+        const turn2 = await appendAvailableCheckpoint(value, "turn two", async () => await writeFile(file, "2"));
+
+        const undoPreview = await value.engine.previewTurnUndo({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: turn2.checkpointId,
+            sourceTurnId: turn2.turnId,
+        });
+        const undone = await value.engine.applyTurnUndo({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: turn2.checkpointId,
+            sourceTurnId: turn2.turnId,
+            mode: "normal",
+            confirmation: value.confirmations.take(undoPreview.confirmationToken!),
+        });
+        expect(await readFile(file, "utf8")).toBe("1");
+
+        const rewindPreview = await value.engine.previewRewind({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: undone.semanticLeafId,
+            targetTurnId: turn1.turnId,
+        });
+        await value.engine.applyRewind({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: undone.semanticLeafId,
+            targetTurnId: turn1.turnId,
+            mode: "normal",
+            confirmation: value.confirmations.take(rewindPreview.confirmationToken!),
+        });
+
+        expect(await readFile(file, "utf8")).toBe("0");
+    }, 30_000);
+
     it("restores absent/rename/binary/symlink/executable states and redo restores the exact safety bytes", async () => {
         const value = await fixture();
         const binaryBefore = Buffer.from([0, 1, 2, 255, 10]);

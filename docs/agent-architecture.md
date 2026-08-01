@@ -350,12 +350,27 @@ verification, and SQLite leaf compare-and-swap make file restore and
 conversation movement one recoverable operation. Unknown bytes freeze recovery
 without whole-workspace reset or Force.
 
-Successful Revert restores the selected prompt to the composer and persists a
-single Redo dock across reload. Redo uses the same checks but never offers
-Force. `/rewind` uses the same preview/apply path as message-side Revert;
+The four user-facing change surfaces have deliberately different authority:
+
+- Message Revert and `/rewind` restore the selected conversation boundary and
+  its workspace suffix together. `/redo` restores that conversation branch and
+  workspace through the persisted one-step Redo marker. Revert also restores
+  the selected prompt to the composer; Redo never offers Force.
+- A completed turn's file card Undo/Redo applies only that checkpoint's exact
+  `after -> before` or `before -> after` path transitions. It appends a durable
+  turn marker but never calls `moveTo()`, changes visible messages or the
+  display leaf, or replaces the composer. Only Undo can Force its precisely
+  previewed red regular-file paths; turn Redo cannot Force.
+- `git-diff` shows the workspace's current Git state and can change as files or
+  the index change.
+- `agent-turn-diff` and the card's Review show immutable checkpoint history
+  derived from stored `before -> after` blobs. They never consult Git or live
+  disk bytes and never fall back when a historical checkpoint is missing.
+
 `/tree` remains conversation-only. Workspace rewind initializes by default on
 supported platforms; real platform, identity, storage, and recovery failures
-remain explicit hard blocks.
+remain explicit hard blocks. Sessions without a terminal available checkpoint
+do not expose a turn file card.
 
 OpenCode Core v2 is the reference for private snapshot/selective restore and
 the persistent revert surface. Pi/pi-rewind is the reference for user-turn

@@ -91,8 +91,13 @@ jobs:
                   emain/agent-rewind-service.test.ts
                   emain/agent-rewind.e2e.test.ts
                   emain/agent-ipc.test.ts
+                  frontend/app/agent/agent-runtime-client.test.ts
+                  frontend/app/agent/rewind
+                  frontend/app/agent/assistant-ui/thread.integration.test.tsx
                   frontend/app/agent/agent-content.test.tsx
                   frontend/app/agent/agent-chat-host.test.tsx
+                  frontend/app/store/use-pi-chat.test.tsx
+                  frontend/app/workspace
 
     workspace-rewind-windows-capability:
         name: windows-latest (explicit unsupported capability gate)

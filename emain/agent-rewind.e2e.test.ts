@@ -18,9 +18,9 @@ import { AgentHarness } from "@crest/agent/harness/agent-harness";
 import { NodeExecutionEnv } from "@crest/agent/node";
 import { getModel, registerApiProvider, resetApiProviders, type AssistantMessage, type Model } from "@crest/ai";
 import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import * as electron from "electron";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => {
@@ -81,6 +81,16 @@ vi.mock("./aiconfig/secrets", () => ({ getSecret: vi.fn() }));
 vi.mock("../frontend/app/store/wshclientapi", () => ({
     RpcApi: { GetCmdBlocksCommand: vi.fn(async () => []) },
 }));
+vi.mock("../frontend/app/gitdiff/git-diff-pane", () => ({
+    DiffContentBody: (props: { loading: boolean; content?: { originalContent: string; modifiedContent: string } }) =>
+        createElement(
+            "output",
+            { "aria-label": "Historical turn diff" },
+            props.loading
+                ? "loading"
+                : `${props.content?.originalContent ?? ""}→${props.content?.modifiedContent ?? ""}`
+        ),
+}));
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
@@ -113,7 +123,10 @@ import { AgentRuntimeClient } from "../frontend/app/agent/agent-runtime-client";
 import { Thread } from "../frontend/app/agent/assistant-ui";
 import { DiffReviewDialog } from "../frontend/app/agent/rewind/diff-review-dialog";
 import { RedoDock } from "../frontend/app/agent/rewind/redo-dock";
+import { TurnFileChangesCard } from "../frontend/app/agent/rewind/turn-file-changes-card";
 import { useAgentRewind } from "../frontend/app/agent/rewind/use-agent-rewind";
+import { useAgentTurnChanges } from "../frontend/app/agent/rewind/use-agent-turn-changes";
+import type { TopTab } from "../frontend/app/workspace/workspace-content-state";
 import { _resetAgentIpcForTests, registerAgentIpcHandlers } from "./agent-ipc";
 import { openAgentRewindFeature } from "./agent-rewind-feature";
 import { AgentRewindService } from "./agent-rewind-service";
@@ -148,6 +161,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
     vi.useRealTimers();
+    cleanup();
     await _resetAgentIpcForTests();
     _setSessionsRepoForTests(undefined);
     if (previousConfigHome == null) delete process.env.WAVETERM_CONFIG_HOME;
@@ -185,6 +199,14 @@ function makeRendererTransport(
         previewRewind: (identity: unknown, input: unknown) => invoke("agent:preview-rewind", identity, input),
         rewindTree: (identity: unknown, input: unknown) => invoke("agent:rewind-tree", identity, input),
         redoRewind: (identity: unknown, input: unknown) => invoke("agent:redo-rewind", identity, input),
+        getTurnChangeSummary: (identity: unknown, input: unknown) =>
+            invoke("agent:get-turn-change-summary", identity, input),
+        getTurnFileDiff: (identity: unknown, input: unknown) => invoke("agent:get-turn-file-diff", identity, input),
+        reviewTurnChanges: (identity: unknown, input: unknown) => invoke("agent:review-turn-changes", identity, input),
+        previewTurnUndo: (identity: unknown, input: unknown) => invoke("agent:preview-turn-undo", identity, input),
+        applyTurnUndo: (identity: unknown, input: unknown) => invoke("agent:apply-turn-undo", identity, input),
+        previewTurnRedo: (identity: unknown, input: unknown) => invoke("agent:preview-turn-redo", identity, input),
+        applyTurnRedo: (identity: unknown, input: unknown) => invoke("agent:apply-turn-redo", identity, input),
         getWorkspaceRecovery: (identity: unknown, input: unknown) =>
             invoke("agent:get-workspace-recovery", identity, input),
         resolveWorkspaceRecovery: (identity: unknown, input: unknown) =>
@@ -196,6 +218,84 @@ function makeRendererTransport(
         purgeTrashedSession: (identity: unknown, input: unknown) =>
             invoke("agent:purge-trashed-session", identity, input),
     };
+}
+
+function TurnChangesE2EUi(props: {
+    client: AgentRuntimeClient;
+    metadata: AgentSessionMeta;
+    sessionRevision: number;
+    rewindState: AgentRewindSessionStateView;
+    turnId: string;
+}) {
+    const [composer, setComposer] = useState("keep this draft");
+    const controller = useAgentTurnChanges({
+        client: props.client,
+        sessionMetadata: props.metadata,
+        sessionRevision: props.sessionRevision,
+        rewindState: props.rewindState,
+        turns: [{ turnId: props.turnId, responseMessages: [], status: "done" }],
+        running: false,
+        onError: vi.fn(),
+    });
+    const card = controller.cards.get(props.turnId);
+    return createElement(
+        "div",
+        null,
+        createElement("input", {
+            "aria-label": "Composer",
+            value: composer,
+            onChange: (event: { currentTarget: { value: string } }) => setComposer(event.currentTarget.value),
+        }),
+        card
+            ? createElement(TurnFileChangesCard, {
+                  summary: card.summary,
+                  action: card.action,
+                  disabled: card.disabled,
+                  onOpenFile: vi.fn(),
+                  onReview: () => void controller.openReview(props.turnId),
+                  onUndo: () => void controller.openMutation(props.turnId),
+                  onRedo: () => void controller.openMutation(props.turnId),
+              })
+            : null,
+        createElement(DiffReviewDialog, {
+            open: controller.dialog.open,
+            title:
+                controller.dialog.kind === "review"
+                    ? "Review turn changes"
+                    : controller.dialog.kind === "undo"
+                      ? "Undo turn changes?"
+                      : "Redo turn changes?",
+            description:
+                controller.dialog.kind === "review"
+                    ? "Checkpoint before → after"
+                    : "Only this turn's workspace files will change",
+            files: controller.dialog.files,
+            selectedPath: controller.dialog.selectedPath,
+            loading: controller.dialog.phase === "loading",
+            errorMessage: controller.dialog.errorMessage,
+            warnings: controller.dialog.preview?.coverageWarnings,
+            locked: controller.dialog.phase === "applying",
+            footer:
+                controller.dialog.kind === "review"
+                    ? createElement("button", { type: "button", onClick: controller.closeDialog }, "Close review")
+                    : createElement(
+                          "button",
+                          {
+                              type: "button",
+                              onClick: () => void controller.confirmMutation("normal"),
+                              disabled:
+                                  controller.dialog.phase !== "ready" ||
+                                  controller.dialog.preview?.hardBlocked ||
+                                  controller.dialog.preview?.forceRequired,
+                          },
+                          controller.dialog.kind === "undo" ? "Confirm undo" : "Confirm redo"
+                      ),
+            onSelectedPathChange: controller.selectDialogPath,
+            onOpenChange: (open: boolean) => {
+                if (!open) controller.closeDialog();
+            },
+        })
+    );
 }
 
 function installPromptHarness(mutate: () => Promise<void>) {
@@ -569,6 +669,241 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         });
     });
 
+    it("renders tool-independent turn changes, reviews immutable history, and cycles Undo → Redo → Undo without touching conversation or composer", async () => {
+        const value = await makeFixture();
+        const path = "direct-shell.txt";
+        const file = join(value.workspaceRoot, path);
+        await writeFile(file, "before\n");
+        const turnId = await value.sendTurn("change without write/edit metadata", async () => {
+            await writeFile(file, "after\n");
+            await value.session.appendMessage({
+                role: "assistant",
+                content: [{ type: "text", text: "changed from an arbitrary tool" }],
+                timestamp: Date.now(),
+            } as never);
+        });
+        await value.manager.dispose();
+
+        const running = value.makeService();
+        const { client } = value.register(running.service);
+        const initial = await client.getSessionState(value.metadata);
+        const initialRewind = initial.rewindState!;
+        const initialMessages = (await value.session.getEntries())
+            .filter((entry) => entry.type === "message")
+            .map((entry) => structuredClone(entry));
+        expect(initialRewind.turnChanges).toEqual([{ turnId, action: "undo" }]);
+
+        const ui = render(
+            createElement(TurnChangesE2EUi, {
+                client,
+                metadata: value.metadata,
+                sessionRevision: 1,
+                rewindState: initialRewind,
+                turnId,
+            })
+        );
+        expect(await screen.findByText("已编辑 1 个文件")).not.toBeNull();
+        expect(screen.getAllByText("+1")).toHaveLength(2);
+        expect(screen.getAllByText("-1")).toHaveLength(2);
+        expect(screen.getByRole("button", { name: /撤销/ })).not.toBeNull();
+        expect(screen.queryByRole("button", { name: /重做/ })).toBeNull();
+
+        fireEvent.click(screen.getByRole("button", { name: "审核" }));
+        const reviewDialog = await screen.findByRole("dialog");
+        expect(await within(reviewDialog).findByText("Checkpoint before → after")).not.toBeNull();
+        expect(await within(reviewDialog).findByTitle(path)).not.toBeNull();
+        const review = await client.reviewTurnChanges({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: initialRewind.semanticLeafId,
+            turnId,
+        });
+        expect(review.files[0]?.diff).toContain("-before");
+        expect(review.files[0]?.diff).toContain("+after");
+        fireEvent.click(within(reviewDialog).getByRole("button", { name: "Close review" }));
+
+        const historical = await client.getTurnFileDiff({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: null,
+            turnId,
+            path,
+        });
+        expect(historical).toMatchObject({
+            originalContent: "before\n",
+            modifiedContent: "after\n",
+            additions: 1,
+            deletions: 1,
+        });
+        const turnDiffTab: Extract<TopTab, { kind: "agent-turn-diff" }> = {
+            id: "e2e-turn-diff",
+            kind: "agent-turn-diff",
+            sessionId: value.metadata.id,
+            sessionCreatedAt: value.metadata.createdAt,
+            sessionCwd: value.metadata.cwd,
+            sessionPath: value.metadata.path,
+            turnId,
+            path,
+            title: path,
+        };
+        const { AgentTurnDiffTopTab } = await import("../frontend/app/workspace/agent-turn-diff-top-tab");
+        const historyRequest = vi.spyOn(client, "getTurnFileDiff");
+        const historyTab = render(createElement(AgentTurnDiffTopTab, { tab: turnDiffTab, client }));
+        await waitFor(() => expect(historyRequest).toHaveBeenCalledWith(expect.objectContaining({ turnId, path })));
+        historyTab.unmount();
+
+        fireEvent.change(screen.getByRole("textbox", { name: "Composer" }), {
+            target: { value: "draft survives turn restore" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: /撤销/ }));
+        const undoDialog = await screen.findByRole("dialog");
+        expect(await within(undoDialog).findByText("Undo turn changes?")).not.toBeNull();
+        expect(within(undoDialog).getByText("Only this turn's workspace files will change")).not.toBeNull();
+        const applyUndo = vi.spyOn(client, "applyTurnUndo");
+        const confirmUndo = within(undoDialog).getByRole("button", { name: "Confirm undo" }) as HTMLButtonElement;
+        await waitFor(() => expect(confirmUndo.disabled).toBe(false));
+        fireEvent.click(confirmUndo);
+        await waitFor(() => expect(applyUndo).toHaveBeenCalledOnce());
+        await act(async () => await applyUndo.mock.results[0]!.value);
+        await waitFor(async () => expect(await readFile(file, "utf8")).toBe("before\n"));
+
+        const undone = (await client.getSessionState(value.metadata)).rewindState!;
+        ui.rerender(
+            createElement(TurnChangesE2EUi, {
+                client,
+                metadata: value.metadata,
+                sessionRevision: 1,
+                rewindState: undone,
+                turnId,
+            })
+        );
+        await waitFor(() => expect(screen.getByRole("button", { name: /重做/ })).not.toBeNull());
+        expect(screen.queryByRole("button", { name: /撤销/ })).toBeNull();
+        expect((screen.getByRole("textbox", { name: "Composer" }) as HTMLInputElement).value).toBe(
+            "draft survives turn restore"
+        );
+        expect(undone.displayLeafId).toBe(initialRewind.displayLeafId);
+        expect(
+            (await value.session.getEntries())
+                .filter((entry) => entry.type === "message")
+                .map((entry) => structuredClone(entry))
+        ).toEqual(initialMessages);
+
+        fireEvent.click(screen.getByRole("button", { name: /重做/ }));
+        const redoDialog = await screen.findByRole("dialog");
+        const confirmRedo = within(redoDialog).getByRole("button", { name: "Confirm redo" }) as HTMLButtonElement;
+        await waitFor(() => expect(confirmRedo.disabled).toBe(false));
+        const applyRedo = vi.spyOn(client, "applyTurnRedo");
+        fireEvent.click(confirmRedo);
+        await waitFor(() => expect(applyRedo).toHaveBeenCalledOnce());
+        await act(async () => await applyRedo.mock.results[0]!.value);
+        await waitFor(async () => expect(await readFile(file, "utf8")).toBe("after\n"));
+        const redone = (await client.getSessionState(value.metadata)).rewindState!;
+        ui.rerender(
+            createElement(TurnChangesE2EUi, {
+                client,
+                metadata: value.metadata,
+                sessionRevision: 1,
+                rewindState: redone,
+                turnId,
+            })
+        );
+        await waitFor(() => expect(screen.getByRole("button", { name: /撤销/ })).not.toBeNull());
+        expect(screen.queryByRole("button", { name: /重做/ })).toBeNull();
+        expect(redone.displayLeafId).toBe(initialRewind.displayLeafId);
+        value.session.close();
+    }, 30_000);
+
+    it("invalidates turn Undo after preview drift and Force restores only the preview red-list", async () => {
+        const value = await makeFixture();
+        const drifted = join(value.workspaceRoot, "turn-drifted.txt");
+        const clean = join(value.workspaceRoot, "turn-clean.txt");
+        const outside = join(value.workspaceRoot, "turn-outside.txt");
+        await Promise.all([
+            writeFile(drifted, "before-drifted"),
+            writeFile(clean, "before-clean"),
+            writeFile(outside, "before-outside"),
+        ]);
+        const turnId = await value.sendTurn("turn files", async () => {
+            await Promise.all([writeFile(drifted, "agent-drifted"), writeFile(clean, "agent-clean")]);
+        });
+        await value.manager.dispose();
+        const running = value.makeService();
+        const { client } = value.register(running.service);
+        const state = (await client.getSessionState(value.metadata)).rewindState!;
+        const stale = await client.previewTurnUndo({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: state.semanticLeafId,
+            turnId,
+        });
+        await writeFile(drifted, "writer-after-preview");
+        await expect(
+            client.applyTurnUndo({
+                sessionMetadata: value.metadata,
+                expectedSemanticLeafId: state.semanticLeafId,
+                turnId,
+                mode: "normal",
+                confirmationToken: stale.confirmationToken!,
+            })
+        ).rejects.toThrow(/confirmation|changed|plan/i);
+        expect(await readFile(drifted, "utf8")).toBe("writer-after-preview");
+        expect(await readFile(clean, "utf8")).toBe("agent-clean");
+
+        const force = await client.previewTurnUndo({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: state.semanticLeafId,
+            turnId,
+        });
+        expect(force.files.filter((file) => file.conflict !== "none").map((file) => file.path)).toEqual([
+            "turn-drifted.txt",
+        ]);
+        expect(force).toMatchObject({ forceRequired: true, hardBlocked: false });
+        await writeFile(outside, "outside-after-preview");
+        await client.applyTurnUndo({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: state.semanticLeafId,
+            turnId,
+            mode: "force-drift",
+            confirmationToken: force.confirmationToken!,
+        });
+        expect(await readFile(drifted, "utf8")).toBe("before-drifted");
+        expect(await readFile(clean, "utf8")).toBe("before-clean");
+        expect(await readFile(outside, "utf8")).toBe("outside-after-preview");
+        value.session.close();
+    }, 30_000);
+
+    it("does not expose a turn card for a historical session without a checkpoint", async () => {
+        const value = await makeFixture();
+        const turnId = await value.session.appendMessage({
+            role: "user",
+            content: [{ type: "text", text: "legacy turn" }],
+            timestamp: Date.now(),
+        } as never);
+        await value.session.appendMessage({
+            role: "assistant",
+            content: [{ type: "text", text: "legacy answer" }],
+            timestamp: Date.now(),
+        } as never);
+        await value.manager.dispose();
+        const running = value.makeService();
+        const summaryRead = vi.spyOn(running.service, "getTurnChangeSummary");
+        const { client } = value.register(running.service);
+        const state = (await client.getSessionState(value.metadata)).rewindState!;
+        render(
+            createElement(TurnChangesE2EUi, {
+                client,
+                metadata: value.metadata,
+                sessionRevision: 1,
+                rewindState: state,
+                turnId,
+            })
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(state.turnChanges).toEqual([]);
+        expect(screen.queryByLabelText("Turn file changes")).toBeNull();
+        expect(summaryRead).not.toHaveBeenCalled();
+        value.session.close();
+    }, 30_000);
+
     it("checkpoints a sent turn, restores through the renderer hook, reloads, and redoes", async () => {
         const value = await makeFixture();
         const file = join(value.workspaceRoot, "changed.txt");
@@ -640,7 +975,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         expect(await within(previewDialog).findByText("Red will be removed · Green will be restored")).not.toBeNull();
         expect(within(previewDialog).queryByText("Original user prompt")).toBeNull();
         expect(await readFile(file, "utf8")).toBe("after");
-        fireEvent.click(within(previewDialog).getByRole("button", { name: "Revert 1 file" }));
+        fireEvent.click(await within(previewDialog).findByRole("button", { name: "Revert 1 file" }));
         await waitFor(() => expect(applyFromUi).toHaveBeenCalledOnce());
         await act(async () => await applyFromUi.mock.results[0]!.value);
         expect(applyFromUi).toHaveBeenCalledWith(expect.objectContaining({ mode: "normal", targetTurnId: turnId }));

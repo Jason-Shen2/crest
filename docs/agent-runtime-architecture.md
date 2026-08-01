@@ -268,9 +268,9 @@ Pi's `NodeExecutionEnv.cwd: string` is a public mutable field (`emain/agent/harn
 
 ```ts
 interface AgentHarnessHost {
-    readonly harness: AgentHarness;
-    /** Update mutable workspace state. Call before each send if anything changed. */
-    update(inputs: SystemPromptInputs): void;
+  readonly harness: AgentHarness;
+  /** Update mutable workspace state. Call before each send if anything changed. */
+  update(inputs: SystemPromptInputs): void;
 }
 ```
 
@@ -419,6 +419,25 @@ Abandon-current, or corrupt-journal quarantine; recovery never offers Force.
 A successful Revert persists a one-step Redo safety snapshot and dock across
 reload. Redo has no Force mode and disappears after Redo, new work, or branch
 navigation. `/tree` remains conversation-only and never restores snapshots.
+
+Runtime APIs preserve four separate meanings instead of treating every diff as
+the current workspace state:
+
+1. Message Revert and `/rewind` plan conversation movement plus selective
+   workspace restore; `/redo` applies the paired conversation/workspace Redo.
+2. Turn-card Undo/Redo plans only one available checkpoint's exact path set.
+   It uses the shared lock, confirmation, safety snapshot, journal, apply, and
+   verification executor, but commits `turn-undo`/`turn-redo` markers on the
+   current semantic branch without moving messages, display leaf, or composer.
+3. `git-diff` reads current Git/worktree state and is not historical authority.
+4. `agent-turn-diff` and turn Review project immutable `before -> after`
+   snapshot blobs. A missing/unavailable historical checkpoint produces no
+   card and no Git/live-disk fallback.
+
+Normal turn Undo refuses same-path drift. Its Force capability is bound to the
+exact red regular-file paths and fingerprints from preview; turn Redo refuses
+all drift and never issues Force authority. Different-path concurrent sessions
+remain isolated because no operation expands beyond checkpoint `changes`.
 
 The storage/selective-restore precedent comes from OpenCode Core v2; turn
 lifecycle and the `/rewind` picker come from Pi/pi-rewind. Drift/Force UX,

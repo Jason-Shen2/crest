@@ -733,7 +733,7 @@ describe("restore planning", () => {
             )
         );
 
-        expect(clean).toMatchObject({ hardBlocked: false, forceRequired: false });
+        expect(clean).toMatchObject({ hardBlocked: false, forceRequired: false, commitParentId: "assistant" });
         expect(drift).toMatchObject({ hardBlocked: true, forceRequired: false });
         expect(stale.hardBlocked).toBe(true);
         expect(otherSession.hardBlocked).toBe(true);
