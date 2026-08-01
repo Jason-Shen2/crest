@@ -150,6 +150,8 @@ func topTabIdentityKey(descriptor waveobj.TopTabDescriptor) string {
 		return tupleIdentityKey(
 			waveobj.TopTabKindAgentTurnDiff,
 			topTabPathIdentity(descriptor.SessionPath),
+			descriptor.SessionId,
+			descriptor.SessionCreatedAt,
 			descriptor.TurnId,
 			topTabPathIdentity(descriptor.Path),
 		)

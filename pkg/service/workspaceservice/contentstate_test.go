@@ -86,6 +86,16 @@ func TestAgentTurnDiffTopTabDescriptorContract(t *testing.T) {
 	if !reflect.DeepEqual(actual.TopTabs, []waveobj.TopTabDescriptor{descriptor}) {
 		t.Fatalf("agent turn diff descriptor did not survive normalization: %#v", actual.TopTabs)
 	}
+	replacement := descriptor
+	replacement.Id = "turn-diff-replacement"
+	replacement.SessionId = "session-2"
+	replacement.SessionCreatedAt = "2026-08-02T13:00:00.000Z"
+	generations := NormalizeWorkspaceContentState(waveobj.WorkspaceContentState{
+		TopTabs: []waveobj.TopTabDescriptor{descriptor, replacement},
+	}, "")
+	if !reflect.DeepEqual(generations.TopTabs, []waveobj.TopTabDescriptor{descriptor, replacement}) {
+		t.Fatalf("replacement session generation was deduplicated: %#v", generations.TopTabs)
+	}
 	descriptor.Path = "C:src/app.ts"
 	invalid := NormalizeWorkspaceContentState(waveobj.WorkspaceContentState{TopTabs: []waveobj.TopTabDescriptor{descriptor}}, "")
 	if len(invalid.TopTabs) != 0 {

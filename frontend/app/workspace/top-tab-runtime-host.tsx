@@ -15,7 +15,7 @@ export interface TopTabSurfaceFactories {
     renderFile(tab: FileTopTab, runtime: TopTabRuntime): ReactNode;
     renderPreview(tab: PreviewTopTab): ReactNode;
     renderGitDiff(tab: GitDiffTopTab): ReactNode;
-    renderAgentTurnDiff?(tab: AgentTurnDiffTopTab): ReactNode;
+    renderAgentTurnDiff(tab: AgentTurnDiffTopTab): ReactNode;
 }
 
 export interface TopTabRuntimeHostProps {
@@ -85,7 +85,7 @@ function ActiveTopTabSurface({
         case "git-diff":
             return factories.renderGitDiff(tab);
         case "agent-turn-diff":
-            return factories.renderAgentTurnDiff?.(tab) ?? null;
+            return factories.renderAgentTurnDiff(tab);
     }
 }
 

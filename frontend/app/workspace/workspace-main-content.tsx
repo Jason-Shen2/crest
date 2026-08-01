@@ -43,6 +43,7 @@ const DefaultTopTabSurfaceFactories: TopTabSurfaceFactories = {
     renderFile: (_tab, runtime) => <FileTopTab runtime={runtime as WorkspaceFileRuntime} />,
     renderPreview: (tab) => tab.title,
     renderGitDiff: (tab) => <GitDiffTopTab tab={tab} />,
+    renderAgentTurnDiff: (tab) => tab.title,
 };
 
 function makeColdRuntime(tab: TopTab): TopTabRuntime {

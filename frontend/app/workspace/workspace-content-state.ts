@@ -189,6 +189,8 @@ function agentTurnDiffTabIdentityKey(tab: Extract<TopTab, { kind: "agent-turn-di
     return tupleIdentityKey([
         "agent-turn-diff",
         pathIdentityKey(tab.sessionPath),
+        tab.sessionId,
+        tab.sessionCreatedAt,
         tab.turnId,
         pathIdentityKey(tab.path),
     ]);

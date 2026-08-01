@@ -141,6 +141,25 @@ describe("TopTabRuntimeHost", () => {
         consoleError.mockRestore();
     });
 
+    it("shows an explicit error instead of silently rendering nothing when a factory is missing at runtime", () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+        const incompleteFactories = factories();
+        delete (incompleteFactories as Partial<TopTabSurfaceFactories>).renderAgentTurnDiff;
+
+        render(
+            <TopTabRuntimeHost
+                activeTab={AgentTurnDiffTab}
+                registry={new WorkspaceTopTabRuntimeRegistry()}
+                createRuntime={() => runtime("a.ts")}
+                factories={incompleteFactories}
+            />
+        );
+
+        expect(screen.getByRole("alert")).toBeTruthy();
+        expect(screen.getByText(/renderAgentTurnDiff|not a function/i)).toBeTruthy();
+        consoleError.mockRestore();
+    });
+
     it("releases the closing file alias without disposing another alias owner", async () => {
         const registry = new WorkspaceTopTabRuntimeRegistry();
         const sharedRuntime = {

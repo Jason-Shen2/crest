@@ -185,6 +185,8 @@ describe("WorkspaceTopTabController", () => {
         vi.spyOn(crypto, "randomUUID")
             .mockReturnValueOnce("base")
             .mockReturnValueOnce("different-session")
+            .mockReturnValueOnce("different-session-id")
+            .mockReturnValueOnce("different-session-created-at")
             .mockReturnValueOnce("different-turn")
             .mockReturnValueOnce("different-path");
         const controller = makeWorkspaceTopTabController(fixture.model);
@@ -197,12 +199,24 @@ describe("WorkspaceTopTabController", () => {
             turnId: "t1",
             path: "src/a.ts",
         });
+        controller.openAgentTurnDiff({
+            sessionMetadata: { ...sessionMetadata, id: "s2" },
+            turnId: "t1",
+            path: "src/a.ts",
+        });
+        controller.openAgentTurnDiff({
+            sessionMetadata: { ...sessionMetadata, createdAt: "later" },
+            turnId: "t1",
+            path: "src/a.ts",
+        });
         controller.openAgentTurnDiff({ sessionMetadata, turnId: "t2", path: "src/a.ts" });
         controller.openAgentTurnDiff({ sessionMetadata, turnId: "t1", path: "src/b.ts" });
 
         expect(fixture.tabs.map((tab) => tab.id)).toEqual([
             "base",
             "different-session",
+            "different-session-id",
+            "different-session-created-at",
             "different-turn",
             "different-path",
         ]);

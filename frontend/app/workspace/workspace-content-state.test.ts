@@ -429,6 +429,30 @@ describe("workspace content state", () => {
         expect(JSON.stringify(descriptor)).not.toMatch(/sessionId|sessionCreatedAt|sessionCwd|sessionPath|turnId/);
     });
 
+    it("keeps immutable tabs from replacement session generations distinct", () => {
+        const base = {
+            id: "turn-diff-old",
+            kind: "agent-turn-diff",
+            sessionid: "session-old",
+            sessioncreatedat: "2026-08-02T12:00:00.000Z",
+            sessioncwd: "/repo",
+            sessionpath: "/sessions/session.db",
+            turnid: "turn-1",
+            path: "src/app.ts",
+            title: "app.ts",
+        };
+        const replacement = {
+            ...base,
+            id: "turn-diff-new",
+            sessionid: "session-new",
+            sessioncreatedat: "2026-08-02T13:00:00.000Z",
+        };
+
+        const hydrated = hydrateWorkspaceContentState(persisted({ toptabs: [base, replacement] }), "");
+
+        expect(hydrated.topTabs.map((tab) => tab.id)).toEqual(["turn-diff-old", "turn-diff-new"]);
+    });
+
     it.each(["sessionid", "sessioncreatedat", "sessioncwd", "sessionpath", "turnid", "path"])(
         "drops an agent turn diff descriptor missing %s",
         (field) => {
