@@ -15,7 +15,21 @@ import { WorkspaceControlCustomTypes } from "./types";
 import { decodeWorkspaceCheckpointV1, decodeWorkspaceStateV1 } from "./validation";
 
 const WorkspaceControlTypeValues = new Set<string>(Object.values(WorkspaceControlCustomTypes));
-type WorkspaceTurnMutationStateV1 = Extract<WorkspaceStateV1, { kind: "turn-undo" } | { kind: "turn-redo" }>;
+export type WorkspaceTurnMutationStateV1 = Extract<WorkspaceStateV1, { kind: "turn-undo" } | { kind: "turn-redo" }>;
+export type WorkspaceTurnMutationAuthority = { action: "undo" } | { action: "redo"; undoOperationId: string };
+
+export function advanceTurnMutationAuthority(
+    current: WorkspaceTurnMutationAuthority,
+    state: WorkspaceTurnMutationStateV1
+): WorkspaceTurnMutationAuthority {
+    if (state.kind === "turn-undo" && current.action === "undo") {
+        return { action: "redo", undoOperationId: state.operationId };
+    }
+    if (state.kind === "turn-redo" && current.action === "redo" && current.undoOperationId === state.undoOperationId) {
+        return { action: "undo" };
+    }
+    return current;
+}
 
 function rawLeafId(entries: SessionTreeEntry[]): string | null {
     let leafId: string | null = null;
@@ -218,7 +232,7 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
         checkpointGaps.push({ turnId, reason: checkpointGapReason(checkpoint) });
     }
 
-    const turnMutationsByTurnId = new Map<string, { action: "undo" } | { action: "redo"; undoOperationId: string }>();
+    const turnMutationsByTurnId = new Map<string, WorkspaceTurnMutationAuthority>();
     for (const turnId of eligibleTurnIds) {
         turnMutationsByTurnId.set(turnId, { action: "undo" });
     }
@@ -236,16 +250,7 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
         if (!current) {
             continue;
         }
-        if (state.kind === "turn-undo" && current.action === "undo") {
-            turnMutationsByTurnId.set(state.sourceTurnId, {
-                action: "redo",
-                undoOperationId: state.operationId,
-            });
-            continue;
-        }
-        if (current.action === "redo" && current.undoOperationId === state.undoOperationId) {
-            turnMutationsByTurnId.set(state.sourceTurnId, { action: "undo" });
-        }
+        turnMutationsByTurnId.set(state.sourceTurnId, advanceTurnMutationAuthority(current, state));
     }
 
     return {

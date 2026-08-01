@@ -266,7 +266,7 @@ describe("AgentRewindService", () => {
 
     it("offers redo only in normal mode and uses the same retained publication path", async () => {
         const value = harness();
-        const redoPlan = { ...plan(), kind: "redo" as const, targetTurnId: undefined };
+        const redoPlan = { ...plan(), target: { kind: "redo" as const } };
         const token = value.confirmations.issue(redoPlan);
 
         const result = await value.service.redo({
@@ -279,7 +279,9 @@ describe("AgentRewindService", () => {
         expect(value.engine.applyRedo).toHaveBeenCalledWith(
             expect.objectContaining({
                 semanticLeafId: "checkpoint-1",
-                confirmation: expect.objectContaining({ plan: expect.objectContaining({ kind: "redo" }) }),
+                confirmation: expect.objectContaining({
+                    plan: expect.objectContaining({ target: { kind: "redo" } }),
+                }),
             })
         );
         expect(value.order).toEqual([

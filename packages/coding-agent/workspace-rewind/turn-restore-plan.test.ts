@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
+import { RewindConfirmationRegistry } from "./confirmation-token";
 import { planTurnRedo, planTurnUndo } from "./turn-restore-plan";
 import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
@@ -251,6 +252,57 @@ describe("per-turn restore planning", () => {
         ]);
     });
 
+    it("uses the legal turn-mutation state machine for duplicate Undo and matching Redo markers", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const firstUndo = custom(
+            "undo-1",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", "undo-operation-1")
+        );
+        const duplicateUndo = custom(
+            "undo-2",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", "undo-operation-2")
+        );
+        const duplicateEntries = branch(checkpoint([change]), [firstUndo, duplicateUndo]);
+        const input = baseInput(duplicateEntries, { "a.ts": live(change.before) });
+
+        expect(
+            (
+                await planTurnRedo({
+                    ...input,
+                    undoOperationId: "undo-operation-1",
+                })
+            ).hardBlocked
+        ).toBe(false);
+        expect(
+            (
+                await planTurnRedo({
+                    ...input,
+                    undoOperationId: "undo-operation-2",
+                })
+            ).hardBlocked
+        ).toBe(true);
+
+        const matchingRedo = custom(
+            "redo-1",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-redo", "redo-operation-1", "undo-operation-1")
+        );
+        const redoneEntries = branch(checkpoint([change]), [firstUndo, duplicateUndo, matchingRedo]);
+        const redoneInput = baseInput(redoneEntries, { "a.ts": live(change.before) });
+        for (const undoOperationId of ["undo-operation-1", "undo-operation-2"]) {
+            expect((await planTurnRedo({ ...redoneInput, undoOperationId })).hardBlocked).toBe(true);
+        }
+    });
+
     it.each([
         ["session", { originSessionId: "session-2" }, /session/i],
         ["workspace", { workspaceIdentity: "workspace-2" }, /identity/i],
@@ -289,7 +341,26 @@ describe("per-turn restore planning", () => {
         expect(unreadable.coverageWarnings[0]!.reason).toMatch(/unavailable.*missing object/i);
     });
 
-    it("reports incomplete checkpoint coverage and isolates paths from another session", async () => {
+    it("hard-blocks multiple visible checkpoint entries before decoding or checking ownership", async () => {
+        const own = checkpoint([]);
+        const foreign = custom(
+            "foreign-checkpoint",
+            null,
+            WorkspaceControlCustomTypes.checkpoint,
+            checkpoint([], { originSessionId: "session-2" })
+        );
+        const invalid = custom("invalid-checkpoint", null, WorkspaceControlCustomTypes.checkpoint, {
+            schemaVersion: 1,
+        });
+
+        for (const second of [foreign, invalid]) {
+            const plan = await planTurnUndo(baseInput(branch(own, [second]), {}));
+            expect(plan.hardBlocked).toBe(true);
+            expect(plan.coverageWarnings[0]!.reason).toMatch(/not unique/i);
+        }
+    });
+
+    it("hard-blocks incomplete checkpoint coverage and cannot issue a confirmation", async () => {
         const own = checkpoint(
             [{ path: "own.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } }],
             {
@@ -301,29 +372,33 @@ describe("per-turn restore planning", () => {
                 },
             }
         );
-        const foreign = custom(
-            "foreign-checkpoint",
-            null,
-            WorkspaceControlCustomTypes.checkpoint,
-            checkpoint(
-                [
-                    {
-                        path: "foreign.ts",
-                        before: { state: "absent" },
-                        after: { state: "file", oid: OidB, executable: false },
-                    },
-                ],
-                { originSessionId: "session-2" }
-            )
-        );
-        const input = baseInput(branch(own, [foreign]), {
+        const input = baseInput(branch(own), {
             "own.ts": live({ state: "file", oid: OidA, executable: false }),
         });
         const plan = await planTurnUndo(input);
 
-        expect(plan.paths.map((item) => item.path)).toEqual(["own.ts"]);
-        expect(input.inspectLivePath).toHaveBeenCalledTimes(1);
+        expect(plan.hardBlocked).toBe(true);
+        expect(input.inspectLivePath).not.toHaveBeenCalled();
         expect(plan.coverageWarnings).toContainEqual({ path: "ignored.log", reason: "ignored" });
+        expect(() => new RewindConfirmationRegistry().issue(plan)).toThrow(/blocked/i);
+    });
+
+    it.each(["before", "after"] as const)("hard-blocks a path excluded from %s coverage", async (side) => {
+        const excluded = { state: "excluded", reason: "ignored" } as const;
+        const covered = { state: "file", oid: OidA, executable: false } as const;
+        const value = checkpoint([
+            {
+                path: "excluded.ts",
+                before: side === "before" ? excluded : covered,
+                after: side === "after" ? excluded : covered,
+            },
+        ]);
+        const plan = await planTurnUndo(baseInput(branch(value), { "excluded.ts": live(covered) }));
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(plan.coverageWarnings).toEqual([
+            expect.objectContaining({ path: "excluded.ts", reason: expect.stringMatching(/excluded/i) }),
+        ]);
     });
 
     it("treats the next prepared turn transaction as outside the source turn", async () => {

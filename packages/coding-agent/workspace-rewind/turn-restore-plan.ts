@@ -11,8 +11,14 @@ import {
     type RestorePlanV1,
     type RestoreTargetV1,
 } from "./restore-plan";
-import { decodeWorkspaceCheckpointEntry, decodeWorkspaceStateEntry, isWorkspaceControlEntry } from "./session-state";
-import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
+import {
+    advanceTurnMutationAuthority,
+    decodeWorkspaceCheckpointEntry,
+    decodeWorkspaceStateEntry,
+    isWorkspaceControlEntry,
+    type WorkspaceTurnMutationAuthority,
+} from "./session-state";
+import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 
@@ -39,7 +45,6 @@ interface ActiveBranchResult {
 }
 
 type AvailableCheckpoint = Extract<WorkspaceCheckpointV1, { status: "available" }>;
-type TurnMutationState = Extract<WorkspaceStateV1, { kind: "turn-undo" } | { kind: "turn-redo" }>;
 
 function emptyPlan(input: PlanTurnRestoreBaseInput, target: RestoreTargetV1): RestorePlanV1 {
     return {
@@ -140,21 +145,13 @@ function terminalCheckpoint(
                 item.entry.type === "custom" &&
                 item.entry.customType === WorkspaceControlCustomTypes.checkpoint
         );
-    const decoded = checkpointEntries.map((item) => ({
-        ...item,
-        checkpoint: decodeWorkspaceCheckpointEntry(item.entry),
-    }));
-    const owned = decoded.filter((item) => item.checkpoint?.originSessionId === sessionId);
-    if (owned.length === 0) {
-        if (decoded.some((item) => item.checkpoint)) return { reason: "checkpoint is owned by another session" };
-        return {
-            reason:
-                checkpointEntries.length === 0 ? "workspace checkpoint is missing" : "workspace checkpoint is invalid",
-        };
-    }
-    if (owned.length !== 1) return { reason: "workspace checkpoint is not unique" };
-    const selected = owned[0]!;
-    if (selected.checkpoint!.turnId !== branch[sourceIndex]!.id) {
+    if (checkpointEntries.length === 0) return { reason: "workspace checkpoint is missing" };
+    if (checkpointEntries.length !== 1) return { reason: "workspace checkpoint is not unique" };
+    const selected = checkpointEntries[0]!;
+    const checkpoint = decodeWorkspaceCheckpointEntry(selected.entry);
+    if (!checkpoint) return { reason: "workspace checkpoint is invalid" };
+    if (checkpoint.originSessionId !== sessionId) return { reason: "checkpoint is owned by another session" };
+    if (checkpoint.turnId !== branch[sourceIndex]!.id) {
         return { reason: "workspace checkpoint is invalid" };
     }
     if (
@@ -164,10 +161,10 @@ function terminalCheckpoint(
     ) {
         return { reason: "workspace checkpoint is not terminal" };
     }
-    if (selected.checkpoint!.status === "unavailable") {
-        return { reason: `workspace checkpoint is unavailable: ${selected.checkpoint!.reasonCode}` };
+    if (checkpoint.status === "unavailable") {
+        return { reason: `workspace checkpoint is unavailable: ${checkpoint.reasonCode}` };
     }
-    return { checkpoint: selected.checkpoint, entryIndex: selected.index };
+    return { checkpoint, entryIndex: selected.index };
 }
 
 async function verifyCheckpoint(
@@ -212,8 +209,9 @@ function projectCoverage(plan: RestorePlanV1, checkpoint: AvailableCheckpoint): 
         }
         plan.coverageWarnings.push({ path: "", reason: exclusion.reason });
     }
-    if (!checkpoint.coverage.complete && checkpoint.coverage.exclusions.length === 0) {
-        plan.coverageWarnings.push({ path: "", reason: "workspace checkpoint coverage is incomplete" });
+    if (!checkpoint.coverage.complete || checkpoint.coverage.exclusions.length > 0) {
+        hardBlock(plan, "workspace checkpoint coverage is incomplete");
+        return false;
     }
     return true;
 }
@@ -235,44 +233,39 @@ function transitionsForCheckpoint(
         }
         const target = direction === "undo" ? change.before : change.after;
         const expectedCurrent = direction === "undo" ? change.after : change.before;
-        const excludedReason =
-            target.state === "excluded" || expectedCurrent.state === "excluded"
-                ? `path was excluded from snapshot coverage: ${
-                      target.state === "excluded"
-                          ? target.reason
-                          : expectedCurrent.state === "excluded"
-                            ? expectedCurrent.reason
-                            : ""
-                  }`
-                : undefined;
+        if (target.state === "excluded" || expectedCurrent.state === "excluded") {
+            hardBlock(plan, "path was excluded from snapshot coverage", change.path);
+            return undefined;
+        }
         transitions.set(change.path, {
             target,
             expectedCurrent,
-            ...(excludedReason == null ? {} : { excludedReason }),
         });
     }
     return transitions;
 }
 
-function latestSourceMutation(
+function sourceMutationAuthority(
     branch: SessionTreeEntry[],
     visibleEntries: ReadonlySet<SessionTreeEntry>,
     checkpointIndex: number,
     input: PlanTurnRedoInput
-): TurnMutationState | undefined {
-    let latest: TurnMutationState | undefined;
+): WorkspaceTurnMutationAuthority {
+    let authority: WorkspaceTurnMutationAuthority = { action: "undo" };
     for (const entry of branch.slice(checkpointIndex + 1)) {
         if (!visibleEntries.has(entry)) continue;
         const state = decodeWorkspaceStateEntry(entry);
         if (
             state?.sessionId === input.sessionId &&
             state.sourceTurnId === input.sourceTurnId &&
+            state.workspaceIdentity === input.workspace.workspaceIdentity &&
+            state.workspaceIncarnation === input.workspace.workspaceIncarnation &&
             (state.kind === "turn-undo" || state.kind === "turn-redo")
         ) {
-            latest = state;
+            authority = advanceTurnMutationAuthority(authority, state);
         }
     }
-    return latest;
+    return authority;
 }
 
 async function prepare(
@@ -324,13 +317,13 @@ export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePla
         undoOperationId: input.undoOperationId,
     });
     if (!prepared.checkpoint) return prepared.plan;
-    const marker = latestSourceMutation(prepared.branch!, prepared.visibleEntries!, prepared.checkpointIndex!, input);
-    if (
-        marker?.kind !== "turn-undo" ||
-        marker.operationId !== input.undoOperationId ||
-        marker.workspaceIdentity !== input.workspace.workspaceIdentity ||
-        marker.workspaceIncarnation !== input.workspace.workspaceIncarnation
-    ) {
+    const authority = sourceMutationAuthority(
+        prepared.branch!,
+        prepared.visibleEntries!,
+        prepared.checkpointIndex!,
+        input
+    );
+    if (authority.action !== "redo" || authority.undoOperationId !== input.undoOperationId) {
         return hardBlock(
             prepared.plan,
             "Redo requires the source turn's current last marker to point at this undoOperationId"
