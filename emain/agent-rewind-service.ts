@@ -6,16 +6,27 @@ import type { AgentRuntimeRegistry, RetainedSessionMutationLease } from "@crest/
 import type { AgentSessionRuntime } from "@crest/coding-agent/agent-session-runtime";
 import { textFromContent } from "@crest/coding-agent/commands/session-views";
 import type {
+    AgentApplyTurnMutationInput,
+    AgentGetTurnFileDiffInput,
     AgentListRewindPointsInput,
     AgentListRewindPointsResult,
     AgentPreviewRewindInput,
+    AgentPreviewTurnMutationInput,
     AgentRedoRewindInput,
+    AgentReviewTurnChangesResult,
     AgentRewindMutationResult,
     AgentRewindPreviewResult,
     AgentRewindTreeInput,
+    AgentTurnChangeSummaryView,
+    AgentTurnFileDiffView,
+    AgentTurnMutationPreviewResult,
+    AgentTurnTargetInput,
 } from "@crest/coding-agent/workspace-rewind/api-types";
 import type { RewindConfirmationRegistry } from "@crest/coding-agent/workspace-rewind/confirmation-token";
-import type { WorkspaceRewindEngine } from "@crest/coding-agent/workspace-rewind/rewind-engine";
+import type {
+    WorkspaceRestorePreviewResult,
+    WorkspaceRewindEngine,
+} from "@crest/coding-agent/workspace-rewind/rewind-engine";
 import { foldWorkspaceSessionState } from "@crest/coding-agent/workspace-rewind/session-state";
 import type { WorkspaceSnapshotStore } from "@crest/coding-agent/workspace-rewind/snapshot-store";
 import type { CanonicalWorkspaceIdentity } from "@crest/coding-agent/workspace-rewind/workspace-identity";
@@ -46,6 +57,24 @@ interface LockedSession {
     session: Session<JsonlSessionMetadata>;
     workspace: CanonicalWorkspaceIdentity;
     engine: WorkspaceRewindEngine;
+}
+
+function turnMutationPreview(result: WorkspaceRestorePreviewResult): AgentTurnMutationPreviewResult {
+    if (result.target.kind !== "turn-undo" && result.target.kind !== "turn-redo") {
+        throw new Error("Turn mutation preview returned an invalid restore target");
+    }
+    return {
+        ...(result.confirmationToken == null ? {} : { confirmationToken: result.confirmationToken }),
+        target: result.target,
+        semanticLeafId: result.semanticLeafId,
+        displayLeafId: result.displayLeafId,
+        expectedSemanticLeafId: result.expectedSemanticLeafId,
+        fileCount: result.fileCount,
+        files: result.files,
+        coverageWarnings: result.coverageWarnings,
+        forceRequired: result.forceRequired,
+        hardBlocked: result.hardBlocked,
+    };
 }
 
 function activeBranch(entries: SessionTreeEntry[], leafId: string | null): SessionTreeEntry[] {
@@ -124,6 +153,121 @@ export class AgentRewindService {
                       workspace,
                       semanticLeafId: input.expectedSemanticLeafId,
                   })
+        );
+    }
+
+    getTurnChangeSummary(input: AgentTurnTargetInput): Promise<AgentTurnChangeSummaryView> {
+        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) =>
+            engine.getTurnChangeSummary({
+                session,
+                sessionId: input.sessionMetadata.id,
+                workspace,
+                semanticLeafId: input.expectedSemanticLeafId,
+                sourceTurnId: input.turnId,
+            })
+        );
+    }
+
+    getTurnFileDiff(input: AgentGetTurnFileDiffInput): Promise<AgentTurnFileDiffView> {
+        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) =>
+            engine.getTurnFileDiff({
+                session,
+                sessionId: input.sessionMetadata.id,
+                workspace,
+                semanticLeafId: input.expectedSemanticLeafId,
+                sourceTurnId: input.turnId,
+                path: input.path,
+            })
+        );
+    }
+
+    reviewTurnChanges(input: AgentTurnTargetInput): Promise<AgentReviewTurnChangesResult> {
+        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) =>
+            engine.reviewTurnChanges({
+                session,
+                sessionId: input.sessionMetadata.id,
+                workspace,
+                semanticLeafId: input.expectedSemanticLeafId,
+                sourceTurnId: input.turnId,
+            })
+        );
+    }
+
+    previewTurnUndo(input: AgentPreviewTurnMutationInput): Promise<AgentTurnMutationPreviewResult> {
+        return this.withLockedSession(input.sessionMetadata, async ({ session, workspace, engine }) => {
+            const result = await engine.previewTurnUndo({
+                session,
+                sessionId: input.sessionMetadata.id,
+                workspace,
+                semanticLeafId: input.expectedSemanticLeafId,
+                sourceTurnId: input.turnId,
+            });
+            return turnMutationPreview(result);
+        });
+    }
+
+    async previewTurnRedo(input: AgentPreviewTurnMutationInput): Promise<AgentTurnMutationPreviewResult> {
+        const undoOperationId = input.undoOperationId;
+        if (!undoOperationId) throw new Error("turn redo requires undoOperationId");
+        return await this.withLockedSession(input.sessionMetadata, async ({ session, workspace, engine }) => {
+            const result = await engine.previewTurnRedo({
+                session,
+                sessionId: input.sessionMetadata.id,
+                workspace,
+                semanticLeafId: input.expectedSemanticLeafId,
+                sourceTurnId: input.turnId,
+                undoOperationId,
+            });
+            return turnMutationPreview(result);
+        });
+    }
+
+    applyTurnUndo(
+        input: AgentApplyTurnMutationInput,
+        assertCurrent: () => Promise<void> = async () => {}
+    ): Promise<AgentRewindMutationResult> {
+        return this.withLockedSession(
+            input.sessionMetadata,
+            ({ session, workspace, engine }) => {
+                const confirmation = this.confirmations.take(input.confirmationToken);
+                return engine.applyTurnUndo({
+                    session,
+                    sessionId: input.sessionMetadata.id,
+                    workspace,
+                    semanticLeafId: input.expectedSemanticLeafId,
+                    sourceTurnId: input.turnId,
+                    mode: input.mode,
+                    confirmation,
+                    assertCurrent,
+                });
+            },
+            assertCurrent
+        );
+    }
+
+    async applyTurnRedo(
+        input: AgentApplyTurnMutationInput,
+        assertCurrent: () => Promise<void> = async () => {}
+    ): Promise<AgentRewindMutationResult> {
+        const undoOperationId = input.undoOperationId;
+        if (!undoOperationId) throw new Error("turn redo requires undoOperationId");
+        if (input.mode !== "normal") throw new Error("turn redo does not support force mode");
+        return await this.withLockedSession(
+            input.sessionMetadata,
+            ({ session, workspace, engine }) => {
+                const confirmation = this.confirmations.take(input.confirmationToken);
+                return engine.applyTurnRedo({
+                    session,
+                    sessionId: input.sessionMetadata.id,
+                    workspace,
+                    semanticLeafId: input.expectedSemanticLeafId,
+                    sourceTurnId: input.turnId,
+                    undoOperationId,
+                    confirmation,
+                    assertCurrent,
+                });
+            },
+            assertCurrent
         );
     }
 

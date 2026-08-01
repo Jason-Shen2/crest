@@ -4,7 +4,13 @@
 import type { JsonlSessionMetadata, Session, SessionTreeEntry } from "@crest/agent/harness/types";
 
 import { textFromContent } from "../commands/session-views";
-import type { AgentRewindFileRowView, AgentRewindPreviewResult } from "./api-types";
+import type {
+    AgentReviewTurnChangesResult,
+    AgentRewindFileRowView,
+    AgentRewindPreviewResult,
+    AgentTurnChangeSummaryView,
+    AgentTurnFileDiffView,
+} from "./api-types";
 import {
     assertRestorePlanMatchesConfirmation,
     type ConfirmedRestorePlanV1,
@@ -60,6 +66,12 @@ export interface ApplyRedoInput extends PreviewRedoInput {
 
 export interface PreviewTurnUndoInput extends PreviewRedoInput {
     sourceTurnId: string;
+}
+
+export type ReadTurnChangesInput = PreviewTurnUndoInput;
+
+export interface ReadTurnFileDiffInput extends ReadTurnChangesInput {
+    path: string;
 }
 
 export interface PreviewTurnRedoInput extends PreviewTurnUndoInput {
@@ -277,6 +289,58 @@ export class WorkspaceRewindEngine {
         return this.preview(await this.computeTurnRedo(input));
     }
 
+    async getTurnChangeSummary(input: ReadTurnChangesInput): Promise<AgentTurnChangeSummaryView> {
+        const projected = await this.projectTurnChanges(input);
+        const files = projected.files.map((file) => ({
+            path: file.path,
+            operation: file.operation as "create" | "write" | "delete",
+            additions: file.additions ?? 0,
+            deletions: file.deletions ?? 0,
+        }));
+        return {
+            turnId: input.sourceTurnId,
+            semanticLeafId: projected.semanticLeafId,
+            fileCount: files.length,
+            additions: files.reduce((total, file) => total + file.additions, 0),
+            deletions: files.reduce((total, file) => total + file.deletions, 0),
+            files,
+        };
+    }
+
+    async reviewTurnChanges(input: ReadTurnChangesInput): Promise<AgentReviewTurnChangesResult> {
+        const projected = await this.projectTurnChanges(input);
+        return {
+            turnId: input.sourceTurnId,
+            semanticLeafId: projected.semanticLeafId,
+            files: projected.files,
+        };
+    }
+
+    async getTurnFileDiff(input: ReadTurnFileDiffInput): Promise<AgentTurnFileDiffView> {
+        const projected = await this.projectTurnChanges(input);
+        const file = projected.files.find((candidate) => candidate.path === input.path);
+        if (!file) throw new Error("Turn file is not present in the workspace checkpoint");
+        const originalContent = file.originalContent ?? "";
+        const modifiedContent = file.modifiedContent ?? "";
+        return {
+            turnId: input.sourceTurnId,
+            path: file.path,
+            operation: file.operation as "create" | "write" | "delete",
+            additions: file.additions ?? 0,
+            deletions: file.deletions ?? 0,
+            originalContent,
+            modifiedContent,
+            isBinary: file.previewUnavailableReason === "binary file",
+            fallbackPatch: file.diff ?? "",
+            truncated:
+                file.previewUnavailableReason === "file exceeds preview size limit" ||
+                file.previewUnavailableReason === "request exceeds preview input limit",
+            ...(file.previewUnavailableReason == null
+                ? {}
+                : { previewUnavailableReason: file.previewUnavailableReason }),
+        };
+    }
+
     async applyRewind(input: ApplyRewindInput): Promise<WorkspaceRewindCommitResult> {
         return this.apply({
             ...input,
@@ -298,6 +362,49 @@ export class WorkspaceRewindEngine {
 
     async applyTurnRedo(input: ApplyTurnRedoInput): Promise<WorkspaceRewindCommitResult> {
         return this.applyTurn({ ...input, mode: "normal" }, () => this.computeTurnRedo(input));
+    }
+
+    private async projectTurnChanges(input: ReadTurnChangesInput): Promise<{
+        semanticLeafId: string | null;
+        files: Array<
+            AgentRewindFileRowView & {
+                originalContent?: string;
+                modifiedContent?: string;
+            }
+        >;
+    }> {
+        this.assertWorkspace(input.workspace);
+        const entries = await input.session.getEntries();
+        const folded = foldWorkspaceSessionState(entries, input.sessionId);
+        if (folded.semanticLeafId !== input.semanticLeafId) {
+            throw new Error("semantic leaf changed");
+        }
+        const checkpoint = folded.checkpointsByTurnId.get(input.sourceTurnId);
+        if (checkpoint?.status !== "available") {
+            throw new Error("workspace checkpoint is unavailable");
+        }
+        if (
+            checkpoint.workspaceIdentity !== input.workspace.workspaceIdentity ||
+            checkpoint.workspaceIncarnation !== input.workspace.workspaceIncarnation
+        ) {
+            throw new Error("checkpoint workspace identity or incarnation does not match");
+        }
+        await this.store.verify(checkpoint.before);
+        await this.store.verify(checkpoint.after);
+        const budget = new WorkspaceDiffPreviewBudget();
+        const files = [];
+        for (const change of checkpoint.changes) {
+            files.push(
+                await projectWorkspacePathDiff({
+                    path: change.path,
+                    before: change.before,
+                    after: change.after,
+                    readBlob: (oid) => this.store.readBlob(oid),
+                    budget,
+                })
+            );
+        }
+        return { semanticLeafId: folded.semanticLeafId, files };
     }
 
     private async preview(planned: PlannedRestore): Promise<WorkspaceRestorePreviewResult> {

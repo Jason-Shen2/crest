@@ -317,6 +317,34 @@ declare global {
                 context: WorkspaceAgentRequestContext,
                 input: AgentListRewindPointsInput
             ) => Promise<AgentListRewindPointsResult>; // agent:list-rewind-points
+            getTurnChangeSummary: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentTurnTargetInput
+            ) => Promise<AgentTurnChangeSummaryView>; // agent:get-turn-change-summary
+            getTurnFileDiff: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentGetTurnFileDiffInput
+            ) => Promise<AgentTurnFileDiffView>; // agent:get-turn-file-diff
+            reviewTurnChanges: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentTurnTargetInput
+            ) => Promise<AgentReviewTurnChangesResult>; // agent:review-turn-changes
+            previewTurnUndo: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentPreviewTurnMutationInput
+            ) => Promise<AgentTurnMutationPreviewResult>; // agent:preview-turn-undo
+            applyTurnUndo: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentApplyTurnMutationInput
+            ) => Promise<AgentRewindMutationResult>; // agent:apply-turn-undo
+            previewTurnRedo: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentPreviewTurnMutationInput
+            ) => Promise<AgentTurnMutationPreviewResult>; // agent:preview-turn-redo
+            applyTurnRedo: (
+                context: WorkspaceAgentRequestContext,
+                input: AgentApplyTurnMutationInput
+            ) => Promise<AgentRewindMutationResult>; // agent:apply-turn-redo
             previewRewind: (
                 context: WorkspaceAgentRequestContext,
                 input: AgentPreviewRewindInput
@@ -792,6 +820,7 @@ declare global {
         additions?: number;
         deletions?: number;
         diff?: string;
+        previewUnavailableReason?: string;
         coverage: "covered" | "excluded" | "unavailable";
         conflict: AgentRewindConflictClass;
         reason?: string;
@@ -808,6 +837,62 @@ declare global {
         points: AgentRewindPointView[];
         semanticLeafId: string | null;
         displayLeafId: string | null;
+    };
+    type AgentTurnTargetInput = {
+        sessionMetadata: AgentSessionMeta;
+        expectedSemanticLeafId: string | null;
+        turnId: string;
+    };
+    type AgentGetTurnFileDiffInput = AgentTurnTargetInput & { path: string };
+    type AgentPreviewTurnMutationInput = AgentTurnTargetInput & { undoOperationId?: string };
+    type AgentApplyTurnMutationInput = AgentPreviewTurnMutationInput & {
+        mode: "normal" | "force-drift";
+        confirmationToken: string;
+    };
+    type AgentTurnChangeSummaryView = {
+        turnId: string;
+        semanticLeafId: string | null;
+        fileCount: number;
+        additions: number;
+        deletions: number;
+        files: Array<{
+            path: string;
+            operation: "create" | "write" | "delete";
+            additions: number;
+            deletions: number;
+        }>;
+    };
+    type AgentReviewTurnChangesResult = {
+        turnId: string;
+        semanticLeafId: string | null;
+        files: AgentRewindFileRowView[];
+    };
+    type AgentTurnFileDiffView = {
+        turnId: string;
+        path: string;
+        operation: "create" | "write" | "delete";
+        additions: number;
+        deletions: number;
+        originalContent: string;
+        modifiedContent: string;
+        isBinary: boolean;
+        fallbackPatch: string;
+        truncated: boolean;
+        previewUnavailableReason?: string;
+    };
+    type AgentTurnMutationPreviewResult = {
+        confirmationToken?: string;
+        target:
+            | { kind: "turn-undo"; sourceTurnId: string }
+            | { kind: "turn-redo"; sourceTurnId: string; undoOperationId: string };
+        semanticLeafId: string | null;
+        displayLeafId: string | null;
+        expectedSemanticLeafId: string | null;
+        fileCount: number;
+        files: AgentRewindFileRowView[];
+        coverageWarnings: string[];
+        forceRequired: boolean;
+        hardBlocked: boolean;
     };
     type AgentPreviewRewindInput = {
         sessionMetadata: AgentSessionMeta;

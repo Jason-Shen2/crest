@@ -3940,6 +3940,13 @@ describe("agent-ipc command helpers", () => {
             },
             rewindService: {
                 listPoints,
+                getTurnChangeSummary: vi.fn(),
+                getTurnFileDiff: vi.fn(),
+                reviewTurnChanges: vi.fn(),
+                previewTurnUndo: vi.fn(),
+                applyTurnUndo: vi.fn(),
+                previewTurnRedo: vi.fn(),
+                applyTurnRedo: vi.fn(),
                 preview: vi.fn(),
                 rewind,
                 redo: vi.fn(),
@@ -3972,6 +3979,13 @@ describe("agent-ipc command helpers", () => {
         expect(
             [
                 "agent:list-rewind-points",
+                "agent:get-turn-change-summary",
+                "agent:get-turn-file-diff",
+                "agent:review-turn-changes",
+                "agent:preview-turn-undo",
+                "agent:apply-turn-undo",
+                "agent:preview-turn-redo",
+                "agent:apply-turn-redo",
                 "agent:preview-rewind",
                 "agent:rewind-tree",
                 "agent:redo-rewind",
@@ -4045,6 +4059,132 @@ describe("agent-ipc command helpers", () => {
         });
     });
 
+    it("routes all seven turn change endpoints through strict session authorization", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-turn-change-ipc-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        session.close();
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-turn-change",
+            workspaceDir: await fs.realpath(cwd),
+            validatePreferredTerminal: async () => true,
+        };
+        const methods = {
+            listPoints: vi.fn(),
+            preview: vi.fn(),
+            rewind: vi.fn(),
+            redo: vi.fn(),
+            getTurnChangeSummary: vi.fn(async () => ({
+                turnId: "turn-1",
+                semanticLeafId: null,
+                fileCount: 0,
+                additions: 0,
+                deletions: 0,
+                files: [],
+            })),
+            getTurnFileDiff: vi.fn(async () => ({
+                turnId: "turn-1",
+                path: "file.txt",
+                operation: "write" as const,
+                additions: 0,
+                deletions: 0,
+                originalContent: "",
+                modifiedContent: "",
+                isBinary: false,
+                fallbackPatch: "",
+                truncated: false,
+            })),
+            reviewTurnChanges: vi.fn(async () => ({ turnId: "turn-1", semanticLeafId: null, files: [] })),
+            previewTurnUndo: vi.fn(async () => ({
+                target: { kind: "turn-undo" as const, sourceTurnId: "turn-1" },
+                semanticLeafId: null,
+                displayLeafId: null,
+                expectedSemanticLeafId: null,
+                fileCount: 0,
+                files: [],
+                coverageWarnings: [],
+                forceRequired: false,
+                hardBlocked: false,
+            })),
+            applyTurnUndo: vi.fn(async () => ({
+                sessionMetadata: metadata,
+                semanticLeafId: null,
+                displayLeafId: null,
+            })),
+            previewTurnRedo: vi.fn(async () => ({
+                target: { kind: "turn-redo" as const, sourceTurnId: "turn-1", undoOperationId: "undo-1" },
+                semanticLeafId: null,
+                displayLeafId: null,
+                expectedSemanticLeafId: null,
+                fileCount: 0,
+                files: [],
+                coverageWarnings: [],
+                forceRequired: false,
+                hardBlocked: false,
+            })),
+            applyTurnRedo: vi.fn(async () => ({
+                sessionMetadata: metadata,
+                semanticLeafId: null,
+                displayLeafId: null,
+            })),
+        };
+        const assertWorkspaceWritable = vi.fn(async () => {});
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async () => identity,
+            resolveWorkspaceIdentity: async () =>
+                ({
+                    canonicalRoot: identity.workspaceDir,
+                    workspaceIdentity: "a".repeat(64),
+                    workspaceIncarnation: "b".repeat(64),
+                    storeKey: "workspace",
+                    ancestorIdentityChain: [],
+                }) as never,
+            recoveryGate: {
+                scanBeforeIpcRegistration: async () => {},
+                ensureRecoveredOnce: async () => {},
+                assertWorkspaceWritable,
+            },
+            rewindService: methods,
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 96, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+        const base = {
+            sessionMetadata: metadata,
+            expectedSemanticLeafId: null,
+            turnId: "turn-1",
+        };
+
+        await handlers.get("agent:get-turn-change-summary")?.(event, TrustedRequestContext, base);
+        await handlers.get("agent:get-turn-file-diff")?.(event, TrustedRequestContext, { ...base, path: "file.txt" });
+        await handlers.get("agent:review-turn-changes")?.(event, TrustedRequestContext, base);
+        await handlers.get("agent:preview-turn-undo")?.(event, TrustedRequestContext, base);
+        await handlers.get("agent:apply-turn-undo")?.(event, TrustedRequestContext, {
+            ...base,
+            mode: "normal",
+            confirmationToken: "token",
+        });
+        await handlers.get("agent:preview-turn-redo")?.(event, TrustedRequestContext, {
+            ...base,
+            undoOperationId: "undo-1",
+        });
+        await handlers.get("agent:apply-turn-redo")?.(event, TrustedRequestContext, {
+            ...base,
+            undoOperationId: "undo-1",
+            mode: "normal",
+            confirmationToken: "token",
+        });
+
+        expect(methods.getTurnChangeSummary).toHaveBeenCalledOnce();
+        expect(methods.getTurnFileDiff).toHaveBeenCalledOnce();
+        expect(methods.reviewTurnChanges).toHaveBeenCalledOnce();
+        expect(methods.previewTurnUndo).toHaveBeenCalledOnce();
+        expect(methods.applyTurnUndo).toHaveBeenCalledOnce();
+        expect(methods.previewTurnRedo).toHaveBeenCalledOnce();
+        expect(methods.applyTurnRedo).toHaveBeenCalledOnce();
+        expect(assertWorkspaceWritable).toHaveBeenCalledTimes(2);
+    });
+
     it("rejects extra and nested renderer fields outside each rewind IPC schema", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-rewind-strict-schema-"));
         const { metadata, session } = await createPaneSession(cwd);
@@ -4072,6 +4212,13 @@ describe("agent-ipc command helpers", () => {
             },
             rewindService: {
                 listPoints: vi.fn(),
+                getTurnChangeSummary: vi.fn(),
+                getTurnFileDiff: vi.fn(),
+                reviewTurnChanges: vi.fn(),
+                previewTurnUndo: vi.fn(),
+                applyTurnUndo: vi.fn(),
+                previewTurnRedo: vi.fn(),
+                applyTurnRedo: vi.fn(),
                 preview,
                 rewind,
                 redo: vi.fn(),

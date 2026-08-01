@@ -20,6 +20,13 @@ describe("AgentRuntimeClient", () => {
             cloneSession: vi.fn(async () => ({})),
             runCommand: vi.fn(async () => ({})),
             listRewindPoints: vi.fn(async () => ({ points: [], semanticLeafId: null, displayLeafId: null })),
+            getTurnChangeSummary: vi.fn(async () => ({})),
+            getTurnFileDiff: vi.fn(async () => ({})),
+            reviewTurnChanges: vi.fn(async () => ({})),
+            previewTurnUndo: vi.fn(async () => ({})),
+            applyTurnUndo: vi.fn(async () => ({})),
+            previewTurnRedo: vi.fn(async () => ({})),
+            applyTurnRedo: vi.fn(async () => ({})),
             previewRewind: vi.fn(async () => ({})),
             rewindTree: vi.fn(async () => ({})),
             redoRewind: vi.fn(async () => ({})),
@@ -53,6 +60,13 @@ describe("AgentRuntimeClient", () => {
         await client.cloneSession({ sessionMetadata: { path: "/session" } } as never);
         await client.runCommand({ command: "new", argsText: "" } as never);
         await client.listRewindPoints({ sessionMetadata: { path: "/session" } } as never);
+        await client.getTurnChangeSummary({ sessionMetadata: { path: "/session" } } as never);
+        await client.getTurnFileDiff({ sessionMetadata: { path: "/session" } } as never);
+        await client.reviewTurnChanges({ sessionMetadata: { path: "/session" } } as never);
+        await client.previewTurnUndo({ sessionMetadata: { path: "/session" } } as never);
+        await client.applyTurnUndo({ sessionMetadata: { path: "/session" } } as never);
+        await client.previewTurnRedo({ sessionMetadata: { path: "/session" } } as never);
+        await client.applyTurnRedo({ sessionMetadata: { path: "/session" } } as never);
         await client.previewRewind({ sessionMetadata: { path: "/session" } } as never);
         await client.rewindTree({ sessionMetadata: { path: "/session" } } as never);
         await client.redoRewind({ sessionMetadata: { path: "/session" } } as never);
@@ -85,6 +99,13 @@ describe("AgentRuntimeClient", () => {
         expect(agent.cloneSession).toHaveBeenCalledWith(identity, expect.any(Object));
         expect(agent.runCommand).toHaveBeenCalledWith(identity, expect.objectContaining({ command: "new" }));
         expect(agent.listRewindPoints).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.getTurnChangeSummary).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.getTurnFileDiff).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.reviewTurnChanges).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.previewTurnUndo).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.applyTurnUndo).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.previewTurnRedo).toHaveBeenCalledWith(identity, expect.any(Object));
+        expect(agent.applyTurnRedo).toHaveBeenCalledWith(identity, expect.any(Object));
         expect(agent.previewRewind).toHaveBeenCalledWith(identity, expect.any(Object));
         expect(agent.rewindTree).toHaveBeenCalledWith(identity, expect.any(Object));
         expect(agent.redoRewind).toHaveBeenCalledWith(identity, expect.any(Object));

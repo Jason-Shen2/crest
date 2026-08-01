@@ -9,7 +9,13 @@ import { RewindConfirmationRegistry } from "./confirmation-token";
 import type { WorkspaceOperationJournalV2 } from "./recovery-journal";
 import { planRedo, type RestorePlanV1 } from "./restore-plan";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
-import type { CapturedPathStateV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
+import {
+    WorkspaceControlCustomTypes,
+    type CapturedPathStateV1,
+    type WorkspaceCheckpointV1,
+    type WorkspaceSnapshotRefV1,
+    type WorkspaceStateV1,
+} from "./types";
 
 const Identity = "1".repeat(64);
 const Incarnation = "2".repeat(64);
@@ -880,5 +886,99 @@ describe("WorkspaceRewindEngine transaction", () => {
             semanticLeafId: "operation-leaf-2",
             displayLeafId: undoPreview.displayLeafId,
         });
+    });
+
+    it("projects immutable turn summary, review, and file diff without live disk inspection or confirmation", async () => {
+        const checkpoint: WorkspaceCheckpointV1 = {
+            schemaVersion: 1,
+            status: "available",
+            originSessionId: "session-1",
+            turnId: "turn-1",
+            workspaceIdentity: Identity,
+            workspaceIncarnation: Incarnation,
+            before: snapshot("1".repeat(40)),
+            after: snapshot("2".repeat(40)),
+            changes: [
+                {
+                    path: "src/file.ts",
+                    before: { state: "file", oid: OldOid, executable: false },
+                    after: { state: "file", oid: NewOid, executable: false },
+                },
+            ],
+            coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 0, exclusions: [] },
+        };
+        const entries: SessionTreeEntry[] = [
+            { ...userEntry(), parentId: null },
+            {
+                type: "custom",
+                id: "checkpoint-1",
+                parentId: "turn-1",
+                timestamp: "2026-07-29T00:00:01.000Z",
+                customType: WorkspaceControlCustomTypes.checkpoint,
+                data: checkpoint,
+            },
+        ];
+        const session = { getEntries: vi.fn(async () => entries) };
+        const value = makeHarness({ blobs: { [OldOid]: "old\n", [NewOid]: "new\nadded\n" } });
+        const issue = vi.spyOn(value.confirmations, "issue");
+        vi.mocked(value.options.inspectLivePath!).mockClear();
+        vi.mocked(value.options.inspectLivePaths!).mockClear();
+        const input = {
+            session: session as never,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "checkpoint-1",
+            sourceTurnId: "turn-1",
+        };
+
+        const summary = await value.engine.getTurnChangeSummary(input);
+        const review = await value.engine.reviewTurnChanges(input);
+        const file = await value.engine.getTurnFileDiff({ ...input, path: "src/file.ts" });
+
+        expect(summary).toEqual({
+            turnId: "turn-1",
+            semanticLeafId: "checkpoint-1",
+            fileCount: 1,
+            additions: 2,
+            deletions: 1,
+            files: [{ path: "src/file.ts", operation: "write", additions: 2, deletions: 1 }],
+        });
+        expect(summary.files[0]).not.toHaveProperty("diff");
+        expect(review).toMatchObject({
+            turnId: "turn-1",
+            semanticLeafId: "checkpoint-1",
+            files: [{ path: "src/file.ts", operation: "write", additions: 2, deletions: 1 }],
+        });
+        expect(review.files[0]?.diff).toContain("-old");
+        expect(file).toMatchObject({
+            turnId: "turn-1",
+            path: "src/file.ts",
+            operation: "write",
+            additions: 2,
+            deletions: 1,
+            originalContent: "old\n",
+            modifiedContent: "new\nadded\n",
+            isBinary: false,
+            truncated: false,
+        });
+        expect(file.fallbackPatch).toContain("+added");
+        expect(issue).not.toHaveBeenCalled();
+        expect(value.options.inspectLivePath).not.toHaveBeenCalled();
+        expect(value.options.inspectLivePaths).not.toHaveBeenCalled();
+    });
+
+    it("fences immutable turn reads to the expected active semantic leaf", async () => {
+        const value = makeHarness({});
+        const session = { getEntries: vi.fn(async () => [userEntry()]) };
+
+        await expect(
+            value.engine.getTurnChangeSummary({
+                session: session as never,
+                sessionId: "session-1",
+                workspace: Workspace,
+                semanticLeafId: "stale-leaf",
+                sourceTurnId: "turn-1",
+            })
+        ).rejects.toThrow(/semantic leaf changed/i);
     });
 });

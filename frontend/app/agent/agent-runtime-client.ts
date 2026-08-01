@@ -76,6 +76,34 @@ export class AgentRuntimeClient {
         return getAgentApi(this).listRewindPoints(this.identity, input);
     }
 
+    getTurnChangeSummary(input: AgentTurnTargetInput) {
+        return getAgentApi(this).getTurnChangeSummary(this.identity, input);
+    }
+
+    getTurnFileDiff(input: AgentGetTurnFileDiffInput) {
+        return getAgentApi(this).getTurnFileDiff(this.identity, input);
+    }
+
+    reviewTurnChanges(input: AgentTurnTargetInput) {
+        return getAgentApi(this).reviewTurnChanges(this.identity, input);
+    }
+
+    previewTurnUndo(input: AgentPreviewTurnMutationInput) {
+        return getAgentApi(this).previewTurnUndo(this.identity, input);
+    }
+
+    applyTurnUndo(input: AgentApplyTurnMutationInput) {
+        return getAgentApi(this).applyTurnUndo(this.identity, input);
+    }
+
+    previewTurnRedo(input: AgentPreviewTurnMutationInput) {
+        return getAgentApi(this).previewTurnRedo(this.identity, input);
+    }
+
+    applyTurnRedo(input: AgentApplyTurnMutationInput) {
+        return getAgentApi(this).applyTurnRedo(this.identity, input);
+    }
+
     previewRewind(input: AgentPreviewRewindInput) {
         return getAgentApi(this).previewRewind(this.identity, input);
     }

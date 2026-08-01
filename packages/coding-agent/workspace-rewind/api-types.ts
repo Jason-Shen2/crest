@@ -51,6 +51,60 @@ export interface AgentTurnFileDiffView {
     previewUnavailableReason?: string;
 }
 
+export interface AgentTurnTargetInput {
+    sessionMetadata: JsonlSessionMetadata;
+    expectedSemanticLeafId: string | null;
+    turnId: string;
+}
+
+export interface AgentTurnChangeSummaryView {
+    turnId: string;
+    semanticLeafId: string | null;
+    fileCount: number;
+    additions: number;
+    deletions: number;
+    files: Array<{
+        path: string;
+        operation: "create" | "write" | "delete";
+        additions: number;
+        deletions: number;
+    }>;
+}
+
+export interface AgentReviewTurnChangesResult {
+    turnId: string;
+    semanticLeafId: string | null;
+    files: AgentRewindFileRowView[];
+}
+
+export interface AgentGetTurnFileDiffInput extends AgentTurnTargetInput {
+    path: string;
+}
+
+export interface AgentPreviewTurnMutationInput extends AgentTurnTargetInput {
+    undoOperationId?: string;
+}
+
+export interface AgentApplyTurnMutationInput extends AgentPreviewTurnMutationInput {
+    mode: "normal" | "force-drift";
+    confirmationToken: string;
+}
+
+export interface AgentTurnMutationPreviewResult {
+    confirmationToken?: string;
+    target:
+        | { kind: "turn-undo"; sourceTurnId: string }
+        | { kind: "turn-redo"; sourceTurnId: string; undoOperationId: string };
+    semanticLeafId: string | null;
+    displayLeafId: string | null;
+    expectedSemanticLeafId: string | null;
+    fileCount: number;
+    files: AgentRewindFileRowView[];
+    coverageWarnings: string[];
+    forceRequired: boolean;
+    hardBlocked: boolean;
+}
+
 export interface AgentRewindPreviewResult {
     confirmationToken?: string;
     target: { kind: "rewind"; targetTurnId: string } | { kind: "redo" };

@@ -145,8 +145,12 @@ import type {
     AgentListCheckpointStorageOwnersResult,
     AgentListRewindPointsResult,
     AgentPurgeTrashedSessionResult,
+    AgentReviewTurnChangesResult,
     AgentRewindMutationResult,
     AgentRewindPreviewResult,
+    AgentTurnChangeSummaryView,
+    AgentTurnFileDiffView,
+    AgentTurnMutationPreviewResult,
     AgentWorkspaceRecoveryView,
 } from "@crest/coding-agent/workspace-rewind/api-types";
 import {
@@ -742,6 +746,13 @@ export interface AgentIpcRegistrationOptions {
     resolveWorkspaceIdentity?: (workspaceRoot: string) => Promise<CanonicalWorkspaceIdentity>;
     rewindService?: {
         listPoints(input: unknown): Promise<AgentListRewindPointsResult>;
+        getTurnChangeSummary(input: unknown): Promise<AgentTurnChangeSummaryView>;
+        getTurnFileDiff(input: unknown): Promise<AgentTurnFileDiffView>;
+        reviewTurnChanges(input: unknown): Promise<AgentReviewTurnChangesResult>;
+        previewTurnUndo(input: unknown): Promise<AgentTurnMutationPreviewResult>;
+        applyTurnUndo(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentRewindMutationResult>;
+        previewTurnRedo(input: unknown): Promise<AgentTurnMutationPreviewResult>;
+        applyTurnRedo(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentRewindMutationResult>;
         preview(input: unknown): Promise<AgentRewindPreviewResult>;
         rewind(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentRewindMutationResult>;
         redo(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentRewindMutationResult>;
@@ -3787,6 +3798,13 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     };
     type RewindIpcSchema =
         | "list"
+        | "turn-summary"
+        | "turn-diff"
+        | "turn-review"
+        | "turn-undo-preview"
+        | "turn-undo-apply"
+        | "turn-redo-preview"
+        | "turn-redo-apply"
         | "preview"
         | "rewind"
         | "redo"
@@ -3797,6 +3815,20 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         | "purge";
     const RewindIpcKeys: Record<RewindIpcSchema, readonly string[]> = {
         list: ["sessionMetadata"],
+        "turn-summary": ["sessionMetadata", "expectedSemanticLeafId", "turnId"],
+        "turn-diff": ["sessionMetadata", "expectedSemanticLeafId", "turnId", "path"],
+        "turn-review": ["sessionMetadata", "expectedSemanticLeafId", "turnId"],
+        "turn-undo-preview": ["sessionMetadata", "expectedSemanticLeafId", "turnId"],
+        "turn-undo-apply": ["sessionMetadata", "expectedSemanticLeafId", "turnId", "mode", "confirmationToken"],
+        "turn-redo-preview": ["sessionMetadata", "expectedSemanticLeafId", "turnId", "undoOperationId"],
+        "turn-redo-apply": [
+            "sessionMetadata",
+            "expectedSemanticLeafId",
+            "turnId",
+            "undoOperationId",
+            "mode",
+            "confirmationToken",
+        ],
         preview: ["sessionMetadata", "expectedSemanticLeafId", "target"],
         rewind: ["sessionMetadata", "expectedSemanticLeafId", "targetTurnId", "mode", "confirmationToken"],
         redo: ["sessionMetadata", "expectedSemanticLeafId", "confirmationToken"],
@@ -3823,6 +3855,23 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             ["id", "createdAt", "path", "cwd", "parentSessionPath"],
             "sessionMetadata"
         );
+        if (schema.startsWith("turn-")) {
+            requireNonEmptyString(value.turnId, "turnId");
+            if (schema === "turn-diff") requireNonEmptyString(value.path, "path");
+            if (schema === "turn-redo-preview" || schema === "turn-redo-apply") {
+                requireNonEmptyString(value.undoOperationId, "undoOperationId");
+            }
+            if (schema === "turn-undo-apply" || schema === "turn-redo-apply") {
+                if (value.mode !== "normal" && value.mode !== "force-drift") {
+                    throw new Error("agent IPC: invalid turn mutation mode");
+                }
+                if (schema === "turn-redo-apply" && value.mode !== "normal") {
+                    throw new Error("agent IPC: turn redo does not support force mode");
+                }
+                requireNonEmptyString(value.confirmationToken, "confirmationToken");
+            }
+            return;
+        }
         if (schema !== "preview") return;
         if (!isRecord(value.target)) throw new Error("agent IPC: preview target must be an object");
         const kind = value.target.kind;
@@ -3926,6 +3975,52 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     electron.ipcMain.handle("agent:list-rewind-points", async (event, requestContext, input) => {
         const authorized = await authorizeRewindInput(event, requestContext, input, "list", false);
         const result = await requireRewindService().listPoints(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:get-turn-change-summary", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-summary", false);
+        const result = await requireRewindService().getTurnChangeSummary(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:get-turn-file-diff", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-diff", false);
+        const result = await requireRewindService().getTurnFileDiff(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:review-turn-changes", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-review", false);
+        const result = await requireRewindService().reviewTurnChanges(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:preview-turn-undo", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-undo-preview", false);
+        const result = await requireRewindService().previewTurnUndo(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:apply-turn-undo", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-undo-apply", true);
+        const result = await requireRewindService().applyTurnUndo(authorized.input, () =>
+            assertCurrent(event, authorized.authenticated)
+        );
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:preview-turn-redo", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-redo-preview", false);
+        const result = await requireRewindService().previewTurnRedo(authorized.input);
+        await assertCurrent(event, authorized.authenticated);
+        return result;
+    });
+    electron.ipcMain.handle("agent:apply-turn-redo", async (event, requestContext, input) => {
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-redo-apply", true);
+        const result = await requireRewindService().applyTurnRedo(authorized.input, () =>
+            assertCurrent(event, authorized.authenticated)
+        );
         await assertCurrent(event, authorized.authenticated);
         return result;
     });

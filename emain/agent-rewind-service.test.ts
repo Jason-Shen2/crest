@@ -138,8 +138,45 @@ function harness() {
     };
     let publishState: (() => Promise<void>) | undefined;
     const engine = {
+        getTurnChangeSummary: vi.fn(async () => ({
+            turnId: "turn-1",
+            semanticLeafId: "checkpoint-1",
+            fileCount: 0,
+            additions: 0,
+            deletions: 0,
+            files: [],
+        })),
+        getTurnFileDiff: vi.fn(async () => ({
+            turnId: "turn-1",
+            path: "file.txt",
+            operation: "write" as const,
+            additions: 0,
+            deletions: 0,
+            originalContent: "",
+            modifiedContent: "",
+            isBinary: false,
+            fallbackPatch: "",
+            truncated: false,
+        })),
+        reviewTurnChanges: vi.fn(async () => ({
+            turnId: "turn-1",
+            semanticLeafId: "checkpoint-1",
+            files: [],
+        })),
         previewRewind: vi.fn(async () => previewResult),
         previewRedo: vi.fn(async () => ({ ...previewResult, target: { kind: "redo" as const } })),
+        previewTurnUndo: vi.fn(async () => ({
+            ...previewResult,
+            target: { kind: "turn-undo" as const, sourceTurnId: "turn-1" },
+        })),
+        previewTurnRedo: vi.fn(async () => ({
+            ...previewResult,
+            target: {
+                kind: "turn-redo" as const,
+                sourceTurnId: "turn-1",
+                undoOperationId: "undo-1",
+            },
+        })),
         applyRewind: vi.fn(async () => {
             order.push("engine-apply");
             await publishState?.();
@@ -156,6 +193,24 @@ function harness() {
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "redo-leaf",
+                displayLeafId: "checkpoint-1",
+            };
+        }),
+        applyTurnUndo: vi.fn(async () => {
+            order.push("engine-turn-undo");
+            await publishState?.();
+            return {
+                sessionMetadata: Metadata,
+                semanticLeafId: "turn-undo-leaf",
+                displayLeafId: "checkpoint-1",
+            };
+        }),
+        applyTurnRedo: vi.fn(async () => {
+            order.push("engine-turn-redo");
+            await publishState?.();
+            return {
+                sessionMetadata: Metadata,
+                semanticLeafId: "turn-redo-leaf",
                 displayLeafId: "checkpoint-1",
             };
         }),
@@ -322,5 +377,119 @@ describe("AgentRewindService", () => {
             "release-workspace-lock",
             "release-session-lease",
         ]);
+    });
+
+    it.each(["summary", "diff", "review"] as const)(
+        "serves immutable turn %s without issuing or consuming a confirmation",
+        async (kind) => {
+            const value = harness();
+            const issue = vi.spyOn(value.confirmations, "issue");
+            const take = vi.spyOn(value.confirmations, "take");
+            const input = {
+                sessionMetadata: Metadata,
+                expectedSemanticLeafId: "checkpoint-1",
+                turnId: "turn-1",
+            };
+
+            if (kind === "summary") await value.service.getTurnChangeSummary(input);
+            if (kind === "diff") await value.service.getTurnFileDiff({ ...input, path: "file.txt" });
+            if (kind === "review") await value.service.reviewTurnChanges(input);
+
+            expect(value.engine.getTurnChangeSummary).toHaveBeenCalledTimes(kind === "summary" ? 1 : 0);
+            expect(value.engine.getTurnFileDiff).toHaveBeenCalledTimes(kind === "diff" ? 1 : 0);
+            expect(value.engine.reviewTurnChanges).toHaveBeenCalledTimes(kind === "review" ? 1 : 0);
+            expect(issue).not.toHaveBeenCalled();
+            expect(take).not.toHaveBeenCalled();
+            expect(value.order).toEqual([
+                "session-lease",
+                "workspace-lock",
+                "release-workspace-lock",
+                "release-session-lease",
+            ]);
+        }
+    );
+
+    it.each(["undo", "redo"] as const)(
+        "previews and applies turn %s under both locks with one-shot confirmation and publication",
+        async (kind) => {
+            const value = harness();
+            const previewInput = {
+                sessionMetadata: Metadata,
+                expectedSemanticLeafId: "checkpoint-1",
+                turnId: "turn-1",
+                ...(kind === "redo" ? { undoOperationId: "undo-1" } : {}),
+            };
+            const preview =
+                kind === "undo"
+                    ? await value.service.previewTurnUndo(previewInput)
+                    : await value.service.previewTurnRedo(previewInput);
+            const token = value.confirmations.issue({
+                ...plan(),
+                target:
+                    kind === "undo"
+                        ? { kind: "turn-undo", sourceTurnId: "turn-1" }
+                        : {
+                              kind: "turn-redo",
+                              sourceTurnId: "turn-1",
+                              undoOperationId: "undo-1",
+                          },
+            });
+            const applyInput = {
+                ...previewInput,
+                mode: "normal" as const,
+                confirmationToken: token,
+            };
+
+            const result =
+                kind === "undo"
+                    ? await value.service.applyTurnUndo(applyInput)
+                    : await value.service.applyTurnRedo(applyInput);
+
+            expect(preview.target.kind).toBe(kind === "undo" ? "turn-undo" : "turn-redo");
+            expect(preview).not.toHaveProperty("messageCount");
+            expect(preview).not.toHaveProperty("targetPrompt");
+            expect(result.semanticLeafId).toBe(kind === "undo" ? "turn-undo-leaf" : "turn-redo-leaf");
+            expect(value.broadcaster.publishForLease).toHaveBeenCalledOnce();
+            expect(() => value.confirmations.take(token)).toThrow(/already consumed/i);
+            expect(value.order).toEqual([
+                "session-lease",
+                "workspace-lock",
+                "release-workspace-lock",
+                "release-session-lease",
+                "session-lease",
+                "workspace-lock",
+                `engine-turn-${kind}`,
+                "broadcast",
+                "release-workspace-lock",
+                "release-session-lease",
+            ]);
+        }
+    );
+
+    it("requires undoOperationId for turn redo and rejects force redo before consuming a token", async () => {
+        const value = harness();
+        await expect(
+            value.service.previewTurnRedo({
+                sessionMetadata: Metadata,
+                expectedSemanticLeafId: "checkpoint-1",
+                turnId: "turn-1",
+            })
+        ).rejects.toThrow(/undoOperationId/i);
+
+        const token = value.confirmations.issue({
+            ...plan(),
+            target: { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-1" },
+        });
+        await expect(
+            value.service.applyTurnRedo({
+                sessionMetadata: Metadata,
+                expectedSemanticLeafId: "checkpoint-1",
+                turnId: "turn-1",
+                undoOperationId: "undo-1",
+                mode: "force-drift",
+                confirmationToken: token,
+            })
+        ).rejects.toThrow(/force/i);
+        expect(value.confirmations.take(token)).toBeDefined();
     });
 });

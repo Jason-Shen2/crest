@@ -247,6 +247,20 @@ contextBridge.exposeInMainWorld("api", {
         runCommand: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:run-command", context, input),
         listRewindPoints: (context: unknown, input: unknown) =>
             ipcRenderer.invoke("agent:list-rewind-points", context, input),
+        getTurnChangeSummary: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:get-turn-change-summary", context, input),
+        getTurnFileDiff: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:get-turn-file-diff", context, input),
+        reviewTurnChanges: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:review-turn-changes", context, input),
+        previewTurnUndo: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:preview-turn-undo", context, input),
+        applyTurnUndo: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:apply-turn-undo", context, input),
+        previewTurnRedo: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:preview-turn-redo", context, input),
+        applyTurnRedo: (context: unknown, input: unknown) =>
+            ipcRenderer.invoke("agent:apply-turn-redo", context, input),
         previewRewind: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:preview-rewind", context, input),
         rewindTree: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:rewind-tree", context, input),
         redoRewind: (context: unknown, input: unknown) => ipcRenderer.invoke("agent:redo-rewind", context, input),
