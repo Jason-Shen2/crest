@@ -259,11 +259,16 @@ tip, combined code-and-conversation rewind is unavailable for that target.
 
 ### Shared Revert Preview and Force Revert
 
+> 2026-08-01 UI/content amendment: the approved two-pane preview, reverse-diff
+> semantics, Git Diff-style file list, and component reuse boundaries are
+> specified in
+> [`2026-08-01-agent-rewind-diff-preview-design.md`](./2026-08-01-agent-rewind-diff-preview-design.md).
+
 The message action and `/rewind` share one server-authored preview. The dialog
 shows:
 
-- the selected prompt and the number of messages that will leave the active
-  branch;
+- a file-focused review surface; the selected message/selector already provides
+  target context, so the dialog does not repeat the prompt or message count;
 - every effective file operation grouped as create, write, delete, or rename;
 - an expandable diff for supported file kinds;
 - coverage warnings for paths that cannot be restored; and
