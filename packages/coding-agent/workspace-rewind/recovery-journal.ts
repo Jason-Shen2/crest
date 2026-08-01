@@ -35,8 +35,8 @@ export interface WorkspaceOperationPathV1 {
     createdParentDirectories: string[];
 }
 
-export interface WorkspaceOperationJournalV1 {
-    schemaVersion: 1;
+export interface WorkspaceOperationJournalV2 {
+    schemaVersion: 2;
     phase: WorkspaceOperationPhase;
     workspaceIdentity: string;
     workspaceIncarnation: string;
@@ -82,7 +82,7 @@ export interface WorkspaceRecoveryJournalTestHooks {
 export interface ScannedWorkspaceOperationJournal {
     operationId: string;
     corrupt: boolean;
-    record?: WorkspaceOperationJournalV1;
+    record?: WorkspaceOperationJournalV2;
     message?: string;
 }
 
@@ -129,12 +129,12 @@ export class WorkspaceRecoveryJournal {
         this.testHooks = testHooks;
     }
 
-    async begin(record: WorkspaceOperationJournalV1): Promise<void> {
+    async begin(record: WorkspaceOperationJournalV2): Promise<void> {
         await this.withWorkspaceLock(() => this.beginUnlocked(record));
     }
 
-    async beginUnlocked(record: WorkspaceOperationJournalV1): Promise<void> {
-        const decoded = decodeWorkspaceOperationJournalV1(record);
+    async beginUnlocked(record: WorkspaceOperationJournalV2): Promise<void> {
+        const decoded = decodeWorkspaceOperationJournalV2(record);
         if (!decoded || decoded.phase !== "prepared") {
             throw new Error("Invalid prepared workspace operation journal");
         }
@@ -155,23 +155,23 @@ export class WorkspaceRecoveryJournal {
     async transition(
         operationId: string,
         phase: WorkspaceOperationPhase,
-        patch: Pick<WorkspaceOperationJournalV1, "resultSnapshot"> = {}
-    ): Promise<WorkspaceOperationJournalV1> {
+        patch: Pick<WorkspaceOperationJournalV2, "resultSnapshot"> = {}
+    ): Promise<WorkspaceOperationJournalV2> {
         return this.withWorkspaceLock(() => this.transitionUnlocked(operationId, phase, patch));
     }
 
     async transitionUnlocked(
         operationId: string,
         phase: WorkspaceOperationPhase,
-        patch: Pick<WorkspaceOperationJournalV1, "resultSnapshot">
-    ): Promise<WorkspaceOperationJournalV1> {
+        patch: Pick<WorkspaceOperationJournalV2, "resultSnapshot">
+    ): Promise<WorkspaceOperationJournalV2> {
         const current = await this.read(operationId);
         const currentIndex = PhaseOrder.indexOf(current.phase);
         const nextIndex = PhaseOrder.indexOf(phase);
         if (nextIndex < 0 || (nextIndex !== currentIndex && nextIndex !== currentIndex + 1)) {
             throw new Error(`Invalid workspace recovery phase transition: ${current.phase} -> ${phase}`);
         }
-        const next: WorkspaceOperationJournalV1 = {
+        const next: WorkspaceOperationJournalV2 = {
             ...current,
             phase,
             ...(patch.resultSnapshot == null ? {} : { resultSnapshot: patch.resultSnapshot }),
@@ -185,7 +185,7 @@ export class WorkspaceRecoveryJournal {
         if ((phase === "prepared" || phase === "applying_files") && next.resultSnapshot) {
             throw new Error("Result snapshot is valid only after files are verified");
         }
-        const decoded = decodeWorkspaceOperationJournalV1(next);
+        const decoded = decodeWorkspaceOperationJournalV2(next);
         if (!decoded) {
             throw new Error("Invalid workspace recovery journal transition");
         }
@@ -203,7 +203,7 @@ export class WorkspaceRecoveryJournal {
         operationId: string,
         path: string,
         createdParentDirectories: readonly string[]
-    ): Promise<WorkspaceOperationJournalV1> {
+    ): Promise<WorkspaceOperationJournalV2> {
         return this.withWorkspaceLock(() =>
             this.updatePathProgressUnlocked(operationId, path, createdParentDirectories)
         );
@@ -213,7 +213,7 @@ export class WorkspaceRecoveryJournal {
         operationId: string,
         path: string,
         createdParentDirectories: readonly string[]
-    ): Promise<WorkspaceOperationJournalV1> {
+    ): Promise<WorkspaceOperationJournalV2> {
         const current = await this.read(operationId);
         if (current.phase === "prepared" || current.phase === "completed") {
             throw new Error("Workspace path progress is invalid in this recovery phase");
@@ -228,7 +228,7 @@ export class WorkspaceRecoveryJournal {
                 : item
         );
         const next = { ...current, paths };
-        const decoded = decodeWorkspaceOperationJournalV1(next);
+        const decoded = decodeWorkspaceOperationJournalV2(next);
         if (!decoded) {
             throw new Error("Invalid workspace path progress");
         }
@@ -236,7 +236,7 @@ export class WorkspaceRecoveryJournal {
         return decoded;
     }
 
-    async read(operationId: string): Promise<WorkspaceOperationJournalV1> {
+    async read(operationId: string): Promise<WorkspaceOperationJournalV2> {
         validateToken(operationId);
         const directory = await this.readAnchoredRoot("journal");
         const entry = directory?.entries.find((item) => item.name === `${operationId}.json`);
@@ -251,7 +251,7 @@ export class WorkspaceRecoveryJournal {
         return decoded;
     }
 
-    async readIfPresent(operationId: string): Promise<WorkspaceOperationJournalV1 | undefined> {
+    async readIfPresent(operationId: string): Promise<WorkspaceOperationJournalV2 | undefined> {
         try {
             return await this.read(operationId);
         } catch (error) {
@@ -523,7 +523,7 @@ export class WorkspaceRecoveryJournal {
         return join(this.root, `${operationId}.json`);
     }
 
-    async writePhase(record: WorkspaceOperationJournalV1): Promise<void> {
+    async writePhase(record: WorkspaceOperationJournalV2): Promise<void> {
         await this.testHooks?.onDurableBoundary?.(`before-${record.phase}`);
         await makePrivateDirectory(this.root);
         const directory = await this.readAnchoredRoot("journal");
@@ -597,7 +597,7 @@ export class WorkspaceRecoveryJournal {
         });
     }
 
-    assertIdentity(record: WorkspaceOperationJournalV1): void {
+    assertIdentity(record: WorkspaceOperationJournalV2): void {
         if (
             record.workspaceIdentity !== this.store.identity.workspaceIdentity ||
             record.workspaceIncarnation !== this.store.identity.workspaceIncarnation
@@ -607,7 +607,7 @@ export class WorkspaceRecoveryJournal {
     }
 }
 
-function ownerFromJournal(record: WorkspaceOperationJournalV1): WorkspaceOperationOwnerV1 {
+function ownerFromJournal(record: WorkspaceOperationJournalV2): WorkspaceOperationOwnerV1 {
     return {
         operationId: record.operationId,
         sessionId: record.sessionId,
@@ -625,7 +625,7 @@ export function recoveryJournalOperationTokenForFilename(name: string): string {
     return `corrupt-${createHash("sha1").update(name).digest("hex")}`;
 }
 
-export function decodeWorkspaceOperationJournalV1(value: unknown): WorkspaceOperationJournalV1 | undefined {
+export function decodeWorkspaceOperationJournalV2(value: unknown): WorkspaceOperationJournalV2 | undefined {
     if (!isRecord(value)) {
         return undefined;
     }
@@ -650,7 +650,7 @@ export function decodeWorkspaceOperationJournalV1(value: unknown): WorkspaceOper
         return undefined;
     }
     if (
-        value.schemaVersion !== 1 ||
+        value.schemaVersion !== 2 ||
         !PhaseOrder.includes(value.phase as WorkspaceOperationPhase) ||
         !isIdentity(value.workspaceIdentity) ||
         !isIdentity(value.workspaceIncarnation) ||
@@ -725,7 +725,7 @@ export function decodeWorkspaceOperationJournalV1(value: unknown): WorkspaceOper
         return undefined;
     }
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         phase: value.phase as WorkspaceOperationPhase,
         workspaceIdentity: value.workspaceIdentity as string,
         workspaceIncarnation: value.workspaceIncarnation as string,
@@ -742,6 +742,61 @@ export function decodeWorkspaceOperationJournalV1(value: unknown): WorkspaceOper
         workspaceStateEntryId: value.workspaceStateEntryId as string,
         ...(resultSnapshot == null ? {} : { resultSnapshot }),
     };
+}
+
+export function decodeWorkspaceOperationJournal(value: unknown): WorkspaceOperationJournalV2 | undefined {
+    if (!isRecord(value)) return undefined;
+    if (value.schemaVersion === 2) return decodeWorkspaceOperationJournalV2(value);
+    if (value.schemaVersion !== 1) return undefined;
+    return decodeLegacyWorkspaceOperationJournalV1(value);
+}
+
+function decodeLegacyWorkspaceOperationJournalV1(
+    value: Record<string, unknown>
+): WorkspaceOperationJournalV2 | undefined {
+    const required = [
+        "schemaVersion",
+        "phase",
+        "workspaceIdentity",
+        "workspaceIncarnation",
+        "sessionId",
+        "sessionPath",
+        "operationId",
+        "kind",
+        "applyMode",
+        "expectedSemanticLeafId",
+        "targetTurnId",
+        "targetBoundaryId",
+        "safetySnapshot",
+        "confirmedConflictFingerprints",
+        "paths",
+        "workspaceStateEntryId",
+    ];
+    if (!hasExactKeys(value, required, ["resultSnapshot"])) return undefined;
+    if (value.kind !== "rewind" && value.kind !== "redo") return undefined;
+    if (value.kind === "rewind" && !isSafeString(value.targetTurnId)) return undefined;
+    if (value.kind === "redo" && value.targetTurnId != null) return undefined;
+    if (value.targetBoundaryId != null && !isSafeString(value.targetBoundaryId)) return undefined;
+    const target: RestoreTargetV1 =
+        value.kind === "rewind" ? { kind: "rewind", targetTurnId: value.targetTurnId as string } : { kind: "redo" };
+    return decodeWorkspaceOperationJournalV2({
+        schemaVersion: 2,
+        phase: value.phase,
+        workspaceIdentity: value.workspaceIdentity,
+        workspaceIncarnation: value.workspaceIncarnation,
+        sessionId: value.sessionId,
+        sessionPath: value.sessionPath,
+        operationId: value.operationId,
+        target,
+        commitParentId: value.targetBoundaryId,
+        applyMode: value.applyMode,
+        expectedSemanticLeafId: value.expectedSemanticLeafId,
+        safetySnapshot: value.safetySnapshot,
+        confirmedConflictFingerprints: value.confirmedConflictFingerprints,
+        paths: value.paths,
+        workspaceStateEntryId: value.workspaceStateEntryId,
+        ...(value.resultSnapshot == null ? {} : { resultSnapshot: value.resultSnapshot }),
+    });
 }
 
 function decodeRestoreTargetV1(value: unknown): RestoreTargetV1 | undefined {
@@ -859,15 +914,16 @@ function decodeCapturedState(value: unknown): CapturedPathStateV1 | undefined {
     return undefined;
 }
 
-function decodeJournalBytes(bytes: Buffer): WorkspaceOperationJournalV1 | undefined {
+function decodeJournalBytes(bytes: Buffer): WorkspaceOperationJournalV2 | undefined {
     let value: unknown;
     try {
         value = JSON.parse(bytes.toString("utf8"));
     } catch {
         return undefined;
     }
-    const decoded = decodeWorkspaceOperationJournalV1(value);
-    if (!decoded || !bytes.equals(encodeDurableJson(decoded))) {
+    const decoded = decodeWorkspaceOperationJournal(value);
+    const canonicalValue = isRecord(value) && value.schemaVersion === 1 ? value : decoded;
+    if (!decoded || !bytes.equals(encodeDurableJson(canonicalValue))) {
         return undefined;
     }
     return decoded;

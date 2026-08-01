@@ -14,7 +14,7 @@ import { inspectLivePath, type LiveCapturedPathState } from "./live-path-state";
 import {
     WorkspaceRecoveryJournal,
     type ScannedWorkspaceOperationJournal,
-    type WorkspaceOperationJournalV1,
+    type WorkspaceOperationJournalV2,
     type WorkspaceOperationPathV1,
 } from "./recovery-journal";
 import { decodeWorkspaceStateEntry } from "./session-state";
@@ -24,7 +24,7 @@ import { workspaceStateFromJournal } from "./workspace-restore-executor";
 
 export interface WorkspaceRecoveryView {
     operationId: string;
-    phase?: WorkspaceOperationJournalV1["phase"];
+    phase?: WorkspaceOperationJournalV2["phase"];
     corrupt: boolean;
     message: string;
     paths: Array<{ path: string; classification?: "pre" | "target" | "unknown" }>;
@@ -91,7 +91,7 @@ export interface WorkspaceRecoveryOptions {
 }
 
 interface ClassifiedOperation {
-    record: WorkspaceOperationJournalV1;
+    record: WorkspaceOperationJournalV2;
     session: WorkspaceRecoverySession;
     leafId: string | null;
     exactOperationLeaf: boolean;
@@ -226,7 +226,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
 
     async abandonAuthoritativeCurrent(
         operationId: string,
-        record: WorkspaceOperationJournalV1,
+        record: WorkspaceOperationJournalV2,
         scope: WorkspaceRecoveryMutationScope,
         boundOwner?: { session: WorkspaceRecoverySession | undefined }
     ): Promise<void> {
@@ -362,7 +362,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         this.frozen = undefined;
     }
 
-    async recoverRecord(record: WorkspaceOperationJournalV1): Promise<void> {
+    async recoverRecord(record: WorkspaceOperationJournalV2): Promise<void> {
         if (
             record.workspaceIdentity !== this.workspace.workspaceIdentity ||
             record.workspaceIncarnation !== this.workspace.workspaceIncarnation
@@ -413,7 +413,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         await this.finishCommitted(classified);
     }
 
-    async classify(record: WorkspaceOperationJournalV1, reconcileArtifacts = false): Promise<ClassifiedOperation> {
+    async classify(record: WorkspaceOperationJournalV2, reconcileArtifacts = false): Promise<ClassifiedOperation> {
         const session = await this.requireSession(record.sessionId);
         const leafId = await session.getLeafId();
         const exactOperationLeaf = await this.isExactOperationLeaf(session, record, leafId);
@@ -535,7 +535,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
 
     async isExactOperationLeaf(
         session: WorkspaceRecoverySession,
-        record: WorkspaceOperationJournalV1,
+        record: WorkspaceOperationJournalV2,
         leafId: string | null
     ): Promise<boolean> {
         if (leafId !== record.workspaceStateEntryId) {
@@ -574,7 +574,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         return this.viewForRecord(scanned.record);
     }
 
-    async viewForRecord(record: WorkspaceOperationJournalV1, error?: unknown): Promise<WorkspaceRecoveryView> {
+    async viewForRecord(record: WorkspaceOperationJournalV2, error?: unknown): Promise<WorkspaceRecoveryView> {
         try {
             if (!(await this.locateSession(record.sessionId))) {
                 return {

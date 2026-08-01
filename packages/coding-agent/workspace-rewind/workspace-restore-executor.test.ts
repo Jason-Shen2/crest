@@ -5,7 +5,7 @@ import type { JsonlSessionMetadata, SessionTreeEntry } from "@crest/agent/harnes
 import { describe, expect, it, vi } from "vitest";
 
 import { RewindConfirmationRegistry } from "./confirmation-token";
-import type { WorkspaceOperationJournalV1 } from "./recovery-journal";
+import type { WorkspaceOperationJournalV2 } from "./recovery-journal";
 import type { RestorePlanV1, RestoreTargetV1 } from "./restore-plan";
 import { WorkspaceControlCustomTypes, type WorkspaceSnapshotRefV1 } from "./types";
 import {
@@ -86,7 +86,7 @@ function sessionFixture() {
 
 function harness() {
     const durableOrder: string[] = [];
-    let record: WorkspaceOperationJournalV1;
+    let record: WorkspaceOperationJournalV2;
     let captures = 0;
     const store = {
         identity: Workspace,
@@ -104,11 +104,11 @@ function harness() {
         anchorSnapshot: vi.fn(async () => durableOrder.push("anchor")),
     };
     const journal = {
-        beginUnlocked: vi.fn(async (next: WorkspaceOperationJournalV1) => {
+        beginUnlocked: vi.fn(async (next: WorkspaceOperationJournalV2) => {
             record = structuredClone(next);
             durableOrder.push("prepared");
         }),
-        transitionUnlocked: vi.fn(async (_id: string, phase: WorkspaceOperationJournalV1["phase"], patch = {}) => {
+        transitionUnlocked: vi.fn(async (_id: string, phase: WorkspaceOperationJournalV2["phase"], patch = {}) => {
             record = { ...record, ...patch, phase };
             durableOrder.push(phase);
             return structuredClone(record);
@@ -119,7 +119,7 @@ function harness() {
     };
     const recovery = {
         recoverRecord: vi.fn(),
-        isExactOperationLeaf: vi.fn(async (_session, candidate: WorkspaceOperationJournalV1, leaf: string | null) => {
+        isExactOperationLeaf: vi.fn(async (_session, candidate: WorkspaceOperationJournalV2, leaf: string | null) => {
             return candidate.workspaceStateEntryId === leaf;
         }),
     };
@@ -203,7 +203,7 @@ describe("WorkspaceRestoreExecutor", () => {
 
     it("constructs exact turn marker provenance from the journal target", () => {
         const record = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             phase: "completed",
             workspaceIdentity: Identity,
             workspaceIncarnation: Incarnation,
@@ -219,7 +219,7 @@ describe("WorkspaceRestoreExecutor", () => {
             paths: [],
             workspaceStateEntryId: "operation-leaf",
             resultSnapshot: Result,
-        } satisfies WorkspaceOperationJournalV1;
+        } satisfies WorkspaceOperationJournalV2;
 
         expect(workspaceStateFromJournal(record)).toMatchObject({
             kind: "turn-redo",

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { RewindConfirmationRegistry } from "./confirmation-token";
-import type { WorkspaceOperationJournalV1 } from "./recovery-journal";
+import type { WorkspaceOperationJournalV2 } from "./recovery-journal";
 import { planRedo, type RestorePlanV1 } from "./restore-plan";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
 import type { CapturedPathStateV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
@@ -161,16 +161,16 @@ function makeHarness(input: {
         appendError: input.appendError,
         appendErrorAfterCommit: input.appendErrorAfterCommit,
     });
-    let record: WorkspaceOperationJournalV1 | undefined;
+    let record: WorkspaceOperationJournalV2 | undefined;
     const liveStates = new Map(
         plan.paths.map((path) => [path.path, input.preStates?.[path.path] ?? path.expectedCurrent])
     );
     const journal = {
-        begin: vi.fn(async (next: WorkspaceOperationJournalV1) => {
+        begin: vi.fn(async (next: WorkspaceOperationJournalV2) => {
             order.push("operation-ref", "prepared");
             record = structuredClone(next);
         }),
-        transition: vi.fn(async (_operationId: string, phase: WorkspaceOperationJournalV1["phase"], patch = {}) => {
+        transition: vi.fn(async (_operationId: string, phase: WorkspaceOperationJournalV2["phase"], patch = {}) => {
             order.push(phase);
             record = { ...record!, ...patch, phase };
             return structuredClone(record);

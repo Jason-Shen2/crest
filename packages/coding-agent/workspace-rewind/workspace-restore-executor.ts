@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assertRestorePlanMatchesConfirmation, type ConfirmedRestorePlanV1 } from "./confirmation-token";
 import { applyCapturedPath, verifyCapturedPath, type WorkspacePathApplyProgress } from "./filesystem-apply";
 import { inspectLivePaths, type LiveCapturedPathState } from "./live-path-state";
-import type { WorkspaceOperationJournalV1, WorkspaceRecoveryJournal } from "./recovery-journal";
+import type { WorkspaceOperationJournalV2, WorkspaceRecoveryJournal } from "./recovery-journal";
 import type { RestorePlanV1 } from "./restore-plan";
 import type { WorkspaceRewindCommitResult } from "./rewind-engine";
 import { foldWorkspaceSessionState } from "./session-state";
@@ -26,7 +26,7 @@ type ApplyPath = typeof applyCapturedPath;
 type VerifyPath = typeof verifyCapturedPath;
 
 export interface WorkspaceRestoreCommitStrategy {
-    makeWorkspaceState(record: WorkspaceOperationJournalV1): WorkspaceStateV1;
+    makeWorkspaceState(record: WorkspaceOperationJournalV2): WorkspaceStateV1;
     makeResult(input: {
         entries: SessionTreeEntry[];
         folded: FoldedWorkspaceSessionState;
@@ -86,7 +86,7 @@ function fingerprintCaptured(state: CapturedPathStateV1): string | undefined {
     return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-export function workspaceStateFromJournal(record: WorkspaceOperationJournalV1): WorkspaceStateV1 {
+export function workspaceStateFromJournal(record: WorkspaceOperationJournalV2): WorkspaceStateV1 {
     if (!record.resultSnapshot) {
         throw new Error("Workspace operation marker requires a result snapshot");
     }
@@ -183,8 +183,8 @@ export class WorkspaceRestoreExecutor {
         const operationId = this.createOperationId();
         const workspaceStateEntryId = await input.session.getStorage().createEntryId();
         const sessionMetadata = await input.session.getMetadata();
-        let record: WorkspaceOperationJournalV1 = {
-            schemaVersion: 1,
+        let record: WorkspaceOperationJournalV2 = {
+            schemaVersion: 2,
             phase: "prepared",
             workspaceIdentity: input.workspace.workspaceIdentity,
             workspaceIncarnation: input.workspace.workspaceIncarnation,
@@ -287,7 +287,7 @@ export class WorkspaceRestoreExecutor {
             return this.makeResult(input, sessionMetadata);
         } catch (error) {
             if (journalAttempted && !completed) {
-                let current: WorkspaceOperationJournalV1;
+                let current: WorkspaceOperationJournalV2;
                 try {
                     current = await this.journal.read(operationId);
                 } catch {
@@ -314,7 +314,7 @@ export class WorkspaceRestoreExecutor {
         });
     }
 
-    async begin(record: WorkspaceOperationJournalV1): Promise<void> {
+    async begin(record: WorkspaceOperationJournalV2): Promise<void> {
         if (typeof this.journal.beginUnlocked === "function") {
             await this.journal.beginUnlocked(record);
             return;
@@ -324,9 +324,9 @@ export class WorkspaceRestoreExecutor {
 
     transition(
         operationId: string,
-        phase: WorkspaceOperationJournalV1["phase"],
-        patch: Pick<WorkspaceOperationJournalV1, "resultSnapshot">
-    ): Promise<WorkspaceOperationJournalV1> {
+        phase: WorkspaceOperationJournalV2["phase"],
+        patch: Pick<WorkspaceOperationJournalV2, "resultSnapshot">
+    ): Promise<WorkspaceOperationJournalV2> {
         if (typeof this.journal.transitionUnlocked === "function") {
             return this.journal.transitionUnlocked(operationId, phase, patch);
         }
@@ -337,7 +337,7 @@ export class WorkspaceRestoreExecutor {
         operationId: string,
         path: string,
         createdParentDirectories: readonly string[]
-    ): Promise<WorkspaceOperationJournalV1> {
+    ): Promise<WorkspaceOperationJournalV2> {
         if (typeof this.journal.updatePathProgressUnlocked === "function") {
             return this.journal.updatePathProgressUnlocked(operationId, path, createdParentDirectories);
         }

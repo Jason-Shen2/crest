@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { encodeDurableJson } from "./durability";
 import { deriveWorkspaceApplyArtifactPaths } from "./filesystem-apply";
-import { WorkspaceRecoveryJournal, type WorkspaceOperationJournalV1 } from "./recovery-journal";
+import { WorkspaceRecoveryJournal, type WorkspaceOperationJournalV2 } from "./recovery-journal";
 import type { RestoreTargetV1 } from "./restore-plan";
 import type {
     CapturedPathStateV1,
@@ -48,13 +48,13 @@ function snapshot(id = "3".repeat(40)): WorkspaceSnapshotRefV1 {
 }
 
 function journalRecord(
-    phase: WorkspaceOperationJournalV1["phase"],
+    phase: WorkspaceOperationJournalV2["phase"],
     preState: CapturedPathStateV1,
     target: CapturedPathStateV1,
     restoreTarget: RestoreTargetV1 = { kind: "rewind", targetTurnId: "turn-1" }
-): WorkspaceOperationJournalV1 {
+): WorkspaceOperationJournalV2 {
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         phase,
         workspaceIdentity: Identity,
         workspaceIncarnation: Incarnation,
@@ -82,8 +82,22 @@ function journalRecord(
     };
 }
 
+function legacyJournal(record: WorkspaceOperationJournalV2): unknown {
+    const { target, commitParentId, ...shared } = record;
+    if (target.kind !== "rewind" && target.kind !== "redo") {
+        throw new Error("Legacy recovery fixture supports conversation restore targets only");
+    }
+    return {
+        ...shared,
+        schemaVersion: 1,
+        kind: target.kind,
+        targetTurnId: target.kind === "rewind" ? target.targetTurnId : null,
+        targetBoundaryId: commitParentId,
+    };
+}
+
 async function fixture(input: {
-    phase: WorkspaceOperationJournalV1["phase"];
+    phase: WorkspaceOperationJournalV2["phase"];
     live: CapturedPathStateV1 | "unknown";
     leaf?: string;
     stateOverrides?: Partial<WorkspaceStateBaseV1> & {
@@ -214,6 +228,41 @@ describe("workspace recovery", () => {
                 })
             );
             await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
+        }
+    );
+
+    it.each(["prepared", "applying_files", "files_verified", "committing_session"] as const)(
+        "recovers a legacy V1 %s journal without treating it as corrupt",
+        async (phase) => {
+            const value = await fixture({ phase, live: "unknown", leaf: "old-leaf" });
+            value.input.live = phase === "prepared" ? value.states.pre : value.states.target;
+            await writeFile(
+                value.durable.path("operation-1"),
+                encodeDurableJson(legacyJournal(await value.durable.read("operation-1")))
+            );
+
+            await value.recovery.ensureRecovered(value.recovery.workspace);
+
+            await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
+            if (phase === "prepared") expect(value.apply).not.toHaveBeenCalled();
+            else expect(value.apply).toHaveBeenCalledOnce();
+        }
+    );
+
+    it.each(["committing_session", "completed"] as const)(
+        "finishes an exact committed legacy V1 %s journal",
+        async (phase) => {
+            const value = await fixture({ phase, live: "unknown", leaf: "operation-leaf" });
+            value.input.live = value.states.target;
+            await writeFile(
+                value.durable.path("operation-1"),
+                encodeDurableJson(legacyJournal(await value.durable.read("operation-1")))
+            );
+
+            await value.recovery.ensureRecovered(value.recovery.workspace);
+
+            await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
+            expect(value.apply).not.toHaveBeenCalled();
         }
     );
 

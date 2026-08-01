@@ -156,7 +156,7 @@ import {
 import { RewindConfirmationRegistry } from "@crest/coding-agent/workspace-rewind/confirmation-token";
 import { removeDurableFile } from "@crest/coding-agent/workspace-rewind/durability";
 import {
-    decodeWorkspaceOperationJournalV1,
+    decodeWorkspaceOperationJournal,
     recoveryJournalOperationTokenForFilename,
     WorkspaceRecoveryJournal,
 } from "@crest/coding-agent/workspace-rewind/recovery-journal";
@@ -314,7 +314,7 @@ export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): Agen
                     );
                     continue;
                 }
-                const record = decodeWorkspaceOperationJournalV1(value);
+                const record = decodeWorkspaceOperationJournal(value);
                 if (
                     !record ||
                     record.operationId !== operationId ||

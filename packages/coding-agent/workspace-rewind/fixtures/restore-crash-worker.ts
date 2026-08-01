@@ -12,7 +12,7 @@ import { WorkspaceGitRunner } from "../git-runner";
 import { makeProcessOwnerIdentity } from "../process-owner";
 import {
     WorkspaceRecoveryJournal,
-    type WorkspaceOperationJournalV1,
+    type WorkspaceOperationJournalV2,
     type WorkspaceRecoveryJournalBoundary,
 } from "../recovery-journal";
 import { WorkspaceSnapshotStore } from "../snapshot-store";
@@ -148,7 +148,7 @@ function operation(
     safetySnapshot: WorkspaceSnapshotRefV1,
     paths: Array<{ path: string; preState: CapturedPathStateV1; target: CapturedPathStateV1 }>,
     kind: "rewind" | "turn-undo" | "turn-redo"
-): WorkspaceOperationJournalV1 {
+): WorkspaceOperationJournalV2 {
     const target =
         kind === "rewind"
             ? ({ kind: "rewind", targetTurnId: "target-turn" } as const)
@@ -160,7 +160,7 @@ function operation(
                     undoOperationId: "undo-operation",
                 } as const);
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         phase: "prepared",
         workspaceIdentity: identity.workspaceIdentity,
         workspaceIncarnation: identity.workspaceIncarnation,
@@ -205,7 +205,7 @@ function initialSessionEntries(): SessionTreeEntry[] {
     ];
 }
 
-function workspaceStateEntry(record: WorkspaceOperationJournalV1): SessionTreeEntry {
+function workspaceStateEntry(record: WorkspaceOperationJournalV2): SessionTreeEntry {
     return {
         type: "custom",
         id: "operation-leaf",

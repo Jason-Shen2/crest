@@ -871,7 +871,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         } as never);
         const journal = new WorkspaceRecoveryJournal(value.store);
         await journal.begin({
-            schemaVersion: 1,
+            schemaVersion: 2,
             phase: "prepared",
             workspaceIdentity: value.store.identity.workspaceIdentity,
             workspaceIncarnation: value.store.identity.workspaceIncarnation,

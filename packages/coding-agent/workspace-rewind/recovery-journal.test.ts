@@ -9,8 +9,9 @@ import { describe, expect, it, vi } from "vitest";
 import { encodeDurableJson } from "./durability";
 import {
     WorkspaceRecoveryJournal,
-    decodeWorkspaceOperationJournalV1,
-    type WorkspaceOperationJournalV1,
+    decodeWorkspaceOperationJournal,
+    decodeWorkspaceOperationJournalV2,
+    type WorkspaceOperationJournalV2,
 } from "./recovery-journal";
 import type { WorkspaceSnapshotRefV1 } from "./types";
 
@@ -28,9 +29,9 @@ function snapshot(id = Oid): WorkspaceSnapshotRefV1 {
     };
 }
 
-function operation(phase: WorkspaceOperationJournalV1["phase"] = "prepared"): WorkspaceOperationJournalV1 {
+function operation(phase: WorkspaceOperationJournalV2["phase"] = "prepared"): WorkspaceOperationJournalV2 {
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         phase,
         workspaceIdentity: Identity,
         workspaceIncarnation: Incarnation,
@@ -54,6 +55,21 @@ function operation(phase: WorkspaceOperationJournalV1["phase"] = "prepared"): Wo
             },
         ],
         workspaceStateEntryId: "state-entry",
+    };
+}
+
+function legacyOperation(phase: WorkspaceOperationJournalV2["phase"]): unknown {
+    const current = operation(phase);
+    const { target, commitParentId, ...shared } = current;
+    return {
+        ...shared,
+        schemaVersion: 1,
+        kind: target.kind === "redo" ? "redo" : "rewind",
+        targetTurnId: target.kind === "rewind" ? target.targetTurnId : null,
+        targetBoundaryId: commitParentId,
+        ...(phase === "files_verified" || phase === "committing_session" || phase === "completed"
+            ? { resultSnapshot: snapshot("9".repeat(40)) }
+            : {}),
     };
 }
 
@@ -114,41 +130,41 @@ describe("workspace recovery journal", () => {
     });
 
     it("validates exact schema, identity, states, paths, and canonical JSON", async () => {
-        expect(decodeWorkspaceOperationJournalV1(operation())).toEqual(operation());
+        expect(decodeWorkspaceOperationJournalV2(operation())).toEqual(operation());
         expect(
-            decodeWorkspaceOperationJournalV1({
+            decodeWorkspaceOperationJournalV2({
                 ...operation(),
                 kind: "rewind",
             })
         ).toBeUndefined();
         expect(
-            decodeWorkspaceOperationJournalV1({
+            decodeWorkspaceOperationJournalV2({
                 ...operation(),
                 target: { kind: "turn-redo", sourceTurnId: "turn-1" },
             })
         ).toBeUndefined();
         expect(
-            decodeWorkspaceOperationJournalV1({
+            decodeWorkspaceOperationJournalV2({
                 ...operation(),
                 target: { kind: "redo" },
                 applyMode: "force-drift",
             })
         ).toBeUndefined();
-        expect(decodeWorkspaceOperationJournalV1({ ...operation(), extra: true })).toBeUndefined();
+        expect(decodeWorkspaceOperationJournalV2({ ...operation(), extra: true })).toBeUndefined();
         expect(
-            decodeWorkspaceOperationJournalV1({
+            decodeWorkspaceOperationJournalV2({
                 ...operation(),
                 paths: [{ ...operation().paths[0], path: "../outside" }],
             })
         ).toBeUndefined();
         expect(
-            decodeWorkspaceOperationJournalV1({
+            decodeWorkspaceOperationJournalV2({
                 ...operation(),
                 safetySnapshot: { ...snapshot(), workspaceIncarnation: "a".repeat(64) },
             })
         ).toBeUndefined();
         expect(
-            decodeWorkspaceOperationJournalV1({
+            decodeWorkspaceOperationJournalV2({
                 ...operation(),
                 paths: [
                     {
@@ -159,10 +175,39 @@ describe("workspace recovery journal", () => {
             })
         ).toBeUndefined();
         expect(
-            decodeWorkspaceOperationJournalV1({
+            decodeWorkspaceOperationJournalV2({
                 ...operation("files_verified"),
             })
         ).toBeUndefined();
+    });
+
+    it.each(["prepared", "applying_files", "files_verified", "committing_session", "completed"] as const)(
+        "strictly migrates a legacy V1 %s journal to V2",
+        (phase) => {
+            const decoded = decodeWorkspaceOperationJournal(legacyOperation(phase));
+
+            expect(decoded).toMatchObject({
+                schemaVersion: 2,
+                phase,
+                target: { kind: "rewind", targetTurnId: "target-turn" },
+                commitParentId: "target-boundary",
+            });
+            expect(decoded).not.toHaveProperty("kind");
+            expect(decoded).not.toHaveProperty("targetTurnId");
+            expect(decoded).not.toHaveProperty("targetBoundaryId");
+        }
+    );
+
+    it("rejects unknown or inexact legacy V1 journal shapes", () => {
+        expect(decodeWorkspaceOperationJournal({ ...legacyOperation("prepared"), extra: true })).toBeUndefined();
+        expect(
+            decodeWorkspaceOperationJournal({
+                ...legacyOperation("prepared"),
+                kind: "redo",
+                targetTurnId: "not-null",
+            })
+        ).toBeUndefined();
+        expect(decodeWorkspaceOperationJournal({ ...operation(), schemaVersion: 3 })).toBeUndefined();
     });
 
     it("reports corrupt and truncated records without deleting them", async () => {
