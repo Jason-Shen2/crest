@@ -584,8 +584,14 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                 ["session_before_user_turn", "session_user_turn_committed", "session_user_turn_terminal"].includes(type)
             )
         ).toEqual(["session_before_user_turn", "session_user_turn_committed", "session_user_turn_terminal"]);
-        expect(await client.getSessionState(value.metadata)).toMatchObject({
+        const liveState = await client.getSessionState(value.metadata);
+        expect(liveState).toMatchObject({
             workspaceRewind: { status: "enabled" },
+            rewindState: {
+                enabled: true,
+                busy: false,
+                eligibleTurnIds: [turnId],
+            },
         });
         expect((await value.session.getEntries()).map((entry) => [entry.type, entry.customType])).toContainEqual([
             "custom",
@@ -602,7 +608,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         const editorText = vi.fn();
         const errors = vi.fn();
         const applyFromUi = vi.spyOn(client, "rewindTree");
-        let state = await value.rewindState();
+        let state = liveState.rewindState!;
         const rewindUi = render(
             createElement(RewindMessageUi, {
                 client,

@@ -67,11 +67,7 @@ export function registerWorkspaceCheckpointManager(input: {
     const inFlight = new Set<Promise<unknown>>();
     let disposed = false;
 
-    const run = <T>(operation: () => Promise<T>): Promise<T> => {
-        if (disposed) {
-            return Promise.resolve(undefined as T);
-        }
-        const running = input.mutationBarrier.run(operation);
+    const track = <T>(running: Promise<T>): Promise<T> => {
         inFlight.add(running);
         void running.then(
             () => inFlight.delete(running),
@@ -79,6 +75,30 @@ export function registerWorkspaceCheckpointManager(input: {
         );
         return running;
     };
+
+    const run = <T>(operation: () => Promise<T>): Promise<T> => {
+        if (disposed) {
+            return Promise.resolve(undefined as T);
+        }
+        return track(input.mutationBarrier.run(operation));
+    };
+
+    const notifyCheckpointCommitted = async (): Promise<void> => {
+        await input.mutationBarrier.waitForIdle();
+        if (!disposed) {
+            await input.onCheckpointCommitted();
+        }
+    };
+
+    const runAndNotifyCheckpointCommitted = (operation: () => Promise<boolean>): Promise<void> =>
+        track(
+            (async () => {
+                const committed = await run(operation);
+                if (committed) {
+                    await notifyCheckpointCommitted();
+                }
+            })()
+        );
 
     const appendCheckpoint = async (checkpoint: WorkspaceCheckpointV1): Promise<void> => {
         const expectedSemanticLeafId = await input.session.getLeafId();
@@ -91,7 +111,6 @@ export function registerWorkspaceCheckpointManager(input: {
             data: checkpoint,
         };
         await input.session.appendEntries([checkpointEntry], { expectedLeafId: expectedSemanticLeafId });
-        await input.onCheckpointCommitted();
     };
 
     const appendUnavailable = async (turnId: string, failure: CheckpointFailure): Promise<void> => {
@@ -148,21 +167,24 @@ export function registerWorkspaceCheckpointManager(input: {
         await pendingStore.retireUnavailable(boundary.token);
     };
 
-    const onTerminal = async (boundaryToken: string, reason: SessionUserTurnTerminalEvent["reason"]): Promise<void> => {
+    const onTerminal = async (
+        boundaryToken: string,
+        reason: SessionUserTurnTerminalEvent["reason"]
+    ): Promise<boolean> => {
         const boundary = boundaries.get(boundaryToken);
         if (!boundary) {
-            return;
+            return false;
         }
         try {
             if (!boundary.userEntryId) {
                 if (boundary.pending) {
                     await pendingStore.retireUnbound(boundaryToken, input.processOwner);
                 }
-                return;
+                return false;
             }
             if (boundary.beforeFailure) {
                 await appendUnavailable(boundary.userEntryId, boundary.beforeFailure);
-                return;
+                return true;
             }
             if (!boundary.before) {
                 await appendUnavailable(boundary.userEntryId, {
@@ -170,7 +192,7 @@ export function registerWorkspaceCheckpointManager(input: {
                     message: `Workspace checkpoint preparation did not retain a before snapshot (${reason})`,
                 });
                 await retirePendingAfterUnavailable(boundary);
-                return;
+                return true;
             }
             if (input.hasRunningHostedCommands()) {
                 await appendUnavailable(boundary.userEntryId, {
@@ -178,7 +200,7 @@ export function registerWorkspaceCheckpointManager(input: {
                     message: "A hosted PTY command was still running at the user-turn boundary",
                 });
                 await retirePendingAfterUnavailable(boundary);
-                return;
+                return true;
             }
             let captured;
             try {
@@ -186,7 +208,7 @@ export function registerWorkspaceCheckpointManager(input: {
             } catch (error) {
                 await appendUnavailable(boundary.userEntryId, classifyCheckpointFailure(error));
                 await retirePendingAfterUnavailable(boundary);
-                return;
+                return true;
             }
             await pendingStore.recordAfter(boundaryToken, captured.ref);
             let changes;
@@ -195,7 +217,7 @@ export function registerWorkspaceCheckpointManager(input: {
             } catch (error) {
                 await appendUnavailable(boundary.userEntryId, classifyCheckpointFailure(error));
                 await retirePendingAfterUnavailable(boundary);
-                return;
+                return true;
             }
             await appendCheckpoint({
                 schemaVersion: 1,
@@ -210,6 +232,7 @@ export function registerWorkspaceCheckpointManager(input: {
                 coverage: captured.coverage,
             });
             await pendingStore.complete(boundaryToken);
+            return true;
         } finally {
             boundaries.delete(boundaryToken);
         }
@@ -223,7 +246,7 @@ export function registerWorkspaceCheckpointManager(input: {
             return run(() => onCommitted(event.boundaryToken, event.userEntryId));
         }
         if (event.type === "session_user_turn_terminal") {
-            return run(() => onTerminal(event.boundaryToken, event.reason));
+            return runAndNotifyCheckpointCommitted(() => onTerminal(event.boundaryToken, event.reason));
         }
         return undefined;
     };
@@ -233,7 +256,8 @@ export function registerWorkspaceCheckpointManager(input: {
     return {
         isBusy: () => input.mutationBarrier.isBusy(),
         recover: () =>
-            run(async () => {
+            runAndNotifyCheckpointCommitted(async () => {
+                let committed = false;
                 const entries = await input.session.getEntries();
                 const finalizedTurns = new Set(
                     entries
@@ -259,9 +283,11 @@ export function registerWorkspaceCheckpointManager(input: {
                             reasonCode: "process_crash_before_finalization",
                             message: "The agent process exited before the workspace checkpoint was finalized",
                         });
+                        committed = true;
                     }
                     await retireRecoveredBoundary(pendingStore, item.record);
                 }
+                return committed;
             }),
         async dispose() {
             if (disposed) {

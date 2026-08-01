@@ -5,7 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentHarness, AgentHarnessEvent, Session, SessionTreeEntry } from "@crest/agent/harness/types";
 import { SessionMutationBarrier } from "../session-mutation-barrier";
-import { registerWorkspaceCheckpointManager, type WorkspaceCheckpointManagerDependencies } from "./checkpoint-manager";
+import {
+    registerWorkspaceCheckpointManager,
+    type WorkspaceCheckpointManager,
+    type WorkspaceCheckpointManagerDependencies,
+} from "./checkpoint-manager";
 import type { ProcessOwnerIdentity } from "./process-owner";
 import { WorkspaceSnapshotStoreError } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceSnapshotRefV1 } from "./types";
@@ -88,10 +92,11 @@ function makeFixture() {
         pendingStore: pending as never,
         now: () => "2026-07-29T00:00:00.000Z",
     };
+    let manager!: WorkspaceCheckpointManager;
     const onCheckpointCommitted = vi.fn(async () => {
-        order.push("refresh");
+        order.push(`refresh:${manager.isBusy()}`);
     });
-    const manager = registerWorkspaceCheckpointManager({
+    manager = registerWorkspaceCheckpointManager({
         harness,
         session,
         sessionId: "session-1",
@@ -147,8 +152,8 @@ describe("WorkspaceCheckpointManager", () => {
             "pending:after",
             "diff",
             "append",
-            "refresh",
             "pending:complete",
+            "refresh:false",
         ]);
         expect(fixture.entries).toHaveLength(1);
         expect(fixture.entries[0]).toMatchObject({
