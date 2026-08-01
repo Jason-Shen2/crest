@@ -42,13 +42,12 @@ const Workspace = {
 
 function restorePlan(overrides: Partial<RestorePlanV1> = {}): RestorePlanV1 {
     return {
-        kind: "rewind",
+        target: { kind: "rewind", targetTurnId: "turn-1" },
         sessionId: "session-1",
         workspaceIdentity: Identity,
         workspaceIncarnation: Incarnation,
         semanticLeafId: "old-leaf",
-        targetTurnId: "turn-1",
-        targetBoundaryId: "transaction-start",
+        commitParentId: "transaction-start",
         paths: [
             {
                 path: "file.txt",
@@ -296,9 +295,8 @@ describe("WorkspaceRewindEngine transaction", () => {
     it("projects rewind in reverse and redo forward from immutable restore-plan states", async () => {
         const rewindPlan = restorePlan();
         const redoPlan = restorePlan({
-            kind: "redo",
+            target: { kind: "redo" },
             semanticLeafId: "operation-leaf-1",
-            targetTurnId: undefined,
             paths: [
                 {
                     path: "file.txt",

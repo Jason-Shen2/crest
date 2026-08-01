@@ -523,7 +523,7 @@ async function inspectName(name, parentIdentity) {
 }
 `;
 
-function liveMatchesCaptured(live: LiveCapturedPathState, captured: CapturedPathStateV1): boolean {
+export function liveMatchesCaptured(live: LiveCapturedPathState, captured: CapturedPathStateV1): boolean {
     if (captured.state === "absent") {
         return live.state === "absent";
     }

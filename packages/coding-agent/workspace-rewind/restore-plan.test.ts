@@ -142,7 +142,8 @@ describe("restore planning", () => {
             verifySnapshot: vi.fn(async () => {}),
         });
 
-        expect(plan.targetBoundaryId).toBeNull();
+        expect(plan.target).toEqual({ kind: "rewind", targetTurnId: "u1" });
+        expect(plan.commitParentId).toBeNull();
         expect(plan.paths.map((item) => item.path)).toEqual(["a.ts", "b.ts"]);
         expect(plan.paths.find((item) => item.path === "a.ts")).toMatchObject({
             target: first.changes[0]!.before,
@@ -248,7 +249,7 @@ describe("restore planning", () => {
             verifySnapshot: async () => {},
         });
 
-        expect(plan.targetBoundaryId).toBe("root");
+        expect(plan.commitParentId).toBe("root");
         expect(plan.hardBlocked).toBe(false);
     });
 

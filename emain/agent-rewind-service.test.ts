@@ -34,13 +34,12 @@ const Snapshot = {
 
 function plan(): RestorePlanV1 {
     return {
-        kind: "rewind",
+        target: { kind: "rewind", targetTurnId: "turn-1" },
         sessionId: Metadata.id,
         workspaceIdentity: Identity,
         workspaceIncarnation: Incarnation,
         semanticLeafId: "checkpoint-1",
-        targetTurnId: "turn-1",
-        targetBoundaryId: null,
+        commitParentId: null,
         paths: [],
         coverageWarnings: [],
         forceRequired: false,

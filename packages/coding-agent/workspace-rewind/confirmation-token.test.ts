@@ -8,13 +8,12 @@ import type { RestorePlanV1 } from "./restore-plan";
 
 function plan(overrides: Partial<RestorePlanV1> = {}): RestorePlanV1 {
     return {
-        kind: "rewind",
+        target: { kind: "rewind", targetTurnId: "turn-1" },
         sessionId: "session-1",
         workspaceIdentity: "workspace-1",
         workspaceIncarnation: "incarnation-1",
         semanticLeafId: "leaf-1",
-        targetTurnId: "turn-1",
-        targetBoundaryId: "boundary-1",
+        commitParentId: "boundary-1",
         paths: [
             {
                 path: "b.ts",
@@ -75,9 +74,7 @@ describe("rewind confirmation registry", () => {
         expect(() => registry.take(invalidated, 2)).toThrow(/token/i);
 
         expect(() => registry.issue(plan({ hardBlocked: true }), 0)).toThrow(/blocked/i);
-        expect(() => registry.issue(plan({ kind: "redo", targetTurnId: undefined, forceRequired: true }), 0)).toThrow(
-            /redo/i
-        );
+        expect(() => registry.issue(plan({ target: { kind: "redo" }, forceRequired: true }), 0)).toThrow(/redo/i);
     });
 
     it("stores an immutable projection so callers cannot expand force authority", () => {
@@ -111,7 +108,7 @@ describe("rewind confirmation registry", () => {
         ["incarnation", { workspaceIncarnation: "incarnation-2" }],
         ["session", { sessionId: "session-2" }],
         ["leaf", { semanticLeafId: "leaf-2" }],
-        ["target", { targetTurnId: "turn-2" }],
+        ["target", { target: { kind: "rewind", targetTurnId: "turn-2" } }],
     ] as const)("rejects a recomputed plan with a changed %s binding", (_label, override) => {
         const registry = new RewindConfirmationRegistry();
         const token = registry.issue(plan(), 0);
@@ -193,6 +190,41 @@ describe("rewind confirmation registry", () => {
                 mode: "force-drift",
             })
         ).toThrow(/blocked/i);
+    });
+
+    it("binds turn targets exactly and allows force only for rewind-like targets", () => {
+        const registry = new RewindConfirmationRegistry();
+        const undoPlan = plan({ target: { kind: "turn-undo", sourceTurnId: "source-1" } });
+        const undo = registry.take(registry.issue(undoPlan, 0), 1);
+        expect(undo.binding.target).toEqual({ kind: "turn-undo", sourceTurnId: "source-1" });
+
+        const redoPlan = plan({
+            target: { kind: "turn-redo", sourceTurnId: "source-1", undoOperationId: "undo-1" },
+            paths: plan().paths.map((path) => ({ ...path, conflict: "none" as const })),
+            forceRequired: false,
+        });
+        const redo = registry.take(registry.issue(redoPlan, 0), 1);
+        expect(redo.binding.target).toEqual({
+            kind: "turn-redo",
+            sourceTurnId: "source-1",
+            undoOperationId: "undo-1",
+        });
+        expect(() =>
+            assertRestorePlanMatchesConfirmation({ confirmation: redo, plan: redoPlan, mode: "force-drift" })
+        ).toThrow(/only.*rewind/i);
+        expect(() => registry.issue({ ...redoPlan, forceRequired: true }, 0)).toThrow(/redo/i);
+    });
+
+    it("rejects incomplete turn targets instead of weakening their binding", () => {
+        const registry = new RewindConfirmationRegistry();
+        expect(() =>
+            registry.issue(
+                plan({
+                    target: { kind: "turn-redo", sourceTurnId: "source-1" } as RestorePlanV1["target"],
+                }),
+                0
+            )
+        ).toThrow(/target/i);
     });
 
     it("sweeps expired entries during issue", () => {

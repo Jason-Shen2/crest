@@ -7,7 +7,12 @@ import {
 } from "@crest/agent/harness/session/entry-transaction";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { isDeepStrictEqual } from "node:util";
-import { classifyLivePath, type LiveCapturedPathState, type RewindConflictClass } from "./live-path-state";
+import {
+    classifyLivePath,
+    liveMatchesCaptured,
+    type LiveCapturedPathState,
+    type RewindConflictClass,
+} from "./live-path-state";
 import { decodeWorkspaceCheckpointEntry, decodeWorkspaceStateEntry, isWorkspaceControlEntry } from "./session-state";
 import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
@@ -27,14 +32,19 @@ export interface RestorePathPlanV1 {
     reason?: string;
 }
 
+export type RestoreTargetV1 =
+    | { kind: "rewind"; targetTurnId: string }
+    | { kind: "redo" }
+    | { kind: "turn-undo"; sourceTurnId: string }
+    | { kind: "turn-redo"; sourceTurnId: string; undoOperationId: string };
+
 export interface RestorePlanV1 {
-    kind: "rewind" | "redo";
+    target: RestoreTargetV1;
     sessionId: string;
     workspaceIdentity: string;
     workspaceIncarnation: string;
     semanticLeafId: string | null;
-    targetTurnId?: string;
-    targetBoundaryId: string | null;
+    commitParentId: string | null;
     paths: RestorePathPlanV1[];
     coverageWarnings: Array<{ path: string; reason: string }>;
     forceRequired: boolean;
@@ -69,7 +79,7 @@ interface ActiveBranchResult {
     reason?: string;
 }
 
-interface PathTransition {
+export interface RestorePathTransitionV1 {
     target: CapturedPathStateV1;
     expectedCurrent: CapturedPathStateV1;
     excludedReason?: string;
@@ -81,18 +91,16 @@ function emptyPlan(
         workspace: CanonicalWorkspaceIdentity;
         semanticLeafId: string | null;
     },
-    kind: "rewind" | "redo",
-    targetBoundaryId: string | null,
-    targetTurnId?: string
+    target: RestoreTargetV1,
+    commitParentId: string | null
 ): RestorePlanV1 {
     return {
-        kind,
+        target,
         sessionId: input.sessionId,
         workspaceIdentity: input.workspace.workspaceIdentity,
         workspaceIncarnation: input.workspace.workspaceIncarnation,
         semanticLeafId: input.semanticLeafId,
-        ...(targetTurnId == null ? {} : { targetTurnId }),
-        targetBoundaryId,
+        commitParentId,
         paths: [],
         coverageWarnings: [],
         forceRequired: false,
@@ -280,14 +288,14 @@ function activeWorkspaceStates(
     });
 }
 
-async function classifyTransitions(
+export async function classifyRestoreTransitions(
     plan: RestorePlanV1,
-    transitions: Map<string, PathTransition>,
+    transitions: ReadonlyMap<string, RestorePathTransitionV1>,
     inspect: (path: string) => Promise<LiveCapturedPathState>,
     inspectBatch: ((paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>) | undefined,
     redo: boolean
 ): Promise<RestorePlanV1> {
-    const effective: Array<{ path: string; transition: PathTransition }> = [];
+    const effective: Array<{ path: string; transition: RestorePathTransitionV1 }> = [];
     for (const path of [...transitions.keys()].sort()) {
         const transition = transitions.get(path)!;
         if (transition.excludedReason) {
@@ -322,6 +330,9 @@ async function classifyTransitions(
             expected: transition.expectedCurrent,
             target: transition.target,
         });
+        if (liveMatchesCaptured(live, transition.target)) {
+            continue;
+        }
         const conflict =
             redo && classification.conflict === "forceable-drift" ? "hard-blocker" : classification.conflict;
         const reason =
@@ -385,7 +396,7 @@ async function inspectWithBoundedFallback(
 
 export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1> {
     const targetBoundaryId = getTransactionForkBoundary(input.rawEntries, input.targetTurnId, "before");
-    const plan = emptyPlan(input, "rewind", targetBoundaryId, input.targetTurnId);
+    const plan = emptyPlan(input, { kind: "rewind", targetTurnId: input.targetTurnId }, targetBoundaryId);
     const active = activeBranch(input.rawEntries, input.semanticLeafId);
     if (!active.branch) {
         return hardBlock(plan, active.reason!);
@@ -473,7 +484,7 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
     }
 
     const workspaceStatesByEntryId = new Map(workspaceStates.map((item) => [item.entryId, item.state]));
-    const transitions = new Map<string, PathTransition>();
+    const transitions = new Map<string, RestorePathTransitionV1>();
     for (const entry of suffix) {
         const checkpoint = checkpointsByEntryId.get(entry.id);
         if (checkpoint) {
@@ -511,11 +522,11 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
             }
         }
     }
-    return classifyTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, false);
+    return classifyRestoreTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, false);
 }
 
 export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
-    const plan = emptyPlan(input, "redo", input.rewindState.rewind.targetBoundaryId);
+    const plan = emptyPlan(input, { kind: "redo" }, input.rewindState.rewind.targetBoundaryId);
     const active = activeBranch(input.rawEntries, input.semanticLeafId);
     if (!active.branch) {
         return hardBlock(plan, active.reason!);
@@ -546,7 +557,7 @@ export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
         }
         current.set(item.path, item.state);
     }
-    const transitions = new Map<string, PathTransition>();
+    const transitions = new Map<string, RestorePathTransitionV1>();
     for (const item of input.rewindState.rewind.redoStates) {
         if (transitions.has(item.path)) {
             return hardBlock(plan, "rewind marker contains duplicate redo paths", item.path);
@@ -563,5 +574,5 @@ export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
                 : {}),
         });
     }
-    return classifyTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, true);
+    return classifyRestoreTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, true);
 }

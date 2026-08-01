@@ -4,7 +4,7 @@
 import { randomBytes } from "node:crypto";
 
 import type { RewindConflictClass } from "./live-path-state";
-import type { RestorePlanV1 } from "./restore-plan";
+import type { RestorePlanV1, RestoreTargetV1 } from "./restore-plan";
 
 const ConfirmationTtlMs = 5 * 60 * 1_000;
 const ConfirmationRegistryCapacity = 1_024;
@@ -19,7 +19,7 @@ export interface ConfirmedRestorePlanV1 {
         workspaceIncarnation: string;
         sessionId: string;
         semanticLeafId: string | null;
-        target: { kind: "rewind"; targetTurnId: string } | { kind: "redo" };
+        target: RestoreTargetV1;
         effectivePaths: string[];
         liveFingerprints: Array<{ path: string; fingerprint: string; conflict: RewindConflictClass }>;
     };
@@ -40,6 +40,35 @@ function clonePlan(plan: RestorePlanV1): RestorePlanV1 {
     return structuredClone(plan);
 }
 
+function targetKeysAre(target: RestoreTargetV1, expected: string[]): boolean {
+    return Object.keys(target).sort().join("\0") === [...expected].sort().join("\0");
+}
+
+function canonicalTarget(target: RestoreTargetV1): RestoreTargetV1 {
+    if (target.kind === "rewind" && targetKeysAre(target, ["kind", "targetTurnId"]) && target.targetTurnId) {
+        return { kind: "rewind", targetTurnId: target.targetTurnId };
+    }
+    if (target.kind === "redo" && targetKeysAre(target, ["kind"])) {
+        return { kind: "redo" };
+    }
+    if (target.kind === "turn-undo" && targetKeysAre(target, ["kind", "sourceTurnId"]) && target.sourceTurnId) {
+        return { kind: "turn-undo", sourceTurnId: target.sourceTurnId };
+    }
+    if (
+        target.kind === "turn-redo" &&
+        targetKeysAre(target, ["kind", "sourceTurnId", "undoOperationId"]) &&
+        target.sourceTurnId &&
+        target.undoOperationId
+    ) {
+        return {
+            kind: "turn-redo",
+            sourceTurnId: target.sourceTurnId,
+            undoOperationId: target.undoOperationId,
+        };
+    }
+    throw new Error("Cannot issue a confirmation token with an invalid restore target");
+}
+
 function confirmationBinding(plan: RestorePlanV1): ConfirmedRestorePlanV1["binding"] {
     const orderedPaths = [...plan.paths].sort((left, right) => left.path.localeCompare(right.path));
     return {
@@ -47,7 +76,7 @@ function confirmationBinding(plan: RestorePlanV1): ConfirmedRestorePlanV1["bindi
         workspaceIncarnation: plan.workspaceIncarnation,
         sessionId: plan.sessionId,
         semanticLeafId: plan.semanticLeafId,
-        target: plan.kind === "rewind" ? { kind: "rewind", targetTurnId: plan.targetTurnId! } : { kind: "redo" },
+        target: canonicalTarget(plan.target),
         effectivePaths: orderedPaths.map((item) => item.path),
         liveFingerprints: orderedPaths.map((item) => ({
             path: item.path,
@@ -62,13 +91,15 @@ function bindingsEqual(left: ConfirmedRestorePlanV1["binding"], right: Confirmed
 }
 
 function validateIssuable(plan: RestorePlanV1): void {
+    canonicalTarget(plan.target);
     if (plan.hardBlocked || plan.paths.some((path) => path.conflict === "hard-blocker")) {
         throw new Error("Cannot issue a confirmation token for a hard-blocked restore preview");
     }
-    if (plan.kind === "rewind" && !plan.targetTurnId) {
+    if (plan.target.kind === "rewind" && !plan.target.targetTurnId) {
         throw new Error("Cannot issue a confirmation token without a rewind target");
     }
-    if (plan.kind === "redo" && (plan.forceRequired || plan.paths.some((path) => path.conflict !== "none"))) {
+    const redoLike = plan.target.kind === "redo" || plan.target.kind === "turn-redo";
+    if (redoLike && (plan.forceRequired || plan.paths.some((path) => path.conflict !== "none"))) {
         throw new Error("Cannot issue a confirmation token for a Redo preview with drift");
     }
     const paths = plan.paths.map((item) => item.path);
@@ -148,7 +179,8 @@ export function assertRestorePlanMatchesConfirmation(input: {
     if (!bindingsEqual(input.confirmation.binding, recomputed)) {
         throw new Error("Rewind confirmation is stale");
     }
-    if (input.mode === "force-drift" && input.plan.kind !== "rewind") {
+    const forceAllowed = input.plan.target.kind === "rewind" || input.plan.target.kind === "turn-undo";
+    if (input.mode === "force-drift" && !forceAllowed) {
         throw new Error("Force mode is available only for rewind");
     }
     if (input.mode === "normal" && input.plan.forceRequired) {

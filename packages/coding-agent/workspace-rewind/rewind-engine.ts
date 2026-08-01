@@ -169,8 +169,8 @@ function previewMessageCount(
     plan: RestorePlanV1,
     rewindState: WorkspaceRewindMarkerV1 | undefined
 ): number {
-    const targetTurnId = plan.kind === "rewind" ? plan.targetTurnId : rewindState?.rewind.targetTurnId;
-    const leafId = plan.kind === "rewind" ? plan.semanticLeafId : rewindState?.rewind.fromLeafId;
+    const targetTurnId = plan.target.kind === "rewind" ? plan.target.targetTurnId : rewindState?.rewind.targetTurnId;
+    const leafId = plan.target.kind === "rewind" ? plan.semanticLeafId : rewindState?.rewind.fromLeafId;
     const branch = rawActiveBranch(entries, leafId ?? null);
     const targetIndex = branch.findIndex((entry) => entry.id === targetTurnId);
     if (targetIndex < 0) return 0;
@@ -286,7 +286,8 @@ export class WorkspaceRewindEngine {
 
     private async preview(planned: PlannedRestore): Promise<AgentRewindPreviewResult> {
         const { plan, entries, rewindState } = planned;
-        const targetTurnId = plan.kind === "rewind" ? plan.targetTurnId! : rewindState?.rewind.targetTurnId;
+        const targetTurnId =
+            plan.target.kind === "rewind" ? plan.target.targetTurnId : rewindState?.rewind.targetTurnId;
         const targetEntry = planned.targetEntry ?? selectedUserEntry(entries, targetTurnId);
         const folded = foldWorkspaceSessionState(entries, plan.sessionId);
         let confirmationToken: string | undefined;
@@ -296,7 +297,7 @@ export class WorkspaceRewindEngine {
         const files = await fileRows(plan, (oid) => this.store.readBlob(oid));
         return {
             ...(confirmationToken == null ? {} : { confirmationToken }),
-            target: plan.kind === "rewind" ? { kind: "rewind", targetTurnId: plan.targetTurnId! } : { kind: "redo" },
+            target: plan.target.kind === "rewind" ? plan.target : { kind: "redo" },
             ...(targetEntry == null
                 ? {}
                 : { targetPrompt: textFromContent((targetEntry.message as { content?: unknown }).content) }),
@@ -341,12 +342,12 @@ export class WorkspaceRewindEngine {
             return {
                 entries,
                 plan: {
-                    kind: "redo",
+                    target: { kind: "redo" },
                     sessionId: input.sessionId,
                     workspaceIdentity: input.workspace.workspaceIdentity,
                     workspaceIncarnation: input.workspace.workspaceIncarnation,
                     semanticLeafId: input.semanticLeafId,
-                    targetBoundaryId: null,
+                    commitParentId: null,
                     paths: [],
                     coverageWarnings: [
                         { path: "", reason: "redo requires the current raw leaf to be this session's rewind marker" },
@@ -428,7 +429,7 @@ export class WorkspaceRewindEngine {
         const workspaceStateEntryId = await input.session.getStorage().createEntryId();
         const sessionMetadata = await input.session.getMetadata();
         const redoBoundary =
-            input.kind === "redo" ? planned.rewindState?.rewind.fromLeafId : planned.plan.targetBoundaryId;
+            input.kind === "redo" ? planned.rewindState?.rewind.fromLeafId : planned.plan.commitParentId;
         if (input.kind === "redo" && !planned.rewindState) {
             throw new Error("Redo requires an authoritative rewind marker");
         }

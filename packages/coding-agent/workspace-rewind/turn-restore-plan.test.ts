@@ -1,0 +1,341 @@
+// Copyright 2026, Command Line Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+import { describe, expect, it, vi } from "vitest";
+
+import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
+import { planTurnRedo, planTurnUndo } from "./turn-restore-plan";
+import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
+import { WorkspaceControlCustomTypes } from "./types";
+import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+
+const OidA = "a".repeat(40);
+const OidB = "b".repeat(40);
+const OidC = "c".repeat(40);
+
+const Workspace = {
+    canonicalRoot: "/workspace",
+    workspaceIdentity: "workspace-1",
+    workspaceIncarnation: "incarnation-1",
+    storeKey: "store",
+    ancestorIdentityChain: [],
+} as CanonicalWorkspaceIdentity;
+
+function message(id: string, parentId: string | null, role: "user" | "assistant"): SessionTreeEntry {
+    return {
+        type: "message",
+        id,
+        parentId,
+        timestamp: `t-${id}`,
+        message: { role, content: [{ type: "text", text: id }] },
+    } as SessionTreeEntry;
+}
+
+function custom(id: string, parentId: string | null, customType: string, data: unknown): SessionTreeEntry {
+    return { type: "custom", id, parentId, timestamp: `t-${id}`, customType, data };
+}
+
+function leaf(targetId: string): SessionTreeEntry {
+    return { type: "leaf", id: "leaf", parentId: targetId, timestamp: "t-leaf", targetId };
+}
+
+function snapshot(id: string) {
+    return {
+        id,
+        workspaceIdentity: Workspace.workspaceIdentity,
+        workspaceIncarnation: Workspace.workspaceIncarnation,
+        tree: OidA,
+        scopeManifest: OidB,
+    };
+}
+
+function checkpoint(
+    changes: Array<{ path: string; before: CapturedPathStateV1; after: CapturedPathStateV1 }>,
+    overrides: Partial<Extract<WorkspaceCheckpointV1, { status: "available" }>> = {}
+): Extract<WorkspaceCheckpointV1, { status: "available" }> {
+    return {
+        schemaVersion: 1,
+        status: "available",
+        originSessionId: "session-1",
+        turnId: "u1",
+        workspaceIdentity: Workspace.workspaceIdentity,
+        workspaceIncarnation: Workspace.workspaceIncarnation,
+        before: snapshot(`${OidA.slice(0, -1)}1`),
+        after: snapshot(`${OidB.slice(0, -1)}1`),
+        changes,
+        coverage: { complete: true, eligibleEntryCount: changes.length, newlyHashedBytes: 0, exclusions: [] },
+        ...overrides,
+    };
+}
+
+function turnState(kind: "turn-undo" | "turn-redo", operationId: string, undoOperationId?: string): WorkspaceStateV1 {
+    return {
+        schemaVersion: 1,
+        sessionId: "session-1",
+        operationId,
+        workspaceIdentity: Workspace.workspaceIdentity,
+        workspaceIncarnation: Workspace.workspaceIncarnation,
+        kind,
+        sourceTurnId: "u1",
+        ...(kind === "turn-redo" ? { undoOperationId: undoOperationId! } : {}),
+        applyMode: "normal",
+        forcedPaths: [],
+        currentSnapshot: snapshot(OidC),
+        currentStates: [],
+    } as WorkspaceStateV1;
+}
+
+function branch(checkpointValue: WorkspaceCheckpointV1, tail: SessionTreeEntry[] = []): SessionTreeEntry[] {
+    const user = message("u1", null, "user");
+    const assistant = message("a1", user.id, "assistant");
+    const checkpointEntry = custom("c1", assistant.id, WorkspaceControlCustomTypes.checkpoint, checkpointValue);
+    const entries = [user, assistant, checkpointEntry];
+    let parentId = checkpointEntry.id;
+    for (const entry of tail) {
+        entry.parentId = parentId;
+        entries.push(entry);
+        parentId = entry.id;
+    }
+    return [...entries, leaf(parentId)];
+}
+
+function live(state: CapturedPathStateV1) {
+    if (state.state === "file") return { ...state, fingerprint: `${state.oid}:${state.executable}` };
+    if (state.state === "symlink") return { ...state, fingerprint: state.oid };
+    return { state: "absent" as const, fingerprint: "absent" };
+}
+
+function baseInput(entries: SessionTreeEntry[], liveStates: Record<string, ReturnType<typeof live>>) {
+    return {
+        sessionId: "session-1",
+        workspace: Workspace,
+        rawEntries: entries,
+        semanticLeafId: entries.at(-2)!.id,
+        sourceTurnId: "u1",
+        inspectLivePath: vi.fn(async (path: string) => liveStates[path]!),
+        verifySnapshot: vi.fn(async () => {}),
+    };
+}
+
+describe("per-turn restore planning", () => {
+    it("plans Undo from checkpoint after to before and Redo from before to after", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const undoEntries = branch(checkpoint([change]));
+        const undo = await planTurnUndo(baseInput(undoEntries, { "a.ts": live(change.after) }));
+
+        expect(undo).toMatchObject({
+            target: { kind: "turn-undo", sourceTurnId: "u1" },
+            semanticLeafId: "c1",
+            commitParentId: "c1",
+            forceRequired: false,
+            hardBlocked: false,
+        });
+        expect(undo.paths).toEqual([
+            expect.objectContaining({ path: "a.ts", expectedCurrent: change.after, target: change.before }),
+        ]);
+
+        const undoMarker = custom(
+            "undo-marker",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", "undo-operation-1")
+        );
+        const redoEntries = branch(checkpoint([change]), [undoMarker]);
+        const redo = await planTurnRedo({
+            ...baseInput(redoEntries, { "a.ts": live(change.before) }),
+            undoOperationId: "undo-operation-1",
+        });
+
+        expect(redo).toMatchObject({
+            target: { kind: "turn-redo", sourceTurnId: "u1", undoOperationId: "undo-operation-1" },
+            semanticLeafId: "undo-marker",
+            commitParentId: "undo-marker",
+            forceRequired: false,
+            hardBlocked: false,
+        });
+        expect(redo.paths).toEqual([
+            expect.objectContaining({ path: "a.ts", expectedCurrent: change.before, target: change.after }),
+        ]);
+    });
+
+    it("omits paths already at the target and classifies regular-file drift consistently", async () => {
+        const changes = [
+            {
+                path: "clean.ts",
+                before: { state: "file", oid: OidA, executable: false } as const,
+                after: { state: "file", oid: OidB, executable: false } as const,
+            },
+            {
+                path: "already.ts",
+                before: { state: "file", oid: OidA, executable: false } as const,
+                after: { state: "file", oid: OidB, executable: false } as const,
+            },
+            {
+                path: "drift.ts",
+                before: { state: "file", oid: OidA, executable: false } as const,
+                after: { state: "file", oid: OidB, executable: false } as const,
+            },
+        ];
+        const plan = await planTurnUndo(
+            baseInput(branch(checkpoint(changes)), {
+                "clean.ts": live(changes[0]!.after),
+                "already.ts": live(changes[1]!.before),
+                "drift.ts": live({ state: "file", oid: OidC, executable: false }),
+            })
+        );
+
+        expect(plan.paths.map((item) => item.path)).toEqual(["clean.ts", "drift.ts"]);
+        expect(plan.paths[0]!.conflict).toBe("none");
+        expect(plan.paths[1]).toMatchObject({
+            conflict: "forceable-drift",
+            reason: "files changed on disk since the agent last wrote them",
+        });
+        expect(plan.forceRequired).toBe(true);
+        expect(plan.hardBlocked).toBe(false);
+    });
+
+    it("hard-blocks every Redo drift and permits force only for Undo forceable drift", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const undo = await planTurnUndo(
+            baseInput(branch(checkpoint([change])), {
+                "a.ts": live({ state: "file", oid: OidC, executable: false }),
+            })
+        );
+        expect(undo).toMatchObject({ forceRequired: true, hardBlocked: false });
+
+        const marker = custom(
+            "undo-marker",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", "undo-operation-1")
+        );
+        const redo = await planTurnRedo({
+            ...baseInput(branch(checkpoint([change]), [marker]), {
+                "a.ts": live({ state: "file", oid: OidC, executable: false }),
+            }),
+            undoOperationId: "undo-operation-1",
+        });
+        expect(redo).toMatchObject({ forceRequired: false, hardBlocked: true });
+        expect(redo.paths[0]).toMatchObject({ conflict: "hard-blocker" });
+    });
+
+    it("requires the current last source-turn marker to point at the requested Undo operation", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const wrongUndo = custom(
+            "wrong-undo",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", "undo-operation-2")
+        );
+        const plan = await planTurnRedo({
+            ...baseInput(branch(checkpoint([change]), [wrongUndo]), { "a.ts": live(change.before) }),
+            undoOperationId: "undo-operation-1",
+        });
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(plan.coverageWarnings).toEqual([
+            expect.objectContaining({ reason: expect.stringMatching(/current.*undoOperationId/i) }),
+        ]);
+    });
+
+    it.each([
+        ["session", { originSessionId: "session-2" }, /session/i],
+        ["workspace", { workspaceIdentity: "workspace-2" }, /identity/i],
+        ["incarnation", { workspaceIncarnation: "incarnation-2" }, /incarnation/i],
+    ] as const)("hard-blocks a checkpoint with the wrong %s", async (_label, overrides, reason) => {
+        const plan = await planTurnUndo(baseInput(branch(checkpoint([], overrides)), {}));
+        expect(plan.hardBlocked).toBe(true);
+        expect(plan.coverageWarnings[0]!.reason).toMatch(reason);
+    });
+
+    it("validates active branch membership, terminal uniqueness, canonical paths, and readable snapshots", async () => {
+        const noncanonical = checkpoint([
+            { path: "../escape", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+        ]);
+        const base = branch(noncanonical);
+        const inactive = await planTurnUndo({ ...baseInput(base, {}), sourceTurnId: "other" });
+        expect(inactive.hardBlocked).toBe(true);
+
+        const extraCheckpoint = custom("c2", null, WorkspaceControlCustomTypes.checkpoint, checkpoint([]));
+        const duplicate = await planTurnUndo(baseInput(branch(checkpoint([]), [extraCheckpoint]), {}));
+        expect(duplicate.hardBlocked).toBe(true);
+
+        const afterCheckpoint = message("late", null, "assistant");
+        const nonterminal = await planTurnUndo(baseInput(branch(checkpoint([]), [afterCheckpoint]), {}));
+        expect(nonterminal.hardBlocked).toBe(true);
+
+        const canonical = await planTurnUndo(baseInput(base, {}));
+        expect(canonical.hardBlocked).toBe(true);
+        expect(canonical.coverageWarnings[0]!.reason).toMatch(/invalid|canonical/i);
+
+        const readableEntries = branch(checkpoint([]));
+        const readableInput = baseInput(readableEntries, {});
+        readableInput.verifySnapshot.mockRejectedValueOnce(new Error("missing object"));
+        const unreadable = await planTurnUndo(readableInput);
+        expect(unreadable.hardBlocked).toBe(true);
+        expect(unreadable.coverageWarnings[0]!.reason).toMatch(/unavailable.*missing object/i);
+    });
+
+    it("reports incomplete checkpoint coverage and isolates paths from another session", async () => {
+        const own = checkpoint(
+            [{ path: "own.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } }],
+            {
+                coverage: {
+                    complete: false,
+                    eligibleEntryCount: 1,
+                    newlyHashedBytes: 0,
+                    exclusions: [{ path: "ignored.log", reason: "ignored" }],
+                },
+            }
+        );
+        const foreign = custom(
+            "foreign-checkpoint",
+            null,
+            WorkspaceControlCustomTypes.checkpoint,
+            checkpoint(
+                [
+                    {
+                        path: "foreign.ts",
+                        before: { state: "absent" },
+                        after: { state: "file", oid: OidB, executable: false },
+                    },
+                ],
+                { originSessionId: "session-2" }
+            )
+        );
+        const input = baseInput(branch(own, [foreign]), {
+            "own.ts": live({ state: "file", oid: OidA, executable: false }),
+        });
+        const plan = await planTurnUndo(input);
+
+        expect(plan.paths.map((item) => item.path)).toEqual(["own.ts"]);
+        expect(input.inspectLivePath).toHaveBeenCalledTimes(1);
+        expect(plan.coverageWarnings).toContainEqual({ path: "ignored.log", reason: "ignored" });
+    });
+
+    it("treats the next prepared turn transaction as outside the source turn", async () => {
+        const source = message("u1", null, "user");
+        const checkpointEntry = custom("c1", source.id, WorkspaceControlCustomTypes.checkpoint, checkpoint([]));
+        const nextTransaction = makeCommittedContextTransaction({ parentId: checkpointEntry.id, prefix: "next" });
+        const entries = [source, checkpointEntry, ...nextTransaction];
+        const plan = await planTurnUndo({
+            ...baseInput(entries, {}),
+            semanticLeafId: nextTransaction.at(-1)!.id,
+        });
+
+        expect(plan.hardBlocked).toBe(false);
+    });
+});
