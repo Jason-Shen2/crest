@@ -11,10 +11,28 @@ export const WorkspaceDiffPreviewLimits = {
     maxRequestInputBytes: 8 * 1024 * 1024,
 } as const;
 
+const WorkspaceDiffPreviewBudgetUsage = new WeakMap<WorkspaceDiffPreviewBudget, number>();
+
 export class WorkspaceDiffPreviewBudget {
-    usedInputBytes = 0;
+    constructor() {
+        WorkspaceDiffPreviewBudgetUsage.set(this, 0);
+    }
+
+    get usedInputBytes(): number {
+        return WorkspaceDiffPreviewBudgetUsage.get(this) ?? 0;
+    }
 
     reserve(beforeBytes: number, afterBytes: number): boolean {
+        if (
+            !Number.isFinite(beforeBytes) ||
+            !Number.isInteger(beforeBytes) ||
+            beforeBytes < 0 ||
+            !Number.isFinite(afterBytes) ||
+            !Number.isInteger(afterBytes) ||
+            afterBytes < 0
+        ) {
+            return false;
+        }
         if (
             beforeBytes > WorkspaceDiffPreviewLimits.maxSideBytes ||
             afterBytes > WorkspaceDiffPreviewLimits.maxSideBytes
@@ -25,8 +43,12 @@ export class WorkspaceDiffPreviewBudget {
         if (this.usedInputBytes + inputBytes > WorkspaceDiffPreviewLimits.maxRequestInputBytes) {
             return false;
         }
-        this.usedInputBytes += inputBytes;
+        WorkspaceDiffPreviewBudgetUsage.set(this, this.usedInputBytes + inputBytes);
         return true;
+    }
+
+    get exhausted(): boolean {
+        return this.usedInputBytes >= WorkspaceDiffPreviewLimits.maxRequestInputBytes;
     }
 }
 
@@ -101,6 +123,9 @@ export async function projectWorkspacePathDiff(
     if (input.after.state === "excluded") return unavailable(row, `excluded: ${input.after.reason}`);
     if (input.before.state === "symlink" || input.after.state === "symlink") {
         return unavailable(row, "symlink");
+    }
+    if (input.budget.exhausted) {
+        return unavailable(row, "request exceeds preview input limit");
     }
 
     let beforeBlob: Buffer;

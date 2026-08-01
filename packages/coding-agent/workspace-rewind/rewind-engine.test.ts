@@ -16,6 +16,9 @@ const Incarnation = "2".repeat(64);
 const CleanFingerprint = "3".repeat(64);
 const OldOid = "a".repeat(40);
 const NewOid = "b".repeat(40);
+const MissingOid = "7".repeat(40);
+const SecondOldOid = "8".repeat(40);
+const SecondNewOid = "9".repeat(40);
 
 function snapshot(id: string): WorkspaceSnapshotRefV1 {
     return {
@@ -140,6 +143,8 @@ function makeSession(options: { appendError?: Error; appendErrorAfterCommit?: Er
 
 function makeHarness(input: {
     plan?: RestorePlanV1;
+    redoPlan?: RestorePlanV1;
+    blobs?: Record<string, Buffer | string | Error>;
     preStates?: Record<string, CapturedPathStateV1>;
     failApplyAt?: string;
     appendError?: Error;
@@ -197,7 +202,11 @@ function makeHarness(input: {
             if (ref.id === SafetySnapshot.id) return liveStates.get(path)!;
             return plan.paths.find((item) => item.path === path)!.target;
         }),
-        readBlob: vi.fn(async () => Buffer.from("blob")),
+        readBlob: vi.fn(async (oid: string) => {
+            const blob = input.blobs?.[oid] ?? "blob";
+            if (blob instanceof Error) throw blob;
+            return Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
+        }),
         verify: vi.fn(async () => {}),
         anchorSnapshot: vi.fn(async () => {
             if (!order.includes("anchor-session-refs")) order.push("anchor-session-refs");
@@ -236,7 +245,7 @@ function makeHarness(input: {
             order.push("recompute-plan");
             return structuredClone(plan);
         }),
-        planRedo: input.useRealPlanRedo ? planRedo : vi.fn(async () => structuredClone(plan)),
+        planRedo: input.useRealPlanRedo ? planRedo : vi.fn(async () => structuredClone(input.redoPlan ?? plan)),
         inspectLivePath: vi.fn(
             async (path: string) =>
                 ({
@@ -284,6 +293,134 @@ function makeHarness(input: {
 }
 
 describe("WorkspaceRewindEngine transaction", () => {
+    it("projects rewind in reverse and redo forward from immutable restore-plan states", async () => {
+        const rewindPlan = restorePlan();
+        const redoPlan = restorePlan({
+            kind: "redo",
+            semanticLeafId: "operation-leaf-1",
+            targetTurnId: undefined,
+            paths: [
+                {
+                    path: "file.txt",
+                    operation: "write",
+                    target: { state: "file", oid: NewOid, executable: false },
+                    expectedCurrent: { state: "file", oid: OldOid, executable: false },
+                    liveFingerprint: CleanFingerprint,
+                    conflict: "none",
+                },
+            ],
+        });
+        const value = makeHarness({
+            plan: rewindPlan,
+            redoPlan,
+            blobs: { [OldOid]: "checkpoint A\n", [NewOid]: "checkpoint B\n" },
+        });
+
+        const rewindPreview = await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+        });
+
+        expect(rewindPreview.files[0]).toMatchObject({ operation: "write", additions: 1, deletions: 1 });
+        expect(rewindPreview.files[0]!.diff).toContain("-checkpoint B");
+        expect(rewindPreview.files[0]!.diff).toContain("+checkpoint A");
+
+        const confirmation = value.confirmations.take(rewindPreview.confirmationToken!);
+        await value.engine.applyRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+            mode: "normal",
+            confirmation,
+        });
+        const redoPreview = await value.engine.previewRedo({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "operation-leaf-1",
+        });
+
+        expect(redoPreview.files[0]).toMatchObject({ operation: "write", additions: 1, deletions: 1 });
+        expect(redoPreview.files[0]!.diff).toContain("-checkpoint A");
+        expect(redoPreview.files[0]!.diff).toContain("+checkpoint B");
+        expect(redoPreview.files[0]!.diff).not.toBe(rewindPreview.files[0]!.diff);
+    });
+
+    it("keeps planner authority and other rows when one immutable blob is unavailable", async () => {
+        const plan = restorePlan({
+            paths: [
+                {
+                    path: "missing.txt",
+                    operation: "write",
+                    target: { state: "file", oid: OldOid, executable: false },
+                    expectedCurrent: { state: "file", oid: MissingOid, executable: false },
+                    liveFingerprint: CleanFingerprint,
+                    conflict: "forceable-drift",
+                    reason: "live file drifted",
+                },
+                {
+                    path: "healthy.txt",
+                    operation: "write",
+                    target: { state: "file", oid: SecondOldOid, executable: false },
+                    expectedCurrent: { state: "file", oid: SecondNewOid, executable: false },
+                    liveFingerprint: CleanFingerprint,
+                    conflict: "none",
+                },
+            ],
+            forceRequired: true,
+        });
+        const value = makeHarness({
+            plan,
+            blobs: {
+                [MissingOid]: new Error("sensitive blob failure"),
+                [OldOid]: "missing target\n",
+                [SecondNewOid]: "healthy before\n",
+                [SecondOldOid]: "healthy after\n",
+            },
+        });
+
+        const preview = await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+        });
+
+        expect(preview.confirmationToken).toBeTypeOf("string");
+        expect(preview.fileCount).toBe(2);
+        expect(preview.files).toHaveLength(2);
+        expect(preview.files[0]).toMatchObject({
+            path: "missing.txt",
+            operation: "write",
+            coverage: "covered",
+            conflict: "forceable-drift",
+            reason: "live file drifted",
+            previewUnavailableReason: "snapshot blob is unavailable",
+        });
+        expect(preview.files[1]).toMatchObject({
+            path: "healthy.txt",
+            operation: "write",
+            additions: 1,
+            deletions: 1,
+            coverage: "covered",
+            conflict: "none",
+        });
+        expect(preview.files[1]!.diff).toContain("-healthy before");
+        expect(preview.files[1]!.diff).toContain("+healthy after");
+        expect(value.store.readBlob.mock.calls.map(([oid]) => oid)).toEqual([
+            MissingOid,
+            OldOid,
+            SecondNewOid,
+            SecondOldOid,
+        ]);
+    });
+
     it("orders every durable boundary, CAS commit point, broadcast, and cleanup", async () => {
         const value = makeHarness({});
         const confirmation = value.confirmations.take(value.confirmations.issue(value.plan));

@@ -11,6 +11,7 @@ import {
     type ConfirmedRestorePlanV1,
     type RewindConfirmationRegistry,
 } from "./confirmation-token";
+import { projectWorkspacePathDiff, WorkspaceDiffPreviewBudget } from "./diff-preview";
 import { applyCapturedPath, verifyCapturedPath, type WorkspacePathApplyProgress } from "./filesystem-apply";
 import { inspectLivePath, inspectLivePaths, type LiveCapturedPathState } from "./live-path-state";
 import type { WorkspaceOperationJournalV1, WorkspaceRecoveryJournal } from "./recovery-journal";
@@ -169,14 +170,39 @@ function previewMessageCount(
     return branch.slice(targetIndex).filter((entry) => entry.type === "message").length;
 }
 
-function fileRows(plan: RestorePlanV1): AgentRewindFileRowView[] {
-    return plan.paths.map((path) => ({
+function baseFileRow(path: RestorePlanV1["paths"][number]): AgentRewindFileRowView {
+    return {
         path: path.path,
         operation: path.operation,
-        coverage: "covered",
+        coverage:
+            path.expectedCurrent.state === "excluded" || path.target.state === "excluded" ? "excluded" : "covered",
         conflict: path.conflict,
         ...(path.reason == null ? {} : { reason: path.reason }),
-    }));
+    };
+}
+
+async function fileRows(
+    plan: RestorePlanV1,
+    readBlob: (oid: string) => Promise<Buffer>
+): Promise<AgentRewindFileRowView[]> {
+    const budget = new WorkspaceDiffPreviewBudget();
+    const rows: AgentRewindFileRowView[] = [];
+    for (const path of plan.paths) {
+        const base = baseFileRow(path);
+        try {
+            const projected = await projectWorkspacePathDiff({
+                path: path.path,
+                before: path.expectedCurrent,
+                after: path.target,
+                readBlob,
+                budget,
+            });
+            rows.push({ ...projected, ...base });
+        } catch {
+            rows.push({ ...base, previewUnavailableReason: "diff preview is unavailable" });
+        }
+    }
+    return rows;
 }
 
 function warningText(plan: RestorePlanV1): string[] {
@@ -252,6 +278,7 @@ export class WorkspaceRewindEngine {
         if (!plan.hardBlocked) {
             confirmationToken = this.confirmations.issue(plan);
         }
+        const files = await fileRows(plan, (oid) => this.store.readBlob(oid));
         return {
             ...(confirmationToken == null ? {} : { confirmationToken }),
             target: plan.kind === "rewind" ? { kind: "rewind", targetTurnId: plan.targetTurnId! } : { kind: "redo" },
@@ -263,7 +290,7 @@ export class WorkspaceRewindEngine {
             expectedSemanticLeafId: plan.semanticLeafId,
             messageCount: previewMessageCount(entries, plan, rewindState),
             fileCount: plan.paths.length,
-            files: fileRows(plan),
+            files,
             coverageWarnings: warningText(plan),
             forceRequired: plan.forceRequired,
             hardBlocked: plan.hardBlocked,

@@ -268,11 +268,12 @@ describe("projectWorkspacePathDiff", () => {
         }
         expect(budget.usedInputBytes).toBe(WorkspaceDiffPreviewLimits.maxRequestInputBytes);
 
+        const readBlob = readBlobs({ [BeforeOid]: "before\n", [AfterOid]: "after\n" });
         const row = await projectWorkspacePathDiff({
             path: "still-listed.txt",
             before: fileState(BeforeOid),
             after: fileState(AfterOid),
-            readBlob: readBlobs({ [BeforeOid]: "before\n", [AfterOid]: "after\n" }),
+            readBlob,
             budget,
         });
 
@@ -285,6 +286,29 @@ describe("projectWorkspacePathDiff", () => {
         });
         expect(row).not.toHaveProperty("diff");
         expect(budget.usedInputBytes).toBe(WorkspaceDiffPreviewLimits.maxRequestInputBytes);
+        expect(readBlob).not.toHaveBeenCalled();
+    });
+
+    it.each([NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 0.5])(
+        "rejects invalid byte reservations without corrupting the budget: %s",
+        (invalidBytes) => {
+            const budget = new WorkspaceDiffPreviewBudget();
+
+            expect(budget.reserve(invalidBytes, 0)).toBe(false);
+            expect(budget.reserve(0, invalidBytes)).toBe(false);
+            expect(budget.usedInputBytes).toBe(0);
+        }
+    );
+
+    it("exposes used input bytes as a read-only view", () => {
+        const budget = new WorkspaceDiffPreviewBudget();
+
+        expect(Object.hasOwn(budget, "usedInputBytes")).toBe(false);
+        expect(Object.getOwnPropertyDescriptor(WorkspaceDiffPreviewBudget.prototype, "usedInputBytes")).toMatchObject({
+            set: undefined,
+        });
+        expect(budget.reserve(3, 4)).toBe(true);
+        expect(budget.usedInputBytes).toBe(7);
     });
 
     it("contains a blob read failure to its row", async () => {
