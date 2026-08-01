@@ -147,7 +147,9 @@ vi.mock("./rewind/diff-review-dialog", () => ({
             <div data-testid="rewind-preview">
                 <span>{`${props.title}:${props.loading ? "loading" : "ready"}`}</span>
                 <span>{props.description}</span>
-                {props.warning ? <span>{props.warning}</span> : null}
+                {props.warnings?.map((warning: string) => (
+                    <span key={warning}>{warning}</span>
+                ))}
                 {props.footer}
             </div>
         ) : null;
@@ -989,6 +991,11 @@ describe("AgentContent", () => {
                 { kind: "rewind", targetTurnId: "turn-a" },
                 {
                     forceRequired: true,
+                    coverageWarnings: [
+                        "checkpoint excluded a socket",
+                        "checkpoint excluded generated output",
+                        "files changed on disk since the agent last wrote them",
+                    ],
                     files: [
                         {
                             path: "src/drift.ts",
@@ -1003,6 +1010,9 @@ describe("AgentContent", () => {
         );
         await act(() => threadProps.latest.onRevertTurn("turn-a"));
         await waitFor(() => expect(screen.getByRole("button", { name: "Force revert" })).not.toBeNull());
+        expect(screen.getByText("checkpoint excluded a socket")).not.toBeNull();
+        expect(screen.getByText("checkpoint excluded generated output")).not.toBeNull();
+        expect(screen.getAllByText("files changed on disk since the agent last wrote them")).toHaveLength(1);
         expect(screen.queryByRole("button", { name: "Revert 1 file" })).toBeNull();
         fireEvent.click(screen.getByRole("button", { name: "Force revert" }));
         await waitFor(() =>

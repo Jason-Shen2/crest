@@ -7,7 +7,7 @@ import { DiffViewer } from "@/app/agent/assistant-ui/diff-viewer";
 import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/shadcn/ui/dialog";
 import { cn } from "@/util/util";
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 
 export interface DiffReviewDialogProps {
     open: boolean;
@@ -17,7 +17,7 @@ export interface DiffReviewDialogProps {
     selectedPath?: string;
     loading?: boolean;
     errorMessage?: string;
-    warning?: string;
+    warnings?: string[];
     locked?: boolean;
     emptyMessage?: string;
     footer: ReactNode;
@@ -39,24 +39,42 @@ function operationLabel(operation: AgentRewindFileRowView["operation"]): "A" | "
 }
 
 function FileStats({ file }: { file: AgentRewindFileRowView }) {
-    if (file.additions == null || file.deletions == null) {
-        return <span className="text-[10px] text-muted-foreground">Unavailable</span>;
-    }
-
     return (
         <span className="flex shrink-0 gap-1.5 text-[11px] tabular-nums">
-            <span className="text-success">+{file.additions}</span>
-            <span className="text-destructive">-{file.deletions}</span>
+            {file.additions == null ? (
+                <span
+                    aria-label="Additions unavailable"
+                    title="Additions unavailable"
+                    className="text-muted-foreground"
+                >
+                    +—
+                </span>
+            ) : (
+                <span className="text-success">+{file.additions}</span>
+            )}
+            {file.deletions == null ? (
+                <span
+                    aria-label="Deletions unavailable"
+                    title="Deletions unavailable"
+                    className="text-muted-foreground"
+                >
+                    -—
+                </span>
+            ) : (
+                <span className="text-destructive">-{file.deletions}</span>
+            )}
         </span>
     );
 }
 
 function FileListRow({
     file,
+    optionId,
     selected,
     onSelect,
 }: {
     file: AgentRewindFileRowView;
+    optionId: string;
     selected: boolean;
     onSelect(): void;
 }) {
@@ -66,8 +84,11 @@ function FileListRow({
 
     return (
         <button
+            id={optionId}
             type="button"
-            aria-pressed={selected}
+            role="option"
+            aria-selected={selected}
+            tabIndex={-1}
             title={file.path}
             onClick={onSelect}
             className={cn(
@@ -141,7 +162,7 @@ export function DiffReviewDialog({
     selectedPath,
     loading = false,
     errorMessage,
-    warning,
+    warnings = [],
     locked = false,
     emptyMessage = "No workspace files will change.",
     footer,
@@ -149,6 +170,18 @@ export function DiffReviewDialog({
     onOpenChange,
 }: DiffReviewDialogProps) {
     const selectedFile = files.find((file) => file.path === selectedPath) ?? files[0];
+    const selectedIndex = selectedFile ? files.indexOf(selectedFile) : -1;
+    const optionId = (index: number) => `diff-review-file-${index}`;
+    const uniqueWarnings = [...new Set(warnings.filter(Boolean))];
+    const onFileListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+        if (files.length === 0) return;
+        event.preventDefault();
+        const currentIndex = selectedIndex < 0 ? 0 : selectedIndex;
+        const nextIndex =
+            event.key === "ArrowDown" ? Math.min(currentIndex + 1, files.length - 1) : Math.max(currentIndex - 1, 0);
+        onSelectedPathChange(files[nextIndex].path);
+    };
 
     return (
         <Dialog
@@ -165,7 +198,11 @@ export function DiffReviewDialog({
                 <DialogHeader className="shrink-0 gap-1 border-b border-border px-5 py-4">
                     <DialogTitle>{title}</DialogTitle>
                     <DialogDescription>{description}</DialogDescription>
-                    {warning && <p className="text-sm text-destructive">{warning}</p>}
+                    {uniqueWarnings.map((warning) => (
+                        <p key={warning} className="text-sm text-destructive">
+                            {warning}
+                        </p>
+                    ))}
                     {errorMessage && (
                         <p role="alert" className="text-sm text-destructive">
                             {errorMessage}
@@ -180,14 +217,23 @@ export function DiffReviewDialog({
                                 {emptyMessage}
                             </div>
                         ) : (
-                            files.map((file) => (
-                                <FileListRow
-                                    key={file.path}
-                                    file={file}
-                                    selected={selectedFile?.path === file.path}
-                                    onSelect={() => onSelectedPathChange(file.path)}
-                                />
-                            ))
+                            <div
+                                role="listbox"
+                                aria-label="Workspace files"
+                                aria-activedescendant={selectedIndex >= 0 ? optionId(selectedIndex) : undefined}
+                                tabIndex={0}
+                                onKeyDown={onFileListKeyDown}
+                            >
+                                {files.map((file, index) => (
+                                    <FileListRow
+                                        key={file.path}
+                                        file={file}
+                                        optionId={optionId(index)}
+                                        selected={selectedFile?.path === file.path}
+                                        onSelect={() => onSelectedPathChange(file.path)}
+                                    />
+                                ))}
+                            </div>
                         )}
                     </aside>
                     <main className="min-h-0 overflow-auto bg-muted/10 p-3">

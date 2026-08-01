@@ -636,8 +636,11 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         !rewindPreview.forceRequired;
     const rewindFileCount = rewindPreview?.fileCount ?? 0;
     const rewindFileLabel = `${rewindFileCount} ${rewindFileCount === 1 ? "file" : "files"}`;
-    const rewindWarning =
-        rewindPreview?.coverageWarnings[0] ?? rewindPreview?.files.find((file) => file.conflict !== "none")?.reason;
+    const rewindWarnings = [
+        ...(rewindPreview?.coverageWarnings ?? []),
+        ...(rewindPreview?.files.flatMap((file) => (file.conflict !== "none" && file.reason ? [file.reason] : [])) ??
+            []),
+    ].filter((warning, index, allWarnings) => allWarnings.indexOf(warning) === index);
 
     useEffect(() => {
         setRewindSelectedPath(undefined);
@@ -1128,7 +1131,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         selectedPath={rewindSelectedPath}
                         loading={rewindController.preview.phase === "loading"}
                         errorMessage={rewindController.preview.errorMessage}
-                        warning={rewindWarning}
+                        warnings={rewindWarnings}
                         locked={rewindDialogLocked}
                         emptyMessage="No workspace files will change."
                         footer={

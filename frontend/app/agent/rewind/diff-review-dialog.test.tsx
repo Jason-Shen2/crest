@@ -86,17 +86,57 @@ describe("DiffReviewDialog", () => {
         render(<ControlledDialog />);
         expect(screen.getByTestId("backend-diff").textContent).toBe("backend alpha patch");
 
-        fireEvent.click(screen.getByRole("button", { name: /beta\.test\.ts/ }));
+        fireEvent.click(screen.getByRole("option", { name: /beta\.test\.ts/ }));
         expect(screen.getByTestId("backend-diff").textContent).toBe("backend beta patch");
         expect(diffViewerMock).toHaveBeenLastCalledWith(expect.objectContaining({ patch: "backend beta patch" }));
+    });
+
+    it("supports ArrowDown and ArrowUp selection from the accessible file list without external side effects", () => {
+        const onSelectedPathChange = vi.fn();
+        const files = [
+            makeFile(),
+            makeFile({ path: "src/beta.ts", diff: "backend beta patch" }),
+            makeFile({ path: "src/gamma.ts", diff: "backend gamma patch" }),
+        ];
+
+        function ControlledDialog() {
+            const [selectedPath, setSelectedPath] = useState(files[0].path);
+            return (
+                <DiffReviewDialog
+                    open
+                    title="Review changes"
+                    description="Immutable checkpoint diff"
+                    files={files}
+                    selectedPath={selectedPath}
+                    footer={<button type="button">Close</button>}
+                    onSelectedPathChange={(path) => {
+                        onSelectedPathChange(path);
+                        setSelectedPath(path);
+                    }}
+                    onOpenChange={vi.fn()}
+                />
+            );
+        }
+
+        render(<ControlledDialog />);
+        const listbox = screen.getByRole("listbox", { name: "Workspace files" });
+        expect(screen.getByRole("option", { name: /alpha\.ts/ }).getAttribute("aria-selected")).toBe("true");
+
+        fireEvent.keyDown(listbox, { key: "ArrowDown" });
+        expect(onSelectedPathChange).toHaveBeenLastCalledWith("src/beta.ts");
+        expect(screen.getByTestId("backend-diff").textContent).toBe("backend beta patch");
+
+        fireEvent.keyDown(listbox, { key: "ArrowUp" });
+        expect(onSelectedPathChange).toHaveBeenLastCalledWith("src/alpha.ts");
+        expect(screen.getByTestId("backend-diff").textContent).toBe("backend alpha patch");
     });
 
     it("uses the existing file icon and shows basename, muted directory, status, and nullable stats", () => {
         renderDialog({
             files: [
                 makeFile({ path: "frontend/app/alpha.ts", operation: "create", additions: 7, deletions: 0 }),
-                makeFile({ path: "README.md", operation: "delete", additions: null, deletions: null }),
-                makeFile({ path: "src/modified.ts", operation: "write", additions: 1, deletions: 4 }),
+                makeFile({ path: "README.md", operation: "delete", additions: null, deletions: 4 }),
+                makeFile({ path: "src/modified.ts", operation: "write", additions: 1, deletions: null }),
             ],
         });
 
@@ -110,8 +150,10 @@ describe("DiffReviewDialog", () => {
         expect(screen.getByText("M")).not.toBeNull();
         expect(screen.getByText("+7").className).toContain("text-success");
         expect(screen.getByText("-0").className).toContain("text-destructive");
-        expect(screen.getAllByText("Unavailable").length).toBeGreaterThan(0);
-        expect(screen.queryByText("+0 -0")).toBeNull();
+        expect(screen.getByText("-4").className).toContain("text-destructive");
+        expect(screen.getByLabelText("Additions unavailable")).not.toBeNull();
+        expect(screen.getByLabelText("Deletions unavailable")).not.toBeNull();
+        expect(screen.queryByText("+0")).toBeNull();
     });
 
     it("does not show coverage text for a normal file row", () => {
@@ -122,15 +164,17 @@ describe("DiffReviewDialog", () => {
 
     it("renders forceable conflicts and the canonical warning with destructive styling", () => {
         const warning = "files changed on disk since the agent last wrote them";
+        const coverageWarning = "checkpoint excluded an unsupported path";
         renderDialog({
-            warning,
+            warnings: [coverageWarning, warning, coverageWarning],
             files: [makeFile({ conflict: "forceable-drift", reason: warning })],
         });
 
-        for (const message of screen.getAllByText(warning)) {
+        expect(screen.getAllByText(coverageWarning)).toHaveLength(1);
+        for (const message of [...screen.getAllByText(warning), screen.getByText(coverageWarning)]) {
             expect(message.className).toMatch(/destructive|red|rose/);
         }
-        expect(screen.getByRole("button", { name: /alpha\.ts/ }).className).toMatch(/destructive|red|rose/);
+        expect(screen.getByRole("option", { name: /alpha\.ts/ }).className).toMatch(/destructive|red|rose/);
     });
 
     it("shows an unavailable reason instead of fabricating an empty diff", () => {
