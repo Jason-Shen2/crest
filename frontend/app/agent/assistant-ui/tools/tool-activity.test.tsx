@@ -56,7 +56,17 @@ describe("ReadToolActivity", () => {
         expect(screen.queryByRole("button", { name: /Open src\/app\.ts/i })).toBeNull();
 
         fireEvent.click(trigger);
-        fireEvent.click(screen.getByRole("button", { name: "Open src/app.ts" }));
+        const fileButton = screen.getByRole("button", { name: "Open src/app.ts" });
+        const fileChip = screen.getByText("src/app.ts");
+
+        expect(fileButton.className).toContain("group/read-file");
+        expect(fileButton.className).toContain("hover:text-foreground");
+        expect(fileChip.className).toContain("bg-muted");
+        expect(fileChip.className).toContain("text-foreground/85");
+        expect(fileChip.className).toContain("group-hover/read-file:bg-accent");
+        expect(fileChip.className).toContain("group-hover/read-file:text-foreground");
+
+        fireEvent.click(fileButton);
 
         expect(trigger.getAttribute("aria-expanded")).toBe("true");
         expect(onOpenFile).toHaveBeenCalledWith("/repo/src/app.ts");

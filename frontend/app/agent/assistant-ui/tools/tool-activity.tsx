@@ -119,12 +119,12 @@ export function ReadToolActivity({
                             <button
                                 type="button"
                                 aria-label={`Open ${entry.displayPath}`}
-                                className="flex w-fit cursor-pointer items-center gap-1.5 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                className="group/read-file flex w-fit cursor-pointer items-center gap-1.5 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 key={entry.absolutePath}
                                 onClick={() => onOpenFile(entry.absolutePath)}
                             >
                                 <span>Read</span>
-                                <code className="rounded bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[0.92em] text-cyan-300">
+                                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.92em] text-foreground/85 transition-colors group-hover/read-file:bg-accent group-hover/read-file:text-foreground">
                                     {entry.displayPath}
                                 </code>
                             </button>
