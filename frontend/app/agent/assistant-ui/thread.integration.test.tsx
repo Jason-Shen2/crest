@@ -16,6 +16,7 @@ import type { FC, PropsWithChildren } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { TurnChangesContext, type TurnChangesContextValue } from "@/app/agent/rewind/turn-changes-context";
 import { Thread, __testing as registryThreadTesting, type ThreadProps } from "./registry-thread";
 
 beforeEach(() => {
@@ -108,6 +109,65 @@ function renderEmptyThread(props?: ThreadProps): string {
 }
 
 describe("Thread assistant-ui integration", () => {
+    it("renders checkpoint-backed turn changes after a completed assistant message and routes immutable file intent", async () => {
+        const openReview = vi.fn();
+        const openMutation = vi.fn();
+        const onOpenTurnFile = vi.fn();
+        const turnChanges: TurnChangesContextValue = {
+            cards: new Map([
+                [
+                    "turn-card",
+                    {
+                        summary: {
+                            turnId: "turn-card",
+                            semanticLeafId: "leaf-1",
+                            fileCount: 1,
+                            additions: 4,
+                            deletions: 2,
+                            files: [
+                                {
+                                    path: "frontend/app/card.tsx",
+                                    operation: "write",
+                                    additions: 4,
+                                    deletions: 2,
+                                },
+                            ],
+                        },
+                        action: "undo",
+                        disabled: false,
+                    },
+                ],
+            ]),
+            openReview,
+            openMutation,
+        };
+
+        render(
+            <RuntimeProvider
+                messages={[
+                    {
+                        role: "assistant",
+                        content: [{ type: "text", text: "Done." }],
+                        status: { type: "complete", reason: "stop" },
+                        metadata: { custom: { turnId: "turn-card" } },
+                    } as ThreadMessageLike,
+                ]}
+            >
+                <TurnChangesContext.Provider value={turnChanges}>
+                    <Thread onOpenTurnFile={onOpenTurnFile} />
+                </TurnChangesContext.Provider>
+            </RuntimeProvider>
+        );
+
+        expect(screen.getByText("已编辑 1 个文件")).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: /card\.tsx/ }));
+        fireEvent.click(screen.getByRole("button", { name: "审核" }));
+        fireEvent.click(screen.getByRole("button", { name: /撤销/ }));
+        expect(onOpenTurnFile).toHaveBeenCalledWith("turn-card", "frontend/app/card.tsx");
+        expect(openReview).toHaveBeenCalledWith("turn-card");
+        expect(openMutation).toHaveBeenCalledWith("turn-card");
+    });
+
     it("discovers /session and /info while keeping /resume hidden", () => {
         const byId = new Map(registryThreadTesting.SlashCommands.map((command) => [command.id, command]));
 

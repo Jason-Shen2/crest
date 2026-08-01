@@ -2,6 +2,8 @@
 "use client";
 
 import { ThreadRewindContext, useThreadRewind } from "@/app/agent/rewind/rewind-context";
+import { TurnChangesContext, type TurnChangesContextValue } from "@/app/agent/rewind/turn-changes-context";
+import { TurnFileChangesCard } from "@/app/agent/rewind/turn-file-changes-card";
 import { Button } from "@/shadcn/ui/button";
 import { cn } from "@/util/util";
 import {
@@ -110,6 +112,8 @@ export type ThreadProps = {
     hideScrollToBottom?: boolean | undefined;
     workspaceDir?: string | undefined;
     onOpenFile?: ((path: string) => void) | undefined;
+    onOpenTurnFile?: ((turnId: string, path: string) => void) | undefined;
+    turnChanges?: TurnChangesContextValue | undefined;
     revealTurnRequest?: { turnId: string; requestId: number } | undefined;
     onRevealTurnComplete?: ((request: { turnId: string; requestId: number }) => void) | undefined;
     rewindableTurnIds?: ReadonlySet<string> | undefined;
@@ -125,7 +129,10 @@ export const ComposerContext = createContext<
 >({});
 const ThreadComponentsContext = createContext<ThreadComponents>(EMPTY_COMPONENTS);
 const ThreadExtrasContext = createContext<
-    Pick<ThreadProps, "beforeComposer" | "composerAnchorRef" | "hideScrollToBottom" | "workspaceDir" | "onOpenFile">
+    Pick<
+        ThreadProps,
+        "beforeComposer" | "composerAnchorRef" | "hideScrollToBottom" | "workspaceDir" | "onOpenFile" | "onOpenTurnFile"
+    >
 >({});
 type CrestAssistantGroup =
     | "group-chainOfThought"
@@ -169,6 +176,8 @@ export const Thread: FC<ThreadProps> = ({
     hideScrollToBottom,
     workspaceDir,
     onOpenFile,
+    onOpenTurnFile,
+    turnChanges,
     revealTurnRequest,
     onRevealTurnComplete,
     rewindableTurnIds = EMPTY_REWINDABLE_TURN_IDS,
@@ -176,6 +185,8 @@ export const Thread: FC<ThreadProps> = ({
     onRevertTurn,
 }) => {
     const isEmpty = useAuiState(isNewChatView);
+    const inheritedTurnChanges = useContext(TurnChangesContext);
+    const activeTurnChanges = turnChanges ?? inheritedTurnChanges;
     const rewindContext = useMemo(
         () => ({
             rewindableTurnIds,
@@ -198,15 +209,24 @@ export const Thread: FC<ThreadProps> = ({
         <ThreadComponentsContext.Provider value={components}>
             <ComposerContext.Provider value={{ modelLabel, onOpenModelPicker, contextUsage, modelContextWindow }}>
                 <ThreadExtrasContext.Provider
-                    value={{ beforeComposer, composerAnchorRef, hideScrollToBottom, workspaceDir, onOpenFile }}
+                    value={{
+                        beforeComposer,
+                        composerAnchorRef,
+                        hideScrollToBottom,
+                        workspaceDir,
+                        onOpenFile,
+                        onOpenTurnFile,
+                    }}
                 >
                     <ThreadRewindContext.Provider value={rewindContext}>
-                        <ThreadRoot
-                            isEmpty={isEmpty}
-                            revealMessageId={revealMessageId}
-                            revealTurnRequest={revealTurnRequest}
-                            onRevealTurnComplete={onRevealTurnComplete}
-                        />
+                        <TurnChangesContext.Provider value={activeTurnChanges}>
+                            <ThreadRoot
+                                isEmpty={isEmpty}
+                                revealMessageId={revealMessageId}
+                                revealTurnRequest={revealTurnRequest}
+                                onRevealTurnComplete={onRevealTurnComplete}
+                            />
+                        </TurnChangesContext.Provider>
                     </ThreadRewindContext.Provider>
                 </ThreadExtrasContext.Provider>
             </ComposerContext.Provider>
@@ -1017,7 +1037,10 @@ const AssistantMessage: FC = () => {
         ToolGroup,
         ReasoningGroup,
     } = useContext(ThreadComponentsContext);
-    const { workspaceDir = "", onOpenFile } = useContext(ThreadExtrasContext);
+    const { workspaceDir = "", onOpenFile, onOpenTurnFile } = useContext(ThreadExtrasContext);
+    const turnChanges = useContext(TurnChangesContext);
+    const turnId = useAuiState((state) => (state.message.metadata.custom as { turnId?: string } | undefined)?.turnId);
+    const turnCard = turnId ? turnChanges?.cards.get(turnId) : undefined;
     const contextProjection = useAuiState(
         (state) =>
             (state.message.metadata.custom as { contextProjection?: AgentContextProjectionReportView } | undefined)
@@ -1112,6 +1135,20 @@ const AssistantMessage: FC = () => {
                 </MessagePrimitive.GroupedParts>
                 <MessageError />
             </div>
+
+            {turnId && turnCard && (
+                <div data-slot="aui_assistant-message-turn-changes" className="mx-2 mt-3">
+                    <TurnFileChangesCard
+                        summary={turnCard.summary}
+                        action={turnCard.action}
+                        disabled={turnCard.disabled}
+                        onOpenFile={(path) => onOpenTurnFile?.(turnId, path)}
+                        onReview={() => void turnChanges?.openReview(turnId)}
+                        onUndo={() => void turnChanges?.openMutation(turnId)}
+                        onRedo={() => void turnChanges?.openMutation(turnId)}
+                    />
+                </div>
+            )}
 
             <div data-slot="aui_assistant-message-footer" className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}>
                 <BranchPicker />

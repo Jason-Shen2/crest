@@ -36,6 +36,10 @@ const rewindDialogProps = vi.hoisted(() => ({
     latest: null as any,
 }));
 
+const turnDialogProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
 const recoveryDialogProps = vi.hoisted(() => ({
     latest: null as any,
 }));
@@ -142,7 +146,11 @@ vi.mock("./rewind/rewind-selector", () => ({
 
 vi.mock("./rewind/diff-review-dialog", () => ({
     DiffReviewDialog: (props: any) => {
-        rewindDialogProps.latest = props;
+        if (props.title.toLowerCase().includes("turn")) {
+            turnDialogProps.latest = props;
+        } else {
+            rewindDialogProps.latest = props;
+        }
         return props.open ? (
             <div data-testid="rewind-preview">
                 <span>{`${props.title}:${props.loading ? "loading" : "ready"}`}</span>
@@ -283,6 +291,32 @@ function makeRewindClient(overrides: Record<string, unknown> = {}) {
             semanticLeafId: "leaf-redone",
             displayLeafId: "turn-redone",
         })),
+        getTurnChangeSummary: vi.fn(async (input: AgentTurnTargetInput) => ({
+            turnId: input.turnId,
+            semanticLeafId: "leaf-a",
+            fileCount: 1,
+            additions: 4,
+            deletions: 2,
+            files: [{ path: "frontend/card.tsx", operation: "write", additions: 4, deletions: 2 }],
+        })),
+        reviewTurnChanges: vi.fn(async (input: AgentTurnTargetInput) => ({
+            turnId: input.turnId,
+            semanticLeafId: "leaf-a",
+            files: [
+                {
+                    path: "frontend/card.tsx",
+                    operation: "write",
+                    additions: 4,
+                    deletions: 2,
+                    conflict: "none",
+                    diff: "@@ -1 +1 @@\n-old\n+new",
+                },
+            ],
+        })),
+        previewTurnUndo: vi.fn(),
+        previewTurnRedo: vi.fn(),
+        applyTurnUndo: vi.fn(),
+        applyTurnRedo: vi.fn(),
         getWorkspaceRecovery: vi.fn(async () => undefined),
         resolveWorkspaceRecovery: vi.fn(async () => undefined),
         cleanupWorkspaceCheckpoints: vi.fn(async () => ({
@@ -355,6 +389,7 @@ afterEach(async () => {
     threadProps.latest = null;
     rewindSelectorProps.latest = null;
     rewindDialogProps.latest = null;
+    turnDialogProps.latest = null;
     recoveryDialogProps.latest = null;
     quotaBannerProps.latest = null;
     quotaDialogProps.latest = null;
@@ -365,6 +400,41 @@ afterEach(async () => {
 });
 
 describe("AgentContent", () => {
+    it("provides completed turn cards and opens forward review in the shared diff dialog", async () => {
+        const { client } = renderRewindContent();
+        act(() => {
+            hostProps.latest.onTurnsChange([
+                {
+                    turnId: "turn-a",
+                    responseMessages: [],
+                    status: "done",
+                },
+            ]);
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    turnChanges: [{ turnId: "turn-a", action: "undo" }],
+                }),
+            });
+        });
+
+        await waitFor(() => expect(threadProps.latest.turnChanges.cards.has("turn-a")).toBe(true));
+        await act(async () => threadProps.latest.turnChanges.openReview("turn-a"));
+
+        expect(client.reviewTurnChanges).toHaveBeenCalledWith({
+            sessionMetadata: expect.objectContaining({ path: "/sessions/a.db" }),
+            expectedSemanticLeafId: "leaf-a",
+            turnId: "turn-a",
+        });
+        expect(turnDialogProps.latest.title).toBe("Review turn changes");
+        expect(turnDialogProps.latest.description).toBe("Red was removed · Green was added");
+        expect(turnDialogProps.latest.files[0].diff).toContain("-old\n+new");
+        expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+        expect(screen.queryByRole("button", { name: /Undo .*file/ })).toBeNull();
+    });
+
     it("freezes writes and renders only authoritative recovery actions until session_state thaws", async () => {
         const recovery: AgentWorkspaceRecoveryView = {
             operationId: "operation-frozen",

@@ -46,6 +46,7 @@ import { RecoveryDialog } from "./rewind/recovery-dialog";
 import { RedoDock } from "./rewind/redo-dock";
 import { RewindSelector } from "./rewind/rewind-selector";
 import { useAgentRewind } from "./rewind/use-agent-rewind";
+import { useAgentTurnChanges } from "./rewind/use-agent-turn-changes";
 
 export interface AgentContentProps {
     model: WorkspaceAgentModel;
@@ -623,6 +624,15 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         onEditorText,
         onError: onUserError,
     });
+    const turnChangesController = useAgentTurnChanges({
+        client,
+        sessionMetadata: agentStateValue.activeSession,
+        sessionRevision,
+        rewindState: hostState.rewindState,
+        turns: agentTurns,
+        running: hostState.status === "streaming",
+        onError: onUserError,
+    });
     const recoveryFrozen = hostState.rewindState.frozen;
     const rewindPreview = rewindController.preview.result;
     const rewindDialogLocked = rewindController.busy;
@@ -956,9 +966,14 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         sessionRevision={sessionRevision}
                     />
                     <Thread
+                        turnChanges={turnChangesController}
                         modelLabel={modelDisplayLabel}
                         onOpenModelPicker={() =>
-                            setAttachedPanelState({ commandResults: [], selectorRequest: null, modelPickerOpen: true })
+                            setAttachedPanelState({
+                                commandResults: [],
+                                selectorRequest: null,
+                                modelPickerOpen: true,
+                            })
                         }
                         modelContextWindow={resolved.resolvedAIConfig?.contextwindow}
                         contextUsage={contextUsage}
@@ -1172,6 +1187,88 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         onSelectedPathChange={setRewindSelectedPath}
                         onOpenChange={(open) => {
                             if (!open) rewindController.cancelPreview();
+                        }}
+                    />
+                    <DiffReviewDialog
+                        open={turnChangesController.dialog.open}
+                        title={
+                            turnChangesController.dialog.kind === "review"
+                                ? "Review turn changes"
+                                : turnChangesController.dialog.kind === "undo"
+                                  ? "Undo turn changes?"
+                                  : "Redo turn changes?"
+                        }
+                        description={
+                            turnChangesController.dialog.kind === "undo"
+                                ? "Red will be removed · Green will be restored"
+                                : "Red was removed · Green was added"
+                        }
+                        files={turnChangesController.dialog.files}
+                        selectedPath={turnChangesController.dialog.selectedPath}
+                        loading={turnChangesController.dialog.phase === "loading"}
+                        errorMessage={turnChangesController.dialog.errorMessage}
+                        warnings={turnChangesController.dialog.preview?.coverageWarnings ?? []}
+                        locked={
+                            turnChangesController.dialog.phase === "applying" ||
+                            turnChangesController.awaitingAuthoritativeAck
+                        }
+                        emptyMessage="No workspace files will change."
+                        footer={
+                            turnChangesController.dialog.kind === "review" ? (
+                                <Button
+                                    className="cursor-pointer"
+                                    variant="outline"
+                                    onClick={turnChangesController.closeDialog}
+                                >
+                                    Close
+                                </Button>
+                            ) : (
+                                <>
+                                    <Button
+                                        className="cursor-pointer"
+                                        variant="outline"
+                                        disabled={
+                                            turnChangesController.dialog.phase === "applying" ||
+                                            turnChangesController.awaitingAuthoritativeAck
+                                        }
+                                        onClick={turnChangesController.closeDialog}
+                                    >
+                                        Cancel
+                                    </Button>
+                                    {turnChangesController.dialog.phase === "ready" &&
+                                        !turnChangesController.dialog.preview?.hardBlocked &&
+                                        turnChangesController.dialog.kind === "undo" &&
+                                        turnChangesController.dialog.preview?.forceRequired && (
+                                            <Button
+                                                className="cursor-pointer"
+                                                variant="destructive"
+                                                onClick={() =>
+                                                    void turnChangesController.confirmMutation("force-drift")
+                                                }
+                                            >
+                                                Force undo
+                                            </Button>
+                                        )}
+                                    {turnChangesController.dialog.phase === "ready" &&
+                                        !turnChangesController.dialog.preview?.hardBlocked &&
+                                        !turnChangesController.dialog.preview?.forceRequired && (
+                                            <Button
+                                                className="cursor-pointer"
+                                                onClick={() => void turnChangesController.confirmMutation("normal")}
+                                            >
+                                                {turnChangesController.dialog.kind === "undo" ? "Undo" : "Redo"}{" "}
+                                                {turnChangesController.dialog.preview?.fileCount ?? 0}{" "}
+                                                {(turnChangesController.dialog.preview?.fileCount ?? 0) === 1
+                                                    ? "file"
+                                                    : "files"}
+                                            </Button>
+                                        )}
+                                </>
+                            )
+                        }
+                        onSelectedPathChange={turnChangesController.selectDialogPath}
+                        onOpenChange={(open) => {
+                            if (!open) turnChangesController.closeDialog();
                         }}
                     />
                     <RecoveryDialog
