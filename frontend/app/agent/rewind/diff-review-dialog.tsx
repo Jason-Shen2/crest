@@ -172,7 +172,8 @@ export function DiffReviewDialog({
     const selectedFile = files.find((file) => file.path === selectedPath) ?? files[0];
     const selectedIndex = selectedFile ? files.indexOf(selectedFile) : -1;
     const optionId = (index: number) => `diff-review-file-${index}`;
-    const uniqueWarnings = [...new Set(warnings.filter(Boolean))];
+    const fileReasons = new Set(files.flatMap((file) => (file.reason ? [file.reason] : [])));
+    const uniqueWarnings = [...new Set(warnings.filter((warning) => warning && !fileReasons.has(warning)))];
     const onFileListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
         if (files.length === 0) return;

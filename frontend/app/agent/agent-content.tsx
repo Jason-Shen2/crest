@@ -636,11 +636,9 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         !rewindPreview.forceRequired;
     const rewindFileCount = rewindPreview?.fileCount ?? 0;
     const rewindFileLabel = `${rewindFileCount} ${rewindFileCount === 1 ? "file" : "files"}`;
-    const rewindWarnings = [
-        ...(rewindPreview?.coverageWarnings ?? []),
-        ...(rewindPreview?.files.flatMap((file) => (file.conflict !== "none" && file.reason ? [file.reason] : [])) ??
-            []),
-    ].filter((warning, index, allWarnings) => allWarnings.indexOf(warning) === index);
+    const rewindWarnings = (rewindPreview?.coverageWarnings ?? []).filter(
+        (warning, index, allWarnings) => allWarnings.indexOf(warning) === index
+    );
 
     useEffect(() => {
         setRewindSelectedPath(undefined);

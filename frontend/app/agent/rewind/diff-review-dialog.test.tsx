@@ -171,7 +171,8 @@ describe("DiffReviewDialog", () => {
         });
 
         expect(screen.getAllByText(coverageWarning)).toHaveLength(1);
-        for (const message of [...screen.getAllByText(warning), screen.getByText(coverageWarning)]) {
+        expect(screen.getAllByText(warning)).toHaveLength(1);
+        for (const message of [screen.getByText(warning), screen.getByText(coverageWarning)]) {
             expect(message.className).toMatch(/destructive|red|rose/);
         }
         expect(screen.getByRole("option", { name: /alpha\.ts/ }).className).toMatch(/destructive|red|rose/);

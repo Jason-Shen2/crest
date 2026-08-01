@@ -150,6 +150,9 @@ vi.mock("./rewind/diff-review-dialog", () => ({
                 {props.warnings?.map((warning: string) => (
                     <span key={warning}>{warning}</span>
                 ))}
+                {props.files?.map((file: AgentRewindFileRowView) =>
+                    file.reason ? <span key={`${file.path}:${file.reason}`}>{file.reason}</span> : null
+                )}
                 {props.footer}
             </div>
         ) : null;
@@ -991,11 +994,7 @@ describe("AgentContent", () => {
                 { kind: "rewind", targetTurnId: "turn-a" },
                 {
                     forceRequired: true,
-                    coverageWarnings: [
-                        "checkpoint excluded a socket",
-                        "checkpoint excluded generated output",
-                        "files changed on disk since the agent last wrote them",
-                    ],
+                    coverageWarnings: ["checkpoint excluded a socket", "checkpoint excluded generated output"],
                     files: [
                         {
                             path: "src/drift.ts",
