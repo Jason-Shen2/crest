@@ -131,10 +131,18 @@ export async function projectWorkspacePathDiff(
 
     const originalContent = beforeText.content!;
     const modifiedContent = afterText.content!;
+    let counts: { additions: number; deletions: number };
+    let diff: string;
+    try {
+        counts = lineCounts(originalContent, modifiedContent);
+        diff = Diff.createTwoFilesPatch(input.path, input.path, originalContent, modifiedContent);
+    } catch {
+        return unavailable(row, "diff preview is unavailable", "unavailable");
+    }
     return {
         ...row,
-        ...lineCounts(originalContent, modifiedContent),
-        diff: Diff.createTwoFilesPatch(input.path, input.path, originalContent, modifiedContent),
+        ...counts,
+        diff,
         originalContent,
         modifiedContent,
     };

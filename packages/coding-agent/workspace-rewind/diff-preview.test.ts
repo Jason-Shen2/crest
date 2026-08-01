@@ -1,13 +1,38 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi } from "vitest";
+import * as Diff from "diff";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AgentRewindFileOperation, AgentRewindFileRowView } from "./api-types";
 import { projectWorkspacePathDiff, WorkspaceDiffPreviewBudget, WorkspaceDiffPreviewLimits } from "./diff-preview";
 import type { CapturedPathStateV1 } from "./types";
 
+vi.mock("diff", async (importOriginal) => {
+    const original = await importOriginal<typeof import("diff")>();
+    return {
+        ...original,
+        createTwoFilesPatch: vi.fn(original.createTwoFilesPatch),
+        diffLines: vi.fn(original.diffLines),
+    };
+});
+
 const BeforeOid = "a".repeat(40);
 const AfterOid = "b".repeat(40);
+const CheckpointChange = {
+    path: "direction.txt",
+    before: { state: "file", oid: BeforeOid, executable: false },
+    after: { state: "file", oid: AfterOid, executable: false },
+} as const;
+
+const LegacyRenameOperation: AgentRewindFileOperation = "rename";
+const LegacyRenameRow: AgentRewindFileRowView = {
+    path: "new-name.txt",
+    oldPath: "old-name.txt",
+    operation: LegacyRenameOperation,
+    coverage: "covered",
+    conflict: "none",
+};
 
 function fileState(oid: string): CapturedPathStateV1 {
     return { state: "file", oid, executable: false };
@@ -21,7 +46,24 @@ function readBlobs(blobs: Record<string, Buffer | string>) {
     });
 }
 
+function statesForDirection(action: "Review" | "Revert" | "Undo" | "Redo") {
+    if (action === "Review" || action === "Redo") {
+        return { before: CheckpointChange.before, after: CheckpointChange.after };
+    }
+    return { before: CheckpointChange.after, after: CheckpointChange.before };
+}
+
 describe("projectWorkspacePathDiff", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("preserves the existing rename row API", () => {
+        expect(LegacyRenameRow).toMatchObject({
+            path: "new-name.txt",
+            oldPath: "old-name.txt",
+            operation: "rename",
+        });
+    });
+
     it.each([
         {
             name: "file to file",
@@ -77,24 +119,38 @@ describe("projectWorkspacePathDiff", () => {
         expect(row.diff).toContain(value.added);
     });
 
-    it.each([
-        { action: "Review", before: "before review\n", after: "after review\n" },
-        { action: "Revert", before: "after revert\n", after: "before revert\n" },
-        { action: "Undo", before: "after undo\n", after: "before undo\n" },
-        { action: "Redo", before: "before redo\n", after: "after redo\n" },
-    ])("uses the supplied immutable direction for $action", async ({ before, after }) => {
-        const row = await projectWorkspacePathDiff({
-            path: "direction.txt",
-            before: fileState(BeforeOid),
-            after: fileState(AfterOid),
-            readBlob: readBlobs({ [BeforeOid]: before, [AfterOid]: after }),
-            budget: new WorkspaceDiffPreviewBudget(),
-        });
+    it("maps Review and Redo forward, and Revert and Undo in reverse", async () => {
+        const blobs = { [BeforeOid]: "checkpoint A\n", [AfterOid]: "checkpoint B\n" };
+        const rows = new Map<string, Awaited<ReturnType<typeof projectWorkspacePathDiff>>>();
+        for (const action of ["Review", "Revert", "Undo", "Redo"] as const) {
+            const direction = statesForDirection(action);
+            rows.set(
+                action,
+                await projectWorkspacePathDiff({
+                    path: CheckpointChange.path,
+                    before: direction.before,
+                    after: direction.after,
+                    readBlob: readBlobs(blobs),
+                    budget: new WorkspaceDiffPreviewBudget(),
+                })
+            );
+        }
 
-        expect(row.diff).toContain(`-${before.trimEnd()}`);
-        expect(row.diff).toContain(`+${after.trimEnd()}`);
-        expect(row.originalContent).toBe(before);
-        expect(row.modifiedContent).toBe(after);
+        for (const action of ["Review", "Redo"]) {
+            expect(rows.get(action)?.diff).toContain("-checkpoint A");
+            expect(rows.get(action)?.diff).toContain("+checkpoint B");
+            expect(rows.get(action)?.originalContent).toBe("checkpoint A\n");
+            expect(rows.get(action)?.modifiedContent).toBe("checkpoint B\n");
+        }
+        for (const action of ["Revert", "Undo"]) {
+            expect(rows.get(action)?.diff).toContain("-checkpoint B");
+            expect(rows.get(action)?.diff).toContain("+checkpoint A");
+            expect(rows.get(action)?.originalContent).toBe("checkpoint B\n");
+            expect(rows.get(action)?.modifiedContent).toBe("checkpoint A\n");
+        }
+        expect(rows.get("Review")?.diff).toBe(rows.get("Redo")?.diff);
+        expect(rows.get("Revert")?.diff).toBe(rows.get("Undo")?.diff);
+        expect(rows.get("Review")?.diff).not.toBe(rows.get("Revert")?.diff);
     });
 
     it("strictly decodes UTF-8 from snapshot blobs", async () => {
@@ -261,5 +317,37 @@ describe("projectWorkspacePathDiff", () => {
         expect(healthyRow).toMatchObject({ path: "healthy.txt", additions: 1, deletions: 1 });
         expect(healthyRow.diff).toContain("-old");
         expect(healthyRow.diff).toContain("+new");
+    });
+
+    it.each([
+        { name: "line statistics", method: "diffLines" as const },
+        { name: "patch generation", method: "createTwoFilesPatch" as const },
+    ])("contains a $name failure to its row", async ({ method }) => {
+        const fail = () => {
+            throw new Error("sensitive diff implementation detail");
+        };
+        if (method === "diffLines") {
+            vi.mocked(Diff.diffLines).mockImplementationOnce(fail);
+        } else {
+            vi.mocked(Diff.createTwoFilesPatch).mockImplementationOnce(fail);
+        }
+
+        const row = await projectWorkspacePathDiff({
+            path: "diff-error.txt",
+            before: fileState(BeforeOid),
+            after: fileState(AfterOid),
+            readBlob: readBlobs({ [BeforeOid]: "old\n", [AfterOid]: "new\n" }),
+            budget: new WorkspaceDiffPreviewBudget(),
+        });
+
+        expect(row).toMatchObject({
+            path: "diff-error.txt",
+            operation: "write",
+            coverage: "unavailable",
+            conflict: "none",
+            previewUnavailableReason: "diff preview is unavailable",
+        });
+        expect(row.previewUnavailableReason).not.toContain("sensitive diff implementation detail");
+        expect(row).not.toHaveProperty("diff");
     });
 });

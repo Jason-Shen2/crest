@@ -4,7 +4,7 @@
 import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
 
 export type AgentRewindConflictClass = "none" | "forceable-drift" | "hard-blocker";
-export type AgentRewindFileOperation = "create" | "write" | "delete";
+export type AgentRewindFileOperation = "create" | "write" | "delete" | "rename";
 
 export interface AgentRewindPointView {
     turnId: string;
@@ -26,6 +26,7 @@ export interface AgentListRewindPointsResult {
 
 export interface AgentRewindFileRowView {
     path: string;
+    oldPath?: string;
     operation: AgentRewindFileOperation;
     additions?: number;
     deletions?: number;
