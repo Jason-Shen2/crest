@@ -99,29 +99,38 @@ export type WorkspaceCheckpointV1 =
           coverage?: WorkspaceSnapshotCoverage;
       };
 
-export interface WorkspaceStateV1 {
+export interface WorkspaceRewindStateV1 {
+    fromLeafId: string | null;
+    targetTurnId: string;
+    targetBoundaryId: string | null;
+    redoSnapshot: WorkspaceSnapshotRefV1;
+    redoStates: Array<{ path: string; state: CapturedPathStateV1 }>;
+}
+
+export interface WorkspaceStateBaseV1 {
     schemaVersion: 1;
     sessionId: string;
     operationId: string;
     workspaceIdentity: string;
     workspaceIncarnation: string;
-    kind: "rewind" | "redo";
     applyMode: "normal" | "force-drift";
     forcedPaths: string[];
     currentSnapshot: WorkspaceSnapshotRefV1;
     currentStates: Array<{ path: string; state: CapturedPathStateV1 }>;
-    rewind?: {
-        fromLeafId: string | null;
-        targetTurnId: string;
-        targetBoundaryId: string | null;
-        redoSnapshot: WorkspaceSnapshotRefV1;
-        redoStates: Array<{ path: string; state: CapturedPathStateV1 }>;
-    };
 }
+
+export type WorkspaceStateV1 = WorkspaceStateBaseV1 &
+    (
+        | { kind: "rewind"; rewind: WorkspaceRewindStateV1 }
+        | { kind: "redo" }
+        | { kind: "turn-undo"; sourceTurnId: string }
+        | { kind: "turn-redo"; sourceTurnId: string; undoOperationId: string }
+    );
 
 export interface FoldedWorkspaceSessionState {
     checkpointsByTurnId: ReadonlyMap<string, WorkspaceCheckpointV1>;
     activeWorkspaceState?: WorkspaceStateV1;
+    turnMutationsByTurnId: ReadonlyMap<string, { action: "undo" } | { action: "redo"; undoOperationId: string }>;
     semanticLeafId: string | null;
     displayLeafId: string | null;
     eligibleTurnIds: string[];

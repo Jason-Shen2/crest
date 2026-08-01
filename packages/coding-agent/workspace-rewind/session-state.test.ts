@@ -16,6 +16,7 @@ import { WorkspaceControlCustomTypes } from "./types";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
+const OidC = "c".repeat(40);
 
 function message(id: string, parentId: string | null, role: "user" | "assistant"): SessionTreeEntry {
     return {
@@ -95,6 +96,46 @@ function workspaceState(sessionId = "session-1", kind: "rewind" | "redo" = "rewi
         forcedPaths: [],
         currentSnapshot: snapshot(OidA),
         currentStates: [],
+        ...(kind === "rewind"
+            ? {
+                  rewind: {
+                      fromLeafId: "leaf-1",
+                      targetTurnId: "u1",
+                      targetBoundaryId: null,
+                      redoSnapshot: snapshot(OidB),
+                      redoStates: [],
+                  },
+              }
+            : {}),
+    };
+}
+
+function turnState(
+    kind: "turn-undo" | "turn-redo",
+    sourceTurnId: string,
+    operationId: string,
+    sessionId = "session-1",
+    undoOperationId?: string
+) {
+    return {
+        ...workspaceState(sessionId, "redo"),
+        operationId,
+        kind,
+        sourceTurnId,
+        ...(undoOperationId == null ? {} : { undoOperationId }),
+    };
+}
+
+function changedCheckpoint(turnId: string) {
+    return {
+        ...checkpoint(turnId),
+        changes: [
+            {
+                path: `${turnId}.txt`,
+                before: { state: "absent" },
+                after: { state: "file", oid: OidA, executable: false },
+            },
+        ],
     };
 }
 
@@ -123,6 +164,7 @@ describe("workspace rewind session state", () => {
 
         expect(verifySnapshot).toHaveBeenCalledTimes(2);
         expect(view.eligibleTurnIds).toEqual([]);
+        expect(view.turnChanges).toEqual([]);
         expect(view.quota.usedBytes).toBe(10);
         expect(view.semanticLeafId).toBe("c1");
         expect(view.displayLeafId).toBe("a1");
@@ -260,6 +302,170 @@ describe("workspace rewind session state", () => {
         expect(folded.activeWorkspaceState).toEqual(workspaceState("session-1", "rewind"));
         expect(folded.semanticLeafId).toBe("malformed");
         expect(folded.displayLeafId).toBe("u1");
+    });
+
+    it("folds the last valid marker per source turn on only the active branch", () => {
+        const u1 = message("u1", null, "user");
+        const c1 = custom("c1", u1.id, WorkspaceControlCustomTypes.checkpoint, changedCheckpoint(u1.id));
+        const u2 = message("u2", c1.id, "user");
+        const c2 = custom("c2", u2.id, WorkspaceControlCustomTypes.checkpoint, changedCheckpoint(u2.id));
+        const undo1 = custom(
+            "undo-1",
+            c2.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", u1.id, "undo-operation-1")
+        );
+        const undo2 = custom(
+            "undo-2",
+            undo1.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", u2.id, "undo-operation-2")
+        );
+        const redo1 = custom(
+            "redo-1",
+            undo2.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-redo", u1.id, "redo-operation-1", "session-1", "undo-operation-1")
+        );
+        const wrongReference = custom(
+            "wrong-reference",
+            redo1.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-redo", u2.id, "redo-operation-2", "session-1", "other-undo-operation")
+        );
+        const crossSession = custom(
+            "cross-session",
+            wrongReference.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", u1.id, "cross-session-operation", "session-2")
+        );
+        const abandoned = custom(
+            "abandoned",
+            c2.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-redo", u2.id, "abandoned-redo", "session-1", "undo-operation-2")
+        );
+
+        const folded = foldWorkspaceSessionState(
+            [
+                u1,
+                c1,
+                u2,
+                c2,
+                undo1,
+                undo2,
+                redo1,
+                wrongReference,
+                crossSession,
+                abandoned,
+                leaf("leaf", crossSession.id, crossSession.id),
+            ],
+            "session-1"
+        );
+
+        expect([...folded.turnMutationsByTurnId]).toEqual([
+            [u1.id, { action: "undo" }],
+            [u2.id, { action: "redo", undoOperationId: "undo-operation-2" }],
+        ]);
+    });
+
+    it("keeps multiple source turns independently undone", () => {
+        const u1 = message("u1", null, "user");
+        const c1 = custom("c1", u1.id, WorkspaceControlCustomTypes.checkpoint, changedCheckpoint(u1.id));
+        const u2 = message("u2", c1.id, "user");
+        const c2 = custom("c2", u2.id, WorkspaceControlCustomTypes.checkpoint, changedCheckpoint(u2.id));
+        const undo1 = custom(
+            "undo-1",
+            c2.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", u1.id, "undo-operation-1")
+        );
+        const undo2 = custom(
+            "undo-2",
+            undo1.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", u2.id, "undo-operation-2")
+        );
+
+        const folded = foldWorkspaceSessionState([u1, c1, u2, c2, undo1, undo2], "session-1");
+
+        expect([...folded.turnMutationsByTurnId]).toEqual([
+            [u1.id, { action: "redo", undoOperationId: "undo-operation-1" }],
+            [u2.id, { action: "redo", undoOperationId: "undo-operation-2" }],
+        ]);
+    });
+
+    it("publishes turn actions only for readable non-empty available checkpoints", async () => {
+        const missing = message("missing", null, "user");
+        const unavailable = message("unavailable", missing.id, "user");
+        const unavailableEntry = custom(
+            "unavailable-checkpoint",
+            unavailable.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            checkpoint(unavailable.id, "unavailable")
+        );
+        const empty = message("empty", unavailableEntry.id, "user");
+        const emptyCheckpoint = custom(
+            "empty-checkpoint",
+            empty.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            checkpoint(empty.id)
+        );
+        const readable = message("readable", emptyCheckpoint.id, "user");
+        const readableCheckpoint = custom(
+            "readable-checkpoint",
+            readable.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            changedCheckpoint(readable.id)
+        );
+        const unreadable = message("unreadable", readableCheckpoint.id, "user");
+        const unreadableCheckpoint = custom(
+            "unreadable-checkpoint",
+            unreadable.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            { ...changedCheckpoint(unreadable.id), after: snapshot(OidC) }
+        );
+        const undo = custom(
+            "undo-readable",
+            unreadableCheckpoint.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", readable.id, "undo-readable-operation")
+        );
+
+        const view = await buildAgentRewindSessionStateView(
+            [
+                missing,
+                unavailable,
+                unavailableEntry,
+                empty,
+                emptyCheckpoint,
+                readable,
+                readableCheckpoint,
+                unreadable,
+                unreadableCheckpoint,
+                undo,
+            ],
+            "session-1",
+            {
+                enabled: true,
+                busy: false,
+                frozen: false,
+                verifySnapshot: async (ref) => {
+                    if (ref.id === OidC) throw new Error("missing object");
+                },
+                getQuota: async () => ({
+                    status: "ok",
+                    usedBytes: 0,
+                    softQuotaBytes: 100,
+                    cleanupAvailable: false,
+                }),
+            }
+        );
+
+        expect(view.eligibleTurnIds).toEqual([empty.id, readable.id]);
+        expect(view.turnChanges).toEqual([
+            { turnId: readable.id, action: "redo", undoOperationId: "undo-readable-operation" },
+        ]);
     });
 
     it("ends the previous turn before the next committed context transaction prefix", () => {

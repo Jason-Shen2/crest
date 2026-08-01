@@ -9,6 +9,7 @@ import type {
     WorkspacePathChangeV1,
     WorkspaceSnapshotCoverage,
     WorkspaceSnapshotRefV1,
+    WorkspaceStateBaseV1,
     WorkspaceStateV1,
 } from "./types";
 
@@ -419,30 +420,25 @@ export function decodeWorkspaceCheckpointV1(value: unknown): WorkspaceCheckpoint
 }
 
 export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undefined {
+    const baseKeys = [
+        "schemaVersion",
+        "sessionId",
+        "operationId",
+        "workspaceIdentity",
+        "workspaceIncarnation",
+        "kind",
+        "applyMode",
+        "forcedPaths",
+        "currentSnapshot",
+        "currentStates",
+    ];
     if (
         !isRecord(value) ||
-        !hasExactKeys(
-            value,
-            [
-                "schemaVersion",
-                "sessionId",
-                "operationId",
-                "workspaceIdentity",
-                "workspaceIncarnation",
-                "kind",
-                "applyMode",
-                "forcedPaths",
-                "currentSnapshot",
-                "currentStates",
-            ],
-            ["rewind"]
-        ) ||
         value.schemaVersion !== 1 ||
         typeof value.sessionId !== "string" ||
         typeof value.operationId !== "string" ||
         typeof value.workspaceIdentity !== "string" ||
         typeof value.workspaceIncarnation !== "string" ||
-        (value.kind !== "rewind" && value.kind !== "redo") ||
         (value.applyMode !== "normal" && value.applyMode !== "force-drift")
     ) {
         return undefined;
@@ -453,8 +449,21 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
     if (!forcedPaths || !currentSnapshot || !currentStates) {
         return undefined;
     }
-    let rewind: WorkspaceStateV1["rewind"];
-    if (Object.hasOwn(value, "rewind")) {
+    const base: WorkspaceStateBaseV1 = {
+        schemaVersion: 1,
+        sessionId: value.sessionId,
+        operationId: value.operationId,
+        workspaceIdentity: value.workspaceIdentity,
+        workspaceIncarnation: value.workspaceIncarnation,
+        applyMode: value.applyMode,
+        forcedPaths,
+        currentSnapshot,
+        currentStates,
+    };
+    if (value.kind === "rewind") {
+        if (!hasExactKeys(value, [...baseKeys, "rewind"])) {
+            return undefined;
+        }
         const rewindValue = value.rewind;
         if (
             !isRecord(rewindValue) ||
@@ -478,25 +487,41 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
         if (!redoSnapshot || !redoStates) {
             return undefined;
         }
-        rewind = {
-            fromLeafId,
-            targetTurnId: rewindValue.targetTurnId,
-            targetBoundaryId,
-            redoSnapshot,
-            redoStates,
+        return {
+            ...base,
+            kind: "rewind",
+            rewind: {
+                fromLeafId,
+                targetTurnId: rewindValue.targetTurnId,
+                targetBoundaryId,
+                redoSnapshot,
+                redoStates,
+            },
         };
     }
-    return {
-        schemaVersion: 1,
-        sessionId: value.sessionId,
-        operationId: value.operationId,
-        workspaceIdentity: value.workspaceIdentity,
-        workspaceIncarnation: value.workspaceIncarnation,
-        kind: value.kind,
-        applyMode: value.applyMode,
-        forcedPaths,
-        currentSnapshot,
-        currentStates,
-        ...(rewind == null ? {} : { rewind }),
-    };
+    if (value.kind === "redo") {
+        return hasExactKeys(value, baseKeys) ? { ...base, kind: "redo" } : undefined;
+    }
+    if (value.kind === "turn-undo") {
+        if (!hasExactKeys(value, [...baseKeys, "sourceTurnId"]) || typeof value.sourceTurnId !== "string") {
+            return undefined;
+        }
+        return { ...base, kind: "turn-undo", sourceTurnId: value.sourceTurnId };
+    }
+    if (value.kind === "turn-redo") {
+        if (
+            !hasExactKeys(value, [...baseKeys, "sourceTurnId", "undoOperationId"]) ||
+            typeof value.sourceTurnId !== "string" ||
+            typeof value.undoOperationId !== "string"
+        ) {
+            return undefined;
+        }
+        return {
+            ...base,
+            kind: "turn-redo",
+            sourceTurnId: value.sourceTurnId,
+            undoOperationId: value.undoOperationId,
+        };
+    }
+    return undefined;
 }

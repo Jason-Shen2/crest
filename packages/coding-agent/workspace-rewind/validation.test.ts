@@ -83,14 +83,13 @@ function unavailableCheckpoint() {
     };
 }
 
-function workspaceState(kind: "rewind" | "redo" = "rewind") {
+function workspaceStateBase() {
     return {
         schemaVersion: 1,
         sessionId: "session-1",
         operationId: "operation-1",
         workspaceIdentity: "workspace-1",
         workspaceIncarnation: "incarnation-1",
-        kind,
         applyMode: "normal",
         forcedPaths: ["src/forced.ts"],
         currentSnapshot: snapshot(OidA),
@@ -98,13 +97,43 @@ function workspaceState(kind: "rewind" | "redo" = "rewind") {
             { path: "src/index.ts", state: { state: "file", oid: OidA, executable: true } },
             { path: "deleted.txt", state: { state: "absent" } },
         ],
-        rewind: {
-            fromLeafId: "leaf-1",
-            targetTurnId: "turn-1",
-            targetBoundaryId: null,
-            redoSnapshot: snapshot(OidB),
-            redoStates: [{ path: "src/index.ts", state: { state: "symlink", oid: OidB } }],
-        },
+    };
+}
+
+function workspaceState(kind: "rewind" | "redo" = "rewind") {
+    return {
+        ...workspaceStateBase(),
+        kind,
+        ...(kind === "rewind"
+            ? {
+                  rewind: {
+                      fromLeafId: "leaf-1",
+                      targetTurnId: "turn-1",
+                      targetBoundaryId: null,
+                      redoSnapshot: snapshot(OidB),
+                      redoStates: [{ path: "src/index.ts", state: { state: "symlink", oid: OidB } }],
+                  },
+              }
+            : {}),
+    };
+}
+
+function turnState(kind: "turn-undo" | "turn-redo") {
+    return {
+        ...workspaceStateBase(),
+        kind,
+        sourceTurnId: "turn-1",
+        ...(kind === "turn-redo" ? { undoOperationId: "undo-operation-1" } : {}),
+    };
+}
+
+function rewindPayload() {
+    return {
+        fromLeafId: "leaf-1",
+        targetTurnId: "turn-1",
+        targetBoundaryId: null,
+        redoSnapshot: snapshot(OidB),
+        redoStates: [{ path: "src/index.ts", state: { state: "symlink", oid: OidB } }],
     };
 }
 
@@ -165,12 +194,38 @@ describe("workspace rewind validation", () => {
         expect(decodeWorkspaceCheckpointV1(checkpoint)).toEqual(checkpoint);
     });
 
-    it("decodes rewind and redo workspace states without changing their values", () => {
+    it("decodes every strict workspace state variant without changing its value", () => {
         const rewind = workspaceState("rewind");
         const redo = workspaceState("redo");
+        const turnUndo = turnState("turn-undo");
+        const turnRedo = turnState("turn-redo");
 
         expect(decodeWorkspaceStateV1(rewind)).toEqual(rewind);
         expect(decodeWorkspaceStateV1(redo)).toEqual(redo);
+        expect(decodeWorkspaceStateV1(turnUndo)).toEqual(turnUndo);
+        expect(decodeWorkspaceStateV1(turnRedo)).toEqual(turnRedo);
+    });
+
+    it("requires each workspace state variant's discriminating payload", () => {
+        expect(decodeWorkspaceStateV1({ ...workspaceStateBase(), kind: "rewind" })).toBeUndefined();
+        expect(decodeWorkspaceStateV1({ ...workspaceStateBase(), kind: "turn-undo" })).toBeUndefined();
+        expect(
+            decodeWorkspaceStateV1({ ...workspaceStateBase(), kind: "turn-redo", sourceTurnId: "turn-1" })
+        ).toBeUndefined();
+    });
+
+    it("rejects variant-only fields on conversation rewind and redo markers", () => {
+        expect(decodeWorkspaceStateV1({ ...workspaceState("rewind"), sourceTurnId: "turn-1" })).toBeUndefined();
+        expect(decodeWorkspaceStateV1({ ...workspaceState("redo"), sourceTurnId: "turn-1" })).toBeUndefined();
+        expect(decodeWorkspaceStateV1({ ...workspaceState("redo"), rewind: rewindPayload() })).toBeUndefined();
+        expect(
+            decodeWorkspaceStateV1({ ...workspaceState("redo"), undoOperationId: "undo-operation-1" })
+        ).toBeUndefined();
+    });
+
+    it("rejects unknown fields on durable turn markers", () => {
+        expect(decodeWorkspaceStateV1({ ...turnState("turn-undo"), unexpected: true })).toBeUndefined();
+        expect(decodeWorkspaceStateV1({ ...turnState("turn-redo"), rewind: rewindPayload() })).toBeUndefined();
     });
 
     it.each([
