@@ -11,7 +11,10 @@
 
 原设计已经要求预览展示每个有效文件操作和支持文件的可展开 diff；安全模型、
 checkpoint 格式、确认 token、冲突分类、Force Revert、Redo 和多 Session 隔离均不变。
-本文修复实现与该要求之间的缺口，并记录已经确认的双栏布局。
+本文修复实现与该要求之间的缺口，并记录已经确认的双栏布局。后续
+[`2026-08-02-agent-turn-file-changes-design.md`](./2026-08-02-agent-turn-file-changes-design.md)
+将该布局命名为纯展示组件 `DiffReviewDialog`，并扩展给 Turn Review、Turn Undo 和 Turn Redo
+复用；本文其余 Revert/Redo 方向和安全语义不变。
 
 ## 问题
 
@@ -88,8 +91,10 @@ preview 展示的是即将执行的 Revert 方向，而不是 Agent 当时写入
 
 ## 双栏 UI
 
-### Dialog
+### `DiffReviewDialog`
 
+- 提取纯展示组件 `DiffReviewDialog`，由 conversation Revert/Redo controller 提供数据、状态
+  和 footer actions；组件本身不调用 IPC 或理解 mutation 语义。
 - 使用现有 shadcn `Dialog`、`DialogContent`、`DialogHeader`、`DialogFooter` 与 `Button`。
 - 标题为 `Revert changes?` 或 `Redo changes?`。
 - 描述只说明 `Review the file changes that will be reverted.`，不重复展示 target prompt、
