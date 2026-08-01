@@ -115,6 +115,7 @@ import { WorkspaceRewindEngine } from "@crest/coding-agent/workspace-rewind/rewi
 import {
     buildAgentRewindSessionStateView,
     decodeWorkspaceCheckpointEntry,
+    decodeWorkspaceStateEntry,
 } from "@crest/coding-agent/workspace-rewind/session-state";
 import { WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "@crest/coding-agent/workspace-rewind/snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "@crest/coding-agent/workspace-rewind/types";
@@ -774,6 +775,18 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         await waitFor(async () => expect(await readFile(file, "utf8")).toBe("before\n"));
 
         const undone = (await client.getSessionState(value.metadata)).rewindState!;
+        expect(await value.session.getLeafId()).toBe(undone.semanticLeafId);
+        const firstUndoEntry = await value.session.getEntry(undone.semanticLeafId!);
+        expect(firstUndoEntry).toBeDefined();
+        const firstUndoMarker = decodeWorkspaceStateEntry(firstUndoEntry!);
+        expect(firstUndoEntry?.parentId).toBe(initialRewind.semanticLeafId);
+        expect(firstUndoMarker).toMatchObject({
+            kind: "turn-undo",
+            sourceTurnId: turnId,
+            sessionId: value.metadata.id,
+            workspaceIdentity: value.store.identity.workspaceIdentity,
+            workspaceIncarnation: value.store.identity.workspaceIncarnation,
+        });
         ui.rerender(
             createElement(TurnChangesE2EUi, {
                 client,
@@ -805,6 +818,17 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         await act(async () => await applyRedo.mock.results[0]!.value);
         await waitFor(async () => expect(await readFile(file, "utf8")).toBe("after\n"));
         const redone = (await client.getSessionState(value.metadata)).rewindState!;
+        expect(await value.session.getLeafId()).toBe(redone.semanticLeafId);
+        const redoEntry = await value.session.getEntry(redone.semanticLeafId!);
+        expect(redoEntry).toBeDefined();
+        const redoMarker = decodeWorkspaceStateEntry(redoEntry!);
+        expect(redoEntry?.parentId).toBe(undone.semanticLeafId);
+        expect(redoMarker).toMatchObject({
+            kind: "turn-redo",
+            sourceTurnId: turnId,
+            undoOperationId: firstUndoMarker?.operationId,
+            sessionId: value.metadata.id,
+        });
         ui.rerender(
             createElement(TurnChangesE2EUi, {
                 client,
@@ -817,6 +841,58 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         await waitFor(() => expect(screen.getByRole("button", { name: /撤销/ })).not.toBeNull());
         expect(screen.queryByRole("button", { name: /重做/ })).toBeNull();
         expect(redone.displayLeafId).toBe(initialRewind.displayLeafId);
+
+        const secondPreviewUndo = vi.spyOn(client, "previewTurnUndo");
+        fireEvent.click(screen.getByRole("button", { name: /撤销/ }));
+        const secondUndoDialog = await screen.findByRole("dialog");
+        await waitFor(() => expect(secondPreviewUndo).toHaveBeenCalledOnce());
+        await act(async () => await secondPreviewUndo.mock.results[0]!.value);
+        const confirmSecondUndo = within(secondUndoDialog).getByRole("button", {
+            name: "Confirm undo",
+        }) as HTMLButtonElement;
+        await waitFor(() => expect(confirmSecondUndo.disabled).toBe(false));
+        fireEvent.click(confirmSecondUndo);
+        await waitFor(() => expect(applyUndo).toHaveBeenCalledTimes(2));
+        await act(async () => await applyUndo.mock.results[1]!.value);
+        await waitFor(async () => expect(await readFile(file, "utf8")).toBe("before\n"));
+
+        const secondUndone = (await client.getSessionState(value.metadata)).rewindState!;
+        ui.rerender(
+            createElement(TurnChangesE2EUi, {
+                client,
+                metadata: value.metadata,
+                sessionRevision: 1,
+                rewindState: secondUndone,
+                turnId,
+            })
+        );
+        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+        await waitFor(() => expect(screen.getByRole("button", { name: /重做/ })).not.toBeNull());
+        expect(screen.queryByRole("button", { name: /撤销/ })).toBeNull();
+        expect((screen.getByRole("textbox", { name: "Composer" }) as HTMLInputElement).value).toBe(
+            "draft survives turn restore"
+        );
+        expect(secondUndone.displayLeafId).toBe(initialRewind.displayLeafId);
+        expect(
+            (await value.session.getEntries())
+                .filter((entry) => entry.type === "message")
+                .map((entry) => structuredClone(entry))
+        ).toEqual(initialMessages);
+        expect(await value.session.getLeafId()).toBe(secondUndone.semanticLeafId);
+        const secondUndoEntry = await value.session.getEntry(secondUndone.semanticLeafId!);
+        expect(secondUndoEntry).toBeDefined();
+        const secondUndoMarker = decodeWorkspaceStateEntry(secondUndoEntry!);
+        expect(secondUndoEntry?.parentId).toBe(redone.semanticLeafId);
+        expect(secondUndoMarker).toMatchObject({
+            kind: "turn-undo",
+            sourceTurnId: turnId,
+            sessionId: value.metadata.id,
+            workspaceIdentity: value.store.identity.workspaceIdentity,
+            workspaceIncarnation: value.store.identity.workspaceIncarnation,
+        });
+        expect(secondUndoMarker?.operationId).not.toBe(firstUndoMarker?.operationId);
+        expect(secondUndoMarker?.operationId).not.toBe(redoMarker?.operationId);
+        expect(secondUndoMarker).not.toHaveProperty("undoOperationId");
         value.session.close();
     }, 30_000);
 
@@ -892,8 +968,8 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         } as never);
         await value.manager.dispose();
         const running = value.makeService();
-        const summaryRead = vi.spyOn(running.service, "getTurnChangeSummary");
         const { client } = value.register(running.service);
+        const summaryRead = vi.spyOn(client, "getTurnChangeSummary");
         const state = (await client.getSessionState(value.metadata)).rewindState!;
         render(
             createElement(TurnChangesE2EUi, {
@@ -905,7 +981,9 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
             })
         );
 
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await act(async () => {
+            await Promise.resolve();
+        });
         expect(state.turnChanges).toEqual([]);
         expect(screen.queryByLabelText("Turn file changes")).toBeNull();
         expect(summaryRead).not.toHaveBeenCalled();

@@ -135,7 +135,7 @@ describe("restore crash phase oracle", () => {
     }, 30_000);
 
     it.each(["turn-undo", "turn-redo"] as const)(
-        "recovers %s at every durable phase boundary",
+        "recovers %s at representative post-phase boundaries",
         async (kind) => {
             const normalFixture = await completeNormally(kind);
             const normal = await readRecoveredState(normalFixture.metadata);
