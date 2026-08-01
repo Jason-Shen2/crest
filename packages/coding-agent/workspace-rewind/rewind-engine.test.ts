@@ -349,6 +349,10 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(redoPreview.files[0]!.diff).toContain("-checkpoint A");
         expect(redoPreview.files[0]!.diff).toContain("+checkpoint B");
         expect(redoPreview.files[0]!.diff).not.toBe(rewindPreview.files[0]!.diff);
+        for (const row of [...rewindPreview.files, ...redoPreview.files]) {
+            expect(row).not.toHaveProperty("originalContent");
+            expect(row).not.toHaveProperty("modifiedContent");
+        }
     });
 
     it("keeps planner authority and other rows when one immutable blob is unavailable", async () => {

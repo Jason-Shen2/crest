@@ -197,7 +197,15 @@ async function fileRows(
                 readBlob,
                 budget,
             });
-            rows.push({ ...projected, ...base });
+            rows.push({
+                ...(projected.additions == null ? {} : { additions: projected.additions }),
+                ...(projected.deletions == null ? {} : { deletions: projected.deletions }),
+                ...(projected.diff == null ? {} : { diff: projected.diff }),
+                ...(projected.previewUnavailableReason == null
+                    ? {}
+                    : { previewUnavailableReason: projected.previewUnavailableReason }),
+                ...base,
+            });
         } catch {
             rows.push({ ...base, previewUnavailableReason: "diff preview is unavailable" });
         }
