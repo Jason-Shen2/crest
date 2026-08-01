@@ -31,6 +31,7 @@ function makeRewindState(hasRedo = false): AgentRewindSessionStateView {
         semanticLeafId: "state-1",
         displayLeafId: "user-1",
         eligibleTurnIds: ["user-1"],
+        turnChanges: [],
         busy: false,
         frozen: false,
         quota: {

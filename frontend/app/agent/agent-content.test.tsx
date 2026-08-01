@@ -231,6 +231,7 @@ function makeRewindState(overrides: Partial<AgentRewindSessionStateView> = {}): 
         semanticLeafId: "leaf-a",
         displayLeafId: "turn-a",
         eligibleTurnIds: ["turn-a"],
+        turnChanges: [],
         busy: false,
         frozen: false,
         quota: {
