@@ -13,6 +13,7 @@ import { applyCapturedPath } from "./filesystem-apply";
 import { WorkspaceGitRunner } from "./git-runner";
 import { makeProcessOwnerIdentity } from "./process-owner";
 import { WorkspaceRecoveryJournal } from "./recovery-journal";
+import { decodeWorkspaceStateEntry, foldWorkspaceSessionState } from "./session-state";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import type { CapturedPathStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -136,6 +137,10 @@ describe("restore crash phase oracle", () => {
     it.each(["turn-undo", "turn-redo"] as const)(
         "recovers %s at every durable phase boundary",
         async (kind) => {
+            const normalFixture = await completeNormally(kind);
+            const normal = await readRecoveredState(normalFixture.metadata);
+            expect(normal).toEqual(expectedRecovery("sqlite-cas-after", kind));
+            expect(normal.workspaceState).toEqual(expectedTurnWorkspaceState(kind));
             for (const boundary of [
                 "after-prepared",
                 "after-applying_files",
@@ -148,7 +153,21 @@ describe("restore crash phase oracle", () => {
 
                 await recovery.coordinator.ensureRecovered(fixture.metadata.identity);
 
-                expect(await readRecoveredState(fixture.metadata)).toEqual(expectedRecovery(boundary));
+                const recovered = await readRecoveredState(fixture.metadata);
+                expect(recovered).toEqual(expectedRecovery(boundary, kind));
+                if (recovered.workspaceState) {
+                    expect(recovered.workspaceState).toEqual(normal.workspaceState);
+                    expect({ semanticLeaf: recovered.semanticLeaf, displayLeaf: recovered.displayLeaf }).toEqual({
+                        semanticLeaf: normal.semanticLeaf,
+                        displayLeaf: normal.displayLeaf,
+                    });
+                } else {
+                    expect(recovered).toMatchObject({
+                        leaf: "old-leaf",
+                        semanticLeaf: "old-leaf",
+                        displayLeaf: "old-leaf",
+                    });
+                }
                 await expect(recovery.journal.read("operation-1")).rejects.toThrow(/not found/i);
                 recovery.session.close();
             }
@@ -203,6 +222,39 @@ async function crashAt(
     return { root, metadata };
 }
 
+async function completeNormally(
+    kind: "turn-undo" | "turn-redo"
+): Promise<{ root: string; metadata: CrashFixtureMetadata }> {
+    const root = await mkdtemp(join(tmpdir(), "crest-restore-normal-"));
+    cleanupRoots.push(root);
+    const workerPath = resolve("packages/coding-agent/workspace-rewind/fixtures/restore-crash-worker.ts");
+    const child = fork(workerPath, [root, "normal-completion", kind], {
+        execArgv: ["--import", "tsx"],
+        stdio: ["ignore", "ignore", "pipe", "ipc"],
+    });
+    let stderr = "";
+    child.stderr?.on("data", (bytes) => {
+        stderr += bytes.toString("utf8");
+    });
+    await new Promise<void>((resolveCompleted, reject) => {
+        child.once("message", (message) => {
+            if (message === "completed") resolveCompleted();
+            else reject(new Error(`restore normal worker sent an unexpected message: ${String(message)}`));
+        });
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+            if (code === 0) return;
+            reject(new Error(`restore normal worker failed: ${String(code ?? signal)} ${stderr}`));
+        });
+    });
+    if (child.exitCode == null) {
+        child.kill("SIGTERM");
+        await new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+    }
+    const metadata = JSON.parse(await readFile(join(root, "fixture.json"), "utf8")) as CrashFixtureMetadata;
+    return { root, metadata };
+}
+
 async function openRecovery(metadata: CrashFixtureMetadata) {
     const store = await WorkspaceSnapshotStore.open({
         dataRoot: metadata.dataRoot,
@@ -225,24 +277,58 @@ async function openRecovery(metadata: CrashFixtureMetadata) {
 async function readRecoveredState(metadata: CrashFixtureMetadata) {
     const session = SqliteSessionStorage.open(metadata.sessionPath);
     try {
+        const entries = await session.getEntries();
+        const operationEntry = entries.find((entry) => entry.id === "operation-leaf");
+        const state = operationEntry ? decodeWorkspaceStateEntry(operationEntry) : undefined;
+        const folded = foldWorkspaceSessionState(entries, "session-1");
         return {
             first: await readFile(join(metadata.identity.canonicalRoot, "first.txt"), "utf8"),
             second: await readFile(join(metadata.identity.canonicalRoot, "second.txt"), "utf8"),
             leaf: await session.getLeafId(),
-            entryCount: (await session.getEntries()).length,
+            semanticLeaf: folded.semanticLeafId,
+            displayLeaf: folded.displayLeafId,
+            entryCount: entries.length,
+            workspaceState:
+                state && operationEntry
+                    ? {
+                          parentId: operationEntry.parentId,
+                          kind: state.kind,
+                          ...(state.kind === "turn-undo" || state.kind === "turn-redo"
+                              ? { sourceTurnId: state.sourceTurnId }
+                              : {}),
+                          ...(state.kind === "turn-redo" ? { undoOperationId: state.undoOperationId } : {}),
+                      }
+                    : undefined,
         };
     } finally {
         session.close();
     }
 }
 
-function expectedRecovery(boundary: Boundary) {
+function expectedRecovery(boundary: Boundary, kind: "rewind" | "turn-undo" | "turn-redo" = "rewind") {
     const completed = Boundaries.indexOf(boundary) >= Boundaries.indexOf("sqlite-cas-after");
     return {
         first: completed ? "target first" : "pre first",
         second: completed ? "target second" : "pre second",
         leaf: completed ? "operation-leaf" : "old-leaf",
+        semanticLeaf: completed ? "operation-leaf" : "old-leaf",
+        displayLeaf: completed && kind === "rewind" ? "target-boundary" : "old-leaf",
         entryCount: completed ? 3 : 2,
+        workspaceState:
+            completed && kind !== "rewind"
+                ? expectedTurnWorkspaceState(kind)
+                : completed
+                  ? { parentId: "target-boundary", kind: "rewind" }
+                  : undefined,
+    };
+}
+
+function expectedTurnWorkspaceState(kind: "turn-undo" | "turn-redo") {
+    return {
+        parentId: "old-leaf",
+        kind,
+        sourceTurnId: "source-turn",
+        ...(kind === "turn-redo" ? { undoOperationId: "undo-operation" } : {}),
     };
 }
 
@@ -259,11 +345,10 @@ async function expectCrashBoundaryState(
     }
     const state = await readRecoveredState(metadata);
     expect(state).toEqual({
+        ...expectedRecovery(boundary),
         first: Boundaries.indexOf(boundary) >= Boundaries.indexOf("path-rename-after-0") ? "target first" : "pre first",
         second:
             Boundaries.indexOf(boundary) >= Boundaries.indexOf("path-rename-after-1") ? "target second" : "pre second",
-        leaf: Boundaries.indexOf(boundary) >= Boundaries.indexOf("sqlite-cas-after") ? "operation-leaf" : "old-leaf",
-        entryCount: Boundaries.indexOf(boundary) >= Boundaries.indexOf("sqlite-cas-after") ? 3 : 2,
     });
 }
 

@@ -91,6 +91,10 @@ vi.mock("../frontend/app/gitdiff/git-diff-pane", () => ({
                 : `${props.content?.originalContent ?? ""}→${props.content?.modifiedContent ?? ""}`
         ),
 }));
+vi.mock("../frontend/app/agent/assistant-ui/diff-viewer", () => ({
+    DiffViewer: (props: { patch: string }) =>
+        createElement("pre", { "aria-label": "Rendered review diff" }, props.patch),
+}));
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
@@ -712,6 +716,9 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         const reviewDialog = await screen.findByRole("dialog");
         expect(await within(reviewDialog).findByText("Checkpoint before → after")).not.toBeNull();
         expect(await within(reviewDialog).findByTitle(path)).not.toBeNull();
+        const renderedReview = await within(reviewDialog).findByLabelText("Rendered review diff");
+        expect(renderedReview.textContent).toContain("-before");
+        expect(renderedReview.textContent).toContain("+after");
         const review = await client.reviewTurnChanges({
             sessionMetadata: value.metadata,
             expectedSemanticLeafId: initialRewind.semanticLeafId,
@@ -748,6 +755,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         const historyRequest = vi.spyOn(client, "getTurnFileDiff");
         const historyTab = render(createElement(AgentTurnDiffTopTab, { tab: turnDiffTab, client }));
         await waitFor(() => expect(historyRequest).toHaveBeenCalledWith(expect.objectContaining({ turnId, path })));
+        await waitFor(() => expect(screen.getByLabelText("Historical turn diff").textContent).toBe("before\n→after\n"));
         historyTab.unmount();
 
         fireEvent.change(screen.getByRole("textbox", { name: "Composer" }), {

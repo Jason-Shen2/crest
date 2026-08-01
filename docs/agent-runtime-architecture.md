@@ -268,9 +268,9 @@ Pi's `NodeExecutionEnv.cwd: string` is a public mutable field (`emain/agent/harn
 
 ```ts
 interface AgentHarnessHost {
-  readonly harness: AgentHarness;
-  /** Update mutable workspace state. Call before each send if anything changed. */
-  update(inputs: SystemPromptInputs): void;
+    readonly harness: AgentHarness;
+    /** Update mutable workspace state. Call before each send if anything changed. */
+    update(inputs: SystemPromptInputs): void;
 }
 ```
 
