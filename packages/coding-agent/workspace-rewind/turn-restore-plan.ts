@@ -249,7 +249,7 @@ function sourceMutationAuthority(
     branch: SessionTreeEntry[],
     visibleEntries: ReadonlySet<SessionTreeEntry>,
     checkpointIndex: number,
-    input: PlanTurnRedoInput
+    input: PlanTurnRestoreBaseInput
 ): WorkspaceTurnMutationAuthority {
     let authority: WorkspaceTurnMutationAuthority = { action: "undo" };
     for (const entry of branch.slice(checkpointIndex + 1)) {
@@ -305,6 +305,15 @@ async function prepare(
 export async function planTurnUndo(input: PlanTurnUndoInput): Promise<RestorePlanV1> {
     const prepared = await prepare(input, { kind: "turn-undo", sourceTurnId: input.sourceTurnId });
     if (!prepared.checkpoint) return prepared.plan;
+    const authority = sourceMutationAuthority(
+        prepared.branch!,
+        prepared.visibleEntries!,
+        prepared.checkpointIndex!,
+        input
+    );
+    if (authority.action !== "undo") {
+        return hardBlock(prepared.plan, "Undo requires the source turn's current authority to allow Undo");
+    }
     const transitions = transitionsForCheckpoint(prepared.plan, prepared.checkpoint, "undo");
     if (!transitions) return prepared.plan;
     return classifyRestoreTransitions(prepared.plan, transitions, input.inspectLivePath, input.inspectLivePaths, false);

@@ -252,7 +252,7 @@ describe("per-turn restore planning", () => {
         ]);
     });
 
-    it("uses the legal turn-mutation state machine for duplicate Undo and matching Redo markers", async () => {
+    it("uses the legal turn-mutation state machine for Redo authority", async () => {
         const change = {
             path: "a.ts",
             before: { state: "file", oid: OidA, executable: false } as const,
@@ -301,6 +301,44 @@ describe("per-turn restore planning", () => {
         for (const undoOperationId of ["undo-operation-1", "undo-operation-2"]) {
             expect((await planTurnRedo({ ...redoneInput, undoOperationId })).hardBlocked).toBe(true);
         }
+    });
+
+    it("blocks duplicate Undo until a matching Redo returns authority to Undo", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const undoMarker = custom(
+            "undo-1",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", "undo-operation-1")
+        );
+        const duplicate = await planTurnUndo(
+            baseInput(branch(checkpoint([change]), [undoMarker]), {
+                "a.ts": live({ state: "file", oid: OidC, executable: false }),
+            })
+        );
+
+        expect(duplicate).toMatchObject({ hardBlocked: true, forceRequired: false, paths: [] });
+        expect(() => new RewindConfirmationRegistry().issue(duplicate)).toThrow(/blocked/i);
+
+        const redoMarker = custom(
+            "redo-1",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-redo", "redo-operation-1", "undo-operation-1")
+        );
+        const restored = await planTurnUndo(
+            baseInput(branch(checkpoint([change]), [undoMarker, redoMarker]), {
+                "a.ts": live(change.after),
+            })
+        );
+        expect(restored).toMatchObject({ hardBlocked: false, forceRequired: false });
+        expect(restored.paths).toEqual([
+            expect.objectContaining({ path: "a.ts", expectedCurrent: change.after, target: change.before }),
+        ]);
     });
 
     it.each([
