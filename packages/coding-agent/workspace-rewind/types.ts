@@ -135,6 +135,7 @@ export type WorkspaceStateV1 = WorkspaceStateBaseV1 &
 export interface FoldedWorkspaceSessionState {
     checkpointsByTurnId: ReadonlyMap<string, WorkspaceCheckpointV1>;
     activeWorkspaceState?: WorkspaceStateV1;
+    conversationRedoState?: Extract<WorkspaceStateV1, { kind: "rewind" }>;
     turnMutationsByTurnId: ReadonlyMap<string, { action: "undo" } | { action: "redo"; undoOperationId: string }>;
     semanticLeafId: string | null;
     displayLeafId: string | null;

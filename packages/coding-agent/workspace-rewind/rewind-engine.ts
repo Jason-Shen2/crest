@@ -336,8 +336,8 @@ export class WorkspaceRewindEngine {
     private async computeRedo(input: PreviewRedoInput): Promise<PlannedRestore> {
         const entries = await input.session.getEntries();
         const folded = foldWorkspaceSessionState(entries, input.sessionId);
-        const rewindState = folded.activeWorkspaceState;
-        if (rewindState?.kind !== "rewind") {
+        const rewindState = folded.conversationRedoState;
+        if (!rewindState) {
             return {
                 entries,
                 plan: {
@@ -348,7 +348,9 @@ export class WorkspaceRewindEngine {
                     semanticLeafId: input.semanticLeafId,
                     targetBoundaryId: null,
                     paths: [],
-                    coverageWarnings: [{ path: "", reason: "redo requires the current raw rewind marker" }],
+                    coverageWarnings: [
+                        { path: "", reason: "redo requires the current raw leaf to be this session's rewind marker" },
+                    ],
                     forceRequired: false,
                     hardBlocked: true,
                 },

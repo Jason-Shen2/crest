@@ -901,6 +901,7 @@ declare global {
         semanticLeafId: string | null;
         displayLeafId: string | null;
         eligibleTurnIds: string[];
+        turnChanges: Array<{ turnId: string; action: "undo" | "redo"; undoOperationId?: string }>;
         busy: boolean;
         frozen: boolean;
         quota: AgentCheckpointQuotaView;

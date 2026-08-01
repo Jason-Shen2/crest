@@ -257,17 +257,24 @@ function committedTransactionStartsByUserId(branch: SessionTreeEntry[]): Map<str
     return startsByUserId;
 }
 
+function committedEntrySet(branch: SessionTreeEntry[]): ReadonlySet<SessionTreeEntry> {
+    return new Set(filterCommittedTransactionEntries(branch).entries);
+}
+
 function currentLeafWorkspaceMarker(branch: SessionTreeEntry[], sessionId: string): WorkspaceStateV1 | undefined {
     const leaf = branch.at(-1);
+    if (leaf == null || !committedEntrySet(branch).has(leaf)) return undefined;
     const state = leaf == null ? undefined : decodeWorkspaceStateEntry(leaf);
     return state?.sessionId === sessionId ? state : undefined;
 }
 
 function activeWorkspaceStates(
     branch: SessionTreeEntry[],
-    sessionId: string
+    sessionId: string,
+    visibleEntries: ReadonlySet<SessionTreeEntry>
 ): Array<{ entryId: string; branchIndex: number; state: WorkspaceStateV1 }> {
     return branch.flatMap((entry, branchIndex) => {
+        if (!visibleEntries.has(entry)) return [];
         const state = decodeWorkspaceStateEntry(entry);
         return state?.sessionId === sessionId ? [{ entryId: entry.id, branchIndex, state }] : [];
     });
@@ -420,7 +427,11 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
     }
 
     const suffix = branch.slice(targetIndex);
+    const visibleEntries = committedEntrySet(branch);
     for (const entry of suffix) {
+        if (!visibleEntries.has(entry)) {
+            continue;
+        }
         if (entry.type !== "custom" || entry.customType !== WorkspaceControlCustomTypes.state) {
             continue;
         }
@@ -432,7 +443,7 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
             return hardBlock(plan, "workspace state inside the target suffix belongs to another session", entry.id);
         }
     }
-    const fullBranchWorkspaceStates = activeWorkspaceStates(branch, input.sessionId);
+    const fullBranchWorkspaceStates = activeWorkspaceStates(branch, input.sessionId, visibleEntries);
     const latestWorkspaceState = fullBranchWorkspaceStates.at(-1)?.state;
     if (
         input.currentWorkspaceState &&

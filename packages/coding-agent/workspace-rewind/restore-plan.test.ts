@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { planRedo, planRewind } from "./restore-plan";
-import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
+import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceStateBaseV1, WorkspaceStateV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 
@@ -250,6 +250,108 @@ describe("restore planning", () => {
 
         expect(plan.targetBoundaryId).toBe("root");
         expect(plan.hardBlocked).toBe(false);
+    });
+
+    it("ignores incomplete transaction workspace states for authority and suffix validation", async () => {
+        const cp = checkpoint("u1", []);
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom("c1", user.id, WorkspaceControlCustomTypes.checkpoint, cp);
+        const authoritative = {
+            schemaVersion: 1,
+            sessionId: "session-1",
+            operationId: "authoritative",
+            workspaceIdentity: Workspace.workspaceIdentity,
+            workspaceIncarnation: Workspace.workspaceIncarnation,
+            kind: "redo",
+            applyMode: "normal",
+            forcedPaths: [],
+            currentSnapshot: snapshot(OidA),
+            currentStates: [],
+        } satisfies WorkspaceStateV1;
+        const marker = custom("authoritative", checkpointEntry.id, WorkspaceControlCustomTypes.state, authoritative);
+        const incompleteValid = {
+            ...custom("incomplete-valid", marker.id, WorkspaceControlCustomTypes.state, {
+                ...authoritative,
+                operationId: "incomplete-valid",
+            }),
+            transactionId: "incomplete-valid-transaction",
+        } as SessionTreeEntry;
+        const incompleteMalformed = {
+            ...custom("incomplete-malformed", incompleteValid.id, WorkspaceControlCustomTypes.state, {
+                schemaVersion: 1,
+            }),
+            transactionId: "incomplete-malformed-transaction",
+        } as SessionTreeEntry;
+
+        const plan = await planRewind({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [user, checkpointEntry, marker, incompleteValid, incompleteMalformed],
+            semanticLeafId: incompleteMalformed.id,
+            targetTurnId: user.id,
+            currentWorkspaceState: authoritative,
+            inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
+            verifySnapshot: async () => {},
+        });
+
+        expect(plan.hardBlocked).toBe(false);
+    });
+
+    it("accepts a turn marker as rewind authority after a conversation rewind marker", async () => {
+        const cp = checkpoint("u1", []);
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom("c1", user.id, WorkspaceControlCustomTypes.checkpoint, cp);
+        const stateBase = {
+            schemaVersion: 1,
+            sessionId: "session-1",
+            workspaceIdentity: Workspace.workspaceIdentity,
+            workspaceIncarnation: Workspace.workspaceIncarnation,
+            applyMode: "normal",
+            forcedPaths: [],
+            currentSnapshot: snapshot(OidA),
+            currentStates: [],
+        } satisfies Omit<WorkspaceStateBaseV1, "operationId">;
+        const rewindState = {
+            ...stateBase,
+            operationId: "conversation-rewind",
+            kind: "rewind",
+            rewind: {
+                fromLeafId: checkpointEntry.id,
+                targetTurnId: user.id,
+                targetBoundaryId: null,
+                redoSnapshot: snapshot(OidB),
+                redoStates: [],
+            },
+        } satisfies WorkspaceStateV1;
+        const turnState = {
+            ...stateBase,
+            operationId: "turn-undo",
+            kind: "turn-undo",
+            sourceTurnId: user.id,
+        } satisfies WorkspaceStateV1;
+        const rewind = custom(
+            "conversation-rewind",
+            checkpointEntry.id,
+            WorkspaceControlCustomTypes.state,
+            rewindState
+        );
+        const turnUndo = custom("turn-undo", rewind.id, WorkspaceControlCustomTypes.state, turnState);
+
+        const plan = await planRewind({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [user, checkpointEntry, rewind, turnUndo],
+            semanticLeafId: turnUndo.id,
+            targetTurnId: user.id,
+            currentWorkspaceState: turnState,
+            inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
+            verifySnapshot: async () => {},
+        });
+
+        expect(plan.hardBlocked).toBe(false);
+        expect(plan.coverageWarnings).not.toContainEqual(
+            expect.objectContaining({ reason: expect.stringMatching(/caller workspace state differs/) })
+        );
     });
 
     it("folds hidden state chronologically and lets a later checkpoint supersede it", async () => {

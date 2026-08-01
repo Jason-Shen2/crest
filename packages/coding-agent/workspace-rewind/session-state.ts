@@ -130,6 +130,8 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
         };
     }
     const branch = active.entries;
+    const committedEntries = filterCommittedTransactionEntries(branch).entries;
+    const committedEntrySet = new Set(committedEntries);
     const checkpointsByTurnId = new Map<string, WorkspaceCheckpointV1>();
     const eligibleTurnIds: string[] = [];
     const checkpointGaps: Array<{ turnId: string; reason: string }> = [];
@@ -138,16 +140,23 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
 
     for (let branchIndex = 0; branchIndex < branch.length; branchIndex++) {
         const entry = branch[branchIndex]!;
+        if (!committedEntrySet.has(entry)) {
+            continue;
+        }
         const state = decodeWorkspaceStateEntry(entry);
         if (state?.sessionId !== sessionId) {
             continue;
         }
-        if (state.kind === "rewind" || state.kind === "redo") {
-            activeWorkspaceState = state;
-            continue;
+        activeWorkspaceState = state;
+        if (state.kind === "turn-undo" || state.kind === "turn-redo") {
+            turnMutationStates.push({ branchIndex, state });
         }
-        turnMutationStates.push({ branchIndex, state });
     }
+    const rawLeaf = branch.at(-1);
+    const rawLeafState =
+        rawLeaf != null && committedEntrySet.has(rawLeaf) ? decodeWorkspaceStateEntry(rawLeaf) : undefined;
+    const conversationRedoState =
+        rawLeafState?.sessionId === sessionId && rawLeafState.kind === "rewind" ? rawLeafState : undefined;
 
     const mutationSourcesByTurnId = new Map<
         string,
@@ -242,6 +251,7 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
     return {
         checkpointsByTurnId,
         ...(activeWorkspaceState == null ? {} : { activeWorkspaceState }),
+        ...(conversationRedoState == null ? {} : { conversationRedoState }),
         turnMutationsByTurnId,
         semanticLeafId,
         displayLeafId: displayLeafId(branch),
@@ -338,8 +348,8 @@ export async function buildAgentRewindSessionStateView(
     }
 
     let redo: AgentRedoView | undefined;
-    const state = folded.activeWorkspaceState;
-    if (state?.kind === "rewind") {
+    const state = folded.conversationRedoState;
+    if (state) {
         try {
             await probe.verifySnapshot(state.currentSnapshot);
             await probe.verifySnapshot(state.rewind.redoSnapshot);

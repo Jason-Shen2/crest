@@ -9,7 +9,7 @@ import { RewindConfirmationRegistry } from "./confirmation-token";
 import type { WorkspaceOperationJournalV1 } from "./recovery-journal";
 import { planRedo, type RestorePlanV1 } from "./restore-plan";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
-import type { CapturedPathStateV1, WorkspaceSnapshotRefV1 } from "./types";
+import type { CapturedPathStateV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
 
 const Identity = "1".repeat(64);
 const Incarnation = "2".repeat(64);
@@ -741,5 +741,65 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(preview.hardBlocked).toBe(true);
         expect(preview.confirmationToken).toBeUndefined();
         expect(preview.coverageWarnings).toContainEqual(expect.stringMatching(/current raw leaf.*rewind marker/i));
+    });
+
+    it("uses a later turn marker for rewind CAS authority and rejects conversation redo", async () => {
+        const value = makeHarness({});
+        const confirmation = value.confirmations.take(value.confirmations.issue(value.plan));
+        await value.engine.applyRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+            mode: "normal",
+            confirmation,
+        });
+        const turnMarker = {
+            schemaVersion: 1,
+            sessionId: "session-1",
+            operationId: "turn-undo-operation",
+            workspaceIdentity: Identity,
+            workspaceIncarnation: Incarnation,
+            kind: "turn-undo",
+            sourceTurnId: "turn-1",
+            applyMode: "normal",
+            forcedPaths: [],
+            currentSnapshot: ResultSnapshot,
+            currentStates: [],
+        } satisfies WorkspaceStateV1;
+        await value.session.appendEntries(
+            [
+                {
+                    type: "custom",
+                    id: "turn-marker",
+                    parentId: "operation-leaf-1",
+                    timestamp: "2026-07-29T00:00:03.000Z",
+                    customType: "workspace_state",
+                    data: turnMarker,
+                },
+            ],
+            { expectedLeafId: "operation-leaf-1" }
+        );
+
+        await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "turn-marker",
+            targetTurnId: "turn-1",
+        });
+        const redoPreview = await value.engine.previewRedo({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "turn-marker",
+        });
+
+        expect(value.options.planRewind).toHaveBeenLastCalledWith(
+            expect.objectContaining({ currentWorkspaceState: turnMarker })
+        );
+        expect(redoPreview.hardBlocked).toBe(true);
+        expect(redoPreview.confirmationToken).toBeUndefined();
     });
 });

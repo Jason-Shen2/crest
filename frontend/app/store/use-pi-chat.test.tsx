@@ -46,6 +46,7 @@ function makeRewindState(overrides: Partial<AgentRewindSessionStateView> = {}): 
         semanticLeafId: "state-1",
         displayLeafId: "user-1",
         eligibleTurnIds: ["user-1"],
+        turnChanges: [{ turnId: "user-1", action: "redo", undoOperationId: "undo-1" }],
         busy: false,
         frozen: false,
         quota: {
@@ -200,11 +201,15 @@ describe("usePiChat lifecycle", () => {
         });
 
         expect(result.current.rewindState).toEqual(makeRewindState());
+        expect(result.current.rewindState.turnChanges).toEqual([
+            { turnId: "user-1", action: "redo", undoOperationId: "undo-1" },
+        ]);
 
         const replacement = makeRewindState({
             semanticLeafId: "state-2",
             displayLeafId: "assistant-2",
             eligibleTurnIds: ["user-2", "user-3"],
+            turnChanges: [{ turnId: "user-2", action: "undo" }],
             busy: true,
             frozen: true,
             redo: undefined,
@@ -222,6 +227,7 @@ describe("usePiChat lifecycle", () => {
         });
 
         expect(result.current.rewindState).toEqual(replacement);
+        expect(result.current.rewindState.turnChanges).toEqual([{ turnId: "user-2", action: "undo" }]);
         expect(result.current.rewindState.redo).toBeUndefined();
     });
 
@@ -298,6 +304,7 @@ describe("usePiChat lifecycle", () => {
             semanticLeafId: null,
             displayLeafId: null,
             eligibleTurnIds: [],
+            turnChanges: [],
             busy: false,
             frozen: false,
             quota: {

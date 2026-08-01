@@ -304,6 +304,102 @@ describe("workspace rewind session state", () => {
         expect(folded.displayLeafId).toBe("u1");
     });
 
+    it("separates the latest turn marker from leaf-only conversation redo authority", async () => {
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom(
+            "c1",
+            user.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            changedCheckpoint(user.id)
+        );
+        const rewind = custom(
+            "rewind",
+            checkpointEntry.id,
+            WorkspaceControlCustomTypes.state,
+            workspaceState("session-1", "rewind")
+        );
+        const turnUndoState = turnState("turn-undo", user.id, "turn-undo-operation");
+        const turnUndo = custom("turn-undo", rewind.id, WorkspaceControlCustomTypes.state, turnUndoState);
+
+        const folded = foldWorkspaceSessionState([user, checkpointEntry, rewind, turnUndo], "session-1");
+        const view = await buildAgentRewindSessionStateView([user, checkpointEntry, rewind, turnUndo], "session-1", {
+            enabled: true,
+            busy: false,
+            frozen: false,
+            verifySnapshot: async () => {},
+            getQuota: async () => ({
+                status: "ok",
+                usedBytes: 0,
+                softQuotaBytes: 100,
+                cleanupAvailable: false,
+            }),
+        });
+
+        expect(folded.activeWorkspaceState).toEqual(turnUndoState);
+        expect(folded.conversationRedoState).toBeUndefined();
+        expect(view.redo).toBeUndefined();
+    });
+
+    it("ignores workspace states in incomplete and invalid transactions", async () => {
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom(
+            "c1",
+            user.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            changedCheckpoint(user.id)
+        );
+        const baselineState = workspaceState("session-1", "redo");
+        const baseline = custom("baseline", checkpointEntry.id, WorkspaceControlCustomTypes.state, baselineState);
+        const incompleteRewind = {
+            ...custom("incomplete-rewind", baseline.id, WorkspaceControlCustomTypes.state, workspaceState()),
+            transactionId: "incomplete-transaction",
+        } as SessionTreeEntry;
+        const invalidTransaction = makeCommittedContextTransaction({
+            parentId: incompleteRewind.id,
+            prefix: "invalid-state",
+        });
+        invalidTransaction[0] = {
+            ...invalidTransaction[0]!,
+            customType: WorkspaceControlCustomTypes.state,
+            data: workspaceState("session-1", "rewind"),
+        } as SessionTreeEntry;
+        invalidTransaction[1] = {
+            ...invalidTransaction[1]!,
+            customType: WorkspaceControlCustomTypes.state,
+            data: turnState("turn-undo", user.id, "invalid-turn-undo"),
+        } as SessionTreeEntry;
+
+        const entries = [user, checkpointEntry, baseline, incompleteRewind, ...invalidTransaction];
+        const folded = foldWorkspaceSessionState(entries, "session-1");
+        const incompleteTurnUndo = {
+            ...custom(
+                "incomplete-turn-undo",
+                checkpointEntry.id,
+                WorkspaceControlCustomTypes.state,
+                turnState("turn-undo", user.id, "incomplete-turn-undo")
+            ),
+            transactionId: "incomplete-turn-transaction",
+        } as SessionTreeEntry;
+        const turnFolded = foldWorkspaceSessionState([user, checkpointEntry, incompleteTurnUndo], "session-1");
+        const view = await buildAgentRewindSessionStateView(entries, "session-1", {
+            enabled: true,
+            busy: false,
+            frozen: false,
+            verifySnapshot: async () => {},
+            getQuota: async () => ({
+                status: "ok",
+                usedBytes: 0,
+                softQuotaBytes: 100,
+                cleanupAvailable: false,
+            }),
+        });
+
+        expect(folded.activeWorkspaceState).toEqual(baselineState);
+        expect(turnFolded.turnMutationsByTurnId.get(user.id)).toEqual({ action: "undo" });
+        expect(folded.conversationRedoState).toBeUndefined();
+        expect(view.redo).toBeUndefined();
+    });
+
     it("folds the last valid marker per source turn on only the active branch", () => {
         const u1 = message("u1", null, "user");
         const c1 = custom("c1", u1.id, WorkspaceControlCustomTypes.checkpoint, changedCheckpoint(u1.id));

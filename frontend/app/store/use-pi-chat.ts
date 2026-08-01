@@ -293,6 +293,7 @@ export const EmptyRewindState: AgentRewindSessionStateView = {
     semanticLeafId: null,
     displayLeafId: null,
     eligibleTurnIds: [],
+    turnChanges: [],
     busy: false,
     frozen: false,
     quota: {
