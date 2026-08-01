@@ -114,7 +114,7 @@ export function TurnFileChangesCard({
             <div className="border-t border-border py-0.5">
                 {summary.files.map((file) => {
                     const { directory, basename } = splitPath(file.path);
-                    const FileIcon = getFileIcon(file.path, false, false);
+                    const FileIcon = getFileIcon(basename, false, false);
                     return (
                         <button
                             key={file.path}

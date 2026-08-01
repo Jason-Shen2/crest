@@ -76,8 +76,8 @@ describe("TurnFileChangesCard", () => {
         expect(file.className).toContain("hover:bg-muted/40");
         expect(file.className).not.toContain("bg-accent");
         expect(screen.getByText("docs/superpowers/specs/").className).toContain("text-muted-foreground");
-        expect(fileIconCalls).toEqual(["docs/superpowers/specs/agent-rewind-design.md", "frontend/app/agent/card.tsx"]);
-        expect(screen.getByTestId("file-icon:docs/superpowers/specs/agent-rewind-design.md")).toBeTruthy();
+        expect(fileIconCalls).toEqual(["agent-rewind-design.md", "card.tsx"]);
+        expect(screen.getByTestId("file-icon:agent-rewind-design.md")).toBeTruthy();
 
         fireEvent.click(file);
         fireEvent.click(screen.getByRole("button", { name: "审核" }));

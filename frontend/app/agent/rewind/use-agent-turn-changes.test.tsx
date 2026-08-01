@@ -272,7 +272,7 @@ describe("useAgentTurnChanges", () => {
         expect(result.current.cards.get("turn-2")?.action).toBe("undo");
     });
 
-    it("preserves an in-flight apply across leaf and revision advance until its turn action is acknowledged", async () => {
+    it("preserves an in-flight apply across semantic leaf advance until its turn action is acknowledged", async () => {
         const apply = deferred<AgentRewindMutationResult>();
         const runtime = client({ applyTurnUndo: vi.fn(() => apply.promise) });
         const initial = options({ client: runtime });
@@ -289,7 +289,6 @@ describe("useAgentTurnChanges", () => {
 
         rerender({
             ...initial,
-            sessionRevision: 2,
             rewindState: rewindState(undefined, { semanticLeafId: "leaf-2", displayLeafId: "display-2" }),
         });
         expect(result.current.awaitingAuthoritativeAck).toBe(true);
@@ -308,7 +307,6 @@ describe("useAgentTurnChanges", () => {
 
         rerender({
             ...initial,
-            sessionRevision: 2,
             rewindState: rewindState([{ turnId: "turn-1", action: "redo", undoOperationId: "undo-1" }], {
                 semanticLeafId: "leaf-2",
                 displayLeafId: "display-2",
@@ -317,6 +315,42 @@ describe("useAgentTurnChanges", () => {
         await waitFor(() => expect(result.current.awaitingAuthoritativeAck).toBe(false));
         expect(result.current.dialog.open).toBe(false);
     });
+
+    it.each(["success", "error"] as const)(
+        "cancels an old apply on session revision advance and ignores its late %s",
+        async (completion) => {
+            const apply = deferred<AgentRewindMutationResult>();
+            const runtime = client({ applyTurnUndo: vi.fn(() => apply.promise) });
+            const onError = vi.fn();
+            const initial = options({ client: runtime, onError });
+            const { result, rerender } = renderHook((props: UseAgentTurnChangesOptions) => useAgentTurnChanges(props), {
+                initialProps: initial,
+            });
+            await waitFor(() => expect(result.current.cards.has("turn-1")).toBe(true));
+            await act(async () => result.current.openMutation("turn-1"));
+            act(() => void result.current.confirmMutation("normal"));
+            await waitFor(() => expect(runtime.applyTurnUndo).toHaveBeenCalledOnce());
+
+            rerender({ ...initial, sessionRevision: 2 });
+            expect(result.current.awaitingAuthoritativeAck).toBe(false);
+            expect(result.current.dialog.open).toBe(false);
+
+            await act(async () => {
+                if (completion === "success") {
+                    apply.resolve({
+                        sessionMetadata: initial.sessionMetadata!,
+                        semanticLeafId: "leaf-after-old-apply",
+                        displayLeafId: "display-after-old-apply",
+                    });
+                    return;
+                }
+                apply.reject(new Error("old revision apply failed"));
+            });
+            expect(result.current.awaitingAuthoritativeAck).toBe(false);
+            expect(result.current.dialog.open).toBe(false);
+            expect(onError).not.toHaveBeenCalledWith("old revision apply failed");
+        }
+    );
 
     it("does not unlock after an unrelated leaf advance and safely ignores completion after a session switch", async () => {
         const apply = deferred<AgentRewindMutationResult>();

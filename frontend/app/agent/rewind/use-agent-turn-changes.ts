@@ -96,7 +96,8 @@ function sameSessionIdentity(left: RequestIdentity | undefined, right: RequestId
         !!left &&
         !!right &&
         left.sessionPath === right.sessionPath &&
-        left.sessionMetadata.id === right.sessionMetadata.id
+        left.sessionMetadata.id === right.sessionMetadata.id &&
+        left.sessionRevision === right.sessionRevision
     );
 }
 
@@ -132,8 +133,8 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
         : undefined;
     const identityRef = useRef<RequestIdentity | undefined>(undefined);
     identityRef.current = currentIdentity;
-    const sessionIdentityKey = `${currentIdentity?.sessionPath ?? ""}\u0000${currentIdentity?.sessionMetadata.id ?? ""}`;
-    const readScopeKey = `${sessionIdentityKey}\u0000${currentIdentity?.sessionRevision ?? 0}\u0000${currentIdentity?.semanticLeafId ?? ""}`;
+    const mutationScopeKey = `${currentIdentity?.sessionPath ?? ""}\u0000${currentIdentity?.sessionMetadata.id ?? ""}\u0000${currentIdentity?.sessionRevision ?? 0}`;
+    const readScopeKey = `${mutationScopeKey}\u0000${currentIdentity?.semanticLeafId ?? ""}`;
 
     const authorityByTurn = useMemo(
         () => new Map(options.rewindState.turnChanges.map((authority) => [authority.turnId, authority])),
@@ -167,7 +168,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
         applyInFlightRef.current = false;
         setAwaitingAuthoritativeAck(false);
         setDialog(ClosedDialog);
-    }, [sessionIdentityKey]);
+    }, [mutationScopeKey]);
 
     useLayoutEffect(() => {
         identityEpochRef.current++;
