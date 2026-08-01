@@ -140,21 +140,15 @@ vi.mock("./rewind/rewind-selector", () => ({
     },
 }));
 
-vi.mock("./rewind/rewind-preview-dialog", () => ({
-    RewindPreviewDialog: (props: any) => {
+vi.mock("./rewind/diff-review-dialog", () => ({
+    DiffReviewDialog: (props: any) => {
         rewindDialogProps.latest = props;
         return props.open ? (
             <div data-testid="rewind-preview">
-                <span>{`${props.operation}:${props.phase}`}</span>
-                <button type="button" onClick={props.onCancel}>
-                    Cancel preview
-                </button>
-                <button type="button" onClick={() => props.onConfirm("normal")}>
-                    Confirm normal
-                </button>
-                <button type="button" onClick={() => props.onConfirm("force-drift")}>
-                    Confirm force
-                </button>
+                <span>{`${props.title}:${props.loading ? "loading" : "ready"}`}</span>
+                <span>{props.description}</span>
+                {props.warning ? <span>{props.warning}</span> : null}
+                {props.footer}
             </div>
         ) : null;
     },
@@ -920,9 +914,11 @@ describe("AgentContent", () => {
                 expect.objectContaining({ target: { kind: "rewind", targetTurnId: "turn-a" } })
             )
         );
-        await waitFor(() => expect(screen.getByTestId("rewind-preview").textContent).toContain("rewind:ready"));
+        await waitFor(() =>
+            expect(screen.getByTestId("rewind-preview").textContent).toContain("Revert changes?:ready")
+        );
 
-        act(() => rewindDialogProps.latest.onCancel());
+        act(() => rewindDialogProps.latest.onOpenChange(false));
         act(() => {
             expect(hostProps.runtime.submit("/rewind")).toBe(true);
         });
@@ -933,7 +929,9 @@ describe("AgentContent", () => {
         fireEvent.click(screen.getByRole("button", { name: "Complete reveal" }));
         await waitFor(() => expect(client.previewRewind).toHaveBeenCalledTimes(2));
         expect(threadProps.latest.revealTurnRequest).toBeUndefined();
-        await waitFor(() => expect(screen.getByTestId("rewind-preview").textContent).toContain("rewind:ready"));
+        await waitFor(() =>
+            expect(screen.getByTestId("rewind-preview").textContent).toContain("Revert changes?:ready")
+        );
     });
 
     it("cancels a selector reveal whose target never mounts", async () => {
@@ -962,7 +960,8 @@ describe("AgentContent", () => {
         const { client } = renderRewindContent();
 
         await act(() => threadProps.latest.onRevertTurn("turn-a"));
-        fireEvent.click(screen.getByRole("button", { name: "Confirm normal" }));
+        expect(screen.getByText("Red will be removed · Green will be restored")).not.toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "Revert 1 file" }));
         await waitFor(() =>
             expect(client.rewindTree).toHaveBeenCalledWith(expect.objectContaining({ mode: "normal" }))
         );
@@ -985,8 +984,27 @@ describe("AgentContent", () => {
             });
         });
 
+        vi.mocked(client.previewRewind).mockResolvedValueOnce(
+            makePreview(
+                { kind: "rewind", targetTurnId: "turn-a" },
+                {
+                    forceRequired: true,
+                    files: [
+                        {
+                            path: "src/drift.ts",
+                            operation: "write",
+                            coverage: "covered",
+                            conflict: "forceable-drift",
+                            reason: "files changed on disk since the agent last wrote them",
+                        },
+                    ],
+                }
+            )
+        );
         await act(() => threadProps.latest.onRevertTurn("turn-a"));
-        fireEvent.click(screen.getByRole("button", { name: "Confirm force" }));
+        await waitFor(() => expect(screen.getByRole("button", { name: "Force revert" })).not.toBeNull());
+        expect(screen.queryByRole("button", { name: "Revert 1 file" })).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "Force revert" }));
         await waitFor(() =>
             expect(client.rewindTree).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "force-drift" }))
         );
@@ -1009,8 +1027,81 @@ describe("AgentContent", () => {
         });
 
         await act(() => threadProps.latest.onRevertTurn("turn-a"));
-        fireEvent.click(screen.getByRole("button", { name: "Cancel preview" }));
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
         expect(screen.queryByTestId("rewind-preview")).toBeNull();
+    });
+
+    it("shows only Cancel for a hard-blocked conversation revert", async () => {
+        const client = makeRewindClient({
+            previewRewind: vi.fn(async () =>
+                makePreview(
+                    { kind: "rewind", targetTurnId: "turn-a" },
+                    {
+                        hardBlocked: true,
+                        files: [
+                            {
+                                path: "src/blocked.ts",
+                                operation: "write",
+                                coverage: "unavailable",
+                                conflict: "hard-blocker",
+                                reason: "checkpoint snapshot is unavailable",
+                            },
+                        ],
+                    }
+                )
+            ),
+        });
+        renderRewindContent(client);
+
+        await act(() => threadProps.latest.onRevertTurn("turn-a"));
+
+        expect(screen.getByRole("button", { name: "Cancel" })).not.toBeNull();
+        expect(screen.queryByRole("button", { name: /^(Revert|Force revert|Redo)/ })).toBeNull();
+    });
+
+    it("never offers Force or Redo for a conversation redo with drift", async () => {
+        const client = makeRewindClient({
+            previewRewind: vi.fn(async () =>
+                makePreview(
+                    { kind: "redo" },
+                    {
+                        forceRequired: true,
+                        files: [
+                            {
+                                path: "src/drift.ts",
+                                operation: "write",
+                                coverage: "covered",
+                                conflict: "forceable-drift",
+                                reason: "files changed on disk since the agent last wrote them",
+                            },
+                        ],
+                    }
+                )
+            ),
+        });
+        renderRewindContent(client);
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    redo: {
+                        operationId: "operation-1",
+                        targetPrompt: "Original prompt",
+                        messageCount: 2,
+                        fileCount: 1,
+                        files: [],
+                    },
+                }),
+            });
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Redo" }));
+        await waitFor(() => expect(screen.getByTestId("rewind-preview")).not.toBeNull());
+
+        expect(screen.getByRole("button", { name: "Cancel" })).not.toBeNull();
+        expect(screen.queryByRole("button", { name: /^(Force revert|Redo 1 file)$/ })).toBeNull();
     });
 
     it("restores authoritative redo above the composer, shares openRedo with /redo, and waits for session_state removal", async () => {
@@ -1041,13 +1132,14 @@ describe("AgentContent", () => {
         await waitFor(() =>
             expect(client.previewRewind).toHaveBeenCalledWith(expect.objectContaining({ target: { kind: "redo" } }))
         );
-        fireEvent.click(screen.getByRole("button", { name: "Cancel preview" }));
+        expect(screen.getByTestId("rewind-preview").textContent).toContain("Redo changes?:ready");
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
         act(() => {
             expect(hostProps.runtime.submit("/redo")).toBe(true);
         });
         await waitFor(() => expect(client.previewRewind).toHaveBeenCalledTimes(2));
-        fireEvent.click(screen.getByRole("button", { name: "Confirm normal" }));
+        fireEvent.click(screen.getByRole("button", { name: "Redo 1 file" }));
         await waitFor(() => expect(client.redoRewind).toHaveBeenCalledOnce());
         expect(screen.getByRole("button", { name: "Redo" }).hasAttribute("disabled")).toBe(true);
         act(() => {

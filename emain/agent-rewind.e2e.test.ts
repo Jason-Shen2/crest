@@ -111,8 +111,8 @@ import {
 import { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 import { AgentRuntimeClient } from "../frontend/app/agent/agent-runtime-client";
 import { Thread } from "../frontend/app/agent/assistant-ui";
+import { DiffReviewDialog } from "../frontend/app/agent/rewind/diff-review-dialog";
 import { RedoDock } from "../frontend/app/agent/rewind/redo-dock";
-import { RewindPreviewDialog } from "../frontend/app/agent/rewind/rewind-preview-dialog";
 import { useAgentRewind } from "../frontend/app/agent/rewind/use-agent-rewind";
 import { _resetAgentIpcForTests, registerAgentIpcHandlers } from "./agent-ipc";
 import { openAgentRewindFeature } from "./agent-rewind-feature";
@@ -316,15 +316,30 @@ function RewindMessageUi(props: {
             rewindBusy: controller.busy,
             onRevertTurn: controller.openRewind,
         }),
-        createElement(RewindPreviewDialog, {
+        createElement(DiffReviewDialog, {
             open: controller.preview.open,
-            operation: controller.preview.operation,
-            phase: controller.preview.phase,
-            busy: controller.busy,
-            preview: controller.preview.result,
+            title: controller.preview.operation === "rewind" ? "Revert changes?" : "Redo changes?",
+            description: "Red will be removed · Green will be restored",
+            files: controller.preview.result?.files ?? [],
+            loading: controller.preview.phase === "loading",
             errorMessage: controller.preview.errorMessage,
-            onCancel: controller.cancelPreview,
-            onConfirm: controller.confirmPreview,
+            locked: controller.busy,
+            footer: createElement(
+                "button",
+                {
+                    type: "button",
+                    onClick: () => void controller.confirmPreview("normal"),
+                    disabled:
+                        controller.busy ||
+                        controller.preview.phase !== "ready" ||
+                        controller.preview.result?.hardBlocked,
+                },
+                `Revert ${controller.preview.result?.fileCount ?? 0} file`
+            ),
+            onSelectedPathChange: vi.fn(),
+            onOpenChange: (open: boolean) => {
+                if (!open) controller.cancelPreview();
+            },
         })
     );
 }
@@ -622,9 +637,10 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         );
         fireEvent.click(screen.getByRole("button", { name: "Revert" }));
         const previewDialog = await screen.findByRole("dialog");
-        expect(await within(previewDialog).findByText("Original user prompt")).not.toBeNull();
+        expect(await within(previewDialog).findByText("Red will be removed · Green will be restored")).not.toBeNull();
+        expect(within(previewDialog).queryByText("Original user prompt")).toBeNull();
         expect(await readFile(file, "utf8")).toBe("after");
-        fireEvent.click(within(previewDialog).getByRole("button", { name: "Revert" }));
+        fireEvent.click(within(previewDialog).getByRole("button", { name: "Revert 1 file" }));
         await waitFor(() => expect(applyFromUi).toHaveBeenCalledOnce());
         await act(async () => await applyFromUi.mock.results[0]!.value);
         expect(applyFromUi).toHaveBeenCalledWith(expect.objectContaining({ mode: "normal", targetTurnId: turnId }));

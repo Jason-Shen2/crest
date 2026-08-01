@@ -16,6 +16,7 @@ import { EmptyRewindState, type PiAgentMessage, type PiTurn } from "@/app/store/
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import type { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
+import { Button } from "@/shadcn/ui/button";
 import { useAtomValue } from "jotai";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -40,9 +41,9 @@ import {
 import type { CrestContextUsage } from "./assistant-ui/context-display";
 import { CheckpointQuotaBanner } from "./rewind/checkpoint-quota-banner";
 import { CheckpointQuotaDialog, type CheckpointPurgeRequest } from "./rewind/checkpoint-quota-dialog";
+import { DiffReviewDialog } from "./rewind/diff-review-dialog";
 import { RecoveryDialog } from "./rewind/recovery-dialog";
 import { RedoDock } from "./rewind/redo-dock";
-import { RewindPreviewDialog } from "./rewind/rewind-preview-dialog";
 import { RewindSelector } from "./rewind/rewind-selector";
 import { useAgentRewind } from "./rewind/use-agent-rewind";
 
@@ -402,6 +403,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
     const userErrorMessageRef = useRef("");
     const userErrorWriteGenerationRef = useRef(0);
     const [agentTurns, setAgentTurns] = useState<PiTurn[]>([]);
+    const [rewindSelectedPath, setRewindSelectedPath] = useState<string>();
     const visibleError =
         hostState.errorMessage && hostState.errorMessage !== dismissedHostError
             ? { source: "host" as const, message: hostState.errorMessage }
@@ -622,6 +624,24 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         onError: onUserError,
     });
     const recoveryFrozen = hostState.rewindState.frozen;
+    const rewindPreview = rewindController.preview.result;
+    const rewindDialogLocked = rewindController.busy;
+    const rewindDialogReady = rewindController.preview.phase === "ready" && !!rewindPreview && !rewindDialogLocked;
+    const rewindCanRevert =
+        rewindDialogReady && rewindController.preview.operation === "rewind" && !rewindPreview.hardBlocked;
+    const rewindCanRedo =
+        rewindDialogReady &&
+        rewindController.preview.operation === "redo" &&
+        !rewindPreview.hardBlocked &&
+        !rewindPreview.forceRequired;
+    const rewindFileCount = rewindPreview?.fileCount ?? 0;
+    const rewindFileLabel = `${rewindFileCount} ${rewindFileCount === 1 ? "file" : "files"}`;
+    const rewindWarning =
+        rewindPreview?.coverageWarnings[0] ?? rewindPreview?.files.find((file) => file.conflict !== "none")?.reason;
+
+    useEffect(() => {
+        setRewindSelectedPath(undefined);
+    }, [operationScopeKey, rewindPreview]);
 
     useLayoutEffect(() => {
         recoveryEpochRef.current++;
@@ -1100,15 +1120,58 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                             </>
                         }
                     />
-                    <RewindPreviewDialog
+                    <DiffReviewDialog
                         open={rewindController.preview.open}
-                        operation={rewindController.preview.operation}
-                        phase={rewindController.preview.phase}
-                        busy={rewindController.busy}
-                        preview={rewindController.preview.result}
+                        title={rewindController.preview.operation === "rewind" ? "Revert changes?" : "Redo changes?"}
+                        description="Red will be removed · Green will be restored"
+                        files={rewindPreview?.files ?? []}
+                        selectedPath={rewindSelectedPath}
+                        loading={rewindController.preview.phase === "loading"}
                         errorMessage={rewindController.preview.errorMessage}
-                        onCancel={rewindController.cancelPreview}
-                        onConfirm={rewindController.confirmPreview}
+                        warning={rewindWarning}
+                        locked={rewindDialogLocked}
+                        emptyMessage="No workspace files will change."
+                        footer={
+                            <>
+                                <Button
+                                    className="cursor-pointer"
+                                    variant="outline"
+                                    disabled={rewindDialogLocked}
+                                    onClick={rewindController.cancelPreview}
+                                >
+                                    Cancel
+                                </Button>
+                                {rewindCanRevert && rewindPreview.forceRequired && (
+                                    <Button
+                                        className="cursor-pointer"
+                                        variant="destructive"
+                                        onClick={() => void rewindController.confirmPreview("force-drift")}
+                                    >
+                                        Force revert
+                                    </Button>
+                                )}
+                                {rewindCanRevert && !rewindPreview.forceRequired && (
+                                    <Button
+                                        className="cursor-pointer"
+                                        onClick={() => void rewindController.confirmPreview("normal")}
+                                    >
+                                        Revert {rewindFileLabel}
+                                    </Button>
+                                )}
+                                {rewindCanRedo && (
+                                    <Button
+                                        className="cursor-pointer"
+                                        onClick={() => void rewindController.confirmPreview("normal")}
+                                    >
+                                        Redo {rewindFileLabel}
+                                    </Button>
+                                )}
+                            </>
+                        }
+                        onSelectedPathChange={setRewindSelectedPath}
+                        onOpenChange={(open) => {
+                            if (!open) rewindController.cancelPreview();
+                        }}
                     />
                     <RecoveryDialog
                         open={recoveryFrozen && recoveryUi.open}
