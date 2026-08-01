@@ -546,7 +546,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         const expectedForcedPaths = record.confirmedConflictFingerprints.map((item) => item.path);
         const exactRewind =
             record.kind === "rewind"
-                ? state?.rewind != null &&
+                ? state?.kind === "rewind" &&
                   state.rewind.fromLeafId === record.expectedSemanticLeafId &&
                   state.rewind.targetTurnId === record.targetTurnId &&
                   state.rewind.targetBoundaryId === record.targetBoundaryId &&
@@ -555,7 +555,7 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
                       state.rewind.redoStates,
                       record.paths.map((path) => ({ path: path.path, state: path.preState }))
                   )
-                : state?.rewind == null;
+                : state?.kind === "redo";
         return (
             entry?.parentId === record.targetBoundaryId &&
             state?.operationId === record.operationId &&

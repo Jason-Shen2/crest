@@ -1497,6 +1497,7 @@ describe("AgentSessionRuntime — execution config", () => {
             semanticLeafId: null,
             displayLeafId: null,
             eligibleTurnIds: [],
+            turnChanges: [],
             busy: false,
             frozen: true,
             quota: { status: "ok", usedBytes: 0, softQuotaBytes: 1, cleanupAvailable: false },

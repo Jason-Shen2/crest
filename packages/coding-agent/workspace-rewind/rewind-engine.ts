@@ -18,9 +18,16 @@ import type { WorkspaceOperationJournalV1, WorkspaceRecoveryJournal } from "./re
 import { planRedo, planRewind, type PlanRedoInput, type PlanRewindInput, type RestorePlanV1 } from "./restore-plan";
 import { foldWorkspaceSessionState } from "./session-state";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
-import { WorkspaceControlCustomTypes, type CapturedPathStateV1, type WorkspaceStateV1 } from "./types";
+import {
+    WorkspaceControlCustomTypes,
+    type CapturedPathStateV1,
+    type WorkspaceStateBaseV1,
+    type WorkspaceStateV1,
+} from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import type { WorkspaceRecovery } from "./workspace-recovery";
+
+type WorkspaceRewindMarkerV1 = Extract<WorkspaceStateV1, { kind: "rewind" }>;
 
 export interface PreviewRewindInput {
     session: Session<JsonlSessionMetadata>;
@@ -77,7 +84,7 @@ export interface WorkspaceRewindEngineOptions {
 interface PlannedRestore {
     entries: SessionTreeEntry[];
     plan: RestorePlanV1;
-    rewindState?: WorkspaceStateV1;
+    rewindState?: WorkspaceRewindMarkerV1;
     targetEntry?: Extract<SessionTreeEntry, { type: "message" }>;
 }
 
@@ -160,10 +167,10 @@ function selectedUserEntry(
 function previewMessageCount(
     entries: SessionTreeEntry[],
     plan: RestorePlanV1,
-    rewindState: WorkspaceStateV1 | undefined
+    rewindState: WorkspaceRewindMarkerV1 | undefined
 ): number {
-    const targetTurnId = plan.kind === "rewind" ? plan.targetTurnId : rewindState?.rewind?.targetTurnId;
-    const leafId = plan.kind === "rewind" ? plan.semanticLeafId : rewindState?.rewind?.fromLeafId;
+    const targetTurnId = plan.kind === "rewind" ? plan.targetTurnId : rewindState?.rewind.targetTurnId;
+    const leafId = plan.kind === "rewind" ? plan.semanticLeafId : rewindState?.rewind.fromLeafId;
     const branch = rawActiveBranch(entries, leafId ?? null);
     const targetIndex = branch.findIndex((entry) => entry.id === targetTurnId);
     if (targetIndex < 0) return 0;
@@ -279,7 +286,7 @@ export class WorkspaceRewindEngine {
 
     private async preview(planned: PlannedRestore): Promise<AgentRewindPreviewResult> {
         const { plan, entries, rewindState } = planned;
-        const targetTurnId = plan.kind === "rewind" ? plan.targetTurnId! : rewindState?.rewind?.targetTurnId;
+        const targetTurnId = plan.kind === "rewind" ? plan.targetTurnId! : rewindState?.rewind.targetTurnId;
         const targetEntry = planned.targetEntry ?? selectedUserEntry(entries, targetTurnId);
         const folded = foldWorkspaceSessionState(entries, plan.sessionId);
         let confirmationToken: string | undefined;
@@ -330,7 +337,7 @@ export class WorkspaceRewindEngine {
         const entries = await input.session.getEntries();
         const folded = foldWorkspaceSessionState(entries, input.sessionId);
         const rewindState = folded.activeWorkspaceState;
-        if (!rewindState?.rewind || rewindState.kind !== "rewind") {
+        if (rewindState?.kind !== "rewind") {
             return {
                 entries,
                 plan: {
@@ -419,8 +426,8 @@ export class WorkspaceRewindEngine {
         const workspaceStateEntryId = await input.session.getStorage().createEntryId();
         const sessionMetadata = await input.session.getMetadata();
         const redoBoundary =
-            input.kind === "redo" ? planned.rewindState?.rewind?.fromLeafId : planned.plan.targetBoundaryId;
-        if (input.kind === "redo" && !planned.rewindState?.rewind) {
+            input.kind === "redo" ? planned.rewindState?.rewind.fromLeafId : planned.plan.targetBoundaryId;
+        if (input.kind === "redo" && !planned.rewindState) {
             throw new Error("Redo requires an authoritative rewind marker");
         }
         let record: WorkspaceOperationJournalV1 = {
@@ -577,31 +584,33 @@ export class WorkspaceRewindEngine {
 
     private workspaceState(record: WorkspaceOperationJournalV1): WorkspaceStateV1 {
         const currentStates = record.paths.map((path) => ({ path: path.path, state: path.target }));
-        return {
+        const base = {
             schemaVersion: 1,
             sessionId: record.sessionId,
             operationId: record.operationId,
             workspaceIdentity: record.workspaceIdentity,
             workspaceIncarnation: record.workspaceIncarnation,
-            kind: record.kind,
             applyMode: record.applyMode,
             forcedPaths: record.confirmedConflictFingerprints.map((item) => item.path),
             currentSnapshot: record.resultSnapshot!,
             currentStates,
-            ...(record.kind === "rewind"
-                ? {
-                      rewind: {
-                          fromLeafId: record.expectedSemanticLeafId,
-                          targetTurnId: record.targetTurnId!,
-                          targetBoundaryId: record.targetBoundaryId,
-                          redoSnapshot: record.safetySnapshot,
-                          redoStates: record.paths.map((path) => ({
-                              path: path.path,
-                              state: path.preState,
-                          })),
-                      },
-                  }
-                : {}),
+        } satisfies WorkspaceStateBaseV1;
+        if (record.kind === "redo") {
+            return { ...base, kind: "redo" };
+        }
+        return {
+            ...base,
+            kind: "rewind",
+            rewind: {
+                fromLeafId: record.expectedSemanticLeafId,
+                targetTurnId: record.targetTurnId!,
+                targetBoundaryId: record.targetBoundaryId,
+                redoSnapshot: record.safetySnapshot,
+                redoStates: record.paths.map((path) => ({
+                    path: path.path,
+                    state: path.preState,
+                })),
+            },
         };
     }
 

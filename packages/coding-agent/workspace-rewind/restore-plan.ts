@@ -15,6 +15,7 @@ import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 
 const RestorePlanMaxInspectedPaths = 4_096;
 const RestorePlanFallbackInspectionConcurrency = 8;
+type WorkspaceRewindMarkerV1 = Extract<WorkspaceStateV1, { kind: "rewind" }>;
 
 export interface RestorePathPlanV1 {
     path: string;
@@ -57,7 +58,7 @@ export interface PlanRedoInput {
     workspace: CanonicalWorkspaceIdentity;
     rawEntries: SessionTreeEntry[];
     semanticLeafId: string | null;
-    rewindState: WorkspaceStateV1;
+    rewindState: WorkspaceRewindMarkerV1;
     inspectLivePath: (path: string) => Promise<LiveCapturedPathState>;
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
@@ -503,18 +504,13 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
 }
 
 export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
-    const plan = emptyPlan(input, "redo", input.rewindState.rewind?.targetBoundaryId ?? null);
+    const plan = emptyPlan(input, "redo", input.rewindState.rewind.targetBoundaryId);
     const active = activeBranch(input.rawEntries, input.semanticLeafId);
     if (!active.branch) {
         return hardBlock(plan, active.reason!);
     }
     const marker = currentLeafWorkspaceMarker(active.branch, input.sessionId);
-    if (
-        input.rewindState.kind !== "rewind" ||
-        !input.rewindState.rewind ||
-        !marker ||
-        !isDeepStrictEqual(marker, input.rewindState)
-    ) {
+    if (!marker || marker.kind !== "rewind" || !isDeepStrictEqual(marker, input.rewindState)) {
         return hardBlock(plan, "redo requires the current raw leaf to be this session's rewind marker");
     }
     if (

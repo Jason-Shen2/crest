@@ -115,7 +115,7 @@ describe("restore planning", () => {
             operationId: "old-rewind",
             workspaceIdentity: Workspace.workspaceIdentity,
             workspaceIncarnation: Workspace.workspaceIncarnation,
-            kind: "rewind",
+            kind: "redo",
             applyMode: "normal",
             forcedPaths: [],
             currentSnapshot: snapshot(OidC),
@@ -273,7 +273,7 @@ describe("restore planning", () => {
             operationId: "between-turns",
             workspaceIdentity: Workspace.workspaceIdentity,
             workspaceIncarnation: Workspace.workspaceIncarnation,
-            kind: "rewind",
+            kind: "redo",
             applyMode: "normal",
             forcedPaths: [],
             currentSnapshot: snapshot(OidC),
@@ -327,7 +327,7 @@ describe("restore planning", () => {
                 operationId: "same-operation",
                 workspaceIdentity: Workspace.workspaceIdentity,
                 workspaceIncarnation: Workspace.workspaceIncarnation,
-                kind: "rewind",
+                kind: "redo",
                 applyMode: "normal",
                 forcedPaths: [],
                 currentSnapshot: snapshot(OidA),
@@ -433,7 +433,7 @@ describe("restore planning", () => {
             operationId: "pre-target",
             workspaceIdentity: Workspace.workspaceIdentity,
             workspaceIncarnation: Workspace.workspaceIncarnation,
-            kind: "rewind",
+            kind: "redo",
             applyMode: "normal",
             forcedPaths: [],
             currentSnapshot: unavailableSnapshot,
@@ -485,7 +485,7 @@ describe("restore planning", () => {
                 operationId: "foreign",
                 workspaceIdentity: Workspace.workspaceIdentity,
                 workspaceIncarnation: Workspace.workspaceIncarnation,
-                kind: "rewind",
+                kind: "redo",
                 applyMode: "normal",
                 forcedPaths: [],
                 currentSnapshot: snapshot(OidA),
@@ -598,7 +598,7 @@ describe("restore planning", () => {
             inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
             verifySnapshot: async () => {},
         });
-        const forgedStates: WorkspaceStateV1[] = [
+        const forgedStates: Array<Extract<WorkspaceStateV1, { kind: "rewind" }>> = [
             { ...rewindState, currentSnapshot: snapshot(OidD) },
             {
                 ...rewindState,

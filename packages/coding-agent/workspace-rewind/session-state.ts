@@ -134,9 +134,10 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
     const eligibleTurnIds: string[] = [];
     const checkpointGaps: Array<{ turnId: string; reason: string }> = [];
     let activeWorkspaceState: WorkspaceStateV1 | undefined;
-    const turnMutationStates: WorkspaceTurnMutationStateV1[] = [];
+    const turnMutationStates: Array<{ branchIndex: number; state: WorkspaceTurnMutationStateV1 }> = [];
 
-    for (const entry of branch) {
+    for (let branchIndex = 0; branchIndex < branch.length; branchIndex++) {
+        const entry = branch[branchIndex]!;
         const state = decodeWorkspaceStateEntry(entry);
         if (state?.sessionId !== sessionId) {
             continue;
@@ -145,9 +146,13 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
             activeWorkspaceState = state;
             continue;
         }
-        turnMutationStates.push(state);
+        turnMutationStates.push({ branchIndex, state });
     }
 
+    const mutationSourcesByTurnId = new Map<
+        string,
+        { checkpoint: Extract<WorkspaceCheckpointV1, { status: "available" }>; branchIndex: number }
+    >();
     const userIndexes = branch.flatMap((entry, index) => (isUserTurn(entry) ? [index] : []));
     const transactionStartsByUserId = committedTransactionStartsByUserId(branch);
     for (let turnIndex = 0; turnIndex < userIndexes.length; turnIndex++) {
@@ -180,6 +185,10 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
             checkpointGaps.push({ turnId, reason: "workspace checkpoint turnId does not match the active turn" });
             continue;
         }
+        if (checkpoint.originSessionId !== sessionId) {
+            checkpointGaps.push({ turnId, reason: "workspace checkpoint originSessionId does not match the session" });
+            continue;
+        }
         const checkpointIndex = turnEntries.indexOf(checkpointEntry);
         const hasNonterminalEntry = turnEntries
             .slice(checkpointIndex + 1)
@@ -191,6 +200,10 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
         checkpointsByTurnId.set(turnId, checkpoint);
         if (checkpoint.status === "available") {
             eligibleTurnIds.push(turnId);
+            mutationSourcesByTurnId.set(turnId, {
+                checkpoint,
+                branchIndex: start + 1 + checkpointIndex,
+            });
             continue;
         }
         checkpointGaps.push({ turnId, reason: checkpointGapReason(checkpoint) });
@@ -200,12 +213,21 @@ export function foldWorkspaceSessionState(entries: SessionTreeEntry[], sessionId
     for (const turnId of eligibleTurnIds) {
         turnMutationsByTurnId.set(turnId, { action: "undo" });
     }
-    for (const state of turnMutationStates) {
+    for (const { branchIndex, state } of turnMutationStates) {
+        const source = mutationSourcesByTurnId.get(state.sourceTurnId);
+        if (
+            !source ||
+            branchIndex <= source.branchIndex ||
+            state.workspaceIdentity !== source.checkpoint.workspaceIdentity ||
+            state.workspaceIncarnation !== source.checkpoint.workspaceIncarnation
+        ) {
+            continue;
+        }
         const current = turnMutationsByTurnId.get(state.sourceTurnId);
         if (!current) {
             continue;
         }
-        if (state.kind === "turn-undo") {
+        if (state.kind === "turn-undo" && current.action === "undo") {
             turnMutationsByTurnId.set(state.sourceTurnId, {
                 action: "redo",
                 undoOperationId: state.operationId,

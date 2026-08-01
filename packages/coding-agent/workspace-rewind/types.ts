@@ -121,10 +121,15 @@ export interface WorkspaceStateBaseV1 {
 
 export type WorkspaceStateV1 = WorkspaceStateBaseV1 &
     (
-        | { kind: "rewind"; rewind: WorkspaceRewindStateV1 }
-        | { kind: "redo" }
-        | { kind: "turn-undo"; sourceTurnId: string }
-        | { kind: "turn-redo"; sourceTurnId: string; undoOperationId: string }
+        | {
+              kind: "rewind";
+              rewind: WorkspaceRewindStateV1;
+              sourceTurnId?: never;
+              undoOperationId?: never;
+          }
+        | { kind: "redo"; rewind?: never; sourceTurnId?: never; undoOperationId?: never }
+        | { kind: "turn-undo"; rewind?: never; sourceTurnId: string; undoOperationId?: never }
+        | { kind: "turn-redo"; rewind?: never; sourceTurnId: string; undoOperationId: string }
     );
 
 export interface FoldedWorkspaceSessionState {

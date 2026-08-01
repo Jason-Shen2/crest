@@ -395,6 +395,123 @@ describe("workspace rewind session state", () => {
         ]);
     });
 
+    it("ignores turn markers that precede their source turn checkpoint", () => {
+        const beforeUndo = custom(
+            "before-undo",
+            null,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", "u1", "before-undo-operation")
+        );
+        const beforeRedo = custom(
+            "before-redo",
+            beforeUndo.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-redo", "u2", "before-redo-operation", "session-1", "future-undo-operation")
+        );
+        const u1 = message("u1", beforeRedo.id, "user");
+        const c1 = custom("c1", u1.id, WorkspaceControlCustomTypes.checkpoint, changedCheckpoint(u1.id));
+        const u2 = message("u2", c1.id, "user");
+        const c2 = custom("c2", u2.id, WorkspaceControlCustomTypes.checkpoint, changedCheckpoint(u2.id));
+
+        const folded = foldWorkspaceSessionState([beforeUndo, beforeRedo, u1, c1, u2, c2], "session-1");
+
+        expect([...folded.turnMutationsByTurnId]).toEqual([
+            [u1.id, { action: "undo" }],
+            [u2.id, { action: "undo" }],
+        ]);
+    });
+
+    it("accepts only undo-to-redo and matching-redo-to-undo transitions", () => {
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom(
+            "checkpoint",
+            user.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            changedCheckpoint(user.id)
+        );
+        const undo = custom(
+            "undo",
+            checkpointEntry.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", user.id, "undo-operation")
+        );
+        const duplicateUndo = custom(
+            "duplicate-undo",
+            undo.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", user.id, "duplicate-undo-operation")
+        );
+        const wrongRedo = custom(
+            "wrong-redo",
+            duplicateUndo.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-redo", user.id, "wrong-redo-operation", "session-1", "duplicate-undo-operation")
+        );
+        const matchingRedo = custom(
+            "matching-redo",
+            wrongRedo.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-redo", user.id, "matching-redo-operation", "session-1", "undo-operation")
+        );
+
+        const beforeMatchingRedo = foldWorkspaceSessionState(
+            [user, checkpointEntry, undo, duplicateUndo, wrongRedo],
+            "session-1"
+        );
+        const folded = foldWorkspaceSessionState(
+            [user, checkpointEntry, undo, duplicateUndo, wrongRedo, matchingRedo],
+            "session-1"
+        );
+
+        expect(beforeMatchingRedo.turnMutationsByTurnId.get(user.id)).toEqual({
+            action: "redo",
+            undoOperationId: "undo-operation",
+        });
+        expect(folded.turnMutationsByTurnId.get(user.id)).toEqual({ action: "undo" });
+    });
+
+    it("ignores workspace-mismatched markers and foreign-session checkpoints", () => {
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom(
+            "checkpoint",
+            user.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            changedCheckpoint(user.id)
+        );
+        const mismatchedUndo = custom("mismatched-undo", checkpointEntry.id, WorkspaceControlCustomTypes.state, {
+            ...turnState("turn-undo", user.id, "mismatched-undo-operation"),
+            workspaceIdentity: "workspace-2",
+        });
+        const undo = custom(
+            "undo",
+            mismatchedUndo.id,
+            WorkspaceControlCustomTypes.state,
+            turnState("turn-undo", user.id, "undo-operation")
+        );
+        const mismatchedRedo = custom("mismatched-redo", undo.id, WorkspaceControlCustomTypes.state, {
+            ...turnState("turn-redo", user.id, "mismatched-redo-operation", "session-1", "undo-operation"),
+            workspaceIncarnation: "incarnation-2",
+        });
+        const foreignUser = message("foreign-user", mismatchedRedo.id, "user");
+        const foreignCheckpoint = custom("foreign-checkpoint", foreignUser.id, WorkspaceControlCustomTypes.checkpoint, {
+            ...changedCheckpoint(foreignUser.id),
+            originSessionId: "session-2",
+        });
+
+        const folded = foldWorkspaceSessionState(
+            [user, checkpointEntry, mismatchedUndo, undo, mismatchedRedo, foreignUser, foreignCheckpoint],
+            "session-1"
+        );
+
+        expect(folded.turnMutationsByTurnId.get(user.id)).toEqual({
+            action: "redo",
+            undoOperationId: "undo-operation",
+        });
+        expect(folded.checkpointsByTurnId.has(foreignUser.id)).toBe(false);
+        expect(folded.eligibleTurnIds).not.toContain(foreignUser.id);
+        expect(folded.turnMutationsByTurnId.has(foreignUser.id)).toBe(false);
+    });
+
     it("publishes turn actions only for readable non-empty available checkpoints", async () => {
         const missing = message("missing", null, "user");
         const unavailable = message("unavailable", missing.id, "user");

@@ -199,6 +199,7 @@ describe("AgentSessionStateBroadcaster", () => {
             semanticLeafId: "assistant-1",
             displayLeafId: "assistant-1",
             eligibleTurnIds: ["user-1"],
+            turnChanges: [],
             busy: false,
             frozen: true,
             quota: { status: "ok" as const, usedBytes: 1, softQuotaBytes: 2, cleanupAvailable: false },

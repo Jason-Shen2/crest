@@ -185,7 +185,7 @@ function collectSessionOwners(
                 throw new Error("Invalid workspace state owner");
             }
             addOwned(state.currentSnapshot, store, owned);
-            if (state.rewind) {
+            if (state.kind === "rewind") {
                 addOwned(state.rewind.redoSnapshot, store, owned);
             }
         }

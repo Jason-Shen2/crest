@@ -11,7 +11,13 @@ import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { encodeDurableJson } from "./durability";
 import { deriveWorkspaceApplyArtifactPaths } from "./filesystem-apply";
 import { WorkspaceRecoveryJournal, type WorkspaceOperationJournalV1 } from "./recovery-journal";
-import type { CapturedPathStateV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
+import type {
+    CapturedPathStateV1,
+    WorkspaceRewindStateV1,
+    WorkspaceSnapshotRefV1,
+    WorkspaceStateBaseV1,
+    WorkspaceStateV1,
+} from "./types";
 import {
     WorkspaceFrozenError,
     WorkspaceRecovery,
@@ -78,7 +84,12 @@ async function fixture(input: {
     phase: WorkspaceOperationJournalV1["phase"];
     live: CapturedPathStateV1 | "unknown";
     leaf?: string;
-    stateOverrides?: Partial<WorkspaceStateV1>;
+    stateOverrides?: Partial<WorkspaceStateBaseV1> & {
+        kind?: WorkspaceStateV1["kind"];
+        rewind?: WorkspaceRewindStateV1;
+        sourceTurnId?: string;
+        undoOperationId?: string;
+    };
     entryParentId?: string;
 }) {
     const root = await mkdtemp(join(tmpdir(), "crest-workspace-recovery-"));
@@ -112,7 +123,7 @@ async function fixture(input: {
             ...(phase === "files_verified" ? { resultSnapshot: snapshot("7".repeat(40)) } : {}),
         });
     }
-    const stateEntry: WorkspaceStateV1 = {
+    const stateEntry = {
         schemaVersion: 1,
         sessionId: "session-1",
         operationId: "operation-1",
