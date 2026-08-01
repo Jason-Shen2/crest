@@ -78,8 +78,9 @@ describe("WorkspaceAgentContentSlot", () => {
         expect(screen.getByTestId("agent-surface").textContent).toBe("Agent");
     });
 
-    it("passes the workspace file callback into AgentContent", () => {
+    it("passes ordinary and immutable workspace file callbacks into AgentContent", () => {
         const onOpenFile = vi.fn();
+        const onOpenTurnDiff = vi.fn();
         render(
             <WorkspaceAgentContentSlot
                 active={true}
@@ -92,9 +93,11 @@ describe("WorkspaceAgentContentSlot", () => {
                     environment: {},
                 }}
                 onOpenFile={onOpenFile}
+                onOpenTurnDiff={onOpenTurnDiff}
             />
         );
 
         expect(agentContentMock.props?.onOpenFile).toBe(onOpenFile);
+        expect(agentContentMock.props?.onOpenTurnDiff).toBe(onOpenTurnDiff);
     });
 });

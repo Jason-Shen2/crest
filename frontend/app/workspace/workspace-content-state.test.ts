@@ -392,6 +392,95 @@ describe("workspace content state", () => {
         expect(hydrated.topTabs).not.toBe(snapshot.toptabs);
     });
 
+    it("strictly hydrates a lowercase immutable agent turn diff descriptor", () => {
+        const descriptor = {
+            id: "turn-diff-1",
+            kind: "agent-turn-diff",
+            sessionid: "session-1",
+            sessioncreatedat: "2026-08-02T12:00:00.000Z",
+            sessioncwd: "/repo",
+            sessionpath: "/sessions/session-1.db",
+            turnid: "turn-1",
+            path: "src/app.ts",
+            title: "app.ts",
+        };
+        const hydrated = hydrateWorkspaceContentState(
+            persisted({ activecontent: { kind: "top-tab", toptabid: descriptor.id }, toptabs: [descriptor] }),
+            ""
+        );
+
+        expect(hydrated).toEqual({
+            activeContent: { kind: "top-tab", topTabId: "turn-diff-1" },
+            topTabs: [
+                {
+                    id: "turn-diff-1",
+                    kind: "agent-turn-diff",
+                    sessionId: "session-1",
+                    sessionCreatedAt: "2026-08-02T12:00:00.000Z",
+                    sessionCwd: "/repo",
+                    sessionPath: "/sessions/session-1.db",
+                    turnId: "turn-1",
+                    path: "src/app.ts",
+                    title: "app.ts",
+                },
+            ],
+            lastActiveTopTabId: "turn-diff-1",
+        });
+        expect(JSON.stringify(descriptor)).not.toMatch(/sessionId|sessionCreatedAt|sessionCwd|sessionPath|turnId/);
+    });
+
+    it.each(["sessionid", "sessioncreatedat", "sessioncwd", "sessionpath", "turnid", "path"])(
+        "drops an agent turn diff descriptor missing %s",
+        (field) => {
+            const descriptor: Record<string, unknown> = {
+                id: "turn-diff-1",
+                kind: "agent-turn-diff",
+                sessionid: "session-1",
+                sessioncreatedat: "2026-08-02T12:00:00.000Z",
+                sessioncwd: "/repo",
+                sessionpath: "/sessions/session-1.db",
+                turnid: "turn-1",
+                path: "src/app.ts",
+                title: "app.ts",
+            };
+            delete descriptor[field];
+
+            expect(
+                hydrateWorkspaceContentState(
+                    persisted({
+                        activecontent: { kind: "top-tab", toptabid: "turn-diff-1" },
+                        toptabs: [descriptor as any],
+                    }),
+                    ""
+                ).topTabs
+            ).toEqual([]);
+        }
+    );
+
+    it.each([
+        ["relative session cwd", { sessioncwd: "repo" }],
+        ["relative session path", { sessionpath: "sessions/session-1.db" }],
+        ["non-canonical session path", { sessionpath: "/sessions/../session-1.db" }],
+        ["non-canonical checkpoint path", { path: "src/../app.ts" }],
+        ["escaping checkpoint path", { path: "../app.ts" }],
+        ["camelcase persisted field", { sessionid: undefined, sessionId: "session-1" }],
+    ])("drops an agent turn diff descriptor with %s", (_name, invalid) => {
+        const descriptor = {
+            id: "turn-diff-1",
+            kind: "agent-turn-diff",
+            sessionid: "session-1",
+            sessioncreatedat: "2026-08-02T12:00:00.000Z",
+            sessioncwd: "/repo",
+            sessionpath: "/sessions/session-1.db",
+            turnid: "turn-1",
+            path: "src/app.ts",
+            title: "app.ts",
+            ...invalid,
+        } as any;
+
+        expect(hydrateWorkspaceContentState(persisted({ toptabs: [descriptor] }), "").topTabs).toEqual([]);
+    });
+
     it("matches backend descriptor validation, ID deduplication, and fallback semantics", () => {
         const snapshot = persisted({
             activecontent: { kind: "top-tab", toptabid: "browser" },

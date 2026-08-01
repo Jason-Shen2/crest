@@ -9,7 +9,7 @@ import type { TopTab } from "./workspace-content-state";
 import { WorkspaceFileContentSlot } from "./workspace-file-content-slot";
 
 type FileTopTab = Extract<TopTab, { kind: "file" }>;
-type EphemeralTopTab = Extract<TopTab, { kind: "preview" | "git-diff" }>;
+type EphemeralTopTab = Extract<TopTab, { kind: "preview" | "git-diff" | "agent-turn-diff" }>;
 
 export interface TopTabContentDeckProps {
     topTabs: TopTab[];
@@ -28,7 +28,7 @@ function LoadingTopTabSurface({ title }: { title: string }) {
 }
 
 function isEphemeralTopTab(tab: TopTab): tab is EphemeralTopTab {
-    return tab.kind === "preview" || tab.kind === "git-diff";
+    return tab.kind === "preview" || tab.kind === "git-diff" || tab.kind === "agent-turn-diff";
 }
 
 export function TopTabContentDeck({

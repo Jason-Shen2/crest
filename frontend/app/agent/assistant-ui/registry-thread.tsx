@@ -112,7 +112,7 @@ export type ThreadProps = {
     hideScrollToBottom?: boolean | undefined;
     workspaceDir?: string | undefined;
     onOpenFile?: ((path: string) => void) | undefined;
-    onOpenTurnFile?: ((turnId: string, path: string) => void) | undefined;
+    onOpenTurnDiff?: ((turnId: string, path: string) => void) | undefined;
     turnChanges?: TurnChangesContextValue | undefined;
     revealTurnRequest?: { turnId: string; requestId: number } | undefined;
     onRevealTurnComplete?: ((request: { turnId: string; requestId: number }) => void) | undefined;
@@ -131,7 +131,7 @@ const ThreadComponentsContext = createContext<ThreadComponents>(EMPTY_COMPONENTS
 const ThreadExtrasContext = createContext<
     Pick<
         ThreadProps,
-        "beforeComposer" | "composerAnchorRef" | "hideScrollToBottom" | "workspaceDir" | "onOpenFile" | "onOpenTurnFile"
+        "beforeComposer" | "composerAnchorRef" | "hideScrollToBottom" | "workspaceDir" | "onOpenFile" | "onOpenTurnDiff"
     >
 >({});
 type CrestAssistantGroup =
@@ -176,7 +176,7 @@ export const Thread: FC<ThreadProps> = ({
     hideScrollToBottom,
     workspaceDir,
     onOpenFile,
-    onOpenTurnFile,
+    onOpenTurnDiff,
     turnChanges,
     revealTurnRequest,
     onRevealTurnComplete,
@@ -215,7 +215,7 @@ export const Thread: FC<ThreadProps> = ({
                         hideScrollToBottom,
                         workspaceDir,
                         onOpenFile,
-                        onOpenTurnFile,
+                        onOpenTurnDiff,
                     }}
                 >
                     <ThreadRewindContext.Provider value={rewindContext}>
@@ -1037,7 +1037,7 @@ const AssistantMessage: FC = () => {
         ToolGroup,
         ReasoningGroup,
     } = useContext(ThreadComponentsContext);
-    const { workspaceDir = "", onOpenFile, onOpenTurnFile } = useContext(ThreadExtrasContext);
+    const { workspaceDir = "", onOpenFile, onOpenTurnDiff } = useContext(ThreadExtrasContext);
     const turnChanges = useContext(TurnChangesContext);
     const turnId = useAuiState((state) => (state.message.metadata.custom as { turnId?: string } | undefined)?.turnId);
     const turnCard = turnId ? turnChanges?.cards.get(turnId) : undefined;
@@ -1142,7 +1142,7 @@ const AssistantMessage: FC = () => {
                         summary={turnCard.summary}
                         action={turnCard.action}
                         disabled={turnCard.disabled}
-                        onOpenFile={(path) => onOpenTurnFile?.(turnId, path)}
+                        onOpenFile={(path) => onOpenTurnDiff?.(turnId, path)}
                         onReview={() => void turnChanges?.openReview(turnId)}
                         onUndo={() => void turnChanges?.openMutation(turnId)}
                         onRedo={() => void turnChanges?.openMutation(turnId)}

@@ -18,6 +18,17 @@ export type TopTab =
           mode: GitDiffMode;
           originalPath: string;
           title: string;
+      }
+    | {
+          id: string;
+          kind: "agent-turn-diff";
+          sessionId: string;
+          sessionCreatedAt: string;
+          sessionCwd: string;
+          sessionPath: string;
+          turnId: string;
+          path: string;
+          title: string;
       };
 
 export interface WorkspaceContentState {
@@ -41,6 +52,11 @@ export interface PersistedTopTab {
     reporoot?: string;
     mode?: string;
     originalpath?: string;
+    sessionid?: string;
+    sessioncreatedat?: string;
+    sessioncwd?: string;
+    sessionpath?: string;
+    turnid?: string;
 }
 
 export interface PersistedWorkspaceContentState {
@@ -169,6 +185,15 @@ function gitDiffTabIdentityKey(tab: Extract<TopTab, { kind: "git-diff" }>): stri
     ]);
 }
 
+function agentTurnDiffTabIdentityKey(tab: Extract<TopTab, { kind: "agent-turn-diff" }>): string {
+    return tupleIdentityKey([
+        "agent-turn-diff",
+        pathIdentityKey(tab.sessionPath),
+        tab.turnId,
+        pathIdentityKey(tab.path),
+    ]);
+}
+
 export function topTabIdentityKey(tab: TopTab): string {
     switch (tab.kind) {
         case "file":
@@ -177,7 +202,24 @@ export function topTabIdentityKey(tab: TopTab): string {
             return previewTabIdentityKey(tab);
         case "git-diff":
             return gitDiffTabIdentityKey(tab);
+        case "agent-turn-diff":
+            return agentTurnDiffTabIdentityKey(tab);
     }
+}
+
+function isCanonicalAbsoluteTopTabPath(value: unknown): value is string {
+    return isAbsoluteTopTabPath(value) && normalizeFileTabPath(value) === value.replace(/\\/g, "/");
+}
+
+function isCanonicalCheckpointPath(value: unknown): value is string {
+    return (
+        isNonEmptyString(value) &&
+        !value.includes("\\") &&
+        !value.includes("\0") &&
+        !value.startsWith("/") &&
+        !/^[A-Za-z]:/.test(value) &&
+        value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..")
+    );
 }
 
 function fromPersistedTopTab(tab: unknown): TopTab | undefined {
@@ -211,6 +253,25 @@ function fromPersistedTopTab(tab: unknown): TopTab | undefined {
                       title: tab.title,
                   }
                 : undefined;
+        case "agent-turn-diff":
+            return isNonEmptyString(tab.sessionid) &&
+                isNonEmptyString(tab.sessioncreatedat) &&
+                isCanonicalAbsoluteTopTabPath(tab.sessioncwd) &&
+                isCanonicalAbsoluteTopTabPath(tab.sessionpath) &&
+                isNonEmptyString(tab.turnid) &&
+                isCanonicalCheckpointPath(tab.path)
+                ? {
+                      id: tab.id,
+                      kind: "agent-turn-diff",
+                      sessionId: tab.sessionid,
+                      sessionCreatedAt: tab.sessioncreatedat,
+                      sessionCwd: tab.sessioncwd,
+                      sessionPath: tab.sessionpath,
+                      turnId: tab.turnid,
+                      path: tab.path,
+                      title: tab.title,
+                  }
+                : undefined;
         default:
             return undefined;
     }
@@ -218,7 +279,8 @@ function fromPersistedTopTab(tab: unknown): TopTab | undefined {
 
 function malformedDescriptorMetadata(tab: unknown, index: number) {
     const kind =
-        isRecord(tab) && (tab.kind === "file" || tab.kind === "preview" || tab.kind === "git-diff")
+        isRecord(tab) &&
+        (tab.kind === "file" || tab.kind === "preview" || tab.kind === "git-diff" || tab.kind === "agent-turn-diff")
             ? tab.kind
             : "unknown";
     let reason = "invalid-shape";
@@ -377,6 +439,15 @@ export function isValidTopTab(tab: unknown): tab is TopTab {
                 (tab.mode === "+" || tab.mode === "-") &&
                 typeof tab.originalPath === "string"
             );
+        case "agent-turn-diff":
+            return (
+                isNonEmptyString(tab.sessionId) &&
+                isNonEmptyString(tab.sessionCreatedAt) &&
+                isCanonicalAbsoluteTopTabPath(tab.sessionCwd) &&
+                isCanonicalAbsoluteTopTabPath(tab.sessionPath) &&
+                isNonEmptyString(tab.turnId) &&
+                isCanonicalCheckpointPath(tab.path)
+            );
         default:
             return false;
     }
@@ -387,6 +458,9 @@ function hasOnlyKeys(value: object, allowedKeys: string[]): boolean {
 }
 
 function updateTopTab(tab: TopTab, updates: TopTabUpdates): TopTab | undefined {
+    if (tab.kind === "agent-turn-diff") {
+        return undefined;
+    }
     if (!updates || tab.kind !== updates.kind || (updates.title != null && typeof updates.title !== "string")) {
         return undefined;
     }

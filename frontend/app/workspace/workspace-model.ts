@@ -78,6 +78,18 @@ function serializeTopTab(tab: TopTab): TopTabDescriptor {
                 originalpath: tab.originalPath,
                 title: tab.title,
             };
+        case "agent-turn-diff":
+            return {
+                id: tab.id,
+                kind: tab.kind,
+                sessionid: tab.sessionId,
+                sessioncreatedat: tab.sessionCreatedAt,
+                sessioncwd: tab.sessionCwd,
+                sessionpath: tab.sessionPath,
+                turnid: tab.turnId,
+                path: tab.path,
+                title: tab.title,
+            };
     }
 }
 

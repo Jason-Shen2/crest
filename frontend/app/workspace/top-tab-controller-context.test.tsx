@@ -14,8 +14,10 @@ describe("WorkspaceTopTabControllerContext", () => {
             openFile: vi.fn(),
             openPreview: vi.fn(),
             openGitDiff: vi.fn(),
+            openAgentTurnDiff: vi.fn(),
             activate: vi.fn(),
             close: vi.fn(),
+            relocateFile: vi.fn(),
         };
         const wrapper = ({ children }: PropsWithChildren) => (
             <WorkspaceTopTabControllerContext.Provider value={controller}>

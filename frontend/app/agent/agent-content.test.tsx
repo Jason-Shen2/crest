@@ -371,7 +371,10 @@ function makeRewindClient(overrides: Record<string, unknown> = {}) {
     } as any;
 }
 
-function renderRewindContent(client = makeRewindClient()) {
+function renderRewindContent(
+    client = makeRewindClient(),
+    props: { onOpenFile?: (path: string) => void; onOpenTurnDiff?: (turnId: string, path: string) => void } = {}
+) {
     const model = makeModel();
     const session = { id: "a", path: "/sessions/a.db", cwd: "/repo", createdAt: "now" };
     act(() => model.selectSession(session));
@@ -386,6 +389,8 @@ function renderRewindContent(client = makeRewindClient()) {
                     connection: "",
                     environment: {},
                 }}
+                onOpenFile={props.onOpenFile}
+                onOpenTurnDiff={props.onOpenTurnDiff}
             />
         </Provider>
     );
@@ -432,8 +437,18 @@ afterEach(async () => {
 });
 
 describe("AgentContent", () => {
+    it("routes card file clicks to immutable turn diff without changing the ordinary file callback", () => {
+        const onOpenFile = vi.fn();
+        const onOpenTurnDiff = vi.fn();
+        renderRewindContent(makeRewindClient(), { onOpenFile, onOpenTurnDiff });
+
+        expect(threadProps.latest.onOpenFile).toBe(onOpenFile);
+        expect(threadProps.latest.onOpenTurnDiff).toBe(onOpenTurnDiff);
+    });
+
     it("provides completed turn cards and opens forward review in the shared diff dialog", async () => {
-        const { client } = renderRewindContent();
+        const onOpenTurnDiff = vi.fn();
+        const { client } = renderRewindContent(makeRewindClient(), { onOpenTurnDiff });
         act(() => {
             hostProps.latest.onTurnsChange([
                 {
@@ -463,6 +478,8 @@ describe("AgentContent", () => {
         expect(turnDialogProps.latest.title).toBe("Review turn changes");
         expect(turnDialogProps.latest.description).toBe("Red was removed · Green was added");
         expect(turnDialogProps.latest.files[0].diff).toContain("-old\n+new");
+        act(() => turnDialogProps.latest.onSelectedPathChange("frontend/card.tsx"));
+        expect(onOpenTurnDiff).not.toHaveBeenCalled();
         expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
         expect(screen.queryByRole("button", { name: /Undo .*file/ })).toBeNull();
     });

@@ -144,6 +144,70 @@ describe("WorkspaceTopTabController", () => {
         expect(fixture.model.openTopTab).toHaveBeenCalledTimes(4);
     });
 
+    it("deduplicates immutable turn diffs by canonical session path, turn, and checkpoint path", () => {
+        const fixture = makeModel();
+        vi.spyOn(crypto, "randomUUID").mockReturnValue("turn-diff-id");
+        const controller = makeWorkspaceTopTabController(fixture.model);
+        controller.start();
+        const sessionMetadata = {
+            id: "session-1",
+            createdAt: "2026-08-02T12:00:00.000Z",
+            cwd: "/repo",
+            path: "/sessions/session-1.db",
+        };
+
+        const first = controller.openAgentTurnDiff({ sessionMetadata, turnId: "turn-1", path: "src/app.ts" });
+        const second = controller.openAgentTurnDiff({
+            sessionMetadata: { ...sessionMetadata, path: "/sessions/./session-1.db" },
+            turnId: "turn-1",
+            path: "src/app.ts",
+        });
+
+        expect(second).toBe(first);
+        expect(fixture.tabs).toEqual([
+            {
+                id: "turn-diff-id",
+                kind: "agent-turn-diff",
+                sessionId: "session-1",
+                sessionCreatedAt: "2026-08-02T12:00:00.000Z",
+                sessionCwd: "/repo",
+                sessionPath: "/sessions/session-1.db",
+                turnId: "turn-1",
+                path: "src/app.ts",
+                title: "app.ts",
+            },
+        ]);
+        expect(fixture.model.activateTopTab).toHaveBeenCalledWith("turn-diff-id");
+    });
+
+    it("keeps different immutable turn diff identities distinct", () => {
+        const fixture = makeModel();
+        vi.spyOn(crypto, "randomUUID")
+            .mockReturnValueOnce("base")
+            .mockReturnValueOnce("different-session")
+            .mockReturnValueOnce("different-turn")
+            .mockReturnValueOnce("different-path");
+        const controller = makeWorkspaceTopTabController(fixture.model);
+        controller.start();
+        const sessionMetadata = { id: "s1", createdAt: "now", cwd: "/repo", path: "/sessions/a.db" };
+
+        controller.openAgentTurnDiff({ sessionMetadata, turnId: "t1", path: "src/a.ts" });
+        controller.openAgentTurnDiff({
+            sessionMetadata: { ...sessionMetadata, path: "/sessions/b.db" },
+            turnId: "t1",
+            path: "src/a.ts",
+        });
+        controller.openAgentTurnDiff({ sessionMetadata, turnId: "t2", path: "src/a.ts" });
+        controller.openAgentTurnDiff({ sessionMetadata, turnId: "t1", path: "src/b.ts" });
+
+        expect(fixture.tabs.map((tab) => tab.id)).toEqual([
+            "base",
+            "different-session",
+            "different-turn",
+            "different-path",
+        ]);
+    });
+
     it("activates an existing identity without creating another descriptor", () => {
         const fixture = makeModel([
             { id: "persisted-preview", kind: "preview", path: "/repo/README.md", title: "README.md" },

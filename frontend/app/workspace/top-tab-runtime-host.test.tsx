@@ -31,6 +31,17 @@ const DiffTab: TopTab = {
     originalPath: "",
     title: "a.ts",
 };
+const AgentTurnDiffTab: TopTab = {
+    id: "turn-diff-1",
+    kind: "agent-turn-diff",
+    sessionId: "session-1",
+    sessionCreatedAt: "2026-08-02T12:00:00.000Z",
+    sessionCwd: "/repo",
+    sessionPath: "/sessions/session-1.db",
+    turnId: "turn-1",
+    path: "src/a.ts",
+    title: "a.ts",
+};
 
 function runtime(title: string): TopTabRuntime {
     return {
@@ -45,6 +56,7 @@ function factories(): TopTabSurfaceFactories {
         renderFile: (tab) => <div>file:{tab.id}</div>,
         renderPreview: (tab) => <div>preview:{tab.id}</div>,
         renderGitDiff: (tab) => <div>diff:{tab.id}</div>,
+        renderAgentTurnDiff: (tab) => <div>turn-diff:{tab.id}</div>,
     };
 }
 
@@ -90,11 +102,20 @@ describe("TopTabRuntimeHost", () => {
                 factories={factories()}
             />
         );
+        view.rerender(
+            <TopTabRuntimeHost
+                activeTab={AgentTurnDiffTab}
+                registry={registry}
+                createRuntime={(tab) => runtime(tab.title)}
+                factories={factories()}
+            />
+        );
 
         expect(performanceTrace.record.mock.calls).toEqual([
             ["top-tab-first-content", { kind: "file", id: "file-1", duration: 10 }],
             ["top-tab-first-content", { kind: "preview", id: "preview-1", duration: 25 }],
             ["top-tab-first-content", { kind: "git-diff", id: "diff-1", duration: 40 }],
+            ["top-tab-first-content", { kind: "agent-turn-diff", id: "turn-diff-1", duration: 0 }],
         ]);
         expect(JSON.stringify(performanceTrace.record.mock.calls)).not.toMatch(/\/repo|a\.ts|a\.md/);
     });
@@ -171,56 +192,62 @@ describe("TopTabRuntimeHost", () => {
         expect(createRuntime).toHaveBeenCalledTimes(1);
     });
 
-    it.each([PreviewTab, DiffTab])("disposes $kind adapters when the active surface unmounts", async (tab) => {
-        const registry = new WorkspaceTopTabRuntimeRegistry();
-        const adapter = runtime(tab.title);
-        const view = render(
-            <TopTabRuntimeHost
-                activeTab={tab}
-                registry={registry}
-                createRuntime={() => adapter}
-                factories={factories()}
-            />
-        );
-        view.rerender(
-            <TopTabRuntimeHost
-                activeTab={undefined}
-                registry={registry}
-                createRuntime={() => adapter}
-                factories={factories()}
-            />
-        );
-        await vi.waitFor(() => expect(adapter.dispose).toHaveBeenCalledTimes(1));
-        expect(registry.get(tab.id)).toBeUndefined();
-    });
-
-    it.each([PreviewTab, DiffTab])("keeps the active $kind adapter alive through StrictMode replay", async (tab) => {
-        const registry = new WorkspaceTopTabRuntimeRegistry();
-        const adapter = runtime(tab.title);
-        const view = render(
-            <StrictMode>
+    it.each([PreviewTab, DiffTab, AgentTurnDiffTab])(
+        "disposes $kind adapters when the active surface unmounts",
+        async (tab) => {
+            const registry = new WorkspaceTopTabRuntimeRegistry();
+            const adapter = runtime(tab.title);
+            const view = render(
                 <TopTabRuntimeHost
                     activeTab={tab}
                     registry={registry}
                     createRuntime={() => adapter}
                     factories={factories()}
                 />
-            </StrictMode>
-        );
+            );
+            view.rerender(
+                <TopTabRuntimeHost
+                    activeTab={undefined}
+                    registry={registry}
+                    createRuntime={() => adapter}
+                    factories={factories()}
+                />
+            );
+            await vi.waitFor(() => expect(adapter.dispose).toHaveBeenCalledTimes(1));
+            expect(registry.get(tab.id)).toBeUndefined();
+        }
+    );
 
-        await Promise.resolve();
-        expect(registry.get(tab.id)).toBe(adapter);
-        expect(adapter.dispose).not.toHaveBeenCalled();
-        expect(performanceTrace.record).toHaveBeenCalledTimes(1);
-        expect(performanceTrace.record).toHaveBeenCalledWith("top-tab-first-content", {
-            kind: tab.kind,
-            id: tab.id,
-            duration: 0,
-        });
+    it.each([PreviewTab, DiffTab, AgentTurnDiffTab])(
+        "keeps the active $kind adapter alive through StrictMode replay",
+        async (tab) => {
+            const registry = new WorkspaceTopTabRuntimeRegistry();
+            const adapter = runtime(tab.title);
+            const view = render(
+                <StrictMode>
+                    <TopTabRuntimeHost
+                        activeTab={tab}
+                        registry={registry}
+                        createRuntime={() => adapter}
+                        factories={factories()}
+                    />
+                </StrictMode>
+            );
 
-        view.unmount();
-        await vi.waitFor(() => expect(adapter.dispose).toHaveBeenCalledTimes(1));
-    });
+            await Promise.resolve();
+            expect(registry.get(tab.id)).toBe(adapter);
+            expect(adapter.dispose).not.toHaveBeenCalled();
+            expect(performanceTrace.record).toHaveBeenCalledTimes(1);
+            expect(performanceTrace.record).toHaveBeenCalledWith("top-tab-first-content", {
+                kind: tab.kind,
+                id: tab.id,
+                duration: 0,
+            });
+
+            view.unmount();
+            await vi.waitFor(() => expect(adapter.dispose).toHaveBeenCalledTimes(1));
+        }
+    );
 
     it("does not retire a reactivated ephemeral runtime during an A to B to A switch", async () => {
         const registry = new WorkspaceTopTabRuntimeRegistry();

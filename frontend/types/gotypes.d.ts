@@ -2072,6 +2072,11 @@ declare global {
         reporoot?: string;
         mode?: string;
         originalpath?: string;
+        sessionid?: string;
+        sessioncreatedat?: string;
+        sessioncwd?: string;
+        sessionpath?: string;
+        turnid?: string;
     };
 
     // waveobj.UIContext

@@ -934,6 +934,11 @@ describe("WorkspaceRewindEngine transaction", () => {
         const summary = await value.engine.getTurnChangeSummary(input);
         const review = await value.engine.reviewTurnChanges(input);
         const file = await value.engine.getTurnFileDiff({ ...input, path: "src/file.ts" });
+        const historicalFile = await value.engine.getTurnFileDiff({
+            ...input,
+            semanticLeafId: null,
+            path: "src/file.ts",
+        });
 
         expect(summary).toEqual({
             turnId: "turn-1",
@@ -962,9 +967,19 @@ describe("WorkspaceRewindEngine transaction", () => {
             truncated: false,
         });
         expect(file.fallbackPatch).toContain("+added");
+        expect(historicalFile).toEqual(file);
         expect(issue).not.toHaveBeenCalled();
         expect(value.options.inspectLivePath).not.toHaveBeenCalled();
         expect(value.options.inspectLivePaths).not.toHaveBeenCalled();
+
+        entries.push({ ...userEntry(), id: "turn-2", parentId: null });
+        await expect(
+            value.engine.getTurnFileDiff({
+                ...input,
+                semanticLeafId: null,
+                path: "src/file.ts",
+            })
+        ).rejects.toThrow(/checkpoint is unavailable/i);
     });
 
     it("fences immutable turn reads to the expected active semantic leaf", async () => {

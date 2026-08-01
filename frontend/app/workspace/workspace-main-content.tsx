@@ -3,7 +3,9 @@
 
 import type { AgentRuntimeClient } from "@/app/agent/agent-runtime-client";
 import { getApi } from "@/app/store/global";
+import { globalStore } from "@/app/store/jotaiStore";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AgentTurnDiffTopTab } from "./agent-turn-diff-top-tab";
 import { FileTopTab } from "./file-top-tab";
 import { GitDiffTopTab } from "./git-diff-top-tab";
 import type { WorkspacePreviewRepository } from "./preview-repository";
@@ -108,9 +110,13 @@ export function WorkspaceMainContent({
                       renderPreview: (tab) => (
                           <PreviewTopTab tab={tab} repository={previewRepository} controller={topTabController} />
                       ),
+                      renderAgentTurnDiff: (tab) => <AgentTurnDiffTopTab tab={tab} client={agentClient} />,
                   }
-                : topTabSurfaceFactories,
-        [editorRegistry, onCloseTopTab, previewRepository, topTabController, topTabSurfaceFactories]
+                : {
+                      ...topTabSurfaceFactories,
+                      renderAgentTurnDiff: (tab) => <AgentTurnDiffTopTab tab={tab} client={agentClient} />,
+                  },
+        [agentClient, editorRegistry, onCloseTopTab, previewRepository, topTabController, topTabSurfaceFactories]
     );
     const createRuntime = useCallback(
         (tab: TopTab) =>
@@ -122,6 +128,15 @@ export function WorkspaceMainContent({
             topTabController?.openFile(path);
         },
         [topTabController]
+    );
+    const openAgentTurnDiff = useCallback(
+        (turnId: string, path: string) => {
+            if (!topTabController || !agentModel) return;
+            const sessionMetadata = globalStore.get(agentModel.stateAtom).activeSession;
+            if (!sessionMetadata) return;
+            topTabController.openAgentTurnDiff({ sessionMetadata, turnId, path });
+        },
+        [agentModel, topTabController]
     );
     const registryDisposal = useRef<{ registry: WorkspaceTopTabRuntimeRegistry; cancelled: boolean } | undefined>(
         undefined
@@ -227,6 +242,7 @@ export function WorkspaceMainContent({
                     client={agentClient}
                     executionContext={agentExecutionContext}
                     onOpenFile={topTabController ? openAgentFile : undefined}
+                    onOpenTurnDiff={topTabController ? openAgentTurnDiff : undefined}
                 />
                 {activeContent.kind === "terminal" ? (
                     <section

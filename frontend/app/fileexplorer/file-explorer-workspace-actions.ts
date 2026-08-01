@@ -14,7 +14,7 @@ import { TabRpcClient } from "@/app/store/wshrpcutil";
 import type { TerminalNavigationAdapter } from "@/app/workspace/terminal-navigation";
 import type { TopTabCloseCoordinator } from "@/app/workspace/top-tab-close-coordinator";
 import type { WorkspaceTopTabController } from "@/app/workspace/top-tab-controller";
-import { normalizeFileTabPath } from "@/app/workspace/workspace-content-state";
+import { normalizeFileTabPath, type TopTab } from "@/app/workspace/workspace-content-state";
 import type { WorkspaceEditorRegistry } from "@/app/workspace/workspace-editor-registry";
 import type { WorkspaceModel } from "@/app/workspace/workspace-model";
 import { joinLocalPath } from "@/util/local-path";
@@ -83,12 +83,13 @@ export function makeFileExplorerWorkspaceActions(
         return next;
     }
 
-    function affected(target: string) {
+    function affected(target: string): Array<Extract<TopTab, { kind: "file" | "preview" }>> {
         const normalized = normalizeFileTabPath(target);
         return globalStore
             .get(deps.model.contentStateAtom)
             .topTabs.filter(
-                (tab) => (tab.kind === "file" || tab.kind === "preview") && isPathOrChild(tab.path, normalized)
+                (tab): tab is Extract<TopTab, { kind: "file" | "preview" }> =>
+                    (tab.kind === "file" || tab.kind === "preview") && isPathOrChild(tab.path, normalized)
             );
     }
 

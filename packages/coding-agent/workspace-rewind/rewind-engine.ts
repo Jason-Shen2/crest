@@ -324,7 +324,7 @@ export class WorkspaceRewindEngine {
     }
 
     async getTurnFileDiff(input: ReadTurnFileDiffInput): Promise<AgentTurnFileDiffView> {
-        const loaded = await this.loadTurnCheckpoint(input);
+        const loaded = await this.loadTurnCheckpoint(input, "active-branch");
         const change = loaded.checkpoint.changes.find((candidate) => candidate.path === input.path);
         if (!change) throw new Error("Turn file is not present in the workspace checkpoint");
         const file = await projectWorkspacePathDiff({
@@ -399,14 +399,17 @@ export class WorkspaceRewindEngine {
         return { semanticLeafId: loaded.semanticLeafId, files };
     }
 
-    private async loadTurnCheckpoint(input: ReadTurnChangesInput): Promise<{
+    private async loadTurnCheckpoint(
+        input: ReadTurnChangesInput,
+        authority: "expected-leaf" | "active-branch" = "expected-leaf"
+    ): Promise<{
         semanticLeafId: string | null;
         checkpoint: AvailableCheckpoint;
     }> {
         this.assertWorkspace(input.workspace);
         const entries = await input.session.getEntries();
         const folded = foldWorkspaceSessionState(entries, input.sessionId);
-        if (folded.semanticLeafId !== input.semanticLeafId) {
+        if (authority === "expected-leaf" && folded.semanticLeafId !== input.semanticLeafId) {
             throw new Error("semantic leaf changed");
         }
         const checkpoint = folded.checkpointsByTurnId.get(input.sourceTurnId);

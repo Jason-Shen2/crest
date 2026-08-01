@@ -3,6 +3,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { atom } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TopTabRuntime } from "./top-tab-runtime-registry";
 import { WorkspaceMainContent, type WorkspaceMainContentProps } from "./workspace-main-content";
@@ -32,6 +33,12 @@ vi.mock("./file-top-tab", () => ({
 
 vi.mock("./git-diff-top-tab", () => ({
     GitDiffTopTab: ({ tab }: any) => <div>Git diff production:{tab.path}</div>,
+}));
+
+vi.mock("./agent-turn-diff-top-tab", () => ({
+    AgentTurnDiffTopTab: ({ tab, client }: any) => (
+        <div>{`Agent turn diff production:${tab.turnId}:${tab.path}:${client?.identity?.workspaceId}`}</div>
+    ),
 }));
 
 const TopTabs = [
@@ -188,6 +195,49 @@ describe("WorkspaceMainContent identity", () => {
         (agentContentMock.props?.onOpenFile as ((path: string) => void) | undefined)?.("/repo/src/app.ts");
 
         expect(openFile).toHaveBeenCalledWith("/repo/src/app.ts");
+    });
+
+    it("routes Agent turn card files to an immutable tab and gives the surface the workspace client", async () => {
+        const openAgentTurnDiff = vi.fn(() => "turn-diff-1");
+        const client = { identity: { workspaceId: "workspace-1" } } as any;
+        const sessionMetadata = {
+            id: "session-1",
+            createdAt: "2026-08-02T12:00:00.000Z",
+            cwd: "/repo",
+            path: "/sessions/session-1.db",
+        };
+        const turnDiffTab = {
+            id: "turn-diff-1",
+            kind: "agent-turn-diff" as const,
+            sessionId: "session-1",
+            sessionCreatedAt: "2026-08-02T12:00:00.000Z",
+            sessionCwd: "/repo",
+            sessionPath: "/sessions/session-1.db",
+            turnId: "turn-1",
+            path: "src/app.ts",
+            title: "app.ts",
+        };
+        const props = makeProps({
+            agentModel: { stateAtom: atom({ activeSession: sessionMetadata }) } as any,
+            agentClient: client,
+            agentExecutionContext: { workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} },
+            topTabController: { openAgentTurnDiff } as any,
+            topTabs: [turnDiffTab],
+        });
+        const view = render(<WorkspaceMainContent {...props} />);
+
+        (agentContentMock.props?.onOpenTurnDiff as ((turnId: string, path: string) => void) | undefined)?.(
+            "turn-1",
+            "src/app.ts"
+        );
+        expect(openAgentTurnDiff).toHaveBeenCalledWith({
+            sessionMetadata,
+            turnId: "turn-1",
+            path: "src/app.ts",
+        });
+
+        view.rerender(<WorkspaceMainContent {...props} activeContent={{ kind: "top-tab", topTabId: "turn-diff-1" }} />);
+        expect(await screen.findByText("Agent turn diff production:turn-1:src/app.ts:workspace-1")).toBeTruthy();
     });
 
     it("keeps Terminal navigation out of the top tabs and renders no Phase 2 placeholder copy", () => {

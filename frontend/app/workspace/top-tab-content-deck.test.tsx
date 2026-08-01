@@ -24,6 +24,17 @@ const DiffTab: TopTab = {
     originalPath: "",
     title: "a.ts",
 };
+const AgentTurnDiffTab: TopTab = {
+    id: "turn-diff-a",
+    kind: "agent-turn-diff",
+    sessionId: "session-1",
+    sessionCreatedAt: "2026-08-02T12:00:00.000Z",
+    sessionCwd: "/repo",
+    sessionPath: "/sessions/session-1.db",
+    turnId: "turn-1",
+    path: "src/a.ts",
+    title: "a.ts",
+};
 
 function makeRuntime(title: string): TopTabRuntime {
     return {
@@ -57,6 +68,7 @@ function makeFactories(
         renderFile: (tab) => <Lifecycle id={tab.id} mounts={mounts} unmounts={unmounts} />,
         renderPreview: (tab) => <div>preview:{tab.id}</div>,
         renderGitDiff: (tab) => <div>diff:{tab.id}</div>,
+        renderAgentTurnDiff: (tab) => <div>turn-diff:{tab.id}</div>,
     };
 }
 
@@ -220,6 +232,7 @@ describe("TopTabContentDeck", () => {
     it.each([
         ["Preview", PreviewTab, "renderPreview"],
         ["Git Diff", DiffTab, "renderGitDiff"],
+        ["Agent Turn Diff", AgentTurnDiffTab, "renderAgentTurnDiff"],
     ] as const)(
         "renders a cold active %s loading surface during static render without calling its factory",
         (_, tab, key) => {
@@ -243,7 +256,7 @@ describe("TopTabContentDeck", () => {
         }
     );
 
-    it.each([PreviewTab, DiffTab])(
+    it.each([PreviewTab, DiffTab, AgentTurnDiffTab])(
         "mounts %kind after the client loading commit and unmounts when inactive",
         async (tab) => {
             const factories = makeFactories();
@@ -259,7 +272,8 @@ describe("TopTabContentDeck", () => {
                 />
             );
 
-            await screen.findByText(`${tab.kind === "preview" ? "preview" : "diff"}:${tab.id}`);
+            const prefix = tab.kind === "preview" ? "preview" : tab.kind === "git-diff" ? "diff" : "turn-diff";
+            await screen.findByText(`${prefix}:${tab.id}`);
             expect(createRuntime).toHaveBeenCalledTimes(1);
 
             const runtime = registry.get(tab.id);
@@ -273,7 +287,7 @@ describe("TopTabContentDeck", () => {
                 />
             );
 
-            expect(screen.queryByText(`${tab.kind === "preview" ? "preview" : "diff"}:${tab.id}`)).toBeNull();
+            expect(screen.queryByText(`${prefix}:${tab.id}`)).toBeNull();
             await waitFor(() => expect(runtime?.dispose).toHaveBeenCalledTimes(1));
         }
     );

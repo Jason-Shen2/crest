@@ -9,11 +9,13 @@ import type { TopTab } from "./workspace-content-state";
 type FileTopTab = Extract<TopTab, { kind: "file" }>;
 type PreviewTopTab = Extract<TopTab, { kind: "preview" }>;
 type GitDiffTopTab = Extract<TopTab, { kind: "git-diff" }>;
+type AgentTurnDiffTopTab = Extract<TopTab, { kind: "agent-turn-diff" }>;
 
 export interface TopTabSurfaceFactories {
     renderFile(tab: FileTopTab, runtime: TopTabRuntime): ReactNode;
     renderPreview(tab: PreviewTopTab): ReactNode;
     renderGitDiff(tab: GitDiffTopTab): ReactNode;
+    renderAgentTurnDiff?(tab: AgentTurnDiffTopTab): ReactNode;
 }
 
 export interface TopTabRuntimeHostProps {
@@ -82,6 +84,8 @@ function ActiveTopTabSurface({
             return factories.renderPreview(tab);
         case "git-diff":
             return factories.renderGitDiff(tab);
+        case "agent-turn-diff":
+            return factories.renderAgentTurnDiff?.(tab) ?? null;
     }
 }
 

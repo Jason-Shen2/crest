@@ -299,6 +299,44 @@ describe("WorkspaceModel", () => {
         );
     });
 
+    it("round-trips the complete immutable turn diff identity using lowercase persisted fields", async () => {
+        const saveCheckpoint = vi.fn().mockResolvedValue(undefined);
+        const model = makeWorkspaceModel({ workspaceId: "ws-1", saveCheckpoint });
+        model.openTopTab({
+            id: "turn-diff-1",
+            kind: "agent-turn-diff",
+            sessionId: "session-1",
+            sessionCreatedAt: "2026-08-02T12:00:00.000Z",
+            sessionCwd: "/repo",
+            sessionPath: "/sessions/session-1.db",
+            turnId: "turn-1",
+            path: "src/app.ts",
+            title: "app.ts",
+        });
+        await model.flush();
+
+        const persistedState = saveCheckpoint.mock.calls.at(-1)?.[0].contentstate;
+        expect(persistedState.toptabs).toEqual([
+            {
+                id: "turn-diff-1",
+                kind: "agent-turn-diff",
+                sessionid: "session-1",
+                sessioncreatedat: "2026-08-02T12:00:00.000Z",
+                sessioncwd: "/repo",
+                sessionpath: "/sessions/session-1.db",
+                turnid: "turn-1",
+                path: "src/app.ts",
+                title: "app.ts",
+            },
+        ]);
+        expect(Object.keys(persistedState.toptabs[0]).every((key) => key === key.toLowerCase())).toBe(true);
+
+        const restored = makeWorkspaceModel({ workspaceId: "ws-restored", initialContentState: persistedState });
+        expect(globalStore.get(restored.contentStateAtom).topTabs).toEqual(
+            globalStore.get(model.contentStateAtom).topTabs
+        );
+    });
+
     it("restores File, Preview, and Git Diff order and selection without runtime-only File state", async () => {
         const saveCheckpoint = vi.fn().mockResolvedValue(undefined);
         const model = makeWorkspaceModel({ workspaceId: "ws-1", saveCheckpoint });

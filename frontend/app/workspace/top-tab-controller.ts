@@ -12,6 +12,7 @@ export interface WorkspaceTopTabController {
     openFile(path: string): string;
     openPreview(path: string): string;
     openGitDiff(input: { repoRoot: string; path: string; mode: GitDiffMode; originalPath?: string }): string;
+    openAgentTurnDiff(input: { sessionMetadata: AgentSessionMeta; turnId: string; path: string }): string;
     activate(topTabId: string): void;
     close(topTabId: string): Promise<boolean>;
     relocateFile(topTabId: string, path: string): boolean;
@@ -78,6 +79,22 @@ class WorkspaceTopTabControllerImpl implements WorkspaceTopTabController {
             mode: input.mode,
             originalPath,
             title: titleForPath(path),
+        });
+    }
+
+    openAgentTurnDiff(input: { sessionMetadata: AgentSessionMeta; turnId: string; path: string }): string {
+        const sessionPath = normalizeFileTabPath(input.sessionMetadata?.path ?? "");
+        const sessionCwd = normalizeFileTabPath(input.sessionMetadata?.cwd ?? "");
+        return this.open({
+            id: "",
+            kind: "agent-turn-diff",
+            sessionId: input.sessionMetadata?.id ?? "",
+            sessionCreatedAt: input.sessionMetadata?.createdAt ?? "",
+            sessionCwd,
+            sessionPath,
+            turnId: input.turnId,
+            path: input.path,
+            title: titleForPath(input.path),
         });
     }
 

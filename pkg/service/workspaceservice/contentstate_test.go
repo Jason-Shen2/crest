@@ -63,6 +63,36 @@ func TestTopTabDescriptorContract(t *testing.T) {
 	}
 }
 
+func TestAgentTurnDiffTopTabDescriptorContract(t *testing.T) {
+	descriptor := waveobj.TopTabDescriptor{
+		Id: "turn-diff-1", Kind: waveobj.TopTabKindAgentTurnDiff,
+		SessionId: "session-1", SessionCreatedAt: "2026-08-02T12:00:00.000Z",
+		SessionCwd: "/repo", SessionPath: "/sessions/session-1.db",
+		TurnId: "turn-1", Path: "src/app.ts", Title: "app.ts",
+	}
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := `{"id":"turn-diff-1","kind":"agent-turn-diff","path":"src/app.ts","title":"app.ts","sessionid":"session-1","sessioncreatedat":"2026-08-02T12:00:00.000Z","sessioncwd":"/repo","sessionpath":"/sessions/session-1.db","turnid":"turn-1"}`
+	if string(encoded) != expected {
+		t.Fatalf("expected %s, got %s", expected, encoded)
+	}
+
+	actual := NormalizeWorkspaceContentState(waveobj.WorkspaceContentState{
+		ActiveContent: waveobj.ActiveContent{Kind: waveobj.ActiveContentKindTopTab, TopTabId: descriptor.Id},
+		TopTabs:       []waveobj.TopTabDescriptor{descriptor},
+	}, "")
+	if !reflect.DeepEqual(actual.TopTabs, []waveobj.TopTabDescriptor{descriptor}) {
+		t.Fatalf("agent turn diff descriptor did not survive normalization: %#v", actual.TopTabs)
+	}
+	descriptor.Path = "C:src/app.ts"
+	invalid := NormalizeWorkspaceContentState(waveobj.WorkspaceContentState{TopTabs: []waveobj.TopTabDescriptor{descriptor}}, "")
+	if len(invalid.TopTabs) != 0 {
+		t.Fatalf("drive-relative checkpoint path survived normalization: %#v", invalid.TopTabs)
+	}
+}
+
 func TestNormalizeWorkspaceContentStateFinalTopTabContract(t *testing.T) {
 	validFile := waveobj.TopTabDescriptor{Id: "file", Kind: waveobj.TopTabKindFile, Path: "/tmp/file.ts", Title: "File"}
 	validPreview := waveobj.TopTabDescriptor{Id: "preview", Kind: waveobj.TopTabKindPreview, Path: "/tmp/preview.md", Title: "Preview"}

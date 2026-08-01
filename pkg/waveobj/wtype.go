@@ -1,4 +1,4 @@
-// Copyright 2025, Command Line Inc.
+// Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package waveobj
@@ -42,6 +42,7 @@ const (
 	TopTabKindBrowser         = "browser"
 	TopTabKindPreview         = "preview"
 	TopTabKindGitDiff         = "git-diff"
+	TopTabKindAgentTurnDiff   = "agent-turn-diff"
 	CurrentTabDomainVersion   = 1
 )
 
@@ -195,13 +196,18 @@ func (active ActiveContent) ContentId() string {
 }
 
 type TopTabDescriptor struct {
-	Id           string `json:"id"`
-	Kind         string `json:"kind"`
-	Path         string `json:"path,omitempty"`
-	Title        string `json:"title"`
-	RepoRoot     string `json:"reporoot,omitempty"`
-	Mode         string `json:"mode,omitempty"`
-	OriginalPath string `json:"originalpath,omitempty"`
+	Id               string `json:"id"`
+	Kind             string `json:"kind"`
+	Path             string `json:"path,omitempty"`
+	Title            string `json:"title"`
+	RepoRoot         string `json:"reporoot,omitempty"`
+	Mode             string `json:"mode,omitempty"`
+	OriginalPath     string `json:"originalpath,omitempty"`
+	SessionId        string `json:"sessionid,omitempty"`
+	SessionCreatedAt string `json:"sessioncreatedat,omitempty"`
+	SessionCwd       string `json:"sessioncwd,omitempty"`
+	SessionPath      string `json:"sessionpath,omitempty"`
+	TurnId           string `json:"turnid,omitempty"`
 }
 
 type WorkspaceContentState struct {

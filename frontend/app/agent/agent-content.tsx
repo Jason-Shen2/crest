@@ -53,6 +53,7 @@ export interface AgentContentProps {
     client: AgentRuntimeClient;
     executionContext: AgentExecutionContext;
     onOpenFile?: (path: string) => void;
+    onOpenTurnDiff?: (turnId: string, path: string) => void;
 }
 
 interface AgentAttachedPanelState {
@@ -304,7 +305,7 @@ export function agentContextSendGuidance(reason: ContextReferenceSendDisabledRea
     return "";
 }
 
-export function AgentContent({ model, client, executionContext, onOpenFile }: AgentContentProps) {
+export function AgentContent({ model, client, executionContext, onOpenFile, onOpenTurnDiff }: AgentContentProps) {
     const [attachedPanelState, setAttachedPanelState] = useState<AgentAttachedPanelState>(emptyAttachedPanelState);
     const userConfigState = useAtomValue(aiUserConfigAtom);
     const contextReferenceUiConfig = useMemo(() => resolveContextReferenceUiConfig(userConfigState), [userConfigState]);
@@ -985,6 +986,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                         contextUsage={contextUsage}
                         workspaceDir={executionContext.workspaceDir}
                         onOpenFile={onOpenFile}
+                        onOpenTurnDiff={onOpenTurnDiff}
                         composerAnchorRef={composerAnchorRef}
                         revealTurnRequest={currentRevealTurnRequest}
                         onRevealTurnComplete={onRevealTurnComplete}

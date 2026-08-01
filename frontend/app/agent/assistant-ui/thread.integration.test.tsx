@@ -112,7 +112,7 @@ describe("Thread assistant-ui integration", () => {
     it("renders checkpoint-backed turn changes after a completed assistant message and routes immutable file intent", async () => {
         const openReview = vi.fn();
         const openMutation = vi.fn();
-        const onOpenTurnFile = vi.fn();
+        const onOpenTurnDiff = vi.fn();
         const turnChanges: TurnChangesContextValue = {
             cards: new Map([
                 [
@@ -154,7 +154,7 @@ describe("Thread assistant-ui integration", () => {
                 ]}
             >
                 <TurnChangesContext.Provider value={turnChanges}>
-                    <Thread onOpenTurnFile={onOpenTurnFile} />
+                    <Thread onOpenTurnDiff={onOpenTurnDiff} />
                 </TurnChangesContext.Provider>
             </RuntimeProvider>
         );
@@ -163,7 +163,7 @@ describe("Thread assistant-ui integration", () => {
         fireEvent.click(screen.getByRole("button", { name: /card\.tsx/ }));
         fireEvent.click(screen.getByRole("button", { name: "审核" }));
         fireEvent.click(screen.getByRole("button", { name: /撤销/ }));
-        expect(onOpenTurnFile).toHaveBeenCalledWith("turn-card", "frontend/app/card.tsx");
+        expect(onOpenTurnDiff).toHaveBeenCalledWith("turn-card", "frontend/app/card.tsx");
         expect(openReview).toHaveBeenCalledWith("turn-card");
         expect(openMutation).toHaveBeenCalledWith("turn-card");
     });

@@ -132,6 +132,33 @@ export function GitDiffBody({
     path?: string;
     onRetry?: () => void;
 }) {
+    return (
+        <DiffContentBody
+            loading={loading}
+            content={content}
+            errorMessage={error ? `Failed to load Git diff: ${error}` : null}
+            path={path}
+            onRetry={onRetry}
+            retryAriaLabel="Retry Git diff"
+        />
+    );
+}
+
+export function DiffContentBody({
+    loading = false,
+    content = null,
+    errorMessage = null,
+    path = "",
+    onRetry,
+    retryAriaLabel = "Retry diff",
+}: {
+    loading?: boolean;
+    content?: GitDiffContent | null;
+    errorMessage?: string | null;
+    path?: string;
+    onRetry?: () => void;
+    retryAriaLabel?: string;
+}) {
     if (loading) {
         return (
             <div className="flex h-full items-center justify-center text-xs text-[#a1a1aa]" role="status">
@@ -139,13 +166,13 @@ export function GitDiffBody({
             </div>
         );
     }
-    if (error) {
+    if (errorMessage) {
         return (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-xs text-red-300" role="alert">
-                <p>Failed to load Git diff: {error}</p>
+                <p>{errorMessage}</p>
                 {onRetry ? (
                     <button
-                        aria-label="Retry Git diff"
+                        aria-label={retryAriaLabel}
                         className="cursor-pointer rounded px-3 py-1"
                         type="button"
                         onClick={onRetry}

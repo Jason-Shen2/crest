@@ -8,7 +8,7 @@ export type TopTabPerformanceMark =
     | "workspace-checkpoint-error";
 
 export interface TopTabPerformanceDetail {
-    kind: "file" | "preview" | "git-diff" | "workspace";
+    kind: "file" | "preview" | "git-diff" | "agent-turn-diff" | "workspace";
     id: string;
     duration: number;
 }

@@ -86,7 +86,7 @@ func NormalizeWorkspaceContentState(state waveobj.WorkspaceContentState, termina
 
 func safeTopTabKind(kind string) string {
 	switch kind {
-	case waveobj.TopTabKindFile, waveobj.TopTabKindPreview, waveobj.TopTabKindGitDiff:
+	case waveobj.TopTabKindFile, waveobj.TopTabKindPreview, waveobj.TopTabKindGitDiff, waveobj.TopTabKindAgentTurnDiff:
 		return kind
 	default:
 		return "unknown"
@@ -100,7 +100,7 @@ func invalidTopTabDescriptorReason(descriptor waveobj.TopTabDescriptor) string {
 	switch descriptor.Kind {
 	case waveobj.TopTabKindFile, waveobj.TopTabKindPreview:
 		return "invalid-path"
-	case waveobj.TopTabKindGitDiff:
+	case waveobj.TopTabKindGitDiff, waveobj.TopTabKindAgentTurnDiff:
 		return "invalid-fields"
 	default:
 		return "unsupported-kind"
@@ -126,6 +126,13 @@ func isValidTopTabDescriptor(descriptor waveobj.TopTabDescriptor) bool {
 		return isAbsoluteTopTabPath(descriptor.Path)
 	case waveobj.TopTabKindGitDiff:
 		return descriptor.RepoRoot != "" && descriptor.Path != "" && (descriptor.Mode == "+" || descriptor.Mode == "-")
+	case waveobj.TopTabKindAgentTurnDiff:
+		return descriptor.SessionId != "" &&
+			descriptor.SessionCreatedAt != "" &&
+			isCanonicalAbsoluteTopTabPath(descriptor.SessionCwd) &&
+			isCanonicalAbsoluteTopTabPath(descriptor.SessionPath) &&
+			descriptor.TurnId != "" &&
+			isCanonicalCheckpointPath(descriptor.Path)
 	default:
 		return false
 	}
@@ -139,6 +146,13 @@ func topTabIdentityKey(descriptor waveobj.TopTabDescriptor) string {
 		return previewTopTabIdentityKey(descriptor.Path)
 	case waveobj.TopTabKindGitDiff:
 		return gitDiffTopTabIdentityKey(descriptor.RepoRoot, descriptor.Path, descriptor.Mode, descriptor.OriginalPath)
+	case waveobj.TopTabKindAgentTurnDiff:
+		return tupleIdentityKey(
+			waveobj.TopTabKindAgentTurnDiff,
+			topTabPathIdentity(descriptor.SessionPath),
+			descriptor.TurnId,
+			topTabPathIdentity(descriptor.Path),
+		)
 	default:
 		return ""
 	}
@@ -240,4 +254,22 @@ func isAbsoluteTopTabPath(path string) bool {
 	}
 	driveLetter := normalized[0]
 	return (driveLetter >= 'a' && driveLetter <= 'z') || (driveLetter >= 'A' && driveLetter <= 'Z')
+}
+
+func isCanonicalAbsoluteTopTabPath(path string) bool {
+	return isAbsoluteTopTabPath(path) && normalizeTopTabPath(path) == strings.ReplaceAll(path, "\\", "/")
+}
+
+func isCanonicalCheckpointPath(path string) bool {
+	isDriveRelative := len(path) >= 2 && path[1] == ':' &&
+		((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z'))
+	if path == "" || strings.ContainsRune(path, '\x00') || strings.Contains(path, "\\") || isDriveRelative || isAbsoluteTopTabPath(path) {
+		return false
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
 }

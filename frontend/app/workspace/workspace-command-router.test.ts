@@ -69,8 +69,10 @@ describe("WorkspaceCommandRouter", () => {
             openFile: vi.fn(),
             openPreview: vi.fn(),
             openGitDiff: vi.fn(),
+            openAgentTurnDiff: vi.fn(),
             activate: vi.fn(),
             close: vi.fn(),
+            relocateFile: vi.fn(),
         };
         const layoutModel = { openRightTool: vi.fn() };
         const rightBrowserModel = { newTab: vi.fn() };
