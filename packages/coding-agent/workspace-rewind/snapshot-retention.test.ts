@@ -12,6 +12,7 @@ import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import { AgentRuntimeRegistry } from "../agent-runtime-registry";
 import { WorkspaceGitRunner, type GitRunOptions, type GitRunResult } from "./git-runner";
 import { PendingBoundaryStore } from "./pending-boundary-store";
+import { PendingWorkspaceRestoreStore, type PendingWorkspaceRestoreV1 } from "./pending-restore-store";
 import { makeProcessOwnerIdentity } from "./process-owner";
 import { reconcileSnapshotRefs, SnapshotRetentionLimits } from "./snapshot-retention";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
@@ -210,6 +211,44 @@ test("retains bound and unbound pending plus operation journal owners without co
     expect(quota).not.toHaveBeenCalled();
     await store.verify(snapshot);
 }, 15_000);
+
+test("retains the active restore pending safety snapshot until it moves to audit and orphan grace expires", async () => {
+    const { store, sessionsRoot, snapshot } = await makeStore();
+    const pending = new PendingWorkspaceRestoreStore(store);
+    const record = makePendingRestore(store, sessionsRoot, snapshot);
+    await store.withWorkspaceLock(() => pending.publishLocked(record));
+    await store.deleteCrestRef(`refs/crest/snapshots/${snapshot.id}`);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-15T00:00:00Z"));
+
+    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
+    vi.advanceTimersByTime(SnapshotRetentionLimits.orphanGraceMs * 2);
+    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
+    await store.verify(snapshot);
+
+    await store.withWorkspaceLock(() => pending.resolveToAuditLocked(record.operationId, "keep-current"));
+    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
+    vi.advanceTimersByTime(SnapshotRetentionLimits.orphanGraceMs + 1);
+    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([
+        `refs/crest/snapshots/${snapshot.id}`,
+    ]);
+    await expect(store.verify(snapshot)).rejects.toThrow();
+}, 15_000);
+
+test("fails closed before deletion or GC when the active restore pending is corrupt", async () => {
+    const { store, sessionsRoot, snapshot } = await makeStore();
+    const root = join(store.storeRoot, "journal", "restore");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    await writeFile(join(root, "pending.json"), '{"operationId":"broken-restore"', { mode: 0o600 });
+    const gc = vi.spyOn(store.git, "run");
+
+    const report = await reconcileSnapshotRefs({ store, sessionsRoot });
+
+    expect(report.removedRefs).toEqual([]);
+    expect(report.failClosedReason).toMatch(/owner source/i);
+    expect(gc.mock.calls.some(([args]) => args[0] === "gc")).toBe(false);
+    expect((await store.listCrestRefs()).map((ref) => ref.name)).toContain(`refs/crest/snapshots/${snapshot.id}`);
+});
 
 test("retains workspace state current and redo snapshots through aggressive Git GC", async () => {
     const { store, sessionsRoot, snapshot: currentSnapshot } = await makeStore();
@@ -480,6 +519,36 @@ async function addStateOwner(
     };
     await session.appendCustomEntry(WorkspaceControlCustomTypes.state, state);
     session.close();
+}
+
+function makePendingRestore(
+    store: WorkspaceSnapshotStore,
+    sessionsRoot: string,
+    snapshot: PendingWorkspaceRestoreV1["safetySnapshot"]
+): PendingWorkspaceRestoreV1 {
+    return {
+        schemaVersion: 1,
+        operationId: "active-restore",
+        workspaceIdentity: store.identity.workspaceIdentity,
+        workspaceIncarnation: store.identity.workspaceIncarnation,
+        sessionId: "restore-session",
+        sessionPath: join(sessionsRoot, "restore-session.db"),
+        target: { kind: "rewind", targetTurnId: "turn-a" },
+        commitParentId: null,
+        applyMode: "normal",
+        forcedPaths: [],
+        expectedSemanticLeafId: null,
+        workspaceStateEntryId: "workspace-state-a",
+        safetySnapshot: snapshot,
+        paths: [
+            {
+                path: "tracked.txt",
+                before: { state: "file", oid: "a".repeat(40), executable: false },
+                target: { state: "absent" },
+                createdParentDirectories: [],
+            },
+        ],
+    };
 }
 
 async function ancestorIdentityChain(path: string): Promise<CanonicalWorkspaceIdentity["ancestorIdentityChain"]> {

@@ -14,6 +14,7 @@ import {
     type PendingWorkspaceBoundaryV1,
     type WorkspaceOperationOwnerV1,
 } from "./pending-boundary-store";
+import { PendingWorkspaceRestoreStore } from "./pending-restore-store";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceSnapshotRefV1 } from "./types";
 import { decodeWorkspaceCheckpointV1, decodeWorkspaceStateV1 } from "./validation";
@@ -149,6 +150,18 @@ async function scanOwners(input: { store: WorkspaceSnapshotStore; sessionsRoot: 
             addOwned(record.after, input.store, snapshots);
         }
         refs.add(input.store.pendingRefName(record));
+    }
+    const activeRestore = await new PendingWorkspaceRestoreStore(input.store).readLocked();
+    if (activeRestore.kind === "corrupt") {
+        throw new Error(`Invalid active pending workspace restore: ${activeRestore.message}`);
+    }
+    if (activeRestore.kind === "valid") {
+        assertOwnerIdentity(
+            activeRestore.record.workspaceIdentity,
+            activeRestore.record.workspaceIncarnation,
+            input.store
+        );
+        addOwned(activeRestore.record.safetySnapshot, input.store, snapshots);
     }
     const operations = await scanWorkspaceOperationOwners(input.store);
     for (const record of operations) {
