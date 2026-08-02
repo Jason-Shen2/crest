@@ -337,7 +337,7 @@ export function DiffReviewDialog({
                     style={{ "--diff-review-file-pane-width": `${filePaneWidth}px` } as CSSProperties}
                     className="flex min-h-0 flex-col md:flex-row"
                 >
-                    <aside className="relative flex min-h-0 w-full shrink-0 basis-[35%] flex-col border-b border-border md:w-[var(--diff-review-file-pane-width)] md:basis-auto md:border-r md:border-b-0">
+                    <aside className="relative flex min-h-[120px] w-full shrink-0 basis-[35%] flex-col border-b border-border md:min-h-0 md:w-[var(--diff-review-file-pane-width)] md:basis-auto md:border-r md:border-b-0">
                         <div className="flex-1 overflow-y-auto p-2">
                             {files.length === 0 ? (
                                 <div className="grid h-full place-items-center p-6 text-center text-sm text-muted-foreground">

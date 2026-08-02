@@ -370,6 +370,8 @@ describe("DiffReviewDialog", () => {
         expect(handle.className).toContain("cursor-col-resize");
         expect(handle.className).toContain("hover:bg-fg-overlay-2");
         expect(filePane?.className).toContain("md:w-[var(--diff-review-file-pane-width)]");
+        expect(filePane?.className).toContain("min-h-[120px]");
+        expect(filePane?.className).toContain("md:min-h-0");
         expect(selectedFile.className).toContain("hover:bg-muted/40");
         expect(selectedFile.className).toContain("bg-muted/40");
 
