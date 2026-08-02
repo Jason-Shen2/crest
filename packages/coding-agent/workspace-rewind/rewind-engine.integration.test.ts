@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RewindConfirmationRegistry } from "./confirmation-token";
-import { applyCapturedPath } from "./filesystem-apply";
+import { applyCapturedPath, verifyCapturedPath } from "./filesystem-apply";
 import { WorkspaceGitRunner } from "./git-runner";
 import { PendingWorkspaceRestoreStore } from "./pending-restore-store";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
@@ -62,6 +62,8 @@ async function ancestorIdentityChain(path: string): Promise<CanonicalWorkspaceId
 async function fixture(
     options: {
         applyPath?: (workspaceRoot: string) => NonNullable<WorkspaceRewindEngineOptions["applyPath"]>;
+        verifyPath?: (workspaceRoot: string) => NonNullable<WorkspaceRewindEngineOptions["verifyPath"]>;
+        locateSession?: NonNullable<WorkspaceRewindEngineOptions["locateSession"]>;
     } = {}
 ) {
     const root = await mkdtemp(join(tmpdir(), "crest-rewind-engine-"));
@@ -93,7 +95,8 @@ async function fixture(
         workspace: identity,
         store,
         pending,
-        locateSession: async (sessionId) => (sessionId === metadata.id ? session : undefined),
+        locateSession:
+            options.locateSession ?? (async (sessionId) => (sessionId === metadata.id ? session : undefined)),
         verifyWorkspace: vi.fn(async () => {}),
     });
     const confirmations = new RewindConfirmationRegistry();
@@ -104,6 +107,7 @@ async function fixture(
         confirmations,
         onCommitted: published,
         applyPath: options.applyPath?.(workspaceRoot),
+        verifyPath: options.verifyPath?.(workspaceRoot),
     });
     return {
         root,
@@ -441,4 +445,132 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         },
         30_000
     );
+
+    it("detects an external writer after result capture but before the final target verification", async () => {
+        const value = await fixture({
+            verifyPath: (workspaceRoot) => async (input) => {
+                await verifyCapturedPath(input);
+                await writeFile(join(workspaceRoot, input.path), "external-writer-after-result-capture");
+            },
+        });
+        const file = join(value.workspaceRoot, "file.txt");
+        await writeFile(file, "before");
+        const item = await appendAvailableCheckpoint(value, "change file", async () => {
+            await writeFile(file, "after");
+        });
+        const planned = await value.engine.previewRewind({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: item.checkpointId,
+            targetTurnId: item.turnId,
+        });
+
+        await expect(
+            value.engine.applyRewind({
+                session: value.session,
+                sessionId: value.metadata.id,
+                workspace: value.identity,
+                semanticLeafId: item.checkpointId,
+                targetTurnId: item.turnId,
+                mode: "normal",
+                confirmation: value.confirmations.take(planned.confirmationToken!),
+            })
+        ).rejects.toBeInstanceOf(WorkspaceFrozenError);
+
+        expect(await readFile(file, "utf8")).toBe("external-writer-after-result-capture");
+        await expect(value.pending.readLocked()).resolves.toMatchObject({ kind: "valid" });
+        await expect(value.recovery.inspectPending()).resolves.toMatchObject({
+            state: "needs-user",
+            view: { paths: [{ path: "file.txt", classification: "unknown" }] },
+        });
+    }, 30_000);
+
+    it("cleans a committed pending record before the next owning-session leaf mutation", async () => {
+        const value = await fixture();
+        const file = join(value.workspaceRoot, "cleanup.txt");
+        await writeFile(file, "before");
+        const item = await appendAvailableCheckpoint(value, "change cleanup file", async () => {
+            await writeFile(file, "after");
+        });
+        const planned = await value.engine.previewRewind({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: item.checkpointId,
+            targetTurnId: item.turnId,
+        });
+        vi.spyOn(value.pending, "removeLocked").mockRejectedValueOnce(new Error("pending cleanup failed"));
+
+        await expect(
+            value.engine.applyRewind({
+                session: value.session,
+                sessionId: value.metadata.id,
+                workspace: value.identity,
+                semanticLeafId: item.checkpointId,
+                targetTurnId: item.turnId,
+                mode: "normal",
+                confirmation: value.confirmations.take(planned.confirmationToken!),
+            })
+        ).rejects.toBeInstanceOf(WorkspaceFrozenError);
+        const markerLeaf = await value.session.getLeafId();
+        await expect(value.pending.readLocked()).resolves.toMatchObject({ kind: "valid" });
+
+        await value.recovery.assertWorkspaceWritable();
+        expect(await value.session.getLeafId()).toBe(markerLeaf);
+        await expect(value.pending.readLocked()).resolves.toEqual({ kind: "none" });
+
+        const nextLeaf = await value.session.appendMessage({
+            role: "assistant",
+            content: "next owning-session mutation",
+            timestamp: Date.now(),
+        } as never);
+        expect(await value.session.getLeafId()).toBe(nextLeaf);
+        expect(await readFile(file, "utf8")).toBe("before");
+    }, 30_000);
+
+    it("keeps current for a missing owning Session without changing workspace bytes or the Session tree", async () => {
+        const value = await fixture({
+            locateSession: async () => undefined,
+            applyPath: (workspaceRoot) => async (input) => {
+                await applyCapturedPath(input);
+                throw new Error(`owner disappeared after applying ${join(workspaceRoot, input.path)}`);
+            },
+        });
+        const file = join(value.workspaceRoot, "missing-owner.txt");
+        await writeFile(file, "before");
+        const item = await appendAvailableCheckpoint(value, "change before owner disappears", async () => {
+            await writeFile(file, "after");
+        });
+        const planned = await value.engine.previewRewind({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: item.checkpointId,
+            targetTurnId: item.turnId,
+        });
+
+        await expect(
+            value.engine.applyRewind({
+                session: value.session,
+                sessionId: value.metadata.id,
+                workspace: value.identity,
+                semanticLeafId: item.checkpointId,
+                targetTurnId: item.turnId,
+                mode: "normal",
+                confirmation: value.confirmations.take(planned.confirmationToken!),
+            })
+        ).rejects.toBeInstanceOf(WorkspaceFrozenError);
+        const pending = await value.pending.readLocked();
+        expect(pending).toMatchObject({ kind: "valid" });
+        if (pending.kind !== "valid") throw new Error("expected valid pending restore");
+        const leafBefore = await value.session.getLeafId();
+        const bytesBefore = await readFile(file);
+
+        await value.recovery.keepCurrent(pending.record.operationId);
+
+        expect(await value.session.getLeafId()).toBe(leafBefore);
+        expect(await readFile(file)).toEqual(bytesBefore);
+        await expect(value.pending.readLocked()).resolves.toEqual({ kind: "none" });
+    }, 30_000);
 });

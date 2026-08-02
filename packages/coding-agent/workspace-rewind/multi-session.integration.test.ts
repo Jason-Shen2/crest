@@ -226,6 +226,42 @@ describe("workspace rewind across sessions", () => {
         expect(await readFile(join(value.workspaceRoot, "b.txt"), "utf8")).toBe("session-b");
     }, 30_000);
 
+    it("preserves a non-target path written by session B while session A has a pending restore", async () => {
+        let value: Awaited<ReturnType<typeof makeFixture>>;
+        let sessionBLeaf: string | undefined;
+        value = await makeFixture({
+            applyPath: async (input) => {
+                await applyCapturedPath(input);
+                sessionBLeaf = await value.sessions.b.appendMessage({
+                    role: "assistant",
+                    content: "session B changed its own path",
+                    timestamp: Date.now(),
+                } as never);
+                await writeFile(join(value.workspaceRoot, "b-only.txt"), "session-b-during-restore");
+            },
+        });
+        await writeFile(join(value.workspaceRoot, "a-only.txt"), "base-a");
+        await writeFile(join(value.workspaceRoot, "b-only.txt"), "base-b");
+        const a = await checkpoint(value, value.sessions.a, "change only A", async () => {
+            await writeFile(join(value.workspaceRoot, "a-only.txt"), "session-a");
+        });
+        const planned = await preview(value, a);
+
+        await value.engine.applyRewind({
+            session: value.sessions.a,
+            sessionId: a.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: a.checkpointId,
+            targetTurnId: a.turnId,
+            mode: "normal",
+            confirmation: value.confirmations.take(planned.confirmationToken!),
+        });
+
+        expect(await readFile(join(value.workspaceRoot, "a-only.txt"), "utf8")).toBe("base-a");
+        expect(await readFile(join(value.workspaceRoot, "b-only.txt"), "utf8")).toBe("session-b-during-restore");
+        expect(await value.sessions.b.getLeafId()).toBe(sessionBLeaf);
+    }, 30_000);
+
     it("requires Force for overlapping later writes and overwrites only the confirmed red-list", async () => {
         const value = await makeFixture();
         await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
@@ -300,11 +336,17 @@ describe("workspace rewind across sessions", () => {
         expect(await readFile(join(value.workspaceRoot, "untouched.txt"), "utf8")).toBe("untouched");
     }, 30_000);
 
-    it("freezes recovery when an unknown writer changes bytes after final verification", async () => {
+    it("does not overwrite unknown target bytes written by session B after session A publishes pending", async () => {
         let value: Awaited<ReturnType<typeof makeFixture>>;
+        let sessionBLeaf: string | undefined;
         value = await makeFixture({
             applyPath: async (input) => {
                 await applyCapturedPath(input);
+                sessionBLeaf = await value.sessions.b.appendMessage({
+                    role: "assistant",
+                    content: "session B wrote the shared target",
+                    timestamp: Date.now(),
+                } as never);
                 await writeFile(join(value.workspaceRoot, input.path), "unknown-third-party");
             },
         });
@@ -326,6 +368,7 @@ describe("workspace rewind across sessions", () => {
             })
         ).rejects.toBeInstanceOf(WorkspaceFrozenError);
         expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("unknown-third-party");
+        expect(await value.sessions.b.getLeafId()).toBe(sessionBLeaf);
         expect(await value.recovery.resolvePending()).toMatchObject({
             state: "needs-user",
             view: {

@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-02
 
-**状态：** 待评审
+**状态：** 已实施
 
 **范围：** 完整会话 Revert/Redo 与单 Turn Undo/Redo 共用的恢复事务
 
@@ -124,7 +124,9 @@ Resolver 不保存长期 `frozen` 字段，不发布 Session state，也不直�
 - pending 能自动解决：调用 `resolvePending()` 后再允许写入；
 - pending 返回 `needs-user`：阻止工作区写入并返回 Recovery diagnostic。
 
-Gate 不缓存另一份永久 `frozen Map`。Renderer 通过只读 `inspectPending()` 获得临时投影，不因打开 UI 而修改 Workspace。
+Gate 不缓存另一份永久 `frozen Map`。Renderer 通过 `getRecovery()` 获得临时投影；该查询委托同一
+Resolver 自动清理已提交 pending 或回滚可安全恢复的未提交 pending，只把 authoritative `needs-user`
+返回 UI。Renderer 自身不另行写 Workspace，也不缓存 Recovery decision。
 
 Gate 必须位于调用方获取 Session lease 之前，覆盖 send、compact、navigate、fork、clone 和所有写入入口。这样 marker 提交但 pending 尚未清理时，不会被下一条消息推进 leaf，导致已提交事务被误判为不确定。Recovery UI 请求携带它看到的 `operationId`；Resolver 持锁重读后若 ID 已变化，拒绝该过期请求。
 
@@ -232,7 +234,8 @@ resolved audit 不阻止 Workspace 写入，由普通保留策略清理。
 - pending 发布后的文件、snapshot、SQLite 或 cleanup 错误：一律交给同一个 Resolver，以 marker 和实时文件重新分类；
 - 分类为未提交且路径均为 before/target：恢复 before 并删除 pending；
 - 任一路径出现 unknown，或 Session/marker 无法精确匹配：保留 pending，返回 `needs-user`；
-- marker 提交后 cleanup 失败：事务成功，pending 留给下一次 Resolver 清理；
+- marker 提交后 cleanup 失败：提交点、目标文件和 Session leaf 保持已提交，但当前调用 fail closed 为
+  Recovery required，pending 留给下一次 Resolver 清理；
 - Renderer 广播失败：事务成功，只记录并安排普通状态刷新。
 
 ## 测试要求
@@ -279,3 +282,37 @@ resolved audit 不阻止 Workspace 写入，由普通保留策略清理。
 - 文件替换中间产物可以确定性 reconciliation；
 - unknown 文件状态永远不会被自动覆盖；
 - 多 Session restore 仍由 Workspace lock 串行化。
+
+## 实施记录
+
+最终实现集中在：
+
+- `packages/coding-agent/workspace-rewind/pending-restore-store.ts`
+- `packages/coding-agent/workspace-rewind/workspace-recovery.ts`
+- `packages/coding-agent/workspace-rewind/workspace-restore-executor.ts`
+- `packages/coding-agent/workspace-rewind/rewind-engine.ts`
+- `emain/agent-workspace-recovery-gate.ts`
+- `emain/agent-ipc.ts`
+
+并发与恢复验收覆盖集中在：
+
+- `packages/coding-agent/workspace-rewind/multi-session.integration.test.ts`
+- `packages/coding-agent/workspace-rewind/rewind-engine.integration.test.ts`
+- `packages/coding-agent/workspace-rewind/workspace-recovery.test.ts`
+- `packages/coding-agent/workspace-rewind/restore-crash.test.ts`
+- `emain/agent-workspace-recovery-gate.test.ts`
+- `emain/agent-ipc.test.ts`
+
+最终定向验证命令：
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/multi-session.integration.test.ts packages/coding-agent/workspace-rewind/rewind-engine.integration.test.ts emain/agent-ipc.test.ts
+npx vitest run packages/coding-agent/workspace-rewind emain/agent-workspace-recovery-gate.test.ts emain/agent-ipc.test.ts packages/coding-agent/agent-session-runtime.test.ts frontend/app/agent/rewind/recovery-dialog.test.tsx --maxWorkers=1 --no-file-parallelism
+npm run build:dev
+git diff --check
+```
+
+相对初稿已评审的必要差异只有一项：exact marker 已提交但首次 pending cleanup 失败时，提交点、目标
+文件和 Session leaf 保持不变，但当前调用 fail closed 为 Recovery required；下一次 owning Session leaf
+mutation 必须先通过统一 gate 重试并完成 pending cleanup。该差异不引入新 phase、状态数据库或 marker
+ancestor 判定，也不改变 marker 作为唯一提交点。
