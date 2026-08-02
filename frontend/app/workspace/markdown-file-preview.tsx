@@ -16,8 +16,13 @@ export function MarkdownFilePreview({ path, text }: MarkdownFilePreviewProps) {
     }, [path]);
 
     return (
-        <div className="h-full min-h-0 overflow-hidden">
-            <Markdown key={path} text={text} resolveOpts={resolveOpts} contentClassName="px-4 py-4 sm:px-6 sm:py-5" />
+        <div className="@container h-full min-h-0 overflow-hidden">
+            <Markdown
+                key={path}
+                text={text}
+                resolveOpts={resolveOpts}
+                contentClassName="px-6 py-5 [@container(max-width:40rem)]:px-4 [@container(max-width:40rem)]:py-4"
+            />
         </div>
     );
 }

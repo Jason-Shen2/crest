@@ -51,11 +51,13 @@ describe("MarkdownFilePreview", () => {
     it("renders markdown text with its local parent directory", () => {
         render(<MarkdownFilePreview path="/repo/docs/README.md" text="# First" />);
 
-        expect(screen.getByTestId("markdown-adapter").textContent).toBe("# First");
+        const adapter = screen.getByTestId("markdown-adapter");
+        expect(adapter.textContent).toBe("# First");
+        expect(adapter.parentElement.className.split(" ")).toContain("@container");
         expect(markdownProps.current).toMatchObject({
             text: "# First",
             resolveOpts: { connName: "local", baseDir: "/repo/docs" },
-            contentClassName: "px-4 py-4 sm:px-6 sm:py-5",
+            contentClassName: "px-6 py-5 [@container(max-width:40rem)]:px-4 [@container(max-width:40rem)]:py-4",
         });
     });
 
