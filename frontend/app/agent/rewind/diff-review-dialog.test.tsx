@@ -244,7 +244,9 @@ describe("DiffReviewDialog", () => {
         expect(summary.parentElement?.getAttribute("aria-atomic")).toBe("true");
         expect(summary.parentElement?.textContent).toBe("Loading files…");
         rerender(<DiffReviewDialog {...props} loading={false} />);
-        expect(screen.getByRole("status").textContent).toBe("1 file+3-2");
+        expect(screen.getAllByRole("status").find((status) => !status.hasAttribute("aria-label"))?.textContent).toBe(
+            "1 file+3-2"
+        );
         expect(screen.queryByText(/red (will|was)/i)).toBeNull();
         expect(screen.queryByText(/green (will|was)/i)).toBeNull();
     });
@@ -264,23 +266,46 @@ describe("DiffReviewDialog", () => {
             files: [makeFile({ conflict: "forceable-drift", reason: warning })],
         });
 
-        expect(screen.getAllByText(coverageWarning)).toHaveLength(1);
-        expect(screen.getAllByText(warning)).toHaveLength(1);
-        const warningStatus = screen
-            .getAllByRole("status")
-            .find((status) => status.textContent?.includes(coverageWarning));
-        expect(warningStatus?.getAttribute("aria-atomic")).toBe("true");
-        expect(warningStatus?.textContent).toBe(coverageWarning);
-        expect(screen.getAllByRole("status")).toHaveLength(2);
+        const visibleCoverageWarning = screen
+            .getAllByText(coverageWarning)
+            .find((message) => message.className.includes("text-destructive"));
+        const visibleConflictWarning = screen
+            .getAllByText(warning)
+            .find((message) => !message.closest('[aria-label="Review warnings"]'));
+        expect(visibleCoverageWarning).toBeDefined();
+        expect(visibleConflictWarning).toBeDefined();
         expect(screen.getByRole("alert").textContent).toBe("preview failed");
-        for (const message of [
-            screen.getByText(warning),
-            screen.getByText(coverageWarning),
-            screen.getByText("preview failed"),
-        ]) {
+        for (const message of [visibleConflictWarning!, visibleCoverageWarning!, screen.getByText("preview failed")]) {
             expect(message.className).toMatch(/destructive|red|rose/);
         }
         expect(screen.getByRole("option", { name: /alpha\.ts/ }).className).toMatch(/destructive|red|rose/);
+    });
+
+    it("pre-mounts one warning status that announces deduplicated coverage and conflict warnings", () => {
+        const coverageWarning = "checkpoint excluded an unsupported path";
+        const conflictWarning = "files changed on disk since the agent last wrote them";
+        const files = [makeFile({ conflict: "forceable-drift", reason: conflictWarning })];
+        const { rerender, props } = renderDialog({ files, warnings: [] });
+        const initialWarningStatus = screen.getByRole("status", { name: "Review warnings" });
+
+        expect(initialWarningStatus.textContent).toBe("");
+        rerender(
+            <DiffReviewDialog {...props} files={files} warnings={[coverageWarning, conflictWarning, coverageWarning]} />
+        );
+
+        const warningStatus = screen.getByRole("status", { name: "Review warnings" });
+        expect(warningStatus).toBe(initialWarningStatus);
+        expect(warningStatus.getAttribute("aria-atomic")).toBe("true");
+        expect(warningStatus.querySelectorAll("p")).toHaveLength(2);
+        expect(warningStatus.textContent).toContain(coverageWarning);
+        expect(warningStatus.textContent).toContain(conflictWarning);
+        expect(
+            screen.getAllByText(coverageWarning).filter((message) => message.className.includes("text-destructive"))
+        ).toHaveLength(1);
+        expect(
+            screen.getAllByText(conflictWarning).filter((message) => !message.closest('[aria-label="Review warnings"]'))
+        ).toHaveLength(1);
+        expect(screen.getAllByRole("status")).toHaveLength(2);
     });
 
     it("shows an unavailable reason instead of fabricating an empty diff", () => {

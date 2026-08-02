@@ -216,6 +216,7 @@ export function DiffReviewDialog({
     const optionId = (index: number) => `diff-review-file-${index}`;
     const fileReasons = new Set(files.flatMap((file) => (file.reason ? [file.reason] : [])));
     const uniqueWarnings = [...new Set(warnings.filter((warning) => warning && !fileReasons.has(warning)))];
+    const announcedWarnings = [...new Set(warnings.filter(Boolean))];
     const onFileListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
         if (files.length === 0) return;
@@ -265,15 +266,16 @@ export function DiffReviewDialog({
                             </div>
                         </div>
                     </div>
-                    {uniqueWarnings.length > 0 && (
-                        <div role="status" aria-atomic="true">
-                            {uniqueWarnings.map((warning) => (
-                                <p key={warning} className="text-sm text-destructive">
-                                    {warning}
-                                </p>
-                            ))}
-                        </div>
-                    )}
+                    {uniqueWarnings.map((warning) => (
+                        <p key={warning} className="text-sm text-destructive">
+                            {warning}
+                        </p>
+                    ))}
+                    <div role="status" aria-label="Review warnings" aria-atomic="true" className="sr-only">
+                        {announcedWarnings.map((warning) => (
+                            <p key={warning}>{warning}</p>
+                        ))}
+                    </div>
                     {errorMessage && (
                         <p role="alert" className="text-sm text-destructive">
                             {errorMessage}
