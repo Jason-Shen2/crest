@@ -354,4 +354,46 @@ describe("DiffReviewDialog", () => {
         fireEvent.keyDown(document, { key: "Escape" });
         expect(locked.props.onOpenChange).not.toHaveBeenCalled();
     });
+
+    it("resizes the desktop file pane within the review body's responsive bounds and stops after release", () => {
+        renderDialog({ files: [makeFile(), makeFile({ path: "src/beta.ts" })] });
+
+        const body = screen.getByTestId("diff-review-body");
+        const handle = screen.getByRole("separator", { name: "Resize file list" });
+        const filePane = screen.getByRole("listbox", { name: "Workspace files" }).closest("aside");
+        const selectedFile = screen.getByRole("option", { name: /alpha\.ts/ });
+
+        expect(body.style.getPropertyValue("--diff-review-file-pane-width")).toBe("250px");
+        expect(handle.getAttribute("aria-orientation")).toBe("vertical");
+        expect(handle.className).toContain("hidden md:block");
+        expect(handle.className).toContain("w-1");
+        expect(handle.className).toContain("cursor-col-resize");
+        expect(handle.className).toContain("hover:bg-fg-overlay-2");
+        expect(filePane?.className).toContain("md:w-[var(--diff-review-file-pane-width)]");
+        expect(selectedFile.className).toContain("hover:bg-muted/40");
+        expect(selectedFile.className).toContain("bg-muted/40");
+
+        Object.defineProperty(body, "getBoundingClientRect", {
+            configurable: true,
+            value: () => ({ left: 100, width: 1000 }),
+        });
+
+        fireEvent.mouseDown(handle);
+        fireEvent.mouseMove(window, { clientX: 900 });
+        expect(body.style.getPropertyValue("--diff-review-file-pane-width")).toBe("480px");
+
+        fireEvent.mouseMove(window, { clientX: 0 });
+        expect(body.style.getPropertyValue("--diff-review-file-pane-width")).toBe("160px");
+
+        Object.defineProperty(body, "getBoundingClientRect", {
+            configurable: true,
+            value: () => ({ left: 100, width: 300 }),
+        });
+        fireEvent.mouseMove(window, { clientX: 500 });
+        expect(body.style.getPropertyValue("--diff-review-file-pane-width")).toBe("180px");
+
+        fireEvent.mouseUp(window);
+        fireEvent.mouseMove(window, { clientX: 0 });
+        expect(body.style.getPropertyValue("--diff-review-file-pane-width")).toBe("180px");
+    });
 });

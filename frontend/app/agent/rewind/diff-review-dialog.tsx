@@ -8,7 +8,19 @@ import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/shadcn/ui/dialog";
 import { cn } from "@/util/util";
 import { FileDiffIcon } from "lucide-react";
-import type { KeyboardEvent, ReactNode } from "react";
+import {
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+    type CSSProperties,
+    type KeyboardEvent,
+    type ReactNode,
+} from "react";
+
+const FilePane_DefaultWidth = 250;
+const FilePane_MinWidth = 160;
+const FilePane_MaxWidth = 480;
 
 export interface DiffReviewDialogProps {
     open: boolean;
@@ -196,6 +208,33 @@ function SelectedFileDiff({ file }: { file?: AgentRewindFileRowView }) {
     return <DiffViewer patch={file.diff} size="sm" className="m-0" />;
 }
 
+function FilePaneResizeHandle({ onResize }: { onResize(clientX: number): void }) {
+    const [dragging, setDragging] = useState(false);
+
+    useEffect(() => {
+        if (!dragging) return;
+
+        const onMouseMove = (event: MouseEvent) => onResize(event.clientX);
+        const onMouseUp = () => setDragging(false);
+        window.addEventListener("mousemove", onMouseMove);
+        window.addEventListener("mouseup", onMouseUp);
+        return () => {
+            window.removeEventListener("mousemove", onMouseMove);
+            window.removeEventListener("mouseup", onMouseUp);
+        };
+    }, [dragging, onResize]);
+
+    return (
+        <div
+            role="separator"
+            aria-label="Resize file list"
+            aria-orientation="vertical"
+            onMouseDown={() => setDragging(true)}
+            className="absolute top-0 right-0 hidden md:block h-full w-1 cursor-col-resize bg-transparent hover:bg-fg-overlay-2"
+        />
+    );
+}
+
 export function DiffReviewDialog({
     open,
     title,
@@ -210,6 +249,8 @@ export function DiffReviewDialog({
     onSelectedPathChange,
     onOpenChange,
 }: DiffReviewDialogProps) {
+    const [filePaneWidth, setFilePaneWidth] = useState(FilePane_DefaultWidth);
+    const reviewBodyRef = useRef<HTMLDivElement>(null);
     const selectedFile = files.find((file) => file.path === selectedPath) ?? files[0];
     const selectedIndex = selectedFile ? files.indexOf(selectedFile) : -1;
     const stats = aggregateStats(files);
@@ -217,6 +258,13 @@ export function DiffReviewDialog({
     const fileReasons = new Set(files.flatMap((file) => (file.reason ? [file.reason] : [])));
     const uniqueWarnings = [...new Set(warnings.filter((warning) => warning && !fileReasons.has(warning)))];
     const announcedWarnings = [...new Set(warnings.filter(Boolean))];
+    const handleFilePaneResize = useCallback((clientX: number) => {
+        if (!reviewBodyRef.current) return;
+        const rect = reviewBodyRef.current.getBoundingClientRect();
+        const maximumWidth = Math.min(FilePane_MaxWidth, rect.width * 0.6);
+        const nextWidth = clientX - rect.left;
+        setFilePaneWidth(Math.max(FilePane_MinWidth, Math.min(nextWidth, maximumWidth)));
+    }, []);
     const onFileListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
         if (files.length === 0) return;
@@ -283,33 +331,41 @@ export function DiffReviewDialog({
                     )}
                 </DialogHeader>
 
-                <div className="grid min-h-0 grid-rows-[minmax(120px,35%)_minmax(0,1fr)] md:grid-cols-[minmax(220px,30%)_minmax(0,1fr)] md:grid-rows-1">
-                    <aside className="min-h-0 overflow-y-auto border-b border-border p-2 md:border-r md:border-b-0">
-                        {files.length === 0 ? (
-                            <div className="grid h-full place-items-center p-6 text-center text-sm text-muted-foreground">
-                                {emptyMessage}
-                            </div>
-                        ) : (
-                            <div
-                                role="listbox"
-                                aria-label="Workspace files"
-                                aria-activedescendant={selectedIndex >= 0 ? optionId(selectedIndex) : undefined}
-                                tabIndex={0}
-                                onKeyDown={onFileListKeyDown}
-                            >
-                                {files.map((file, index) => (
-                                    <FileListRow
-                                        key={file.path}
-                                        file={file}
-                                        optionId={optionId(index)}
-                                        selected={selectedFile?.path === file.path}
-                                        onSelect={() => onSelectedPathChange(file.path)}
-                                    />
-                                ))}
-                            </div>
-                        )}
+                <div
+                    ref={reviewBodyRef}
+                    data-testid="diff-review-body"
+                    style={{ "--diff-review-file-pane-width": `${filePaneWidth}px` } as CSSProperties}
+                    className="flex min-h-0 flex-col md:flex-row"
+                >
+                    <aside className="relative flex min-h-0 w-full shrink-0 basis-[35%] flex-col border-b border-border md:w-[var(--diff-review-file-pane-width)] md:basis-auto md:border-r md:border-b-0">
+                        <div className="flex-1 overflow-y-auto p-2">
+                            {files.length === 0 ? (
+                                <div className="grid h-full place-items-center p-6 text-center text-sm text-muted-foreground">
+                                    {emptyMessage}
+                                </div>
+                            ) : (
+                                <div
+                                    role="listbox"
+                                    aria-label="Workspace files"
+                                    aria-activedescendant={selectedIndex >= 0 ? optionId(selectedIndex) : undefined}
+                                    tabIndex={0}
+                                    onKeyDown={onFileListKeyDown}
+                                >
+                                    {files.map((file, index) => (
+                                        <FileListRow
+                                            key={file.path}
+                                            file={file}
+                                            optionId={optionId(index)}
+                                            selected={selectedFile?.path === file.path}
+                                            onSelect={() => onSelectedPathChange(file.path)}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        <FilePaneResizeHandle onResize={handleFilePaneResize} />
                     </aside>
-                    <main className="min-h-0 overflow-auto bg-muted/10 p-3">
+                    <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-muted/10 p-3">
                         {loading ? (
                             <div className="grid h-full place-items-center text-sm text-muted-foreground">
                                 Loading diff…
