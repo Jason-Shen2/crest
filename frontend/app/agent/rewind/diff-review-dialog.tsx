@@ -18,9 +18,9 @@ import {
     type ReactNode,
 } from "react";
 
-const FilePane_DefaultWidth = 250;
-const FilePane_MinWidth = 160;
-const FilePane_MaxWidth = 480;
+const FilePaneDefaultWidth = 250;
+const FilePaneMinWidth = 160;
+const FilePaneMaxWidth = 480;
 
 export interface DiffReviewDialogProps {
     open: boolean;
@@ -229,7 +229,11 @@ function FilePaneResizeHandle({ onResize }: { onResize(clientX: number): void })
             role="separator"
             aria-label="Resize file list"
             aria-orientation="vertical"
-            onMouseDown={() => setDragging(true)}
+            onMouseDown={(event) => {
+                if (event.button !== 0) return;
+                event.preventDefault();
+                setDragging(true);
+            }}
             className="absolute top-0 right-0 hidden md:block h-full w-1 cursor-col-resize bg-transparent hover:bg-fg-overlay-2"
         />
     );
@@ -249,7 +253,7 @@ export function DiffReviewDialog({
     onSelectedPathChange,
     onOpenChange,
 }: DiffReviewDialogProps) {
-    const [filePaneWidth, setFilePaneWidth] = useState(FilePane_DefaultWidth);
+    const [filePaneWidth, setFilePaneWidth] = useState(FilePaneDefaultWidth);
     const reviewBodyRef = useRef<HTMLDivElement>(null);
     const selectedFile = files.find((file) => file.path === selectedPath) ?? files[0];
     const selectedIndex = selectedFile ? files.indexOf(selectedFile) : -1;
@@ -261,9 +265,9 @@ export function DiffReviewDialog({
     const handleFilePaneResize = useCallback((clientX: number) => {
         if (!reviewBodyRef.current) return;
         const rect = reviewBodyRef.current.getBoundingClientRect();
-        const maximumWidth = Math.min(FilePane_MaxWidth, rect.width * 0.6);
+        const maximumWidth = Math.min(FilePaneMaxWidth, rect.width * 0.6);
         const nextWidth = clientX - rect.left;
-        setFilePaneWidth(Math.max(FilePane_MinWidth, Math.min(nextWidth, maximumWidth)));
+        setFilePaneWidth(Math.max(FilePaneMinWidth, Math.min(nextWidth, maximumWidth)));
     }, []);
     const onFileListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -337,7 +341,7 @@ export function DiffReviewDialog({
                     style={{ "--diff-review-file-pane-width": `${filePaneWidth}px` } as CSSProperties}
                     className="flex min-h-0 flex-col md:flex-row"
                 >
-                    <aside className="relative flex min-h-[120px] w-full shrink-0 basis-[35%] flex-col border-b border-border md:min-h-0 md:w-[var(--diff-review-file-pane-width)] md:basis-auto md:border-r md:border-b-0">
+                    <aside className="relative flex min-h-[120px] w-full shrink-0 basis-[35%] flex-col border-b border-border md:min-h-0 md:w-[var(--diff-review-file-pane-width)] md:max-w-[60%] md:basis-auto md:border-r md:border-b-0">
                         <div className="flex-1 overflow-y-auto p-2">
                             {files.length === 0 ? (
                                 <div className="grid h-full place-items-center p-6 text-center text-sm text-muted-foreground">

@@ -370,6 +370,7 @@ describe("DiffReviewDialog", () => {
         expect(handle.className).toContain("cursor-col-resize");
         expect(handle.className).toContain("hover:bg-fg-overlay-2");
         expect(filePane?.className).toContain("md:w-[var(--diff-review-file-pane-width)]");
+        expect(filePane?.className).toContain("md:max-w-[60%]");
         expect(filePane?.className).toContain("min-h-[120px]");
         expect(filePane?.className).toContain("md:min-h-0");
         expect(selectedFile.className).toContain("hover:bg-muted/40");
@@ -380,7 +381,17 @@ describe("DiffReviewDialog", () => {
             value: () => ({ left: 100, width: 1000 }),
         });
 
-        fireEvent.mouseDown(handle);
+        fireEvent.mouseDown(handle, { button: 2 });
+        fireEvent.mouseMove(window, { clientX: 400 });
+        expect(body.style.getPropertyValue("--diff-review-file-pane-width")).toBe("250px");
+
+        const mouseDownEvent = new MouseEvent("mousedown", { bubbles: true, button: 0, cancelable: true });
+        fireEvent(handle, mouseDownEvent);
+        expect(mouseDownEvent.defaultPrevented).toBe(true);
+
+        fireEvent.mouseMove(window, { clientX: 400 });
+        expect(body.style.getPropertyValue("--diff-review-file-pane-width")).toBe("300px");
+
         fireEvent.mouseMove(window, { clientX: 900 });
         expect(body.style.getPropertyValue("--diff-review-file-pane-width")).toBe("480px");
 
