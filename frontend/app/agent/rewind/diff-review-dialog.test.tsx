@@ -157,6 +157,7 @@ describe("DiffReviewDialog", () => {
         renderDialog();
 
         const dialog = screen.getByRole("dialog");
+        expect(dialog.hasAttribute("aria-describedby")).toBe(false);
         expect(dialog.className).toContain("border-0");
         expect(dialog.className).toContain("h-[calc(100vh-1rem)]");
         expect(dialog.className).toContain("max-h-[calc(100vh-1rem)]");
@@ -184,6 +185,8 @@ describe("DiffReviewDialog", () => {
         });
 
         const summary = screen.getByText("2 files").parentElement;
+        expect(summary?.getAttribute("role")).toBe("status");
+        expect(summary?.getAttribute("aria-atomic")).toBe("true");
         expect(summary?.textContent).toContain("+355");
         expect(summary?.textContent).toContain("-2");
         expect(screen.getByText("+355").className).toContain("text-success");
@@ -212,11 +215,36 @@ describe("DiffReviewDialog", () => {
         expect(summary?.querySelector('[aria-label="Deletions unavailable"]')).toBeNull();
     });
 
+    it("treats undefined additions as unavailable without losing known deletions", () => {
+        renderDialog({
+            files: [
+                makeFile({ additions: undefined, deletions: 2 }),
+                makeFile({ path: "src/beta.ts", additions: 8, deletions: 3 }),
+            ],
+        });
+
+        const summary = screen.getByText("2 files").parentElement;
+        expect(summary?.querySelector('[aria-label="Additions unavailable"]')).not.toBeNull();
+        expect(summary?.textContent).toContain("-5");
+        expect(summary?.querySelector('[aria-label="Deletions unavailable"]')).toBeNull();
+    });
+
+    it("shows zero-valued header stats when no files change", () => {
+        renderDialog({ files: [] });
+
+        const summary = screen.getByText("0 files").parentElement;
+        expect(summary?.textContent).toBe("0 files+0-0");
+    });
+
     it("shows only the loading summary while files are loading and omits color explanation copy", () => {
-        renderDialog({ loading: true });
+        const { rerender, props } = renderDialog({ loading: true });
 
         const summary = screen.getByText("Loading files…");
+        expect(summary.parentElement?.getAttribute("role")).toBe("status");
+        expect(summary.parentElement?.getAttribute("aria-atomic")).toBe("true");
         expect(summary.parentElement?.textContent).toBe("Loading files…");
+        rerender(<DiffReviewDialog {...props} loading={false} />);
+        expect(screen.getByRole("status").textContent).toBe("1 file+3-2");
         expect(screen.queryByText(/red (will|was)/i)).toBeNull();
         expect(screen.queryByText(/green (will|was)/i)).toBeNull();
     });
@@ -238,6 +266,13 @@ describe("DiffReviewDialog", () => {
 
         expect(screen.getAllByText(coverageWarning)).toHaveLength(1);
         expect(screen.getAllByText(warning)).toHaveLength(1);
+        const warningStatus = screen
+            .getAllByRole("status")
+            .find((status) => status.textContent?.includes(coverageWarning));
+        expect(warningStatus?.getAttribute("aria-atomic")).toBe("true");
+        expect(warningStatus?.textContent).toBe(coverageWarning);
+        expect(screen.getAllByRole("status")).toHaveLength(2);
+        expect(screen.getByRole("alert").textContent).toBe("preview failed");
         for (const message of [
             screen.getByText(warning),
             screen.getByText(coverageWarning),

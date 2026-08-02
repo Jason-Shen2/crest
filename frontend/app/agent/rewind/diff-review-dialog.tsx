@@ -249,7 +249,11 @@ export function DiffReviewDialog({
                         </div>
                         <div className="min-w-0 space-y-1">
                             <DialogTitle className="text-base leading-tight">{title}</DialogTitle>
-                            <div className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
+                            <div
+                                role="status"
+                                aria-atomic="true"
+                                className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground"
+                            >
                                 {loading ? (
                                     <span>Loading files…</span>
                                 ) : (
@@ -261,11 +265,15 @@ export function DiffReviewDialog({
                             </div>
                         </div>
                     </div>
-                    {uniqueWarnings.map((warning) => (
-                        <p key={warning} className="text-sm text-destructive">
-                            {warning}
-                        </p>
-                    ))}
+                    {uniqueWarnings.length > 0 && (
+                        <div role="status" aria-atomic="true">
+                            {uniqueWarnings.map((warning) => (
+                                <p key={warning} className="text-sm text-destructive">
+                                    {warning}
+                                </p>
+                            ))}
+                        </div>
+                    )}
                     {errorMessage && (
                         <p role="alert" className="text-sm text-destructive">
                             {errorMessage}
