@@ -319,37 +319,46 @@ describe("FileTopTab", () => {
         }
     });
 
-    it("preserves a non-Markdown editor and reports the save error without open-failure actions", () => {
-        const snapshot = {
-            dirty: true,
-            title: "draft.ts",
-            status: "error",
-            saveStatus: "error",
-            operation: "idle",
-            error: "disk full",
-        };
-        const runtime = {
-            id: "file-1",
-            path: "/repo/draft.ts",
-            value: "const draft = true;",
-            language: "typescript",
-            readonly: false,
-            model: { id: "model" },
-            viewState: undefined,
-            getSnapshot: () => snapshot,
-            subscribe: () => () => {},
-            setValue: vi.fn(),
-            attach: vi.fn(),
-            detach: vi.fn(),
-        } as any;
+    it("preserves a non-Markdown editor and reports the save error without open-failure actions", async () => {
+        const registry = new WorkspaceEditorRegistry(
+            "workspace-1",
+            {
+                readFile: vi.fn().mockResolvedValue({ text: "const saved = true;", readonly: false }),
+                writeFile: vi.fn().mockRejectedValue(new Error("disk full")),
+            },
+            makeTestModelRegistry() as any
+        );
+        const runtime = registry.open("file-1", "/repo/draft.ts");
 
-        render(<FileTopTab runtime={runtime} onClose={vi.fn()} onLocate={vi.fn()} />);
+        try {
+            await act(async () => {
+                await runtime.ready;
+            });
+            render(<FileTopTab runtime={runtime} onClose={vi.fn()} onLocate={vi.fn()} />);
 
-        expect(screen.getByText("Monaco file editor")).toBeTruthy();
-        expect(screen.getByRole("alert").textContent).toContain("disk full");
-        expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-        expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
-        expect(screen.queryByRole("button", { name: "Locate" })).toBeNull();
+            act(() => {
+                runtime.setValue("const latestDirtyDraft = true;");
+            });
+            await act(async () => {
+                await expect(runtime.save()).rejects.toThrow("disk full");
+            });
+
+            expect(runtime.getSnapshot()).toMatchObject({
+                dirty: true,
+                status: "error",
+                saveStatus: "error",
+                operation: "idle",
+                error: "disk full",
+            });
+            expect(screen.getByText("Monaco file editor")).toBeTruthy();
+            expect(editorProps.current.text).toBe("const latestDirtyDraft = true;");
+            expect(screen.getByRole("alert").textContent).toContain("disk full");
+            expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+            expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+            expect(screen.queryByRole("button", { name: "Locate" })).toBeNull();
+        } finally {
+            await registry.dispose();
+        }
     });
 
     it("resets its Markdown mode when the file path changes", async () => {
