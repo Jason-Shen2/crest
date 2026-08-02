@@ -132,12 +132,12 @@ export class WorkspaceRestoreExecutor {
         } catch (error) {
             console.warn("Workspace restore committed but renderer refresh failed", error);
         }
-        return committed.result;
+        return this.makeResult(input, committed.sessionMetadata);
     }
 
     async executeLocked(
         input: ExecuteWorkspaceRestoreInput
-    ): Promise<{ result: WorkspaceRewindCommitResult; operationId: string }> {
+    ): Promise<{ sessionMetadata: JsonlSessionMetadata; operationId: string }> {
         const assertCurrent = input.assertCurrent ?? (async () => {});
         await assertCurrent();
         assertRestorePlanMatchesConfirmation({ confirmation: input.confirmation, plan: input.plan, mode: input.mode });
@@ -182,12 +182,14 @@ export class WorkspaceRestoreExecutor {
                 return { path: path.path, before, target: path.target, createdParentDirectories: [] };
             }),
         };
-        let publicationAttempted = false;
+        let publicationStarted = false;
+        let publicationSucceeded = false;
         let resolutionAttempted = false;
         try {
             await assertCurrent();
+            publicationStarted = true;
             await this.pending.publishLocked(pending);
-            publicationAttempted = true;
+            publicationSucceeded = true;
             for (const item of pending.paths) {
                 await assertCurrent();
                 const createdParentDirectories = new Set(item.createdParentDirectories);
@@ -242,9 +244,32 @@ export class WorkspaceRestoreExecutor {
             if (decision.state !== "committed") {
                 throw this.recoveryRequired(pending, decision);
             }
-            return { result: await this.makeResult(input, sessionMetadata), operationId };
+            return { sessionMetadata, operationId };
         } catch (error) {
-            if (!publicationAttempted) throw error;
+            if (!publicationSucceeded) {
+                if (!publicationStarted) throw error;
+                let current;
+                try {
+                    current = await this.pending.readLocked();
+                } catch (readError) {
+                    throw new WorkspaceFrozenError(operationId, "Workspace recovery required", { cause: readError });
+                }
+                if (current.kind === "none") throw error;
+                if (current.kind !== "valid" || current.record.operationId !== operationId) {
+                    throw new WorkspaceFrozenError(operationId, "Workspace recovery required", { cause: error });
+                }
+                let decision;
+                try {
+                    decision = await this.recovery.resolvePendingLocked(current.record);
+                } catch (recoveryError) {
+                    throw new WorkspaceFrozenError(operationId, "Workspace recovery required", {
+                        cause: recoveryError,
+                    });
+                }
+                if (decision.state === "committed") return { sessionMetadata, operationId };
+                if (decision.state === "not-committed") throw error;
+                throw this.recoveryRequired(current.record, decision, error);
+            }
             if (resolutionAttempted) {
                 if (error instanceof WorkspaceFrozenError) throw error;
                 throw new WorkspaceFrozenError(operationId, "Workspace recovery required", { cause: error });
@@ -256,7 +281,7 @@ export class WorkspaceRestoreExecutor {
                 throw new WorkspaceFrozenError(operationId, "Workspace recovery required", { cause: recoveryError });
             }
             if (decision.state === "committed") {
-                return { result: await this.makeResult(input, sessionMetadata), operationId };
+                return { sessionMetadata, operationId };
             }
             if (decision.state === "not-committed") throw error;
             throw this.recoveryRequired(pending, decision, error);

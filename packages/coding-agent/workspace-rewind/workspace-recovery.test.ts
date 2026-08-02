@@ -3,10 +3,10 @@
 
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deriveWorkspaceApplyArtifactPaths } from "./filesystem-apply";
 import type { PendingWorkspaceRestoreV1, ScannedPendingWorkspaceRestore } from "./pending-restore-store";
@@ -24,6 +24,17 @@ const Identity = "1".repeat(64);
 const Incarnation = "2".repeat(64);
 const Before = { state: "file", oid: "a".repeat(40), executable: false } as const;
 const Target = { state: "file", oid: "b".repeat(40), executable: false } as const;
+const CleanupRoots: string[] = [];
+
+afterEach(async () => {
+    await Promise.all(CleanupRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function makeTemporaryRoot(prefix: string): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), prefix));
+    CleanupRoots.push(root);
+    return root;
+}
 
 function snapshot(id = "3".repeat(40)): WorkspaceSnapshotRefV1 {
     return {
@@ -65,7 +76,7 @@ async function fixture(input: {
     sessionMissing?: boolean;
     corrupt?: boolean;
 }) {
-    const root = await mkdtemp(join(tmpdir(), "crest-pending-recovery-"));
+    const root = await makeTemporaryRoot("crest-pending-recovery-");
     let record = pendingRecord(input.target);
     const currentSnapshot = snapshot("6".repeat(40));
     const live = new Map<string, CapturedPathStateV1 | "unknown">([["file.txt", input.live ?? Target]]);
@@ -274,7 +285,7 @@ describe("WorkspaceRecovery pending resolver", () => {
     });
 
     it("reconciles deterministic apply artifacts before classifying live paths", async () => {
-        const root = await mkdtemp(join(tmpdir(), "crest-pending-artifact-"));
+        const root = await makeTemporaryRoot("crest-pending-artifact-");
         const beforeBytes = Buffer.from("before");
         const targetBytes = Buffer.from("target");
         const blobOid = (bytes: Buffer) =>

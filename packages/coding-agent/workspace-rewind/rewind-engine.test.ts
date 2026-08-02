@@ -322,6 +322,28 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(engine.executor.recovery).toBe((engine as unknown as { recovery: unknown }).recovery);
     });
 
+    it("rejects explicitly mismatched pending store and Resolver dependencies", () => {
+        const store = {
+            storeRoot: "/store",
+            identity: Workspace,
+            readBlob: vi.fn(),
+            readPathState: vi.fn(),
+            verify: vi.fn(),
+        };
+        const pending = { root: "/store/journal/restore-a" };
+        const recovery = { pending: { root: "/store/journal/restore-b" } };
+
+        expect(
+            () =>
+                new WorkspaceRewindEngine({
+                    store: store as never,
+                    pending: pending as never,
+                    recovery: recovery as never,
+                    confirmations: new RewindConfirmationRegistry(),
+                })
+        ).toThrow(/pending store/i);
+    });
+
     it("projects rewind in reverse and redo forward from immutable restore-plan states", async () => {
         const rewindPlan = restorePlan();
         const redoPlan = restorePlan({

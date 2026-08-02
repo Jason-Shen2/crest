@@ -253,6 +253,9 @@ export class WorkspaceRewindEngine {
 
     constructor(options: WorkspaceRewindEngineOptions) {
         this.store = options.store;
+        if (options.pending && options.recovery && options.pending !== options.recovery.pending) {
+            throw new Error("Workspace rewind engine pending store does not match its Resolver");
+        }
         this.pending = options.pending ?? options.recovery?.pending ?? new PendingWorkspaceRestoreStore(options.store);
         if (!options.recovery && !options.locateSession) {
             throw new Error("Workspace rewind engine requires a Session locator for recovery");

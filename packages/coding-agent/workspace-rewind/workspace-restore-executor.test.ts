@@ -66,7 +66,7 @@ function plan(target: RestoreTargetV1, withPath = false): RestorePlanV1 {
     };
 }
 
-function sessionFixture(appendError?: Error, appendAfterCommit = false) {
+function sessionFixture(appendError?: Error, appendAfterCommit = false, getEntriesError?: Error) {
     const metadata: JsonlSessionMetadata = {
         id: "session-1",
         cwd: "/workspace",
@@ -92,7 +92,10 @@ function sessionFixture(appendError?: Error, appendAfterCommit = false) {
     return {
         session: {
             getMetadata: vi.fn(async () => metadata),
-            getEntries: vi.fn(async () => [...entries]),
+            getEntries: vi.fn(async () => {
+                if (getEntriesError) throw getEntriesError;
+                return [...entries];
+            }),
             getLeafId: vi.fn(async () => leafId),
             getEntry: vi.fn(async (id: string) => entries.find((entry) => entry.id === id)),
             getStorage: vi.fn(() => ({ createEntryId: vi.fn(async () => "operation-leaf") })),
@@ -121,6 +124,8 @@ function harness(
         appendAfterCommit?: boolean;
         onCommittedError?: Error;
         publishError?: Error;
+        publishVisibleOnError?: "matching" | "corrupt" | "different-operation";
+        getEntriesError?: Error;
         withPath?: boolean;
     } = {}
 ) {
@@ -161,6 +166,22 @@ function harness(
             return structuredClone(record);
         }),
         removeLocked: vi.fn(async () => order.push("remove-pending")),
+        readLocked: vi.fn(async () => {
+            order.push("read-pending");
+            if (input.publishVisibleOnError === "matching") return { kind: "valid", record } as const;
+            if (input.publishVisibleOnError === "corrupt") {
+                return {
+                    kind: "corrupt",
+                    operationId: "operation-1",
+                    message: "corrupt pending",
+                    bytes: Buffer.from("{"),
+                } as const;
+            }
+            if (input.publishVisibleOnError === "different-operation") {
+                return { kind: "valid", record: { ...record, operationId: "operation-2" } } as const;
+            }
+            return { kind: "none" } as const;
+        }),
     };
     const recovery = {
         resolvePendingLocked: vi.fn(async () => {
@@ -199,7 +220,7 @@ function harness(
         order.push("refresh");
         if (input.onCommittedError) throw input.onCommittedError;
     });
-    const session = sessionFixture(input.appendError, input.appendAfterCommit);
+    const session = sessionFixture(input.appendError, input.appendAfterCommit, input.getEntriesError);
     const executor = new WorkspaceRestoreExecutor({
         store: store as never,
         pending: pending as never,
@@ -326,7 +347,48 @@ describe("WorkspaceRestoreExecutor pending transaction", () => {
         await expect(execute(value, { kind: "redo" })).rejects.toBe(error);
 
         expect(value.pending.publishLocked).toHaveBeenCalledOnce();
+        expect(value.pending.readLocked).toHaveBeenCalledOnce();
         expect(value.recovery.resolvePendingLocked).not.toHaveBeenCalled();
+    });
+
+    it("resolves an ambiguous publication failure when the matching pending record is durable", async () => {
+        const value = harness({
+            publishError: new Error("publish acknowledgement failed"),
+            publishVisibleOnError: "matching",
+            decision: "committed",
+        });
+
+        await expect(execute(value, { kind: "redo" })).resolves.toMatchObject({ semanticLeafId: "current-leaf" });
+
+        expect(value.pending.readLocked).toHaveBeenCalledOnce();
+        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
+    });
+
+    it.each(["corrupt", "different-operation"] as const)(
+        "requires recovery when ambiguous publication leaves %s pending state",
+        async (publishVisibleOnError) => {
+            const value = harness({
+                publishError: new Error("publish acknowledgement failed"),
+                publishVisibleOnError,
+            });
+
+            await expect(execute(value, { kind: "redo" })).rejects.toBeInstanceOf(WorkspaceFrozenError);
+
+            expect(value.pending.readLocked).toHaveBeenCalledOnce();
+            expect(value.recovery.resolvePendingLocked).not.toHaveBeenCalled();
+        }
+    );
+
+    it("reports response construction failure after publishing the committed outcome", async () => {
+        const error = new Error("session response read failed");
+        const value = harness({ getEntriesError: error });
+
+        await expect(execute(value, { kind: "redo" })).rejects.toBe(error);
+
+        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
+        expect(value.onCommitted).toHaveBeenCalledWith("session-1", "operation-1");
+        expect(value.order).toContain("unlock");
+        expect(value.order).toContain("refresh");
     });
 
     it("logs renderer refresh failure after unlocking without changing the transaction result", async () => {
