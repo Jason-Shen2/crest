@@ -197,6 +197,7 @@ export class WorkspaceRecovery {
         if (candidate.kind === "corrupt") {
             return this.withWorkspaceLock(async () => {
                 const current = await this.pending.readLocked();
+                if (current.kind === "none" && expectedOperationId == null) return { state: "none" } as const;
                 this.assertSameCandidate(candidate, current, expectedOperationId);
                 return this.decisionForCorrupt(current as Extract<ScannedPendingWorkspaceRestore, { kind: "corrupt" }>);
             });
@@ -205,6 +206,7 @@ export class WorkspaceRecovery {
         const classify = () =>
             this.withWorkspaceLock(async () => {
                 const current = await this.pending.readLocked();
+                if (current.kind === "none" && expectedOperationId == null) return { state: "none" } as const;
                 this.assertSameCandidate(candidate, current, expectedOperationId);
                 if (current.kind !== "valid") throw new Error("Pending restore changed before authoritative reread");
                 await this.verifyWorkspace(this.workspace);

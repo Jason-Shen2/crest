@@ -152,7 +152,6 @@ import type {
     AgentTurnChangeSummaryView,
     AgentTurnFileDiffView,
     AgentTurnMutationPreviewResult,
-    AgentWorkspaceRecoveryView,
 } from "@crest/coding-agent/workspace-rewind/api-types";
 import {
     makeDisabledWorkspaceCheckpointManager,
@@ -463,8 +462,6 @@ export interface AgentIpcRegistrationOptions {
         redo(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentRewindMutationResult>;
     };
     rewindMaintenance?: {
-        getRecovery(input: unknown): Promise<AgentWorkspaceRecoveryView | undefined>;
-        resolveRecovery(input: unknown, assertCurrent?: () => Promise<void>): Promise<void>;
         cleanup(input: unknown, assertCurrent?: () => Promise<void>): Promise<AgentCleanupWorkspaceCheckpointsResult>;
         listStorageOwners(input: unknown): Promise<AgentListCheckpointStorageOwnersResult>;
         purgeTrashedSession(
@@ -1420,16 +1417,10 @@ function makeFallbackSubscriptionAuthorization(beforeMutation?: AuthorizationGua
 async function buildColdRewindState(
     metadata: JsonlSessionMetadata,
     entries: import("@crest/agent/harness/types").SessionTreeEntry[],
-    refreshOptions: AgentRewindStateRefreshOptions = {}
+    refreshOptions: AgentRewindStateRefreshOptions = {},
+    recoveryProbe?: Awaited<ReturnType<typeof probeColdRewindRecovery>>
 ) {
-    const { getWaveDataDir } = await import("./emain-platform");
-    const feature = await openAgentRewindFeature({
-        workspaceRoot: metadata.cwd,
-        dataRoot: getWaveDataDir(),
-    });
-    const recoveryGate = getAgentWorkspaceRecoveryGate();
-    const recoveryView =
-        feature.state === "enabled" ? await recoveryGate.getRecovery(feature.store.identity) : undefined;
+    const { feature, recoveryView } = recoveryProbe ?? (await probeColdRewindRecovery(metadata));
     return await buildAgentRewindSessionStateView(entries, metadata.id, {
         enabled: feature.state === "enabled",
         busy: false,
@@ -1452,12 +1443,25 @@ async function buildColdRewindState(
     });
 }
 
+async function probeColdRewindRecovery(metadata: JsonlSessionMetadata) {
+    const { getWaveDataDir } = await import("./emain-platform");
+    const feature = await openAgentRewindFeature({
+        workspaceRoot: metadata.cwd,
+        dataRoot: getWaveDataDir(),
+    });
+    const recoveryGate = getAgentWorkspaceRecoveryGate();
+    const recoveryView =
+        feature.state === "enabled" ? await recoveryGate.getRecovery(feature.store.identity) : undefined;
+    return { feature, recoveryView };
+}
+
 async function sendPersistedSessionState(
     sender: electron.WebContents,
     sessionPath: string,
     rendererSessionPath: string,
     authorization: AgentSubscriptionAuthorization,
-    key: SubKey
+    key: SubKey,
+    recoveryProbe?: Awaited<ReturnType<typeof probeColdRewindRecovery>>
 ): Promise<void> {
     let canonicalPath = sessionPath;
     try {
@@ -1489,7 +1493,12 @@ async function sendPersistedSessionState(
             const context = await session.buildContext();
             const branch = await session.getBranch();
             const contextState = buildContextStateFromSessionEntries(branch);
-            const rewindState = await buildColdRewindState(await session.getMetadata(), await session.getEntries());
+            const rewindState = await buildColdRewindState(
+                await session.getMetadata(),
+                await session.getEntries(),
+                {},
+                recoveryProbe
+            );
             await authorization.validateCurrent();
             if (sender.isDestroyed()) return;
             sender.send(
@@ -1518,11 +1527,7 @@ async function sendPersistedSessionState(
     }
 }
 
-async function buildPersistedSessionState(
-    sessionPath: string,
-    guardRuntime?: LiveRuntimeGuard,
-    beforeReturn?: AuthorizationGuard
-): Promise<{
+type PersistedSessionState = {
     type: "session_state";
     messages: AgentMessage[];
     turns: AgentTurn[];
@@ -1533,30 +1538,49 @@ async function buildPersistedSessionState(
     commands: ReturnType<AgentSessionRuntime["getSessionState"]>["commands"];
     workspaceRewind: AgentWorkspaceRewindState;
     rewindState?: import("@crest/coding-agent/workspace-rewind/api-types").AgentRewindSessionStateView;
-}> {
+};
+
+async function buildLiveSessionState(
+    liveRuntime: LiveAgentRuntimeLookup,
+    guardRuntime?: LiveRuntimeGuard
+): Promise<PersistedSessionState> {
+    await guardRuntime?.(liveRuntime);
+    const state = liveRuntime.runtime.getSessionState();
+    return {
+        type: "session_state",
+        messages: state.messages,
+        turns: state.turns,
+        status: state.status,
+        steer: state.steerQueue,
+        followUp: state.followUpQueue,
+        contextReports: state.contextReports,
+        commands: state.commands,
+        workspaceRewind: state.workspaceRewind,
+        ...(state.rewindState == null ? {} : { rewindState: state.rewindState }),
+    };
+}
+
+async function buildPersistedSessionState(
+    sessionPath: string,
+    guardRuntime?: LiveRuntimeGuard,
+    beforeReturn?: AuthorizationGuard,
+    recoveryProbe?: Awaited<ReturnType<typeof probeColdRewindRecovery>>
+): Promise<PersistedSessionState> {
     const canonicalPath = await validateSessionPath(sessionPath);
     const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
     if (liveRuntime) {
-        await guardRuntime?.(liveRuntime);
-        const state = liveRuntime.runtime.getSessionState();
-        return {
-            type: "session_state",
-            messages: state.messages,
-            turns: state.turns,
-            status: state.status,
-            steer: state.steerQueue,
-            followUp: state.followUpQueue,
-            contextReports: state.contextReports,
-            commands: state.commands,
-            workspaceRewind: state.workspaceRewind,
-            ...(state.rewindState == null ? {} : { rewindState: state.rewindState }),
-        };
+        return await buildLiveSessionState(liveRuntime, guardRuntime);
     }
     const session = await openPaneSessionByPath(canonicalPath);
     try {
         const context = await session.buildContext();
         const branch = await session.getBranch();
-        const rewindState = await buildColdRewindState(await session.getMetadata(), await session.getEntries());
+        const rewindState = await buildColdRewindState(
+            await session.getMetadata(),
+            await session.getEntries(),
+            {},
+            recoveryProbe
+        );
         await guardLiveRuntimeIfPresent([canonicalPath], guardRuntime, beforeReturn);
         return {
             type: "session_state",
@@ -2074,15 +2098,31 @@ export async function getAgentSessionStateForIpc(
     beforeReturn?: AuthorizationGuard
 ): Promise<Awaited<ReturnType<typeof buildPersistedSessionState>>> {
     const input = validateSessionMetadataShape(sessionMetadata);
-    return await withCanonicalSessionAccess(
+    const prepared = await withCanonicalSessionAccess(
         input.path,
         async (canonicalPath) => {
             const { metadata, session } = await openValidatedSessionMetadata({ ...input, path: canonicalPath });
             try {
-                return await buildPersistedSessionState(metadata.path, guardRuntime, beforeReturn);
+                const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
+                if (liveRuntime) {
+                    return { kind: "live" as const, state: await buildLiveSessionState(liveRuntime, guardRuntime) };
+                }
+                return { kind: "cold" as const, metadata };
             } finally {
                 session.close();
             }
+        },
+        "sessionMetadata.path"
+    );
+    if (prepared.kind === "live") return prepared.state;
+    const { metadata } = prepared;
+    const recoveryProbe = await probeColdRewindRecovery(metadata);
+    return await withCanonicalSessionAccess(
+        metadata.path,
+        async (canonicalPath) => {
+            const current = await openValidatedSessionMetadata({ ...metadata, path: canonicalPath });
+            current.session.close();
+            return await buildPersistedSessionState(canonicalPath, guardRuntime, beforeReturn, recoveryProbe);
         },
         "sessionMetadata.path"
     );
@@ -2675,6 +2715,7 @@ export async function subscribeAgentSessionForIpc(
             ? makeFallbackSubscriptionAuthorization(authorizationOrBeforeMutation)
             : (authorizationOrBeforeMutation ?? makeFallbackSubscriptionAuthorization());
     const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
+    let pendingDelivery: { canonicalPath: string; key: SubKey; metadata: JsonlSessionMetadata } | undefined;
     await withCanonicalSessionAccess(rendererPath, async (canonicalPath, lease) => {
         await authorization.validateCurrent();
         if (sender.isDestroyed()) return;
@@ -2687,11 +2728,39 @@ export async function subscribeAgentSessionForIpc(
                 pendingSubscriptions.set(key, { sender, canonicalPath, rendererPath, authorization });
                 trackSenderKey(sender, key);
             }
-            await sendPersistedSessionState(sender, canonicalPath, rendererPath, authorization, key);
+            const session = await openPaneSessionByPath(canonicalPath);
+            try {
+                pendingDelivery = { canonicalPath, key, metadata: await session.getMetadata() };
+            } finally {
+                session.close();
+            }
             return;
         }
         await subscribeToOwner(sender, canonicalPath, liveRuntime.runtime, rendererPath, authorization);
     });
+    if (pendingDelivery) {
+        await authorization.validateCurrent();
+        if (!pendingSubscriptions.has(pendingDelivery.key)) return;
+        const recoveryProbe = await probeColdRewindRecovery(pendingDelivery.metadata);
+        try {
+            await withCanonicalSessionAccess(
+                pendingDelivery.canonicalPath,
+                async (canonicalPath) =>
+                    sendPersistedSessionState(
+                        sender,
+                        canonicalPath,
+                        rendererPath,
+                        authorization,
+                        pendingDelivery!.key,
+                        recoveryProbe
+                    ),
+                "sessionPath"
+            );
+        } catch (error) {
+            if (!(error instanceof AgentSessionMutationActiveError)) throw error;
+            releaseSubscription(pendingDelivery.key);
+        }
+    }
 }
 
 export async function unsubscribeAgentSessionForIpc(
@@ -3260,29 +3329,6 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         ].join(":");
     };
     const defaultMaintenance: NonNullable<AgentIpcRegistrationOptions["rewindMaintenance"]> = {
-        async getRecovery(input) {
-            if (!isRecord(input)) throw new Error("agent IPC: recovery input must be an object");
-            const metadata = validateSessionMetadataShape(input.sessionMetadata);
-            const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
-                metadata.cwd
-            );
-            const recoveryGate = options.recoveryGate ?? getAgentWorkspaceRecoveryGate();
-            return await recoveryGate.getRecovery(workspace);
-        },
-        async resolveRecovery(input, assertCurrent = async () => {}) {
-            if (!isRecord(input)) throw new Error("agent IPC: recovery input must be an object");
-            const metadata = validateSessionMetadataShape(input.sessionMetadata);
-            const operationId = requireNonEmptyString(input.operationId, "operationId");
-            const action = input.action;
-            if (action !== "retry" && action !== "abandon-current" && action !== "quarantine-corrupt") {
-                throw new Error("agent IPC: invalid recovery action");
-            }
-            const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
-                metadata.cwd
-            );
-            const recoveryGate = options.recoveryGate ?? getAgentWorkspaceRecoveryGate();
-            await recoveryGate.resolveRecovery(workspace, operationId, action, assertCurrent);
-        },
         async cleanup(input, assertCurrent = async () => {}) {
             if (!isRecord(input)) throw new Error("agent IPC: cleanup input must be an object");
             const metadata = validateSessionMetadataShape(input.sessionMetadata);
@@ -3430,6 +3476,18 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         );
         await (options.recoveryGate ?? getAgentWorkspaceRecoveryGate()).assertWorkspaceWritable(workspace);
     };
+    const authorizeWritableSession = async (
+        event: electron.IpcMainInvokeEvent,
+        requestContext: unknown,
+        sessionMetadata: unknown
+    ): Promise<{ authenticated: AuthenticatedWorkspaceAgentSender; metadata: JsonlSessionMetadata }> => {
+        const authenticated = await authenticate(event, requestContext);
+        const input = validateSessionMetadataShape(sessionMetadata);
+        await assertWorkspaceWritable(authenticated);
+        const metadata = await requireSessionBelongsToWorkspace(authenticated, input);
+        await assertCurrent(event, authenticated);
+        return { authenticated, metadata };
+    };
     type RewindIpcSchema =
         | "list"
         | "turn-summary"
@@ -3535,8 +3593,11 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     }> => {
         if (!isRecord(input)) throw new Error("agent IPC: rewind input must be an object");
         validateRewindIpcSchema(input, schema);
-        const { authenticated, metadata } = await authorizeSession(event, requestContext, input.sessionMetadata);
-        if (writable) await assertWorkspaceWritable(authenticated);
+        const { authenticated, metadata } = await (writable ? authorizeWritableSession : authorizeSession)(
+            event,
+            requestContext,
+            input.sessionMetadata
+        );
         return {
             authenticated,
             input: { ...input, sessionMetadata: metadata } as Record<string, unknown> & {
@@ -3685,14 +3746,28 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     });
     electron.ipcMain.handle("agent:get-workspace-recovery", async (event, requestContext, input) => {
         const authorized = await authorizeRewindInput(event, requestContext, input, "get-recovery", false);
-        const result = await requireRewindMaintenance().getRecovery(authorized.input);
+        const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
+            authorized.authenticated.workspaceDir
+        );
+        const result = await (options.recoveryGate ?? getAgentWorkspaceRecoveryGate()).getRecovery(workspace);
         await assertCurrent(event, authorized.authenticated);
         return result;
     });
     electron.ipcMain.handle("agent:resolve-workspace-recovery", async (event, requestContext, input) => {
         const authorized = await authorizeRewindInput(event, requestContext, input, "resolve-recovery", false);
-        await requireRewindMaintenance().resolveRecovery(authorized.input, () =>
-            assertCurrent(event, authorized.authenticated)
+        const operationId = requireNonEmptyString(authorized.input.operationId, "operationId");
+        const action = authorized.input.action;
+        if (action !== "retry" && action !== "abandon-current" && action !== "quarantine-corrupt") {
+            throw new Error("agent IPC: invalid recovery action");
+        }
+        const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
+            authorized.authenticated.workspaceDir
+        );
+        await (options.recoveryGate ?? getAgentWorkspaceRecoveryGate()).resolveRecovery(
+            workspace,
+            operationId,
+            action,
+            () => assertCurrent(event, authorized.authenticated)
         );
         await assertCurrent(event, authorized.authenticated);
         await publishMaintenanceSessionState(event, authorized.authenticated, authorized.input.sessionMetadata);
@@ -3778,8 +3853,11 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     electron.ipcMain.handle(
         "agent:navigate-tree",
         async (event, requestContext, input: AgentNavigateTreeInput): Promise<AgentNavigateTreeResult> => {
-            const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
-            await assertWorkspaceWritable(authenticated);
+            const { authenticated, metadata } = await authorizeWritableSession(
+                event,
+                requestContext,
+                input?.sessionMetadata
+            );
             const authorization = makeAuthorization(event, authenticated);
             const result = await navigateAgentTreeForIpc(
                 { ...input, sessionMetadata: metadata },
@@ -3794,8 +3872,11 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     electron.ipcMain.handle(
         "agent:fork-session",
         async (event, requestContext, input: AgentForkSessionInput): Promise<AgentForkSessionResult> => {
-            const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
-            await assertWorkspaceWritable(authenticated);
+            const { authenticated, metadata } = await authorizeWritableSession(
+                event,
+                requestContext,
+                input?.sessionMetadata
+            );
             const authorization = makeAuthorization(event, authenticated);
             const result = await forkAgentSessionForIpc(
                 {
@@ -3814,8 +3895,11 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     electron.ipcMain.handle(
         "agent:clone-session",
         async (event, requestContext, input: AgentCloneSessionInput): Promise<AgentCloneSessionResult> => {
-            const { authenticated, metadata } = await authorizeSession(event, requestContext, input?.sessionMetadata);
-            await assertWorkspaceWritable(authenticated);
+            const { authenticated, metadata } = await authorizeWritableSession(
+                event,
+                requestContext,
+                input?.sessionMetadata
+            );
             const authorization = makeAuthorization(event, authenticated);
             const result = await cloneAgentSessionForIpc(
                 {
@@ -3967,8 +4051,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     });
 
     electron.ipcMain.handle("agent:command-write", async (event, requestContext, sessionMetadata, input) => {
-        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
-        await assertWorkspaceWritable(authenticated);
+        const { authenticated, metadata } = await authorizeWritableSession(event, requestContext, sessionMetadata);
         const authorization = makeAuthorization(event, authenticated);
         await runtimeRegistry.withSessionAccess(metadata.path, async () => {
             const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
@@ -3980,8 +4063,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     });
 
     electron.ipcMain.handle("agent:command-resize", async (event, requestContext, sessionMetadata, input) => {
-        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
-        await assertWorkspaceWritable(authenticated);
+        const { authenticated, metadata } = await authorizeWritableSession(event, requestContext, sessionMetadata);
         const authorization = makeAuthorization(event, authenticated);
         await runtimeRegistry.withSessionAccess(metadata.path, async () => {
             const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
@@ -4003,8 +4085,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     });
 
     electron.ipcMain.handle("agent:command-stop", async (event, requestContext, sessionMetadata, input) => {
-        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
-        await assertWorkspaceWritable(authenticated);
+        const { authenticated, metadata } = await authorizeWritableSession(event, requestContext, sessionMetadata);
         const authorization = makeAuthorization(event, authenticated);
         await runtimeRegistry.withSessionAccess(metadata.path, async () => {
             const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
@@ -4018,8 +4099,11 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         if (!isRecord(input)) {
             throw new Error("agent IPC: renameSession input must be an object");
         }
-        const { authenticated, metadata } = await authorizeSession(event, requestContext, input.sessionMetadata);
-        await assertWorkspaceWritable(authenticated);
+        const { authenticated, metadata } = await authorizeWritableSession(
+            event,
+            requestContext,
+            input.sessionMetadata
+        );
         const name = requireSessionName(input.name);
         await renameAgentSessionForIpc(metadata, name, () => assertCurrent(event, authenticated));
         await assertCurrent(event, authenticated);
@@ -4028,8 +4112,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     electron.ipcMain.handle(
         "agent:archive-session",
         async (event, requestContext, sessionMetadata): Promise<JsonlSessionMetadata> => {
-            const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
-            await assertWorkspaceWritable(authenticated);
+            const { authenticated, metadata } = await authorizeWritableSession(event, requestContext, sessionMetadata);
             const workspaceHooks = await removalWorkspaceHooks(metadata);
             const archived = await archiveAgentSessionForIpc(
                 metadata,
@@ -4048,8 +4131,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     );
 
     electron.ipcMain.handle("agent:delete-session", async (event, requestContext, sessionMetadata) => {
-        const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
-        await assertWorkspaceWritable(authenticated);
+        const { authenticated, metadata } = await authorizeWritableSession(event, requestContext, sessionMetadata);
         const workspaceHooks = await removalWorkspaceHooks(metadata);
         await deleteAgentSessionForIpc(
             metadata,

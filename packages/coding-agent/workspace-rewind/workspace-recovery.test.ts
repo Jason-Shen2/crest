@@ -361,6 +361,25 @@ describe("WorkspaceRecovery pending resolver", () => {
         expect(value.order.slice(0, 4)).toEqual(["candidate", "session", "workspace", "authoritative"]);
     });
 
+    it.each(["inspectPending", "resolvePending"] as const)(
+        "returns none when a concurrent completed restore removes pending before %s authoritatively rereads",
+        async (method) => {
+            const value = await fixture({ marker: "exact", live: Target });
+            value.pending.readLocked.mockResolvedValueOnce({ kind: "none" });
+
+            await expect(value.recovery[method]()).resolves.toEqual({ state: "none" });
+            expect(value.pending.removeLocked).not.toHaveBeenCalled();
+        }
+    );
+
+    it("keeps the operation guard strict when pending disappears before an action rereads", async () => {
+        const value = await fixture({ marker: "exact", live: Target });
+        value.pending.readLocked.mockResolvedValueOnce({ kind: "none" });
+
+        await expect(value.recovery.resolvePending("operation-1")).rejects.toThrow(/disappeared/i);
+        expect(value.pending.removeLocked).not.toHaveBeenCalled();
+    });
+
     it("does not reacquire either public lock from the locked Resolver helper", async () => {
         const value = await fixture({ marker: "missing", live: Before });
         await value.recovery.resolvePendingLocked(value.record());
