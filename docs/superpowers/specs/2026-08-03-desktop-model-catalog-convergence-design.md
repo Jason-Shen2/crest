@@ -179,7 +179,7 @@ For a provider, the merged catalog starts with the generated baseline.
 
 - A valid remote model with the same ID replaces the baseline model.
 - A valid remote model with a new ID is appended.
-- A remote catalog whose `Last-Modified` value is not newer than the generated snapshot is ignored.
+- When the generated snapshot carries a generation timestamp, a remote catalog whose `Last-Modified` value is not newer is ignored; otherwise validated remote data wins by normal merge precedence.
 - User-defined provider and model configuration remains a higher-level runtime overlay and is not written into the catalog cache.
 - Invalid remote records reject the entire provider response so a partially valid response cannot erase known-good facts.
 
