@@ -35,7 +35,7 @@ function snapshot(overrides: Partial<AgentContextSnapshotView> = {}): AgentConte
 }
 
 describe("ContextInspector", () => {
-    it("renders capacity, fixed composition categories, overhead, and attribution diagnostics", () => {
+    it("keeps capacity and lifecycle details while replacing composition diagnostics with the source ledger", () => {
         render(
             <ContextInspector
                 state={{
@@ -56,9 +56,10 @@ describe("ContextInspector", () => {
         for (const label of ["Agent instructions", "Tools", "Conversation", "Added context"]) {
             expect(screen.getByText(label)).toBeTruthy();
         }
-        expect(screen.queryByRole("heading", { name: "Sources" })).toBeNull();
-        expect(screen.getByText("Request overhead").parentElement?.textContent).toContain("1.0k");
-        expect(screen.getByText(/Attribution differs from the provider-ready total by -12 tokens/)).toBeTruthy();
+        expect(screen.queryByRole("heading", { name: "Composition" })).toBeNull();
+        expect(screen.queryByText("Request overhead")).toBeNull();
+        expect(screen.queryByText(/Attribution differs/)).toBeNull();
+        expect(screen.queryByLabelText("Context composition")).toBeNull();
     });
 
     it("keeps known inventory visible when token counting is unavailable", () => {

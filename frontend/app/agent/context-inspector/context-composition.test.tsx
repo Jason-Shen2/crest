@@ -18,6 +18,19 @@ function conversationItem(index: number): AgentContextSnapshotItemView {
         tokens: 10,
         tokenAccuracy: "estimated",
         source: { entryIds: [`entry-${index}`] },
+        children: [
+            {
+                id: `user-${index}`,
+                category: "conversation",
+                kind: "user_message",
+                title: `User message ${index + 1}`,
+                preview: `User question ${index + 1}`,
+                content: `Complete user question ${index + 1}`,
+                tokens: 5,
+                tokenAccuracy: "estimated",
+                source: { entryIds: [`entry-${index}`] },
+            },
+        ],
     };
 }
 
@@ -35,10 +48,11 @@ function snapshot(overrides: Partial<AgentContextSnapshotView> = {}): AgentConte
         effectiveInputTokens: 1_300,
         remainingInputTokens: 110_700,
         requestOverheadTokens: 1_000,
+        attributionDeltaTokens: 7,
         categories: [
             { category: "agent_instructions", tokens: 100, itemCount: 1 },
             { category: "tools", tokens: 200, itemCount: 1 },
-            { category: "conversation", tokens: 0, itemCount: 0 },
+            { category: "conversation", tokens: 10, itemCount: 1 },
             { category: "added_context", tokens: 0, itemCount: 0 },
         ],
         items: [
@@ -47,59 +61,91 @@ function snapshot(overrides: Partial<AgentContextSnapshotView> = {}): AgentConte
                 category: "agent_instructions",
                 kind: "base_prompt",
                 title: "Base prompt source",
+                preview: "Core agent behavior",
+                content: "Complete base prompt",
                 tokens: 100,
                 tokenAccuracy: "estimated",
-                source: {},
+                source: { entryIds: ["prompt-entry"] },
             },
             {
                 id: "read-file",
                 category: "tools",
                 kind: "tool_definition",
-                title: "read_file",
+                title: "Read file",
+                preview: "Read a file from disk",
+                content: { name: "read_file", strict: true },
                 tokens: 200,
                 tokenAccuracy: "estimated",
-                source: {},
+                source: { toolName: "read_file" },
             },
+            conversationItem(0),
         ],
         ...overrides,
     };
 }
 
 describe("ContextComposition", () => {
-    it("expands source details inline and keeps multiple categories open", () => {
+    it("shows fixed groups and source rows without legacy composition chrome", () => {
         render(<ContextComposition snapshot={snapshot()} />);
 
-        const instructions = screen.getByRole("button", { name: /Agent instructions, 1 sources/ });
-        const tools = screen.getByRole("button", { name: /Tools, 1 sources/ });
-        expect(instructions.getAttribute("aria-expanded")).toBe("false");
-        expect(tools.getAttribute("aria-expanded")).toBe("false");
-
-        fireEvent.click(instructions);
-        fireEvent.click(tools);
-
-        expect(instructions.getAttribute("aria-expanded")).toBe("true");
-        expect(tools.getAttribute("aria-expanded")).toBe("true");
-        expect(instructions.querySelector("svg")?.classList.contains("rotate-90")).toBe(true);
-        expect(tools.querySelector("svg")?.classList.contains("rotate-90")).toBe(true);
-        expect(screen.getByText("Base prompt source")).toBeTruthy();
-        expect(screen.getByText("read_file")).toBeTruthy();
-
-        const addedContext = screen.getByRole("button", { name: /Added context, 0 sources/ });
-        fireEvent.click(addedContext);
+        for (const label of ["Agent instructions", "Tools", "Conversation", "Added context"]) {
+            expect(screen.getByRole("heading", { name: label })).toBeTruthy();
+            expect(screen.queryByRole("button", { name: new RegExp(label) })).toBeNull();
+        }
+        expect(screen.getByRole("button", { name: "Base prompt source, Core agent behavior" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Read file, Read a file from disk" })).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Turn 1, User message 1, User question 1" })).toBeTruthy();
         expect(screen.getByText("No active sources.")).toBeTruthy();
-        expect(screen.queryByRole("button", { name: /Request overhead/ })).toBeNull();
+
+        for (const legacyText of [
+            "Composition",
+            "Tokens",
+            "Included as",
+            "Why it is here",
+            "Request overhead",
+            "Attribution differs",
+            "No additional provenance",
+        ]) {
+            expect(screen.queryByText(new RegExp(legacyText, "i"))).toBeNull();
+        }
+        expect(screen.queryByLabelText("Context composition")).toBeNull();
+        expect(document.querySelector("[aria-label*='entry']")).toBeNull();
     });
 
-    it("virtualizes a long Conversation inventory after expansion", () => {
+    it("keeps one source open across groups, toggles it closed, and restores focus on Escape", () => {
+        render(<ContextComposition snapshot={snapshot()} />);
+
+        const instructions = screen.getByRole("button", { name: "Base prompt source, Core agent behavior" });
+        const tool = screen.getByRole("button", { name: "Read file, Read a file from disk" });
+        fireEvent.click(instructions);
+        expect(instructions.getAttribute("aria-expanded")).toBe("true");
+        const instructionPayload = screen.getByTestId("context-payload-base-prompt");
+        expect(instructions.getAttribute("aria-controls")).toBe(instructionPayload.id);
+
+        fireEvent.click(tool);
+        expect(instructions.getAttribute("aria-expanded")).toBe("false");
+        expect(tool.getAttribute("aria-expanded")).toBe("true");
+        expect(screen.queryByTestId("context-payload-base-prompt")).toBeNull();
+
+        fireEvent.click(tool);
+        expect(tool.getAttribute("aria-expanded")).toBe("false");
+        fireEvent.click(instructions);
+        const payload = screen.getByTestId("context-payload-base-prompt");
+        payload.focus();
+        fireEvent.keyDown(payload, { key: "Escape" });
+
+        expect(instructions.getAttribute("aria-expanded")).toBe("false");
+        expect(document.activeElement).toBe(instructions);
+    });
+
+    it("virtualizes 1,000 conversation turns while exposing their concrete child sources", () => {
         const items = Array.from({ length: 1_000 }, (_, index) => conversationItem(index));
         render(
             <ContextComposition
                 snapshot={snapshot({
-                    effectiveInputTokens: 11_300,
-                    remainingInputTokens: 100_700,
                     categories: [
-                        { category: "agent_instructions", tokens: 100, itemCount: 1 },
-                        { category: "tools", tokens: 200, itemCount: 1 },
+                        { category: "agent_instructions", tokens: 0, itemCount: 0 },
+                        { category: "tools", tokens: 0, itemCount: 0 },
                         { category: "conversation", tokens: 10_000, itemCount: 1_000 },
                         { category: "added_context", tokens: 0, itemCount: 0 },
                     ],
@@ -108,10 +154,9 @@ describe("ContextComposition", () => {
             />
         );
 
-        fireEvent.click(screen.getByRole("button", { name: /Conversation, 1000 sources/ }));
-
-        expect(screen.getByText(/1,000 sources/)).toBeTruthy();
         expect(screen.getByTestId("context-conversation-items").getAttribute("data-virtualized")).toBe("conversation");
+        expect(screen.getByRole("button", { name: "Turn 1, User message 1, User question 1" })).toBeTruthy();
         expect(screen.getAllByTestId("context-inventory-item").length).toBeLessThan(100);
+        expect(screen.queryByRole("button", { name: /User message 999/ })).toBeNull();
     });
 });
