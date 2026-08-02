@@ -17,7 +17,7 @@ export function MarkdownFilePreview({ path, text }: MarkdownFilePreviewProps) {
 
     return (
         <div className="h-full min-h-0 overflow-hidden">
-            <Markdown text={text} resolveOpts={resolveOpts} contentClassName="px-6 py-5" />
+            <Markdown key={path} text={text} resolveOpts={resolveOpts} contentClassName="px-6 py-5" />
         </div>
     );
 }

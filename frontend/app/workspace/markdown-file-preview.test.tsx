@@ -3,6 +3,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/react";
+import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MarkdownFilePreview } from "./markdown-file-preview";
 
@@ -12,12 +13,24 @@ type CapturedMarkdownProps = {
     contentClassName: string;
 };
 
-const markdownProps = vi.hoisted(() => ({ current: null as CapturedMarkdownProps }));
+const markdownProps = vi.hoisted(() => ({
+    current: null as CapturedMarkdownProps,
+    nextMountId: 0,
+}));
 
 vi.mock("@/app/element/markdown", () => ({
     Markdown: (props: CapturedMarkdownProps) => {
+        const mountId = useRef<number>(null);
+        if (mountId.current == null) {
+            mountId.current = ++markdownProps.nextMountId;
+        }
         markdownProps.current = props;
-        return <div data-testid="markdown-adapter">{props.text}</div>;
+        return (
+            <>
+                <div data-testid="markdown-adapter">{props.text}</div>
+                <span data-testid="markdown-mount-id">{mountId.current}</span>
+            </>
+        );
     },
 }));
 
@@ -31,6 +44,7 @@ describe("MarkdownFilePreview", () => {
         expect(markdownProps.current).toMatchObject({
             text: "# First",
             resolveOpts: { connName: "local", baseDir: "/repo/docs" },
+            contentClassName: "px-6 py-5",
         });
     });
 
@@ -50,5 +64,14 @@ describe("MarkdownFilePreview", () => {
         view.rerender(<MarkdownFilePreview path="//server/share/README.md" text="# First" />);
 
         expect(markdownProps.current.resolveOpts.baseDir).toBe("//server/share");
+    });
+
+    it("remounts Markdown when the file path changes", () => {
+        const view = render(<MarkdownFilePreview path="C:/docs/README.md" text="![Logo](logo.png)" />);
+        const firstMountId = screen.getByTestId("markdown-mount-id").textContent;
+
+        view.rerender(<MarkdownFilePreview path="//server/share/README.md" text="![Logo](logo.png)" />);
+
+        expect(screen.getByTestId("markdown-mount-id").textContent).not.toBe(firstMountId);
     });
 });
