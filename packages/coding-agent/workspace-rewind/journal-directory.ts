@@ -498,9 +498,18 @@ async function main() {
             await handle.close();
         }
         try {
-            await fsp.rename(temporary, input.destinationName);
-            await syncRoot();
-            await assertRoot(input.rootIdentity);
+            if (input.expectedDestinationIdentity) {
+                await fsp.rename(temporary, input.destinationName);
+                await syncRoot();
+                await assertRoot(input.rootIdentity);
+            } else {
+                await fsp.link(temporary, input.destinationName);
+                await syncRoot();
+                await assertRoot(input.rootIdentity);
+                await fsp.unlink(temporary);
+                await syncRoot();
+                await assertRoot(input.rootIdentity);
+            }
         } catch (error) {
             await fsp.unlink(temporary).catch(() => {});
             throw error;

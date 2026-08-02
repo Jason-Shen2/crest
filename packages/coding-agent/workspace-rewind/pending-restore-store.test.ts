@@ -4,7 +4,7 @@
 import { renameSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -69,6 +69,12 @@ test("strictly decodes the phase-free pending restore schema", async () => {
         expect(decodePendingWorkspaceRestoreV1({ ...record, ...extra })).toBeUndefined();
     }
     expect(decodePendingWorkspaceRestoreV1({ ...record, sessionPath: "relative/session.db" })).toBeUndefined();
+    expect(
+        decodePendingWorkspaceRestoreV1({
+            ...record,
+            sessionPath: `${fixture.sessionsRoot}${sep}nested${sep}..${sep}session-a.db`,
+        })
+    ).toBeUndefined();
     expect(decodePendingWorkspaceRestoreV1({ ...record, operationId: "unsafe/id" })).toBeUndefined();
     expect(decodePendingWorkspaceRestoreV1({ ...record, sessionId: "" })).toBeUndefined();
     expect(decodePendingWorkspaceRestoreV1({ ...record, workspaceStateEntryId: "bad\0entry" })).toBeUndefined();
@@ -103,6 +109,40 @@ test("strictly decodes the phase-free pending restore schema", async () => {
             safetySnapshot: { ...record.safetySnapshot, workspaceIdentity: "9".repeat(64) },
         })
     ).toBeUndefined();
+});
+
+test("rejects unpaired UTF-16 surrogates in every free-form persisted string family", async () => {
+    const fixture = await makeFixture();
+    const record = makeRecord(fixture);
+    for (const unpaired of ["\ud800", "\udc00"]) {
+        const invalidRecords = [
+            { ...record, sessionId: `session-${unpaired}` },
+            { ...record, sessionPath: `${record.sessionPath}-${unpaired}` },
+            { ...record, target: { kind: "rewind", targetTurnId: `turn-${unpaired}` } },
+            { ...record, commitParentId: `parent-${unpaired}` },
+            { ...record, expectedSemanticLeafId: `leaf-${unpaired}` },
+            { ...record, workspaceStateEntryId: `entry-${unpaired}` },
+            {
+                ...record,
+                paths: [{ ...record.paths[0]!, path: `a-${unpaired}.txt` }, record.paths[1]],
+            },
+            {
+                ...record,
+                paths: [
+                    record.paths[0],
+                    {
+                        ...record.paths[1]!,
+                        path: `dir-${unpaired}/file.txt`,
+                        createdParentDirectories: [`dir-${unpaired}`],
+                    },
+                ],
+            },
+        ];
+
+        for (const invalid of invalidRecords) {
+            expect(decodePendingWorkspaceRestoreV1(invalid)).toBeUndefined();
+        }
+    }
 });
 
 test("returns truncated active bytes as a corrupt candidate without deleting them", async () => {
@@ -228,6 +268,11 @@ test("updates created parent directory progress only for the active operation an
         pending.updateCreatedParentDirectoriesLocked(record.operationId, "dir/file.txt", ["dir"])
     );
     expect(updated.paths[1]!.createdParentDirectories).toEqual(["dir"]);
+    await expect(
+        fixture.store.withWorkspaceLock(() =>
+            pending.updateCreatedParentDirectoriesLocked(record.operationId, "dir/file.txt", [])
+        )
+    ).rejects.toThrow(/monotonic|remove|created/i);
     expect(await pending.readCandidate()).toEqual({ kind: "valid", record: updated });
 });
 

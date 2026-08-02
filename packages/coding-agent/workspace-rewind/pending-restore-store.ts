@@ -3,7 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { lstat, mkdir } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 
 import { encodeDurableJson } from "./durability";
 import {
@@ -123,6 +123,10 @@ export class PendingWorkspaceRestoreStore {
         }
         if (!isValidCreatedDirectories(directories, path)) {
             throw new Error("Invalid pending restore created parent directories");
+        }
+        const recordedDirectories = record.paths[index]!.createdParentDirectories;
+        if (recordedDirectories.some((directory) => !directories.includes(directory))) {
+            throw new Error("Created parent directory progress is monotonic and cannot remove directories");
         }
         const paths = record.paths.map((item, itemIndex) =>
             itemIndex === index ? { ...item, createdParentDirectories: [...directories] } : item
@@ -461,6 +465,7 @@ function isCanonicalRelativePath(path: unknown): path is string {
         typeof path === "string" &&
         path.length > 0 &&
         path.length <= 4_096 &&
+        hasWellFormedUtf16(path) &&
         !path.includes("\0") &&
         !path.includes("\\") &&
         !path.startsWith("/") &&
@@ -470,11 +475,42 @@ function isCanonicalRelativePath(path: unknown): path is string {
 }
 
 function isAbsoluteSafePath(path: unknown): path is string {
-    return typeof path === "string" && isAbsolute(path) && path.length <= 16_384 && !path.includes("\0");
+    return (
+        typeof path === "string" &&
+        isAbsolute(path) &&
+        normalize(path) === path &&
+        path.length <= 16_384 &&
+        hasWellFormedUtf16(path) &&
+        !path.includes("\0")
+    );
 }
 
 function isSafeString(value: unknown): value is string {
-    return typeof value === "string" && value.length > 0 && value.length <= 16_384 && !value.includes("\0");
+    return (
+        typeof value === "string" &&
+        value.length > 0 &&
+        value.length <= 16_384 &&
+        hasWellFormedUtf16(value) &&
+        !value.includes("\0")
+    );
+}
+
+function hasWellFormedUtf16(value: string): boolean {
+    for (let index = 0; index < value.length; index++) {
+        const code = value.charCodeAt(index);
+        if (code >= 0xd800 && code <= 0xdbff) {
+            const next = value.charCodeAt(index + 1);
+            if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff) {
+                return false;
+            }
+            index++;
+            continue;
+        }
+        if (code >= 0xdc00 && code <= 0xdfff) {
+            return false;
+        }
+    }
+    return true;
 }
 
 function isIdentity(value: unknown): value is string {

@@ -1,14 +1,14 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { renameSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { renameSync, watch, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, expect, test, vi } from "vitest";
 
-import { readAnchoredJournalEntry } from "./journal-directory";
+import { readAnchoredJournalEntry, writeAnchoredJournalEntry } from "./journal-directory";
 
 const CleanupRoots: string[] = [];
 
@@ -74,3 +74,57 @@ test("fails closed when the named journal root is swapped before its worker star
     ).rejects.toThrow(/anchor|changed/i);
     expect(swapped).toBe(true);
 });
+
+test("first publication refuses to overwrite an existing destination", async () => {
+    const root = await mkdtemp(join(tmpdir(), "crest-journal-publish-existing-"));
+    CleanupRoots.push(root);
+    await writeFile(join(root, "pending.json"), "existing", { mode: 0o600 });
+    const anchored = await readAnchoredJournalEntry({ root, name: "absent.json", maximumEntryBytes: 1024 });
+
+    await expect(
+        writeAnchoredJournalEntry({
+            root,
+            rootIdentity: anchored!.identity,
+            destinationName: "pending.json",
+            bytes: Buffer.from("replacement"),
+        })
+    ).rejects.toThrow(/destination|exist/i);
+    expect(await readFile(join(root, "pending.json"), "utf8")).toBe("existing");
+});
+
+test("first publication cannot overwrite a destination created after its initial check", async () => {
+    const root = await mkdtemp(join(tmpdir(), "crest-journal-publish-race-"));
+    CleanupRoots.push(root);
+    const destination = join(root, "pending.json");
+    const anchored = await readAnchoredJournalEntry({ root, name: "absent.json", maximumEntryBytes: 1024 });
+    let installed = false;
+    const watcher = watch(root, (_event, filename) => {
+        if (installed || !/^\.[0-9a-f]{32}\.tmp$/.test(String(filename))) {
+            return;
+        }
+        try {
+            writeFileSync(destination, "racing owner", { flag: "wx", mode: 0o600 });
+            installed = true;
+        } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
+                throw error;
+            }
+        }
+    });
+    try {
+        await expect(
+            writeAnchoredJournalEntry({
+                root,
+                rootIdentity: anchored!.identity,
+                destinationName: "pending.json",
+                bytes: Buffer.alloc(64 * 1024 * 1024, 0x61),
+            })
+        ).rejects.toThrow(/exist/i);
+    } finally {
+        watcher.close();
+    }
+
+    expect(installed).toBe(true);
+    expect(await readFile(destination, "utf8")).toBe("racing owner");
+    expect((await readdir(root)).filter((name) => /^\.[0-9a-f]{32}\.tmp$/.test(name))).toEqual([]);
+}, 15_000);
