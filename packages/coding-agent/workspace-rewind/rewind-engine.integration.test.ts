@@ -23,7 +23,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RewindConfirmationRegistry } from "./confirmation-token";
 import { applyCapturedPath } from "./filesystem-apply";
 import { WorkspaceGitRunner } from "./git-runner";
-import { WorkspaceRecoveryJournal } from "./recovery-journal";
+import { PendingWorkspaceRestoreStore } from "./pending-restore-store";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
 import { decodeWorkspaceStateEntry } from "./session-state";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
@@ -87,21 +87,19 @@ async function fixture(
     const repo = new SqliteSessionRepo({ sessionsRoot: join(root, "sessions") });
     const session = await repo.create({ cwd: workspaceRoot, id: "session-1" });
     const metadata = await session.getMetadata();
-    const journal = new WorkspaceRecoveryJournal(store);
+    const pending = new PendingWorkspaceRestoreStore(store);
     const published = vi.fn(async () => {});
     const recovery = new WorkspaceRecovery({
         workspace: identity,
         store,
-        journal,
+        pending,
         locateSession: async (sessionId) => (sessionId === metadata.id ? session : undefined),
-        publishState: published,
-        repairSessionRefs: vi.fn(async () => {}),
         verifyWorkspace: vi.fn(async () => {}),
     });
     const confirmations = new RewindConfirmationRegistry();
     const engine = new WorkspaceRewindEngine({
         store,
-        journal,
+        pending,
         recovery,
         confirmations,
         onCommitted: published,
@@ -114,7 +112,7 @@ async function fixture(
         store,
         session,
         metadata,
-        journal,
+        pending,
         recovery,
         confirmations,
         engine,
@@ -303,6 +301,11 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         expect(redoEntry?.parentId).toBe(checkpointId);
         expect(redoState).toMatchObject({ kind: "redo", applyMode: "normal", forcedPaths: [] });
         expect(redoState?.rewind).toBeUndefined();
+        await expect(value.pending.readLocked()).resolves.toEqual({ kind: "none" });
+        await value.store.verify(redoState!.currentSnapshot);
+        for (const item of redoState!.currentStates) {
+            await expect(value.store.readPathState(redoState!.currentSnapshot, item.path)).resolves.toEqual(item.state);
+        }
         expect(value.published).toHaveBeenCalledTimes(2);
     }, 30_000);
 
@@ -422,17 +425,18 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             expect(await readFile(join(value.workspaceRoot, "b.txt"), "utf8")).toBe("third party");
             expect(await value.session.getLeafId()).toBe(checkpointId);
             expect(value.published).not.toHaveBeenCalled();
-            await expect(value.journal.scan()).resolves.toEqual([
-                expect.objectContaining({
-                    corrupt: false,
-                    record: expect.objectContaining({ phase: "applying_files", applyMode: mode }),
-                }),
-            ]);
-            await expect(value.recovery.getRecoveryState(value.identity)).resolves.toMatchObject({
-                paths: expect.arrayContaining([
-                    { path: "a.txt", classification: "target" },
-                    { path: "b.txt", classification: "unknown" },
-                ]),
+            await expect(value.pending.readLocked()).resolves.toMatchObject({
+                kind: "valid",
+                record: { applyMode: mode },
+            });
+            await expect(value.recovery.inspectPending()).resolves.toMatchObject({
+                state: "needs-user",
+                view: {
+                    paths: expect.arrayContaining([
+                        { path: "a.txt", classification: "target" },
+                        { path: "b.txt", classification: "unknown" },
+                    ]),
+                },
             });
         },
         30_000

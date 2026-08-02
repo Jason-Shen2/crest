@@ -1,41 +1,29 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import type { SessionTreeEntry } from "@crest/agent/harness/types";
-import { encodeDurableJson } from "./durability";
 import { deriveWorkspaceApplyArtifactPaths } from "./filesystem-apply";
-import { WorkspaceRecoveryJournal, type WorkspaceOperationJournalV2 } from "./recovery-journal";
+import type { PendingWorkspaceRestoreV1, ScannedPendingWorkspaceRestore } from "./pending-restore-store";
 import type { RestoreTargetV1 } from "./restore-plan";
-import type {
-    CapturedPathStateV1,
-    WorkspaceRewindStateV1,
-    WorkspaceSnapshotRefV1,
-    WorkspaceStateBaseV1,
-    WorkspaceStateV1,
-} from "./types";
 import {
-    WorkspaceFrozenError,
-    WorkspaceRecovery,
-    classifyWorkspaceRecoveryPath,
-    type WorkspaceRecoverySession,
-} from "./workspace-recovery";
-import { workspaceStateFromJournal } from "./workspace-restore-executor";
+    WorkspaceControlCustomTypes,
+    type CapturedPathStateV1,
+    type WorkspaceSnapshotRefV1,
+    type WorkspaceStateV1,
+} from "./types";
+import { WorkspaceRecovery, classifyWorkspaceRecoveryPath } from "./workspace-recovery";
+import { workspaceStateFromPending } from "./workspace-restore-executor";
 
 const Identity = "1".repeat(64);
 const Incarnation = "2".repeat(64);
-
-function oid(bytes: Buffer): string {
-    return createHash("sha1")
-        .update(Buffer.from(`blob ${bytes.length}\0`))
-        .update(bytes)
-        .digest("hex");
-}
+const Before = { state: "file", oid: "a".repeat(40), executable: false } as const;
+const Target = { state: "file", oid: "b".repeat(40), executable: false } as const;
 
 function snapshot(id = "3".repeat(40)): WorkspaceSnapshotRefV1 {
     return {
@@ -47,472 +35,280 @@ function snapshot(id = "3".repeat(40)): WorkspaceSnapshotRefV1 {
     };
 }
 
-function journalRecord(
-    phase: WorkspaceOperationJournalV2["phase"],
-    preState: CapturedPathStateV1,
-    target: CapturedPathStateV1,
-    restoreTarget: RestoreTargetV1 = { kind: "rewind", targetTurnId: "turn-1" }
-): WorkspaceOperationJournalV2 {
+function pendingRecord(
+    target: RestoreTargetV1 = { kind: "rewind", targetTurnId: "turn-1" }
+): PendingWorkspaceRestoreV1 {
     return {
-        schemaVersion: 2,
-        phase,
+        schemaVersion: 1,
+        operationId: "operation-1",
         workspaceIdentity: Identity,
         workspaceIncarnation: Incarnation,
         sessionId: "session-1",
-        sessionPath: "/old/path.sqlite",
-        operationId: "operation-1",
-        target: restoreTarget,
+        sessionPath: "/sessions/session-1.db",
+        target,
+        commitParentId: "commit-parent",
         applyMode: "normal",
+        forcedPaths: [],
         expectedSemanticLeafId: "old-leaf",
-        commitParentId: "target",
-        safetySnapshot: snapshot(),
-        confirmedConflictFingerprints: [],
-        paths: [
-            {
-                path: "file.txt",
-                preState,
-                target,
-                expectedCurrent: preState,
-                confirmedLiveFingerprint: "6".repeat(64),
-                createdParentDirectories: [],
-            },
-        ],
         workspaceStateEntryId: "operation-leaf",
-        ...(phase === "completed" ? { resultSnapshot: snapshot("7".repeat(40)) } : {}),
-    };
-}
-
-function legacyJournal(record: WorkspaceOperationJournalV2): unknown {
-    const { target, commitParentId, ...shared } = record;
-    if (target.kind !== "rewind" && target.kind !== "redo") {
-        throw new Error("Legacy recovery fixture supports conversation restore targets only");
-    }
-    return {
-        ...shared,
-        schemaVersion: 1,
-        kind: target.kind,
-        targetTurnId: target.kind === "rewind" ? target.targetTurnId : null,
-        targetBoundaryId: commitParentId,
+        safetySnapshot: snapshot(),
+        paths: [{ path: "file.txt", before: Before, target: Target, createdParentDirectories: [] }],
     };
 }
 
 async function fixture(input: {
-    phase: WorkspaceOperationJournalV2["phase"];
-    live: CapturedPathStateV1 | "unknown";
-    leaf?: string;
-    stateOverrides?: Partial<WorkspaceStateBaseV1> & {
-        kind?: WorkspaceStateV1["kind"];
-        rewind?: WorkspaceRewindStateV1;
-        sourceTurnId?: string;
-        undoOperationId?: string;
-    };
-    entryParentId?: string;
     target?: RestoreTargetV1;
+    leaf?: string | null;
+    marker?: "exact" | "missing" | "wrong-id" | "wrong-type" | "wrong-parent" | "wrong-payload";
+    mutateState?: (state: WorkspaceStateV1) => void;
+    live?: CapturedPathStateV1 | "unknown";
+    sessionMissing?: boolean;
+    corrupt?: boolean;
 }) {
-    const root = await mkdtemp(join(tmpdir(), "crest-workspace-recovery-"));
-    const storeRoot = join(root, "store", "repo.git");
-    await mkdir(storeRoot, { recursive: true });
-    const pre = Buffer.from("pre");
-    const target = Buffer.from("target");
-    const states = {
-        pre: { state: "file", oid: oid(pre), executable: false } satisfies CapturedPathStateV1,
-        target: { state: "file", oid: oid(target), executable: false } satisfies CapturedPathStateV1,
+    const root = await mkdtemp(join(tmpdir(), "crest-pending-recovery-"));
+    let record = pendingRecord(input.target);
+    const currentSnapshot = snapshot("6".repeat(40));
+    const live = new Map<string, CapturedPathStateV1 | "unknown">([["file.txt", input.live ?? Target]]);
+    const markerState = workspaceStateFromPending(record, currentSnapshot);
+    if (input.marker === "wrong-payload") markerState.operationId = "forged-operation";
+    input.mutateState?.(markerState);
+    const marker: SessionTreeEntry = {
+        type: "custom",
+        id: input.marker === "wrong-id" ? "forged-entry" : record.workspaceStateEntryId,
+        parentId: input.marker === "wrong-parent" ? "wrong-parent" : record.commitParentId,
+        timestamp: new Date(0).toISOString(),
+        customType: input.marker === "wrong-type" ? "forged-type" : WorkspaceControlCustomTypes.state,
+        data: markerState,
+    };
+    const candidate = (): ScannedPendingWorkspaceRestore =>
+        input.corrupt
+            ? {
+                  kind: "corrupt",
+                  operationId: record.operationId,
+                  message: "truncated pending",
+                  bytes: Buffer.from("{"),
+              }
+            : { kind: "valid", record: structuredClone(record) };
+    const order: string[] = [];
+    const pending = {
+        readCandidate: vi.fn(async () => {
+            order.push("candidate");
+            return candidate();
+        }),
+        readLocked: vi.fn(async () => {
+            order.push("authoritative");
+            return candidate();
+        }),
+        updateCreatedParentDirectoriesLocked: vi.fn(
+            async (_operationId: string, path: string, directories: string[]) => {
+                record = {
+                    ...record,
+                    paths: record.paths.map((item) =>
+                        item.path === path ? { ...item, createdParentDirectories: [...directories] } : item
+                    ),
+                };
+                return structuredClone(record);
+            }
+        ),
+        removeLocked: vi.fn(async () => order.push("remove")),
+        resolveToAuditLocked: vi.fn(async (_operationId: string, disposition: string) => order.push(disposition)),
+    };
+    const session = {
+        getLeafId: vi.fn(async () => input.leaf ?? (input.marker === "missing" ? "old-leaf" : "operation-leaf")),
+        getEntry: vi.fn(async () => (input.marker === "missing" ? undefined : marker)),
     };
     const store = {
-        storeRoot,
+        storeRoot: join(root, "store"),
         identity: {
             canonicalRoot: root,
             workspaceIdentity: Identity,
             workspaceIncarnation: Incarnation,
-            storeKey: `${Identity}-${Incarnation}`,
+            storeKey: "workspace",
             ancestorIdentityChain: [],
         },
-        anchorOperation: vi.fn(async () => {}),
-        deleteCrestRef: vi.fn(async () => {}),
-        readBlob: vi.fn(async (key: string) => (key === states.pre.oid ? pre : target)),
+        readBlob: vi.fn(),
         verify: vi.fn(async () => {}),
-    };
-    const durable = new WorkspaceRecoveryJournal(store);
-    await durable.begin(journalRecord("prepared", states.pre, states.target, input.target));
-    const phases = ["prepared", "applying_files", "files_verified", "committing_session", "completed"] as const;
-    for (const phase of phases.slice(1, phases.indexOf(input.phase) + 1)) {
-        await durable.transition("operation-1", phase, {
-            ...(phase === "files_verified" ? { resultSnapshot: snapshot("7".repeat(40)) } : {}),
-        });
-    }
-    const stateEntry = {
-        ...workspaceStateFromJournal({
-            ...journalRecord("completed", states.pre, states.target, input.target),
-            resultSnapshot: snapshot("7".repeat(40)),
-        }),
-        ...input.stateOverrides,
-    };
-    const session: WorkspaceRecoverySession = {
-        getLeafId: vi.fn(async () => input.leaf ?? "old-leaf"),
-        getEntry: vi.fn(
-            async (entryId): Promise<SessionTreeEntry | undefined> =>
-                entryId === "operation-leaf"
-                    ? {
-                          type: "custom",
-                          id: "operation-leaf",
-                          parentId: input.entryParentId ?? "target",
-                          timestamp: new Date(0).toISOString(),
-                          customType: "workspace_state",
-                          data: stateEntry,
-                      }
-                    : undefined
+        readPathState: vi.fn(
+            async (_snapshot: WorkspaceSnapshotRefV1, path: string) =>
+                record.paths.find((item) => item.path === path)!.target
         ),
+        withWorkspaceLock: vi.fn(async (operation: () => Promise<unknown>) => {
+            order.push("workspace");
+            return operation();
+        }),
     };
-    const apply = vi.fn(
-        async ({ target: next }: { expectedCurrent: CapturedPathStateV1; target: CapturedPathStateV1 }) => {
-            input.live = next;
-        }
-    );
+    const applyPath = vi.fn(async ({ path, target, progress }) => {
+        live.set(path, target);
+        await progress.onPathReplaced?.();
+    });
     const recovery = new WorkspaceRecovery({
         workspace: store.identity,
-        store,
-        journal: durable,
-        locateSession: async () => session,
-        inspectPath: async () => input.live,
-        applyPath: apply,
-        publishState: vi.fn(async () => {}),
-        repairSessionRefs: vi.fn(async () => {}),
-        verifyWorkspace: vi.fn(async () => {}),
+        store: store as never,
+        pending: pending as never,
+        locateSession: async () => (input.sessionMissing ? undefined : session),
+        inspectPath: async (path) => live.get(path) ?? "unknown",
+        applyPath,
+        verifyWorkspace: async () => {},
+        withSessionLease: async (_sessionId, operation) => {
+            order.push("session");
+            return operation();
+        },
     });
-    return { recovery, durable, apply, states, input, session, store };
+    return { recovery, pending, session, store, applyPath, live, order, record: () => record, currentSnapshot, root };
 }
 
-describe("workspace recovery", () => {
-    it("classifies only exact pre and target states", () => {
-        const pre = { state: "absent" } as const;
-        const target = { state: "file", oid: "a".repeat(40), executable: false } as const;
-        expect(classifyWorkspaceRecoveryPath(pre, pre, target)).toBe("pre");
-        expect(classifyWorkspaceRecoveryPath(target, pre, target)).toBe("target");
+describe("WorkspaceRecovery pending resolver", () => {
+    it("classifies only exact before and target path states", () => {
+        expect(classifyWorkspaceRecoveryPath(Before, Before, Target)).toBe("before");
+        expect(classifyWorkspaceRecoveryPath(Target, Before, Target)).toBe("target");
+        expect(classifyWorkspaceRecoveryPath("unknown", Before, Target)).toBe("unknown");
         expect(
-            classifyWorkspaceRecoveryPath({ state: "file", oid: "b".repeat(40), executable: false }, pre, target)
+            classifyWorkspaceRecoveryPath({ state: "file", oid: "c".repeat(40), executable: false }, Before, Target)
         ).toBe("unknown");
-        expect(classifyWorkspaceRecoveryPath("unknown", pre, target)).toBe("unknown");
     });
 
-    it("omits only the matching completed journal from an authoritative success publication", async () => {
-        const value = await fixture({ phase: "completed", live: "unknown", leaf: "operation-leaf" });
-        value.input.live = value.states.target;
+    it.each([
+        { kind: "rewind", targetTurnId: "turn-1" },
+        { kind: "redo" },
+        { kind: "turn-undo", sourceTurnId: "turn-1" },
+        { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-1" },
+    ] satisfies RestoreTargetV1[])("recognizes an exact committed $kind marker", async (target) => {
+        const value = await fixture({ target, marker: "exact", live: Target });
 
-        await expect(value.recovery.getRecoveryState(value.recovery.workspace)).resolves.toMatchObject({
+        await expect(value.recovery.inspectPending()).resolves.toEqual({
+            state: "committed",
             operationId: "operation-1",
-            phase: "completed",
         });
-        await expect(
-            value.recovery.getRecoveryState(value.recovery.workspace, {
-                ignoreCompletedOperationId: "operation-1",
-            })
-        ).resolves.toBeUndefined();
-        await expect(
-            value.recovery.getRecoveryState(value.recovery.workspace, {
-                ignoreCompletedOperationId: "different-operation",
-            })
-        ).resolves.toMatchObject({ operationId: "operation-1" });
-        await expect(value.durable.read("operation-1")).resolves.toMatchObject({ phase: "completed" });
+        expect(value.store.verify).toHaveBeenCalledWith(value.currentSnapshot);
+        expect(value.store.readPathState).toHaveBeenCalledWith(value.currentSnapshot, "file.txt");
+        expect(value.pending.removeLocked).not.toHaveBeenCalled();
     });
 
-    it("never omits an unfinished journal from recovery diagnostics", async () => {
-        const value = await fixture({ phase: "committing_session", live: "unknown", leaf: "operation-leaf" });
-
-        await expect(
-            value.recovery.getRecoveryState(value.recovery.workspace, {
-                ignoreCompletedOperationId: "operation-1",
-            })
-        ).resolves.toMatchObject({ operationId: "operation-1", phase: "committing_session" });
-    });
-
-    it("discards prepared only when every path is exact pre", async () => {
-        const safe = await fixture({ phase: "prepared", live: "unknown" });
-        safe.input.live = safe.states.pre;
-        await safe.recovery.ensureRecovered(safe.recovery.workspace);
-        await expect(safe.durable.read("operation-1")).rejects.toThrow(/not found/i);
-        expect(safe.apply).not.toHaveBeenCalled();
-
-        const unsafe = await fixture({ phase: "prepared", live: "unknown" });
-        await expect(unsafe.recovery.ensureRecovered(unsafe.recovery.workspace)).rejects.toThrow(WorkspaceFrozenError);
-        expect(await unsafe.recovery.getRecoveryState(unsafe.recovery.workspace)).toMatchObject({
-            phase: "prepared",
-            paths: [{ path: "file.txt", classification: "unknown" }],
-            allowedActions: ["retry", "abandon-current"],
-        });
-    });
-
-    it.each(["applying_files", "files_verified"] as const)(
-        "rolls exact target paths back in %s and is idempotent",
-        async (phase) => {
-            const value = await fixture({ phase, live: "unknown" });
-            value.input.live = value.states.target;
-
-            await value.recovery.ensureRecovered(value.recovery.workspace);
-            await value.recovery.ensureRecovered(value.recovery.workspace);
-
-            expect(value.apply).toHaveBeenCalledOnce();
-            expect(value.apply).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    path: "file.txt",
-                    expectedCurrent: value.states.target,
-                    target: value.states.pre,
-                })
-            );
-            await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
+    it.each(["wrong-id", "wrong-type", "wrong-parent", "wrong-payload"] as const)(
+        "requires user input when the marker has a %s",
+        async (marker) => {
+            const value = await fixture({ marker, live: Target });
+            await expect(value.recovery.inspectPending()).resolves.toMatchObject({ state: "needs-user" });
         }
     );
 
-    it.each(["prepared", "applying_files", "files_verified", "committing_session"] as const)(
-        "recovers a legacy V1 %s journal without treating it as corrupt",
-        async (phase) => {
-            const value = await fixture({ phase, live: "unknown", leaf: "old-leaf" });
-            value.input.live = phase === "prepared" ? value.states.pre : value.states.target;
-            await writeFile(
-                value.durable.path("operation-1"),
-                encodeDurableJson(legacyJournal(await value.durable.read("operation-1")))
-            );
-
-            await value.recovery.ensureRecovered(value.recovery.workspace);
-
-            await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
-            if (phase === "prepared") expect(value.apply).not.toHaveBeenCalled();
-            else expect(value.apply).toHaveBeenCalledOnce();
+    it.each([
+        ["Session", (state: WorkspaceStateV1) => (state.sessionId = "session-2")],
+        ["Workspace", (state: WorkspaceStateV1) => (state.workspaceIdentity = "9".repeat(64))],
+        ["operation target", (state: WorkspaceStateV1) => Object.assign(state, { kind: "redo", rewind: undefined })],
+        ["apply mode", (state: WorkspaceStateV1) => (state.applyMode = "force-drift")],
+        ["forced paths", (state: WorkspaceStateV1) => (state.forcedPaths = ["other.txt"])],
+        ["current states", (state: WorkspaceStateV1) => (state.currentStates = [])],
+        [
+            "rewind safety snapshot",
+            (state: WorkspaceStateV1) => {
+                if (state.kind === "rewind") state.rewind.redoSnapshot = snapshot("8".repeat(40));
+            },
+        ],
+        [
+            "rewind before states",
+            (state: WorkspaceStateV1) => {
+                if (state.kind === "rewind") state.rewind.redoStates = [];
+            },
+        ],
+    ] as Array<[string, (state: WorkspaceStateV1) => void]>)(
+        "requires user input when exact marker %s differs from pending",
+        async (_label, mutateState) => {
+            const value = await fixture({ marker: "exact", live: Target, mutateState });
+            await expect(value.recovery.inspectPending()).resolves.toMatchObject({ state: "needs-user" });
         }
     );
 
-    it.each(["committing_session", "completed"] as const)(
-        "finishes an exact committed legacy V1 %s journal",
-        async (phase) => {
-            const value = await fixture({ phase, live: "unknown", leaf: "operation-leaf" });
-            value.input.live = value.states.target;
-            await writeFile(
-                value.durable.path("operation-1"),
-                encodeDurableJson(legacyJournal(await value.durable.read("operation-1")))
-            );
+    it("requires user input when the committed snapshot is missing or does not contain every target", async () => {
+        const missing = await fixture({ marker: "exact", live: Target });
+        missing.store.verify.mockRejectedValueOnce(new Error("missing snapshot"));
+        await expect(missing.recovery.inspectPending()).resolves.toMatchObject({ state: "needs-user" });
 
-            await value.recovery.ensureRecovered(value.recovery.workspace);
-
-            await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
-            expect(value.apply).not.toHaveBeenCalled();
-        }
-    );
-
-    it("never overwrites an unknown post-crash manual modification", async () => {
-        const value = await fixture({
-            phase: "applying_files",
-            live: { state: "file", oid: oid(Buffer.from("manual")), executable: false },
-        });
-
-        await expect(value.recovery.ensureRecovered(value.recovery.workspace)).rejects.toThrow(WorkspaceFrozenError);
-
-        expect(value.apply).not.toHaveBeenCalled();
-        await expect(value.durable.read("operation-1")).resolves.toMatchObject({ phase: "applying_files" });
-        await expect(value.recovery.assertWorkspaceWritable(value.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
+        const wrongState = await fixture({ marker: "exact", live: Target });
+        wrongState.store.readPathState.mockResolvedValueOnce(Before);
+        await expect(wrongState.recovery.inspectPending()).resolves.toMatchObject({ state: "needs-user" });
     });
 
-    it("offers abandon only when the session leaf is exactly old or committed", async () => {
-        const oldLeaf = await fixture({ phase: "applying_files", live: "unknown", leaf: "old-leaf" });
-        await expect(oldLeaf.recovery.ensureRecovered(oldLeaf.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-        await expect(oldLeaf.recovery.getRecoveryState(oldLeaf.recovery.workspace)).resolves.toMatchObject({
-            allowedActions: ["retry", "abandon-current"],
-        });
-
-        const unexpected = await fixture({ phase: "applying_files", live: "unknown", leaf: "other-leaf" });
-        await expect(unexpected.recovery.ensureRecovered(unexpected.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-        await expect(unexpected.recovery.getRecoveryState(unexpected.recovery.workspace)).resolves.toMatchObject({
-            allowedActions: ["retry"],
-        });
-    });
-
-    it("freezes for missing objects, missing sessions, and incarnation mismatch", async () => {
-        const missingObject = await fixture({ phase: "prepared", live: "unknown" });
-        missingObject.input.live = missingObject.states.pre;
-        missingObject.recovery.store.verify = vi.fn(async () => {
-            throw new Error("missing object");
-        });
-        await expect(missingObject.recovery.ensureRecovered(missingObject.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-        await expect(missingObject.durable.read("operation-1")).resolves.toMatchObject({ phase: "prepared" });
-
-        const missingSession = await fixture({ phase: "prepared", live: "unknown" });
-        Object.assign(missingSession.recovery, { locateSession: async () => undefined });
-        await expect(missingSession.recovery.ensureRecovered(missingSession.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-
-        const wrongIncarnation = await fixture({ phase: "prepared", live: "unknown" });
-        const path = wrongIncarnation.durable.path("operation-1");
-        const value = JSON.parse(await import("node:fs/promises").then(({ readFile }) => readFile(path, "utf8")));
-        value.workspaceIncarnation = "a".repeat(64);
-        value.safetySnapshot.workspaceIncarnation = "a".repeat(64);
-        await writeFile(path, encodeDurableJson(value));
-        await expect(wrongIncarnation.recovery.ensureRecovered(wrongIncarnation.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-        expect(await wrongIncarnation.recovery.getRecoveryState(wrongIncarnation.recovery.workspace)).toMatchObject({
-            corrupt: false,
-        });
-    });
-
-    it("acquires the owning session lease before the workspace lock", async () => {
-        const value = await fixture({ phase: "prepared", live: "unknown" });
-        value.input.live = value.states.pre;
-        const order: string[] = [];
-        Object.assign(value.recovery, {
-            withSessionLease: async (_sessionId: string, operation: () => Promise<unknown>) => {
-                order.push("session");
-                return operation();
-            },
-        });
-        Object.assign(value.recovery.store, {
-            withWorkspaceLock: async (operation: () => Promise<unknown>) => {
-                order.push("workspace");
-                return operation();
-            },
-        });
-
-        await value.recovery.ensureRecovered(value.recovery.workspace);
-
-        expect(order.slice(0, 2)).toEqual(["session", "workspace"]);
-    });
-
-    it("rereads the authoritative journal after waiting for the workspace lock", async () => {
-        const value = await fixture({ phase: "applying_files", live: "unknown" });
-        value.input.live = value.states.target;
-        let firstLock = true;
-        Object.assign(value.recovery.store, {
-            withWorkspaceLock: async (operation: () => Promise<unknown>) => {
-                if (firstLock) {
-                    firstLock = false;
-                    await value.durable.completeCleanup("operation-1");
-                }
-                return operation();
-            },
-        });
-
-        await value.recovery.ensureRecovered(value.recovery.workspace);
-
-        expect(value.apply).not.toHaveBeenCalled();
-        await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
-    });
-
-    it("refuses abandon when the authoritative journal changes owning session", async () => {
-        const value = await fixture({ phase: "prepared", live: "unknown", leaf: "old-leaf" });
-        const originalScan = value.durable.scan.bind(value.durable);
-        let scans = 0;
-        vi.spyOn(value.durable, "scan").mockImplementation(async () => {
-            const result = await originalScan();
-            scans++;
-            if (scans === 2 && result[0]?.record) {
-                result[0].record.sessionId = "session-2";
-            }
-            return result;
-        });
-
-        await expect(value.recovery.abandonKeepingCurrent("operation-1")).rejects.toThrow(/owning session/i);
-        await expect(value.durable.read("operation-1")).resolves.toMatchObject({ sessionId: "session-1" });
-    });
-
-    it("does not freeze a corrupt candidate that disappears before authoritative reread", async () => {
-        const value = await fixture({ phase: "applying_files", live: "unknown" });
-        await writeFile(value.durable.path("operation-1"), "{truncated");
-        let firstLock = true;
-        Object.assign(value.recovery.store, {
-            withWorkspaceLock: async (operation: () => Promise<unknown>) => {
-                if (firstLock) {
-                    firstLock = false;
-                    await value.durable.completeCleanup("operation-1");
-                }
-                return operation();
-            },
-        });
-
-        await value.recovery.ensureRecovered(value.recovery.workspace);
-
-        expect(value.apply).not.toHaveBeenCalled();
-    });
-
-    it("revalidates workspace incarnation inside both locks before recovery mutations", async () => {
-        const value = await fixture({ phase: "applying_files", live: "unknown" });
-        value.input.live = value.states.target;
-        let verification = 0;
-        Object.assign(value.recovery, {
-            verifyWorkspace: vi.fn(async () => {
-                verification++;
-                if (verification === 2) {
-                    throw new Error("workspace replaced while waiting");
-                }
-            }),
-        });
-
-        await expect(value.recovery.ensureRecovered(value.recovery.workspace)).rejects.toThrow(WorkspaceFrozenError);
-
-        expect(value.apply).not.toHaveBeenCalled();
-        await expect(value.durable.read("operation-1")).resolves.toMatchObject({ phase: "applying_files" });
-    });
-
-    it("assertWorkspaceWritable waits on the workspace lock and observes a newly published operation", async () => {
-        const value = await fixture({ phase: "prepared", live: "unknown" });
-        await value.durable.completeCleanup("operation-1");
-        let published = false;
-        Object.assign(value.recovery.store, {
-            withWorkspaceLock: async (operation: () => Promise<unknown>) => {
-                if (!published) {
-                    published = true;
-                    await value.durable.begin(journalRecord("prepared", value.states.pre, value.states.target));
-                }
-                return operation();
-            },
-        });
-
-        await expect(value.recovery.assertWorkspaceWritable(value.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-    });
-
-    it("reconciles Task10's deterministic quarantine before classifying a crash-time absent leaf", async () => {
-        const root = await mkdtemp(join(tmpdir(), "crest-workspace-recovery-artifact-"));
-        const storeRoot = join(root, ".store", "repo.git");
-        await mkdir(storeRoot, { recursive: true });
-        const pre = Buffer.from("pre");
-        const target = Buffer.from("target");
-        const preState = { state: "file", oid: oid(pre), executable: false } as const;
-        const targetState = { state: "file", oid: oid(target), executable: false } as const;
-        await writeFile(join(root, "file.txt"), pre);
-        const artifacts = deriveWorkspaceApplyArtifactPaths({
+    it("recognizes only an absent marker at the expected old leaf as not committed", async () => {
+        const expected = await fixture({ marker: "missing", live: Target });
+        await expect(expected.recovery.inspectPending()).resolves.toEqual({
+            state: "not-committed",
             operationId: "operation-1",
-            path: "file.txt",
         });
+
+        const changedLeaf = await fixture({ marker: "missing", leaf: "other-leaf", live: Before });
+        await expect(changedLeaf.recovery.inspectPending()).resolves.toMatchObject({ state: "needs-user" });
+
+        const committedMarkerOffLeaf = await fixture({ marker: "exact", leaf: "other-leaf", live: Target });
+        await expect(committedMarkerOffLeaf.recovery.inspectPending()).resolves.toMatchObject({
+            state: "needs-user",
+        });
+    });
+
+    it("classifies every path before performing any rollback write", async () => {
+        const value = await fixture({ marker: "missing", live: Target });
+        const second = { path: "other.txt", before: Before, target: Target, createdParentDirectories: [] };
+        Object.assign(value.record(), { paths: [...value.record().paths, second] });
+        value.live.set("other.txt", "unknown");
+
+        await expect(value.recovery.resolvePending()).resolves.toMatchObject({ state: "needs-user" });
+        expect(value.applyPath).not.toHaveBeenCalled();
+    });
+
+    it("rolls back only target paths, persists parent progress, and removes recorded empty directories", async () => {
+        const value = await fixture({ marker: "missing", live: Target });
+        await mkdir(join(value.root, "created"));
+        value.record().paths[0]!.createdParentDirectories = ["created"];
+
+        await expect(value.recovery.resolvePending()).resolves.toEqual({
+            state: "not-committed",
+            operationId: "operation-1",
+        });
+
+        expect(value.applyPath).toHaveBeenCalledWith(
+            expect.objectContaining({ path: "file.txt", expectedCurrent: Target, target: Before })
+        );
+        expect(value.pending.updateCreatedParentDirectoriesLocked).toHaveBeenCalled();
+        expect(value.pending.removeLocked).toHaveBeenCalledWith("operation-1");
+        await expect(stat(join(value.root, "created"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("reconciles deterministic apply artifacts before classifying live paths", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-pending-artifact-"));
+        const beforeBytes = Buffer.from("before");
+        const targetBytes = Buffer.from("target");
+        const blobOid = (bytes: Buffer) =>
+            createHash("sha1")
+                .update(Buffer.from(`blob ${bytes.length}\0`))
+                .update(bytes)
+                .digest("hex");
+        const before = { state: "file", oid: blobOid(beforeBytes), executable: false } as const;
+        const target = { state: "file", oid: blobOid(targetBytes), executable: false } as const;
+        let record = {
+            ...pendingRecord({ kind: "redo" }),
+            paths: [{ path: "file.txt", before, target, createdParentDirectories: [] }],
+        };
+        await writeFile(join(root, "file.txt"), beforeBytes);
+        const artifacts = deriveWorkspaceApplyArtifactPaths({ operationId: record.operationId, path: "file.txt" });
         await mkdir(join(root, artifacts.quarantine));
         await rename(join(root, "file.txt"), join(root, artifacts.quarantine, "entry"));
-        const store = {
-            storeRoot,
-            identity: {
-                canonicalRoot: root,
-                workspaceIdentity: Identity,
-                workspaceIncarnation: Incarnation,
-                storeKey: `${Identity}-${Incarnation}`,
-                ancestorIdentityChain: [],
-            },
-            anchorOperation: vi.fn(async () => {}),
-            deleteCrestRef: vi.fn(async () => {}),
-            readBlob: vi.fn(async (key: string) => (key === preState.oid ? pre : target)),
-            verify: vi.fn(async () => {}),
+        const pending = {
+            readCandidate: vi.fn(async () => ({ kind: "valid", record }) as const),
+            readLocked: vi.fn(async () => ({ kind: "valid", record }) as const),
+            updateCreatedParentDirectoriesLocked: vi.fn(async () => record),
+            removeLocked: vi.fn(async () => {}),
         };
-        const durable = new WorkspaceRecoveryJournal(store);
-        await durable.begin(journalRecord("prepared", preState, targetState));
-        await durable.transition("operation-1", "applying_files");
+        const store = {
+            storeRoot: join(root, "store"),
+            identity: workspaceIdentity(root),
+            readBlob: vi.fn(async (key: string) => (key === before.oid ? beforeBytes : targetBytes)),
+            readPathState: vi.fn(),
+            verify: vi.fn(),
+        };
         const recovery = new WorkspaceRecovery({
             workspace: store.identity,
-            store,
-            journal: durable,
+            store: store as never,
+            pending: pending as never,
             locateSession: async () => ({
                 getLeafId: async () => "old-leaf",
                 getEntry: async () => undefined,
@@ -520,214 +316,64 @@ describe("workspace recovery", () => {
             verifyWorkspace: async () => {},
         });
 
-        await expect(recovery.getRecoveryState(store.identity)).resolves.toMatchObject({
-            paths: [{ path: "file.txt", classification: "unknown" }],
+        await expect(recovery.resolvePending()).resolves.toMatchObject({ state: "not-committed" });
+        await expect(readFile(join(root, "file.txt"))).resolves.toEqual(beforeBytes);
+        expect(pending.updateCreatedParentDirectoriesLocked).toHaveBeenCalled();
+    });
+
+    it("never auto-writes for a missing owning Session and permits explicit keep current", async () => {
+        const value = await fixture({ marker: "missing", live: Target, sessionMissing: true });
+        await expect(value.recovery.resolvePending()).resolves.toMatchObject({
+            state: "needs-user",
+            view: { allowedActions: ["retry", "abandon-current"] },
         });
-        await expect(readFile(join(root, artifacts.quarantine, "entry"))).resolves.toEqual(pre);
-        await expect(readFile(join(root, "file.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(value.applyPath).not.toHaveBeenCalled();
 
-        await recovery.ensureRecovered(store.identity);
-
-        await expect(
-            import("node:fs/promises").then(({ readFile }) => readFile(join(root, "file.txt")))
-        ).resolves.toEqual(pre);
-        await expect(durable.read("operation-1")).rejects.toThrow(/not found/i);
+        await value.recovery.keepCurrent("operation-1");
+        expect(value.pending.resolveToAuditLocked).toHaveBeenCalledWith("operation-1", "keep-current");
     });
 
-    it("finishes committing_session only for the exact operation leaf and rolls back only at the old leaf", async () => {
-        const committed = await fixture({ phase: "committing_session", live: "unknown", leaf: "operation-leaf" });
-        committed.input.live = committed.states.target;
-        await committed.recovery.ensureRecovered(committed.recovery.workspace);
-        await expect(committed.durable.read("operation-1")).rejects.toThrow(/not found/i);
-        expect(committed.apply).not.toHaveBeenCalled();
-
-        const uncommitted = await fixture({ phase: "committing_session", live: "unknown", leaf: "old-leaf" });
-        uncommitted.input.live = uncommitted.states.target;
-        await uncommitted.recovery.ensureRecovered(uncommitted.recovery.workspace);
-        expect(uncommitted.apply).toHaveBeenCalledWith(
-            expect.objectContaining({
-                path: "file.txt",
-                expectedCurrent: uncommitted.states.target,
-                target: uncommitted.states.pre,
-            })
-        );
-
-        const unexpected = await fixture({ phase: "committing_session", live: "unknown", leaf: "other-leaf" });
-        unexpected.input.live = unexpected.states.target;
-        await expect(unexpected.recovery.ensureRecovered(unexpected.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-    });
-
-    it.each([
-        { kind: "rewind", targetTurnId: "turn-1" },
-        { kind: "redo" },
-        { kind: "turn-undo", sourceTurnId: "turn-1" },
-        { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-operation-1" },
-    ] satisfies RestoreTargetV1[])("finishes an exact committed $kind marker", async (target) => {
-        const value = await fixture({
-            phase: "committing_session",
-            live: "unknown",
-            leaf: "operation-leaf",
-            target,
+    it("permits only quarantine for corrupt pending bytes", async () => {
+        const value = await fixture({ corrupt: true });
+        await expect(value.recovery.inspectPending()).resolves.toMatchObject({
+            state: "needs-user",
+            view: { corrupt: true, allowedActions: ["quarantine-corrupt"] },
         });
-        value.input.live = value.states.target;
-
-        await value.recovery.ensureRecovered(value.recovery.workspace);
-
-        await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
-        expect(value.apply).not.toHaveBeenCalled();
+        await expect(value.recovery.keepCurrent("operation-1")).rejects.toThrow(/decoded/i);
+        await value.recovery.quarantine("operation-1");
+        expect(value.pending.resolveToAuditLocked).toHaveBeenCalledWith("operation-1", "quarantine");
     });
 
-    it("freezes a forged operation leaf whose marker or parent does not exactly match the journal", async () => {
-        const wrongParent = await fixture({
-            phase: "committing_session",
-            live: "unknown",
-            leaf: "operation-leaf",
-            entryParentId: "wrong-parent",
-        });
-        wrongParent.input.live = wrongParent.states.target;
-        await expect(wrongParent.recovery.ensureRecovered(wrongParent.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-
-        const wrongKind = await fixture({
-            phase: "committing_session",
-            live: "unknown",
-            leaf: "operation-leaf",
-            stateOverrides: { kind: "redo" },
-        });
-        wrongKind.input.live = wrongKind.states.target;
-        await expect(wrongKind.recovery.ensureRecovered(wrongKind.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
+    it("orders candidate read, Session lease, Workspace lock, then authoritative reread", async () => {
+        const value = await fixture({ marker: "missing", live: Before });
+        await value.recovery.inspectPending();
+        expect(value.order.slice(0, 4)).toEqual(["candidate", "session", "workspace", "authoritative"]);
     });
 
-    it("finishes completed only after exact target, operation leaf, object verification, and publish", async () => {
-        const value = await fixture({ phase: "completed", live: "unknown", leaf: "operation-leaf" });
-        value.input.live = value.states.target;
-
-        await value.recovery.ensureRecovered(value.recovery.workspace);
-
-        expect(value.recovery.store.verify).toHaveBeenCalledWith(expect.objectContaining({ id: "7".repeat(40) }));
-        expect(value.recovery.repairSessionRefs).toHaveBeenCalledWith("session-1");
-        expect(value.recovery.publishState).toHaveBeenCalledWith("session-1");
-        await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
+    it("does not reacquire either public lock from the locked Resolver helper", async () => {
+        const value = await fixture({ marker: "missing", live: Before });
+        await value.recovery.resolvePendingLocked(value.record());
+        expect(value.order).not.toContain("session");
+        expect(value.order).not.toContain("workspace");
     });
 
-    it("allows abandon only at the exact old or committed leaf, and quarantine only for corrupt bytes", async () => {
-        const abandon = await fixture({ phase: "prepared", live: "unknown", leaf: "old-leaf" });
-        await expect(abandon.recovery.ensureRecovered(abandon.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-        await abandon.recovery.abandonKeepingCurrent("operation-1");
-        await expect(abandon.durable.read("operation-1")).rejects.toThrow(/not found/i);
-
-        const corrupt = await fixture({ phase: "prepared", live: "unknown" });
-        await writeFile(corrupt.durable.path("operation-1"), "{truncated");
-        await expect(corrupt.recovery.ensureRecovered(corrupt.recovery.workspace)).rejects.toThrow(
-            WorkspaceFrozenError
-        );
-        await expect(corrupt.recovery.abandonKeepingCurrent("operation-1")).rejects.toThrow(/corrupt/i);
-        await corrupt.recovery.quarantineCorrupt("operation-1");
-        await expect(corrupt.durable.read("operation-1")).rejects.toThrow(/not found/i);
-    });
-
-    it("abandons a decoded orphan without workspace or session writes and stays resolved after restart", async () => {
-        const value = await fixture({ phase: "prepared", live: "unknown", leaf: "old-leaf" });
-        Object.assign(value.recovery, { locateSession: async () => undefined });
-
-        await expect(value.recovery.ensureRecovered(value.recovery.workspace)).rejects.toThrow(WorkspaceFrozenError);
-        await expect(value.recovery.getRecoveryState(value.recovery.workspace)).resolves.toMatchObject({
-            operationId: "operation-1",
-            corrupt: false,
-            allowedActions: ["retry", "abandon-current"],
-        });
-
-        await value.recovery.abandonKeepingCurrent("operation-1");
-
-        expect(value.apply).not.toHaveBeenCalled();
-        expect(value.recovery.publishState).not.toHaveBeenCalled();
-        await expect(value.durable.read("operation-1")).rejects.toThrow(/not found/i);
-        const restarted = new WorkspaceRecovery({
-            workspace: value.recovery.workspace,
-            store: value.recovery.store,
-            journal: value.durable,
-            locateSession: async () => undefined,
-        });
-        await expect(restarted.ensureRecovered(restarted.workspace)).resolves.toBeUndefined();
-        await expect(restarted.getRecoveryState(restarted.workspace)).resolves.toBeUndefined();
-    });
-
-    it("retains a startup orphan journal when its owner leaf changes before abandon", async () => {
-        const value = await fixture({ phase: "prepared", live: "unknown", leaf: "old-leaf" });
-        await expect(value.recovery.ensureRecovered(value.recovery.workspace)).rejects.toThrow(WorkspaceFrozenError);
-        value.input.leaf = "replacement-leaf";
-
-        await expect(
-            value.recovery.abandonKeepingCurrent("operation-1", {
-                sessionId: "session-1",
-                locateBoundOwner: async () => await value.recovery.locateSession("session-1"),
-            })
-        ).rejects.toThrow(/unexpected session leaf/i);
-
-        await expect(value.durable.read("operation-1")).resolves.toMatchObject({ sessionId: "session-1" });
-        await expect(value.recovery.getRecoveryState(value.recovery.workspace)).resolves.toMatchObject({
-            operationId: "operation-1",
-        });
-    });
-
-    it("checks a request guard after acquiring the workspace lock before quarantine mutation", async () => {
-        const value = await fixture({ phase: "prepared", live: "unknown" });
-        await writeFile(value.durable.path("operation-1"), "{truncated");
-        const stale = new Error("request sender became stale");
-        let lockAcquired = false;
-        Object.assign(value.recovery.store, {
-            withWorkspaceLock: async (operation: () => Promise<unknown>) => {
-                lockAcquired = true;
-                return await operation();
-            },
-        });
-
-        await expect(
-            value.recovery.quarantineCorrupt("operation-1", async () => {
-                if (lockAcquired) throw stale;
-            })
-        ).rejects.toBe(stale);
-
-        await expect(readFile(value.durable.path("operation-1"), "utf8")).resolves.toBe("{truncated");
-        expect(value.store.deleteCrestRef).not.toHaveBeenCalled();
-    });
-
-    it("checks a request guard inside the workspace lock before retry or abandon mutation", async () => {
-        for (const action of ["retry", "abandon"] as const) {
-            const value = await fixture({
-                phase: action === "retry" ? "applying_files" : "prepared",
-                live: action === "retry" ? "unknown" : "unknown",
-                leaf: "old-leaf",
-            });
-            const stale = new Error(`${action} request became stale`);
-            let lockAcquired = false;
-            Object.assign(value.recovery.store, {
-                withWorkspaceLock: async (operation: () => Promise<unknown>) => {
-                    lockAcquired = true;
-                    return await operation();
-                },
-            });
-            const guard = async () => {
-                if (lockAcquired) throw stale;
-            };
-
-            const resolution =
-                action === "retry"
-                    ? value.recovery.retry("operation-1", guard)
-                    : value.recovery.abandonKeepingCurrent("operation-1", undefined, guard);
-            await expect(resolution).rejects.toBe(stale);
-            await expect(value.durable.read("operation-1")).resolves.toMatchObject({
-                operationId: "operation-1",
-            });
-            expect(value.apply).not.toHaveBeenCalled();
-            expect(value.store.deleteCrestRef).not.toHaveBeenCalled();
-        }
+    it("rechecks the requested operation ID after entering the Workspace lock", async () => {
+        const value = await fixture({ marker: "missing", live: Before });
+        value.pending.readLocked.mockImplementationOnce(async () => ({
+            kind: "valid",
+            record: { ...value.record(), operationId: "operation-2" },
+        }));
+        await expect(value.recovery.resolvePending("operation-1")).rejects.toThrow(/operation changed/i);
+        expect(value.applyPath).not.toHaveBeenCalled();
     });
 });
+
+function workspaceIdentity(canonicalRoot: string) {
+    return {
+        canonicalRoot,
+        workspaceIdentity: Identity,
+        workspaceIncarnation: Incarnation,
+        storeKey: "workspace",
+        ancestorIdentityChain: [],
+    };
+}

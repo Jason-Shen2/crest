@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { RewindConfirmationRegistry } from "./confirmation-token";
-import type { WorkspaceOperationJournalV2 } from "./recovery-journal";
+import type { PendingWorkspaceRestoreV1 } from "./pending-restore-store";
 import { planRedo, type RestorePlanV1 } from "./restore-plan";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
 import {
@@ -167,26 +167,19 @@ function makeHarness(input: {
         appendError: input.appendError,
         appendErrorAfterCommit: input.appendErrorAfterCommit,
     });
-    let record: WorkspaceOperationJournalV2 | undefined;
+    let record: PendingWorkspaceRestoreV1 | undefined;
     const liveStates = new Map(
         plan.paths.map((path) => [path.path, input.preStates?.[path.path] ?? path.expectedCurrent])
     );
-    const journal = {
-        begin: vi.fn(async (next: WorkspaceOperationJournalV2) => {
-            order.push("operation-ref", "prepared");
+    const pending = {
+        publishLocked: vi.fn(async (next: PendingWorkspaceRestoreV1) => {
+            order.push("publish-pending");
             record = structuredClone(next);
         }),
-        transition: vi.fn(async (_operationId: string, phase: WorkspaceOperationJournalV2["phase"], patch = {}) => {
-            order.push(phase);
-            record = { ...record!, ...patch, phase };
-            return structuredClone(record);
-        }),
-        updatePathProgress: vi.fn(async () => record!),
-        read: vi.fn(async () => structuredClone(record!)),
-        completeCleanup: vi.fn(async () => {
-            order.push("remove-journal");
+        updateCreatedParentDirectoriesLocked: vi.fn(async () => structuredClone(record!)),
+        removeLocked: vi.fn(async () => {
+            order.push("remove-pending");
             if (input.failCleanup) throw new Error("cleanup failed");
-            order.push("remove-operation-ref");
         }),
     };
     let captureCount = 0;
@@ -224,26 +217,35 @@ function makeHarness(input: {
         if (input.failBroadcast) throw new Error("broadcast failed");
     });
     const recovery = {
-        isExactOperationLeaf: vi.fn(async (_session, _record, leafId: string | null) => {
-            order.push("verify-exact-leaf");
-            return leafId === record?.workspaceStateEntryId;
-        }),
-        recoverRecord: vi.fn(async () => {
-            order.push("classifier-recovery");
-            if (input.recoverError) throw input.recoverError;
-            if (session.leafId() === record!.workspaceStateEntryId) {
-                record = await journal.transition(record!.operationId, "completed");
-                await onCommitted();
-                await journal.completeCleanup();
-                return;
+        pending,
+        resolvePendingLocked: vi.fn(async () => {
+            order.push("resolve-pending");
+            if (input.recoverError) {
+                return {
+                    state: "needs-user",
+                    view: {
+                        operationId: record!.operationId,
+                        corrupt: false,
+                        message: input.recoverError.message,
+                        paths: [],
+                        allowedActions: ["retry"],
+                    },
+                } as const;
             }
-            for (const path of record!.paths) liveStates.set(path.path, path.preState);
+            if (session.leafId() === record!.workspaceStateEntryId) {
+                order.push("verify-exact-marker");
+                await pending.removeLocked();
+                return { state: "committed", operationId: record!.operationId } as const;
+            }
+            for (const path of record!.paths) liveStates.set(path.path, path.before);
+            await pending.removeLocked();
+            return { state: "not-committed", operationId: record!.operationId } as const;
         }),
     };
     const confirmations = new RewindConfirmationRegistry();
     const options: WorkspaceRewindEngineOptions = {
         store: store as never,
-        journal: journal as never,
+        pending: pending as never,
         recovery: recovery as never,
         confirmations,
         createOperationId: () => "operation-1",
@@ -293,7 +295,7 @@ function makeHarness(input: {
         plan,
         session,
         store,
-        journal,
+        pending,
         recovery,
         liveStates,
         order,
@@ -302,6 +304,24 @@ function makeHarness(input: {
 }
 
 describe("WorkspaceRewindEngine transaction", () => {
+    it("constructs one pending store and Resolver shared by every restore path", () => {
+        const store = {
+            storeRoot: "/store",
+            identity: Workspace,
+            readBlob: vi.fn(),
+            readPathState: vi.fn(),
+            verify: vi.fn(),
+        };
+        const engine = new WorkspaceRewindEngine({
+            store: store as never,
+            confirmations: new RewindConfirmationRegistry(),
+            locateSession: async () => undefined,
+        });
+
+        expect(engine.executor.pending).toBe((engine as unknown as { pending: unknown }).pending);
+        expect(engine.executor.recovery).toBe((engine as unknown as { recovery: unknown }).recovery);
+    });
+
     it("projects rewind in reverse and redo forward from immutable restore-plan states", async () => {
         const rewindPlan = restorePlan();
         const redoPlan = restorePlan({
@@ -450,20 +470,14 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(value.order).toEqual([
             "recompute-plan",
             "safety-capture",
-            "operation-ref",
-            "prepared",
-            "applying_files",
+            "publish-pending",
             "write:file.txt",
             "result-capture",
             "verify:file.txt",
-            "files_verified",
-            "anchor-session-refs",
-            "committing_session",
-            "verify-exact-leaf",
-            "completed",
+            "resolve-pending",
+            "verify-exact-marker",
+            "remove-pending",
             "broadcast",
-            "remove-journal",
-            "remove-operation-ref",
         ]);
         expect(value.session.appendEntries).toHaveBeenCalledWith(
             [expect.objectContaining({ id: "operation-leaf-1", parentId: "transaction-start" })],
@@ -511,10 +525,8 @@ describe("WorkspaceRewindEngine transaction", () => {
             profile: "safety",
             requiredPaths: ["drift.bin"],
         });
-        expect(value.record().confirmedConflictFingerprints).toEqual([
-            { path: "drift.bin", fingerprint: driftFingerprint },
-        ]);
-        expect(value.record().paths[0]!.preState).toEqual(driftState);
+        expect(value.record().forcedPaths).toEqual(["drift.bin"]);
+        expect(value.record().paths[0]!.before).toEqual(driftState);
         expect(value.options.applyPath).toHaveBeenCalledWith(
             expect.objectContaining({
                 path: "drift.bin",
@@ -582,10 +594,10 @@ describe("WorkspaceRewindEngine transaction", () => {
                 })
             ).rejects.toThrow(/apply failed/);
 
-            expect(value.recovery.recoverRecord).toHaveBeenCalledOnce();
+            expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
             expect(value.session.appendEntries).not.toHaveBeenCalled();
             for (const path of value.record().paths) {
-                expect(value.liveStates.get(path.path)).toEqual(path.preState);
+                expect(value.liveStates.get(path.path)).toEqual(path.before);
             }
         }
     );
@@ -606,9 +618,9 @@ describe("WorkspaceRewindEngine transaction", () => {
             })
         ).rejects.toThrow(/stale leaf CAS/);
 
-        expect(value.recovery.recoverRecord).toHaveBeenCalledOnce();
+        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
         expect(value.session.leafId()).toBe("old-leaf");
-        expect(value.liveStates.get("file.txt")).toEqual(value.record().paths[0]!.preState);
+        expect(value.liveStates.get("file.txt")).toEqual(value.record().paths[0]!.before);
     });
 
     it("finishes from Task 11 recovery when SQLite commits before appendEntries throws", async () => {
@@ -627,17 +639,10 @@ describe("WorkspaceRewindEngine transaction", () => {
 
         expect(result.semanticLeafId).toBe("operation-leaf-1");
         expect(value.session.leafId()).toBe("operation-leaf-1");
-        expect(value.recovery.recoverRecord).toHaveBeenCalledOnce();
+        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
         expect(value.options.onCommitted).toHaveBeenCalledOnce();
         expect(value.liveStates.get("file.txt")).toEqual(value.plan.paths[0]!.target);
-        expect(value.order.slice(-6)).toEqual([
-            "classifier-recovery",
-            "completed",
-            "broadcast",
-            "remove-journal",
-            "remove-operation-ref",
-            "verify-exact-leaf",
-        ]);
+        expect(value.order.slice(-3)).toEqual(["verify-exact-marker", "remove-pending", "broadcast"]);
     });
 
     it("never performs a broad rollback when Task 11 classifies a third-party write as unknown", async () => {
@@ -657,35 +662,36 @@ describe("WorkspaceRewindEngine transaction", () => {
             })
         ).rejects.toThrow(/unknown live path state/);
 
-        expect(value.recovery.recoverRecord).toHaveBeenCalledOnce();
+        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
         expect(value.liveStates.get("file.txt")).toEqual(value.plan.paths[0]!.target);
     });
 
     it.each(["broadcast", "cleanup"] as const)(
-        "does not invoke rollback after the SQLite commit when %s fails",
+        "does not roll back a committed workspace when %s fails",
         async (failure) => {
+            const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
             const value = makeHarness({
                 failBroadcast: failure === "broadcast",
                 failCleanup: failure === "cleanup",
             });
             const confirmation = value.confirmations.take(value.confirmations.issue(value.plan));
 
-            await expect(
-                value.engine.applyRewind({
-                    session: value.session.session,
-                    sessionId: "session-1",
-                    workspace: Workspace,
-                    semanticLeafId: "old-leaf",
-                    targetTurnId: "turn-1",
-                    mode: "normal",
-                    confirmation,
-                })
-            ).rejects.toThrow(new RegExp(failure));
+            const operation = value.engine.applyRewind({
+                session: value.session.session,
+                sessionId: "session-1",
+                workspace: Workspace,
+                semanticLeafId: "old-leaf",
+                targetTurnId: "turn-1",
+                mode: "normal",
+                confirmation,
+            });
+            if (failure === "broadcast") await expect(operation).resolves.toBeDefined();
+            else await expect(operation).rejects.toThrow(/recovery required/i);
 
             expect(value.session.leafId()).toBe("operation-leaf-1");
             expect(value.liveStates.get("file.txt")).toEqual(value.plan.paths[0]!.target);
-            expect(value.recovery.recoverRecord).not.toHaveBeenCalled();
-            expect(value.record().phase).toBe("completed");
+            expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
+            warning.mockRestore();
         }
     );
 

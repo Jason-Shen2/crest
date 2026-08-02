@@ -19,7 +19,7 @@ import {
 import { projectWorkspacePathDiff, WorkspaceDiffPreviewBudget } from "./diff-preview";
 import { applyCapturedPath, verifyCapturedPath } from "./filesystem-apply";
 import { inspectLivePath, inspectLivePaths, type LiveCapturedPathState } from "./live-path-state";
-import type { WorkspaceRecoveryJournal } from "./recovery-journal";
+import { PendingWorkspaceRestoreStore } from "./pending-restore-store";
 import {
     planRedo,
     planRewind,
@@ -33,8 +33,8 @@ import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoInput } from "./turn-restore-plan";
 import type { WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
-import type { WorkspaceRecovery } from "./workspace-recovery";
-import { WorkspaceRestoreExecutor, workspaceStateFromJournal } from "./workspace-restore-executor";
+import { WorkspaceRecovery, type WorkspaceRecoveryOptions } from "./workspace-recovery";
+import { WorkspaceRestoreExecutor, workspaceStateFromPending } from "./workspace-restore-executor";
 
 type WorkspaceRewindMarkerV1 = Extract<WorkspaceStateV1, { kind: "rewind" }>;
 
@@ -105,8 +105,10 @@ type VerifyPath = typeof verifyCapturedPath;
 
 export interface WorkspaceRewindEngineOptions {
     store: WorkspaceSnapshotStore;
-    journal: WorkspaceRecoveryJournal;
-    recovery: Pick<WorkspaceRecovery, "recoverRecord" | "isExactOperationLeaf">;
+    pending?: PendingWorkspaceRestoreStore;
+    recovery?: WorkspaceRecovery;
+    locateSession?: WorkspaceRecoveryOptions["locateSession"];
+    withSessionLease?: WorkspaceRecoveryOptions["withSessionLease"];
     confirmations: RewindConfirmationRegistry;
     planRewind?: (input: PlanRewindInput) => Promise<RestorePlanV1>;
     planRedo?: (input: PlanRedoInput) => Promise<RestorePlanV1>;
@@ -238,8 +240,8 @@ function warningText(plan: RestorePlanV1): string[] {
 
 export class WorkspaceRewindEngine {
     private readonly store: WorkspaceSnapshotStore;
-    private readonly journal: WorkspaceRecoveryJournal;
-    private readonly recovery: WorkspaceRewindEngineOptions["recovery"];
+    private readonly pending: PendingWorkspaceRestoreStore;
+    private readonly recovery: WorkspaceRecovery;
     private readonly confirmations: RewindConfirmationRegistry;
     private readonly planRewindImpl: NonNullable<WorkspaceRewindEngineOptions["planRewind"]>;
     private readonly planRedoImpl: NonNullable<WorkspaceRewindEngineOptions["planRedo"]>;
@@ -251,8 +253,19 @@ export class WorkspaceRewindEngine {
 
     constructor(options: WorkspaceRewindEngineOptions) {
         this.store = options.store;
-        this.journal = options.journal;
-        this.recovery = options.recovery;
+        this.pending = options.pending ?? options.recovery?.pending ?? new PendingWorkspaceRestoreStore(options.store);
+        if (!options.recovery && !options.locateSession) {
+            throw new Error("Workspace rewind engine requires a Session locator for recovery");
+        }
+        this.recovery =
+            options.recovery ??
+            new WorkspaceRecovery({
+                workspace: options.store.identity,
+                store: options.store,
+                pending: this.pending,
+                locateSession: options.locateSession!,
+                withSessionLease: options.withSessionLease,
+            });
         this.confirmations = options.confirmations;
         this.planRewindImpl = options.planRewind ?? planRewind;
         this.planRedoImpl = options.planRedo ?? planRedo;
@@ -264,8 +277,8 @@ export class WorkspaceRewindEngine {
             options.inspectLivePaths ?? ((paths) => inspectLivePaths(this.store.identity.canonicalRoot, paths));
         this.executor = new WorkspaceRestoreExecutor({
             store: options.store,
-            journal: options.journal,
-            recovery: options.recovery,
+            pending: this.pending,
+            recovery: this.recovery,
             inspectLivePaths: this.inspectPaths,
             applyPath: options.applyPath,
             verifyPath: options.verifyPath,
@@ -569,7 +582,7 @@ export class WorkspaceRewindEngine {
                 mode: input.mode,
                 assertCurrent: input.assertCurrent,
                 commit: {
-                    makeWorkspaceState: workspaceStateFromJournal,
+                    makeWorkspaceState: workspaceStateFromPending,
                     makeResult: ({ folded, sessionMetadata }) => ({
                         sessionMetadata,
                         semanticLeafId: folded.semanticLeafId,
@@ -578,7 +591,7 @@ export class WorkspaceRewindEngine {
                 },
             });
         };
-        return this.store.withWorkspaceLock ? this.store.withWorkspaceLock(operation) : operation();
+        return operation();
     }
 
     private async apply(input: ApplyRestoreInput): Promise<WorkspaceRewindCommitResult> {
@@ -606,7 +619,7 @@ export class WorkspaceRewindEngine {
             });
             return this.applyPlanned(input, planned);
         };
-        return this.store.withWorkspaceLock ? this.store.withWorkspaceLock(operation) : operation();
+        return operation();
     }
 
     private async applyPlanned(
@@ -621,7 +634,7 @@ export class WorkspaceRewindEngine {
             mode: input.mode,
             assertCurrent: input.assertCurrent,
             commit: {
-                makeWorkspaceState: (record) => workspaceStateFromJournal(record),
+                makeWorkspaceState: workspaceStateFromPending,
                 makeResult: ({ entries, folded, sessionMetadata }) => {
                     const targetEntry =
                         input.kind === "rewind"
