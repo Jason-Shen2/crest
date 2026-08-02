@@ -84,6 +84,11 @@ function snapshot(overrides: Partial<AgentContextSnapshotView> = {}): AgentConte
     };
 }
 
+function renderedLargePayloadText(surface: HTMLElement): string {
+    if (surface instanceof HTMLTextAreaElement) return surface.value;
+    return surface.textContent ?? "";
+}
+
 describe("ContextComposition", () => {
     it("shows fixed groups and source rows without legacy composition chrome", () => {
         render(<ContextComposition snapshot={snapshot()} />);
@@ -136,6 +141,58 @@ describe("ContextComposition", () => {
 
         expect(instructions.getAttribute("aria-expanded")).toBe("false");
         expect(document.activeElement).toBe(instructions);
+    });
+
+    it("labels the payload region with its disclosure button", () => {
+        render(<ContextComposition snapshot={snapshot()} />);
+
+        const disclosure = screen.getByRole("button", { name: "Base prompt source, Core agent behavior" });
+        fireEvent.click(disclosure);
+        const payload = screen.getByRole("region", { name: "Base prompt source, Core agent behavior" });
+
+        expect(disclosure.id).not.toBe("");
+        expect(disclosure.getAttribute("aria-controls")).toBe(payload.id);
+        expect(payload.getAttribute("aria-labelledby")).toBe(disclosure.id);
+    });
+
+    it("closes an expanded payload when Escape is pressed on its focused disclosure", () => {
+        render(<ContextComposition snapshot={snapshot()} />);
+
+        const disclosure = screen.getByRole("button", { name: "Base prompt source, Core agent behavior" });
+        disclosure.focus();
+        fireEvent.click(disclosure);
+        fireEvent.keyDown(disclosure, { key: "Escape" });
+
+        expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+        expect(screen.queryByTestId("context-payload-base-prompt")).toBeNull();
+        expect(document.activeElement).toBe(disclosure);
+    });
+
+    it("closes an expanded payload when Escape is pressed on its large payload scroll region", () => {
+        const content = `first\r\nsecond\r${"x".repeat(1_048_576)}\r\nlast`;
+        render(
+            <ContextComposition
+                snapshot={snapshot({
+                    items: [
+                        {
+                            ...snapshot().items[0],
+                            content,
+                        },
+                    ],
+                })}
+            />
+        );
+
+        const disclosure = screen.getByRole("button", { name: "Base prompt source, Core agent behavior" });
+        fireEvent.click(disclosure);
+        const payload = screen.getByTestId("context-payload-base-prompt");
+        const valueSurface = screen.getByTestId("context-payload-large-value");
+        expect(renderedLargePayloadText(valueSurface)).toBe(content);
+        payload.focus();
+        fireEvent.keyDown(payload, { key: "Escape" });
+
+        expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+        expect(document.activeElement).toBe(disclosure);
     });
 
     it("virtualizes 1,000 conversation turns while exposing their concrete child sources", () => {

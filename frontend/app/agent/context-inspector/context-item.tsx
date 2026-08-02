@@ -10,6 +10,10 @@ function payloadId(itemId: string): string {
     return `context-payload-panel-${encodeURIComponent(itemId)}`;
 }
 
+function disclosureId(itemId: string): string {
+    return `context-payload-disclosure-${encodeURIComponent(itemId)}`;
+}
+
 export function ContextItem({
     item,
     expanded,
@@ -23,15 +27,27 @@ export function ContextItem({
 }) {
     const buttonRef = useRef<HTMLButtonElement>(null);
     const panelId = payloadId(item.id);
+    const buttonId = disclosureId(item.id);
     const accessibleName = [accessibleContext, item.title, item.preview].filter(Boolean).join(", ");
-    const closeFromPayload = () => {
+    const closeDisclosure = () => {
+        if (!expanded) return;
         onToggle(item.id);
         buttonRef.current?.focus();
     };
 
     return (
-        <article data-testid="context-inventory-item" className="border-t border-border/35 first:border-t-0">
+        <article
+            data-testid="context-inventory-item"
+            className="border-t border-border/35 first:border-t-0"
+            onKeyDown={(event) => {
+                if (!expanded || event.key !== "Escape") return;
+                event.preventDefault();
+                event.stopPropagation();
+                closeDisclosure();
+            }}
+        >
             <button
+                id={buttonId}
                 ref={buttonRef}
                 type="button"
                 aria-controls={panelId}
@@ -58,7 +74,7 @@ export function ContextItem({
                 </span>
             </button>
             {expanded ? (
-                <ContextPayload itemId={item.id} panelId={panelId} content={item.content} onEscape={closeFromPayload} />
+                <ContextPayload itemId={item.id} panelId={panelId} labelledBy={buttonId} content={item.content} />
             ) : null}
         </article>
     );
