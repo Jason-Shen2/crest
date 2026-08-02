@@ -120,6 +120,7 @@ function harness(
         appendError?: Error;
         appendAfterCommit?: boolean;
         onCommittedError?: Error;
+        publishError?: Error;
         withPath?: boolean;
     } = {}
 ) {
@@ -153,6 +154,7 @@ function harness(
         publishLocked: vi.fn(async (next: PendingWorkspaceRestoreV1) => {
             record = structuredClone(next);
             order.push("publish-pending");
+            if (input.publishError) throw input.publishError;
         }),
         updateCreatedParentDirectoriesLocked: vi.fn(async () => {
             order.push("persist-parent-progress");
@@ -314,6 +316,16 @@ describe("WorkspaceRestoreExecutor pending transaction", () => {
         const value = harness({ fail: "safety" });
         await expect(execute(value, { kind: "redo" })).rejects.toThrow("safety failed");
         expect(value.pending.publishLocked).not.toHaveBeenCalled();
+        expect(value.recovery.resolvePendingLocked).not.toHaveBeenCalled();
+    });
+
+    it("propagates a failed pending publication without invoking the Resolver", async () => {
+        const error = new Error("pending publication failed");
+        const value = harness({ publishError: error });
+
+        await expect(execute(value, { kind: "redo" })).rejects.toBe(error);
+
+        expect(value.pending.publishLocked).toHaveBeenCalledOnce();
         expect(value.recovery.resolvePendingLocked).not.toHaveBeenCalled();
     });
 

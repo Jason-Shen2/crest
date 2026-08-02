@@ -186,8 +186,8 @@ export class WorkspaceRestoreExecutor {
         let resolutionAttempted = false;
         try {
             await assertCurrent();
-            publicationAttempted = true;
             await this.pending.publishLocked(pending);
+            publicationAttempted = true;
             for (const item of pending.paths) {
                 await assertCurrent();
                 const createdParentDirectories = new Set(item.createdParentDirectories);
