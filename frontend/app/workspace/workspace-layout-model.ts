@@ -24,11 +24,11 @@
 // dozens of meta writes.
 
 import { globalStore } from "@/app/store/jotaiStore";
+import * as WOS from "@/app/store/wos";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { getLayoutModelForStaticTab } from "@/layout/lib/layoutModelHooks";
 import { atoms, getOrefMetaKeyAtom, refocusNode } from "@/store/global";
-import * as WOS from "@/app/store/wos";
 import * as jotai from "jotai";
 import type { RightToolId, RightToolPanelState } from "./right-tool-panel-state";
 import {
@@ -443,6 +443,7 @@ class WorkspaceLayoutModel {
     }
 
     private clearMagnifiedLayoutNode(): void {
+        if (atoms.staticTabId == null) return;
         const layoutModel = getLayoutModelForStaticTab();
         const magnifiedNodeId = layoutModel.magnifiedNodeId;
         if (magnifiedNodeId == null) return;
