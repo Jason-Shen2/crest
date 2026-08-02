@@ -4,7 +4,7 @@
 import { CodeEditor } from "@/app/view/codeeditor/codeeditor";
 import { cn } from "@/util/util";
 import type * as monaco from "monaco-editor";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { MarkdownFilePreview } from "./markdown-file-preview";
 import type { WorkspaceFileRuntime } from "./workspace-editor-registry";
 
@@ -19,11 +19,9 @@ export function FileTopTab({
     onClose?: () => void;
     onLocate?: () => void;
 }) {
-    const snapshot = useSyncExternalStore(
-        (listener) => runtime.subscribe(listener),
-        () => runtime.getSnapshot(),
-        () => runtime.getSnapshot()
-    );
+    const subscribe = useCallback((listener: () => void) => runtime.subscribe(listener), [runtime]);
+    const getSnapshot = useCallback(() => runtime.getSnapshot(), [runtime]);
+    const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
     const editorRef = useRef<monaco.editor.IStandaloneCodeEditor>(null);
     const attachedModelRef = useRef<monaco.editor.ITextModel>(runtime.model);
     const isMarkdown = runtime.language === "markdown";
@@ -83,15 +81,18 @@ export function FileTopTab({
             language={runtime.language}
             model={runtime.model}
             onChange={(value) => runtime.setValue(value)}
-            onMount={(editor) => {
-                editorRef.current = editor;
+            onMount={(mountedEditor) => {
+                editorRef.current = mountedEditor;
                 attachedModelRef.current = runtime.model;
                 if (runtime.viewState) {
-                    editor.restoreViewState(runtime.viewState);
+                    mountedEditor.restoreViewState(runtime.viewState);
                 }
-                runtime.attach(editor);
+                runtime.attach(mountedEditor);
                 return () => {
-                    runtime.detach(editor);
+                    if (editorRef.current !== mountedEditor) {
+                        return;
+                    }
+                    runtime.detach(mountedEditor);
                     editorRef.current = null;
                 };
             }}

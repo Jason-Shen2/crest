@@ -3,15 +3,36 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render, screen } from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FileTopTab } from "./file-top-tab";
 
 const editorProps = vi.hoisted(() => ({ current: null as any }));
 const markdownFilePreviewProps = vi.hoisted(() => ({ current: null as any }));
+const codeEditorLifecycleHarness = vi.hoisted(() => ({
+    enabled: false,
+    editors: [] as any[],
+    cleanups: [] as Array<() => void>,
+}));
 
 vi.mock("@/app/view/codeeditor/codeeditor", () => ({
     CodeEditor: (props: any) => {
         editorProps.current = props;
+        useEffect(() => {
+            if (!codeEditorLifecycleHarness.enabled) {
+                return;
+            }
+            const editor = codeEditorLifecycleHarness.editors.shift();
+            if (editor == null) {
+                return;
+            }
+            const cleanup = props.onMount(editor);
+            codeEditorLifecycleHarness.cleanups.push(cleanup);
+            return () => {
+                cleanup();
+                cleanup();
+            };
+        }, [props]);
         return <div>Monaco file editor</div>;
     },
 }));
@@ -37,10 +58,10 @@ function makeControlledRuntime(path: string, value: string) {
         model: { id: "model" },
         viewState: undefined,
         getSnapshot: () => snapshot,
-        subscribe: (listener: () => void) => {
+        subscribe: vi.fn((listener: () => void) => {
             listeners.add(listener);
             return () => listeners.delete(listener);
-        },
+        }),
         setValue: vi.fn((nextValue: string) => {
             runtime.value = nextValue;
             snapshot = { ...snapshot };
@@ -61,6 +82,9 @@ afterEach(() => {
     cleanup();
     editorProps.current = null;
     markdownFilePreviewProps.current = null;
+    codeEditorLifecycleHarness.enabled = false;
+    codeEditorLifecycleHarness.editors = [];
+    codeEditorLifecycleHarness.cleanups = [];
 });
 
 describe("FileTopTab", () => {
@@ -226,5 +250,66 @@ describe("FileTopTab", () => {
         });
         expect(screen.getByTestId("markdown-file-preview")).toBeTruthy();
         expect(screen.queryByText("Monaco file editor")).toBeNull();
+    });
+
+    it("keeps editor mount cleanups isolated across Markdown view switches", () => {
+        const firstEditor = {
+            restoreViewState: vi.fn(),
+            saveViewState: vi.fn(() => ({ cursorState: [] })),
+        };
+        const secondEditor = {
+            restoreViewState: vi.fn(),
+            saveViewState: vi.fn(() => ({ cursorState: [] })),
+        };
+        const runtime = makeControlledRuntime("/repo/README.md", "# Draft");
+        (runtime as any).viewState = { cursorState: [{ position: { lineNumber: 2, column: 1 } }] };
+        codeEditorLifecycleHarness.enabled = true;
+        codeEditorLifecycleHarness.editors = [firstEditor, secondEditor];
+        render(<FileTopTab runtime={runtime as any} />);
+
+        act(() => {
+            screen.getByRole("button", { name: "Edit" }).click();
+        });
+        expect(runtime.attach).toHaveBeenCalledWith(firstEditor);
+        expect(firstEditor.restoreViewState).toHaveBeenCalledWith(runtime.viewState);
+
+        act(() => {
+            screen.getByRole("button", { name: "Preview" }).click();
+        });
+        expect(runtime.detach).toHaveBeenCalledTimes(1);
+
+        act(() => {
+            screen.getByRole("button", { name: "Edit" }).click();
+        });
+        expect(runtime.attach).toHaveBeenCalledWith(secondEditor);
+        expect(secondEditor.restoreViewState).toHaveBeenCalledWith(runtime.viewState);
+
+        act(() => {
+            codeEditorLifecycleHarness.cleanups[0]();
+        });
+        expect(runtime.detach).toHaveBeenCalledTimes(1);
+
+        act(() => {
+            screen.getByRole("button", { name: "Preview" }).click();
+        });
+        expect(runtime.detach).toHaveBeenCalledTimes(2);
+        expect(runtime.detach).toHaveBeenLastCalledWith(secondEditor);
+    });
+
+    it("keeps the runtime subscription stable while switching local Markdown views", () => {
+        const runtime = makeControlledRuntime("/repo/README.md", "# Draft");
+        render(<FileTopTab runtime={runtime as any} />);
+
+        act(() => {
+            screen.getByRole("button", { name: "Edit" }).click();
+        });
+        act(() => {
+            screen.getByRole("button", { name: "Preview" }).click();
+        });
+        act(() => {
+            screen.getByRole("button", { name: "Edit" }).click();
+        });
+
+        expect(runtime.subscribe).toHaveBeenCalledOnce();
     });
 });
