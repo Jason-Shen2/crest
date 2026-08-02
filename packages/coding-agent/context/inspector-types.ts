@@ -54,6 +54,7 @@ export interface ContextSnapshotItem {
     kind: ContextSnapshotItemKind;
     title: string;
     preview: string;
+    content?: unknown;
     tokens?: number;
     tokenAccuracy: "estimated" | "unavailable";
     source: ContextSnapshotItemSource;

@@ -1,6 +1,17 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import {
+    BRANCH_SUMMARY_PREFIX,
+    BRANCH_SUMMARY_SUFFIX,
+    COMPACTION_SUMMARY_PREFIX,
+    COMPACTION_SUMMARY_SUFFIX,
+    bashExecutionToText,
+} from "@crest/agent/harness/messages";
+import type { SessionContext, SessionTreeEntry } from "@crest/agent/harness/types";
+import type { AgentMessage, AgentTool } from "@crest/agent/types";
+import type { SystemPromptManifest } from "../build-system-prompt";
+import { stripHistoricalReferences } from "./history";
 import type {
     AgentContextSnapshot,
     BuildContextSnapshotInput,
@@ -10,10 +21,6 @@ import type {
     ContextSnapshotItem,
     ContextSnapshotLifecycle,
 } from "./inspector-types";
-import type { SessionContext, SessionTreeEntry } from "@crest/agent/harness/types";
-import type { AgentMessage, AgentTool } from "@crest/agent/types";
-import type { SystemPromptManifest } from "../build-system-prompt";
-import { stripHistoricalReferences } from "./history";
 import { foldContextJournal } from "./journal";
 
 export interface BuildContextInventoryInput {
@@ -44,9 +51,7 @@ function attributedItemTokens(items: readonly ContextSnapshotItem[]): number | u
     return total;
 }
 
-export function summarizeContextCategories(
-    items: readonly ContextSnapshotItem[]
-): ContextSnapshotCategorySummary[] {
+export function summarizeContextCategories(items: readonly ContextSnapshotItem[]): ContextSnapshotCategorySummary[] {
     return ContextSnapshotCategoryOrder.map((category) => {
         const categoryItems = items.filter((item) => item.category === category);
         return {
@@ -110,7 +115,7 @@ export function buildContextSnapshot(input: BuildContextSnapshotInput): AgentCon
         requestOverheadTokens: reconciliation?.requestOverheadTokens,
         attributionDeltaTokens: reconciliation?.attributionDeltaTokens,
         categories,
-        items: input.items.map((item) => ({ ...item, source: { ...item.source } })),
+        items: input.items.map((item) => structuredClone(item)),
         diagnostic: input.diagnostic ?? attributionDiagnostic,
     };
 }
@@ -162,6 +167,38 @@ function messageTokens(message: AgentMessage): number {
     return estimateTextTokens(JSON.stringify(message));
 }
 
+function userMessageContent(message: AgentMessage): unknown {
+    if (message.role === "user") {
+        const effectiveMessage = stripHistoricalReferences(message);
+        return { role: "user", content: (effectiveMessage as { content: unknown }).content };
+    }
+    if (message.role === "custom") {
+        const content =
+            typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
+        return { role: "user", content };
+    }
+    if (message.role === "bashExecution") {
+        return { role: "user", content: [{ type: "text", text: bashExecutionToText(message) }] };
+    }
+    return undefined;
+}
+
+function summaryContent(message: AgentMessage): unknown {
+    if (message.role === "compactionSummary") {
+        return {
+            role: "user",
+            content: [{ type: "text", text: COMPACTION_SUMMARY_PREFIX + message.summary + COMPACTION_SUMMARY_SUFFIX }],
+        };
+    }
+    if (message.role === "branchSummary") {
+        return {
+            role: "user",
+            content: [{ type: "text", text: BRANCH_SUMMARY_PREFIX + message.summary + BRANCH_SUMMARY_SUFFIX }],
+        };
+    }
+    return undefined;
+}
+
 function instructionItems(manifest?: SystemPromptManifest): ContextSnapshotItem[] {
     if (!manifest) return [];
     return manifest.segments.map((segment) => ({
@@ -170,6 +207,7 @@ function instructionItems(manifest?: SystemPromptManifest): ContextSnapshotItem[
         kind: segment.kind,
         title: segment.title,
         preview: previewValue(segment.text),
+        content: segment.text,
         tokens: estimateTextTokens(segment.text),
         tokenAccuracy: "estimated",
         source: {
@@ -192,6 +230,11 @@ function toolItems(tools: AgentTool[]): ContextSnapshotItem[] {
             kind: "tool_definition",
             title: tool.name,
             preview: previewValue(tool.description ?? serialized),
+            content: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+            },
             tokens: estimateTextTokens(serialized),
             tokenAccuracy: "estimated",
             source: { toolName: tool.name },
@@ -213,7 +256,9 @@ function coveredCompactionEntryIds(entries: SessionTreeEntry[], firstKeptEntryId
     if (firstKeptIndex <= 0) return [];
     return entries
         .slice(0, firstKeptIndex)
-        .filter((entry) => entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary")
+        .filter(
+            (entry) => entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary"
+        )
         .map((entry) => entry.id);
 }
 
@@ -234,6 +279,7 @@ function childItem(
                 kind: "user_message",
                 title: "User",
                 preview: messagePreview(conversationMessage),
+                content: userMessageContent(conversationMessage),
                 tokens: messageTokens(conversationMessage),
                 tokenAccuracy: "estimated",
                 source: { entryIds: entryId == null ? [] : [entryId] },
@@ -241,14 +287,27 @@ function childItem(
         ];
     }
     if (role === "toolResult") {
-        const toolCallId = (message as { toolCallId?: string }).toolCallId;
+        const toolResultMessage = message as {
+            toolCallId?: string;
+            toolName?: string;
+            content?: unknown;
+            isError?: boolean;
+        };
+        const toolCallId = toolResultMessage.toolCallId;
         return [
             {
                 id: `tool-result:${toolCallId ?? stableId}`,
                 category: "conversation",
                 kind: "tool_result",
-                title: (message as { toolName?: string }).toolName ?? "Tool result",
+                title: toolResultMessage.toolName ?? "Tool result",
                 preview: messagePreview(message),
+                content: {
+                    role: "toolResult",
+                    toolCallId: toolResultMessage.toolCallId,
+                    toolName: toolResultMessage.toolName,
+                    content: toolResultMessage.content,
+                    isError: toolResultMessage.isError,
+                },
                 tokens: messageTokens(message),
                 tokenAccuracy: "estimated",
                 source: {
@@ -271,6 +330,7 @@ function childItem(
                 kind: "tool_call",
                 title: value.name ?? "Tool call",
                 preview: previewValue(value.arguments),
+                content: { role: "assistant", content: [block] },
                 tokens: estimateTextTokens(JSON.stringify(value)),
                 tokenAccuracy: "estimated",
                 source: {
@@ -287,6 +347,7 @@ function childItem(
                 kind: "assistant_message",
                 title: "Assistant",
                 preview: previewValue(value.text),
+                content: { role: "assistant", content: [block] },
                 tokens: estimateTextTokens(value.text),
                 tokenAccuracy: "estimated",
                 source: { entryIds: entryId == null ? [] : [entryId] },
@@ -314,6 +375,7 @@ function conversationItems(input: BuildContextInventoryInput): ContextSnapshotIt
         currentTurn = undefined;
     };
     input.context.messages.forEach((message, index) => {
+        if (message.role === "bashExecution" && message.excludeFromContext) return;
         const entryId = input.context.messageEntryIds[index];
         if (message.role === "compactionSummary") {
             flushTurn();
@@ -323,11 +385,14 @@ function conversationItems(input: BuildContextInventoryInput): ContextSnapshotIt
                 kind: "compaction_summary",
                 title: "Compacted history",
                 preview: messagePreview(message),
+                content: summaryContent(message),
                 tokens: messageTokens(message),
                 tokenAccuracy: "estimated",
                 source: {
                     entryIds: entryId == null ? [] : [entryId],
-                    coveredEntryIds: compaction ? coveredCompactionEntryIds(input.entries, compaction.firstKeptEntryId) : [],
+                    coveredEntryIds: compaction
+                        ? coveredCompactionEntryIds(input.entries, compaction.firstKeptEntryId)
+                        : [],
                 },
             });
             return;
@@ -340,6 +405,7 @@ function conversationItems(input: BuildContextInventoryInput): ContextSnapshotIt
                 kind: "branch_summary",
                 title: "Branch summary",
                 preview: messagePreview(message),
+                content: summaryContent(message),
                 tokens: messageTokens(message),
                 tokenAccuracy: "estimated",
                 source: { entryIds: entryId == null ? [] : [entryId] },
@@ -387,7 +453,8 @@ function addedContextItems(input: BuildContextInventoryInput): ContextSnapshotIt
         .filter(
             (attachment) =>
                 visibleIds.has(attachment.data.targetTurnId) &&
-                (attachment.data.deliveryScope === "conversation" || attachment.data.targetTurnId === input.activeTurnId)
+                (attachment.data.deliveryScope === "conversation" ||
+                    attachment.data.targetTurnId === input.activeTurnId)
         );
     const reportItems = journal.projectionReports.flatMap((report) => report.items);
     return attachments.map((attachment) => {

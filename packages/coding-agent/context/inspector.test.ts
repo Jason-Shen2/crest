@@ -3,6 +3,11 @@
 
 import { describe, expect, it } from "vitest";
 
+import { createTransactionManifestData } from "@crest/agent/harness/session/entry-transaction";
+import { buildSessionContext } from "@crest/agent/harness/session/session";
+import type { SessionTreeEntry } from "@crest/agent/harness/types";
+import type { AgentMessage, AgentTool } from "@crest/agent/types";
+import { appendHistoricalReference, renderHistoricalReference } from "./history";
 import {
     buildContextInventory,
     buildContextSnapshot,
@@ -10,11 +15,6 @@ import {
     reconcileContextAttribution,
 } from "./inspector";
 import type { BuildContextSnapshotInput, ContextSnapshotItem } from "./inspector-types";
-import { buildSessionContext } from "@crest/agent/harness/session/session";
-import { createTransactionManifestData } from "@crest/agent/harness/session/entry-transaction";
-import type { SessionTreeEntry } from "@crest/agent/harness/types";
-import type { AgentMessage } from "@crest/agent/types";
-import { appendHistoricalReference, renderHistoricalReference } from "./history";
 import { ContextCustomTypes } from "./journal";
 
 const GeneratedAt = "2026-08-01T00:00:00.000Z";
@@ -150,6 +150,18 @@ describe("Context Inspector snapshot", () => {
         expect(waiting).toMatchObject({ lifecycle: "waiting_for_tool", diagnostic: "Waiting for tool result" });
         expect(snapshot).toMatchObject({ lifecycle: "ready", diagnostic: undefined });
     });
+
+    it("does not share mutable model content with the inventory input", () => {
+        const content = { role: "user", content: [{ type: "text", text: "Original" }] };
+        const snapshot = buildContextSnapshot(fixture({ items: [item({ content } as Partial<ContextSnapshotItem>)] }));
+
+        content.content[0]!.text = "Mutated";
+
+        expect(snapshot.items[0]?.content).toEqual({
+            role: "user",
+            content: [{ type: "text", text: "Original" }],
+        });
+    });
 });
 
 function entry(id: string, parentId: string | null, message: Record<string, unknown>): SessionTreeEntry {
@@ -181,6 +193,51 @@ function customEntry(
 }
 
 describe("Context Inspector semantic inventory", () => {
+    it("keeps exact instruction text and complete model tool definitions", () => {
+        const instructionText = "Follow this exact instruction.\n\nPreserve spacing and punctuation: !";
+        const parameters = {
+            type: "object",
+            properties: {
+                path: { type: "string", description: "Absolute file path" },
+            },
+            required: ["path"],
+        };
+        const items = buildContextInventory({
+            entries: [],
+            context: {
+                messages: [],
+                messageEntryIds: [],
+                thinkingLevel: "off",
+                model: null,
+            },
+            tools: [
+                {
+                    name: "read",
+                    description: "Read a file from disk.",
+                    parameters,
+                } as unknown as AgentTool,
+            ],
+            systemPromptManifest: {
+                text: instructionText,
+                segments: [
+                    {
+                        id: "base-prompt",
+                        kind: "base_prompt",
+                        title: "Base instructions",
+                        text: instructionText,
+                    },
+                ],
+            },
+        });
+
+        expect(items.find((candidate) => candidate.kind === "base_prompt")?.content).toBe(instructionText);
+        expect(items.find((candidate) => candidate.kind === "tool_definition")?.content).toEqual({
+            name: "read",
+            description: "Read a file from disk.",
+            parameters,
+        });
+    });
+
     it("attributes generated historical reference blocks only to Added context", () => {
         const userMessage = { role: "user", content: [{ type: "text", text: "Use the reference" }] } as AgentMessage;
         const decoratedMessage = appendHistoricalReference(
@@ -213,6 +270,64 @@ describe("Context Inspector semantic inventory", () => {
         );
     });
 
+    it("omits bash executions excluded from provider context", () => {
+        const message = {
+            role: "bashExecution",
+            command: "printf hidden",
+            output: "hidden",
+            exitCode: 0,
+            cancelled: false,
+            truncated: false,
+            timestamp: 1,
+            excludeFromContext: true,
+        } as AgentMessage;
+
+        const items = buildContextInventory({
+            entries: [],
+            context: {
+                messages: [message],
+                messageEntryIds: ["bash-hidden"],
+                thinkingLevel: "off",
+                model: null,
+            },
+            tools: [],
+        });
+
+        expect(items).toEqual([]);
+    });
+
+    it("keeps the exact provider-visible text for included bash executions", () => {
+        const message = {
+            role: "bashExecution",
+            command: "printf visible",
+            output: "visible",
+            exitCode: 0,
+            cancelled: false,
+            truncated: false,
+            timestamp: 1,
+        } as AgentMessage;
+
+        const items = buildContextInventory({
+            entries: [],
+            context: {
+                messages: [message],
+                messageEntryIds: ["bash-visible"],
+                thinkingLevel: "off",
+                model: null,
+            },
+            tools: [],
+        });
+
+        const messageItem = items
+            .flatMap((candidate) => candidate.children ?? [])
+            .find((candidate) => candidate.id === "message:bash-visible");
+
+        expect(messageItem?.content).toEqual({
+            role: "user",
+            content: [{ type: "text", text: "Ran `printf visible`\n```\nvisible\n```" }],
+        });
+    });
+
     it("groups a complete conversation turn and pairs tool calls with their results", () => {
         const entries = [
             entry("user-1", null, { role: "user", content: [{ type: "text", text: "Read package.json" }] }),
@@ -236,7 +351,10 @@ describe("Context Inspector semantic inventory", () => {
         const items = buildContextInventory({ entries, context: buildSessionContext(entries), tools: [] });
         const turn = items.find((candidate) => candidate.kind === "turn");
 
-        expect(turn).toMatchObject({ id: "turn:user-1", source: { entryIds: ["user-1", "assistant-1", "result-1", "assistant-2"] } });
+        expect(turn).toMatchObject({
+            id: "turn:user-1",
+            source: { entryIds: ["user-1", "assistant-1", "result-1", "assistant-2"] },
+        });
         expect(turn?.children?.map((child) => child.kind)).toEqual([
             "user_message",
             "tool_call",
@@ -247,6 +365,21 @@ describe("Context Inspector semantic inventory", () => {
             toolCallId: "call-1",
             pairedResultEntryId: "result-1",
         });
+        expect(turn?.children?.map((child) => child.content)).toEqual([
+            { role: "user", content: [{ type: "text", text: "Read package.json" }] },
+            {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "package.json" } }],
+            },
+            {
+                role: "toolResult",
+                toolCallId: "call-1",
+                toolName: "read",
+                content: [{ type: "text", text: "package contents" }],
+                isError: false,
+            },
+            { role: "assistant", content: [{ type: "text", text: "The package is valid." }] },
+        ]);
     });
 
     it("replaces covered turns with a compaction summary item", () => {
@@ -254,7 +387,10 @@ describe("Context Inspector semantic inventory", () => {
             entry("user-old", null, { role: "user", content: [{ type: "text", text: "Old question" }] }),
             entry("assistant-old", "user-old", { role: "assistant", content: [{ type: "text", text: "Old answer" }] }),
             entry("user-kept", "assistant-old", { role: "user", content: [{ type: "text", text: "Kept question" }] }),
-            entry("assistant-kept", "user-kept", { role: "assistant", content: [{ type: "text", text: "Kept answer" }] }),
+            entry("assistant-kept", "user-kept", {
+                role: "assistant",
+                content: [{ type: "text", text: "Kept answer" }],
+            }),
         ];
         const compaction = {
             type: "compaction",
@@ -274,6 +410,15 @@ describe("Context Inspector semantic inventory", () => {
         ]);
         expect(items.find((candidate) => candidate.kind === "compaction_summary")).toMatchObject({
             id: "compaction:compact-1",
+            content: {
+                role: "user",
+                content: [
+                    {
+                        type: "text",
+                        text: "The conversation history before this point was compacted into the following summary:\n\n<summary>\nOld summarized history\n</summary>",
+                    },
+                ],
+            },
             source: { coveredEntryIds: ["user-old", "assistant-old"] },
         });
     });
@@ -298,6 +443,15 @@ describe("Context Inspector semantic inventory", () => {
         expect(items.find((candidate) => candidate.kind === "branch_summary")).toMatchObject({
             id: "branch-summary:branch-summary-1",
             preview: "The abandoned branch investigated an alternate parser.",
+            content: {
+                role: "user",
+                content: [
+                    {
+                        type: "text",
+                        text: "The following is a summary of a branch that this conversation came back from:\n\n<summary>\nThe abandoned branch investigated an alternate parser.</summary>",
+                    },
+                ],
+            },
             source: { entryIds: ["branch-summary-1"] },
         });
     });
@@ -377,6 +531,10 @@ describe("Context Inspector semantic inventory", () => {
             expect.objectContaining({ id: "context:message-attach", kind: "context_reference" }),
             expect.objectContaining({ id: "context:conversation-attach", kind: "context_reference" }),
         ]);
+        for (const contextItem of items.filter((candidate) => candidate.category === "added_context")) {
+            expect(contextItem.content).toBeUndefined();
+            expect(contextItem.preview).toBe("Referenced source");
+        }
     });
 
     it("keeps a malformed attachment visible without inventing token attribution", () => {

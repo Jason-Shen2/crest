@@ -697,6 +697,7 @@ declare global {
         kind: string;
         title: string;
         preview: string;
+        content?: unknown;
         tokens?: number;
         tokenAccuracy: "estimated" | "unavailable";
         source: {
