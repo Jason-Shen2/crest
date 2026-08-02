@@ -33,10 +33,16 @@ Below the `sm` breakpoint, use `calc(100vw - 1rem) × calc(100vh - 1rem)` and re
 
 ### Review body
 
-- Give the file list roughly one quarter of the desktop width, with a practical minimum width.
+- Make the desktop file list width adjustable with the same interaction rules as the Code Review Panel:
+  - initial width: `250px`;
+  - minimum width: `160px`;
+  - maximum width: the smaller of `480px` and `60%` of the review body;
+  - a `4px` transparent drag target at the right edge with `cursor-col-resize` and a subtle hover highlight.
+- Keep the resized width local to the mounted dialog controller; do not add settings or persisted workspace state.
 - Let the diff surface consume the remaining space and height.
 - Preserve independent scrolling for the file list and diff body.
 - Retain the approved muted-gray hover/selection treatment; do not introduce blue selection backgrounds.
+- Below the desktop split breakpoint, keep the stacked layout and do not render the horizontal resize handle.
 
 ## File Icon Consistency
 
@@ -54,6 +60,7 @@ No new icon mapping or duplicate icon component will be introduced.
 ## Component Boundaries
 
 - `DiffReviewDialog` owns only its magnified modal sizing and split-pane presentation.
+- A small file-pane unit inside `DiffReviewDialog` owns the local resize state and drag listeners, mirroring Code Review Panel behavior.
 - `FileCard` owns the shared diff-header file icon.
 - `DiffViewer` continues to parse and render patches without dialog-specific knowledge.
 - The shared shadcn `DialogContent` remains unchanged.
@@ -65,9 +72,11 @@ Renderer tests will lock down:
 1. the dialog shell has no outer border and uses the magnified viewport sizing;
 2. the internal header/footer/file-pane separators remain present;
 3. the file pane retains muted-gray hover and selection styles;
-4. `FileCard` calls `getFileIcon()` with the basename and renders the resolved icon instead of an extension badge;
-5. `showIcon={false}` still suppresses the icon;
-6. existing selection, keyboard navigation, conflict, warning, and footer behavior remains unchanged.
+4. dragging the divider clamps the pane to `160px`, `480px`, and `60%` of the available body width;
+5. the divider is absent in the stacked narrow-screen layout and exposes an accessible resize label on desktop;
+6. `FileCard` calls `getFileIcon()` with the basename and renders the resolved icon instead of an extension badge;
+7. `showIcon={false}` still suppresses the icon;
+8. existing selection, keyboard navigation, conflict, warning, and footer behavior remains unchanged.
 
 Focused visual regression tests will cover `DiffReviewDialog`, `DiffViewer`, and `FileCard` consumers.
 
@@ -76,5 +85,6 @@ Focused visual regression tests will cover `DiffReviewDialog`, `DiffViewer`, and
 - changing diff colors, syntax highlighting, or patch semantics;
 - creating a dedicated full-screen route;
 - adding a magnify toggle;
+- persisting the file-pane width across application launches;
 - changing global dialog styling;
 - redesigning Undo, Redo, Force, or Review behavior.
