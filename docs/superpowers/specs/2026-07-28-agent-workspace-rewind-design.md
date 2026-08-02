@@ -732,6 +732,15 @@ Applying:
 8. Remove the blocking journal, then remove the operation ref; keep the
    session-owned checkpoint/state refs.
 
+The step-7 state rebuild receives the exact operation ID and ignores only that
+operation's `completed` journal while calculating the published `frozen`
+flag. This is a publication-scoped view, not a journal deletion or a general
+recovery exemption: unfinished, corrupt, frozen, and unrelated journals still
+freeze the workspace. Ordinary recovery queries also continue to see the
+completed journal. If broadcast fails, the journal remains authoritative and
+the next normal probe exposes it for recovery; cleanup still happens only
+after a successful broadcast.
+
 If file application, verification, or conversation commit fails, the
 coordinator runs the same per-path classifier used for crash recovery. It
 automatically restores a path only when its live state still equals that

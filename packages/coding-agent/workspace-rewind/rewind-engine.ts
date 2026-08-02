@@ -118,7 +118,7 @@ export interface WorkspaceRewindEngineOptions {
     verifyPath?: VerifyPath;
     createOperationId?: () => string;
     now?: () => Date;
-    onCommitted?: (sessionId: string) => Promise<void>;
+    onCommitted?: (sessionId: string, operationId: string) => Promise<void>;
 }
 
 interface PlannedRestore {

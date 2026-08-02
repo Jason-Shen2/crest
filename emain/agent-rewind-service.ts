@@ -48,7 +48,7 @@ export type ResolveAgentRewindWorkspaceInput =
           mode: "mutation";
           sessionMetadata: JsonlSessionMetadata;
           lease: RetainedSessionMutationLease<AgentSessionRuntime>;
-          publishState(): Promise<void>;
+          publishState(operationId: string): Promise<void>;
       };
 
 export interface AgentRewindServiceOptions {
@@ -330,8 +330,10 @@ export class AgentRewindService {
             sessionMetadata.path,
             { rejectIfRunning: true },
             async (lease) => {
-                const publishState = async () => {
-                    await this.broadcaster.publishForLease(lease, sessionMetadata);
+                const publishState = async (operationId: string) => {
+                    await this.broadcaster.publishForLease(lease, sessionMetadata, {
+                        ignoreCompletedOperationId: operationId,
+                    });
                 };
                 const resolved = await this.resolveWorkspace({
                     mode: "mutation",

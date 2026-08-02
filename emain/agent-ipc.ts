@@ -70,6 +70,7 @@ import {
     buildContextStateFromSessionEntries,
     buildPersistedTurnsFromSessionEntries,
     type AgentExecutionConfig,
+    type AgentRewindStateRefreshOptions,
     type AgentSessionRuntimeStatus,
     type AgentTurn,
     type AgentWorkspaceRewindState,
@@ -442,12 +443,12 @@ export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): Agen
     return {
         ...base,
         getFrozenDiagnostic: (workspace) => frozen.get(workspaceKey(workspace)),
-        probeFrozenDiagnostic: async (workspace) => {
+        probeFrozenDiagnostic: async (workspace, options) => {
             const startup = frozen.get(workspaceKey(workspace));
             if (startup) return startup;
             const recovery = recoveries.get(workspaceKey(workspace));
             if (!recovery) return undefined;
-            const state = await recovery.getRecoveryState(workspace);
+            const state = await recovery.getRecoveryState(workspace, options);
             return state
                 ? {
                       operationId: state.operationId,
@@ -1372,12 +1373,12 @@ async function createAgentRuntimeFromSession(
         }
         const seed = await piSession.buildContext();
         const initialEntries = await piSession.getBranch();
-        const buildRewindState = async () => {
+        const buildRewindState = async (refreshOptions: AgentRewindStateRefreshOptions = {}) => {
             const entries = await piSession.getEntries();
             const recoveryGate = getAgentWorkspaceRecoveryGate();
             const frozenDiagnostic =
                 rewindFeature.state === "enabled"
-                    ? ((await recoveryGate.probeFrozenDiagnostic?.(rewindFeature.store.identity)) ??
+                    ? ((await recoveryGate.probeFrozenDiagnostic?.(rewindFeature.store.identity, refreshOptions)) ??
                       recoveryGate.getFrozenDiagnostic?.(rewindFeature.store.identity))
                     : undefined;
             if (rewindFeature.state !== "enabled") {
@@ -1715,7 +1716,8 @@ function makeFallbackSubscriptionAuthorization(beforeMutation?: AuthorizationGua
 
 async function buildColdRewindState(
     metadata: JsonlSessionMetadata,
-    entries: import("@crest/agent/harness/types").SessionTreeEntry[]
+    entries: import("@crest/agent/harness/types").SessionTreeEntry[],
+    refreshOptions: AgentRewindStateRefreshOptions = {}
 ) {
     const { getWaveDataDir } = await import("./emain-platform");
     const feature = await openAgentRewindFeature({
@@ -1725,7 +1727,7 @@ async function buildColdRewindState(
     const recoveryGate = getAgentWorkspaceRecoveryGate();
     const frozenDiagnostic =
         feature.state === "enabled"
-            ? ((await recoveryGate.probeFrozenDiagnostic?.(feature.store.identity)) ??
+            ? ((await recoveryGate.probeFrozenDiagnostic?.(feature.store.identity, refreshOptions)) ??
               recoveryGate.getFrozenDiagnostic?.(feature.store.identity))
             : undefined;
     return await buildAgentRewindSessionStateView(entries, metadata.id, {
@@ -3464,7 +3466,12 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                 journal,
                 recovery,
                 confirmations,
-                ...(input.mode === "mutation" ? { onCommitted: async () => await input.publishState() } : {}),
+                ...(input.mode === "mutation"
+                    ? {
+                          onCommitted: async (_sessionId: string, operationId: string) =>
+                              await input.publishState(operationId),
+                      }
+                    : {}),
             });
             return { workspace: feature.store.identity, store: feature.store, engine };
         },

@@ -144,7 +144,7 @@ function harness() {
         forceRequired: false,
         hardBlocked: false,
     };
-    let publishState: (() => Promise<void>) | undefined;
+    let publishState: ((operationId: string) => Promise<void>) | undefined;
     const engine = {
         getTurnChangeSummary: vi.fn(async () => ({
             turnId: "turn-1",
@@ -195,7 +195,7 @@ function harness() {
         }),
         applyRewind: vi.fn(async () => {
             order.push("engine-apply");
-            await publishState?.();
+            await publishState?.("operation-1");
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "operation-leaf",
@@ -205,7 +205,7 @@ function harness() {
         }),
         applyRedo: vi.fn(async () => {
             order.push("engine-redo");
-            await publishState?.();
+            await publishState?.("operation-1");
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "redo-leaf",
@@ -214,7 +214,7 @@ function harness() {
         }),
         applyTurnUndo: vi.fn(async () => {
             order.push("engine-turn-undo");
-            await publishState?.();
+            await publishState?.("operation-1");
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "turn-undo-leaf",
@@ -223,7 +223,7 @@ function harness() {
         }),
         applyTurnRedo: vi.fn(async () => {
             order.push("engine-turn-redo");
-            await publishState?.();
+            await publishState?.("operation-1");
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "turn-redo-leaf",
@@ -332,6 +332,9 @@ describe("AgentRewindService", () => {
             "release-session-lease",
         ]);
         expect(value.broadcaster.publishForLease).toHaveBeenCalledOnce();
+        expect(value.broadcaster.publishForLease).toHaveBeenCalledWith(expect.any(Object), Metadata, {
+            ignoreCompletedOperationId: "operation-1",
+        });
         expect(value.session.close).toHaveBeenCalledOnce();
     });
 

@@ -25,12 +25,19 @@ export interface AgentWorkspaceFrozenDiagnostic {
     source?: AgentWorkspaceFrozenDiagnosticSource;
 }
 
+export interface AgentWorkspaceRecoveryProbeOptions {
+    ignoreCompletedOperationId?: string;
+}
+
 export interface AgentWorkspaceRecoveryGate {
     scanBeforeIpcRegistration(): Promise<void>;
     ensureRecoveredOnce(workspace: CanonicalWorkspaceIdentity): Promise<void>;
     assertWorkspaceWritable(workspace: CanonicalWorkspaceIdentity): Promise<void>;
     getFrozenDiagnostic?(workspace: CanonicalWorkspaceIdentity): AgentWorkspaceFrozenDiagnostic | undefined;
-    probeFrozenDiagnostic?(workspace: CanonicalWorkspaceIdentity): Promise<AgentWorkspaceFrozenDiagnostic | undefined>;
+    probeFrozenDiagnostic?(
+        workspace: CanonicalWorkspaceIdentity,
+        options?: AgentWorkspaceRecoveryProbeOptions
+    ): Promise<AgentWorkspaceFrozenDiagnostic | undefined>;
     resolveFrozenDiagnostic?(
         workspace: CanonicalWorkspaceIdentity,
         operationId: string,

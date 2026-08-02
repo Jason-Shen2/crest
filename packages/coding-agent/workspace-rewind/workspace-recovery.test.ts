@@ -194,6 +194,37 @@ describe("workspace recovery", () => {
         expect(classifyWorkspaceRecoveryPath("unknown", pre, target)).toBe("unknown");
     });
 
+    it("omits only the matching completed journal from an authoritative success publication", async () => {
+        const value = await fixture({ phase: "completed", live: "unknown", leaf: "operation-leaf" });
+        value.input.live = value.states.target;
+
+        await expect(value.recovery.getRecoveryState(value.recovery.workspace)).resolves.toMatchObject({
+            operationId: "operation-1",
+            phase: "completed",
+        });
+        await expect(
+            value.recovery.getRecoveryState(value.recovery.workspace, {
+                ignoreCompletedOperationId: "operation-1",
+            })
+        ).resolves.toBeUndefined();
+        await expect(
+            value.recovery.getRecoveryState(value.recovery.workspace, {
+                ignoreCompletedOperationId: "different-operation",
+            })
+        ).resolves.toMatchObject({ operationId: "operation-1" });
+        await expect(value.durable.read("operation-1")).resolves.toMatchObject({ phase: "completed" });
+    });
+
+    it("never omits an unfinished journal from recovery diagnostics", async () => {
+        const value = await fixture({ phase: "committing_session", live: "unknown", leaf: "operation-leaf" });
+
+        await expect(
+            value.recovery.getRecoveryState(value.recovery.workspace, {
+                ignoreCompletedOperationId: "operation-1",
+            })
+        ).resolves.toMatchObject({ operationId: "operation-1", phase: "committing_session" });
+    });
+
     it("discards prepared only when every path is exact pre", async () => {
         const safe = await fixture({ phase: "prepared", live: "unknown" });
         safe.input.live = safe.states.pre;

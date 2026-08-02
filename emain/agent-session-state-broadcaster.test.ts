@@ -114,12 +114,14 @@ function runtimeState(): AgentSessionRuntimeState {
 
 class FakeRuntime {
     readonly state = runtimeState();
-    readonly refreshFromPersistedBranch = vi.fn(async (options?: { discardCompletedPtyHistory?: boolean }) => {
-        if (options?.discardCompletedPtyHistory) {
-            this.state.commands = [];
+    readonly refreshFromPersistedBranch = vi.fn(
+        async (options?: { discardCompletedPtyHistory?: boolean; ignoreCompletedOperationId?: string }) => {
+            if (options?.discardCompletedPtyHistory) {
+                this.state.commands = [];
+            }
+            return this.state;
         }
-        return this.state;
-    });
+    );
     readonly dispose = vi.fn(async () => {});
     readonly listenerIdentity = {};
 
@@ -145,12 +147,16 @@ describe("AgentSessionStateBroadcaster", () => {
         const state = await registry.withRetainedSessionMutation(
             liveMetadata.path,
             { rejectIfRunning: true },
-            (lease) => broadcaster.publishForLease(lease as never, liveMetadata)
+            (lease) =>
+                broadcaster.publishForLease(lease as never, liveMetadata, {
+                    ignoreCompletedOperationId: "operation-1",
+                })
         );
 
         expect(state).toMatchObject({ type: "session_state", status: "idle" });
         expect(runtime.refreshFromPersistedBranch).toHaveBeenCalledWith({
             discardCompletedPtyHistory: true,
+            ignoreCompletedOperationId: "operation-1",
         });
         expect(runtime.dispose).not.toHaveBeenCalled();
         expect(registry.get(liveMetadata.path)).toBe(runtime);
@@ -216,10 +222,15 @@ describe("AgentSessionStateBroadcaster", () => {
         const state = await registry.withRetainedSessionMutation(
             coldMetadata.path,
             { rejectIfRunning: true },
-            (lease) => broadcaster.publishForLease(lease as never, coldMetadata)
+            (lease) =>
+                broadcaster.publishForLease(lease as never, coldMetadata, {
+                    ignoreCompletedOperationId: "operation-1",
+                })
         );
 
-        expect(buildRewindState).toHaveBeenCalledOnce();
+        expect(buildRewindState).toHaveBeenCalledWith(coldMetadata, persistedBranch(), {
+            ignoreCompletedOperationId: "operation-1",
+        });
         expect(state.rewindState).toEqual(rewindState);
     });
 

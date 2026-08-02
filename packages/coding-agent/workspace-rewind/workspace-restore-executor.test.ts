@@ -125,6 +125,7 @@ function harness() {
     };
     const applyPath = vi.fn();
     const verifyPath = vi.fn();
+    const onCommitted = vi.fn(async () => {});
     const executor = new WorkspaceRestoreExecutor({
         store: store as never,
         journal: journal as never,
@@ -134,8 +135,19 @@ function harness() {
         verifyPath,
         createOperationId: () => "operation-1",
         now: () => new Date(1),
+        onCommitted,
     });
-    return { executor, store, journal, recovery, applyPath, verifyPath, durableOrder, record: () => record! };
+    return {
+        executor,
+        store,
+        journal,
+        recovery,
+        applyPath,
+        verifyPath,
+        onCommitted,
+        durableOrder,
+        record: () => record!,
+    };
 }
 
 function strategy(): WorkspaceRestoreCommitStrategy {
@@ -187,6 +199,7 @@ describe("WorkspaceRestoreExecutor", () => {
         ]);
         expect(value.applyPath).not.toHaveBeenCalled();
         expect(value.verifyPath).not.toHaveBeenCalled();
+        expect(value.onCommitted).toHaveBeenCalledWith("session-1", "operation-1");
         expect(value.record()).toMatchObject({ target, commitParentId: "current-leaf" });
         expect(value.record()).not.toHaveProperty("kind");
         expect(value.record()).not.toHaveProperty("targetTurnId");

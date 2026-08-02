@@ -43,7 +43,7 @@ export interface WorkspaceRestoreExecutorOptions {
     verifyPath?: VerifyPath;
     createOperationId?: () => string;
     now?: () => Date;
-    onCommitted?: (sessionId: string) => Promise<void>;
+    onCommitted?: (sessionId: string, operationId: string) => Promise<void>;
 }
 
 export interface ExecuteWorkspaceRestoreInput {
@@ -282,7 +282,7 @@ export class WorkspaceRestoreExecutor {
             record = await this.transition(operationId, "completed", {});
             completed = true;
             await assertCurrent();
-            await this.onCommitted(input.plan.sessionId);
+            await this.onCommitted(input.plan.sessionId, operationId);
             await this.completeCleanup(operationId);
             return this.makeResult(input, sessionMetadata);
         } catch (error) {

@@ -97,7 +97,10 @@ export interface AgentSessionRuntimeState {
 
 export interface AgentSessionRefreshOptions {
     discardCompletedPtyHistory?: boolean;
+    ignoreCompletedOperationId?: string;
 }
+
+export type AgentRewindStateRefreshOptions = Pick<AgentSessionRefreshOptions, "ignoreCompletedOperationId">;
 
 export type AgentSessionRuntimeListener = (event: AgentHarnessEvent) => void;
 export type AgentTurnFinishedHook = (turn: AgentTurn) => void | Promise<void>;
@@ -122,7 +125,7 @@ export interface AgentSessionRuntimeOptions {
     checkpointManager?: WorkspaceCheckpointManager;
     workspaceRewind?: AgentWorkspaceRewindState;
     initialRewindState?: AgentRewindSessionStateView;
-    buildRewindState?: () => Promise<AgentRewindSessionStateView>;
+    buildRewindState?: (options?: AgentRewindStateRefreshOptions) => Promise<AgentRewindSessionStateView>;
     assertWorkspaceWritable?: () => Promise<void>;
 }
 
@@ -241,7 +244,9 @@ export class AgentSessionRuntime {
     checkpointManager: WorkspaceCheckpointManager | undefined;
     workspaceRewind: AgentWorkspaceRewindState;
     rewindState?: AgentRewindSessionStateView;
-    private readonly buildRewindState?: () => Promise<AgentRewindSessionStateView>;
+    private readonly buildRewindState?: (
+        options?: AgentRewindStateRefreshOptions
+    ) => Promise<AgentRewindSessionStateView>;
     assertWorkspaceWritable: () => Promise<void>;
     private permissionsToolCallHook: ToolCallHook | undefined;
     private promptDispatch: Promise<void> | undefined;
@@ -630,7 +635,11 @@ export class AgentSessionRuntime {
 
     async refreshFromPersistedBranch(options: AgentSessionRefreshOptions = {}): Promise<AgentSessionRuntimeState> {
         await this.rebuildFromCurrentBranch();
-        await this.refreshRewindState();
+        await this.refreshRewindState(
+            options.ignoreCompletedOperationId == null
+                ? {}
+                : { ignoreCompletedOperationId: options.ignoreCompletedOperationId }
+        );
         if (options.discardCompletedPtyHistory) {
             this.ptyHost.clearCompletedHistory();
         }
@@ -661,9 +670,9 @@ export class AgentSessionRuntime {
         }
     }
 
-    private async refreshRewindState(): Promise<void> {
+    private async refreshRewindState(options: AgentRewindStateRefreshOptions = {}): Promise<void> {
         if (this.buildRewindState) {
-            this.rewindState = await this.buildRewindState();
+            this.rewindState = await this.buildRewindState(options);
         }
     }
 

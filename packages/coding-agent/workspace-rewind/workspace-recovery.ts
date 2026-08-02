@@ -31,10 +31,17 @@ export interface WorkspaceRecoveryView {
     allowedActions: Array<"retry" | "abandon-current" | "quarantine-corrupt">;
 }
 
+export interface WorkspaceRecoveryStateOptions {
+    ignoreCompletedOperationId?: string;
+}
+
 export interface WorkspaceRecoveryCoordinator {
     scanKnownJournals(): Promise<void>;
     ensureRecovered(workspace: CanonicalWorkspaceIdentity): Promise<void>;
-    getRecoveryState(workspace: CanonicalWorkspaceIdentity): Promise<WorkspaceRecoveryView | undefined>;
+    getRecoveryState(
+        workspace: CanonicalWorkspaceIdentity,
+        options?: WorkspaceRecoveryStateOptions
+    ): Promise<WorkspaceRecoveryView | undefined>;
     retry(operationId: string, assertCurrent?: WorkspaceRecoveryMutationGuard): Promise<void>;
     abandonKeepingCurrent(
         operationId: string,
@@ -164,16 +171,25 @@ export class WorkspaceRecovery implements WorkspaceRecoveryCoordinator {
         await this.recoverAll();
     }
 
-    async getRecoveryState(workspace: CanonicalWorkspaceIdentity): Promise<WorkspaceRecoveryView | undefined> {
+    async getRecoveryState(
+        workspace: CanonicalWorkspaceIdentity,
+        options: WorkspaceRecoveryStateOptions = {}
+    ): Promise<WorkspaceRecoveryView | undefined> {
         this.assertRequestedWorkspace(workspace);
         if (this.frozen) {
             return cloneView(this.frozen);
         }
         const scanned = await this.journal.scan();
-        if (scanned.length === 0) {
+        const candidate = scanned.find(
+            (item) =>
+                item.operationId !== options.ignoreCompletedOperationId ||
+                item.corrupt ||
+                item.record?.phase !== "completed"
+        );
+        if (!candidate) {
             return undefined;
         }
-        return this.viewForScanned(scanned[0]!);
+        return this.viewForScanned(candidate);
     }
 
     retry(operationId: string, assertCurrent?: WorkspaceRecoveryMutationGuard): Promise<void> {
