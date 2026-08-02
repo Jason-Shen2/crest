@@ -21,10 +21,6 @@ const RecoveryActionLabels: Record<AgentResolveWorkspaceRecoveryInput["action"],
     "quarantine-corrupt": "Quarantine corrupt record and keep current",
 };
 
-function recoveryPhaseLabel(phase: AgentWorkspaceRecoveryView["phase"]): string {
-    return phase?.replaceAll("_", " ") ?? "diagnostic";
-}
-
 export function RecoveryDialog({ open, recovery, busy, errorMessage, onAction, onClose }: RecoveryDialogProps) {
     const allowedActions =
         recovery?.allowedActions.filter((action) => action !== "quarantine-corrupt" || recovery.corrupt) ?? [];
@@ -35,7 +31,7 @@ export function RecoveryDialog({ open, recovery, busy, errorMessage, onAction, o
                 <DialogHeader>
                     <DialogTitle>Workspace recovery required</DialogTitle>
                     <DialogDescription>
-                        Agent writes remain frozen until the backend completes or resolves this operation.
+                        Choose how the backend should resolve this interrupted workspace operation.
                     </DialogDescription>
                 </DialogHeader>
 
@@ -50,8 +46,6 @@ export function RecoveryDialog({ open, recovery, busy, errorMessage, onAction, o
                         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
                             <dt className="text-secondary">Operation</dt>
                             <dd className="break-all font-mono">{recovery.operationId}</dd>
-                            <dt className="text-secondary">Phase</dt>
-                            <dd className="capitalize">{recoveryPhaseLabel(recovery.phase)}</dd>
                         </dl>
                         <p className="rounded-xl border border-amber-300/25 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
                             {recovery.message}

@@ -160,11 +160,6 @@ import {
 } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
 import { RewindConfirmationRegistry } from "@crest/coding-agent/workspace-rewind/confirmation-token";
 import { removeDurableFile } from "@crest/coding-agent/workspace-rewind/durability";
-import {
-    decodeWorkspaceOperationJournal,
-    recoveryJournalOperationTokenForFilename,
-    WorkspaceRecoveryJournal,
-} from "@crest/coding-agent/workspace-rewind/recovery-journal";
 import { WorkspaceRewindEngine } from "@crest/coding-agent/workspace-rewind/rewind-engine";
 import { buildAgentRewindSessionStateView } from "@crest/coding-agent/workspace-rewind/session-state";
 import {
@@ -186,9 +181,8 @@ import { createSpawnCliAgentTool } from "./agent-tools/spawn-cli-agent";
 import type { AgentWorkspaceRecoveryGate } from "./agent-workspace-recovery-gate";
 import {
     getAgentWorkspaceRecoveryGate,
+    hasInstalledAgentWorkspaceRecoveryGate,
     makeAgentWorkspaceRecoveryGate,
-    type AgentWorkspaceFrozenDiagnostic,
-    type AgentWorkspaceFrozenDiagnosticSource,
 } from "./agent-workspace-recovery-gate";
 import { getSecret } from "./aiconfig/secrets";
 import { readAIUserConfig } from "./aiconfig/user-config";
@@ -204,53 +198,46 @@ function withRecoverySessionMutation<T>(sessionId: string, operation: () => Prom
     return withSessionIdMutationFence(sessionId, async () => {
         const metadata = await getSessionsRepo().findById(sessionId);
         const mutationKey = metadata?.path ?? `agent-session-id:${sessionId}`;
-        return runtimeRegistry.withRetainedSessionMutation(mutationKey, { rejectIfRunning: true }, operation);
+        return runtimeRegistry.withRetainedSessionMutation(mutationKey, { rejectIfRunning: false }, operation);
     });
 }
 
 export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): AgentWorkspaceRecoveryGate {
-    const recoveries = new Map<string, WorkspaceRecovery>();
-    const frozen = new Map<string, AgentWorkspaceFrozenDiagnostic>();
-    const rescanRoots = new Map<string, string>();
+    const features = new Map<string, Promise<Extract<AgentRewindFeature, { state: "enabled" }>>>();
     const workspaceKey = (workspace: { workspaceIdentity: string; workspaceIncarnation: string }) =>
         `${workspace.workspaceIdentity}\0${workspace.workspaceIncarnation}`;
-    const freeze = (
-        identity: { workspaceIdentity: string; workspaceIncarnation: string },
-        operationId: string,
-        message: string,
-        corrupt = true,
-        allowedActions: AgentWorkspaceFrozenDiagnostic["allowedActions"] = ["quarantine-corrupt"],
-        source?: AgentWorkspaceFrozenDiagnosticSource
-    ) => {
-        frozen.set(`${identity.workspaceIdentity}\0${identity.workspaceIncarnation}`, {
-            operationId,
-            message,
-            corrupt,
-            allowedActions,
-            source,
-        });
-    };
-    const recoveryFor = async (workspace: CanonicalWorkspaceIdentity): Promise<WorkspaceRecovery> => {
+
+    const featureFor = async (workspace: CanonicalWorkspaceIdentity) => {
         const key = workspaceKey(workspace);
-        const existing = recoveries.get(key);
+        const existing = features.get(key);
         if (existing) return existing;
-        const feature = await openAgentRewindFeature({
+        const loading = openAgentRewindFeature({
             workspaceRoot: workspace.canonicalRoot,
             dataRoot,
+        }).then((feature) => {
+            if (feature.state !== "enabled") {
+                throw new Error(feature.state === "unavailable" ? feature.message : "Workspace rewind is unavailable");
+            }
+            if (workspaceKey(feature.store.identity) !== key) {
+                throw new Error("Workspace identity changed while opening recovery storage");
+            }
+            return feature;
         });
-        if (feature.state !== "enabled") {
-            throw new Error(feature.state === "unavailable" ? feature.message : "Workspace rewind is unavailable");
-        }
-        if (workspaceKey(feature.store.identity) !== key) {
-            throw new Error("Workspace identity changed while opening recovery storage");
-        }
-        const recovery = new WorkspaceRecovery({
+        features.set(key, loading);
+        return await loading.catch((error) => {
+            features.delete(key);
+            throw error;
+        });
+    };
+
+    const recoveryFor = async (workspace: CanonicalWorkspaceIdentity, assertCurrent = async () => {}) => {
+        const feature = await featureFor(workspace);
+        return new WorkspaceRecovery({
             workspace,
             store: feature.store,
-            journal: new WorkspaceRecoveryJournal(feature.store),
-            locateSession: async (sessionId) => {
+            locateSession: async (sessionId, sessionPath) => {
                 const metadata = await getSessionsRepo().findById(sessionId);
-                if (!metadata) return undefined;
+                if (!metadata || metadata.path !== sessionPath) return undefined;
                 return {
                     async getLeafId() {
                         const session = await openPaneSessionByPath(metadata.path);
@@ -271,308 +258,25 @@ export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): Agen
                 };
             },
             withSessionLease: withRecoverySessionMutation,
+            assertCurrent,
         });
-        recoveries.set(key, recovery);
-        return recovery;
     };
-    const scanKnownJournals = async () => {
-        const sessions = await getSessionsRepo().scanAllMetadata();
-        const sessionsById = new Map(sessions.map((metadata) => [metadata.id, metadata]));
-        const workspacesRoot = path.join(dataRoot, "agent-checkpoints", "workspaces");
-        const workspaceDirs = await fs.readdir(workspacesRoot, { withFileTypes: true }).catch((error) => {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-            throw error;
-        });
-        const identities = new Map<string, CanonicalWorkspaceIdentity>();
-        for (const dirent of workspaceDirs) {
-            const match = /^([0-9a-f]{64})-([0-9a-f]{64})$/.exec(dirent.name);
-            if (!dirent.isDirectory() || !match) continue;
-            const identityParts = { workspaceIdentity: match[1]!, workspaceIncarnation: match[2]! };
-            const restoresRoot = path.join(workspacesRoot, dirent.name, "repo.git", "journal", "restores");
-            const files = await fs.readdir(restoresRoot).catch((error) => {
-                if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-                const operationId = `scan-${createHash("sha256").update(restoresRoot).digest("hex").slice(0, 24)}`;
-                freeze(
-                    identityParts,
-                    operationId,
-                    "Unable to scan startup workspace recovery journals",
-                    false,
-                    ["retry"],
-                    { kind: "process-scan" }
-                );
-                rescanRoots.set(workspaceKey(identityParts), restoresRoot);
-                return [];
-            });
-            for (const filename of files.sort()) {
-                const operationId = recoveryJournalOperationTokenForFilename(filename);
-                let value: unknown;
-                try {
-                    value = JSON.parse(await fs.readFile(path.join(restoresRoot, filename), "utf8"));
-                } catch {
-                    freeze(
-                        identityParts,
-                        operationId,
-                        `Corrupt startup recovery journal: ${filename}`,
-                        true,
-                        ["quarantine-corrupt"],
-                        { kind: "startup-corrupt", filename }
-                    );
-                    continue;
-                }
-                const record = decodeWorkspaceOperationJournal(value);
-                if (
-                    !record ||
-                    record.operationId !== operationId ||
-                    record.workspaceIdentity !== identityParts.workspaceIdentity ||
-                    record.workspaceIncarnation !== identityParts.workspaceIncarnation
-                ) {
-                    freeze(
-                        identityParts,
-                        operationId,
-                        `Invalid startup recovery journal: ${filename}`,
-                        true,
-                        ["quarantine-corrupt"],
-                        { kind: "startup-corrupt", filename }
-                    );
-                    continue;
-                }
-                const metadata = sessionsById.get(record.sessionId);
-                if (!metadata) {
-                    freeze(
-                        identityParts,
-                        operationId,
-                        `Recovery owner session is missing: ${record.sessionId}`,
-                        false,
-                        ["retry", "abandon-current"],
-                        { kind: "startup-orphan", reason: "missing-owner", sessionId: record.sessionId }
-                    );
-                    continue;
-                }
+
+    return makeAgentWorkspaceRecoveryGate({
+        scanPendingWorkspaces: async () => {
+            const identities = new Map<string, CanonicalWorkspaceIdentity>();
+            for (const metadata of await getSessionsRepo().scanAllMetadata()) {
                 try {
                     const identity = await resolveCanonicalWorkspaceIdentity(metadata.cwd);
-                    if (workspaceKey(identity) !== workspaceKey(identityParts)) {
-                        freeze(
-                            identityParts,
-                            operationId,
-                            `Recovery owner workspace does not match: ${record.sessionId}`,
-                            false,
-                            ["retry", "abandon-current"],
-                            {
-                                kind: "startup-orphan",
-                                reason: "mismatched-workspace",
-                                sessionId: record.sessionId,
-                                ownerPath: metadata.path,
-                                ownerCwd: metadata.cwd,
-                            }
-                        );
-                        continue;
-                    }
                     identities.set(workspaceKey(identity), identity);
-                } catch {
-                    freeze(
-                        identityParts,
-                        operationId,
-                        `Unable to resolve recovery owner workspace: ${record.sessionId}`,
-                        false,
-                        ["retry", "abandon-current"],
-                        {
-                            kind: "startup-orphan",
-                            reason: "unresolvable-workspace",
-                            sessionId: record.sessionId,
-                            ownerPath: metadata.path,
-                            ownerCwd: metadata.cwd,
-                        }
-                    );
+                } catch (error) {
+                    console.error(`[agent-ipc] cannot scan recovery workspace for Session ${metadata.id}:`, error);
                 }
             }
-        }
-        for (const identity of [...identities.values()].sort((a, b) =>
-            workspaceKey(a).localeCompare(workspaceKey(b))
-        )) {
-            const recovery = await recoveryFor(identity);
-            try {
-                await recovery.scanKnownJournals();
-            } catch (error) {
-                const state = await recovery.getRecoveryState(identity).catch(() => undefined);
-                if (state) {
-                    freeze(identity, state.operationId, state.message, state.corrupt, state.allowedActions, {
-                        kind: "internal-recovery",
-                    });
-                } else {
-                    console.error("[agent-ipc] workspace recovery startup scan failed without a journal:", error);
-                }
-            }
-        }
-    };
-    const mirrorRecoveryDiagnostic = async (
-        workspace: CanonicalWorkspaceIdentity,
-        recovery: WorkspaceRecovery
-    ): Promise<void> => {
-        const state = await recovery.getRecoveryState(workspace).catch(() => undefined);
-        if (state) {
-            freeze(workspace, state.operationId, state.message, state.corrupt, state.allowedActions, {
-                kind: "internal-recovery",
-            });
-        }
-    };
-    const base = makeAgentWorkspaceRecoveryGate({
-        scanKnownJournals,
-        ensureRecovered: async (workspace) => {
-            const diagnostic = frozen.get(workspaceKey(workspace));
-            if (diagnostic) throw new Error(diagnostic.message);
-            const recovery = await recoveryFor(workspace);
-            try {
-                await recovery.ensureRecovered(workspace);
-            } catch (error) {
-                await mirrorRecoveryDiagnostic(workspace, recovery);
-                throw error;
-            }
+            return [...identities.values()].sort((a, b) => workspaceKey(a).localeCompare(workspaceKey(b)));
         },
-        assertWorkspaceWritable: async (workspace) => {
-            const diagnostic = frozen.get(workspaceKey(workspace));
-            if (diagnostic) throw new Error(diagnostic.message);
-            const recovery = await recoveryFor(workspace);
-            try {
-                await recovery.assertWorkspaceWritable(workspace);
-            } catch (error) {
-                await mirrorRecoveryDiagnostic(workspace, recovery);
-                throw error;
-            }
-        },
+        recoveryFor,
     });
-    return {
-        ...base,
-        getFrozenDiagnostic: (workspace) => frozen.get(workspaceKey(workspace)),
-        probeFrozenDiagnostic: async (workspace, options) => {
-            const startup = frozen.get(workspaceKey(workspace));
-            if (startup) return startup;
-            const recovery = recoveries.get(workspaceKey(workspace));
-            if (!recovery) return undefined;
-            const state = await recovery.getRecoveryState(workspace, options);
-            return state
-                ? {
-                      operationId: state.operationId,
-                      message: state.message,
-                      corrupt: state.corrupt,
-                      allowedActions: state.allowedActions,
-                      source: { kind: "internal-recovery" },
-                  }
-                : undefined;
-        },
-        resolveFrozenDiagnostic: async (workspace, operationId, action, assertCurrent) => {
-            const key = workspaceKey(workspace);
-            const diagnostic = frozen.get(key);
-            if (diagnostic?.operationId !== operationId) return false;
-            if (!diagnostic.allowedActions.includes(action)) {
-                throw new Error(`Recovery action ${action} is not allowed for ${operationId}`);
-            }
-            if (diagnostic.source?.kind === "process-scan") {
-                const rescanRoot = rescanRoots.get(key);
-                if (!rescanRoot) {
-                    throw new Error(`Process recovery scan binding is missing for ${operationId}`);
-                }
-                if (action !== "retry") {
-                    throw new Error(`Only retry can resolve process diagnostic ${operationId}`);
-                }
-                await assertCurrent();
-                await fs.readdir(rescanRoot);
-                await assertCurrent();
-                rescanRoots.delete(key);
-                frozen.delete(key);
-                return true;
-            }
-            const recovery = await recoveryFor(workspace);
-            if (diagnostic.source?.kind === "internal-recovery") {
-                if (action === "retry") await recovery.retry(operationId, assertCurrent);
-                else if (action === "abandon-current") {
-                    await recovery.abandonKeepingCurrent(operationId, undefined, assertCurrent);
-                } else await recovery.quarantineCorrupt(operationId, assertCurrent);
-                await assertCurrent();
-                frozen.delete(key);
-                return true;
-            }
-            if (diagnostic.source?.kind === "startup-corrupt") {
-                if (action !== "quarantine-corrupt") {
-                    throw new Error(`Only quarantine can resolve corrupt startup diagnostic ${operationId}`);
-                }
-                await recovery.quarantineCorrupt(operationId, assertCurrent);
-                await assertCurrent();
-                frozen.delete(key);
-                return true;
-            }
-            if (diagnostic.source?.kind === "startup-orphan") {
-                if (action === "retry") return false;
-                if (action !== "abandon-current") {
-                    throw new Error(`Only abandon can resolve decoded startup orphan ${operationId}`);
-                }
-                const source = diagnostic.source;
-                await recovery.abandonKeepingCurrent(
-                    operationId,
-                    {
-                        sessionId: source.sessionId,
-                        locateBoundOwner: async () => {
-                            const metadata = await getSessionsRepo().findById(source.sessionId);
-                            if (source.reason === "missing-owner") {
-                                if (metadata) {
-                                    throw new Error(`Startup recovery orphan owner was rebound: ${source.sessionId}`);
-                                }
-                                return undefined;
-                            }
-                            if (!metadata || metadata.path !== source.ownerPath || metadata.cwd !== source.ownerCwd) {
-                                throw new Error(`Startup recovery owner binding changed: ${source.sessionId}`);
-                            }
-                            if (source.reason === "mismatched-workspace") {
-                                const ownerIdentity = await resolveCanonicalWorkspaceIdentity(metadata.cwd);
-                                if (workspaceKey(ownerIdentity) === key) {
-                                    throw new Error(`Startup recovery owner workspace changed: ${source.sessionId}`);
-                                }
-                            } else {
-                                let nowResolvable = false;
-                                try {
-                                    await resolveCanonicalWorkspaceIdentity(metadata.cwd);
-                                    nowResolvable = true;
-                                } catch {}
-                                if (nowResolvable) {
-                                    throw new Error(`Startup recovery owner workspace changed: ${source.sessionId}`);
-                                }
-                            }
-                            return {
-                                async getLeafId() {
-                                    const session = await openPaneSessionByPath(metadata.path);
-                                    try {
-                                        return await session.getLeafId();
-                                    } finally {
-                                        session.close();
-                                    }
-                                },
-                                async getEntry(id) {
-                                    const session = await openPaneSessionByPath(metadata.path);
-                                    try {
-                                        return await session.getEntry(id);
-                                    } finally {
-                                        session.close();
-                                    }
-                                },
-                            };
-                        },
-                    },
-                    assertCurrent
-                );
-                await assertCurrent();
-                frozen.delete(key);
-                return true;
-            }
-            return false;
-        },
-        clearFrozenDiagnostic: async (workspace, operationId) => {
-            const key = workspaceKey(workspace);
-            if (frozen.get(key)?.operationId === operationId) {
-                frozen.delete(key);
-                rescanRoots.delete(key);
-            }
-            recoveries.get(key)?.clearFrozen(operationId);
-        },
-    };
 }
 
 class RegistrySessionMutationBarrier extends SessionMutationBarrier {
@@ -1376,10 +1080,9 @@ async function createAgentRuntimeFromSession(
         const buildRewindState = async (refreshOptions: AgentRewindStateRefreshOptions = {}) => {
             const entries = await piSession.getEntries();
             const recoveryGate = getAgentWorkspaceRecoveryGate();
-            const frozenDiagnostic =
+            const recoveryView =
                 rewindFeature.state === "enabled"
-                    ? ((await recoveryGate.probeFrozenDiagnostic?.(rewindFeature.store.identity, refreshOptions)) ??
-                      recoveryGate.getFrozenDiagnostic?.(rewindFeature.store.identity))
+                    ? await recoveryGate.getRecovery(rewindFeature.store.identity)
                     : undefined;
             if (rewindFeature.state !== "enabled") {
                 return await buildAgentRewindSessionStateView(entries, metadata.id, {
@@ -1398,7 +1101,7 @@ async function createAgentRuntimeFromSession(
             return await buildAgentRewindSessionStateView(entries, metadata.id, {
                 enabled: true,
                 busy: checkpointManager.isBusy(),
-                frozen: frozenDiagnostic != null,
+                frozen: recoveryView != null,
                 verifySnapshot: (snapshot) => rewindFeature.store.verifyOwnedSnapshot(snapshot),
                 getQuota: async () => {
                     if (typeof rewindFeature.store.getQuotaStatus !== "function") {
@@ -1725,15 +1428,12 @@ async function buildColdRewindState(
         dataRoot: getWaveDataDir(),
     });
     const recoveryGate = getAgentWorkspaceRecoveryGate();
-    const frozenDiagnostic =
-        feature.state === "enabled"
-            ? ((await recoveryGate.probeFrozenDiagnostic?.(feature.store.identity, refreshOptions)) ??
-              recoveryGate.getFrozenDiagnostic?.(feature.store.identity))
-            : undefined;
+    const recoveryView =
+        feature.state === "enabled" ? await recoveryGate.getRecovery(feature.store.identity) : undefined;
     return await buildAgentRewindSessionStateView(entries, metadata.id, {
         enabled: feature.state === "enabled",
         busy: false,
-        frozen: feature.state === "unavailable" || frozenDiagnostic != null,
+        frozen: feature.state === "unavailable" || recoveryView != null,
         verifySnapshot: async (snapshot) => {
             if (feature.state === "enabled") await feature.store.verifyOwnedSnapshot(snapshot);
         },
@@ -3434,13 +3134,10 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             if (feature.state !== "enabled") {
                 throw new Error(feature.state === "unavailable" ? feature.message : "Workspace rewind is unavailable");
             }
-            const journal = new WorkspaceRecoveryJournal(feature.store);
-            const recovery = new WorkspaceRecovery({
-                workspace: feature.store.identity,
+            const engine = new WorkspaceRewindEngine({
                 store: feature.store,
-                journal,
-                locateSession: async (sessionId) => {
-                    if (sessionId !== sessionMetadata.id) return undefined;
+                locateSession: async (sessionId, sessionPath) => {
+                    if (sessionId !== sessionMetadata.id || sessionPath !== sessionMetadata.path) return undefined;
                     return {
                         async getLeafId() {
                             const session = await openPaneSessionByPath(sessionMetadata.path);
@@ -3460,11 +3157,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                         },
                     };
                 },
-            });
-            const engine = new WorkspaceRewindEngine({
-                store: feature.store,
-                journal,
-                recovery,
+                withSessionLease: withRecoverySessionMutation,
                 confirmations,
                 ...(input.mode === "mutation"
                     ? {
@@ -3566,84 +3259,29 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             digest.digest("hex"),
         ].join(":");
     };
-    const locateRecoverySession = (sessionMetadata: JsonlSessionMetadata) => async (sessionId: string) => {
-        const metadata =
-            sessionId === sessionMetadata.id ? sessionMetadata : await getSessionsRepo().findById(sessionId);
-        if (!metadata) return undefined;
-        return {
-            async getLeafId() {
-                const session = await openPaneSessionByPath(metadata.path);
-                try {
-                    return await session.getLeafId();
-                } finally {
-                    session.close();
-                }
-            },
-            async getEntry(id: string) {
-                const session = await openPaneSessionByPath(metadata.path);
-                try {
-                    return await session.getEntry(id);
-                } finally {
-                    session.close();
-                }
-            },
-        };
-    };
-    const makeRecovery = (
-        metadata: JsonlSessionMetadata,
-        feature: Extract<AgentRewindFeature, { state: "enabled" }>,
-        assertCurrent: () => Promise<void> = async () => {}
-    ) => {
-        const journal = new WorkspaceRecoveryJournal(feature.store);
-        return new WorkspaceRecovery({
-            workspace: feature.store.identity,
-            store: feature.store,
-            journal,
-            locateSession: locateRecoverySession(metadata),
-            withSessionLease: withRecoverySessionMutation,
-            assertCurrent,
-        });
-    };
     const defaultMaintenance: NonNullable<AgentIpcRegistrationOptions["rewindMaintenance"]> = {
         async getRecovery(input) {
             if (!isRecord(input)) throw new Error("agent IPC: recovery input must be an object");
             const metadata = validateSessionMetadataShape(input.sessionMetadata);
-            const feature = await openMaintenanceFeature(metadata);
+            const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
+                metadata.cwd
+            );
             const recoveryGate = options.recoveryGate ?? getAgentWorkspaceRecoveryGate();
-            const startupDiagnostic =
-                (await recoveryGate.probeFrozenDiagnostic?.(feature.store.identity)) ??
-                recoveryGate.getFrozenDiagnostic?.(feature.store.identity);
-            if (startupDiagnostic) {
-                return {
-                    operationId: startupDiagnostic.operationId,
-                    corrupt: startupDiagnostic.corrupt,
-                    message: startupDiagnostic.message,
-                    paths: [],
-                    allowedActions: startupDiagnostic.allowedActions,
-                };
-            }
-            return await makeRecovery(metadata, feature).getRecoveryState(feature.store.identity);
+            return await recoveryGate.getRecovery(workspace);
         },
         async resolveRecovery(input, assertCurrent = async () => {}) {
             if (!isRecord(input)) throw new Error("agent IPC: recovery input must be an object");
             const metadata = validateSessionMetadataShape(input.sessionMetadata);
             const operationId = requireNonEmptyString(input.operationId, "operationId");
-            const feature = await openMaintenanceFeature(metadata);
             const action = input.action;
             if (action !== "retry" && action !== "abandon-current" && action !== "quarantine-corrupt") {
                 throw new Error("agent IPC: invalid recovery action");
             }
+            const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
+                metadata.cwd
+            );
             const recoveryGate = options.recoveryGate ?? getAgentWorkspaceRecoveryGate();
-            if (
-                await recoveryGate.resolveFrozenDiagnostic?.(feature.store.identity, operationId, action, assertCurrent)
-            ) {
-                return;
-            }
-            const recovery = makeRecovery(metadata, feature, assertCurrent);
-            if (action === "retry") await recovery.retry(operationId);
-            else if (action === "abandon-current") await recovery.abandonKeepingCurrent(operationId);
-            else await recovery.quarantineCorrupt(operationId);
-            await recoveryGate.clearFrozenDiagnostic?.(feature.store.identity, operationId);
+            await recoveryGate.resolveRecovery(workspace, operationId, action, assertCurrent);
         },
         async cleanup(input, assertCurrent = async () => {}) {
             if (!isRecord(input)) throw new Error("agent IPC: cleanup input must be an object");
@@ -3786,23 +3424,11 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         };
     };
     const assertWorkspaceWritable = async (authenticated: AuthenticatedWorkspaceAgentSender): Promise<void> => {
-        if (!options.recoveryGate) return;
+        if (!options.recoveryGate && !hasInstalledAgentWorkspaceRecoveryGate()) return;
         const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
             authenticated.workspaceDir
         );
-        await options.recoveryGate.assertWorkspaceWritable(workspace);
-    };
-    const workspaceFrozenDiagnostic = async (
-        authenticated: AuthenticatedWorkspaceAgentSender
-    ): Promise<AgentWorkspaceFrozenDiagnostic | undefined> => {
-        if (!options.recoveryGate) return undefined;
-        const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
-            authenticated.workspaceDir
-        );
-        return (
-            (await options.recoveryGate.probeFrozenDiagnostic?.(workspace)) ??
-            options.recoveryGate.getFrozenDiagnostic?.(workspace)
-        );
+        await (options.recoveryGate ?? getAgentWorkspaceRecoveryGate()).assertWorkspaceWritable(workspace);
     };
     type RewindIpcSchema =
         | "list"
@@ -4209,13 +3835,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         "agent:run-command",
         async (event, requestContext, input: AgentRunCommandInput): Promise<AgentCommandExecutionResult> => {
             const authenticated = await authenticate(event, requestContext);
-            const exportToMessage =
-                input?.command === "export" && (await workspaceFrozenDiagnostic(authenticated)) !== undefined;
-            if (
-                !input ||
-                !isAgentBackendCommandReadOnly(input.command) ||
-                (input.command === "export" && !exportToMessage)
-            ) {
+            if (!input || !isAgentBackendCommandReadOnly(input.command)) {
                 await assertWorkspaceWritable(authenticated);
             }
             let sessionMetadata = input?.sessionMetadata;
@@ -4231,8 +3851,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                     sessionMetadata,
                 },
                 authorization.validateCurrent,
-                authorization.guardRuntime,
-                { exportToMessage }
+                authorization.guardRuntime
             );
             await assertCurrent(event, authenticated);
             return result;
@@ -4349,6 +3968,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
 
     electron.ipcMain.handle("agent:command-write", async (event, requestContext, sessionMetadata, input) => {
         const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        await assertWorkspaceWritable(authenticated);
         const authorization = makeAuthorization(event, authenticated);
         await runtimeRegistry.withSessionAccess(metadata.path, async () => {
             const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
@@ -4361,6 +3981,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
 
     electron.ipcMain.handle("agent:command-resize", async (event, requestContext, sessionMetadata, input) => {
         const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        await assertWorkspaceWritable(authenticated);
         const authorization = makeAuthorization(event, authenticated);
         await runtimeRegistry.withSessionAccess(metadata.path, async () => {
             const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);
@@ -4383,6 +4004,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
 
     electron.ipcMain.handle("agent:command-stop", async (event, requestContext, sessionMetadata, input) => {
         const { authenticated, metadata } = await authorizeSession(event, requestContext, sessionMetadata);
+        await assertWorkspaceWritable(authenticated);
         const authorization = makeAuthorization(event, authenticated);
         await runtimeRegistry.withSessionAccess(metadata.path, async () => {
             const runtime = await requireLiveRuntimeForCommand(metadata.path, authorization);

@@ -96,7 +96,6 @@ import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
 import { _setSessionsRepoForTests, createPaneSession, defaultSessionsDir } from "@crest/coding-agent/sessions";
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { registerWorkspaceCheckpointManager } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
-import { encodeDurableJson } from "@crest/coding-agent/workspace-rewind/durability";
 import { AgentRuntimeClient } from "../frontend/app/agent/agent-runtime-client";
 import type { PiAgentEvent } from "../frontend/app/store/use-pi-chat";
 import {
@@ -109,7 +108,6 @@ import {
     listAgentCommandsForIpc,
     listAgentForkPointsForIpc,
     listAgentTreeForIpc,
-    makeProductionAgentWorkspaceRecoveryGate,
     navigateAgentTreeForIpc,
     registerAgentIpcHandlers as registerAgentIpcHandlersImpl,
     runAgentCommandForIpc,
@@ -118,9 +116,19 @@ import {
 } from "./agent-ipc";
 import { openAgentRewindFeature } from "./agent-rewind-feature";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
-import { installAgentWorkspaceRecoveryGate } from "./agent-workspace-recovery-gate";
+import { installAgentWorkspaceRecoveryGate, type AgentWorkspaceRecoveryGate } from "./agent-workspace-recovery-gate";
 
 const TrustedRequestContext = { workspaceId: "workspace-test", generation: 1 };
+
+function makeRecoveryGate(overrides: Partial<AgentWorkspaceRecoveryGate> = {}): AgentWorkspaceRecoveryGate {
+    return {
+        scanBeforeIpcRegistration: async () => {},
+        assertWorkspaceWritable: async () => {},
+        getRecovery: async () => undefined,
+        resolveRecovery: async () => {},
+        ...overrides,
+    };
+}
 
 function getTrustedCwd(channel: string, args: unknown[]): string {
     const input = args[0] as Record<string, unknown> | undefined;
@@ -186,48 +194,6 @@ function user(text: string): AgentMessage {
 
 function assistant(text: string): AgentMessage {
     return { role: "assistant", content: [{ type: "text", text }] } as unknown as AgentMessage;
-}
-
-function startupJournalRecord(
-    workspaceIdentity: string,
-    workspaceIncarnation: string,
-    sessionId: string,
-    operationId: string
-) {
-    const snapshot = {
-        id: "1".repeat(40),
-        workspaceIdentity,
-        workspaceIncarnation,
-        tree: "2".repeat(40),
-        scopeManifest: "3".repeat(40),
-    };
-    return {
-        schemaVersion: 1,
-        phase: "prepared",
-        workspaceIdentity,
-        workspaceIncarnation,
-        sessionId,
-        sessionPath: "/missing/session.db",
-        operationId,
-        kind: "rewind",
-        applyMode: "normal",
-        expectedSemanticLeafId: "leaf-before",
-        targetTurnId: "target-turn",
-        targetBoundaryId: "target-boundary",
-        safetySnapshot: snapshot,
-        confirmedConflictFingerprints: [],
-        paths: [
-            {
-                path: "file.txt",
-                preState: { state: "absent" },
-                target: { state: "file", oid: "4".repeat(40), executable: false },
-                expectedCurrent: { state: "absent" },
-                confirmedLiveFingerprint: "5".repeat(64),
-                createdParentDirectories: [],
-            },
-        ],
-        workspaceStateEntryId: "state-entry",
-    };
 }
 
 function makeHarnessHostMock() {
@@ -3897,6 +3863,158 @@ describe("agent-ipc command helpers", () => {
         }
     );
 
+    it("routes recovery query and operation-guarded actions directly through the gate", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-recovery-gate-routing-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        session.close();
+        const canonicalRoot = await fs.realpath(cwd);
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-recovery-gate-routing",
+            workspaceDir: canonicalRoot,
+            validatePreferredTerminal: async () => true,
+        };
+        const workspace = {
+            canonicalRoot,
+            workspaceIdentity: "a".repeat(64),
+            workspaceIncarnation: "b".repeat(64),
+            storeKey: "workspace",
+            ancestorIdentityChain: [],
+        } as never;
+        const recovery = {
+            operationId: "operation-a",
+            corrupt: false,
+            message: "choose",
+            paths: [],
+            allowedActions: ["retry" as const, "abandon-current" as const],
+        };
+        const getRecovery = vi.fn(async () => recovery);
+        const resolveRecovery = vi.fn(async () => {});
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async () => identity,
+            resolveWorkspaceIdentity: async () => workspace,
+            recoveryGate: {
+                scanBeforeIpcRegistration: async () => {},
+                assertWorkspaceWritable: async () => {},
+                getRecovery,
+                resolveRecovery,
+            },
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 89, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+
+        await expect(
+            handlers.get("agent:get-workspace-recovery")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+            })
+        ).resolves.toEqual(recovery);
+        await handlers.get("agent:resolve-workspace-recovery")?.(event, TrustedRequestContext, {
+            sessionMetadata: metadata,
+            operationId: "operation-a",
+            action: "retry",
+        });
+
+        expect(getRecovery).toHaveBeenCalledWith(workspace);
+        expect(resolveRecovery).toHaveBeenCalledWith(workspace, "operation-a", "retry", expect.any(Function));
+    });
+
+    it("gates every owning-session leaf and writable runtime entrypoint while leaving reads available", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-pending-leaf-gate-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        await session.appendMessage(user("pending"));
+        session.close();
+        const canonicalRoot = await fs.realpath(cwd);
+        const identity = {
+            ...TrustedRequestContext,
+            windowId: "window-pending-leaf-gate",
+            workspaceDir: canonicalRoot,
+            validatePreferredTerminal: async () => true,
+        };
+        const pending = new Error("pending recovery");
+        const assertWorkspaceWritable = vi.fn(async () => {
+            throw pending;
+        });
+        registerAgentIpcHandlersImpl({
+            ...DefaultAgentIpcRegistrationDependencies,
+            resolveWorkspaceSender: async () => identity,
+            resolveWorkspaceIdentity: async () =>
+                ({
+                    canonicalRoot,
+                    workspaceIdentity: "c".repeat(64),
+                    workspaceIncarnation: "d".repeat(64),
+                    storeKey: "pending-leaf",
+                    ancestorIdentityChain: [],
+                }) as never,
+            recoveryGate: {
+                scanBeforeIpcRegistration: async () => {},
+                assertWorkspaceWritable,
+                getRecovery: async () => ({
+                    operationId: "operation-pending",
+                    corrupt: false,
+                    message: pending.message,
+                    paths: [],
+                    allowedActions: ["retry"],
+                }),
+                resolveRecovery: async () => {},
+            },
+        });
+        const handlers = registeredHandlers();
+        const event = { sender: { id: 90, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
+        const sendInput = {
+            sessionMetadata: metadata,
+            provider: "test",
+            model: "test",
+            text: "send",
+            context: {
+                workspaceId: TrustedRequestContext.workspaceId,
+                workspaceDir: canonicalRoot,
+                sessionPath: metadata.path,
+            },
+        };
+        const gatedCalls: Array<[string, unknown[]]> = [
+            ["agent:send", [sendInput]],
+            [
+                "agent:run-command",
+                [{ sessionMetadata: metadata, cwd: canonicalRoot, command: "compact", argsText: "" }],
+            ],
+            [
+                "agent:navigate-tree",
+                [
+                    {
+                        sessionMetadata: metadata,
+                        targetId: "missing",
+                        semanticAnchorId: null,
+                        expectedSemanticLeafId: null,
+                    },
+                ],
+            ],
+            ["agent:fork-session", [{ sessionMetadata: metadata, cwd: canonicalRoot, entryId: "missing" }]],
+            ["agent:clone-session", [{ sessionMetadata: metadata, cwd: canonicalRoot }]],
+            ["agent:command-write", [metadata, { commandId: "command-a", input: "x" }]],
+            ["agent:command-resize", [metadata, { commandId: "command-a", cols: 80, rows: 24 }]],
+            ["agent:command-stop", [metadata, { commandId: "command-a" }]],
+        ];
+        for (const [channel, args] of gatedCalls) {
+            await expect(handlers.get(channel)?.(event, TrustedRequestContext, ...args)).rejects.toThrow(
+                "pending recovery"
+            );
+        }
+
+        await expect(handlers.get("agent:list-tree")?.(event, TrustedRequestContext, metadata)).resolves.toEqual(
+            expect.objectContaining({ entries: expect.any(Array) })
+        );
+        await expect(
+            handlers.get("agent:run-command")?.(event, TrustedRequestContext, {
+                sessionMetadata: metadata,
+                cwd: canonicalRoot,
+                command: "info",
+                argsText: "",
+            })
+        ).resolves.toEqual(expect.objectContaining({ status: "success" }));
+        expect(assertWorkspaceWritable).toHaveBeenCalledTimes(gatedCalls.length);
+    });
+
     it("registers all rewind and maintenance channels with authorization and the write gate", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-rewind-ipc-contract-"));
         const { metadata } = await createPaneSession(cwd);
@@ -3933,11 +4051,7 @@ describe("agent-ipc command helpers", () => {
                     storeKey: "workspace",
                     ancestorIdentityChain: [],
                 }) as never,
-            recoveryGate: {
-                scanBeforeIpcRegistration: async () => {},
-                ensureRecoveredOnce: async () => {},
-                assertWorkspaceWritable,
-            },
+            recoveryGate: makeRecoveryGate({ assertWorkspaceWritable }),
             rewindService: {
                 listPoints,
                 getTurnChangeSummary: vi.fn(),
@@ -4030,17 +4144,17 @@ describe("agent-ipc command helpers", () => {
                 })),
             },
         } as never);
-        installAgentWorkspaceRecoveryGate({
-            scanBeforeIpcRegistration: async () => {},
-            ensureRecoveredOnce: async () => {},
-            assertWorkspaceWritable: async () => {},
-            probeFrozenDiagnostic: async () => ({
-                operationId: "internal-operation",
-                message: "internal recovery frozen",
-                corrupt: false,
-                allowedActions: ["retry"],
-            }),
-        });
+        installAgentWorkspaceRecoveryGate(
+            makeRecoveryGate({
+                getRecovery: async () => ({
+                    operationId: "internal-operation",
+                    message: "internal recovery frozen",
+                    corrupt: false,
+                    paths: [],
+                    allowedActions: ["retry"],
+                }),
+            })
+        );
         registerAgentIpcHandlersImpl({
             ...DefaultAgentIpcRegistrationDependencies,
             resolveWorkspaceSender: async () => identity,
@@ -4140,11 +4254,7 @@ describe("agent-ipc command helpers", () => {
                     storeKey: "workspace",
                     ancestorIdentityChain: [],
                 }) as never,
-            recoveryGate: {
-                scanBeforeIpcRegistration: async () => {},
-                ensureRecoveredOnce: async () => {},
-                assertWorkspaceWritable,
-            },
+            recoveryGate: makeRecoveryGate({ assertWorkspaceWritable }),
             rewindService: methods,
         });
         const handlers = registeredHandlers();
@@ -4226,11 +4336,7 @@ describe("agent-ipc command helpers", () => {
                 revision: data.expectedrevision + 1,
                 state: data.state,
             }),
-            recoveryGate: {
-                scanBeforeIpcRegistration: async () => {},
-                ensureRecoveredOnce: async () => {},
-                assertWorkspaceWritable: async () => {},
-            },
+            recoveryGate: makeRecoveryGate(),
             rewindService: {
                 listPoints: vi.fn(),
                 getTurnChangeSummary: vi.fn(),
@@ -4275,381 +4381,6 @@ describe("agent-ipc command helpers", () => {
         expect(rewind).not.toHaveBeenCalled();
     });
 
-    it("freezes an unknown corrupt startup journal while allowing IPC startup scan to complete", async () => {
-        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-journal-"));
-        const workspaceIdentity = "a".repeat(64);
-        const workspaceIncarnation = "b".repeat(64);
-        const restoresRoot = path.join(
-            dataRoot,
-            "agent-checkpoints",
-            "workspaces",
-            `${workspaceIdentity}-${workspaceIncarnation}`,
-            "repo.git",
-            "journal",
-            "restores"
-        );
-        await fs.mkdir(restoresRoot, { recursive: true });
-        await fs.writeFile(path.join(restoresRoot, "corrupt.json"), "{broken");
-        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
-        const workspace = {
-            canonicalRoot: "/missing-workspace",
-            workspaceIdentity,
-            workspaceIncarnation,
-            storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
-            ancestorIdentityChain: [],
-        };
-
-        await expect(gate.scanBeforeIpcRegistration()).resolves.toBeUndefined();
-        expect(gate.getFrozenDiagnostic?.(workspace)).toEqual(
-            expect.objectContaining({
-                operationId: "corrupt",
-                message: expect.stringMatching(/corrupt/i),
-            })
-        );
-        await expect(gate.assertWorkspaceWritable(workspace)).rejects.toThrow(/corrupt/i);
-        gate.clearFrozenDiagnostic?.(workspace, "corrupt");
-        expect(gate.getFrozenDiagnostic?.(workspace)).toBeUndefined();
-    });
-
-    it("quarantines an invalid startup filename by its anchored source and stays resolved after restart", async () => {
-        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-invalid-name-"));
-        const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-invalid-name-workspace-"));
-        const workspaceIdentity = "b".repeat(64);
-        const workspaceIncarnation = "d".repeat(64);
-        const storeRoot = path.join(
-            dataRoot,
-            "agent-checkpoints",
-            "workspaces",
-            `${workspaceIdentity}-${workspaceIncarnation}`,
-            "repo.git"
-        );
-        const restoresRoot = path.join(storeRoot, "journal", "restores");
-        await fs.mkdir(restoresRoot, { recursive: true, mode: 0o700 });
-        for (const directory of [storeRoot, path.dirname(restoresRoot), restoresRoot]) {
-            await fs.chmod(directory, 0o700);
-        }
-        const invalidFilename = "invalid journal !.json";
-        const sourcePath = path.join(restoresRoot, invalidFilename);
-        await fs.writeFile(sourcePath, "{broken", { mode: 0o600 });
-        let workspaceLockHeld = false;
-        const store = {
-            storeRoot,
-            identity: {
-                canonicalRoot: await fs.realpath(workspaceRoot),
-                workspaceIdentity,
-                workspaceIncarnation,
-                storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
-                ancestorIdentityChain: [],
-            },
-            withWorkspaceLock: async <T>(operation: () => Promise<T>) => {
-                workspaceLockHeld = true;
-                try {
-                    return await operation();
-                } finally {
-                    workspaceLockHeld = false;
-                }
-            },
-            deleteCrestRef: vi.fn(async () => {}),
-            deleteOperationOwnerRecord: vi.fn(async () => {}),
-        };
-        vi.mocked(openAgentRewindFeature).mockResolvedValue({
-            state: "enabled",
-            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
-            store,
-        } as never);
-        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
-
-        await gate.scanBeforeIpcRegistration();
-        const diagnostic = gate.getFrozenDiagnostic?.(store.identity);
-        expect(diagnostic).toMatchObject({ corrupt: true, allowedActions: ["quarantine-corrupt"] });
-
-        const guardContexts: boolean[] = [];
-        await expect(
-            gate.resolveFrozenDiagnostic?.(store.identity, diagnostic!.operationId, "quarantine-corrupt", async () => {
-                guardContexts.push(workspaceLockHeld);
-            })
-        ).resolves.toBe(true);
-        expect(guardContexts).toContain(true);
-        await expect(fs.access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
-        const audits = await fs.readdir(path.join(storeRoot, "journal", "resolved"));
-        expect(audits).toEqual([expect.stringContaining(`${diagnostic!.operationId}-`)]);
-
-        const restarted = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
-        await restarted.scanBeforeIpcRegistration();
-        expect(restarted.getFrozenDiagnostic?.(store.identity)).toBeUndefined();
-    });
-
-    it("reports a decoded startup journal with a missing owner as abandonable instead of corrupt", async () => {
-        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-orphan-"));
-        const workspaceIdentity = "c".repeat(64);
-        const workspaceIncarnation = "d".repeat(64);
-        const restoresRoot = path.join(
-            dataRoot,
-            "agent-checkpoints",
-            "workspaces",
-            `${workspaceIdentity}-${workspaceIncarnation}`,
-            "repo.git",
-            "journal",
-            "restores"
-        );
-        await fs.mkdir(restoresRoot, { recursive: true });
-        await fs.writeFile(
-            path.join(restoresRoot, "orphan-op.json"),
-            JSON.stringify(
-                startupJournalRecord(workspaceIdentity, workspaceIncarnation, "missing-session", "orphan-op")
-            )
-        );
-        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
-        const workspace = {
-            canonicalRoot: "/missing-workspace",
-            workspaceIdentity,
-            workspaceIncarnation,
-            storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
-            ancestorIdentityChain: [],
-        };
-
-        await gate.scanBeforeIpcRegistration();
-
-        expect(gate.getFrozenDiagnostic?.(workspace)).toMatchObject({
-            operationId: "orphan-op",
-            corrupt: false,
-            allowedActions: ["retry", "abandon-current"],
-        });
-    });
-
-    it("rejects startup orphan abandon when the missing owner is rebound after the diagnostic", async () => {
-        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-orphan-rebind-"));
-        const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-orphan-workspace-"));
-        const workspaceIdentity = "a".repeat(64);
-        const workspaceIncarnation = "c".repeat(64);
-        const storeRoot = path.join(
-            dataRoot,
-            "agent-checkpoints",
-            "workspaces",
-            `${workspaceIdentity}-${workspaceIncarnation}`,
-            "repo.git"
-        );
-        const restoresRoot = path.join(storeRoot, "journal", "restores");
-        await fs.mkdir(restoresRoot, { recursive: true, mode: 0o700 });
-        for (const directory of [storeRoot, path.dirname(restoresRoot), restoresRoot]) {
-            await fs.chmod(directory, 0o700);
-        }
-        const record = startupJournalRecord(
-            workspaceIdentity,
-            workspaceIncarnation,
-            "rebound-session",
-            "orphan-rebind"
-        );
-        const sourcePath = path.join(restoresRoot, "orphan-rebind.json");
-        await fs.writeFile(sourcePath, encodeDurableJson(record), { mode: 0o600 });
-        const store = {
-            storeRoot,
-            identity: {
-                canonicalRoot: await fs.realpath(workspaceRoot),
-                workspaceIdentity,
-                workspaceIncarnation,
-                storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
-                ancestorIdentityChain: [],
-            },
-            withWorkspaceLock: async <T>(operation: () => Promise<T>) => await operation(),
-            deleteCrestRef: vi.fn(async () => {}),
-            deleteOperationOwnerRecord: vi.fn(async () => {}),
-        };
-        vi.mocked(openAgentRewindFeature).mockResolvedValue({
-            state: "enabled",
-            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
-            store,
-        } as never);
-        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
-
-        await gate.scanBeforeIpcRegistration();
-        const diagnostic = gate.getFrozenDiagnostic?.(store.identity);
-        expect(diagnostic).toMatchObject({ operationId: "orphan-rebind", corrupt: false });
-        const rebound = await new SqliteSessionRepo({ sessionsRoot: defaultSessionsDir() }).create({
-            cwd: store.identity.canonicalRoot,
-            id: "rebound-session",
-        });
-        rebound.close();
-
-        await expect(
-            gate.resolveFrozenDiagnostic?.(store.identity, "orphan-rebind", "abandon-current", async () => {})
-        ).rejects.toThrow(/owner|orphan/i);
-        await expect(fs.access(sourcePath)).resolves.toBeUndefined();
-        expect(gate.getFrozenDiagnostic?.(store.identity)).toEqual(diagnostic);
-    });
-
-    it("blocks creation of a missing startup owner between the final absence check and audit", async () => {
-        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-owner-fence-"));
-        const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-owner-fence-workspace-"));
-        const workspaceIdentity = "e".repeat(64);
-        const workspaceIncarnation = "f".repeat(64);
-        const storeRoot = path.join(
-            dataRoot,
-            "agent-checkpoints",
-            "workspaces",
-            `${workspaceIdentity}-${workspaceIncarnation}`,
-            "repo.git"
-        );
-        const restoresRoot = path.join(storeRoot, "journal", "restores");
-        await fs.mkdir(restoresRoot, { recursive: true, mode: 0o700 });
-        for (const directory of [storeRoot, path.dirname(restoresRoot), restoresRoot]) {
-            await fs.chmod(directory, 0o700);
-        }
-        const sessionId = "owner-fence-session";
-        const operationId = "owner-fence-operation";
-        const sourcePath = path.join(restoresRoot, `${operationId}.json`);
-        await fs.writeFile(
-            sourcePath,
-            encodeDurableJson(startupJournalRecord(workspaceIdentity, workspaceIncarnation, sessionId, operationId)),
-            { mode: 0o600 }
-        );
-        const store = {
-            storeRoot,
-            identity: {
-                canonicalRoot: await fs.realpath(workspaceRoot),
-                workspaceIdentity,
-                workspaceIncarnation,
-                storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
-                ancestorIdentityChain: [],
-            },
-            withWorkspaceLock: async <T>(operation: () => Promise<T>) => await operation(),
-            deleteCrestRef: vi.fn(async () => {}),
-            deleteOperationOwnerRecord: vi.fn(async () => {}),
-        };
-        const repo = new SqliteSessionRepo({ sessionsRoot: defaultSessionsDir() });
-        _setSessionsRepoForTests(repo);
-        const finalCheckReached = deferred<void>();
-        const releaseFinalCheck = deferred<void>();
-        const findById = repo.findById.bind(repo);
-        let ownerChecks = 0;
-        vi.spyOn(repo, "findById").mockImplementation(async (id) => {
-            const metadata = await findById(id);
-            if (id === sessionId && ++ownerChecks === 2) {
-                finalCheckReached.resolve();
-                await releaseFinalCheck.promise;
-            }
-            return metadata;
-        });
-        vi.mocked(openAgentRewindFeature).mockResolvedValue({
-            state: "enabled",
-            processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
-            store,
-        } as never);
-        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
-        await gate.scanBeforeIpcRegistration();
-
-        const resolving = gate.resolveFrozenDiagnostic?.(
-            store.identity,
-            operationId,
-            "abandon-current",
-            async () => {}
-        );
-        await finalCheckReached.promise;
-        const creating = repo.create({ cwd: store.identity.canonicalRoot, id: sessionId });
-        const createState = await Promise.race([
-            creating.then(() => "created" as const),
-            new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 30)),
-        ]);
-
-        expect(createState).toBe("blocked");
-        releaseFinalCheck.resolve();
-        await expect(resolving).resolves.toBe(true);
-        const created = await creating;
-        created.close();
-        await expect(fs.access(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
-        await expect(repo.findById(sessionId)).resolves.toMatchObject({ id: sessionId });
-    });
-
-    it("does not classify a shallow startup object as a decoded orphan", async () => {
-        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-invalid-"));
-        const workspaceIdentity = "6".repeat(64);
-        const workspaceIncarnation = "7".repeat(64);
-        const restoresRoot = path.join(
-            dataRoot,
-            "agent-checkpoints",
-            "workspaces",
-            `${workspaceIdentity}-${workspaceIncarnation}`,
-            "repo.git",
-            "journal",
-            "restores"
-        );
-        await fs.mkdir(restoresRoot, { recursive: true });
-        await fs.writeFile(
-            path.join(restoresRoot, "shallow.json"),
-            JSON.stringify({
-                operationId: "shallow",
-                sessionId: "missing-session",
-                workspaceIdentity,
-                workspaceIncarnation,
-            })
-        );
-        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
-        const workspace = {
-            canonicalRoot: "/missing-workspace",
-            workspaceIdentity,
-            workspaceIncarnation,
-            storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
-            ancestorIdentityChain: [],
-        };
-
-        await gate.scanBeforeIpcRegistration();
-
-        expect(gate.getFrozenDiagnostic?.(workspace)).toMatchObject({
-            operationId: "shallow",
-            corrupt: true,
-            allowedActions: ["quarantine-corrupt"],
-        });
-    });
-
-    it("clears a process scan diagnostic only after a verified retry succeeds", async () => {
-        const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-startup-rescan-"));
-        const workspaceIdentity = "8".repeat(64);
-        const workspaceIncarnation = "9".repeat(64);
-        const restoresRoot = path.join(
-            dataRoot,
-            "agent-checkpoints",
-            "workspaces",
-            `${workspaceIdentity}-${workspaceIncarnation}`,
-            "repo.git",
-            "journal",
-            "restores"
-        );
-        await fs.mkdir(restoresRoot, { recursive: true });
-        const originalReaddir = fs.readdir.bind(fs);
-        let blocked = true;
-        const readdirSpy = vi
-            .spyOn(fs, "readdir")
-            .mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
-                if (String(args[0]) === restoresRoot && blocked) {
-                    const error = Object.assign(new Error("scan denied"), { code: "EACCES" });
-                    throw error;
-                }
-                return await originalReaddir(...args);
-            });
-        const gate = makeProductionAgentWorkspaceRecoveryGate(dataRoot);
-        const workspace = {
-            canonicalRoot: "/missing-workspace",
-            workspaceIdentity,
-            workspaceIncarnation,
-            storeKey: `${workspaceIdentity}-${workspaceIncarnation}`,
-            ancestorIdentityChain: [],
-        };
-
-        try {
-            await gate.scanBeforeIpcRegistration();
-            const diagnostic = gate.getFrozenDiagnostic?.(workspace);
-            expect(diagnostic).toMatchObject({ corrupt: false, allowedActions: ["retry"] });
-            blocked = false;
-
-            await expect(
-                gate.resolveFrozenDiagnostic?.(workspace, diagnostic!.operationId, "retry", async () => {})
-            ).resolves.toBe(true);
-            expect(gate.getFrozenDiagnostic?.(workspace)).toBeUndefined();
-        } finally {
-            readdirSpy.mockRestore();
-        }
-    });
-
     it("allows an authorized recovery resolution through a frozen ordinary write gate", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-recovery-resolution-"));
         const { metadata, session } = await createPaneSession(cwd);
@@ -4681,12 +4412,7 @@ describe("agent-ipc command helpers", () => {
                 })),
             },
         } as never);
-        installAgentWorkspaceRecoveryGate({
-            scanBeforeIpcRegistration: async () => {},
-            ensureRecoveredOnce: async () => {},
-            assertWorkspaceWritable: async () => {},
-            probeFrozenDiagnostic: async () => undefined,
-        });
+        installAgentWorkspaceRecoveryGate(makeRecoveryGate());
         registerAgentIpcHandlersImpl({
             resolveWorkspaceSender: async () => identity,
             loadWorkspace: async () => workspaceWithAgentState(identity.workspaceId, 0, {}),
@@ -4695,15 +4421,11 @@ describe("agent-ipc command helpers", () => {
                 revision: data.expectedrevision + 1,
                 state: data.state,
             }),
-            recoveryGate: {
-                scanBeforeIpcRegistration: async () => {},
-                ensureRecoveredOnce: async () => {
-                    throw new Error("workspace frozen");
-                },
+            recoveryGate: makeRecoveryGate({
                 assertWorkspaceWritable: async () => {
                     throw new Error("workspace frozen");
                 },
-            },
+            }),
             rewindMaintenance: {
                 getRecovery: vi.fn(),
                 resolveRecovery,
@@ -4725,7 +4447,7 @@ describe("agent-ipc command helpers", () => {
         expect(resolveRecovery).toHaveBeenCalledOnce();
     });
 
-    it("allows frozen read commands and tree inspection while rejecting command and navigation mutations", async () => {
+    it("allows recovery reads and export while rejecting command and navigation mutations", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-frozen-command-access-"));
         const { metadata, session } = await createPaneSession(cwd);
         await session.appendMessage(user("inspect while frozen"));
@@ -4751,17 +4473,16 @@ describe("agent-ipc command helpers", () => {
             ...DefaultAgentIpcRegistrationDependencies,
             resolveWorkspaceSender: async () => identity,
             resolveWorkspaceIdentity: async () => storeIdentity,
-            recoveryGate: {
-                scanBeforeIpcRegistration: async () => {},
-                ensureRecoveredOnce: async () => {},
+            recoveryGate: makeRecoveryGate({
                 assertWorkspaceWritable,
-                getFrozenDiagnostic: () => ({
+                getRecovery: async () => ({
                     operationId: "frozen-command-access",
                     message: "workspace frozen",
                     corrupt: false,
+                    paths: [],
                     allowedActions: ["retry"],
                 }),
-            },
+            }),
         });
         const handlers = registeredHandlers();
         const event = { sender: { id: 98, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
@@ -4779,21 +4500,21 @@ describe("agent-ipc command helpers", () => {
         await expect(handlers.get("agent:list-tree")?.(event, TrustedRequestContext, metadata)).resolves.toEqual(
             expect.objectContaining({ entries: expect.any(Array) })
         );
-        const frozenExportPath = path.join(canonicalRoot, "must-not-be-written.jsonl");
+        const recoveryExportPath = path.join(canonicalRoot, "recovery-export.jsonl");
         await expect(
             handlers.get("agent:run-command")?.(event, TrustedRequestContext, {
                 sessionMetadata: metadata,
                 cwd: canonicalRoot,
                 command: "export",
-                argsText: frozenExportPath,
+                argsText: recoveryExportPath,
             })
         ).resolves.toEqual(
             expect.objectContaining({
                 status: "success",
-                message: expect.stringContaining('"type":"session"'),
+                message: expect.stringContaining(recoveryExportPath),
             })
         );
-        await expect(fs.stat(frozenExportPath)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.stat(recoveryExportPath)).resolves.toMatchObject({ isFile: expect.any(Function) });
 
         await expect(
             handlers.get("agent:run-command")?.(event, TrustedRequestContext, {
@@ -4844,20 +4565,18 @@ describe("agent-ipc command helpers", () => {
             referencedBytes: 30,
             softQuotaBytes: 10,
         };
-        const recoveryGate = {
-            scanBeforeIpcRegistration: async () => {},
-            ensureRecoveredOnce: async () => {},
-            assertWorkspaceWritable: async () => {},
-            probeFrozenDiagnostic: async () =>
+        const recoveryGate = makeRecoveryGate({
+            getRecovery: async () =>
                 frozen
                     ? {
                           operationId: "operation-a",
                           message: "recovery required",
                           corrupt: false,
+                          paths: [],
                           allowedActions: ["retry" as const],
                       }
                     : undefined,
-        };
+        });
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
@@ -5040,11 +4759,7 @@ describe("agent-ipc command helpers", () => {
             storeKey: "maintenance-failure",
             ancestorIdentityChain: [],
         };
-        const recoveryGate = {
-            scanBeforeIpcRegistration: async () => {},
-            ensureRecoveredOnce: async () => {},
-            assertWorkspaceWritable: async () => {},
-        };
+        const recoveryGate = makeRecoveryGate();
         vi.mocked(openAgentRewindFeature).mockResolvedValue({
             state: "enabled",
             processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },

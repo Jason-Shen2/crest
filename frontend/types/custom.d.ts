@@ -933,10 +933,9 @@ declare global {
     };
     type AgentWorkspaceRecoveryView = {
         operationId: string;
-        phase?: "prepared" | "applying_files" | "files_verified" | "committing_session" | "completed";
         corrupt: boolean;
         message: string;
-        paths: Array<{ path: string; classification?: "pre" | "target" | "unknown" }>;
+        paths: Array<{ path: string; classification?: "before" | "target" | "unknown" }>;
         allowedActions: Array<"retry" | "abandon-current" | "quarantine-corrupt">;
     };
     type AgentGetWorkspaceRecoveryInput = { sessionMetadata: AgentSessionMeta };

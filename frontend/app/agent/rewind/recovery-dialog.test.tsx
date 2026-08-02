@@ -9,7 +9,6 @@ import { RecoveryDialog } from "./recovery-dialog";
 
 const Recovery: AgentWorkspaceRecoveryView = {
     operationId: "operation-17",
-    phase: "applying_files",
     corrupt: false,
     message: "Workspace files need recovery before the agent can continue.",
     paths: [
@@ -27,7 +26,7 @@ describe("RecoveryDialog", () => {
         render(<RecoveryDialog open recovery={Recovery} busy={false} onAction={onAction} onClose={vi.fn()} />);
 
         expect(screen.getByText("operation-17")).not.toBeNull();
-        expect(screen.getByText("applying files")).not.toBeNull();
+        expect(screen.queryByText(/phase/i)).toBeNull();
         expect(screen.getByText("src/changed.ts")).not.toBeNull();
         expect(screen.getByText("target")).not.toBeNull();
         expect(screen.getByText("src/unknown.ts")).not.toBeNull();

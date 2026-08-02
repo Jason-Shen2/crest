@@ -1,103 +1,84 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { AgentWorkspaceRecoveryView } from "@crest/coding-agent/workspace-rewind/api-types";
 import type { CanonicalWorkspaceIdentity } from "@crest/coding-agent/workspace-rewind/workspace-identity";
+import type { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 
 export type AgentWorkspaceRecoveryAction = "retry" | "abandon-current" | "quarantine-corrupt";
 
-export type AgentWorkspaceFrozenDiagnosticSource =
-    | { kind: "process-scan" }
-    | { kind: "internal-recovery" }
-    | { kind: "startup-corrupt"; filename: string }
-    | {
-          kind: "startup-orphan";
-          reason: "missing-owner" | "mismatched-workspace" | "unresolvable-workspace";
-          sessionId: string;
-          ownerPath?: string;
-          ownerCwd?: string;
-      };
-
-export interface AgentWorkspaceFrozenDiagnostic {
-    operationId: string;
-    message: string;
-    corrupt: boolean;
-    allowedActions: AgentWorkspaceRecoveryAction[];
-    source?: AgentWorkspaceFrozenDiagnosticSource;
-}
-
-export interface AgentWorkspaceRecoveryProbeOptions {
-    ignoreCompletedOperationId?: string;
-}
+type AgentWorkspaceRecoveryResolver = Pick<
+    WorkspaceRecovery,
+    "resolvePending" | "assertWorkspaceWritable" | "keepCurrent" | "quarantine"
+>;
 
 export interface AgentWorkspaceRecoveryGate {
     scanBeforeIpcRegistration(): Promise<void>;
-    ensureRecoveredOnce(workspace: CanonicalWorkspaceIdentity): Promise<void>;
     assertWorkspaceWritable(workspace: CanonicalWorkspaceIdentity): Promise<void>;
-    getFrozenDiagnostic?(workspace: CanonicalWorkspaceIdentity): AgentWorkspaceFrozenDiagnostic | undefined;
-    probeFrozenDiagnostic?(
-        workspace: CanonicalWorkspaceIdentity,
-        options?: AgentWorkspaceRecoveryProbeOptions
-    ): Promise<AgentWorkspaceFrozenDiagnostic | undefined>;
-    resolveFrozenDiagnostic?(
+    getRecovery(workspace: CanonicalWorkspaceIdentity): Promise<AgentWorkspaceRecoveryView | undefined>;
+    resolveRecovery(
         workspace: CanonicalWorkspaceIdentity,
         operationId: string,
         action: AgentWorkspaceRecoveryAction,
         assertCurrent: () => Promise<void>
-    ): Promise<boolean>;
-    clearFrozenDiagnostic?(workspace: CanonicalWorkspaceIdentity, operationId: string): void | Promise<void>;
+    ): Promise<void>;
 }
 
 export interface AgentWorkspaceRecoveryGateDependencies {
-    scanKnownJournals(): Promise<void>;
-    ensureRecovered(workspace: CanonicalWorkspaceIdentity): Promise<void>;
-    assertWorkspaceWritable(workspace: CanonicalWorkspaceIdentity): Promise<void>;
+    scanPendingWorkspaces(): Promise<CanonicalWorkspaceIdentity[]>;
+    recoveryFor(
+        workspace: CanonicalWorkspaceIdentity,
+        assertCurrent?: () => Promise<void>
+    ): Promise<AgentWorkspaceRecoveryResolver>;
 }
 
 export function makeAgentWorkspaceRecoveryGate(
     dependencies: AgentWorkspaceRecoveryGateDependencies
 ): AgentWorkspaceRecoveryGate {
     let scanPromise: Promise<void> | undefined;
-    const recovered = new Set<string>();
-    const recovering = new Map<string, Promise<void>>();
-    const keyFor = (workspace: CanonicalWorkspaceIdentity) =>
-        `${workspace.workspaceIdentity}\0${workspace.workspaceIncarnation}`;
+
+    const getRecovery = async (workspace: CanonicalWorkspaceIdentity) => {
+        const recovery = await dependencies.recoveryFor(workspace);
+        const decision = await recovery.resolvePending();
+        return decision.state === "needs-user" ? decision.view : undefined;
+    };
 
     return {
         scanBeforeIpcRegistration() {
-            scanPromise ??= dependencies.scanKnownJournals();
+            scanPromise ??= dependencies.scanPendingWorkspaces().then(async (workspaces) => {
+                for (const workspace of workspaces) {
+                    await getRecovery(workspace);
+                }
+            });
             return scanPromise;
         },
-        ensureRecoveredOnce(workspace) {
-            const key = keyFor(workspace);
-            if (recovered.has(key)) {
-                return Promise.resolve();
-            }
-            const pending = recovering.get(key);
-            if (pending) {
-                return pending;
-            }
-            const operation = dependencies
-                .ensureRecovered(workspace)
-                .then(() => {
-                    recovered.add(key);
-                })
-                .finally(() => {
-                    recovering.delete(key);
-                });
-            recovering.set(key, operation);
-            return operation;
-        },
         async assertWorkspaceWritable(workspace) {
-            await this.ensureRecoveredOnce(workspace);
-            await dependencies.assertWorkspaceWritable(workspace);
+            const recovery = await dependencies.recoveryFor(workspace);
+            await recovery.assertWorkspaceWritable();
+        },
+        getRecovery,
+        async resolveRecovery(workspace, operationId, action, assertCurrent) {
+            const recovery = await dependencies.recoveryFor(workspace, assertCurrent);
+            if (action === "retry") {
+                await recovery.resolvePending(operationId);
+                return;
+            }
+            if (action === "abandon-current") {
+                await recovery.keepCurrent(operationId, assertCurrent);
+                return;
+            }
+            await recovery.quarantine(operationId, assertCurrent);
         },
     };
 }
 
 const NoopRecoveryGate: AgentWorkspaceRecoveryGate = {
     async scanBeforeIpcRegistration() {},
-    async ensureRecoveredOnce() {},
     async assertWorkspaceWritable() {},
+    async getRecovery() {
+        return undefined;
+    },
+    async resolveRecovery() {},
 };
 
 let ProcessRecoveryGate: AgentWorkspaceRecoveryGate = NoopRecoveryGate;

@@ -578,7 +578,6 @@ describe("AgentContent", () => {
     it("freezes writes and renders only authoritative recovery actions until session_state thaws", async () => {
         const recovery: AgentWorkspaceRecoveryView = {
             operationId: "operation-frozen",
-            phase: "files_verified",
             corrupt: false,
             message: "Recovery required",
             paths: [{ path: "src/frozen.ts", classification: "target" }],
