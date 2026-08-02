@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { convertToLlm } from "@crest/agent/harness/messages";
 import { createTransactionManifestData } from "@crest/agent/harness/session/entry-transaction";
 import { buildSessionContext } from "@crest/agent/harness/session/session";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
@@ -108,6 +109,22 @@ describe("Context Inspector snapshot", () => {
             requestOverheadTokens: 0,
             attributionDeltaTokens: -20,
         });
+    });
+
+    it("keeps negative attribution delta accounting out of snapshot diagnostics", () => {
+        const snapshot = buildContextSnapshot(fixture({ providerInputTokens: 100, items: [item({ tokens: 120 })] }));
+
+        expect(snapshot.attributionDeltaTokens).toBe(-20);
+        expect(snapshot.diagnostic).toBeUndefined();
+    });
+
+    it("preserves explicit diagnostics when attribution has a negative delta", () => {
+        const snapshot = buildContextSnapshot(
+            fixture({ providerInputTokens: 100, items: [item({ tokens: 120 })], diagnostic: "counter failed" })
+        );
+
+        expect(snapshot.attributionDeltaTokens).toBe(-20);
+        expect(snapshot.diagnostic).toBe("counter failed");
     });
 
     it("falls back to estimated semantic input when provider counting is unavailable", () => {
@@ -380,6 +397,157 @@ describe("Context Inspector semantic inventory", () => {
             },
             { role: "assistant", content: [{ type: "text", text: "The package is valid." }] },
         ]);
+    });
+
+    it("keeps provider-normalized summaries as durable top-level conversation items", () => {
+        const oldUser = entry("user-old", null, {
+            role: "user",
+            content: [{ type: "text", text: "Old question" }],
+        });
+        const keptUser = entry("user-kept", "user-old", {
+            role: "user",
+            content: [{ type: "text", text: "Kept question" }],
+        });
+        const compaction = {
+            type: "compaction",
+            id: "compact-1",
+            parentId: "user-kept",
+            timestamp: "2026-08-01T00:01:00.000Z",
+            summary: "Old summarized history",
+            firstKeptEntryId: "user-kept",
+            tokensBefore: 400,
+        } as SessionTreeEntry;
+        const branchSummary = {
+            type: "branch_summary",
+            id: "branch-summary-1",
+            parentId: "compact-1",
+            timestamp: "2026-08-01T00:02:00.000Z",
+            fromId: "abandoned-assistant",
+            summary: "An alternate parser was investigated.",
+        } as unknown as SessionTreeEntry;
+        const userAfterBranch = entry("user-after-branch", "branch-summary-1", {
+            role: "user",
+            content: [{ type: "text", text: "Continue" }],
+        });
+        const entries = [oldUser, keptUser, compaction, branchSummary, userAfterBranch];
+        const agentContext = buildSessionContext(entries);
+        const normalizedMessages = convertToLlm(agentContext.messages);
+
+        const items = buildContextInventory({
+            entries,
+            context: { ...agentContext, messages: normalizedMessages },
+            tools: [],
+        });
+
+        const normalizedCompaction = normalizedMessages[0]!;
+        const normalizedBranchSummary = normalizedMessages[2]!;
+        expect(items.find((candidate) => candidate.kind === "compaction_summary")).toMatchObject({
+            id: "compaction:compact-1",
+            content: { role: normalizedCompaction.role, content: normalizedCompaction.content },
+            source: {
+                entryIds: ["compact-1"],
+                coveredEntryIds: ["user-old"],
+            },
+        });
+        expect(items.find((candidate) => candidate.kind === "branch_summary")).toMatchObject({
+            id: "branch-summary:branch-summary-1",
+            content: { role: normalizedBranchSummary.role, content: normalizedBranchSummary.content },
+            source: { entryIds: ["branch-summary-1"] },
+        });
+        expect(items.filter((candidate) => candidate.kind === "turn").map((candidate) => candidate.id)).toEqual([
+            "turn:user-kept",
+            "turn:user-after-branch",
+        ]);
+        expect(
+            items
+                .flatMap((candidate) => candidate.children ?? [])
+                .some((candidate) =>
+                    candidate.source.entryIds?.some((entryId) => ["compact-1", "branch-summary-1"].includes(entryId))
+                )
+        ).toBe(false);
+    });
+
+    it("keeps model-visible assistant reasoning blocks with their provider continuity data", () => {
+        const signedThinking = {
+            type: "thinking",
+            thinking: "Inspect the parser state before choosing a fix.",
+            thinkingSignature: "signed-reasoning",
+        };
+        const redactedThinking = {
+            type: "thinking",
+            thinking: "",
+            thinkingSignature: "encrypted-redacted-reasoning",
+            redacted: true,
+        };
+        const emptyThinking = {
+            type: "thinking",
+        };
+        const entries = [
+            entry("user-1", null, { role: "user", content: [{ type: "text", text: "Inspect this" }] }),
+            entry("assistant-1", "user-1", {
+                role: "assistant",
+                content: [
+                    { type: "text", text: "I will inspect it." },
+                    signedThinking,
+                    redactedThinking,
+                    emptyThinking,
+                ],
+            }),
+        ];
+
+        const items = buildContextInventory({ entries, context: buildSessionContext(entries), tools: [] });
+        const reasoning = items
+            .flatMap((candidate) => candidate.children ?? [])
+            .filter((candidate) => candidate.kind === "assistant_reasoning");
+
+        expect(reasoning).toHaveLength(2);
+        expect(reasoning[0]).toMatchObject({
+            id: "assistant-reasoning:assistant-1:1",
+            title: "Reasoning",
+            preview: "Inspect the parser state before choosing a fix.",
+            content: { role: "assistant", content: [signedThinking] },
+            tokens: Math.ceil(JSON.stringify(signedThinking).length / 4),
+            source: { entryIds: ["assistant-1"] },
+        });
+        expect(reasoning[1]).toMatchObject({
+            id: "assistant-reasoning:assistant-1:2",
+            title: "Reasoning",
+            preview: "Redacted reasoning",
+            content: { role: "assistant", content: [redactedThinking] },
+            tokens: Math.ceil(JSON.stringify(redactedThinking).length / 4),
+            source: { entryIds: ["assistant-1"] },
+        });
+        expect(reasoning[1]?.preview).not.toContain(redactedThinking.thinkingSignature);
+    });
+
+    it("keeps signed-only assistant reasoning without exposing its signature in the preview", () => {
+        const signedOnlyThinking = {
+            type: "thinking",
+            thinking: "",
+            thinkingSignature: '{"id":"reasoning-item-1","encrypted_content":"opaque"}',
+        };
+        const entries = [
+            entry("user-signed", null, { role: "user", content: [{ type: "text", text: "Continue" }] }),
+            entry("assistant-signed", "user-signed", {
+                role: "assistant",
+                content: [signedOnlyThinking],
+            }),
+        ];
+
+        const items = buildContextInventory({ entries, context: buildSessionContext(entries), tools: [] });
+        const reasoning = items
+            .flatMap((candidate) => candidate.children ?? [])
+            .find((candidate) => candidate.kind === "assistant_reasoning");
+
+        expect(reasoning).toMatchObject({
+            id: "assistant-reasoning:assistant-signed:0",
+            title: "Reasoning",
+            preview: "Signed reasoning",
+            content: { role: "assistant", content: [signedOnlyThinking] },
+            tokens: Math.ceil(JSON.stringify(signedOnlyThinking).length / 4),
+            source: { entryIds: ["assistant-signed"] },
+        });
+        expect(reasoning?.preview).not.toContain(signedOnlyThinking.thinkingSignature);
     });
 
     it("replaces covered turns with a compaction summary item", () => {

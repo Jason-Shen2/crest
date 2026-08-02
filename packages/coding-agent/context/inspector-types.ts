@@ -25,6 +25,7 @@ export type ContextSnapshotItemKind =
     | "context_reference"
     | "user_message"
     | "assistant_message"
+    | "assistant_reasoning"
     | "tool_call"
     | "tool_result";
 

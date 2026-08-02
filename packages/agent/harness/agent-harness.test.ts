@@ -414,6 +414,64 @@ describe("AgentHarness — prepared turns", () => {
         expect(observation.messageEntryIds.at(-1)).toBeUndefined();
     });
 
+    it("realigns durable message identities after provider conversion filters context", async () => {
+        const observations: AgentHarnessProviderContextObservation[] = [];
+        registerApiProvider({
+            api: FAKE_API,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (model: Model<any>, _context: Context, options?: SimpleStreamOptions) => {
+                const stream = new AssistantMessageEventStream();
+                void (async () => {
+                    await options?.onPayload?.({ provider: "built" }, model);
+                    const message = fakeAssistantMessage(model);
+                    stream.push({ type: "start", partial: message });
+                    stream.push({ type: "done", reason: "stop", message });
+                })();
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const excludedBashEntryId = await session.appendMessage({
+            role: "bashExecution",
+            command: "printf hidden",
+            output: "hidden",
+            exitCode: 0,
+            cancelled: false,
+            truncated: false,
+            timestamp: 1,
+            excludeFromContext: true,
+        } as AgentMessage);
+        const summaryEntryId = await session.moveTo(excludedBashEntryId, {
+            summary: "Durable branch summary",
+        });
+        const harness = new AgentHarness({
+            env: new NodeExecutionEnv({ cwd: process.cwd() }),
+            session,
+            model: fakeModel(),
+            tools: [],
+            observeProviderContext: (observation) => {
+                observations.push(observation);
+            },
+        });
+
+        const result = await harness.promptReturningEntryId("current user message");
+        await waitFor(() => observations.length === 1);
+
+        const observation = observations[0]!;
+        expect(observation.messages).toHaveLength(2);
+        expect(observation.messages[0]).toMatchObject({
+            role: "user",
+            content: [{ type: "text", text: expect.stringContaining("Durable branch summary") }],
+        });
+        expect(observation.messages[1]).toMatchObject({
+            role: "user",
+            content: [{ type: "text", text: "current user message" }],
+        });
+        expect(observation.messageEntryIds).toHaveLength(observation.messages.length);
+        expect(observation.messageEntryIds).toEqual([summaryEntryId, result.userEntryId]);
+        expect(observation.messageEntryIds).not.toContain(excludedBashEntryId);
+    });
+
     it("observes entries committed by semantic turn preparation", async () => {
         const observations: AgentHarnessProviderContextObservation[] = [];
         let blockObservationRead = false;

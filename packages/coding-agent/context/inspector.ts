@@ -94,11 +94,6 @@ export function buildContextSnapshot(input: BuildContextSnapshotInput): AgentCon
         effectiveInputTokens != null && semanticTokens != null
             ? reconcileContextAttribution(effectiveInputTokens, semanticTokens)
             : undefined;
-    const attributionDiagnostic =
-        reconciliation?.attributionDeltaTokens == null
-            ? undefined
-            : `Estimated source attribution exceeds provider input by ${Math.abs(reconciliation.attributionDeltaTokens)} tokens.`;
-
     return {
         schemaVersion: 1,
         identity: { ...input.identity },
@@ -116,7 +111,7 @@ export function buildContextSnapshot(input: BuildContextSnapshotInput): AgentCon
         attributionDeltaTokens: reconciliation?.attributionDeltaTokens,
         categories,
         items: input.items.map((item) => structuredClone(item)),
-        diagnostic: input.diagnostic ?? attributionDiagnostic,
+        diagnostic: input.diagnostic,
     };
 }
 
@@ -196,7 +191,8 @@ function summaryContent(message: AgentMessage): unknown {
             content: [{ type: "text", text: BRANCH_SUMMARY_PREFIX + message.summary + BRANCH_SUMMARY_SUFFIX }],
         };
     }
-    return undefined;
+    const normalized = message as { role?: string; content?: unknown };
+    return { role: normalized.role, content: normalized.content };
 }
 
 function instructionItems(manifest?: SystemPromptManifest): ContextSnapshotItem[] {
@@ -321,7 +317,16 @@ function childItem(
     const children: ContextSnapshotItem[] = [];
     for (const [blockIndex, block] of messageContent(message).entries()) {
         if (!block || typeof block !== "object") continue;
-        const value = block as { type?: string; text?: string; id?: string; name?: string; arguments?: unknown };
+        const value = block as {
+            type?: string;
+            text?: string;
+            thinking?: string;
+            thinkingSignature?: string;
+            redacted?: boolean;
+            id?: string;
+            name?: string;
+            arguments?: unknown;
+        };
         if (value.type === "toolCall") {
             const callId = value.id ?? `${stableId}:${blockIndex}`;
             children.push({
@@ -352,6 +357,22 @@ function childItem(
                 tokenAccuracy: "estimated",
                 source: { entryIds: entryId == null ? [] : [entryId] },
             });
+        } else if (value.type === "thinking" && (value.redacted || value.thinkingSignature || value.thinking?.trim())) {
+            children.push({
+                id: `assistant-reasoning:${stableId}:${blockIndex}`,
+                category: "conversation",
+                kind: "assistant_reasoning",
+                title: "Reasoning",
+                preview: value.redacted
+                    ? "Redacted reasoning"
+                    : value.thinking?.trim()
+                      ? previewValue(value.thinking)
+                      : "Signed reasoning",
+                content: { role: "assistant", content: [block] },
+                tokens: estimateTextTokens(JSON.stringify(block)),
+                tokenAccuracy: "estimated",
+                source: { entryIds: entryId == null ? [] : [entryId] },
+            });
         }
     }
     return children;
@@ -359,6 +380,7 @@ function childItem(
 
 function conversationItems(input: BuildContextInventoryInput): ContextSnapshotItem[] {
     const items: ContextSnapshotItem[] = [];
+    const entriesById = new Map(input.entries.map((entry) => [entry.id, entry]));
     const resultIdsByCall = new Map<string, string>();
     input.context.messages.forEach((message, index) => {
         if (message.role !== "toolResult") return;
@@ -377,34 +399,38 @@ function conversationItems(input: BuildContextInventoryInput): ContextSnapshotIt
     input.context.messages.forEach((message, index) => {
         if (message.role === "bashExecution" && message.excludeFromContext) return;
         const entryId = input.context.messageEntryIds[index];
-        if (message.role === "compactionSummary") {
+        const entry = entryId == null ? undefined : entriesById.get(entryId);
+        const isCompactionSummary = entry?.type === "compaction" || message.role === "compactionSummary";
+        const isBranchSummary = entry?.type === "branch_summary" || message.role === "branchSummary";
+        if (isCompactionSummary) {
             flushTurn();
+            const sourceCompaction = entry?.type === "compaction" ? entry : compaction;
             items.push({
                 id: `compaction:${entryId ?? index}`,
                 category: "conversation",
                 kind: "compaction_summary",
                 title: "Compacted history",
-                preview: messagePreview(message),
+                preview: previewValue(sourceCompaction?.summary ?? messagePreview(message)),
                 content: summaryContent(message),
                 tokens: messageTokens(message),
                 tokenAccuracy: "estimated",
                 source: {
                     entryIds: entryId == null ? [] : [entryId],
-                    coveredEntryIds: compaction
-                        ? coveredCompactionEntryIds(input.entries, compaction.firstKeptEntryId)
+                    coveredEntryIds: sourceCompaction
+                        ? coveredCompactionEntryIds(input.entries, sourceCompaction.firstKeptEntryId)
                         : [],
                 },
             });
             return;
         }
-        if (message.role === "branchSummary") {
+        if (isBranchSummary) {
             flushTurn();
             items.push({
                 id: `branch-summary:${entryId ?? index}`,
                 category: "conversation",
                 kind: "branch_summary",
                 title: "Branch summary",
-                preview: messagePreview(message),
+                preview: previewValue(entry?.type === "branch_summary" ? entry.summary : messagePreview(message)),
                 content: summaryContent(message),
                 tokens: messageTokens(message),
                 tokenAccuracy: "estimated",

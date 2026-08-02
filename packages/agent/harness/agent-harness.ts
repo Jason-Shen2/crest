@@ -760,7 +760,35 @@ export class AgentHarness<
 		return {
 			model: turnState.model,
 			reasoning: turnState.thinkingLevel === "off" ? undefined : turnState.thinkingLevel,
-			convertToLlm,
+			convertToLlm: (messages) => {
+				const current = getTurnState();
+				const sourceEntryIds =
+					current.providerMessageEntryIds ??
+					alignMessageEntryIds(
+						current.messages,
+						current.messageEntryIds,
+						messages,
+						this.messageEntryIds,
+					);
+				const llmMessages = messages.flatMap((message, index) => {
+					const converted = convertToLlm([message]);
+					const entryId = sourceEntryIds[index];
+					if (entryId) {
+						for (const convertedMessage of converted) {
+							this.messageEntryIds.set(convertedMessage as object, entryId);
+						}
+					}
+					return converted;
+				});
+				const providerMessageEntryIds = alignMessageEntryIds(
+					messages,
+					sourceEntryIds,
+					llmMessages,
+					this.messageEntryIds,
+				);
+				setTurnState({ ...current, providerMessageEntryIds });
+				return llmMessages;
+			},
 			transformContext: async (messages) => {
 				let transformedMessages: AgentMessage[] | undefined;
 				const receipt = this.preparedProviderReceipts[0];
