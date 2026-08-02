@@ -2,13 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { renameSync, watch, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, expect, test, vi } from "vitest";
 
-import { readAnchoredJournalEntry, writeAnchoredJournalEntry } from "./journal-directory";
+import {
+    readAnchoredJournalEntry,
+    readAnchoredJournalPublication,
+    recoverAnchoredJournalPublication,
+    writeAnchoredJournalEntry,
+} from "./journal-directory";
 
 const CleanupRoots: string[] = [];
 
@@ -99,7 +104,7 @@ test("first publication cannot overwrite a destination created after its initial
     const anchored = await readAnchoredJournalEntry({ root, name: "absent.json", maximumEntryBytes: 1024 });
     let installed = false;
     const watcher = watch(root, (_event, filename) => {
-        if (installed || !/^\.[0-9a-f]{32}\.tmp$/.test(String(filename))) {
+        if (installed || String(filename) !== ".pending.json.publish.tmp") {
             return;
         }
         try {
@@ -126,5 +131,83 @@ test("first publication cannot overwrite a destination created after its initial
 
     expect(installed).toBe(true);
     expect(await readFile(destination, "utf8")).toBe("racing owner");
-    expect((await readdir(root)).filter((name) => /^\.[0-9a-f]{32}\.tmp$/.test(name))).toEqual([]);
+    expect((await readdir(root)).filter((name) => name.endsWith(".publish.tmp"))).toEqual([]);
 }, 15_000);
+
+test.each([
+    ["after link", false, false],
+    ["after first directory sync", true, false],
+    ["after unlink before second directory sync", true, true],
+] as const)("reads and recovers first publication %s", async (_boundary, syncAfterLink, unlinkTemporary) => {
+    const root = await mkdtemp(join(tmpdir(), "crest-journal-publish-recover-"));
+    CleanupRoots.push(root);
+    const destinationName = "pending.json";
+    const temporaryName = ".pending.json.publish.tmp";
+    const destination = join(root, destinationName);
+    const temporary = join(root, temporaryName);
+    const bytes = Buffer.from("published bytes");
+    await writeFile(temporary, bytes, { mode: 0o600 });
+    await link(temporary, destination);
+    if (syncAfterLink) {
+        const directory = await open(root, "r");
+        await directory.sync();
+        await directory.close();
+    }
+    if (unlinkTemporary) {
+        await unlink(temporary);
+    }
+
+    const observed = await readAnchoredJournalPublication({ root, destinationName, maximumEntryBytes: 1024 });
+    expect(observed?.entry?.bytes).toEqual(bytes);
+    if (!unlinkTemporary) {
+        expect((await lstat(temporary)).nlink).toBe(2);
+    }
+
+    const recovered = await recoverAnchoredJournalPublication({ root, destinationName, maximumEntryBytes: 1024 });
+    expect(recovered?.entry?.bytes).toEqual(bytes);
+    await expect(lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(destination)).nlink).toBe(1);
+});
+
+test("leaves an active only-temp publication untouched until locked recovery", async () => {
+    const root = await mkdtemp(join(tmpdir(), "crest-journal-publish-only-temp-"));
+    CleanupRoots.push(root);
+    const temporary = join(root, ".pending.json.publish.tmp");
+    await writeFile(temporary, "not published", { mode: 0o600 });
+
+    await expect(
+        readAnchoredJournalPublication({ root, destinationName: "pending.json", maximumEntryBytes: 1024 })
+    ).resolves.toMatchObject({ entry: undefined });
+    await expect(lstat(temporary)).resolves.toBeDefined();
+
+    await expect(
+        recoverAnchoredJournalPublication({ root, destinationName: "pending.json", maximumEntryBytes: 1024 })
+    ).resolves.toMatchObject({ entry: undefined });
+    await expect(lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("fails closed on mismatched or unsafe fixed publication entries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "crest-journal-publish-unsafe-"));
+    CleanupRoots.push(root);
+    const destination = join(root, "pending.json");
+    const temporary = join(root, ".pending.json.publish.tmp");
+    await writeFile(destination, "destination", { mode: 0o600 });
+    await writeFile(temporary, "mismatch", { mode: 0o600 });
+
+    await expect(
+        readAnchoredJournalPublication({ root, destinationName: "pending.json", maximumEntryBytes: 1024 })
+    ).rejects.toThrow(/pair|match|unsafe/i);
+    await expect(
+        recoverAnchoredJournalPublication({ root, destinationName: "pending.json", maximumEntryBytes: 1024 })
+    ).rejects.toThrow(/pair|match|unsafe/i);
+    expect(await readFile(destination, "utf8")).toBe("destination");
+    expect(await readFile(temporary, "utf8")).toBe("mismatch");
+
+    await unlink(temporary);
+    await symlink(join(root, "missing"), temporary);
+    await expect(
+        recoverAnchoredJournalPublication({ root, destinationName: "pending.json", maximumEntryBytes: 1024 })
+    ).rejects.toThrow(/pair|match|unsafe/i);
+    expect(await readFile(destination, "utf8")).toBe("destination");
+    expect((await lstat(temporary)).isSymbolicLink()).toBe(true);
+});

@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { renameSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 
 import { afterEach, expect, test, vi } from "vitest";
 
+import { encodeDurableJson } from "./durability";
 import { WorkspaceGitRunner } from "./git-runner";
 import {
     decodePendingWorkspaceRestoreV1,
@@ -160,6 +161,40 @@ test("returns truncated active bytes as a corrupt candidate without deleting the
     expect(await readFile(path)).toEqual(bytes);
 });
 
+test("candidate sees a linked first publication before locked recovery removes its fixed temp", async () => {
+    const fixture = await makeFixture();
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const record = makeRecord(fixture);
+    const root = join(fixture.store.storeRoot, "journal", "restore");
+    const destination = join(root, "pending.json");
+    const temporary = join(root, ".pending.json.publish.tmp");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    await writeFile(temporary, encodeDurableJson(record), { mode: 0o600 });
+    await link(temporary, destination);
+
+    expect(await pending.readCandidate()).toEqual({ kind: "valid", record });
+    expect((await lstat(temporary)).nlink).toBe(2);
+
+    expect(await fixture.store.withWorkspaceLock(() => pending.readLocked())).toEqual({ kind: "valid", record });
+    await expect(lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await lstat(destination)).nlink).toBe(1);
+});
+
+test("publish preflight durably discards an unpublished fixed temp", async () => {
+    const fixture = await makeFixture();
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const record = makeRecord(fixture);
+    const root = join(fixture.store.storeRoot, "journal", "restore");
+    const temporary = join(root, ".pending.json.publish.tmp");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    await writeFile(temporary, "abandoned", { mode: 0o600 });
+
+    await fixture.store.withWorkspaceLock(() => pending.publishLocked(record));
+
+    expect(await pending.readCandidate()).toEqual({ kind: "valid", record });
+    await expect(lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test("ignores resolved audit accumulation when reading and publishing the fixed active record", async () => {
     const fixture = await makeFixture();
     const pending = new PendingWorkspaceRestoreStore(fixture.store);
@@ -288,6 +323,38 @@ test("removes only the matching valid active operation", async () => {
     await fixture.store.withWorkspaceLock(() => pending.removeLocked(record.operationId));
 
     expect(await pending.readCandidate()).toEqual({ kind: "none" });
+});
+
+test("locked update remove and audit recover stale fixed temps without blocking later publication", async () => {
+    const fixture = await makeFixture();
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const root = join(fixture.store.storeRoot, "journal", "restore");
+    const destination = join(root, "pending.json");
+    const temporary = join(root, ".pending.json.publish.tmp");
+    const first = makeRecord(fixture, "operation-a");
+    await fixture.store.withWorkspaceLock(() => pending.publishLocked(first));
+
+    await link(destination, temporary);
+    await fixture.store.withWorkspaceLock(() =>
+        pending.updateCreatedParentDirectoriesLocked(first.operationId, "dir/file.txt", ["dir"])
+    );
+    await expect(lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await link(destination, temporary);
+    await fixture.store.withWorkspaceLock(() => pending.removeLocked(first.operationId));
+    await expect(lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const second = makeRecord(fixture, "operation-b");
+    await fixture.store.withWorkspaceLock(() => pending.publishLocked(second));
+    await link(destination, temporary);
+    await fixture.store.withWorkspaceLock(() => pending.resolveToAuditLocked(second.operationId, "keep-current"));
+    await expect(lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const third = makeRecord(fixture, "operation-c");
+    await fixture.store.withWorkspaceLock(() => pending.publishLocked(third));
+    expect(await pending.readCandidate()).toEqual({ kind: "valid", record: third });
 });
 
 test("atomically resolves a valid pending record to non-owning audit without changing its bytes", async () => {

@@ -7,7 +7,8 @@ import { isAbsolute, join, normalize } from "node:path";
 
 import { encodeDurableJson } from "./durability";
 import {
-    readAnchoredJournalEntry,
+    readAnchoredJournalPublication,
+    recoverAnchoredJournalPublication,
     removeAnchoredJournalEntry,
     renameAnchoredJournalEntry,
     writeAnchoredJournalEntry,
@@ -76,11 +77,11 @@ export class PendingWorkspaceRestoreStore {
     }
 
     readCandidate(): Promise<ScannedPendingWorkspaceRestore> {
-        return this.scanActive();
+        return this.scanActive(false);
     }
 
     readLocked(): Promise<ScannedPendingWorkspaceRestore> {
-        return this.scanActive();
+        return this.scanActive(true);
     }
 
     async publishLocked(record: PendingWorkspaceRestoreV1): Promise<void> {
@@ -92,7 +93,7 @@ export class PendingWorkspaceRestoreStore {
         await this.store.verify(decoded.safetySnapshot);
         await this.store.anchorSnapshot(decoded.safetySnapshot);
         await makePrivateDirectory(this.root);
-        const active = await this.readActiveEntry();
+        const active = await this.readActiveEntry(true);
         if (!active) {
             throw new Error("Pending restore directory disappeared before publication");
         }
@@ -160,7 +161,7 @@ export class PendingWorkspaceRestoreStore {
 
     async resolveToAuditLocked(operationId: string, disposition: "keep-current" | "quarantine"): Promise<void> {
         validateToken(operationId);
-        const active = await this.readActiveEntry();
+        const active = await this.readActiveEntry(true);
         if (!active?.source) {
             throw new Error("No workspace restore is pending");
         }
@@ -185,8 +186,8 @@ export class PendingWorkspaceRestoreStore {
         });
     }
 
-    async scanActive(): Promise<ScannedPendingWorkspaceRestore> {
-        const source = (await this.readActiveEntry())?.source;
+    async scanActive(recoverPublication: boolean): Promise<ScannedPendingWorkspaceRestore> {
+        const source = (await this.readActiveEntry(recoverPublication))?.source;
         if (!source) {
             return { kind: "none" };
         }
@@ -198,7 +199,7 @@ export class PendingWorkspaceRestoreStore {
         source: AnchoredJournalEntry;
         record: PendingWorkspaceRestoreV1;
     }> {
-        const active = await this.readActiveEntry();
+        const active = await this.readActiveEntry(true);
         if (!active?.source) {
             throw new Error("No workspace restore is pending");
         }
@@ -210,12 +211,12 @@ export class PendingWorkspaceRestoreStore {
         return { rootIdentity: active.identity, source, record: candidate.record };
     }
 
-    async readActiveEntry(): Promise<
-        { identity: AnchoredJournalDirectoryIdentity; source?: AnchoredJournalEntry } | undefined
-    > {
-        const active = await readAnchoredJournalEntry({
+    async readActiveEntry(
+        recoverPublication = false
+    ): Promise<{ identity: AnchoredJournalDirectoryIdentity; source?: AnchoredJournalEntry } | undefined> {
+        const active = await (recoverPublication ? recoverAnchoredJournalPublication : readAnchoredJournalPublication)({
             root: this.root,
-            name: "pending.json",
+            destinationName: "pending.json",
             maximumEntryBytes: MaximumPendingBytes,
         });
         if (!active) {

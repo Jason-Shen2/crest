@@ -113,6 +113,22 @@ export async function readAnchoredJournalEntry(input: {
     };
 }
 
+export async function readAnchoredJournalPublication(input: {
+    root: string;
+    destinationName: string;
+    maximumEntryBytes: number;
+}): Promise<{ identity: AnchoredJournalDirectoryIdentity; entry: AnchoredJournalEntry | undefined } | undefined> {
+    return runPublicationWorker(input, "read-publication");
+}
+
+export async function recoverAnchoredJournalPublication(input: {
+    root: string;
+    destinationName: string;
+    maximumEntryBytes: number;
+}): Promise<{ identity: AnchoredJournalDirectoryIdentity; entry: AnchoredJournalEntry | undefined } | undefined> {
+    return runPublicationWorker(input, "recover-publication");
+}
+
 export async function renameAnchoredJournalEntry(input: {
     root: string;
     rootIdentity: AnchoredJournalDirectoryIdentity;
@@ -168,6 +184,49 @@ export async function writeAnchoredJournalEntry(input: {
     if (!isRecord(result) || result.ok !== true || Object.keys(result).length !== 1) {
         throw new Error("Workspace recovery journal write returned invalid output");
     }
+}
+
+async function runPublicationWorker(
+    input: { root: string; destinationName: string; maximumEntryBytes: number },
+    type: "read-publication" | "recover-publication"
+): Promise<{ identity: AnchoredJournalDirectoryIdentity; entry: AnchoredJournalEntry | undefined } | undefined> {
+    let state;
+    try {
+        state = await lstat(input.root, { bigint: true });
+    } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") {
+            return undefined;
+        }
+        throw error;
+    }
+    if (!state.isDirectory() || state.isSymbolicLink() || (state.mode & 0o077n) !== 0n) {
+        throw new Error("Workspace recovery journal directory is unsafe");
+    }
+    const identity = directoryIdentity(state);
+    const result = await runWorker(input.root, {
+        type,
+        rootIdentity: identity,
+        destinationName: input.destinationName,
+        maximumEntryBytes: input.maximumEntryBytes,
+    });
+    const after = await lstat(input.root, { bigint: true });
+    if (!after.isDirectory() || after.isSymbolicLink() || !sameIdentity(after, identity)) {
+        throw new Error("Workspace recovery journal directory changed while recovering publication");
+    }
+    if (!isNamedReadResult(result, { name: input.destinationName, maximumEntryBytes: input.maximumEntryBytes })) {
+        throw new Error("Workspace recovery journal publication worker returned invalid output");
+    }
+    return {
+        identity,
+        entry:
+            result.entry == null
+                ? undefined
+                : {
+                      name: result.entry.name,
+                      bytes: Buffer.from(result.entry.bytesBase64, "base64"),
+                      identity: result.entry.identity,
+                  },
+    };
 }
 
 async function runWorker(root: string, input: unknown): Promise<unknown> {
@@ -347,6 +406,14 @@ function validName(name) {
         name !== "." && name !== ".." && !/[\/\\\0]/.test(name);
 }
 
+function publicationTemporaryName(destinationName) {
+    const temporaryName = "." + destinationName + ".publish.tmp";
+    if (!validName(destinationName) || !validName(temporaryName)) {
+        throw new Error("invalid journal publication name");
+    }
+    return temporaryName;
+}
+
 async function readInput() {
     const chunks = [];
     let total = 0;
@@ -382,6 +449,130 @@ async function readOptionalEntry(name, maximumEntryBytes) {
         throw error;
     }
     return readEntryWithState(name, maximumEntryBytes, before);
+}
+
+async function lstatOptional(name) {
+    try {
+        return await fsp.lstat(name, { bigint: true });
+    } catch (error) {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+    }
+}
+
+function safePrivateRegular(state, maximumEntryBytes, expectedNlink) {
+    return state && state.isFile() && !state.isSymbolicLink() && state.nlink === expectedNlink &&
+        (state.mode & 63n) === 0n && state.size <= BigInt(maximumEntryBytes);
+}
+
+function sameInode(left, right) {
+    return left.dev === right.dev && left.ino === right.ino && left.birthtimeNs === right.birthtimeNs;
+}
+
+async function readLinkedPublicationEntry(destinationName, temporaryName, maximumEntryBytes, beforeDestination) {
+    const flags = fs.constants.O_RDONLY | fs.constants.O_NONBLOCK |
+        (fs.constants.O_NOFOLLOW || 0);
+    const handle = await fsp.open(destinationName, flags);
+    try {
+        const opened = await handle.stat({ bigint: true });
+        if (!sameInode(opened, beforeDestination)) {
+            throw new Error("journal publication changed");
+        }
+        const bytes = await handle.readFile();
+        const after = await handle.stat({ bigint: true });
+        const namedDestination = await fsp.lstat(destinationName, { bigint: true });
+        const namedTemporary = await lstatOptional(temporaryName);
+        if (!sameEntry(after, entryIdentity(namedDestination)) || !sameInode(after, beforeDestination)) {
+            throw new Error("journal publication changed");
+        }
+        if (namedTemporary) {
+            if (!safePrivateRegular(after, maximumEntryBytes, 2n) ||
+                !safePrivateRegular(namedTemporary, maximumEntryBytes, 2n) ||
+                !sameInode(after, namedTemporary)) {
+                throw new Error("journal publication changed");
+            }
+        } else if (!safePrivateRegular(after, maximumEntryBytes, 1n)) {
+            throw new Error("journal publication changed");
+        }
+        return {
+            name: destinationName,
+            bytesBase64: bytes.toString("base64"),
+            identity: entryIdentity(after),
+        };
+    } finally {
+        await handle.close();
+    }
+}
+
+async function readPublication(destinationName, maximumEntryBytes) {
+    const temporaryName = publicationTemporaryName(destinationName);
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const destination = await lstatOptional(destinationName);
+        const temporary = await lstatOptional(temporaryName);
+        if (!destination) {
+            if (!temporary) return null;
+            if (safePrivateRegular(temporary, maximumEntryBytes, 1n)) return null;
+            if (safePrivateRegular(temporary, maximumEntryBytes, 2n)) continue;
+            throw new Error("unsafe journal publication temporary entry");
+        }
+        if (!temporary) {
+            if (safePrivateRegular(destination, maximumEntryBytes, 2n)) continue;
+            return readEntryWithState(destinationName, maximumEntryBytes, destination);
+        }
+        if (!sameInode(destination, temporary)) {
+            throw new Error("journal publication pair does not match");
+        }
+        if (!safePrivateRegular(destination, maximumEntryBytes, 2n) ||
+            !safePrivateRegular(temporary, maximumEntryBytes, 2n)) {
+            continue;
+        }
+        try {
+            return await readLinkedPublicationEntry(
+                destinationName,
+                temporaryName,
+                maximumEntryBytes,
+                destination
+            );
+        } catch (error) {
+            if (error.message !== "journal publication changed") throw error;
+        }
+    }
+    throw new Error("journal publication changed while reading");
+}
+
+async function recoverPublication(destinationName, maximumEntryBytes, rootIdentity) {
+    const temporaryName = publicationTemporaryName(destinationName);
+    const destination = await lstatOptional(destinationName);
+    const temporary = await lstatOptional(temporaryName);
+    if (!destination && !temporary) return null;
+    if (!destination) {
+        if (!safePrivateRegular(temporary, maximumEntryBytes, 1n)) {
+            throw new Error("unsafe journal publication temporary entry");
+        }
+        await fsp.unlink(temporaryName);
+        await syncRoot();
+        await assertRoot(rootIdentity);
+        return null;
+    }
+    if (!temporary) {
+        if (!safePrivateRegular(destination, maximumEntryBytes, 1n)) {
+            throw new Error("unsafe journal publication destination entry");
+        }
+        await syncRoot();
+        await assertRoot(rootIdentity);
+        const recovered = await fsp.lstat(destinationName, { bigint: true });
+        return readEntryWithState(destinationName, maximumEntryBytes, recovered);
+    }
+    if (!safePrivateRegular(destination, maximumEntryBytes, 2n) ||
+        !safePrivateRegular(temporary, maximumEntryBytes, 2n) ||
+        !sameInode(destination, temporary)) {
+        throw new Error("unsafe journal publication pair does not match");
+    }
+    await fsp.unlink(temporaryName);
+    await syncRoot();
+    await assertRoot(rootIdentity);
+    const recovered = await fsp.lstat(destinationName, { bigint: true });
+    return readEntryWithState(destinationName, maximumEntryBytes, recovered);
 }
 
 async function readEntryWithState(name, maximumEntryBytes, before) {
@@ -441,6 +632,14 @@ async function main() {
         await assertRoot(input.rootIdentity);
         return { entry };
     }
+    if (input.type === "read-publication" || input.type === "recover-publication") {
+        publicationTemporaryName(input.destinationName);
+        const entry = input.type === "read-publication"
+            ? await readPublication(input.destinationName, input.maximumEntryBytes)
+            : await recoverPublication(input.destinationName, input.maximumEntryBytes, input.rootIdentity);
+        await assertRoot(input.rootIdentity);
+        return { entry };
+    }
     if (input.type === "rename" || input.type === "remove") {
         if (!validName(input.sourceName) ||
             (input.type === "rename" && !validName(input.destinationName))) {
@@ -489,7 +688,9 @@ async function main() {
         } else if (destination) {
             throw new Error("journal write destination appeared");
         }
-        const temporary = "." + require("node:crypto").randomBytes(16).toString("hex") + ".tmp";
+        const temporary = input.expectedDestinationIdentity
+            ? "." + require("node:crypto").randomBytes(16).toString("hex") + ".tmp"
+            : publicationTemporaryName(input.destinationName);
         const handle = await fsp.open(temporary, "wx", 384);
         try {
             await handle.writeFile(bytes);
@@ -511,7 +712,13 @@ async function main() {
                 await assertRoot(input.rootIdentity);
             }
         } catch (error) {
-            await fsp.unlink(temporary).catch(() => {});
+            try {
+                await fsp.unlink(temporary);
+                await syncRoot();
+                await assertRoot(input.rootIdentity);
+            } catch (cleanupError) {
+                if (cleanupError.code !== "ENOENT") throw cleanupError;
+            }
             throw error;
         }
         return { ok: true };
