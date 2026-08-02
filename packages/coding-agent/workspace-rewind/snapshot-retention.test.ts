@@ -217,6 +217,10 @@ test("retains the active restore pending safety snapshot until it moves to audit
     const pending = new PendingWorkspaceRestoreStore(store);
     const record = makePendingRestore(store, sessionsRoot, snapshot);
     await store.withWorkspaceLock(() => pending.publishLocked(record));
+    const unreadableAuditTarget = join(dirname(store.storeRoot), "unreadable-audit-target");
+    await writeFile(unreadableAuditTarget, "audit bytes");
+    await symlink(unreadableAuditTarget, join(store.storeRoot, "journal", "restore", "resolved-unreadable-audit.json"));
+    expect(await pending.readCandidate()).toEqual({ kind: "valid", record });
     await store.deleteCrestRef(`refs/crest/snapshots/${snapshot.id}`);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-15T00:00:00Z"));

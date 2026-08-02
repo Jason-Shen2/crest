@@ -116,6 +116,29 @@ test("returns truncated active bytes as a corrupt candidate without deleting the
     expect(await readFile(path)).toEqual(bytes);
 });
 
+test("ignores resolved audit accumulation when reading and publishing the fixed active record", async () => {
+    const fixture = await makeFixture();
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const root = join(fixture.store.storeRoot, "journal", "restore");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    for (let start = 0; start < 4_097; start += 128) {
+        await Promise.all(
+            Array.from({ length: Math.min(128, 4_097 - start) }, (_, offset) =>
+                writeFile(join(root, `resolved-audit-${start + offset}.json`), "not an active record", {
+                    mode: 0o600,
+                })
+            )
+        );
+    }
+
+    expect(await pending.readCandidate()).toEqual({ kind: "none" });
+    expect(await pending.readLocked()).toEqual({ kind: "none" });
+
+    const record = makeRecord(fixture);
+    await fixture.store.withWorkspaceLock(() => pending.publishLocked(record));
+    expect(await pending.readLocked()).toEqual({ kind: "valid", record });
+}, 30_000);
+
 test("updates created parent directory progress only for the active operation and path", async () => {
     const fixture = await makeFixture();
     const pending = new PendingWorkspaceRestoreStore(fixture.store);
