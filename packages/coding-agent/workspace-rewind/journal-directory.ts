@@ -69,6 +69,50 @@ export async function readAnchoredJournalDirectory(input: {
     };
 }
 
+export async function readAnchoredJournalEntry(input: {
+    root: string;
+    name: string;
+    maximumEntryBytes: number;
+}): Promise<{ identity: AnchoredJournalDirectoryIdentity; entry: AnchoredJournalEntry | undefined } | undefined> {
+    let state;
+    try {
+        state = await lstat(input.root, { bigint: true });
+    } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") {
+            return undefined;
+        }
+        throw error;
+    }
+    if (!state.isDirectory() || state.isSymbolicLink() || (state.mode & 0o077n) !== 0n) {
+        throw new Error("Workspace recovery journal directory is unsafe");
+    }
+    const identity = directoryIdentity(state);
+    const result = await runWorker(input.root, {
+        type: "read-entry",
+        rootIdentity: identity,
+        name: input.name,
+        maximumEntryBytes: input.maximumEntryBytes,
+    });
+    const after = await lstat(input.root, { bigint: true });
+    if (!after.isDirectory() || after.isSymbolicLink() || !sameIdentity(after, identity)) {
+        throw new Error("Workspace recovery journal directory changed while reading entry");
+    }
+    if (!isNamedReadResult(result, input)) {
+        throw new Error("Workspace recovery journal entry reader returned invalid output");
+    }
+    return {
+        identity,
+        entry:
+            result.entry == null
+                ? undefined
+                : {
+                      name: result.entry.name,
+                      bytes: Buffer.from(result.entry.bytesBase64, "base64"),
+                      identity: result.entry.identity,
+                  },
+    };
+}
+
 export async function renameAnchoredJournalEntry(input: {
     root: string;
     rootIdentity: AnchoredJournalDirectoryIdentity;
@@ -194,6 +238,34 @@ function isReadResult(
     });
 }
 
+function isNamedReadResult(
+    value: unknown,
+    input: { name: string; maximumEntryBytes: number }
+): value is {
+    entry: {
+        name: string;
+        bytesBase64: string;
+        identity: AnchoredJournalEntry["identity"];
+    } | null;
+} {
+    if (!isRecord(value) || Object.keys(value).length !== 1 || !("entry" in value)) {
+        return false;
+    }
+    if (value.entry === null) {
+        return true;
+    }
+    if (
+        !isRecord(value.entry) ||
+        value.entry.name !== input.name ||
+        typeof value.entry.bytesBase64 !== "string" ||
+        !isEntryIdentity(value.entry.identity)
+    ) {
+        return false;
+    }
+    const bytes = Buffer.from(value.entry.bytesBase64, "base64");
+    return bytes.toString("base64") === value.entry.bytesBase64 && bytes.length <= input.maximumEntryBytes;
+}
+
 function isEntryIdentity(value: unknown): value is AnchoredJournalEntry["identity"] {
     if (!isRecord(value)) {
         return false;
@@ -297,6 +369,22 @@ async function assertRoot(expected) {
 async function readEntry(name, maximumEntryBytes) {
     if (!validName(name)) throw new Error("invalid journal entry name");
     const before = await fsp.lstat(name, { bigint: true });
+    return readEntryWithState(name, maximumEntryBytes, before);
+}
+
+async function readOptionalEntry(name, maximumEntryBytes) {
+    if (!validName(name)) throw new Error("invalid journal entry name");
+    let before;
+    try {
+        before = await fsp.lstat(name, { bigint: true });
+    } catch (error) {
+        if (error.code === "ENOENT") return null;
+        throw error;
+    }
+    return readEntryWithState(name, maximumEntryBytes, before);
+}
+
+async function readEntryWithState(name, maximumEntryBytes, before) {
     if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n ||
         (before.mode & 63n) !== 0n || before.size > BigInt(maximumEntryBytes)) {
         throw new Error("unsafe journal entry: " + name);
@@ -347,6 +435,11 @@ async function main() {
         }
         await assertRoot(input.rootIdentity);
         return { entries };
+    }
+    if (input.type === "read-entry") {
+        const entry = await readOptionalEntry(input.name, input.maximumEntryBytes);
+        await assertRoot(input.rootIdentity);
+        return { entry };
     }
     if (input.type === "rename" || input.type === "remove") {
         if (!validName(input.sourceName) ||

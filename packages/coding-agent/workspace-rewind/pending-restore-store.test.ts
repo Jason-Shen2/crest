@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { renameSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,6 +21,9 @@ import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 const CleanupRoots: string[] = [];
 
 afterEach(async () => {
+    vi.doUnmock("node:fs/promises");
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
     vi.restoreAllMocks();
     await Promise.all(CleanupRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -138,6 +142,63 @@ test("ignores resolved audit accumulation when reading and publishing the fixed 
     await fixture.store.withWorkspaceLock(() => pending.publishLocked(record));
     expect(await pending.readLocked()).toEqual({ kind: "valid", record });
 }, 30_000);
+
+test("cannot miss an active pending record when its restore directory is swapped and restored during read", async () => {
+    const fixture = await makeFixture();
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const record = makeRecord(fixture);
+    await fixture.store.withWorkspaceLock(() => pending.publishLocked(record));
+    const root = join(fixture.store.storeRoot, "journal", "restore");
+    const held = join(dirname(root), "restore-held");
+    const replacement = join(dirname(root), "restore-replacement");
+    await mkdir(replacement, { mode: 0o700 });
+    let swapped = false;
+    let restored = false;
+    vi.doMock("node:fs/promises", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("node:fs/promises")>();
+        return {
+            ...actual,
+            lstat: async (...args: Parameters<typeof actual.lstat>) => {
+                const path = String(args[0]);
+                if (!swapped && path === root) {
+                    const state = await actual.lstat(...args);
+                    renameSync(root, held);
+                    renameSync(replacement, root);
+                    swapped = true;
+                    return state;
+                }
+                if (swapped && !restored && path === root) {
+                    renameSync(root, replacement);
+                    renameSync(held, root);
+                    restored = true;
+                }
+                return actual.lstat(...args);
+            },
+        };
+    });
+    vi.doMock("node:child_process", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("node:child_process")>();
+        return {
+            ...actual,
+            spawn: (...args: Parameters<typeof actual.spawn>) => {
+                const child = actual.spawn(...args);
+                if (swapped && !restored && args[2]?.cwd === root) {
+                    renameSync(root, replacement);
+                    renameSync(held, root);
+                    restored = true;
+                }
+                return child;
+            },
+        };
+    });
+    vi.resetModules();
+    const isolated = await import("./pending-restore-store");
+    const isolatedPending = new isolated.PendingWorkspaceRestoreStore(fixture.store);
+
+    await expect(isolatedPending.readCandidate()).rejects.toThrow(/anchor|changed|directory/i);
+    expect({ swapped, restored }).toEqual({ swapped: true, restored: true });
+    expect(await pending.readCandidate()).toEqual({ kind: "valid", record });
+});
 
 test("updates created parent directory progress only for the active operation and path", async () => {
     const fixture = await makeFixture();

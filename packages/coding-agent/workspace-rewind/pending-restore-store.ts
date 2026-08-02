@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
-import { lstat, mkdir, open } from "node:fs/promises";
+import { lstat, mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 import { encodeDurableJson } from "./durability";
 import {
+    readAnchoredJournalEntry,
     removeAnchoredJournalEntry,
     renameAnchoredJournalEntry,
     writeAnchoredJournalEntry,
@@ -209,31 +209,22 @@ export class PendingWorkspaceRestoreStore {
     async readActiveEntry(): Promise<
         { identity: AnchoredJournalDirectoryIdentity; source?: AnchoredJournalEntry } | undefined
     > {
-        let rootState;
-        try {
-            rootState = await lstat(this.root, { bigint: true });
-        } catch (error) {
-            if (isNodeError(error) && error.code === "ENOENT") {
-                if (this.rootIdentity) {
-                    throw new Error("Pending restore directory disappeared");
-                }
-                return undefined;
+        const active = await readAnchoredJournalEntry({
+            root: this.root,
+            name: "pending.json",
+            maximumEntryBytes: MaximumPendingBytes,
+        });
+        if (!active) {
+            if (this.rootIdentity) {
+                throw new Error("Pending restore directory disappeared");
             }
-            throw error;
+            return undefined;
         }
-        assertPrivateRoot(rootState);
-        const identity = directoryIdentity(rootState);
-        if (this.rootIdentity && !sameIdentity(this.rootIdentity, identity)) {
+        if (this.rootIdentity && !sameIdentity(this.rootIdentity, active.identity)) {
             throw new Error("Pending restore directory identity changed");
         }
-        const source = await readActivePendingFile(join(this.root, "pending.json"));
-        const after = await lstat(this.root, { bigint: true });
-        assertPrivateRoot(after);
-        if (!sameIdentity(identity, directoryIdentity(after))) {
-            throw new Error("Pending restore directory changed while reading active pending");
-        }
-        this.rootIdentity ??= identity;
-        return { identity, ...(source ? { source } : {}) };
+        this.rootIdentity ??= active.identity;
+        return { identity: active.identity, ...(active.entry ? { source: active.entry } : {}) };
     }
 
     assertIdentity(record: PendingWorkspaceRestoreV1): void {
@@ -520,90 +511,8 @@ async function makePrivateDirectory(path: string): Promise<void> {
     }
 }
 
-async function readActivePendingFile(path: string): Promise<AnchoredJournalEntry | undefined> {
-    let before: BigIntStats;
-    try {
-        before = await lstat(path, { bigint: true });
-    } catch (error) {
-        if (isNodeError(error) && error.code === "ENOENT") {
-            return undefined;
-        }
-        throw error;
-    }
-    if (
-        !before.isFile() ||
-        before.isSymbolicLink() ||
-        before.nlink !== 1n ||
-        (before.mode & 0o077n) !== 0n ||
-        before.size > BigInt(MaximumPendingBytes)
-    ) {
-        throw new Error("Active pending workspace restore is unsafe");
-    }
-    const expected = entryIdentity(before);
-    const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
-    try {
-        const opened = await handle.stat({ bigint: true });
-        if (!sameEntryIdentity(entryIdentity(opened), expected)) {
-            throw new Error("Active pending workspace restore changed before read");
-        }
-        const bytes = await handle.readFile();
-        const after = await handle.stat({ bigint: true });
-        const named = await lstat(path, { bigint: true });
-        if (
-            bytes.length > MaximumPendingBytes ||
-            !sameEntryIdentity(entryIdentity(after), expected) ||
-            !sameEntryIdentity(entryIdentity(named), expected)
-        ) {
-            throw new Error("Active pending workspace restore changed during read");
-        }
-        return { name: "pending.json", bytes, identity: expected };
-    } finally {
-        await handle.close();
-    }
-}
-
-function assertPrivateRoot(state: BigIntStats): void {
-    if (!state.isDirectory() || state.isSymbolicLink() || (state.mode & 0o077n) !== 0n) {
-        throw new Error("Pending restore directory is unsafe");
-    }
-}
-
-function directoryIdentity(state: BigIntStats): AnchoredJournalDirectoryIdentity {
-    return {
-        dev: state.dev.toString(),
-        ino: state.ino.toString(),
-        birthtimeNs: state.birthtimeNs.toString(),
-    };
-}
-
-function entryIdentity(state: BigIntStats): AnchoredJournalEntry["identity"] {
-    return {
-        ...directoryIdentity(state),
-        mode: state.mode.toString(),
-        nlink: state.nlink.toString(),
-        size: state.size.toString(),
-        mtimeNs: state.mtimeNs.toString(),
-        ctimeNs: state.ctimeNs.toString(),
-    };
-}
-
-function sameEntryIdentity(left: AnchoredJournalEntry["identity"], right: AnchoredJournalEntry["identity"]): boolean {
-    return (
-        sameIdentity(left, right) &&
-        left.mode === right.mode &&
-        left.nlink === right.nlink &&
-        left.size === right.size &&
-        left.mtimeNs === right.mtimeNs &&
-        left.ctimeNs === right.ctimeNs
-    );
-}
-
 function sameIdentity(left: AnchoredJournalDirectoryIdentity, right: AnchoredJournalDirectoryIdentity): boolean {
     return left.dev === right.dev && left.ino === right.ino && left.birthtimeNs === right.birthtimeNs;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-    return error instanceof Error && "code" in error;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
