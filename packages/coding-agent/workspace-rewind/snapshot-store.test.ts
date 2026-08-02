@@ -147,6 +147,60 @@ describe("private snapshot store", () => {
         warning.mockRestore();
     });
 
+    test.skipIf(process.platform === "win32")(
+        "syncs each legacy quarantine destination before unlinking its source",
+        async () => {
+            const fixture = await makeStoreFixture();
+            const legacyRoot = join(fixture.storeRoot, "journal", "restores");
+            const resolvedRoot = join(fixture.storeRoot, "journal", "restore", "resolved");
+            const bytes = Buffer.from("durable legacy restore");
+            const digest = createHash("sha256").update(bytes).digest("hex");
+            const source = join(legacyRoot, "operation.json");
+            const destination = join(resolvedRoot, `legacy-${digest}.json`);
+            await mkdir(legacyRoot, { recursive: true, mode: 0o700 });
+            await writeFile(source, bytes, { mode: 0o600 });
+            const probe = await open(source, "r");
+            const prototype = Object.getPrototypeOf(probe) as {
+                sync(): Promise<void>;
+            };
+            const originalSync = prototype.sync;
+            await probe.close();
+            const events: Array<{ directory: boolean; sourceExists: boolean }> = [];
+            const exists = async (path: string) =>
+                lstat(path).then(
+                    () => true,
+                    (error: NodeJS.ErrnoException) => {
+                        if (error.code === "ENOENT") return false;
+                        throw error;
+                    }
+                );
+            const sync = vi.spyOn(prototype, "sync").mockImplementation(async function () {
+                await originalSync.call(this);
+                if (!(await exists(destination))) return;
+                const state = await (this as unknown as { stat(): Promise<{ isDirectory(): boolean }> }).stat();
+                events.push({ directory: state.isDirectory(), sourceExists: await exists(source) });
+            });
+
+            try {
+                await WorkspaceSnapshotStore.open({
+                    dataRoot: fixture.dataRoot,
+                    identity: fixture.identity,
+                    git: fixture.git,
+                    processOwner: fixture.processOwner,
+                });
+            } finally {
+                sync.mockRestore();
+            }
+
+            const destinationFileSync = events.findIndex((event) => !event.directory && event.sourceExists);
+            const destinationDirectorySync = events.findIndex((event) => event.directory && event.sourceExists);
+            const sourceDirectorySync = events.findIndex((event) => event.directory && !event.sourceExists);
+            expect(destinationFileSync).toBeGreaterThanOrEqual(0);
+            expect(destinationDirectorySync).toBeGreaterThan(destinationFileSync);
+            expect(sourceDirectorySync).toBeGreaterThan(destinationDirectorySync);
+        }
+    );
+
     test("does not block startup when legacy restore quarantine cannot be created", async () => {
         const fixture = await makeStoreFixture();
         const legacyRoot = join(fixture.storeRoot, "journal", "restores");

@@ -3,11 +3,11 @@
 
 import { Session } from "@crest/agent/harness/session/session";
 import { SqliteSessionStorage } from "@crest/agent/harness/session/sqlite-storage";
-import { fork } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
 import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deriveWorkspaceApplyArtifactPaths } from "./filesystem-apply";
 import { WorkspaceGitRunner } from "./git-runner";
@@ -66,6 +66,21 @@ afterEach(async () => {
 });
 
 describe("phase-free restore crash matrix", () => {
+    it("uses process-group kill on POSIX and child kill on Windows", () => {
+        const childKill = vi.fn(() => true);
+        const groupKill = vi.fn();
+        const child = { pid: 42, kill: childKill } as unknown as ChildProcess;
+
+        killCrashWorker(child, "darwin", groupKill);
+        expect(groupKill).toHaveBeenCalledWith(-42, "SIGKILL");
+        expect(childKill).not.toHaveBeenCalled();
+
+        groupKill.mockClear();
+        killCrashWorker(child, "win32", groupKill);
+        expect(childKill).toHaveBeenCalledWith("SIGKILL");
+        expect(groupKill).not.toHaveBeenCalled();
+    });
+
     it("does not retain the legacy operation-owner API beside the pending protocol", () => {
         expect(
             Object.getOwnPropertyNames(WorkspaceSnapshotStore.prototype).filter((name) =>
@@ -185,7 +200,7 @@ async function crashAt(
     });
     await new Promise<void>((ready, reject) => {
         const timer = setTimeout(() => {
-            process.kill(-child.pid!, "SIGKILL");
+            killCrashWorker(child);
             reject(new Error(`restore crash worker timed out before ${boundary}: ${stderr}`));
         }, 20_000);
         child.once("message", (message) => {
@@ -202,10 +217,23 @@ async function crashAt(
             reject(new Error(`restore crash worker exited before ${boundary}: ${String(code ?? signal)} ${stderr}`));
         });
     });
-    process.kill(-child.pid!, "SIGKILL");
+    killCrashWorker(child);
     await new Promise<void>((exited) => child.once("exit", () => exited()));
     const metadata = JSON.parse(await readFile(join(root, "fixture.json"), "utf8")) as CrashFixtureMetadata;
     return { root, metadata };
+}
+
+function killCrashWorker(
+    child: ChildProcess,
+    platform: NodeJS.Platform = process.platform,
+    killProcess: (pid: number, signal: NodeJS.Signals) => void = process.kill
+): void {
+    if (platform === "win32") {
+        child.kill("SIGKILL");
+        return;
+    }
+    if (child.pid == null) throw new Error("Restore crash worker has no process id");
+    killProcess(-child.pid, "SIGKILL");
 }
 
 async function recover(metadata: CrashFixtureMetadata) {

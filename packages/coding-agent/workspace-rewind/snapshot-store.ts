@@ -2212,10 +2212,6 @@ async function quarantineLegacyRestoreJournalsImpl(
             failed++;
         }
     }
-    if (quarantined > 0) {
-        await syncDirectory(resolvedRoot);
-        await syncDirectory(legacyRoot);
-    }
     return { quarantined, failed };
 }
 
@@ -2275,7 +2271,9 @@ async function quarantineLegacyRestoreJournal(legacyRoot: string, resolvedRoot: 
     ) {
         throw new Error("Legacy restore journal entry changed during quarantine");
     }
+    await syncDirectory(resolvedRoot);
     await unlink(source);
+    await syncDirectory(legacyRoot);
 }
 
 function parseOid(value: Buffer): string {
