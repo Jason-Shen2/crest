@@ -270,10 +270,6 @@ function TurnChangesE2EUi(props: {
                     : controller.dialog.kind === "undo"
                       ? "Undo turn changes?"
                       : "Redo turn changes?",
-            description:
-                controller.dialog.kind === "review"
-                    ? "Checkpoint before → after"
-                    : "Only this turn's workspace files will change",
             files: controller.dialog.files,
             selectedPath: controller.dialog.selectedPath,
             loading: controller.dialog.phase === "loading",
@@ -424,7 +420,6 @@ function RewindMessageUi(props: {
         createElement(DiffReviewDialog, {
             open: controller.preview.open,
             title: controller.preview.operation === "rewind" ? "Revert changes?" : "Redo changes?",
-            description: "Red will be removed · Green will be restored",
             files: controller.preview.result?.files ?? [],
             loading: controller.preview.phase === "loading",
             errorMessage: controller.preview.errorMessage,
@@ -715,7 +710,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "审核" }));
         const reviewDialog = await screen.findByRole("dialog");
-        expect(await within(reviewDialog).findByText("Checkpoint before → after")).not.toBeNull();
+        expect(await within(reviewDialog).findByRole("heading", { name: "Review turn changes" })).not.toBeNull();
         expect(await within(reviewDialog).findByTitle(path)).not.toBeNull();
         const renderedReview = await within(reviewDialog).findByLabelText("Rendered review diff");
         expect(renderedReview.textContent).toContain("-before");
@@ -765,7 +760,6 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         fireEvent.click(screen.getByRole("button", { name: /撤销/ }));
         const undoDialog = await screen.findByRole("dialog");
         expect(await within(undoDialog).findByText("Undo turn changes?")).not.toBeNull();
-        expect(within(undoDialog).getByText("Only this turn's workspace files will change")).not.toBeNull();
         const applyUndo = vi.spyOn(client, "applyTurnUndo");
         const confirmUndo = within(undoDialog).getByRole("button", { name: "Confirm undo" }) as HTMLButtonElement;
         await waitFor(() => expect(confirmUndo.disabled).toBe(false));
@@ -1058,7 +1052,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         );
         fireEvent.click(screen.getByRole("button", { name: "Revert" }));
         const previewDialog = await screen.findByRole("dialog");
-        expect(await within(previewDialog).findByText("Red will be removed · Green will be restored")).not.toBeNull();
+        expect(await within(previewDialog).findByRole("heading", { name: "Revert changes?" })).not.toBeNull();
         expect(within(previewDialog).queryByText("Original user prompt")).toBeNull();
         expect(await readFile(file, "utf8")).toBe("after");
         fireEvent.click(await within(previewDialog).findByRole("button", { name: "Revert 1 file" }));
