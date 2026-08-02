@@ -110,6 +110,7 @@ import {
     cloneAgentSessionForIpc,
     deleteAgentSessionForIpc,
     forkAgentSessionForIpc,
+    getAgentSessionStateForIpc,
     listAgentCommandsForIpc,
     listAgentForkPointsForIpc,
     listAgentTreeForIpc,
@@ -122,6 +123,7 @@ import {
 import { openAgentRewindFeature } from "./agent-rewind-feature";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
 import {
+    _resetAgentWorkspaceRecoveryGateForTests,
     installAgentWorkspaceRecoveryGate,
     makeAgentWorkspaceRecoveryGate,
     type AgentWorkspaceRecoveryGate,
@@ -3912,8 +3914,29 @@ describe("agent-ipc command helpers", () => {
             paths: [],
             allowedActions: ["retry" as const, "abandon-current" as const],
         };
-        const getRecovery = vi.fn(async () => recovery);
-        const resolveRecovery = vi.fn(async () => {});
+        const order: string[] = [];
+        let sessionAccessDepth = 0;
+        const originalWithSessionAccess = AgentRuntimeRegistry.prototype.withSessionAccess;
+        const accessSpy = vi
+            .spyOn(AgentRuntimeRegistry.prototype, "withSessionAccess")
+            .mockImplementation(function (path, operation) {
+                order.push("session-access");
+                return originalWithSessionAccess.call(this, path, async (lease) => {
+                    sessionAccessDepth++;
+                    try {
+                        return await operation(lease);
+                    } finally {
+                        sessionAccessDepth--;
+                    }
+                });
+            });
+        const getRecovery = vi.fn(async () => {
+            order.push(`get-gate:${sessionAccessDepth}`);
+            return recovery;
+        });
+        const resolveRecovery = vi.fn(async () => {
+            order.push(`resolve-gate:${sessionAccessDepth}`);
+        });
         const injectedMaintenance = {
             getRecovery: vi.fn(async () => ({ ...recovery, operationId: "maintenance-bypass" })),
             resolveRecovery: vi.fn(async () => {}),
@@ -3936,16 +3959,24 @@ describe("agent-ipc command helpers", () => {
         const handlers = registeredHandlers();
         const event = { sender: { id: 89, isDestroyed: () => false, once: vi.fn(), send: vi.fn() } };
 
-        await expect(
-            handlers.get("agent:get-workspace-recovery")?.(event, TrustedRequestContext, {
+        try {
+            await expect(
+                handlers.get("agent:get-workspace-recovery")?.(event, TrustedRequestContext, {
+                    sessionMetadata: metadata,
+                })
+            ).resolves.toEqual(recovery);
+            expect.soft(order).toEqual(["get-gate:0", "session-access"]);
+
+            order.length = 0;
+            await handlers.get("agent:resolve-workspace-recovery")?.(event, TrustedRequestContext, {
                 sessionMetadata: metadata,
-            })
-        ).resolves.toEqual(recovery);
-        await handlers.get("agent:resolve-workspace-recovery")?.(event, TrustedRequestContext, {
-            sessionMetadata: metadata,
-            operationId: "operation-a",
-            action: "retry",
-        });
+                operationId: "operation-a",
+                action: "retry",
+            });
+            expect.soft(order).toEqual(["resolve-gate:0", "session-access"]);
+        } finally {
+            accessSpy.mockRestore();
+        }
 
         expect(getRecovery).toHaveBeenCalledWith(workspace);
         expect(resolveRecovery).toHaveBeenCalledWith(workspace, "operation-a", "retry", expect.any(Function));
@@ -4357,6 +4388,72 @@ describe("agent-ipc command helpers", () => {
 
         expect(observedDepths).toEqual([0, 0]);
     });
+
+    it.each(["get-session-state", "cold-subscription"] as const)(
+        "rejects a same-path session replacement after the recovery probe for %s",
+        async (kind) => {
+            const cwd = await fs.mkdtemp(path.join(os.tmpdir(), `crest-agent-cold-identity-${kind}-`));
+            const original = await createPaneSession(cwd);
+            const replacement = await createPaneSession(cwd);
+            original.session.close();
+            replacement.session.close();
+            const displacedPath = `${original.metadata.path}.displaced`;
+            const sender = { id: 100, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
+            const authorization = {
+                workspaceId: TrustedRequestContext.workspaceId,
+                generation: TrustedRequestContext.generation,
+                validateCurrent: vi.fn(async () => {}),
+                guardRuntime: vi.fn(async () => {}),
+            };
+            const canonicalRoot = await fs.realpath(cwd);
+            vi.mocked(openAgentRewindFeature).mockResolvedValueOnce({
+                state: "enabled",
+                processOwner: { pid: 1, processStartToken: "start", nonce: "nonce" },
+                store: {
+                    identity: {
+                        canonicalRoot,
+                        workspaceIdentity: "5".repeat(64),
+                        workspaceIncarnation: "6".repeat(64),
+                        storeKey: `cold-identity-${kind}`,
+                        ancestorIdentityChain: [],
+                    },
+                    verifyOwnedSnapshot: vi.fn(async () => {}),
+                    getQuotaStatus: vi.fn(async () => ({
+                        status: "ok",
+                        usedBytes: 0,
+                        referencedBytes: 0,
+                        softQuotaBytes: 1,
+                    })),
+                },
+            } as never);
+            installAgentWorkspaceRecoveryGate(
+                makeRecoveryGate({
+                    getRecovery: async () => {
+                        await fs.rename(original.metadata.path, displacedPath);
+                        await fs.rename(replacement.metadata.path, original.metadata.path);
+                        return undefined;
+                    },
+                })
+            );
+
+            try {
+                const operation =
+                    kind === "get-session-state"
+                        ? getAgentSessionStateForIpc(original.metadata)
+                        : subscribeAgentSessionForIpc(
+                              sender as unknown as electron.WebContents,
+                              original.metadata.path,
+                              {
+                                  ...authorization,
+                              }
+                          );
+                await expect(operation).rejects.toThrow(/session identity changed during recovery probe/i);
+                expect(sender.send).not.toHaveBeenCalled();
+            } finally {
+                _resetAgentWorkspaceRecoveryGateForTests();
+            }
+        }
+    );
 
     it("routes all seven turn change endpoints through strict session authorization", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-turn-change-ipc-"));

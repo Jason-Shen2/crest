@@ -816,6 +816,41 @@ async function openValidatedSessionMetadata(value: unknown): Promise<{
     }
 }
 
+interface StableSessionIdentity {
+    id: string;
+    createdAt: string;
+    canonicalPath: string;
+    canonicalCwd: string;
+}
+
+async function captureStableSessionIdentity(
+    metadata: JsonlSessionMetadata,
+    expectedCanonicalPath: string
+): Promise<StableSessionIdentity> {
+    const canonicalPath = await validateSessionPath(metadata.path, "sessionMetadata.path");
+    if (canonicalPath !== expectedCanonicalPath) {
+        throw new Error("agent IPC: session identity changed during recovery probe");
+    }
+    let canonicalCwd: string;
+    try {
+        canonicalCwd = await fs.realpath(metadata.cwd);
+    } catch {
+        canonicalCwd = path.resolve(metadata.cwd);
+    }
+    return { id: metadata.id, createdAt: metadata.createdAt, canonicalPath, canonicalCwd };
+}
+
+function assertStableSessionIdentity(expected: StableSessionIdentity, current: StableSessionIdentity): void {
+    if (
+        expected.id !== current.id ||
+        expected.createdAt !== current.createdAt ||
+        expected.canonicalPath !== current.canonicalPath ||
+        expected.canonicalCwd !== current.canonicalCwd
+    ) {
+        throw new Error("agent IPC: session identity changed during recovery probe");
+    }
+}
+
 async function requireSessionEntry(
     session: Awaited<ReturnType<typeof openPaneSessionByPath>>,
     entryId: string,
@@ -2107,7 +2142,11 @@ export async function getAgentSessionStateForIpc(
                 if (liveRuntime) {
                     return { kind: "live" as const, state: await buildLiveSessionState(liveRuntime, guardRuntime) };
                 }
-                return { kind: "cold" as const, metadata };
+                return {
+                    kind: "cold" as const,
+                    metadata,
+                    identity: await captureStableSessionIdentity(metadata, canonicalPath),
+                };
             } finally {
                 session.close();
             }
@@ -2115,13 +2154,20 @@ export async function getAgentSessionStateForIpc(
         "sessionMetadata.path"
     );
     if (prepared.kind === "live") return prepared.state;
-    const { metadata } = prepared;
+    const { metadata, identity } = prepared;
     const recoveryProbe = await probeColdRewindRecovery(metadata);
     return await withCanonicalSessionAccess(
         metadata.path,
         async (canonicalPath) => {
             const current = await openValidatedSessionMetadata({ ...metadata, path: canonicalPath });
-            current.session.close();
+            try {
+                assertStableSessionIdentity(
+                    identity,
+                    await captureStableSessionIdentity(current.metadata, canonicalPath)
+                );
+            } finally {
+                current.session.close();
+            }
             return await buildPersistedSessionState(canonicalPath, guardRuntime, beforeReturn, recoveryProbe);
         },
         "sessionMetadata.path"
@@ -2715,7 +2761,14 @@ export async function subscribeAgentSessionForIpc(
             ? makeFallbackSubscriptionAuthorization(authorizationOrBeforeMutation)
             : (authorizationOrBeforeMutation ?? makeFallbackSubscriptionAuthorization());
     const rendererPath = requireNonEmptyString(sessionPath, "sessionPath");
-    let pendingDelivery: { canonicalPath: string; key: SubKey; metadata: JsonlSessionMetadata } | undefined;
+    let pendingDelivery:
+        | {
+              canonicalPath: string;
+              key: SubKey;
+              metadata: JsonlSessionMetadata;
+              identity: StableSessionIdentity;
+          }
+        | undefined;
     await withCanonicalSessionAccess(rendererPath, async (canonicalPath, lease) => {
         await authorization.validateCurrent();
         if (sender.isDestroyed()) return;
@@ -2730,7 +2783,13 @@ export async function subscribeAgentSessionForIpc(
             }
             const session = await openPaneSessionByPath(canonicalPath);
             try {
-                pendingDelivery = { canonicalPath, key, metadata: await session.getMetadata() };
+                const metadata = await session.getMetadata();
+                pendingDelivery = {
+                    canonicalPath,
+                    key,
+                    metadata,
+                    identity: await captureStableSessionIdentity(metadata, canonicalPath),
+                };
             } finally {
                 session.close();
             }
@@ -2745,15 +2804,39 @@ export async function subscribeAgentSessionForIpc(
         try {
             await withCanonicalSessionAccess(
                 pendingDelivery.canonicalPath,
-                async (canonicalPath) =>
-                    sendPersistedSessionState(
+                async (canonicalPath) => {
+                    await authorization.validateCurrent();
+                    const pending = pendingSubscriptions.get(pendingDelivery!.key);
+                    if (
+                        !pending ||
+                        pending.sender !== sender ||
+                        pending.authorization !== authorization ||
+                        pending.canonicalPath !== canonicalPath ||
+                        pending.rendererPath !== rendererPath
+                    ) {
+                        return;
+                    }
+                    const current = await openValidatedSessionMetadata({
+                        ...pendingDelivery!.metadata,
+                        path: canonicalPath,
+                    });
+                    try {
+                        assertStableSessionIdentity(
+                            pendingDelivery!.identity,
+                            await captureStableSessionIdentity(current.metadata, canonicalPath)
+                        );
+                    } finally {
+                        current.session.close();
+                    }
+                    await sendPersistedSessionState(
                         sender,
                         canonicalPath,
                         rendererPath,
                         authorization,
                         pendingDelivery!.key,
                         recoveryProbe
-                    ),
+                    );
+                },
                 "sessionPath"
             );
         } catch (error) {
@@ -3605,6 +3688,30 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             },
         };
     };
+    const authenticateRecoveryInput = async (
+        event: electron.IpcMainInvokeEvent,
+        requestContext: unknown,
+        input: unknown,
+        schema: "get-recovery" | "resolve-recovery"
+    ): Promise<{
+        authenticated: AuthenticatedWorkspaceAgentSender;
+        input: Record<string, unknown> & { sessionMetadata: JsonlSessionMetadata };
+    }> => {
+        if (!isRecord(input)) throw new Error("agent IPC: rewind input must be an object");
+        validateRewindIpcSchema(input, schema);
+        const sessionMetadata = validateSessionMetadataShape(input.sessionMetadata);
+        const authenticated = await authenticate(event, requestContext);
+        return { authenticated, input: { ...input, sessionMetadata } };
+    };
+    const authorizeRecoverySession = async (
+        event: electron.IpcMainInvokeEvent,
+        authenticated: AuthenticatedWorkspaceAgentSender,
+        sessionMetadata: JsonlSessionMetadata
+    ): Promise<JsonlSessionMetadata> => {
+        const metadata = await requireSessionBelongsToWorkspace(authenticated, sessionMetadata);
+        await assertCurrent(event, authenticated);
+        return metadata;
+    };
     const requireRewindService = () => options.rewindService ?? defaultRewindService;
     const requireRewindMaintenance = () => options.rewindMaintenance ?? defaultMaintenance;
     const publishMaintenanceSessionState = async (
@@ -3745,16 +3852,16 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         return result;
     });
     electron.ipcMain.handle("agent:get-workspace-recovery", async (event, requestContext, input) => {
-        const authorized = await authorizeRewindInput(event, requestContext, input, "get-recovery", false);
+        const authorized = await authenticateRecoveryInput(event, requestContext, input, "get-recovery");
         const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(
             authorized.authenticated.workspaceDir
         );
         const result = await (options.recoveryGate ?? getAgentWorkspaceRecoveryGate()).getRecovery(workspace);
-        await assertCurrent(event, authorized.authenticated);
+        await authorizeRecoverySession(event, authorized.authenticated, authorized.input.sessionMetadata);
         return result;
     });
     electron.ipcMain.handle("agent:resolve-workspace-recovery", async (event, requestContext, input) => {
-        const authorized = await authorizeRewindInput(event, requestContext, input, "resolve-recovery", false);
+        const authorized = await authenticateRecoveryInput(event, requestContext, input, "resolve-recovery");
         const operationId = requireNonEmptyString(authorized.input.operationId, "operationId");
         const action = authorized.input.action;
         if (action !== "retry" && action !== "abandon-current" && action !== "quarantine-corrupt") {
@@ -3769,8 +3876,12 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
             action,
             () => assertCurrent(event, authorized.authenticated)
         );
-        await assertCurrent(event, authorized.authenticated);
-        await publishMaintenanceSessionState(event, authorized.authenticated, authorized.input.sessionMetadata);
+        const metadata = await authorizeRecoverySession(
+            event,
+            authorized.authenticated,
+            authorized.input.sessionMetadata
+        );
+        await publishMaintenanceSessionState(event, authorized.authenticated, metadata);
     });
     electron.ipcMain.handle("agent:cleanup-workspace-checkpoints", async (event, requestContext, input) => {
         const authorized = await authorizeRewindInput(event, requestContext, input, "cleanup", true);
