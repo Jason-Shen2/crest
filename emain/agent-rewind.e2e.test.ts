@@ -487,7 +487,7 @@ async function makeFixture() {
     ) => {
         const confirmations = new RewindConfirmationRegistry();
         const registry = new AgentRuntimeRegistry({ idleTtlMs: 60_000 });
-        let publishState = async (_operationId: string) => undefined;
+        let publishState = async () => undefined;
         const recovery = new WorkspaceRecovery({
             workspace: identity,
             store,
@@ -519,7 +519,7 @@ async function makeFixture() {
             recovery,
             confirmations,
             applyPath,
-            onCommitted: async (_sessionId, operationId) => await publishState(operationId),
+            onCommitted: async () => await publishState(),
         });
         const service = new AgentRewindService({
             registry: registry as never,

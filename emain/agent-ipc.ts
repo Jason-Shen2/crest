@@ -3309,8 +3309,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                 confirmations,
                 ...(input.mode === "mutation"
                     ? {
-                          onCommitted: async (_sessionId: string, operationId: string) =>
-                              await input.publishState(operationId),
+                          onCommitted: async () => await input.publishState(),
                       }
                     : {}),
             });

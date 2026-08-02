@@ -144,7 +144,7 @@ function harness() {
         forceRequired: false,
         hardBlocked: false,
     };
-    let publishState: ((operationId: string) => Promise<void>) | undefined;
+    let publishState: (() => Promise<void>) | undefined;
     const engine = {
         getTurnChangeSummary: vi.fn(async () => ({
             turnId: "turn-1",
@@ -195,7 +195,7 @@ function harness() {
         }),
         applyRewind: vi.fn(async () => {
             order.push("engine-apply");
-            await publishState?.("operation-1");
+            await publishState?.();
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "operation-leaf",
@@ -205,7 +205,7 @@ function harness() {
         }),
         applyRedo: vi.fn(async () => {
             order.push("engine-redo");
-            await publishState?.("operation-1");
+            await publishState?.();
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "redo-leaf",
@@ -214,7 +214,7 @@ function harness() {
         }),
         applyTurnUndo: vi.fn(async () => {
             order.push("engine-turn-undo");
-            await publishState?.("operation-1");
+            await publishState?.();
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "turn-undo-leaf",
@@ -223,7 +223,7 @@ function harness() {
         }),
         applyTurnRedo: vi.fn(async () => {
             order.push("engine-turn-redo");
-            await publishState?.("operation-1");
+            await publishState?.();
             return {
                 sessionMetadata: Metadata,
                 semanticLeafId: "turn-redo-leaf",
@@ -255,6 +255,7 @@ function harness() {
         engine,
         broadcaster,
         order,
+        getPublishState: () => publishState,
     };
 }
 
@@ -276,6 +277,7 @@ describe("AgentRewindService", () => {
             semanticLeafId: "checkpoint-1",
             displayLeafId: "turn-1",
         });
+        expect(value.getPublishState()).toHaveLength(0);
         expect(value.order).toEqual([
             "session-lease",
             "workspace-lock",
