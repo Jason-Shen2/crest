@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 
 import {
+    publishAnchoredJournalEntryNoReplace,
+    readAnchoredJournalDirectory,
     readAnchoredJournalEntry,
     readAnchoredJournalPublication,
     recoverAnchoredJournalPublication,
@@ -80,14 +82,14 @@ test("fails closed when the named journal root is swapped before its worker star
     expect(swapped).toBe(true);
 });
 
-test("first publication refuses to overwrite an existing destination", async () => {
+test("pending publication refuses to overwrite an existing destination", async () => {
     const root = await mkdtemp(join(tmpdir(), "crest-journal-publish-existing-"));
     CleanupRoots.push(root);
     await writeFile(join(root, "pending.json"), "existing", { mode: 0o600 });
     const anchored = await readAnchoredJournalEntry({ root, name: "absent.json", maximumEntryBytes: 1024 });
 
     await expect(
-        writeAnchoredJournalEntry({
+        publishAnchoredJournalEntryNoReplace({
             root,
             rootIdentity: anchored!.identity,
             destinationName: "pending.json",
@@ -97,7 +99,7 @@ test("first publication refuses to overwrite an existing destination", async () 
     expect(await readFile(join(root, "pending.json"), "utf8")).toBe("existing");
 });
 
-test("first publication cannot overwrite a destination created after its initial check", async () => {
+test("pending publication cannot overwrite a destination created after its initial check", async () => {
     const root = await mkdtemp(join(tmpdir(), "crest-journal-publish-race-"));
     CleanupRoots.push(root);
     const destination = join(root, "pending.json");
@@ -118,7 +120,7 @@ test("first publication cannot overwrite a destination created after its initial
     });
     try {
         await expect(
-            writeAnchoredJournalEntry({
+            publishAnchoredJournalEntryNoReplace({
                 root,
                 rootIdentity: anchored!.identity,
                 destinationName: "pending.json",
@@ -132,6 +134,39 @@ test("first publication cannot overwrite a destination created after its initial
     expect(installed).toBe(true);
     expect(await readFile(destination, "utf8")).toBe("racing owner");
     expect((await readdir(root)).filter((name) => name.endsWith(".publish.tmp"))).toEqual([]);
+}, 15_000);
+
+test("shared journal writes keep random rename temps readable by the legacy directory scanner", async () => {
+    const root = await mkdtemp(join(tmpdir(), "crest-journal-legacy-write-"));
+    CleanupRoots.push(root);
+    const anchored = await readAnchoredJournalEntry({ root, name: "absent.json", maximumEntryBytes: 1024 });
+    let temporaryName: string | undefined;
+    const watcher = watch(root, (_event, filename) => {
+        const name = String(filename);
+        if (/^\.[0-9a-f]{32}\.tmp$/.test(name)) {
+            temporaryName = name;
+        }
+    });
+    try {
+        await writeAnchoredJournalEntry({
+            root,
+            rootIdentity: anchored!.identity,
+            destinationName: "legacy.json",
+            bytes: Buffer.alloc(64 * 1024 * 1024, 0x62),
+        });
+    } finally {
+        watcher.close();
+    }
+    expect(temporaryName).toMatch(/^\.[0-9a-f]{32}\.tmp$/);
+
+    await writeFile(join(root, temporaryName!), "interrupted legacy write", { mode: 0o600 });
+    const scanned = await readAnchoredJournalDirectory({
+        root,
+        maximumEntries: 2,
+        maximumEntryBytes: 64 * 1024 * 1024,
+        maximumTotalBytes: 65 * 1024 * 1024,
+    });
+    expect(scanned?.entries.map((entry) => entry.name).sort()).toEqual([temporaryName, "legacy.json"].sort());
 }, 15_000);
 
 test.each([

@@ -7,6 +7,7 @@ import { isAbsolute, join, normalize } from "node:path";
 
 import { encodeDurableJson } from "./durability";
 import {
+    publishAnchoredJournalEntryNoReplace,
     readAnchoredJournalPublication,
     recoverAnchoredJournalPublication,
     removeAnchoredJournalEntry,
@@ -100,7 +101,7 @@ export class PendingWorkspaceRestoreStore {
         if (active.source) {
             throw new Error("A workspace restore is already pending");
         }
-        await writeAnchoredJournalEntry({
+        await publishAnchoredJournalEntryNoReplace({
             root: this.root,
             rootIdentity: active.identity,
             destinationName: "pending.json",

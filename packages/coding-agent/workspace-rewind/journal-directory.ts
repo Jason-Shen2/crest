@@ -186,6 +186,23 @@ export async function writeAnchoredJournalEntry(input: {
     }
 }
 
+export async function publishAnchoredJournalEntryNoReplace(input: {
+    root: string;
+    rootIdentity: AnchoredJournalDirectoryIdentity;
+    destinationName: string;
+    bytes: Buffer;
+}): Promise<void> {
+    const result = await runWorker(input.root, {
+        type: "publish-no-replace",
+        rootIdentity: input.rootIdentity,
+        destinationName: input.destinationName,
+        bytesBase64: input.bytes.toString("base64"),
+    });
+    if (!isRecord(result) || result.ok !== true || Object.keys(result).length !== 1) {
+        throw new Error("Workspace recovery journal no-replace publication returned invalid output");
+    }
+}
+
 async function runPublicationWorker(
     input: { root: string; destinationName: string; maximumEntryBytes: number },
     type: "read-publication" | "recover-publication"
@@ -666,7 +683,7 @@ async function main() {
         await assertRoot(input.rootIdentity);
         return { ok: true };
     }
-    if (input.type === "write") {
+    if (input.type === "write" || input.type === "publish-no-replace") {
         if (!validName(input.destinationName) || typeof input.bytesBase64 !== "string") {
             throw new Error("invalid journal write input");
         }
@@ -688,9 +705,13 @@ async function main() {
         } else if (destination) {
             throw new Error("journal write destination appeared");
         }
-        const temporary = input.expectedDestinationIdentity
-            ? "." + require("node:crypto").randomBytes(16).toString("hex") + ".tmp"
-            : publicationTemporaryName(input.destinationName);
+        const noReplace = input.type === "publish-no-replace";
+        if (noReplace && input.expectedDestinationIdentity) {
+            throw new Error("invalid journal no-replace publication input");
+        }
+        const temporary = noReplace
+            ? publicationTemporaryName(input.destinationName)
+            : "." + require("node:crypto").randomBytes(16).toString("hex") + ".tmp";
         const handle = await fsp.open(temporary, "wx", 384);
         try {
             await handle.writeFile(bytes);
@@ -699,7 +720,7 @@ async function main() {
             await handle.close();
         }
         try {
-            if (input.expectedDestinationIdentity) {
+            if (!noReplace) {
                 await fsp.rename(temporary, input.destinationName);
                 await syncRoot();
                 await assertRoot(input.rootIdentity);
@@ -712,6 +733,10 @@ async function main() {
                 await assertRoot(input.rootIdentity);
             }
         } catch (error) {
+            if (!noReplace) {
+                await fsp.unlink(temporary).catch(() => {});
+                throw error;
+            }
             try {
                 await fsp.unlink(temporary);
                 await syncRoot();
