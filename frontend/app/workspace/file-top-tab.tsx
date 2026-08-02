@@ -10,6 +10,14 @@ import type { WorkspaceFileRuntime } from "./workspace-editor-registry";
 
 type FileViewMode = "preview" | "edit";
 
+function FileSaveError({ title, error }: { title: string; error: string }) {
+    return (
+        <div className="shrink-0 border-b border-border px-3 py-2 text-sm text-red-500" role="alert">
+            Unable to save {title}: {error}
+        </div>
+    );
+}
+
 export function FileTopTab({
     runtime,
     onClose,
@@ -44,7 +52,7 @@ export function FileTopTab({
         attachedModelRef.current = runtime.model;
     }, [runtime, runtime.model]);
 
-    if (snapshot.status === "error" && snapshot.operation !== "save") {
+    if (snapshot.status === "error" && snapshot.saveStatus !== "error") {
         return (
             <div className="flex h-full items-center justify-center p-6" role="alert">
                 <div className="flex max-w-lg flex-col gap-3">
@@ -100,9 +108,16 @@ export function FileTopTab({
             text={runtime.value}
         />
     );
+    const saveError =
+        snapshot.saveStatus === "error" ? <FileSaveError title={snapshot.title} error={snapshot.error} /> : null;
 
     if (!isMarkdown) {
-        return editor;
+        return (
+            <div className="flex h-full min-h-0 flex-col">
+                {saveError}
+                <div className="min-h-0 flex-1">{editor}</div>
+            </div>
+        );
     }
 
     const breadcrumb = runtime.path.replaceAll("\\", "/").split("/").filter(Boolean).slice(-2).join(" / ");
@@ -142,6 +157,7 @@ export function FileTopTab({
                     </button>
                 </div>
             </div>
+            {saveError}
             <div className="min-h-0 flex-1">
                 {viewMode === "preview" ? <MarkdownFilePreview path={runtime.path} text={runtime.value} /> : editor}
             </div>

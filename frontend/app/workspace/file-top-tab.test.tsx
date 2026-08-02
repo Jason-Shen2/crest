@@ -6,6 +6,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FileTopTab } from "./file-top-tab";
+import { WorkspaceEditorRegistry } from "./workspace-editor-registry";
 
 const editorProps = vi.hoisted(() => ({ current: null as any }));
 const markdownFilePreviewProps = vi.hoisted(() => ({ current: null as any }));
@@ -14,6 +15,8 @@ const codeEditorLifecycleHarness = vi.hoisted(() => ({
     editors: [] as any[],
     cleanups: [] as Array<() => void>,
 }));
+
+vi.mock("@/app/righteditor/monaco-model-registry", () => ({ MonacoModelRegistry: class {} }));
 
 vi.mock("@/app/view/codeeditor/codeeditor", () => ({
     CodeEditor: (props: any) => {
@@ -76,6 +79,42 @@ function makeControlledRuntime(path: string, value: string) {
         detach: vi.fn(),
     };
     return runtime;
+}
+
+function makeTestModelRegistry() {
+    const models = new Map<string, any>();
+    return {
+        getOrCreateModel({ path, text }: { path: string; text: string }) {
+            const existing = models.get(path);
+            if (existing) {
+                return existing;
+            }
+            const listeners = new Set<() => void>();
+            const model = {
+                value: text,
+                getValue: () => model.value,
+                setValue: (nextValue: string) => {
+                    model.value = nextValue;
+                    listeners.forEach((listener) => listener());
+                },
+                onDidChangeContent: (listener: () => void) => {
+                    listeners.add(listener);
+                    return { dispose: () => listeners.delete(listener) };
+                },
+                dispose: vi.fn(),
+            };
+            models.set(path, model);
+            return model;
+        },
+        disposePath(path: string) {
+            models.get(path)?.dispose();
+            models.delete(path);
+        },
+        disposeAll() {
+            models.forEach((model) => model.dispose());
+            models.clear();
+        },
+    };
 }
 
 afterEach(() => {
@@ -228,6 +267,89 @@ describe("FileTopTab", () => {
 
         expect(markdownFilePreviewProps.current).toMatchObject({ path: "/repo/docs/README.md", text: "# Edited" });
         expect(runtime.setValue).toHaveBeenCalledWith("# Edited");
+    });
+
+    it("preserves a dirty Markdown buffer and view controls when saving fails", async () => {
+        const registry = new WorkspaceEditorRegistry(
+            "workspace-1",
+            {
+                readFile: vi.fn().mockResolvedValue({ text: "# Saved", readonly: false }),
+                writeFile: vi.fn().mockRejectedValue(new Error("disk full")),
+            },
+            makeTestModelRegistry() as any
+        );
+        const runtime = registry.open("file-1", "/repo/docs/README.md");
+
+        try {
+            await act(async () => {
+                await runtime.ready;
+            });
+            render(<FileTopTab runtime={runtime} onClose={vi.fn()} onLocate={vi.fn()} />);
+
+            act(() => {
+                runtime.setValue("# Latest dirty draft");
+            });
+            await act(async () => {
+                await expect(runtime.save()).rejects.toThrow("disk full");
+            });
+
+            expect(runtime.getSnapshot()).toMatchObject({
+                dirty: true,
+                status: "error",
+                saveStatus: "error",
+                operation: "idle",
+                error: "disk full",
+            });
+            expect(screen.getByTestId("markdown-file-preview").textContent).toBe("# Latest dirty draft");
+            expect(screen.getByRole("alert").textContent).toContain("disk full");
+            expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+            expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+            expect(screen.queryByRole("button", { name: "Locate" })).toBeNull();
+
+            act(() => {
+                screen.getByRole("button", { name: "Edit" }).click();
+            });
+            expect(screen.getByText("Monaco file editor")).toBeTruthy();
+            act(() => {
+                screen.getByRole("button", { name: "Preview" }).click();
+            });
+            expect(screen.getByTestId("markdown-file-preview").textContent).toBe("# Latest dirty draft");
+        } finally {
+            await registry.dispose();
+        }
+    });
+
+    it("preserves a non-Markdown editor and reports the save error without open-failure actions", () => {
+        const snapshot = {
+            dirty: true,
+            title: "draft.ts",
+            status: "error",
+            saveStatus: "error",
+            operation: "idle",
+            error: "disk full",
+        };
+        const runtime = {
+            id: "file-1",
+            path: "/repo/draft.ts",
+            value: "const draft = true;",
+            language: "typescript",
+            readonly: false,
+            model: { id: "model" },
+            viewState: undefined,
+            getSnapshot: () => snapshot,
+            subscribe: () => () => {},
+            setValue: vi.fn(),
+            attach: vi.fn(),
+            detach: vi.fn(),
+        } as any;
+
+        render(<FileTopTab runtime={runtime} onClose={vi.fn()} onLocate={vi.fn()} />);
+
+        expect(screen.getByText("Monaco file editor")).toBeTruthy();
+        expect(screen.getByRole("alert").textContent).toContain("disk full");
+        expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Locate" })).toBeNull();
     });
 
     it("resets its Markdown mode when the file path changes", async () => {

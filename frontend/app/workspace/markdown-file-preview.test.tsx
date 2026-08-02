@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
 
+import { resolveRemoteFile } from "@/app/element/markdown-util";
+import { RpcApi } from "@/app/store/wshclientapi";
+import { TabRpcClient } from "@/app/store/wshrpcutil";
 import { cleanup, render, screen } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,7 +27,11 @@ vi.mock("@/app/element/markdown", () => ({
         if (mountId.current == null) {
             mountId.current = ++markdownProps.nextMountId;
         }
-        markdownProps.current = props;
+        markdownProps.current = {
+            text: props.text,
+            resolveOpts: props.resolveOpts,
+            contentClassName: props.contentClassName,
+        };
         return (
             <>
                 <div data-testid="markdown-adapter">{props.text}</div>
@@ -34,7 +41,11 @@ vi.mock("@/app/element/markdown", () => ({
     },
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    delete (window as any).api;
+});
 
 describe("MarkdownFilePreview", () => {
     it("renders markdown text with its local parent directory", () => {
@@ -44,7 +55,7 @@ describe("MarkdownFilePreview", () => {
         expect(markdownProps.current).toMatchObject({
             text: "# First",
             resolveOpts: { connName: "local", baseDir: "/repo/docs" },
-            contentClassName: "px-6 py-5",
+            contentClassName: "px-4 py-4 sm:px-6 sm:py-5",
         });
     });
 
@@ -64,6 +75,20 @@ describe("MarkdownFilePreview", () => {
         view.rerender(<MarkdownFilePreview path="//server/share/README.md" text="# First" />);
 
         expect(markdownProps.current.resolveOpts.baseDir).toBe("//server/share");
+    });
+
+    it.each([
+        ["POSIX", "/repo/docs/README.md", "wsh://local//repo/docs"],
+        ["Windows drive", "C:/docs/README.md", "wsh://local/C:/docs"],
+        ["UNC", "//server/share/README.md", "wsh://local///server/share"],
+    ])("wires %s parent paths through the real remote-file resolver", async (_kind, path, expectedBaseUri) => {
+        const fileJoin = vi.spyOn(RpcApi, "FileJoinCommand").mockResolvedValue({ path: "/resolved/logo.png" } as any);
+        (window as any).api = { getEnv: vi.fn(() => "localhost") };
+        render(<MarkdownFilePreview path={path} text="![Logo](assets/logo.png)" />);
+
+        await resolveRemoteFile("assets/logo.png", markdownProps.current.resolveOpts);
+
+        expect(fileJoin).toHaveBeenCalledWith(TabRpcClient, [expectedBaseUri, "assets/logo.png"]);
     });
 
     it("remounts Markdown when the file path changes", () => {
