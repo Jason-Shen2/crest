@@ -28,6 +28,15 @@ Below the `sm` breakpoint, use `calc(100vw - 1rem) × calc(100vh - 1rem)` and re
 ### Header and footer
 
 - Keep both regions compact and fixed while the body scrolls.
+- Use the approved **A · Icon + Summary** header:
+  - a `FileDiff` icon in a compact `bg-muted/40` rounded tile;
+  - the caller-owned operation title (`Review turn changes`, `Revert changes?`, or `Redo changes?`);
+  - a second line containing the actual file count followed by aggregate additions/deletions, for example `2 files  +355  -2`;
+  - `1 file` for a single item and `{n} files` for every other count, with tabular diff statistics.
+- Remove the visible description and the `description` prop from `DiffReviewDialog`; specifically, do not render `Red was removed · Green was added` or equivalent color-explanation copy.
+- While the preview is loading, show `Loading files…` in place of the file-count/statistics line.
+- Sum additions and deletions independently across every file. If any file lacks one side of the statistics, display that aggregate as `+—` or `-—`; never convert unknown values to zero or hide the known side.
+- Keep warnings and errors below the title/summary group in destructive text without adding a separate card.
 - Continue using subtle `border-border` separators inside the dialog. The requested border removal applies to the bright outer shell, not the internal hierarchy.
 - Do not add more controls, labels, or decorative chrome.
 
@@ -74,9 +83,12 @@ Renderer tests will lock down:
 3. the file pane retains muted-gray hover and selection styles;
 4. dragging the divider clamps the pane to `160px`, `480px`, and `60%` of the available body width;
 5. the divider is absent in the stacked narrow-screen layout and exposes an accessible resize label on desktop;
-6. `FileCard` calls `getFileIcon()` with the basename and renders the resolved icon instead of an extension badge;
-7. `showIcon={false}` still suppresses the icon;
-8. existing selection, keyboard navigation, conflict, warning, and footer behavior remains unchanged.
+6. the header renders the `FileDiff` icon, correct file-count grammar, and exact aggregate statistics;
+7. loading and partially unavailable statistics render `Loading files…` and `+—`/`-—` respectively;
+8. the removed color-explanation description is absent from Review, Undo, Redo, Revert, and conversation Redo;
+9. `FileCard` calls `getFileIcon()` with the basename and renders the resolved icon instead of an extension badge;
+10. `showIcon={false}` still suppresses the icon;
+11. existing selection, keyboard navigation, conflict, warning, and footer behavior remains unchanged.
 
 Focused visual regression tests will cover `DiffReviewDialog`, `DiffViewer`, and `FileCard` consumers.
 
