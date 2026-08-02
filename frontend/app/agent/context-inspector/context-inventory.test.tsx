@@ -4,7 +4,7 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { ContextInventory } from "./context-inventory";
+import { ContextCategoryItems } from "./context-inventory";
 
 afterEach(cleanup);
 
@@ -33,18 +33,10 @@ function item(index: number): AgentContextSnapshotItemView {
     };
 }
 
-describe("ContextInventory", () => {
-    it("expands semantic categories and turn detail with provenance", () => {
-        render(
-            <ContextInventory
-                categories={[{ category: "conversation", tokens: 10, itemCount: 1 }]}
-                items={[item(0)]}
-            />
-        );
+describe("ContextCategoryItems", () => {
+    it("expands turn detail with provenance", () => {
+        render(<ContextCategoryItems category="conversation" items={[item(0)]} />);
 
-        const category = screen.getByRole("button", { name: /Conversation/ });
-        expect(category.getAttribute("aria-expanded")).toBe("false");
-        fireEvent.click(category);
         const turn = screen.getByRole("button", { name: /Turn 1/ });
         fireEvent.click(turn);
         expect(turn.getAttribute("aria-expanded")).toBe("true");
@@ -55,15 +47,9 @@ describe("ContextInventory", () => {
 
     it("virtualizes a long Conversation inventory while retaining its complete total", () => {
         const items = Array.from({ length: 1_000 }, (_, index) => item(index));
-        render(
-            <ContextInventory
-                categories={[{ category: "conversation", tokens: 10_000, itemCount: 1_000 }]}
-                items={items}
-            />
-        );
-        fireEvent.click(screen.getByRole("button", { name: /Conversation/ }));
+        render(<ContextCategoryItems category="conversation" items={items} />);
 
-        expect(screen.getByText("1,000 sources")).toBeTruthy();
+        expect(screen.getByTestId("context-conversation-items").getAttribute("data-virtualized")).toBe("conversation");
         expect(screen.getAllByTestId("context-inventory-item").length).toBeLessThan(100);
     });
 });

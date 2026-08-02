@@ -54,8 +54,9 @@ describe("ContextInspector", () => {
         expect(screen.getByText("Output reserve").parentElement?.textContent).toContain("16.0k");
         expect(screen.getByText("Remaining input").parentElement?.textContent).toContain("84.0k");
         for (const label of ["Agent instructions", "Tools", "Conversation", "Added context"]) {
-            expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+            expect(screen.getByText(label)).toBeTruthy();
         }
+        expect(screen.queryByRole("heading", { name: "Sources" })).toBeNull();
         expect(screen.getByText("Request overhead").parentElement?.textContent).toContain("1.0k");
         expect(screen.getByText(/Attribution differs from the provider-ready total by -12 tokens/)).toBeTruthy();
     });
@@ -77,7 +78,7 @@ describe("ContextInspector", () => {
 
         expect(screen.getByText("Token count unavailable")).toBeTruthy();
         expect(screen.getByText("Unavailable / 112.0k")).toBeTruthy();
-        expect(screen.getAllByText("Conversation").length).toBeGreaterThan(0);
+        expect(screen.getByText("Conversation")).toBeTruthy();
     });
 
     it("labels provider-ready counts as exact", () => {

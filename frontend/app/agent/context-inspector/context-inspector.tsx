@@ -10,7 +10,6 @@ import {
     formatContextTimestamp,
     formatContextTokens,
 } from "./context-format";
-import { ContextInventory } from "./context-inventory";
 
 function effectiveLifecycle(state: WorkspaceAgentContextState): AgentContextSnapshotLifecycleView {
     if (state.status === "loading") return "updating";
@@ -119,7 +118,6 @@ export function ContextInspector({ state }: { state?: WorkspaceAgentContextState
                     </section>
 
                     <ContextComposition snapshot={snapshot} />
-                    <ContextInventory categories={snapshot.categories} items={snapshot.items} />
 
                     {state.status === "out_of_date" && state.errorMessage ? (
                         <p className="rounded-md border border-warning/25 bg-warning/10 px-3 py-2 text-[11px] text-foreground">
