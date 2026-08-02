@@ -208,8 +208,10 @@ function projectCoverage(plan: RestorePlanV1, checkpoint: AvailableCheckpoint): 
             continue;
         }
         plan.coverageWarnings.push({ path: "", reason: exclusion.reason });
+        hardBlock(plan, "workspace checkpoint coverage is incomplete");
+        return false;
     }
-    if (!checkpoint.coverage.complete || checkpoint.coverage.exclusions.length > 0) {
+    if (!checkpoint.coverage.complete && checkpoint.coverage.exclusions.length === 0) {
         hardBlock(plan, "workspace checkpoint coverage is incomplete");
         return false;
     }

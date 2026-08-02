@@ -671,6 +671,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
 
     it("renders tool-independent turn changes, reviews immutable history, and cycles Undo → Redo → Undo without touching conversation or composer", async () => {
         const value = await makeFixture();
+        await mkdir(join(value.workspaceRoot, ".git"));
         const path = "direct-shell.txt";
         const file = join(value.workspaceRoot, path);
         await writeFile(file, "before\n");

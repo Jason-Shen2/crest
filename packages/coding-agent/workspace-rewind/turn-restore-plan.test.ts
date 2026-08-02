@@ -398,7 +398,7 @@ describe("per-turn restore planning", () => {
         }
     });
 
-    it("hard-blocks incomplete checkpoint coverage and cannot issue a confirmation", async () => {
+    it("keeps explicit workspace exclusions as warnings while planning covered turn changes", async () => {
         const own = checkpoint(
             [{ path: "own.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } }],
             {
@@ -406,7 +406,47 @@ describe("per-turn restore planning", () => {
                     complete: false,
                     eligibleEntryCount: 1,
                     newlyHashedBytes: 0,
-                    exclusions: [{ path: "ignored.log", reason: "ignored" }],
+                    exclusions: [
+                        { path: ".DS_Store", reason: "ignored" },
+                        { path: ".git", reason: "nested-repository" },
+                        { path: ".vite", reason: "ignored" },
+                        { path: "node_modules", reason: "ignored" },
+                    ],
+                },
+            }
+        );
+        const input = baseInput(branch(own), {
+            "own.ts": live({ state: "file", oid: OidA, executable: false }),
+        });
+        const plan = await planTurnUndo(input);
+
+        expect(plan.hardBlocked).toBe(false);
+        expect(plan.paths).toEqual([
+            expect.objectContaining({
+                path: "own.ts",
+                expectedCurrent: own.changes[0]!.after,
+                target: own.changes[0]!.before,
+            }),
+        ]);
+        expect(input.inspectLivePath).toHaveBeenCalledWith("own.ts");
+        expect(plan.coverageWarnings).toEqual([
+            { path: ".DS_Store", reason: "ignored" },
+            { path: ".git", reason: "nested-repository" },
+            { path: ".vite", reason: "ignored" },
+            { path: "node_modules", reason: "ignored" },
+        ]);
+        expect(() => new RewindConfirmationRegistry().issue(plan)).not.toThrow();
+    });
+
+    it("hard-blocks unexplained incomplete checkpoint coverage and cannot issue a confirmation", async () => {
+        const own = checkpoint(
+            [{ path: "own.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } }],
+            {
+                coverage: {
+                    complete: false,
+                    eligibleEntryCount: 1,
+                    newlyHashedBytes: 0,
+                    exclusions: [],
                 },
             }
         );
@@ -417,7 +457,35 @@ describe("per-turn restore planning", () => {
 
         expect(plan.hardBlocked).toBe(true);
         expect(input.inspectLivePath).not.toHaveBeenCalled();
-        expect(plan.coverageWarnings).toContainEqual({ path: "ignored.log", reason: "ignored" });
+        expect(plan.coverageWarnings).toContainEqual({
+            path: "",
+            reason: "workspace checkpoint coverage is incomplete",
+        });
+        expect(() => new RewindConfirmationRegistry().issue(plan)).toThrow(/blocked/i);
+    });
+
+    it.each([
+        [{ pathBytesBase64: "/w==", reason: "non-utf8-path" }],
+        [{ scope: "workspace-root", reason: "capture-budget" }],
+    ] as const)("hard-blocks an unaddressable checkpoint coverage exclusion", async (exclusion) => {
+        const own = checkpoint(
+            [{ path: "own.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } }],
+            {
+                coverage: {
+                    complete: false,
+                    eligibleEntryCount: 1,
+                    newlyHashedBytes: 0,
+                    exclusions: [exclusion],
+                },
+            }
+        );
+        const input = baseInput(branch(own), {
+            "own.ts": live({ state: "file", oid: OidA, executable: false }),
+        });
+        const plan = await planTurnUndo(input);
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(input.inspectLivePath).not.toHaveBeenCalled();
         expect(() => new RewindConfirmationRegistry().issue(plan)).toThrow(/blocked/i);
     });
 

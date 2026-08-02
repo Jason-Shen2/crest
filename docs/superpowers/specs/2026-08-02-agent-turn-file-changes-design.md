@@ -127,13 +127,15 @@ planner 必须验证：
 - `originSessionId` 等于当前 Session；
 - workspace identity/incarnation 匹配；
 - before/after snapshot 和所需 blob 可读；
-- 路径 canonical 且具有完整 coverage；
+- 每条待恢复路径 canonical，且该 change 的 before/after 均具有完整 coverage；checkpoint 中其他具有
+  canonical path 的显式排除项只作为 coverage warning 展示，不阻断已覆盖 change；
 - semantic leaf 与调用方预期一致。
 
 live 状态等于 `expectedCurrent` 时可普通 Undo；live 已等于 `target` 时该路径作为已恢复
 no-op 排除；其他普通文件状态属于 `forceable-drift`，显示精确警告
 `files changed on disk since the agent last wrote them`。unsafe 类型、目录碰撞、意外 symlink、
-不完整 coverage 或无法稳定读取均为 hard blocker。
+无法定位到 canonical path 的 coverage 缺口（例如 workspace-root capture budget、non-UTF-8 path）、
+待恢复 change 自身被排除，或无法稳定读取，均为 hard blocker。
 
 ### Turn Redo Planner
 
