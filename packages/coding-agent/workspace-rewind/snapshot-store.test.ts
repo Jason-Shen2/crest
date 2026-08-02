@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { renameSync, symlinkSync } from "node:fs";
 import {
     chmod,
@@ -53,13 +54,6 @@ describe("private snapshot store", () => {
             nonce: "c".repeat(64),
             before: ref,
         };
-        const operation = {
-            operationId: "operation-lock",
-            sessionId: "session-lock",
-            workspaceIdentity: fixture.identity.workspaceIdentity,
-            workspaceIncarnation: fixture.identity.workspaceIncarnation,
-            snapshot: ref,
-        };
         let settled = 0;
         const operations = [
             fixture.store.capture({ profile: "terminal" }),
@@ -69,10 +63,9 @@ describe("private snapshot store", () => {
             fixture.store.verify(ref),
             fixture.store.anchorSnapshot(ref),
             fixture.store.anchorPending(pending),
-            fixture.store.anchorOperation(operation),
-            fixture.store.deleteCrestRef("refs/crest/ops/missing-lock"),
+            fixture.store.deleteCrestRef(`refs/crest/pending/${fixture.identity.workspaceIdentity}/missing-lock`),
             fixture.store.deleteCrestRefs([]),
-            fixture.store.readCrestRefBlob("refs/crest/ops/missing-lock"),
+            fixture.store.readCrestRefBlob(`refs/crest/pending/${fixture.identity.workspaceIdentity}/missing-lock`),
             fixture.store.listCrestRefs(),
             fixture.store.ensureObjectsDurable([ref.id]),
             fixture.store.getQuotaStatus(),
@@ -119,6 +112,93 @@ describe("private snapshot store", () => {
         expect(config).toContain("fsync = loose-object,reference");
         expect(config).toContain(`hooksPath = ${join(storeRoot, "private-hooks")}`);
         expect(await readdir(join(storeRoot, "private-hooks"))).toEqual([]);
+    });
+
+    test("quarantines legacy restore bytes without decoding and warns once", async () => {
+        const fixture = await makeStoreFixture();
+        const legacyRoot = join(fixture.storeRoot, "journal", "restores");
+        const bytes = Buffer.from("not-json\0legacy-restore");
+        const digest = createHash("sha256").update(bytes).digest("hex");
+        await mkdir(legacyRoot, { recursive: true, mode: 0o700 });
+        const source = join(legacyRoot, "operation.json");
+        await writeFile(source, bytes, { mode: 0o600 });
+        const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        await WorkspaceSnapshotStore.open({
+            dataRoot: fixture.dataRoot,
+            identity: fixture.identity,
+            git: fixture.git,
+            processOwner: fixture.processOwner,
+        });
+
+        const destination = join(fixture.storeRoot, "journal", "restore", "resolved", `legacy-${digest}.json`);
+        await expect(readFile(destination)).resolves.toEqual(bytes);
+        await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(warning).toHaveBeenCalledWith(expect.stringMatching(/legacy.*restore.*incompatible.*quarantined/i));
+
+        warning.mockClear();
+        await WorkspaceSnapshotStore.open({
+            dataRoot: fixture.dataRoot,
+            identity: fixture.identity,
+            git: fixture.git,
+            processOwner: fixture.processOwner,
+        });
+        expect(warning).not.toHaveBeenCalled();
+        warning.mockRestore();
+    });
+
+    test("does not block startup when legacy restore quarantine cannot be created", async () => {
+        const fixture = await makeStoreFixture();
+        const legacyRoot = join(fixture.storeRoot, "journal", "restores");
+        const source = join(legacyRoot, "operation.json");
+        const bytes = Buffer.from("legacy source must remain");
+        await mkdir(legacyRoot, { recursive: true, mode: 0o700 });
+        await writeFile(source, bytes, { mode: 0o600 });
+        await writeFile(join(fixture.storeRoot, "journal", "restore"), "blocks resolved directory", {
+            mode: 0o600,
+        });
+        const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        await expect(
+            WorkspaceSnapshotStore.open({
+                dataRoot: fixture.dataRoot,
+                identity: fixture.identity,
+                git: fixture.git,
+                processOwner: fixture.processOwner,
+            })
+        ).resolves.toBeInstanceOf(WorkspaceSnapshotStore);
+        await expect(readFile(source)).resolves.toEqual(bytes);
+        expect(warning).toHaveBeenCalledWith(expect.stringMatching(/legacy.*restore.*incompatible/i));
+        warning.mockRestore();
+    });
+
+    test("continues quarantining valid legacy restore bytes after an unsafe entry", async () => {
+        const fixture = await makeStoreFixture();
+        const legacyRoot = join(fixture.storeRoot, "journal", "restores");
+        const bytes = Buffer.from("valid raw legacy restore");
+        const digest = createHash("sha256").update(bytes).digest("hex");
+        await mkdir(legacyRoot, { recursive: true, mode: 0o700 });
+        await symlink(fixture.workspace, join(legacyRoot, "a-unsafe.json"));
+        const source = join(legacyRoot, "b-valid.json");
+        await writeFile(source, bytes, { mode: 0o600 });
+        const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        await expect(
+            WorkspaceSnapshotStore.open({
+                dataRoot: fixture.dataRoot,
+                identity: fixture.identity,
+                git: fixture.git,
+                processOwner: fixture.processOwner,
+            })
+        ).resolves.toBeInstanceOf(WorkspaceSnapshotStore);
+
+        await expect(
+            readFile(join(fixture.storeRoot, "journal", "restore", "resolved", `legacy-${digest}.json`))
+        ).resolves.toEqual(bytes);
+        await expect(lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(lstat(join(legacyRoot, "a-unsafe.json"))).resolves.toMatchObject({ mode: expect.any(Number) });
+        expect(warning).toHaveBeenCalledWith(expect.stringMatching(/some entries.*quarantined/i));
+        warning.mockRestore();
     });
 
     test("repairs an existing directory whose bare repository initialization was interrupted", async () => {
@@ -1152,7 +1232,7 @@ describe("workspace snapshots", () => {
         await writeFile(join(fixture.workspace, "a.txt"), "first");
         const { ref } = await fixture.store.capture({ profile: "pre-turn" });
         const firstName = `refs/crest/pending/${fixture.identity.workspaceIdentity}/first`;
-        const secondName = "refs/crest/ops/second";
+        const secondName = `refs/crest/pending/${fixture.identity.workspaceIdentity}/second`;
         for (const name of [firstName, secondName]) {
             await fixture.git.run(["update-ref", name, ref.id], {
                 gitDir: fixture.storeRoot,

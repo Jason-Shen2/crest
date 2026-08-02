@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RewindConfirmationRegistry } from "./confirmation-token";
 import { applyCapturedPath } from "./filesystem-apply";
 import { WorkspaceGitRunner } from "./git-runner";
-import { WorkspaceRecoveryJournal } from "./recovery-journal";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
@@ -77,28 +76,23 @@ async function makeFixture(
         b: await repo.create({ cwd: workspaceRoot, id: "session-b" }),
     };
     const confirmations = new RewindConfirmationRegistry();
-    const journal = new WorkspaceRecoveryJournal(store);
     const published = vi.fn(async () => {});
     const locateSession = async (sessionId: string) =>
         sessionId === "session-a" ? sessions.a : sessionId === "session-b" ? sessions.b : undefined;
     const recovery = new WorkspaceRecovery({
         workspace: identity,
         store,
-        journal,
         locateSession,
-        publishState: published,
-        repairSessionRefs: vi.fn(async () => {}),
         verifyWorkspace: vi.fn(async () => {}),
     });
     const engine = new WorkspaceRewindEngine({
         store,
-        journal,
         recovery,
         confirmations,
         onCommitted: published,
         ...(options.applyPath ? { applyPath: options.applyPath } : {}),
     });
-    return { root, workspaceRoot, identity, store, sessions, confirmations, journal, recovery, engine };
+    return { root, workspaceRoot, identity, store, sessions, confirmations, recovery, engine };
 }
 
 async function checkpoint(
@@ -332,9 +326,12 @@ describe("workspace rewind across sessions", () => {
             })
         ).rejects.toBeInstanceOf(WorkspaceFrozenError);
         expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("unknown-third-party");
-        expect(await value.recovery.getRecoveryState(value.identity)).toMatchObject({
-            paths: [{ path: "shared.txt", classification: "unknown" }],
-            allowedActions: ["retry", "abandon-current"],
+        expect(await value.recovery.resolvePending()).toMatchObject({
+            state: "needs-user",
+            view: {
+                paths: [{ path: "shared.txt", classification: "unknown" }],
+                allowedActions: ["retry", "abandon-current"],
+            },
         });
     }, 30_000);
 });

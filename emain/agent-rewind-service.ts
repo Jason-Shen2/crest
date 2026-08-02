@@ -330,10 +330,8 @@ export class AgentRewindService {
             sessionMetadata.path,
             { rejectIfRunning: true },
             async (lease) => {
-                const publishState = async (operationId: string) => {
-                    await this.broadcaster.publishForLease(lease, sessionMetadata, {
-                        ignoreCompletedOperationId: operationId,
-                    });
+                const publishState = async (_operationId: string) => {
+                    await this.broadcaster.publishForLease(lease, sessionMetadata);
                 };
                 const resolved = await this.resolveWorkspace({
                     mode: "mutation",

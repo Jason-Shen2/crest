@@ -70,7 +70,6 @@ import {
     buildContextStateFromSessionEntries,
     buildPersistedTurnsFromSessionEntries,
     type AgentExecutionConfig,
-    type AgentRewindStateRefreshOptions,
     type AgentSessionRuntimeStatus,
     type AgentTurn,
     type AgentWorkspaceRewindState,
@@ -1109,7 +1108,7 @@ async function createAgentRuntimeFromSession(
         }
         const seed = await piSession.buildContext();
         const initialEntries = await piSession.getBranch();
-        const buildRewindState = async (refreshOptions: AgentRewindStateRefreshOptions = {}) => {
+        const buildRewindState = async () => {
             const entries = await piSession.getEntries();
             const recoveryGate = getAgentWorkspaceRecoveryGate();
             const recoveryView =
@@ -1452,7 +1451,6 @@ function makeFallbackSubscriptionAuthorization(beforeMutation?: AuthorizationGua
 async function buildColdRewindState(
     metadata: JsonlSessionMetadata,
     entries: import("@crest/agent/harness/types").SessionTreeEntry[],
-    refreshOptions: AgentRewindStateRefreshOptions = {},
     recoveryProbe?: Awaited<ReturnType<typeof probeColdRewindRecovery>>
 ) {
     const { feature, recoveryView } = recoveryProbe ?? (await probeColdRewindRecovery(metadata));
@@ -1531,7 +1529,6 @@ async function sendPersistedSessionState(
             const rewindState = await buildColdRewindState(
                 await session.getMetadata(),
                 await session.getEntries(),
-                {},
                 recoveryProbe
             );
             await authorization.validateCurrent();
@@ -1613,7 +1610,6 @@ async function buildPersistedSessionState(
         const rewindState = await buildColdRewindState(
             await session.getMetadata(),
             await session.getEntries(),
-            {},
             recoveryProbe
         );
         await guardLiveRuntimeIfPresent([canonicalPath], guardRuntime, beforeReturn);

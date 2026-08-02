@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { lstat, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
@@ -229,58 +229,6 @@ test("treats process probe errors as unknown and keeps the owner fail-safe", asy
     expect((await pending.recover([]))[0]?.disposition).toBe("owner-still-live");
 });
 
-test("makes operation ownership idempotent but rejects conflicting reuse", async () => {
-    const { store, snapshot } = await makeStore();
-    const record = {
-        operationId: "operation-cas",
-        sessionId: "session-a",
-        workspaceIdentity: store.identity.workspaceIdentity,
-        workspaceIncarnation: store.identity.workspaceIncarnation,
-        snapshot,
-    };
-
-    await store.anchorOperation(record);
-    await store.anchorOperation(record);
-    await expect(store.anchorOperation({ ...record, sessionId: "session-b" })).rejects.toThrow(/already belongs/i);
-
-    const operationRefs = (await store.listCrestRefs()).filter((ref) => ref.name.includes("operation-cas"));
-    expect(operationRefs).toHaveLength(1);
-    expect(JSON.parse((await store.readBlob(operationRefs[0]!.oid)).toString("utf8"))).toEqual(record);
-});
-
-test("rejects operation takeover when only the durable ref survived publication", async () => {
-    const { store, snapshot } = await makeStore();
-    const record = {
-        operationId: "operation-ref-only-conflict",
-        sessionId: "session-a",
-        workspaceIdentity: store.identity.workspaceIdentity,
-        workspaceIncarnation: store.identity.workspaceIncarnation,
-        snapshot,
-    };
-    await store.anchorOperation(record);
-    await unlink(join(store.storeRoot, "journal", "operations", `${record.operationId}.json`));
-
-    await expect(store.anchorOperation({ ...record, sessionId: "session-b" })).rejects.toThrow(/already belongs/i);
-});
-
-test("replays an exact operation owner from its ref-only crash state", async () => {
-    const { store, snapshot } = await makeStore();
-    const record = {
-        operationId: "operation-ref-only-replay",
-        sessionId: "session-a",
-        workspaceIdentity: store.identity.workspaceIdentity,
-        workspaceIncarnation: store.identity.workspaceIncarnation,
-        snapshot,
-    };
-    const journalPath = join(store.storeRoot, "journal", "operations", `${record.operationId}.json`);
-    await store.anchorOperation(record);
-    await unlink(journalPath);
-
-    await store.anchorOperation(record);
-
-    expect(JSON.parse(await readFile(journalPath, "utf8"))).toEqual(record);
-});
-
 test("anchors pending snapshot graphs before publishing their state ref", async () => {
     const { store, snapshot } = await makeStore();
     await writeFile(join(store.identity.canonicalRoot, "tracked.txt"), "after");
@@ -408,26 +356,6 @@ test("verifies each untrusted pending descriptor once in a fresh store", async (
     };
     await expect(fresh.anchorPending(forged)).rejects.toThrow(/corrupt|descriptor/i);
     expect((await fresh.listCrestRefs()).map((ref) => ref.name)).not.toContain(fresh.pendingRefName(forged));
-});
-
-test("anchors an operation without scanning unrelated owner refs", async () => {
-    const { store, snapshot } = await makeStore();
-    const records = Array.from({ length: 5 }, (_, index) => ({
-        operationId: `operation-scale-${index}`,
-        sessionId: `session-${index}`,
-        workspaceIdentity: store.identity.workspaceIdentity,
-        workspaceIncarnation: store.identity.workspaceIncarnation,
-        snapshot,
-    }));
-    for (const record of records) {
-        await store.anchorOperation(record);
-    }
-    const readRef = vi.spyOn(store, "readCrestRefBlob");
-
-    await store.anchorOperation(records[4]!);
-
-    expect(readRef).toHaveBeenCalledTimes(1);
-    expect(readRef).toHaveBeenCalledWith(`refs/crest/ops/${records[4]!.operationId}`);
 });
 
 function treeTraversalCount(calls: ReadonlyArray<readonly [readonly string[], unknown?]>): number {

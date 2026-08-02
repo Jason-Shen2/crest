@@ -171,7 +171,7 @@ test("retains checkpoint owners in archive trash and forks through aggressive Gi
     ]);
 });
 
-test("retains bound and unbound pending plus operation journal owners without consulting quota", async () => {
+test("retains bound and unbound pending owners without consulting quota", async () => {
     const { store, sessionsRoot, snapshot } = await makeStore();
     const pending = new PendingBoundaryStore(store);
     const owner = await makeProcessOwnerIdentity();
@@ -194,13 +194,6 @@ test("retains bound and unbound pending plus operation journal owners without co
         before: snapshot,
     });
     await pending.bind("bound-owner", "user-bound");
-    await store.anchorOperation({
-        operationId: "operation-owner",
-        sessionId: "session-operation",
-        workspaceIdentity: store.identity.workspaceIdentity,
-        workspaceIncarnation: store.identity.workspaceIncarnation,
-        snapshot,
-    });
     const quota = vi.spyOn(store, "getQuotaStatus").mockRejectedValue(new Error("soft quota"));
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-01T00:00:00Z"));
@@ -290,16 +283,16 @@ test("retains workspace state current and redo snapshots through aggressive Git 
     await Promise.all([store.verify(currentSnapshot), store.verify(redoSnapshot)]);
 });
 
-test("grace-collects orphan pending and operation refs without pruning a session-owned graph", async () => {
+test("grace-collects orphan refs without pruning a session-owned graph", async () => {
     const { store, sessionsRoot, snapshot } = await makeStore();
     await addStateOwner(store, sessionsRoot, snapshot, "state-owner");
     const pendingRef = `refs/crest/pending/${"a".repeat(64)}/orphan-boundary`;
-    const operationRef = "refs/crest/ops/orphan-operation";
+    const orphanRef = "refs/crest/ops/legacy-operation";
     await store.git.run(["update-ref", pendingRef, snapshot.id], {
         gitDir: store.storeRoot,
         timeoutMs: 30_000,
     });
-    await store.git.run(["update-ref", operationRef, snapshot.id], {
+    await store.git.run(["update-ref", orphanRef, snapshot.id], {
         gitDir: store.storeRoot,
         timeoutMs: 30_000,
     });
@@ -312,16 +305,16 @@ test("grace-collects orphan pending and operation refs without pruning a session
     const expired = await reconcileSnapshotRefs({ store, sessionsRoot });
 
     expect(expired.failClosedReason).toBeUndefined();
-    expect(expired.removedRefs.sort()).toEqual([operationRef, pendingRef].sort());
+    expect(expired.removedRefs.sort()).toEqual([orphanRef, pendingRef].sort());
     expect((await store.listCrestRefs()).map((ref) => ref.name)).toContain(`refs/crest/snapshots/${snapshot.id}`);
     await store.verify(snapshot);
 
-    await store.git.run(["update-ref", operationRef, snapshot.id], {
+    await store.git.run(["update-ref", orphanRef, snapshot.id], {
         gitDir: store.storeRoot,
         timeoutMs: 30_000,
     });
     expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
-    expect((await store.listCrestRefs()).map((ref) => ref.name)).toContain(operationRef);
+    expect((await store.listCrestRefs()).map((ref) => ref.name)).toContain(orphanRef);
 });
 
 test("keeps every ref when the durable grace ledger cannot be persisted", async () => {
@@ -345,8 +338,8 @@ test("uses one atomic ref transaction and resets grace when the deletion batch f
     const { store, sessionsRoot, snapshot } = await makeStore();
     await addStateOwner(store, sessionsRoot, snapshot, "batch-owner");
     const pendingRef = `refs/crest/pending/${"b".repeat(64)}/batch-pending`;
-    const operationRef = "refs/crest/ops/batch-operation";
-    for (const refName of [pendingRef, operationRef]) {
+    const orphanRef = `refs/crest/pending/${"d".repeat(64)}/batch-ref`;
+    for (const refName of [pendingRef, orphanRef]) {
         await store.git.run(["update-ref", refName, snapshot.id], {
             gitDir: store.storeRoot,
             timeoutMs: 30_000,
@@ -365,7 +358,7 @@ test("uses one atomic ref transaction and resets grace when the deletion batch f
 
     expect(failed.removedRefs).toEqual([]);
     expect((await store.listCrestRefs()).map((ref) => ref.name)).toEqual(
-        expect.arrayContaining([pendingRef, operationRef])
+        expect.arrayContaining([pendingRef, orphanRef])
     );
     deletion.mockRestore();
     expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
@@ -375,8 +368,8 @@ test("reports refs already removed when Git GC fails after the atomic deletion",
     const { store, sessionsRoot, snapshot } = await makeStore();
     await addStateOwner(store, sessionsRoot, snapshot, "gc-owner");
     const pendingRef = `refs/crest/pending/${"c".repeat(64)}/gc-pending`;
-    const operationRef = "refs/crest/ops/gc-operation";
-    for (const refName of [pendingRef, operationRef]) {
+    const orphanRef = `refs/crest/pending/${"d".repeat(64)}/gc-ref`;
+    for (const refName of [pendingRef, orphanRef]) {
         await store.git.run(["update-ref", refName, snapshot.id], {
             gitDir: store.storeRoot,
             timeoutMs: 30_000,
@@ -396,10 +389,10 @@ test("reports refs already removed when Git GC fails after the atomic deletion",
 
     const report = await reconcileSnapshotRefs({ store, sessionsRoot });
 
-    expect(report.removedRefs.sort()).toEqual([pendingRef, operationRef].sort());
+    expect(report.removedRefs.sort()).toEqual([pendingRef, orphanRef].sort());
     expect(report.failClosedReason).toMatch(/cleanup failed/i);
     expect((await store.listCrestRefs()).map((ref) => ref.name)).not.toEqual(
-        expect.arrayContaining([pendingRef, operationRef])
+        expect.arrayContaining([pendingRef, orphanRef])
     );
 });
 
@@ -416,18 +409,16 @@ test("fails closed before deletion or GC when an owner snapshot graph is corrupt
     expect((await store.listCrestRefs()).map((ref) => ref.name)).toContain(`refs/crest/snapshots/${snapshot.id}`);
 });
 
-test("fails closed on a corrupt pending or operation owner record", async () => {
-    for (const directory of ["pending", "operations"]) {
-        const { store, sessionsRoot } = await makeStore();
-        const root = join(store.storeRoot, "journal", directory);
-        await mkdir(root, { recursive: true });
-        await writeFile(join(root, "broken.json"), "{}");
+test("fails closed on a corrupt pending owner record", async () => {
+    const { store, sessionsRoot } = await makeStore();
+    const root = join(store.storeRoot, "journal", "pending");
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "broken.json"), "{}");
 
-        const report = await reconcileSnapshotRefs({ store, sessionsRoot });
+    const report = await reconcileSnapshotRefs({ store, sessionsRoot });
 
-        expect(report.removedRefs).toEqual([]);
-        expect(report.failClosedReason).toMatch(/owner source/i);
-    }
+    expect(report.removedRefs).toEqual([]);
+    expect(report.failClosedReason).toMatch(/owner source/i);
 });
 
 async function makeStore(git: WorkspaceGitRunner = new WorkspaceGitRunner()) {

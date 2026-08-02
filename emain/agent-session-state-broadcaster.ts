@@ -8,7 +8,6 @@ import type { AgentRuntimeRegistry, RetainedSessionMutationLease } from "@crest/
 import {
     buildContextStateFromSessionEntries,
     buildPersistedTurnsFromSessionEntries,
-    type AgentRewindStateRefreshOptions,
     type AgentSessionRuntime,
     type AgentSessionRuntimeState,
     type AgentSessionRuntimeStatus,
@@ -47,8 +46,7 @@ export interface AgentSessionStateBroadcasterOptions {
         | ((metadata: JsonlSessionMetadata) => AgentWorkspaceRewindState | Promise<AgentWorkspaceRewindState>);
     buildRewindState?: (
         metadata: JsonlSessionMetadata,
-        entries: SessionTreeEntry[],
-        options?: AgentRewindStateRefreshOptions
+        entries: SessionTreeEntry[]
     ) => Promise<AgentRewindSessionStateView>;
 }
 
@@ -113,31 +111,26 @@ export class AgentSessionStateBroadcaster {
 
     async publishForLease(
         lease: RetainedSessionMutationLease<AgentSessionRuntime>,
-        sessionMetadata: JsonlSessionMetadata,
-        options: AgentRewindStateRefreshOptions = {}
+        sessionMetadata: JsonlSessionMetadata
     ): Promise<AgentAuthoritativeSessionState> {
         return this.registry.withMutationLeaseAccess(lease, async (runtime) => {
             const state = runtime
                 ? toAuthoritativeAgentSessionState(
                       await runtime.refreshFromPersistedBranch({
                           discardCompletedPtyHistory: true,
-                          ...options,
                       })
                   )
-                : await this.buildColdState(sessionMetadata, options);
+                : await this.buildColdState(sessionMetadata);
             await this.publishState({ lease, sessionMetadata, state });
             return state;
         });
     }
 
-    async buildColdState(
-        sessionMetadata: JsonlSessionMetadata,
-        options: AgentRewindStateRefreshOptions = {}
-    ): Promise<AgentAuthoritativeSessionState> {
+    async buildColdState(sessionMetadata: JsonlSessionMetadata): Promise<AgentAuthoritativeSessionState> {
         const session = await this.openSession(sessionMetadata);
         try {
             const rewindState = this.buildRewindState
-                ? await this.buildRewindState(sessionMetadata, await session.getEntries(), options)
+                ? await this.buildRewindState(sessionMetadata, await session.getEntries())
                 : undefined;
             return await buildPersistedAgentSessionState(
                 session,

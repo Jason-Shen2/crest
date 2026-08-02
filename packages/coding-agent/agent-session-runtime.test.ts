@@ -603,7 +603,7 @@ describe("AgentSessionRuntime — command operations", () => {
         unsubscribe();
     });
 
-    it("passes the completed operation exclusion only to the rewind-state refresh", async () => {
+    it("rebuilds rewind state during a persisted branch refresh", async () => {
         const fake = makeFakeHarness();
         const rewindState: AgentRewindSessionStateView = {
             enabled: true,
@@ -618,9 +618,9 @@ describe("AgentSessionRuntime — command operations", () => {
         const buildRewindState = vi.fn(async () => rewindState);
         const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { buildRewindState });
 
-        await owner.refreshFromPersistedBranch({ ignoreCompletedOperationId: "operation-1" });
+        await owner.refreshFromPersistedBranch();
 
-        expect(buildRewindState).toHaveBeenCalledWith({ ignoreCompletedOperationId: "operation-1" });
+        expect(buildRewindState).toHaveBeenCalledWith();
     });
 
     it("discards non-persisted completed commands only for an idle mutation refresh", async () => {

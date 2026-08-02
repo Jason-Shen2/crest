@@ -8,12 +8,7 @@ import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 
 import { writeDurableJson } from "./durability";
-import {
-    scanPendingBoundaryRecords,
-    scanWorkspaceOperationOwners,
-    type PendingWorkspaceBoundaryV1,
-    type WorkspaceOperationOwnerV1,
-} from "./pending-boundary-store";
+import { scanPendingBoundaryRecords, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import { PendingWorkspaceRestoreStore } from "./pending-restore-store";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceSnapshotRefV1 } from "./types";
@@ -32,7 +27,6 @@ interface SnapshotOwners {
     snapshots: Map<string, WorkspaceSnapshotRefV1>;
     refs: Set<string>;
     pending: PendingWorkspaceBoundaryV1[];
-    operations: WorkspaceOperationOwnerV1[];
 }
 
 export interface SnapshotReconcileReport {
@@ -70,9 +64,6 @@ export async function reconcileSnapshotRefsLocked(input: {
         }
         for (const record of owners.pending) {
             await input.store.anchorPending(record);
-        }
-        for (const record of owners.operations) {
-            await input.store.anchorOperation(record);
         }
         const refs = await input.store.listCrestRefs();
         const ledgerPath = join(input.store.storeRoot, "journal", "orphan-grace.json");
@@ -163,13 +154,7 @@ async function scanOwners(input: { store: WorkspaceSnapshotStore; sessionsRoot: 
         );
         addOwned(activeRestore.record.safetySnapshot, input.store, snapshots);
     }
-    const operations = await scanWorkspaceOperationOwners(input.store);
-    for (const record of operations) {
-        assertOwnerIdentity(record.workspaceIdentity, record.workspaceIncarnation, input.store);
-        addOwned(record.snapshot, input.store, snapshots);
-        refs.add(`refs/crest/ops/${record.operationId}`);
-    }
-    return { snapshots, refs, pending, operations };
+    return { snapshots, refs, pending };
 }
 
 function collectSessionOwners(

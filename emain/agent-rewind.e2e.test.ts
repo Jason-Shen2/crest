@@ -109,8 +109,8 @@ import {
     workspaceFilesystemApplyPlatformSupport,
 } from "@crest/coding-agent/workspace-rewind/filesystem-apply";
 import { WorkspaceGitRunner } from "@crest/coding-agent/workspace-rewind/git-runner";
+import { PendingWorkspaceRestoreStore } from "@crest/coding-agent/workspace-rewind/pending-restore-store";
 import { makeProcessOwnerIdentity } from "@crest/coding-agent/workspace-rewind/process-owner";
-import { WorkspaceRecoveryJournal } from "@crest/coding-agent/workspace-rewind/recovery-journal";
 import { WorkspaceRewindEngine } from "@crest/coding-agent/workspace-rewind/rewind-engine";
 import {
     buildAgentRewindSessionStateView,
@@ -488,16 +488,15 @@ async function makeFixture() {
         const confirmations = new RewindConfirmationRegistry();
         const registry = new AgentRuntimeRegistry({ idleTtlMs: 60_000 });
         let publishState = async (_operationId: string) => undefined;
-        const journal = new WorkspaceRecoveryJournal(store);
         const recovery = new WorkspaceRecovery({
             workspace: identity,
             store,
-            journal,
-            locateSession: async (sessionId) => {
-                if (sessionId !== metadata.id) return undefined;
+            locateSession: async (sessionId, sessionPath) => {
+                const owner = await repo.findById(sessionId);
+                if (!owner || owner.path !== sessionPath) return undefined;
                 return {
                     async getLeafId() {
-                        const opened = await repo.open(metadata);
+                        const opened = await repo.open(owner);
                         try {
                             return await opened.getLeafId();
                         } finally {
@@ -505,7 +504,7 @@ async function makeFixture() {
                         }
                     },
                     async getEntry(id) {
-                        const opened = await repo.open(metadata);
+                        const opened = await repo.open(owner);
                         try {
                             return await opened.getEntry(id);
                         } finally {
@@ -517,7 +516,6 @@ async function makeFixture() {
         });
         const engine = new WorkspaceRewindEngine({
             store,
-            journal,
             recovery,
             confirmations,
             applyPath,
@@ -537,7 +535,7 @@ async function makeFixture() {
     };
     const register = (
         service: AgentRewindService,
-        rewindMaintenance?: NonNullable<Parameters<typeof registerAgentIpcHandlers>[0]["rewindMaintenance"]>
+        recoveryGate?: NonNullable<Parameters<typeof registerAgentIpcHandlers>[0]["recoveryGate"]>
     ) => {
         const sender = { id: 7, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
         registerAgentIpcHandlers({
@@ -550,7 +548,7 @@ async function makeFixture() {
             loadWorkspace: async () => ({}) as never,
             saveWorkspaceAgentState: async () => ({}) as never,
             rewindService: service,
-            ...(rewindMaintenance ? { rewindMaintenance } : {}),
+            ...(recoveryGate ? { recoveryGate } : {}),
         });
         const transport = makeRendererTransport(registeredHandlers(), sender);
         return { client: new AgentRuntimeClient(transport as never, RequestIdentity), sender };
@@ -1286,7 +1284,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         value.session.close();
     }, 30_000);
 
-    it("surfaces and resolves a real interrupted restore journal through IPC", async () => {
+    it("surfaces and resolves a real interrupted pending restore through IPC", async () => {
         const value = await makeFixture();
         const file = join(value.workspaceRoot, "recovery.txt");
         await writeFile(file, "pre-crash");
@@ -1301,66 +1299,60 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
             content: "interrupted restore",
             timestamp: Date.now(),
         } as never);
-        const journal = new WorkspaceRecoveryJournal(value.store);
-        await journal.begin({
-            schemaVersion: 2,
-            phase: "prepared",
-            workspaceIdentity: value.store.identity.workspaceIdentity,
-            workspaceIncarnation: value.store.identity.workspaceIncarnation,
-            sessionId: value.metadata.id,
-            sessionPath: value.metadata.path,
-            operationId: "operation-e2e-crash",
-            target: { kind: "rewind", targetTurnId: expectedLeaf },
-            commitParentId: null,
-            applyMode: "normal",
-            expectedSemanticLeafId: expectedLeaf,
-            safetySnapshot: safety.ref,
-            confirmedConflictFingerprints: [],
-            paths: [
-                {
-                    path: "recovery.txt",
-                    preState,
-                    target: targetState,
-                    expectedCurrent: preState,
-                    confirmedLiveFingerprint: "5".repeat(64),
-                    createdParentDirectories: [],
-                },
-            ],
-            workspaceStateEntryId: "workspace-state-e2e-crash",
-        });
-        await journal.transition("operation-e2e-crash", "applying_files");
+        const pending = new PendingWorkspaceRestoreStore(value.store);
+        await value.store.withWorkspaceLock(() =>
+            pending.publishLocked({
+                schemaVersion: 1,
+                workspaceIdentity: value.store.identity.workspaceIdentity,
+                workspaceIncarnation: value.store.identity.workspaceIncarnation,
+                sessionId: value.metadata.id,
+                sessionPath: value.metadata.path,
+                operationId: "operation-e2e-crash",
+                target: { kind: "rewind", targetTurnId: expectedLeaf },
+                commitParentId: null,
+                applyMode: "normal",
+                expectedSemanticLeafId: expectedLeaf,
+                safetySnapshot: safety.ref,
+                forcedPaths: [],
+                paths: [
+                    {
+                        path: "recovery.txt",
+                        before: preState,
+                        target: targetState,
+                        createdParentDirectories: [],
+                    },
+                ],
+                workspaceStateEntryId: "workspace-state-e2e-crash",
+            })
+        );
+        await writeFile(file, "external-after-crash");
         const recovery = new WorkspaceRecovery({
             workspace: value.store.identity,
             store: value.store,
-            journal,
+            pending,
             locateSession: async (sessionId) => (sessionId === value.metadata.id ? value.session : undefined),
         });
-        const maintenance = {
-            getRecovery: async () => await recovery.getRecoveryState(value.store.identity),
-            resolveRecovery: async (input: unknown) => {
-                const action = (input as { action: string }).action;
+        const recoveryGate: NonNullable<Parameters<typeof registerAgentIpcHandlers>[0]["recoveryGate"]> = {
+            scanBeforeIpcRegistration: async () => {},
+            assertWorkspaceWritable: async () => recovery.assertWorkspaceWritable(),
+            getRecovery: async () => {
+                const decision = await recovery.resolvePending();
+                return decision.state === "needs-user" ? decision.view : undefined;
+            },
+            resolveRecovery: async (_workspace, operationId, action, assertCurrent) => {
                 if (action !== "abandon-current") throw new Error(`unexpected recovery action ${action}`);
-                await recovery.abandonKeepingCurrent("operation-e2e-crash");
-            },
-            cleanup: async () => {
-                throw new Error("unused");
-            },
-            listStorageOwners: async () => {
-                throw new Error("unused");
-            },
-            purgeTrashedSession: async () => {
-                throw new Error("unused");
+                await recovery.keepCurrent(operationId, assertCurrent);
             },
         };
         const running = value.makeService();
-        const { client } = value.register(running.service, maintenance);
+        const { client } = value.register(running.service, recoveryGate);
 
         const frozen = await client.getWorkspaceRecovery({ sessionMetadata: value.metadata });
         expect(frozen).toMatchObject({
             operationId: "operation-e2e-crash",
-            phase: "applying_files",
             allowedActions: expect.arrayContaining(["abandon-current"]),
         });
+        expect(frozen).not.toHaveProperty("phase");
         expect(JSON.stringify(frozen)).not.toMatch(/force/i);
         await client.resolveWorkspaceRecovery({
             sessionMetadata: value.metadata,
@@ -1368,7 +1360,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
             action: "abandon-current",
         });
         await expect(client.getWorkspaceRecovery({ sessionMetadata: value.metadata })).resolves.toBeUndefined();
-        expect(await readFile(file, "utf8")).toBe("pre-crash");
+        expect(await readFile(file, "utf8")).toBe("external-after-crash");
         value.session.close();
     }, 30_000);
 

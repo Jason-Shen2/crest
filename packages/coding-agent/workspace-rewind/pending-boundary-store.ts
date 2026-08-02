@@ -14,14 +14,6 @@ import { decodeWorkspaceSnapshotRefV1 } from "./validation";
 
 const TokenPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-export interface WorkspaceOperationOwnerV1 {
-    operationId: string;
-    sessionId: string;
-    workspaceIdentity: string;
-    workspaceIncarnation: string;
-    snapshot: WorkspaceSnapshotRefV1;
-}
-
 export interface UnboundPendingBoundaryV1 {
     boundaryToken: string;
     sessionId: string;
@@ -217,124 +209,6 @@ export async function scanPendingBoundaryRecords(store: WorkspaceSnapshotStore):
         records.push(await resolvePendingRefRecord(store, record));
     }
     return records;
-}
-
-export async function scanWorkspaceOperationOwners(
-    store: WorkspaceSnapshotStore
-): Promise<WorkspaceOperationOwnerV1[]> {
-    const root = join(store.storeRoot, "journal", "operations");
-    const names = await readOwnerDirectory(root);
-    const records = new Map<string, WorkspaceOperationOwnerV1>();
-    for (const name of names.sort()) {
-        if (!name.endsWith(".json") || !TokenPattern.test(name.slice(0, -5))) {
-            throw new Error("Invalid workspace operation filename");
-        }
-        const path = join(root, name);
-        await assertPrivateRecord(path);
-        const value: unknown = JSON.parse(await readFile(path, "utf8"));
-        const record = decodeWorkspaceOperationOwnerV1(value);
-        if (!record || `${record.operationId}.json` !== name) {
-            throw new Error("Invalid workspace operation owner");
-        }
-        assertOperationIdentity(store, record);
-        records.set(record.operationId, record);
-    }
-    const operationRefs = (await store.listCrestRefs()).filter((ref) => ref.name.startsWith("refs/crest/ops/"));
-    for (const ref of operationRefs) {
-        const operationId = ref.name.slice("refs/crest/ops/".length);
-        if (!TokenPattern.test(operationId)) {
-            throw new Error("Invalid workspace operation ref");
-        }
-        const type = await store.git.run(["cat-file", "-t", ref.oid], {
-            gitDir: store.storeRoot,
-            timeoutMs: 30_000,
-        });
-        if (type.stdout.toString("ascii").trim() !== "blob") {
-            continue;
-        }
-        const descriptor = await store.readCrestRefBlob(ref.name);
-        if (!descriptor) {
-            throw new Error("Workspace operation ref disappeared");
-        }
-        let value: unknown;
-        try {
-            value = JSON.parse(descriptor.bytes.toString("utf8"));
-        } catch {
-            throw new Error("Invalid workspace operation ref descriptor");
-        }
-        const record = decodeWorkspaceOperationOwnerV1(value);
-        if (!record || record.operationId !== operationId || !descriptor.bytes.equals(encodeDurableJson(record))) {
-            throw new Error("Invalid workspace operation ref descriptor");
-        }
-        assertOperationIdentity(store, record);
-        const journalRecord = records.get(operationId);
-        if (journalRecord && !encodeDurableJson(journalRecord).equals(descriptor.bytes)) {
-            throw new Error("Workspace operation ref conflicts with its journal owner");
-        }
-        records.set(operationId, record);
-    }
-    return [...records.values()];
-}
-
-export async function readWorkspaceOperationOwner(
-    store: WorkspaceSnapshotStore,
-    operationId: string
-): Promise<WorkspaceOperationOwnerV1 | undefined> {
-    validateToken(operationId, "operation id");
-    const path = join(store.storeRoot, "journal", "operations", `${operationId}.json`);
-    try {
-        await assertPrivateRecord(path);
-    } catch (error) {
-        if (isNodeError(error) && error.code === "ENOENT") {
-            return undefined;
-        }
-        throw error;
-    }
-    const value: unknown = JSON.parse(await readFile(path, "utf8"));
-    const record = decodeWorkspaceOperationOwnerV1(value);
-    if (!record || record.operationId !== operationId) {
-        throw new Error("Invalid workspace operation owner");
-    }
-    assertOperationIdentity(store, record);
-    return record;
-}
-
-export function decodeWorkspaceOperationOwnerV1(value: unknown): WorkspaceOperationOwnerV1 | undefined {
-    if (
-        !isRecord(value) ||
-        Object.keys(value).sort().join(",") !==
-            "operationId,sessionId,snapshot,workspaceIdentity,workspaceIncarnation" ||
-        !TokenPattern.test(String(value.operationId ?? "")) ||
-        !isSafeString(value.sessionId) ||
-        !isIdentity(value.workspaceIdentity) ||
-        !isIdentity(value.workspaceIncarnation)
-    ) {
-        return undefined;
-    }
-    const snapshot = decodeWorkspaceSnapshotRefV1(value.snapshot);
-    if (
-        !snapshot ||
-        snapshot.workspaceIdentity !== value.workspaceIdentity ||
-        snapshot.workspaceIncarnation !== value.workspaceIncarnation
-    ) {
-        return undefined;
-    }
-    return {
-        operationId: value.operationId as string,
-        sessionId: value.sessionId as string,
-        workspaceIdentity: value.workspaceIdentity as string,
-        workspaceIncarnation: value.workspaceIncarnation as string,
-        snapshot,
-    };
-}
-
-function assertOperationIdentity(store: WorkspaceSnapshotStore, record: WorkspaceOperationOwnerV1): void {
-    if (
-        record.workspaceIdentity !== store.identity.workspaceIdentity ||
-        record.workspaceIncarnation !== store.identity.workspaceIncarnation
-    ) {
-        throw new Error("Workspace operation belongs to another workspace incarnation");
-    }
 }
 
 export function decodePendingWorkspaceBoundaryV1(value: unknown): PendingWorkspaceBoundaryV1 | undefined {

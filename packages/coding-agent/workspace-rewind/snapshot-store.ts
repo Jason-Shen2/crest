@@ -25,17 +25,10 @@ import {
     type AnchoredReaderEntry,
     type AnchoredReaderEntryIdentity,
 } from "./anchored-reader";
-import { encodeDurableJson, ensureDurableGitObjects, removeDurableFile, writeDurableJson } from "./durability";
+import { encodeDurableJson, ensureDurableGitObjects } from "./durability";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
-import {
-    decodePendingWorkspaceBoundaryV1,
-    decodeWorkspaceOperationOwnerV1,
-    readWorkspaceOperationOwner,
-    scanWorkspaceOperationOwners,
-    type PendingWorkspaceBoundaryV1,
-    type WorkspaceOperationOwnerV1,
-} from "./pending-boundary-store";
+import { decodePendingWorkspaceBoundaryV1, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import { readProcessStartToken, type ProcessOwnerIdentity } from "./process-owner";
 import type {
     CapturedPathStateV1,
@@ -258,6 +251,7 @@ export class WorkspaceSnapshotStore {
             git: input.git,
             processOwner: input.processOwner,
         });
+        await quarantineLegacyRestoreJournals(storeRoot);
         return new WorkspaceSnapshotStore({ ...input, storeRoot });
     }
 
@@ -563,92 +557,6 @@ export class WorkspaceSnapshotStore {
             timeoutMs: StoreGitTimeoutMs,
         });
         await secureCaptureArtifacts(this.storeRoot, new Set(), refName);
-    }
-
-    anchorOperation(record: WorkspaceOperationOwnerV1): Promise<void> {
-        return this.withWorkspaceLock(() => this.#anchorOperationUnlocked(record));
-    }
-
-    scanOperationOwners(): Promise<WorkspaceOperationOwnerV1[]> {
-        return this.withWorkspaceLock(() => scanWorkspaceOperationOwners(this));
-    }
-
-    deleteOperationOwnerRecord(operationId: string): Promise<void> {
-        return this.withWorkspaceLock(async () => {
-            validateRefToken(operationId, "operation id");
-            await removeDurableFile(join(this.storeRoot, "journal", "operations", `${operationId}.json`));
-        });
-    }
-
-    async #anchorOperationUnlocked(record: WorkspaceOperationOwnerV1): Promise<void> {
-        if (!decodeWorkspaceOperationOwnerV1(record)) {
-            throw new Error("Invalid workspace operation owner");
-        }
-        if (
-            record.workspaceIdentity !== this.identity.workspaceIdentity ||
-            record.workspaceIncarnation !== this.identity.workspaceIncarnation
-        ) {
-            throw new Error("Workspace operation belongs to another workspace incarnation");
-        }
-        validateRefToken(record.operationId, "operation id");
-        this.assertSnapshotIdentity(record.snapshot);
-        const canonicalRecord = encodeDurableJson(record);
-        const refName = `refs/crest/ops/${record.operationId}`;
-        const existingRecord = await readWorkspaceOperationOwner(this, record.operationId);
-        if (existingRecord && !encodeDurableJson(existingRecord).equals(canonicalRecord)) {
-            throw new Error("Workspace operation id already belongs to another owner");
-        }
-        const existingRef = await this.readCrestRefBlob(refName);
-        if (existingRef) {
-            let value: unknown;
-            try {
-                value = JSON.parse(existingRef.bytes.toString("utf8"));
-            } catch {
-                throw new Error("Invalid workspace operation ref descriptor");
-            }
-            const refRecord = decodeWorkspaceOperationOwnerV1(value);
-            if (
-                !refRecord ||
-                refRecord.operationId !== record.operationId ||
-                !existingRef.bytes.equals(encodeDurableJson(refRecord))
-            ) {
-                throw new Error("Invalid workspace operation ref descriptor");
-            }
-            if (!existingRef.bytes.equals(canonicalRecord)) {
-                throw new Error("Workspace operation id already belongs to another owner");
-            }
-        }
-        await this.verifyUntrustedSnapshot(record.snapshot);
-        await this.anchorSnapshot(record.snapshot);
-        const descriptor = await this.git.run(["hash-object", "-w", "--stdin", "--no-filters"], {
-            gitDir: this.storeRoot,
-            stdin: canonicalRecord,
-            timeoutMs: StoreGitTimeoutMs,
-        });
-        const descriptorOid = parseOid(descriptor.stdout);
-        await this.ensureObjectsDurable([descriptorOid]);
-        if (existingRef && existingRef.oid !== descriptorOid) {
-            throw new Error("Workspace operation ref conflicts with its durable owner");
-        }
-        let createdRef = false;
-        if (!existingRef) {
-            await this.git.run(["update-ref", refName, descriptorOid, "0".repeat(40)], {
-                gitDir: this.storeRoot,
-                timeoutMs: StoreGitTimeoutMs,
-            });
-            createdRef = true;
-        }
-        await secureCaptureArtifacts(this.storeRoot, new Set(), refName);
-        const operationsRoot = join(this.storeRoot, "journal", "operations");
-        await makePrivateDirectory(operationsRoot);
-        try {
-            await writeDurableJson(join(operationsRoot, `${record.operationId}.json`), record);
-        } catch (error) {
-            if (createdRef) {
-                await this.deleteCrestRef(refName);
-            }
-            throw error;
-        }
     }
 
     deleteCrestRef(refName: string): Promise<void> {
@@ -1350,7 +1258,7 @@ async function initializePrivateStoreImpl(input: {
             }
         }
         if (!created) {
-            await assertSafeExistingTree(input.storeRoot);
+            await assertSafeExistingTree(input.storeRoot, join(input.storeRoot, "journal", "restores"));
             await initializeBareRepository(input.storeRoot, input.git);
         }
         await repairStorePermissions(input.storeRoot);
@@ -2008,7 +1916,7 @@ async function repairStorePermissions(storeRoot: string): Promise<void> {
     for (const directory of ["objects", "refs", "journal", "lock", "private-hooks"]) {
         await makePrivateDirectory(join(storeRoot, directory));
     }
-    await repairTreePermissions(storeRoot);
+    await repairTreePermissions(storeRoot, join(storeRoot, "journal", "restores"));
 }
 
 async function secureCaptureArtifacts(
@@ -2053,13 +1961,16 @@ function assertPrivateStorePlatform(): void {
     }
 }
 
-async function repairTreePermissions(root: string): Promise<void> {
+async function repairTreePermissions(root: string, ignoredLegacyRoot?: string): Promise<void> {
     const entries = await readdir(root, { withFileTypes: true });
     await securePathWithHandle(root, 0o700, "directory");
     for (const entry of entries) {
         const path = join(root, entry.name);
+        if (path === ignoredLegacyRoot) {
+            continue;
+        }
         if (entry.isDirectory()) {
-            await repairTreePermissions(path);
+            await repairTreePermissions(path, ignoredLegacyRoot);
             continue;
         }
         if (entry.isFile()) {
@@ -2101,7 +2012,7 @@ async function securePathWithHandle(path: string, mode: number, kind: "file" | "
     }
 }
 
-async function assertSafeExistingTree(root: string): Promise<void> {
+async function assertSafeExistingTree(root: string, ignoredLegacyRoot?: string): Promise<void> {
     const metadata = await lstat(root, { bigint: true });
     if (!metadata.isDirectory()) {
         throw new Error(`Unsafe snapshot store directory: ${root}`);
@@ -2109,8 +2020,11 @@ async function assertSafeExistingTree(root: string): Promise<void> {
     const entries = await readdir(root, { withFileTypes: true });
     for (const entry of entries) {
         const path = join(root, entry.name);
+        if (path === ignoredLegacyRoot) {
+            continue;
+        }
         if (entry.isDirectory()) {
-            await assertSafeExistingTree(path);
+            await assertSafeExistingTree(path, ignoredLegacyRoot);
             continue;
         }
         if (!entry.isFile()) {
@@ -2255,6 +2169,113 @@ function validateCrestRefName(value: string): void {
     ) {
         throw new Error("Invalid Crest ref name");
     }
+}
+
+async function quarantineLegacyRestoreJournals(storeRoot: string): Promise<void> {
+    try {
+        const result = await quarantineLegacyRestoreJournalsImpl(storeRoot);
+        if (result.failed > 0) {
+            console.warn("Legacy restore data is incompatible and some entries could not be quarantined safely");
+        } else if (result.quarantined > 0) {
+            console.warn("Legacy restore data is incompatible and was quarantined without decoding");
+        }
+    } catch {
+        console.warn("Legacy restore data is incompatible and could not be quarantined safely");
+    }
+}
+
+async function quarantineLegacyRestoreJournalsImpl(
+    storeRoot: string
+): Promise<{ quarantined: number; failed: number }> {
+    const legacyRoot = join(storeRoot, "journal", "restores");
+    let names: string[];
+    try {
+        const rootState = await lstat(legacyRoot, { bigint: true });
+        if (!rootState.isDirectory() || rootState.isSymbolicLink()) {
+            throw new Error("Legacy restore journal root is unsafe");
+        }
+        names = await readdir(legacyRoot);
+    } catch (error) {
+        if (isCode(error, "ENOENT")) return { quarantined: 0, failed: 0 };
+        throw error;
+    }
+    const resolvedRoot = join(storeRoot, "journal", "restore", "resolved");
+    await makePrivateDirectory(resolvedRoot);
+    let quarantined = 0;
+    let failed = 0;
+    for (const name of names.sort()) {
+        if (!name.endsWith(".json")) continue;
+        try {
+            await quarantineLegacyRestoreJournal(legacyRoot, resolvedRoot, name);
+            quarantined++;
+        } catch {
+            failed++;
+        }
+    }
+    if (quarantined > 0) {
+        await syncDirectory(resolvedRoot);
+        await syncDirectory(legacyRoot);
+    }
+    return { quarantined, failed };
+}
+
+async function quarantineLegacyRestoreJournal(legacyRoot: string, resolvedRoot: string, name: string): Promise<void> {
+    const source = join(legacyRoot, name);
+    const sourceHandle = await open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    let bytes: Buffer;
+    let sourceIdentity: { dev: bigint; ino: bigint };
+    try {
+        const state = await sourceHandle.stat({ bigint: true });
+        if (!state.isFile() || state.nlink !== 1n) {
+            throw new Error("Legacy restore journal entry is unsafe");
+        }
+        sourceIdentity = { dev: state.dev, ino: state.ino };
+        bytes = await sourceHandle.readFile();
+    } finally {
+        await sourceHandle.close();
+    }
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const destination = join(resolvedRoot, `legacy-${digest}.json`);
+    let created = false;
+    try {
+        const destinationHandle = await open(
+            destination,
+            constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+            0o600
+        );
+        created = true;
+        try {
+            await destinationHandle.writeFile(bytes);
+            await destinationHandle.sync();
+        } finally {
+            await destinationHandle.close();
+        }
+    } catch (error) {
+        if (!isCode(error, "EEXIST")) {
+            if (created) await unlink(destination).catch(() => {});
+            throw error;
+        }
+    }
+    try {
+        await securePathWithHandle(destination, 0o600, "file");
+        if (!(await readFile(destination)).equals(bytes)) {
+            throw new Error("Legacy restore quarantine digest collision");
+        }
+    } catch (error) {
+        if (created) await unlink(destination).catch(() => {});
+        throw error;
+    }
+    const currentSource = await lstat(source, { bigint: true });
+    if (
+        !currentSource.isFile() ||
+        currentSource.isSymbolicLink() ||
+        currentSource.nlink !== 1n ||
+        currentSource.dev !== sourceIdentity.dev ||
+        currentSource.ino !== sourceIdentity.ino
+    ) {
+        throw new Error("Legacy restore journal entry changed during quarantine");
+    }
+    await unlink(source);
 }
 
 function parseOid(value: Buffer): string {

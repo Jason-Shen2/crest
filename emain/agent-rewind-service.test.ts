@@ -332,9 +332,7 @@ describe("AgentRewindService", () => {
             "release-session-lease",
         ]);
         expect(value.broadcaster.publishForLease).toHaveBeenCalledOnce();
-        expect(value.broadcaster.publishForLease).toHaveBeenCalledWith(expect.any(Object), Metadata, {
-            ignoreCompletedOperationId: "operation-1",
-        });
+        expect(value.broadcaster.publishForLease).toHaveBeenCalledWith(expect.any(Object), Metadata);
         expect(value.session.close).toHaveBeenCalledOnce();
     });
 
