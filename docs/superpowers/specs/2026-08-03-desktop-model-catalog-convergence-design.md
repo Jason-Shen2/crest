@@ -9,11 +9,12 @@ Approved for implementation planning on 2026-08-03.
 Crest desktop currently has multiple model-data paths with overlapping responsibilities:
 
 - `emain/models-dev-overlay.ts` fetches `models.dev/api.json`, persists a 24-hour cache, and overlays capability metadata for Electron model-picker reads.
-- `packages/coding-agent/src/core/remote-catalog-provider.ts` fetches per-provider catalogs from `pi.dev`, persists a separate four-hour cache, and overlays models inside each coding-agent runtime.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts` fetches per-provider catalogs from `pi.dev` for the inherited pi `ModelRuntime`, but the Crest desktop Agent does not use that runtime.
 - `emain/aiconfig/list-provider-models.ts` calls a provider's `/models` endpoint and returns account- or deployment-visible model IDs.
-- `packages/ai/src/providers/data/` contains the generated built-in snapshot used when no dynamic data is available.
+- `packages/ai/models.generated.ts` contains the generated built-in snapshot used by the desktop Agent when no dynamic data is available.
+- `frontend/app/store/ai-catalog.ts` contains a second generated/static model list used by the desktop picker and resolver.
 
-These paths use different caches, refresh triggers, error handling, and ownership. The Electron picker can therefore display model facts that differ from the model objects used by Crest Agent requests.
+These paths use different caches, refresh triggers, error handling, and ownership. In the desktop product, the picker currently combines the renderer static catalog with provider `/models`, while `emain/agent-ipc.ts` resolves the actual request model from the static `@crest/ai` registry. `listRegistryModels` exists in Electron but is not consumed by the renderer. The picker can therefore display model facts that differ from the model objects used by Crest Agent requests.
 
 ## Scope
 
@@ -31,7 +32,7 @@ This is a client-only convergence. The existing per-provider `pi.dev` catalog AP
 - Refresh active provider catalogs without blocking application startup.
 - Persist the last valid remote catalog safely and reuse it after failures.
 - Separate global model facts from account- and deployment-specific availability.
-- Remove the Electron models.dev overlay and per-runtime remote catalog state after consumers migrate.
+- Remove the Electron models.dev overlay after desktop consumers migrate.
 
 ## Non-goals
 
@@ -39,6 +40,7 @@ This is a client-only convergence. The existing per-provider `pi.dev` catalog AP
 - Changing the `pi.dev` service or adding a full-catalog endpoint.
 - Making provider `/models` responses authoritative for context windows, pricing, reasoning controls, or API compatibility.
 - Supporting periodic refresh for the inherited standalone CLI.
+- Reworking `packages/coding-agent/src/core/ModelRuntime` or deleting its `remote-catalog-provider.ts`; those files belong to the inherited CLI/SDK path and are outside the desktop product scope.
 - Migrating the obsolete `models-dev-cache.json`; the generated snapshot is the fallback during the first unified refresh.
 - Changing user-defined providers in `models.json`.
 
@@ -53,15 +55,17 @@ pi.dev provider overlays
            |
            v
 Electron-owned ModelCatalogService
-       |                    |
-       v                    v
-Settings/model IPC     Crest Agent ModelRuntime
-       |
-       v
-Provider /models availability observation
+       |                         |
+       v                         v
+Catalog IPC + renderer      Electron agent-ipc
+catalog state               model resolution
+       |                         |
+       v                         v
+Picker/resolver +           AgentHarness
+provider /models availability
 ```
 
-The Electron main process creates one service instance, starts background refresh after startup, injects the instance into every Crest Agent runtime, and stops it during shutdown. All Agent sessions in the process share the service's in-memory state.
+The Electron main process creates one service instance, starts background refresh after startup, passes it to AI-config IPC and Agent IPC registration, and stops it during shutdown. All Agent sessions in the process resolve through the service's in-memory state.
 
 The service remains in `packages/ai` instead of `emain` so model merging, validation, refresh, and event semantics are isolated from Electron and can be tested without creating an Electron application.
 
@@ -127,17 +131,30 @@ Electron creates the service using:
 
 It hydrates cached overlays before Agent runtimes are created, but network refresh is fire-and-forget and does not block window creation.
 
-### ModelRuntime Integration
+### Desktop Agent Integration
 
-`ModelRuntime` receives the shared catalog service. It no longer wraps every provider with a private `dynamicModels` closure.
+`emain/agent-ipc.ts` receives the shared catalog service through `registerAgentIpcHandlers()`. `resolveAgentExecution()` asks that service for the selected provider/model instead of calling the static `getModel()` compatibility helper.
 
-Provider authentication and streaming remain in the runtime. Provider model lists are projections of the shared catalog snapshot plus user configuration. A catalog revision causes the runtime to rebuild its provider/model snapshot and availability projection without replacing the catalog service.
+Provider authentication and streaming remain unchanged. `AgentSessionRuntime.syncExecutionConfig()` already updates a live `AgentHarness` when the resolved model object changes, so every send observes the latest catalog snapshot without replacing the session runtime. This is the actual desktop execution path; the inherited pi `ModelRuntime` is not involved.
 
 ### Electron Model IPC
 
 `listRegistryModels(provider)` reads the shared catalog snapshot and maps it into the renderer's existing response type. It no longer reads a separate models.dev overlay.
 
 The existing `listProviderModels()` call remains an account-availability operation. Its response is ephemeral and scoped to the current provider credentials or custom endpoint.
+
+### Renderer Catalog Projection
+
+The renderer keeps provider presentation and endpoint configuration in `ai-catalog.ts`, but stops treating its generated model arrays as the live source of model facts. When a provider becomes active, it requests `listRegistryModels(provider)` and stores the result in renderer state alongside the separate `/models` availability result.
+
+The picker and `resolveAIConfig()` consume a merged renderer catalog projection:
+
+- Electron registry metadata wins for built-in model facts.
+- The checked-in renderer models remain an immediate first-paint fallback before IPC hydration and during older/preload-incompatible environments.
+- User `custom_models` and `custom_endpoints` remain explicit higher-level overrides.
+- Provider `/models` contributes visibility and provisional IDs only; it never overwrites catalog capabilities.
+
+This renderer projection is read-only and disposable. Electron's service remains authoritative, and the request path independently resolves the selected ID through the same service instead of trusting renderer-supplied capabilities or endpoints.
 
 ## Catalog Facts Versus Availability
 
@@ -197,13 +214,13 @@ Only active providers are refreshed because the current `pi.dev` API is per-prov
 
 Add the catalog types, service, source, store contract, and fake-friendly clock/scheduler. Preserve existing consumers while the new service is proven independently.
 
-### Phase 2: Move Crest Agent runtime reads
+### Phase 2: Move Crest Agent request resolution
 
-Inject the service into desktop-created `ModelRuntime` instances. Rebuild runtime snapshots on catalog revisions. Remove `withRemoteCatalog()` and its private dynamic state after runtime integration tests pass.
+Inject the service into `registerAgentIpcHandlers()` and resolve every send through it. Verify that an existing `AgentSessionRuntime` receives a refreshed model through its existing execution-config synchronization path.
 
 ### Phase 3: Move Electron model reads
 
-Create the Electron singleton and switch `listRegistryModels` to it. Keep `listProviderModels` as availability discovery. Remove `emain/models-dev-overlay.ts`, its startup call, and `models-dev-cache.json` references after IPC tests pass.
+Create the Electron singleton and switch `listRegistryModels` to it. Add the missing renderer typing and hydrate provider catalog state from that IPC so the picker and resolver stop depending on the static model arrays after hydration. Keep `listProviderModels` as availability discovery. Remove `emain/models-dev-overlay.ts`, its startup call, and `models-dev-cache.json` references after IPC tests pass.
 
 ### Phase 4: Own the desktop lifecycle
 
@@ -230,12 +247,13 @@ File-store tests cover schema handling, file locking, temporary-file cleanup, an
 
 Integration tests cover:
 
-- two Crest Agent sessions observing one catalog update;
-- `ModelRuntime` resolving a newly published pi.dev model without an application update;
-- Electron `listRegistryModels` returning the same metadata as the runtime;
+- two Crest Agent sessions resolving one catalog update through `agent-ipc`;
+- `agent-ipc` resolving a newly published pi.dev model without an application update;
+- Electron `listRegistryModels` returning the same metadata as `agent-ipc` uses for `AgentHarness`;
+- the renderer picker and resolver consuming refreshed registry metadata while `/models` only filters availability;
 - provider `/models` results affecting availability without mutating the catalog;
 - offline desktop startup using cached or generated models;
-- removal of the two obsolete dynamic model implementations.
+- removal of the obsolete Electron models.dev overlay.
 
 No test performs a real network request or waits for a real hourly timer.
 
@@ -249,5 +267,6 @@ No test performs a real network request or waits for a real hourly timer.
 - Offline and failed-refresh behavior preserves the last valid catalog or generated snapshot.
 - Cache writes are locked and atomic.
 - Provider `/models` observations remain credential-scoped and do not mutate persistent catalog facts.
-- `emain/models-dev-overlay.ts` and `packages/coding-agent/src/core/remote-catalog-provider.ts` no longer hold dynamic catalog state.
+- `emain/models-dev-overlay.ts` is deleted and has no remaining startup or test references.
+- The inherited CLI/SDK `ModelRuntime` and `remote-catalog-provider.ts` are unchanged by this desktop-only work.
 - Standalone CLI behavior is neither changed nor required for completion.
