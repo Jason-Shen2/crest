@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FileTopTab } from "./file-top-tab";
 
 const editorProps = vi.hoisted(() => ({ current: null as any }));
+const markdownFilePreviewProps = vi.hoisted(() => ({ current: null as any }));
 
 vi.mock("@/app/view/codeeditor/codeeditor", () => ({
     CodeEditor: (props: any) => {
@@ -15,7 +16,52 @@ vi.mock("@/app/view/codeeditor/codeeditor", () => ({
     },
 }));
 
-afterEach(cleanup);
+vi.mock("./markdown-file-preview", () => ({
+    MarkdownFilePreview: (props: any) => {
+        markdownFilePreviewProps.current = props;
+        return <div data-testid="markdown-file-preview">{props.text}</div>;
+    },
+}));
+
+function makeControlledRuntime(path: string, value: string) {
+    const listeners = new Set<() => void>();
+    let snapshot = { dirty: false, title: path.split("/").at(-1), status: "ready" };
+    const runtime = {
+        id: "file-1",
+        path,
+        value,
+        readonly: false,
+        get language() {
+            return this.path.toLowerCase().endsWith(".md") ? "markdown" : "typescript";
+        },
+        model: { id: "model" },
+        viewState: undefined,
+        getSnapshot: () => snapshot,
+        subscribe: (listener: () => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+        },
+        setValue: vi.fn((nextValue: string) => {
+            runtime.value = nextValue;
+            snapshot = { ...snapshot };
+            listeners.forEach((listener) => listener());
+        }),
+        setPath(nextPath: string) {
+            runtime.path = nextPath;
+            snapshot = { ...snapshot, title: nextPath.split("/").at(-1) };
+            listeners.forEach((listener) => listener());
+        },
+        attach: vi.fn(),
+        detach: vi.fn(),
+    };
+    return runtime;
+}
+
+afterEach(() => {
+    cleanup();
+    editorProps.current = null;
+    markdownFilePreviewProps.current = null;
+});
 
 describe("FileTopTab", () => {
     it("shows a read failure with retry, close, and locate actions instead of an empty editor", () => {
@@ -134,5 +180,51 @@ describe("FileTopTab", () => {
         expect(editorProps.current.language).toBe("python");
         expect(runtime.detach).toHaveBeenCalledWith(editor);
         expect(runtime.attach).toHaveBeenCalledTimes(2);
+    });
+
+    it("opens Markdown in preview, lets edits update the preview, and preserves the unsaved buffer", () => {
+        const runtime = makeControlledRuntime("/repo/docs/README.md", "# Draft");
+        render(<FileTopTab runtime={runtime as any} />);
+
+        expect(screen.getByTestId("markdown-file-preview").textContent).toBe("# Draft");
+        expect(markdownFilePreviewProps.current).toMatchObject({ path: "/repo/docs/README.md", text: "# Draft" });
+        expect(screen.queryByText("Monaco file editor")).toBeNull();
+
+        act(() => {
+            screen.getByRole("button", { name: "Edit" }).click();
+        });
+        expect(screen.getByText("Monaco file editor")).toBeTruthy();
+
+        act(() => {
+            editorProps.current.onChange("# Edited");
+        });
+        act(() => {
+            screen.getByRole("button", { name: "Preview" }).click();
+        });
+
+        expect(markdownFilePreviewProps.current).toMatchObject({ path: "/repo/docs/README.md", text: "# Edited" });
+        expect(runtime.setValue).toHaveBeenCalledWith("# Edited");
+    });
+
+    it("resets its Markdown mode when the file path changes", async () => {
+        const runtime = makeControlledRuntime("/repo/README.md", "# Draft");
+        render(<FileTopTab runtime={runtime as any} />);
+
+        act(() => {
+            screen.getByRole("button", { name: "Edit" }).click();
+        });
+        expect(screen.getByText("Monaco file editor")).toBeTruthy();
+
+        await act(async () => {
+            runtime.setPath("/repo/README.ts");
+        });
+        expect(screen.getByText("Monaco file editor")).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();
+
+        await act(async () => {
+            runtime.setPath("/repo/README.MD");
+        });
+        expect(screen.getByTestId("markdown-file-preview")).toBeTruthy();
+        expect(screen.queryByText("Monaco file editor")).toBeNull();
     });
 });
