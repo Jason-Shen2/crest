@@ -42,7 +42,6 @@ function renderDialog(overrides: Partial<DiffReviewDialogProps> = {}) {
     const props: DiffReviewDialogProps = {
         open: true,
         title: "Review changes",
-        description: "Red will be removed · Green will be restored",
         files: [makeFile()],
         footer: <button type="button">Caller action</button>,
         onSelectedPathChange: vi.fn(),
@@ -73,7 +72,6 @@ describe("DiffReviewDialog", () => {
                 <DiffReviewDialog
                     open
                     title="Review changes"
-                    description="Immutable checkpoint diff"
                     files={files}
                     selectedPath={selectedPath}
                     footer={<button type="button">Close</button>}
@@ -105,7 +103,6 @@ describe("DiffReviewDialog", () => {
                 <DiffReviewDialog
                     open
                     title="Review changes"
-                    description="Immutable checkpoint diff"
                     files={files}
                     selectedPath={selectedPath}
                     footer={<button type="button">Close</button>}
@@ -151,9 +148,77 @@ describe("DiffReviewDialog", () => {
         expect(screen.getByText("+7").className).toContain("text-success");
         expect(screen.getByText("-0").className).toContain("text-destructive");
         expect(screen.getByText("-4").className).toContain("text-destructive");
-        expect(screen.getByLabelText("Additions unavailable")).not.toBeNull();
-        expect(screen.getByLabelText("Deletions unavailable")).not.toBeNull();
+        expect(screen.getAllByLabelText("Additions unavailable")).not.toHaveLength(0);
+        expect(screen.getAllByLabelText("Deletions unavailable")).not.toHaveLength(0);
         expect(screen.queryByText("+0")).toBeNull();
+    });
+
+    it("uses the magnified dialog shell with internal separators and the compact diff header icon", () => {
+        renderDialog();
+
+        const dialog = screen.getByRole("dialog");
+        expect(dialog.className).toContain("border-0");
+        expect(dialog.className).toContain("h-[calc(100vh-1rem)]");
+        expect(dialog.className).toContain("max-h-[calc(100vh-1rem)]");
+        expect(dialog.className).toContain("w-[calc(100vw-1rem)]");
+        expect(dialog.className).toContain("max-w-[calc(100vw-1rem)]");
+        expect(dialog.className).toContain("sm:h-[94vh]");
+        expect(dialog.className).toContain("sm:max-h-[94vh]");
+        expect(dialog.className).toContain("sm:w-[96vw]");
+        expect(dialog.className).toContain("sm:max-w-[96vw]");
+        expect(screen.getByTestId("diff-review-header-icon").className).toContain(
+            "grid size-9 shrink-0 place-items-center rounded-lg bg-muted/40 text-muted-foreground"
+        );
+        expect(screen.getByText("Review changes").closest('[data-slot="dialog-header"]')?.className).toContain(
+            "border-b"
+        );
+        expect(screen.getByRole("button", { name: "Caller action" }).parentElement?.className).toContain("border-t");
+    });
+
+    it("summarizes two files with known additions and deletions", () => {
+        renderDialog({
+            files: [
+                makeFile({ additions: 100, deletions: 1 }),
+                makeFile({ path: "src/beta.ts", additions: 255, deletions: 1 }),
+            ],
+        });
+
+        const summary = screen.getByText("2 files").parentElement;
+        expect(summary?.textContent).toContain("+355");
+        expect(summary?.textContent).toContain("-2");
+        expect(screen.getByText("+355").className).toContain("text-success");
+        expect(screen.getByText("-2").className).toContain("text-destructive");
+    });
+
+    it("uses singular file count and keeps unknown addition and deletion aggregates independent", () => {
+        const { rerender, props } = renderDialog({ files: [makeFile({ additions: 3, deletions: 2 })] });
+        let summary = screen.getByText("1 file").parentElement;
+        expect(summary?.textContent).toContain("+3");
+        expect(summary?.textContent).toContain("-2");
+
+        rerender(
+            <DiffReviewDialog
+                {...props}
+                files={[
+                    makeFile({ additions: null, deletions: 1 }),
+                    makeFile({ path: "src/beta.ts", additions: 8, deletions: 2 }),
+                ]}
+            />
+        );
+        summary = screen.getByText("2 files").parentElement;
+        expect(summary?.textContent).toContain("+—");
+        expect(summary?.textContent).toContain("-3");
+        expect(summary?.querySelector('[aria-label="Additions unavailable"]')).not.toBeNull();
+        expect(summary?.querySelector('[aria-label="Deletions unavailable"]')).toBeNull();
+    });
+
+    it("shows only the loading summary while files are loading and omits color explanation copy", () => {
+        renderDialog({ loading: true });
+
+        const summary = screen.getByText("Loading files…");
+        expect(summary.parentElement?.textContent).toBe("Loading files…");
+        expect(screen.queryByText(/red (will|was)/i)).toBeNull();
+        expect(screen.queryByText(/green (will|was)/i)).toBeNull();
     });
 
     it("does not show coverage text for a normal file row", () => {
@@ -162,17 +227,22 @@ describe("DiffReviewDialog", () => {
         expect(screen.queryByText("covered")).toBeNull();
     });
 
-    it("renders forceable conflicts and the canonical warning with destructive styling", () => {
+    it("renders forceable conflicts, deduplicated warnings, and errors with destructive styling", () => {
         const warning = "files changed on disk since the agent last wrote them";
         const coverageWarning = "checkpoint excluded an unsupported path";
         renderDialog({
             warnings: [coverageWarning, warning, coverageWarning],
+            errorMessage: "preview failed",
             files: [makeFile({ conflict: "forceable-drift", reason: warning })],
         });
 
         expect(screen.getAllByText(coverageWarning)).toHaveLength(1);
         expect(screen.getAllByText(warning)).toHaveLength(1);
-        for (const message of [screen.getByText(warning), screen.getByText(coverageWarning)]) {
+        for (const message of [
+            screen.getByText(warning),
+            screen.getByText(coverageWarning),
+            screen.getByText("preview failed"),
+        ]) {
             expect(message.className).toMatch(/destructive|red|rose/);
         }
         expect(screen.getByRole("option", { name: /alpha\.ts/ }).className).toMatch(/destructive|red|rose/);

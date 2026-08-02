@@ -5,14 +5,14 @@
 
 import { DiffViewer } from "@/app/agent/assistant-ui/diff-viewer";
 import { getFileIcon } from "@/app/fileexplorer/file-icon";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/shadcn/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/shadcn/ui/dialog";
 import { cn } from "@/util/util";
+import { FileDiffIcon } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
 
 export interface DiffReviewDialogProps {
     open: boolean;
     title: string;
-    description: string;
     files: AgentRewindFileRowView[];
     selectedPath?: string;
     loading?: boolean;
@@ -62,6 +62,48 @@ function FileStats({ file }: { file: AgentRewindFileRowView }) {
                 </span>
             ) : (
                 <span className="text-destructive">-{file.deletions}</span>
+            )}
+        </span>
+    );
+}
+
+function aggregateStats(files: AgentRewindFileRowView[]): { additions: number | null; deletions: number | null } {
+    let additions: number | null = 0;
+    let deletions: number | null = 0;
+
+    for (const file of files) {
+        if (file.additions == null) {
+            additions = null;
+        } else if (additions != null) {
+            additions += file.additions;
+        }
+
+        if (file.deletions == null) {
+            deletions = null;
+        } else if (deletions != null) {
+            deletions += file.deletions;
+        }
+    }
+
+    return { additions, deletions };
+}
+
+function AggregateStats({ additions, deletions }: { additions: number | null; deletions: number | null }) {
+    return (
+        <span className="flex shrink-0 gap-1.5 tabular-nums">
+            {additions == null ? (
+                <span aria-label="Additions unavailable" className="text-muted-foreground">
+                    +—
+                </span>
+            ) : (
+                <span className="text-success">+{additions}</span>
+            )}
+            {deletions == null ? (
+                <span aria-label="Deletions unavailable" className="text-muted-foreground">
+                    -—
+                </span>
+            ) : (
+                <span className="text-destructive">-{deletions}</span>
             )}
         </span>
     );
@@ -157,7 +199,6 @@ function SelectedFileDiff({ file }: { file?: AgentRewindFileRowView }) {
 export function DiffReviewDialog({
     open,
     title,
-    description,
     files,
     selectedPath,
     loading = false,
@@ -171,6 +212,7 @@ export function DiffReviewDialog({
 }: DiffReviewDialogProps) {
     const selectedFile = files.find((file) => file.path === selectedPath) ?? files[0];
     const selectedIndex = selectedFile ? files.indexOf(selectedFile) : -1;
+    const stats = aggregateStats(files);
     const optionId = (index: number) => `diff-review-file-${index}`;
     const fileReasons = new Set(files.flatMap((file) => (file.reason ? [file.reason] : [])));
     const uniqueWarnings = [...new Set(warnings.filter((warning) => warning && !fileReasons.has(warning)))];
@@ -194,11 +236,31 @@ export function DiffReviewDialog({
         >
             <DialogContent
                 showCloseButton={false}
-                className="grid h-[min(720px,calc(100vh-4rem))] max-h-[calc(100vh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-[min(1100px,calc(100vw-4rem))]"
+                aria-describedby={undefined}
+                className="grid h-[calc(100vh-1rem)] max-h-[calc(100vh-1rem)] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden border-0 p-0 shadow-2xl sm:h-[94vh] sm:max-h-[94vh] sm:w-[96vw] sm:max-w-[96vw]"
             >
                 <DialogHeader className="shrink-0 gap-1 border-b border-border px-5 py-4">
-                    <DialogTitle>{title}</DialogTitle>
-                    <DialogDescription>{description}</DialogDescription>
+                    <div className="flex items-start gap-3">
+                        <div
+                            data-testid="diff-review-header-icon"
+                            className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted/40 text-muted-foreground"
+                        >
+                            <FileDiffIcon size={18} />
+                        </div>
+                        <div className="min-w-0 space-y-1">
+                            <DialogTitle className="text-base leading-tight">{title}</DialogTitle>
+                            <div className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
+                                {loading ? (
+                                    <span>Loading files…</span>
+                                ) : (
+                                    <>
+                                        <span>{files.length === 1 ? "1 file" : `${files.length} files`}</span>
+                                        <AggregateStats additions={stats.additions} deletions={stats.deletions} />
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
                     {uniqueWarnings.map((warning) => (
                         <p key={warning} className="text-sm text-destructive">
                             {warning}

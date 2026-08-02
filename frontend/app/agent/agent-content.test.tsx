@@ -154,7 +154,6 @@ vi.mock("./rewind/diff-review-dialog", () => ({
         return props.open ? (
             <div data-testid="rewind-preview">
                 <span>{`${props.title}:${props.loading ? "loading" : "ready"}`}</span>
-                <span>{props.description}</span>
                 {props.warnings?.map((warning: string) => (
                     <span key={warning}>{warning}</span>
                 ))}
@@ -476,7 +475,7 @@ describe("AgentContent", () => {
             turnId: "turn-a",
         });
         expect(turnDialogProps.latest.title).toBe("Review turn changes");
-        expect(turnDialogProps.latest.description).toBe("Red was removed · Green was added");
+        expect(turnDialogProps.latest).not.toHaveProperty("description");
         expect(turnDialogProps.latest.files[0].diff).toContain("-old\n+new");
         act(() => turnDialogProps.latest.onSelectedPathChange("frontend/card.tsx"));
         expect(onOpenTurnDiff).not.toHaveBeenCalled();
@@ -570,7 +569,7 @@ describe("AgentContent", () => {
             });
         });
         await act(async () => threadProps.latest.turnChanges.openMutation("turn-a"));
-        expect(turnDialogProps.latest.description).toBe("Red will be removed · Green will be restored");
+        expect(turnDialogProps.latest).not.toHaveProperty("description");
         expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
         expect(screen.queryByRole("button", { name: /Force/ })).toBeNull();
         expect(screen.queryByRole("button", { name: "Redo 1 file" })).toBeNull();
@@ -1176,7 +1175,7 @@ describe("AgentContent", () => {
         const { client } = renderRewindContent();
 
         await act(() => threadProps.latest.onRevertTurn("turn-a"));
-        expect(screen.getByText("Red will be removed · Green will be restored")).not.toBeNull();
+        expect(rewindDialogProps.latest).not.toHaveProperty("description");
         fireEvent.click(screen.getByRole("button", { name: "Revert 1 file" }));
         await waitFor(() =>
             expect(client.rewindTree).toHaveBeenCalledWith(expect.objectContaining({ mode: "normal" }))

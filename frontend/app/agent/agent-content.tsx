@@ -1147,7 +1147,6 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                     <DiffReviewDialog
                         open={rewindController.preview.open}
                         title={rewindController.preview.operation === "rewind" ? "Revert changes?" : "Redo changes?"}
-                        description="Red will be removed · Green will be restored"
                         files={rewindPreview?.files ?? []}
                         selectedPath={rewindSelectedPath}
                         loading={rewindController.preview.phase === "loading"}
@@ -1205,11 +1204,6 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                                 : turnChangesController.dialog.kind === "undo"
                                   ? "Undo turn changes?"
                                   : "Redo turn changes?"
-                        }
-                        description={
-                            turnChangesController.dialog.kind === "review"
-                                ? "Red was removed · Green was added"
-                                : "Red will be removed · Green will be restored"
                         }
                         files={turnChangesController.dialog.files}
                         selectedPath={turnChangesController.dialog.selectedPath}
