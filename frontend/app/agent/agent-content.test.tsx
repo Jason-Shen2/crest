@@ -1372,7 +1372,8 @@ describe("AgentContent", () => {
         });
 
         const thread = screen.getByTestId("assistant-thread");
-        const dockSummary = screen.getByText("Reverted 4 messages · 1 file");
+        const dockTitle = screen.getByText("Changes reverted");
+        const dockSummary = screen.getByText("4 messages · 1 file");
         expect(
             !!(dockSummary.compareDocumentPosition(screen.getByLabelText("Prompt")) & Node.DOCUMENT_POSITION_FOLLOWING)
         ).toBe(true);
@@ -1405,7 +1406,9 @@ describe("AgentContent", () => {
                 rewindState: makeRewindState(),
             });
         });
-        expect(screen.queryByText("Reverted 4 messages · 1 file")).toBeNull();
+        expect(screen.queryByText("Changes reverted")).toBeNull();
+        expect(screen.queryByText("4 messages · 1 file")).toBeNull();
+        expect(thread.contains(dockTitle)).toBe(false);
     });
 
     it("hides session A host state synchronously when the controlled session switches to B", async () => {
@@ -1428,11 +1431,13 @@ describe("AgentContent", () => {
                 }),
             });
         });
-        expect(screen.getByText("Reverted 2 messages · 0 files")).not.toBeNull();
+        expect(screen.getByText("Changes reverted")).not.toBeNull();
+        expect(screen.getByText("2 messages · 0 files")).not.toBeNull();
 
         act(() => model.selectSession({ id: "b", path: "/sessions/b.db", cwd: "/repo", createdAt: "later" }));
 
-        expect(screen.queryByText("Reverted 2 messages · 0 files")).toBeNull();
+        expect(screen.queryByText("Changes reverted")).toBeNull();
+        expect(screen.queryByText("2 messages · 0 files")).toBeNull();
         expect(threadProps.latest.rewindableTurnIds.size).toBe(0);
         await waitFor(() => expect(hostProps.latest.sessionMetadata?.path).toBe("/sessions/b.db"));
     });
