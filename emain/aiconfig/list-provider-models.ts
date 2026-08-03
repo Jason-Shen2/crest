@@ -32,17 +32,14 @@ export interface ProviderModelInfo {
     inputmodalities?: string[];
     tokenizer?: string;
     ismoderated?: boolean;
-    // Derived from OpenRouter's supported_parameters array. These are the
-    // only authoritative *capability* facts the live /models response
-    // carries — without them aggregator rows fall back to a stale static
-    // snapshot. true = the model accepts that parameter; absent = the
-    // endpoint didn't report it (non-OpenRouter providers).
+    // Diagnostic hints from OpenRouter's supported_parameters array.
+    // They do not update the shared capability catalog.
     reasoning?: boolean;
     supportstools?: boolean;
 }
 
 // Capability-rich model metadata sourced from the authoritative
-// emain/ai model registry (models.generated.ts). Unlike ProviderModelInfo
+// Shared Electron model catalog. Unlike ProviderModelInfo
 // (a thin /models HTTP echo), this carries the same reasoning / input
 // modality / thinking-level facts the *backend* uses when actually
 // building a request — so the picker can show capabilities that match

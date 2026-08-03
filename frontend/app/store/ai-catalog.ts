@@ -1,17 +1,12 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// AI provider / model catalog.  In-repo source of truth for "what
-// providers + models exist in the world" — endpoints, apitypes,
-// capabilities, context windows, reasoning support.
+// Renderer provider presentation plus an offline/first-paint model
+// fallback. Electron's ModelCatalogService is authoritative for current
+// model facts and projects them over these arrays after IPC hydration.
 //
-// Maintained by crest contributors via PR.  Crest does not have a
-// backend catalog service (unlike warp's Oz proto API), so this list
-// is the authoritative discovery surface for the UI picker.
+// Design: see docs/ai-config-architecture.md.
 //
-// Design: see docs/ai-config-architecture.md §3.
-//
-// To add a model: append to the appropriate provider's `models` array.
 // To add a provider: append a new ProviderEntry to CATALOG.
 // To override or extend at the user level: users add to their
 // ~/.config/crest/ai.json `custom_models` or `custom_endpoints` — they
@@ -35,21 +30,15 @@ export type Capability = "tools" | "images" | "pdfs" | "reasoning";
 // capability.  Maps directly to ThinkingLevel on AIOptsType.
 export type ReasoningLevel = "low" | "medium" | "high";
 
-// Provider kind — distinguishes "direct" providers (OpenAI, Anthropic,
-// Google) whose model set is small and stable enough to curate, from
-// "aggregator" providers (OpenRouter, Together, ...) whose model set is
-// open-ended and only the live /models endpoint is authoritative.
+// Provider kind — distinguishes direct providers from aggregators whose
+// account-visible IDs are open-ended.
 //
 // Consumer rules:
-//   - kind: "direct"     → catalog.models[] is the canonical list; live
-//                          fetch supplements (newer models the catalog
-//                          hasn't picked up) but catalog metadata wins
-//                          when both have the same id.
-//   - kind: "aggregator" → catalog.models[] MUST be empty; the picker
-//                          shows ONLY live /models results.  Resolver
-//                          synthesizes endpoint/apitype from provider
-//                          defaults — that's the whole reason the entry
-//                          exists in catalog.
+//   - kind: "direct"     → checked-in models provide first paint until
+//                          the Electron registry projection arrives.
+//   - kind: "aggregator" → checked-in models stay empty. Electron supplies
+//                          facts; /models optionally filters account-visible
+//                          IDs and may contribute provisional deployment IDs.
 //
 // Why: hard-coding even 2 OpenRouter models in catalog created a UX
 // trap (chip showed model name → user thought it was set → resolver
@@ -78,14 +67,13 @@ export interface ProviderEntry {
     // Set this when a provider's chat and model-list endpoints live at
     // different paths on the same host — e.g. minimax: chat goes
     // through the Anthropic-compatible `/anthropic` path but the
-    // authoritative model list is served by the OpenAI-compatible
+    // account-visible model list is served by the OpenAI-compatible
     // `/v1/models` on the same host.  Anthropic itself doesn't expose
     // any /models, so omitting the override on the direct Anthropic
     // entry correctly degrades to the static catalog fallback.
     modelsEndpoint?: string;
     // OS-keychain key name the secretstore looks up by default when the
-    // user's ai.json provider entry doesn't override it.  Matches the
-    // existing convention in pkg/aiusechat/usechat-mode.go:
+    // user's ai.json provider entry doesn't override it.
     //   OpenAIAPITokenSecretName="OPENAI_API_KEY"
     //   AnthropicAPITokenSecretName="ANTHROPIC_API_KEY"
     //   GoogleAIAPITokenSecretName="GOOGLE_AI_KEY"
@@ -132,23 +120,20 @@ export interface ModelEntry {
 // AI market churn (OpenAI's Responses API URL is stable; OpenRouter is
 // always an aggregator; Gemini always uses its {model} URL template).
 //
-// Model-level entries (the `models` array) are SYNCED from the LiteLLM
+// Model-level fallback entries are synced from the LiteLLM
 // registry by `scripts/sync-ai-models.mjs` (run via `task sync:models`).
-// This keeps the catalog current with new model releases without
-// per-release PR churn. The synced file is ai-catalog-models.gen.ts.
+// The synced file is ai-catalog-models.gen.ts; Electron overlays current
+// metadata from its shared catalog after renderer hydration.
 //
-// Aggregator providers (kind: "aggregator") get an empty models[] by
-// design — their authoritative list is the upstream /models endpoint
-// fetched at picker open time. See ProviderKind comment above.
+// Aggregator providers get an empty checked-in models[] by design.
 
 import { MODELS_BY_PROVIDER } from "./ai-catalog-models.gen";
 import type { RegistryModelsState } from "./ai-registry-models";
 
 // minimax M-series model list — curated inline because LiteLLM's
-// minimax provider doesn't currently expose the full emain-registered
-// set (M2.7 / M2.7-highspeed are missing upstream).  Mirrors
-// emain/ai/models.generated.ts "minimax" + "minimax-cn" blocks
-// exactly so the resolver's model id matches what the backend will
+// minimax provider doesn't currently expose the full generated baseline
+// set (M2.7 / M2.7-highspeed are missing upstream). It mirrors the
+// @crest/ai registry so the resolver's model id matches what Electron will
 // accept.  Capabilities: all M-series are reasoning models with
 // function calling — LiteLLM confirms `supports_function_calling`
 // and `supports_reasoning` on every chat entry under
@@ -158,14 +143,9 @@ import type { RegistryModelsState } from "./ai-registry-models";
 // falls back to `endpoint` substitution regardless so a mismatch is
 // a budgeting concern, not a correctness one.
 //
-// Note: this inline list is the **fallback** for when the live
-// `/v1/models` fetch (see `modelsEndpoint` on the catalog entries
-// below) fails or the IPC isn't reachable.  Successful live fetch
-// returns the authoritative set straight from minimax, so any new
-// model minimax ships (including M3 on the CN endpoint, future M4,
-// etc.) becomes available automatically without us hand-curating
-// here.  The inline set is also what the picker shows on first
-// mount before the live fetch resolves.
+// This inline list is the first-paint/offline fallback. Electron registry
+// hydration supplies current metadata; `/v1/models` only filters what the
+// configured account can see.
 function makeMinimaxModel(id: string, displayName: string, contextWindow: number): ModelEntry {
     return {
         id,
@@ -189,13 +169,10 @@ const MINIMAX_MODELS: ModelEntry[] = [
 
 // minimax-cn ships the same model family as the global endpoint
 // (M2 through M3). Earlier revisions of this file mirrored an older
-// emain/ai/models.generated.ts snapshot that omitted M3 on the CN
+// generated snapshot that omitted M3 on the CN
 // provider, but minimax's China endpoint now exposes M3 in full.
-// Live `/v1/models` fetches (see modelsEndpoint below) bring in any
-// future additions automatically; this inline list is the
-// first-paint fallback the picker shows before the fetch resolves,
-// so keeping it in sync with reality avoids confusing gaps on
-// initial render.
+// This inline list is the first-paint fallback before Electron registry
+// hydration; `/v1/models` only filters account-visible IDs.
 const MINIMAX_CN_MODELS: ModelEntry[] = MINIMAX_MODELS;
 
 export const CATALOG: ProviderEntry[] = [
@@ -236,9 +213,8 @@ export const CATALOG: ProviderEntry[] = [
         //
         // `modelsEndpoint` overrides the picker live fetch so it hits
         // the OpenAI-compatible `/v1/models` on the same host — that's
-        // where minimax serves its authoritative model list, including
-        // any new M-series releases that haven't been hand-curated into
-        // MINIMAX_MODELS yet.  Without this override the IPC would
+        // where minimax serves its account-visible IDs. Without this
+        // override the IPC would
         // derive `/anthropic/models` from defaultEndpoint, which 404s
         // (Anthropic's surface has no /models, and minimax's compat
         // surface inherits that gap).
@@ -269,10 +245,9 @@ export const CATALOG: ProviderEntry[] = [
     {
         // OpenRouter is an aggregator — it routes to 300+ upstream models
         // we couldn't curate in catalog without immediate drift.  The
-        // picker drives off live /models exclusively for aggregators; this
-        // entry exists only to provide endpoint/apitype/icon so the
-        // resolver can construct a request once the user picks a row from
-        // the live list.  See ProviderKind comment above.
+        // checked-in fallback stays empty; Electron supplies catalog facts
+        // and /models optionally filters account-visible IDs. This entry
+        // provides endpoint/apitype/icon defaults for provisional IDs.
         id: "openrouter",
         displayName: "OpenRouter",
         kind: "aggregator",
