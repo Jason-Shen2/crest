@@ -58,10 +58,11 @@ describe("ContextInspector", () => {
         for (const label of ["Agent instructions", "Tools", "Conversation", "Added context"]) {
             expect(screen.getByText(label)).toBeTruthy();
         }
+        expect(screen.getByRole("heading", { name: "Context breakdown" })).toBeTruthy();
         expect(screen.queryByRole("heading", { name: "Composition" })).toBeNull();
         expect(screen.queryByText("Request overhead")).toBeNull();
         expect(screen.queryByText(/Attribution differs/)).toBeNull();
-        expect(screen.queryByLabelText("Context composition")).toBeNull();
+        expect(screen.getByLabelText("Context composition")).toBeTruthy();
     });
 
     it("keeps known inventory visible when token counting is unavailable", () => {

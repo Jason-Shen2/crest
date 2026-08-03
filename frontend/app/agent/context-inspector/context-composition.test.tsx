@@ -90,9 +90,11 @@ function renderedLargePayloadText(surface: HTMLElement): string {
 }
 
 describe("ContextComposition", () => {
-    it("shows fixed groups and source rows without legacy composition chrome", () => {
+    it("shows the context breakdown above fixed source groups", () => {
         render(<ContextComposition snapshot={snapshot()} />);
 
+        expect(screen.getByRole("heading", { name: "Context breakdown" })).toBeTruthy();
+        expect(screen.getByLabelText("Context composition")).toBeTruthy();
         for (const label of ["Agent instructions", "Tools", "Conversation", "Added context"]) {
             expect(screen.getByRole("heading", { name: label })).toBeTruthy();
             expect(screen.queryByRole("button", { name: new RegExp(label) })).toBeNull();
@@ -113,8 +115,34 @@ describe("ContextComposition", () => {
         ]) {
             expect(screen.queryByText(new RegExp(legacyText, "i"))).toBeNull();
         }
-        expect(screen.queryByLabelText("Context composition")).toBeNull();
         expect(document.querySelector("[aria-label*='entry']")).toBeNull();
+    });
+
+    it("renders accounted token categories as a proportional bar with a compact legend", () => {
+        render(
+            <ContextComposition
+                snapshot={snapshot({
+                    effectiveInputTokens: 1_000,
+                    requestOverheadTokens: 400,
+                    categories: [
+                        { category: "agent_instructions", tokens: 100, itemCount: 1 },
+                        { category: "tools", tokens: 200, itemCount: 1 },
+                        { category: "conversation", tokens: 300, itemCount: 1 },
+                        { category: "added_context", tokens: 0, itemCount: 0 },
+                    ],
+                })}
+            />
+        );
+
+        expect(screen.getByLabelText("Agent instructions 10%").style.width).toBe("10%");
+        expect(screen.getByLabelText("Tools 20%").style.width).toBe("20%");
+        expect(screen.getByLabelText("Conversation 30%").style.width).toBe("30%");
+        expect(screen.getByLabelText("Other 40%").style.width).toBe("40%");
+        expect(screen.queryByText(/Added context 0%/)).toBeNull();
+        expect(screen.getByText("Agent instructions 10%")).toBeTruthy();
+        expect(screen.getByText("Tools 20%")).toBeTruthy();
+        expect(screen.getByText("Conversation 30%")).toBeTruthy();
+        expect(screen.getByText("Other 40%")).toBeTruthy();
     });
 
     it("keeps one source open across groups, toggles it closed, and restores focus on Escape", () => {
