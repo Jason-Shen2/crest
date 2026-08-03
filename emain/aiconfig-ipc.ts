@@ -18,6 +18,7 @@
 // the pi-ai library source we vendored — keeping crest-specific config
 // glue in its own dir avoids confusion with the library.
 
+import type { ModelCatalog } from "@crest/ai/model-catalog";
 import * as electron from "electron";
 
 import {
@@ -28,11 +29,7 @@ import {
     type RegistryModelInfo,
 } from "./aiconfig/list-provider-models";
 import { getSecret } from "./aiconfig/secrets";
-import {
-    readAIUserConfig,
-    writeAIUserConfig,
-    type AIUserConfigReadResult,
-} from "./aiconfig/user-config";
+import { readAIUserConfig, writeAIUserConfig, type AIUserConfigReadResult } from "./aiconfig/user-config";
 
 interface ListProviderModelsIpcInput extends ListProviderModelsInput {
     tokensecretname?: string;
@@ -42,7 +39,7 @@ interface ListProviderModelsIpcInput extends ListProviderModelsInput {
  * Wire the AI config / listing IPC handlers. Call once at app startup
  * from emain-ipc.ts initIpcHandlers().
  */
-export function registerAiConfigIpcHandlers(): void {
+export function registerAiConfigIpcHandlers(catalog: ModelCatalog): void {
     electron.ipcMain.handle(
         "ai:list-provider-models",
         async (_event, input: ListProviderModelsIpcInput): Promise<ProviderModelInfo[]> => {
@@ -51,7 +48,7 @@ export function registerAiConfigIpcHandlers(): void {
                 const value = await getSecret(input.tokensecretname);
                 if (value == null) {
                     throw new Error(
-                        `secret "${input.tokensecretname}" not found — open Settings → AI Provider to set the key`,
+                        `secret "${input.tokensecretname}" not found — open Settings → AI Provider to set the key`
                     );
                 }
                 token = value;
@@ -60,28 +57,38 @@ export function registerAiConfigIpcHandlers(): void {
                 apitype: input.apitype,
                 baseurl: input.baseurl,
                 apitoken: token,
+                tokensecretname: input.tokensecretname,
+                modelsendpoint: input.modelsendpoint,
             });
-        },
+        }
     );
 
     electron.ipcMain.handle(
         "ai:list-registry-models",
         async (_event, provider: string): Promise<RegistryModelInfo[]> => {
-            return listRegistryModels(provider);
-        },
+            catalog.activateProvider(provider);
+            await catalog.refreshProvider(provider);
+            return listRegistryModels(catalog, provider);
+        }
     );
 
     electron.ipcMain.handle(
-        "ai:get-user-config",
-        async (): Promise<AIUserConfigReadResult> => {
-            return readAIUserConfig();
-        },
+        "ai:refresh-registry-models",
+        async (_event, provider: string): Promise<RegistryModelInfo[]> => {
+            catalog.activateProvider(provider);
+            await catalog.refreshProvider(provider, { force: true });
+            return listRegistryModels(catalog, provider);
+        }
     );
+
+    electron.ipcMain.handle("ai:get-user-config", async (): Promise<AIUserConfigReadResult> => {
+        return readAIUserConfig();
+    });
 
     electron.ipcMain.handle(
         "ai:write-user-config",
         async (_event, cfg: Parameters<typeof writeAIUserConfig>[0]): Promise<void> => {
             await writeAIUserConfig(cfg);
-        },
+        }
     );
 }

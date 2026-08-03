@@ -1,6 +1,8 @@
 // Copyright 2025, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { ModelCatalog } from "@crest/ai";
+import { resolveAuthenticatedWorkspaceSender } from "@crest/coding-agent/agent-execution-context";
 import * as electron from "electron";
 import { FastAverageColor } from "fast-average-color";
 import fs from "fs";
@@ -15,8 +17,6 @@ import * as keyutil from "../frontend/util/keyutil";
 import { fireAndForget, parseDataUrl } from "../frontend/util/util";
 import { registerAgentIpcHandlers } from "./agent-ipc";
 import { registerAgentObservabilityIpcHandlers } from "./agent-observability-ipc";
-import type { ModelCatalog } from "@crest/ai";
-import { resolveAuthenticatedWorkspaceSender } from "@crest/coding-agent/agent-execution-context";
 import { registerAiConfigIpcHandlers } from "./aiconfig-ipc";
 import {
     incrementTermCommandsDurable,
@@ -215,7 +215,7 @@ function saveImageFileWithNativeDialog(
         });
 }
 
-export function initIpcHandlers(_modelCatalog: ModelCatalog) {
+export function initIpcHandlers(modelCatalog: ModelCatalog) {
     // Agent runtime IPC (renderer ↔ Electron-main agent loop).
     // See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
     registerAgentIpcHandlers({
@@ -234,7 +234,7 @@ export function initIpcHandlers(_modelCatalog: ModelCatalog) {
 
     // AI config / provider /models listing IPC (replaces the Go-side
     // ListProviderModelsCommand wshrpc).
-    registerAiConfigIpcHandlers();
+    registerAiConfigIpcHandlers(modelCatalog);
 
     electron.ipcMain.on("open-external", (event, url) => {
         if (url && typeof url === "string") {

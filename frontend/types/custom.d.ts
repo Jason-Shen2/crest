@@ -271,6 +271,8 @@ declare global {
         // boundary, where the concrete type is already in scope.
         ai: {
             listProviderModels: (input: ListProviderModelsInput) => Promise<AiProviderModelInfo[]>;
+            listRegistryModels: (provider: string) => Promise<RegistryModelInfo[]>;
+            refreshRegistryModels: (provider: string) => Promise<RegistryModelInfo[]>;
             getUserConfig: () => Promise<AIUserConfigReadResult>;
             writeUserConfig: (cfg: unknown) => Promise<void>;
         };
@@ -493,6 +495,20 @@ declare global {
         inputmodalities?: string[];
         tokenizer?: string;
         ismoderated?: boolean;
+        reasoning?: boolean;
+        supportstools?: boolean;
+    };
+
+    type RegistryModelInfo = {
+        id: string;
+        name?: string;
+        reasoning: boolean;
+        thinkinglevels: string[];
+        inputmodalities: string[];
+        context?: number;
+        maxoutputtokens?: number;
+        promptcost?: number;
+        completioncost?: number;
     };
 
     type AgentContextSourceKind = "turn" | "session";

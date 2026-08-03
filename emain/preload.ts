@@ -224,6 +224,7 @@ contextBridge.exposeInMainWorld("api", {
     ai: {
         listProviderModels: (input: unknown) => ipcRenderer.invoke("ai:list-provider-models", input),
         listRegistryModels: (provider: string) => ipcRenderer.invoke("ai:list-registry-models", provider),
+        refreshRegistryModels: (provider: string) => ipcRenderer.invoke("ai:refresh-registry-models", provider),
         getUserConfig: () => ipcRenderer.invoke("ai:get-user-config"),
         writeUserConfig: (cfg: unknown) => ipcRenderer.invoke("ai:write-user-config", cfg),
     },
