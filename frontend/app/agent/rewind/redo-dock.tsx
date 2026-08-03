@@ -121,9 +121,7 @@ export function RedoDock({ redo, busy, onRedo }: RedoDockProps) {
                 aria-label={expanded ? "Reverted operation details" : undefined}
                 className={cn(
                     "grid border-t border-border transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
-                    expanded
-                        ? "grid-rows-[1fr] opacity-100"
-                        : "pointer-events-none grid-rows-[0fr] opacity-0"
+                    expanded ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"
                 )}
                 id={detailsId}
                 role={expanded ? "region" : undefined}
