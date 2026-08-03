@@ -14,6 +14,7 @@
 import type { Api, Model } from "@crest/ai";
 import { AgentHarness } from "@crest/agent/harness/agent-harness";
 import type {
+    AgentHarnessProviderContextObservation,
     Session,
     SessionContext,
     SessionTreeEntry,
@@ -22,10 +23,10 @@ import type {
     ToolCallResult,
 } from "@crest/agent/harness/types";
 import { NodeExecutionEnv } from "@crest/agent/node";
+import type { AgentTool, ThinkingLevel } from "@crest/agent/types";
 import type { ToolCallHook } from "./permissions";
 import type { ProjectContextFile } from "./resource-loader";
-import type { AgentTool, ThinkingLevel } from "@crest/agent/types";
-import { buildSystemPrompt, type SystemPromptInputs } from "./build-system-prompt";
+import { buildSystemPromptManifest, type SystemPromptInputs } from "./build-system-prompt";
 
 export type AgentAuthResolver = (
     model: Model<Api>
@@ -75,6 +76,8 @@ export interface BuildAgentHarnessHostOptions {
         entries: SessionTreeEntry[];
         context: SessionContext;
     }) => Promise<SessionContext>;
+    observeProviderContext?: (observation: AgentHarnessProviderContextObservation) => void | Promise<void>;
+    onProviderContextObservationError?: (error: Error) => void;
 }
 
 export interface AgentHarnessHost {
@@ -85,6 +88,10 @@ export interface AgentHarnessHost {
     promptWithCustomEntry(customType: string, data: unknown, text: string): Promise<unknown>;
     setAuthResolver(resolver?: AgentAuthResolver): void;
     setToolCallHook(hook?: ToolCallHook): void;
+    setProviderContextObserver?(
+        observer?: (observation: AgentHarnessProviderContextObservation) => void | Promise<void>,
+        onError?: (error: Error) => void
+    ): void;
     resolveAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
     runToolCallHook(event: ToolCallEvent): Promise<ToolCallResult | undefined>;
     getCwd(): string;
@@ -124,7 +131,7 @@ export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): Agent
                 if (tool.promptSnippet) toolSnippets[tool.name] = tool.promptSnippet;
                 if (tool.promptGuidelines) promptGuidelines.push(...tool.promptGuidelines);
             }
-            return buildSystemPrompt({
+            const manifest = buildSystemPromptManifest({
                 ...inputs,
                 selectedTools: activeTools.map((tool) => tool.name),
                 toolSnippets,
@@ -132,9 +139,12 @@ export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): Agent
                 contextFiles: opts.contextFiles,
                 skills: opts.skills,
             });
+            return { text: manifest.text, metadata: manifest };
         },
         getApiKeyAndHeaders: async (model) => authResolver?.(model),
         transformSessionContext: opts.transformSessionContext,
+        observeProviderContext: opts.observeProviderContext,
+        onProviderContextObservationError: opts.onProviderContextObservationError,
     });
     harness.on("tool_call", async (event) => toolCallHook?.(event));
     return {
@@ -148,6 +158,9 @@ export function buildAgentHarnessHost(opts: BuildAgentHarnessHostOptions): Agent
         },
         setToolCallHook(next): void {
             toolCallHook = next;
+        },
+        setProviderContextObserver(observer, onError): void {
+            harness.setProviderContextObserver(observer, onError);
         },
         async resolveAuth(model): Promise<{ apiKey: string; headers?: Record<string, string> } | undefined> {
             return authResolver?.(model);

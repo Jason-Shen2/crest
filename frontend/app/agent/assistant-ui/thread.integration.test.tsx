@@ -405,17 +405,16 @@ describe("Thread assistant-ui integration", () => {
     it("renders local context usage ring in the composer action row", () => {
         const html = renderThread({
             modelLabel: "MiniMax-M3",
-            modelContextWindow: 128000,
-            contextUsage: {
-                inputTokens: 72000,
-                cachedInputTokens: 12000,
-                outputTokens: 6000,
-                totalTokens: 90000,
+            contextDisplayValue: {
+                effectiveInputTokens: 72000,
+                inputCapacity: 128000,
+                accuracy: "estimated",
+                lifecycle: "ready",
             },
         } as ThreadProps);
 
         expect(html).toContain("aui-context-display-ring");
-        expect(html).toContain("70%");
+        expect(html).toContain("56%");
         expect(html).toContain("MiniMax-M3");
         expect(html).toContain("aui-composer-left-actions");
         expect(html).toContain("aui-composer-right-actions");

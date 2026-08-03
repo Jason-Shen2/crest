@@ -30,6 +30,13 @@ const modalMocks = vi.hoisted(() => ({
     pushModal: vi.fn(),
 }));
 
+const threadProps = vi.hoisted(() => ({ latest: null as any }));
+const layoutProps = vi.hoisted(() => ({ openRightTool: vi.fn() }));
+
+vi.mock("@/app/workspace/workspace-layout-model", () => ({
+    WorkspaceLayoutModel: { getInstance: () => layoutProps },
+}));
+
 vi.mock("./agent-chat-host", () => ({
     AgentChatHost: (props: any) => {
         hostProps.latest = props;
@@ -74,12 +81,15 @@ vi.mock("@/app/store/modalmodel", () => ({
 
 vi.mock("./assistant-ui", () => ({
     AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    Thread: ({ beforeComposer }: { beforeComposer?: React.ReactNode }) => (
-        <div data-testid="assistant-thread">
-            {beforeComposer}
-            <textarea aria-label="Prompt" />
-        </div>
-    ),
+    Thread: (props: { beforeComposer?: React.ReactNode }) => {
+        threadProps.latest = props;
+        return (
+            <div data-testid="assistant-thread">
+                {props.beforeComposer}
+                <textarea aria-label="Prompt" />
+            </div>
+        );
+    },
     useAui: () => ({ composer: () => ({ setText: vi.fn() }) }),
     useCrestAssistantRuntime: (value: unknown) => {
         hostProps.runtime = value;
@@ -106,6 +116,7 @@ afterEach(async () => {
     selectorProps.latest = null;
     modelPickerProps.latest = null;
     modalMocks.pushModal.mockReset();
+    layoutProps.openRightTool.mockClear();
     vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
@@ -134,6 +145,70 @@ describe("AgentContent", () => {
 
         expect(modelPickerProps.latest.open).toBe(false);
         expect(modalMocks.pushModal).toHaveBeenCalledWith("SettingsModal", { initialTab: "models" });
+    });
+
+    it("opens the Context right tool through the composer ring callback", () => {
+        const model = makeModel();
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+
+        act(() => threadProps.latest.onOpenContextInspector());
+        expect(layoutProps.openRightTool).toHaveBeenCalledWith("context");
+    });
+
+    it("publishes only the host context snapshot matching the current renderer identity", () => {
+        const model = makeModel();
+        model.selectModel({ provider: "openai", model: "gpt-test", reasoning: "low" });
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+        const inspection = globalStore.get(model.contextSnapshotAtom);
+        expect(inspection?.status).toBe("loading");
+        const persistedStateBeforeSnapshot = globalStore.get(model.stateAtom);
+        const snapshot = {
+            schemaVersion: 1,
+            identity: {
+                leafId: null,
+                modelKey: inspection.identity.modelKey,
+                revision: 1,
+            },
+            generatedAt: "2026-08-01T00:00:00Z",
+            lifecycle: "ready",
+            accuracy: "estimated",
+            modelLabel: inspection.identity.modelKey,
+            contextWindow: 100_000,
+            outputReserve: 10_000,
+            inputCapacity: 90_000,
+            effectiveInputTokens: 20,
+            remainingInputTokens: 89_980,
+            categories: [],
+            items: [],
+        } satisfies AgentContextSnapshotView;
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                contextSnapshot: snapshot,
+            });
+        });
+
+        expect(globalStore.get(model.contextSnapshotAtom)).toMatchObject({ status: "ready", snapshot });
+        expect(globalStore.get(model.stateAtom)).toEqual(persistedStateBeforeSnapshot);
     });
 
     it("writes session changes to the model but keeps user errors component-local", () => {

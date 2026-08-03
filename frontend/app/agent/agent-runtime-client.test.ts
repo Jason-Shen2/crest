@@ -13,6 +13,7 @@ describe("AgentRuntimeClient", () => {
             listSessionDetails: vi.fn(async () => []),
             listCommands: vi.fn(async () => []),
             getSessionState: vi.fn(async () => ({})),
+            inspectContext: vi.fn(async () => ({ snapshot: {} })),
             listTree: vi.fn(async () => ({ entries: [], leafId: null })),
             listForkPoints: vi.fn(async () => []),
             navigateTree: vi.fn(async () => ({})),
@@ -37,6 +38,7 @@ describe("AgentRuntimeClient", () => {
         await client.listSessionDetails(5);
         await client.listCommands();
         await client.getSessionState({ path: "/session" } as AgentSessionMeta);
+        await client.inspectContext({ provider: "openai", model: "model", context: {} } as never);
         await client.listTree({ path: "/session" } as AgentSessionMeta);
         await client.listForkPoints({ path: "/session" } as AgentSessionMeta);
         await client.navigateTree({ sessionMetadata: { path: "/session" }, targetId: "entry" } as never);
@@ -60,6 +62,10 @@ describe("AgentRuntimeClient", () => {
         expect(agent.listSessionDetails).toHaveBeenCalledWith(identity, 5);
         expect(agent.listCommands).toHaveBeenCalledWith(identity);
         expect(agent.getSessionState).toHaveBeenCalledWith(identity, expect.objectContaining({ path: "/session" }));
+        expect(agent.inspectContext).toHaveBeenCalledWith(
+            identity,
+            expect.objectContaining({ provider: "openai", model: "model" })
+        );
         expect(agent.listTree).toHaveBeenCalledWith(identity, expect.objectContaining({ path: "/session" }));
         expect(agent.listForkPoints).toHaveBeenCalledWith(identity, expect.objectContaining({ path: "/session" }));
         expect(agent.navigateTree).toHaveBeenCalledWith(identity, expect.objectContaining({ targetId: "entry" }));

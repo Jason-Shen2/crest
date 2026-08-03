@@ -38,6 +38,24 @@ function makeModel(): UsePiChatModel {
     return { provider: "openai", model: "gpt-test", reasoning: "low", tokenSecretName: "secret" };
 }
 
+function makeContextSnapshot(sessionPath?: string, modelKey = "openai/gpt-test"): AgentContextSnapshotView {
+    return {
+        schemaVersion: 1,
+        identity: { sessionPath, leafId: null, modelKey, revision: 1 },
+        generatedAt: "2026-08-01T00:00:00Z",
+        lifecycle: "ready",
+        accuracy: "estimated",
+        modelLabel: modelKey,
+        contextWindow: 100_000,
+        outputReserve: 10_000,
+        inputCapacity: 90_000,
+        effectiveInputTokens: 12,
+        remainingInputTokens: 89_988,
+        categories: [],
+        items: [],
+    };
+}
+
 function deferred<T>() {
     let resolve!: (value: T | PromiseLike<T>) => void;
     let reject!: (reason?: unknown) => void;
@@ -62,11 +80,14 @@ function makeClient() {
             followUp: [],
             commands: [],
         })),
+        inspectContext: vi.fn(async (options: AgentInspectContextOptions) => ({
+            snapshot: makeContextSnapshot(options.sessionMetadata?.path, `${options.provider}/${options.model}`),
+        })),
         prepareContextDraft: vi.fn(),
         summarizeContextDraft: vi.fn(),
         discardContextDraft: vi.fn(),
         listReferencePoints: vi.fn(async () => []),
-        listContextState: vi.fn(async () => ({ contextReports: [] })),
+        listContextState: vi.fn(async () => ({ drafts: [], contextReports: [] })),
         send: vi.fn(async (opts: AgentSendOptions) => ({
             sessionMetadata: opts.sessionMetadata ?? makeSession("/repo/.agent/sent.jsonl"),
             turnId: "turn-1",
@@ -97,6 +118,40 @@ function makeClient() {
 }
 
 describe("usePiChat lifecycle", () => {
+    it("inspects pre-session context without minting a session and ignores a stale identity", async () => {
+        const client = makeClient();
+        const first = deferred<AgentInspectContextResult>();
+        client.inspectContext.mockImplementationOnce(() => first.promise);
+        const { result, rerender } = renderHook(
+            ({ model }) =>
+                usePiChat({
+                    client,
+                    executionContext: makeExecutionContext(),
+                    modelSelection: model,
+                }),
+            { initialProps: { model: makeModel() } }
+        );
+
+        expect(client.inspectContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                context: expect.objectContaining({ workspaceId: "workspace-a", sessionPath: undefined }),
+                sessionMetadata: undefined,
+                provider: "openai",
+                model: "gpt-test",
+            })
+        );
+        expect(client.createSession).not.toHaveBeenCalled();
+
+        rerender({ model: { ...makeModel(), model: "gpt-next" } });
+        await waitFor(() => expect(client.inspectContext).toHaveBeenCalledTimes(2));
+        await act(async () => {
+            first.resolve({ snapshot: makeContextSnapshot(undefined, "openai/gpt-test") });
+            await first.promise;
+        });
+
+        await waitFor(() => expect(result.current.contextSnapshot?.identity.modelKey).toBe("openai/gpt-next"));
+    });
+
     it("sends through the injected client with authenticated workspace context and no block id", async () => {
         const client = makeClient();
         const context = makeExecutionContext();

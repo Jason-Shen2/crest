@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { GitReviewSidebar } from "@/app/codereview/git-panel";
+import { ContextInspector } from "@/app/agent/context-inspector/context-inspector";
 import { MagnifyIcon } from "@/app/element/magnify";
 import { Icon } from "@/app/icon/Icon";
 import { ObservabilityPanel } from "@/app/observability/observability-panel";
@@ -28,6 +29,7 @@ import { useAtomValue } from "jotai";
 import type { CSSProperties, FocusEvent, MouseEvent, ReactNode } from "react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { RightToolId, RightToolIds, RightToolPanelState } from "./right-tool-panel-state";
+import type { WorkspaceAgentContextState } from "./workspace-agent-model";
 
 type RightToolMetadata = {
     label: string;
@@ -58,6 +60,7 @@ export function shouldAnimateRightToolPanelLayout(
 export type RightToolPanelProps = {
     state: RightToolPanelState;
     sessionId: string | undefined;
+    contextState?: WorkspaceAgentContextState | null;
     onOpenTool: (tool: RightToolId) => void;
     onSelectTool: (tool: RightToolId) => void;
     onCloseTool: (tool: RightToolId) => void;
@@ -67,7 +70,7 @@ export type RightToolPanelProps = {
     className?: string;
 };
 
-const RightToolMetadataById: Record<RightToolId, RightToolMetadata> = {
+export const RightToolMetadataById: Record<RightToolId, RightToolMetadata> = {
     editor: {
         label: "Editor",
         icon: "edit-02",
@@ -97,6 +100,11 @@ const RightToolMetadataById: Record<RightToolId, RightToolMetadata> = {
         label: "Observability",
         icon: "chart-line",
         description: "Review Langfuse-compatible agent traces.",
+    },
+    context: {
+        label: "Context",
+        icon: "list-tree",
+        description: "Inspect what the Agent will send on its next model call.",
     },
 };
 
@@ -131,6 +139,7 @@ export type RightToolContentProps = {
     activeTool?: RightToolId;
     magnified?: boolean;
     sessionId?: string;
+    contextState?: WorkspaceAgentContextState | null;
 };
 
 function disposeRightEditorModelPath(path: string): void {
@@ -346,7 +355,7 @@ export function RightToolTabs({ activeTool, openedTools, onSelectTool, onCloseTo
     );
 }
 
-export function RightToolContent({ activeTool, magnified, sessionId }: RightToolContentProps) {
+export function RightToolContent({ activeTool, magnified, sessionId, contextState }: RightToolContentProps) {
     if (activeTool == null) {
         return <RightToolLauncher onOpenTool={() => null} />;
     }
@@ -375,16 +384,21 @@ export function RightToolContent({ activeTool, magnified, sessionId }: RightTool
     if (activeTool === "observability") {
         return <ObservabilityPanel magnified={magnified} sessionId={sessionId} />;
     }
+    if (activeTool === "context") {
+        return <ContextInspector state={contextState} />;
+    }
     return null;
 }
 
 function RightToolPanelContent({
     state,
     sessionId,
+    contextState,
     onOpenTool,
 }: {
     state: RightToolPanelState;
     sessionId?: string;
+    contextState?: WorkspaceAgentContextState | null;
     onOpenTool: (tool: RightToolId) => void;
 }) {
     if (state.openedTools.length === 0) {
@@ -396,7 +410,12 @@ function RightToolPanelContent({
     }
     return (
         <div className="min-h-0 flex-1 overflow-hidden rounded-b-xl">
-            <RightToolContent activeTool={state.activeTool} magnified={state.magnified} sessionId={sessionId} />
+            <RightToolContent
+                activeTool={state.activeTool}
+                magnified={state.magnified}
+                sessionId={sessionId}
+                contextState={contextState}
+            />
         </div>
     );
 }
@@ -453,6 +472,7 @@ export function RightToolPanelMagnifiedOverlayView({
 export function RightToolPanel({
     state,
     sessionId,
+    contextState,
     onOpenTool,
     onSelectTool,
     onCloseTool,
@@ -569,7 +589,12 @@ export function RightToolPanel({
                     </button>
                 }
             />
-            <RightToolPanelContent state={state} sessionId={sessionId} onOpenTool={onOpenTool} />
+            <RightToolPanelContent
+                state={state}
+                sessionId={sessionId}
+                contextState={contextState}
+                onOpenTool={onOpenTool}
+            />
         </aside>
     );
 }

@@ -85,6 +85,7 @@ import type {
 } from "@crest/coding-agent/commands/types";
 import { ContextDraftRegistry } from "@crest/coding-agent/context/draft-registry";
 import { decorateContextHistory } from "@crest/coding-agent/context/history";
+import type { AgentContextSnapshot } from "@crest/coding-agent/context/inspector-types";
 import type { ContextProviderRequest } from "@crest/coding-agent/context/projector";
 import { createContextProviderAdapter, type ContextProviderAdapter } from "@crest/coding-agent/context/provider-adapter";
 import { captureContextArtifactDraft } from "@crest/coding-agent/context/snapshot";
@@ -210,6 +211,12 @@ interface SendOptions {
      */
     allowedTools?: string[];
     contextAttachments?: ContextTurnDraftAttachmentInput[];
+}
+
+type InspectContextOptions = Omit<SendOptions, "text" | "images" | "contextAttachments">;
+
+interface InspectContextResult {
+    snapshot: AgentContextSnapshot;
 }
 
 function reserveAgentSendIngress(opts: SendOptions): <T>(operation: () => Promise<T>) => Promise<T> {
@@ -878,6 +885,9 @@ async function createAgentRuntimeFromSession(
         initialContextEntries: initialEntries,
         ptyHost: new AgentPtyHost(),
     });
+    if (typeof host.harness.inspectCurrentContext === "function") {
+        void owner.refreshContextSnapshot("initial context");
+    }
     if (options.attachObservability !== false) {
         attachAgentObservability(metadata.path, host.harness);
     }
@@ -1159,6 +1169,7 @@ async function buildPersistedSessionState(
     followUp: AgentMessage[];
     contextReports: ReturnType<typeof buildContextStateFromSessionEntries>["contextReports"];
     commands: ReturnType<AgentSessionRuntime["getSessionState"]>["commands"];
+    contextSnapshot?: AgentContextSnapshot;
 }> {
     const canonicalPath = await validateSessionPath(sessionPath);
     const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
@@ -1174,6 +1185,7 @@ async function buildPersistedSessionState(
             followUp: state.followUpQueue,
             contextReports: state.contextReports,
             commands: state.commands,
+            contextSnapshot: state.contextSnapshot,
         };
     }
     const session = await openPaneSessionByPath(canonicalPath);
@@ -1222,6 +1234,7 @@ async function subscribeToOwner(
                     makeAgentEventPayload(sessionPath, rendererSessionPath, authorization, {
                         ...agentEvent,
                         turns: session.getSessionState().turns,
+                        contextSnapshot: session.getSessionState().contextSnapshot,
                     })
                 );
             })
@@ -1260,6 +1273,7 @@ async function subscribeToOwner(
                 followUp: sessionState.followUpQueue,
                 contextReports: sessionState.contextReports,
                 commands: sessionState.commands,
+                contextSnapshot: sessionState.contextSnapshot,
             })
         );
     } catch (error) {
@@ -2647,6 +2661,95 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         await assertCurrent(event, authenticated);
         return result;
     });
+
+    electron.ipcMain.handle(
+        "agent:inspect-context",
+        async (event, requestContext, input: InspectContextOptions): Promise<InspectContextResult> => {
+            const authenticated = await authenticate(event, requestContext);
+            const rendererContext = await parseAgentExecutionContext(input.context);
+            if (
+                rendererContext.workspaceId !== authenticated.workspaceId ||
+                rendererContext.workspaceDir !== authenticated.workspaceDir
+            ) {
+                throw new Error("agent IPC: execution context does not match authenticated Workspace");
+            }
+            let sessionMetadata = input.sessionMetadata;
+            if (sessionMetadata) {
+                sessionMetadata = await requireSessionBelongsToWorkspace(authenticated, sessionMetadata);
+            }
+            if (rendererContext.sessionPath) {
+                const contextSessionPath = await validateSessionPath(rendererContext.sessionPath, "context.sessionPath");
+                if (!sessionMetadata || contextSessionPath !== sessionMetadata.path) {
+                    throw new Error("agent IPC: execution context session does not match the request");
+                }
+            }
+            const opts: SendOptions = {
+                ...input,
+                text: "",
+                sessionMetadata,
+                context: {
+                    ...rendererContext,
+                    workspaceId: authenticated.workspaceId,
+                    workspaceDir: authenticated.workspaceDir,
+                },
+            };
+            await assertCurrent(event, authenticated);
+            const { config } = await resolveAgentExecution(opts);
+
+            if (sessionMetadata) {
+                return await runtimeRegistry.withSessionAccess(sessionMetadata.path, async () => {
+                    const { runtime } = await ensureAgentRuntime(
+                        sessionMetadata,
+                        opts,
+                        authenticated.workspaceId
+                    );
+                    const authorization = makeAuthorization(event, authenticated);
+                    await authorization.guardRuntime({ path: sessionMetadata.path, runtime });
+                    if (!runtime.isRunning()) {
+                        await runtime.syncExecutionConfig(config);
+                        await runtime.refreshContextSnapshot("renderer inspection");
+                    }
+                    await authorization.guardRuntime({ path: sessionMetadata.path, runtime });
+                    const snapshot = runtime.getSessionState().contextSnapshot;
+                    if (!snapshot) throw new Error("agent context inspection is unavailable");
+                    return { snapshot };
+                });
+            }
+
+            const skills = await loadAgentSkills({ cwd: authenticated.workspaceDir });
+            const session = await new InMemorySessionRepo().create({});
+            const host = buildAgentHarnessHost({
+                session,
+                model: config.model,
+                thinkingLevel: config.thinkingLevel,
+                promptInputs: config.promptInputs,
+                tools: getDefaultTools(() => authenticated.workspaceDir),
+                contextFiles: loadProjectContextFiles({ cwd: authenticated.workspaceDir }),
+                skills,
+                getApiKeyAndHeaders: config.authResolver,
+                toolCallHook: config.toolCallHook,
+            });
+            const runtime = new AgentSessionRuntime(`preview:${authenticated.workspaceId}`, host);
+            try {
+                await runtime.refreshContextSnapshot("stateless preview");
+                await assertCurrent(event, authenticated);
+                const snapshot = runtime.getSessionState().contextSnapshot;
+                if (!snapshot) throw new Error("agent context inspection is unavailable");
+                return {
+                    snapshot: {
+                        ...snapshot,
+                        identity: {
+                            leafId: null,
+                            modelKey: snapshot.identity.modelKey,
+                            revision: snapshot.identity.revision,
+                        },
+                    },
+                };
+            } finally {
+                await runtime.dispose();
+            }
+        }
+    );
 
     electron.ipcMain.handle(
         "agent:list-fork-points",

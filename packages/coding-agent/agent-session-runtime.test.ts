@@ -65,6 +65,8 @@ function makeFakeHarness() {
     } as Model<any>;
     let currentModel = model;
     let thinkingLevel: ThinkingLevel = "off";
+    let providerContextObserver: ((observation: any) => void | Promise<void>) | undefined;
+    let providerContextError: ((error: Error) => void) | undefined;
     const harness = {
         subscribe(listener: (event: unknown) => void) {
             listeners.add(listener);
@@ -108,6 +110,23 @@ function makeFakeHarness() {
         setThinkingLevel: vi.fn(async (next: ThinkingLevel) => {
             thinkingLevel = next;
         }),
+        setProviderContextObserver(
+            observer?: (observation: any) => void | Promise<void>,
+            onError?: (error: Error) => void
+        ) {
+            providerContextObserver = observer;
+            providerContextError = onError;
+        },
+        inspectCurrentContext: vi.fn(async () => ({
+            model: currentModel,
+            sessionId: "session-1",
+            leafId: await session.getLeafId(),
+            systemPrompt: "system",
+            messages: [],
+            messageEntryIds: [],
+            entries: await session.getBranch(),
+            activeTools: [],
+        })),
     };
     return {
         calls,
@@ -122,6 +141,24 @@ function makeFakeHarness() {
         },
         setNavigateTreeResult(fn: () => Promise<unknown>) {
             navigateTreeResult = fn;
+        },
+        async observeProviderContext(overrides: Record<string, unknown> = {}) {
+            return await providerContextObserver?.({
+                model: currentModel,
+                sessionId: "session-1",
+                leafId: "leaf-1",
+                systemPrompt: "system",
+                messages: [],
+                messageEntryIds: [],
+                entries: [],
+                activeTools: [],
+                requestOptions: {},
+                payload: { input: [] },
+                ...overrides,
+            });
+        },
+        failProviderContext(error: Error) {
+            providerContextError?.(error);
         },
         async prepareNextFollowUp(input?: Partial<AgentHarnessTurnPreparationInput>) {
             const queuedPrepare = calls.followUpPreparations.shift();
@@ -166,6 +203,7 @@ function makeFakeHarness() {
             update: vi.fn(),
             setAuthResolver: vi.fn(),
             setToolCallHook: vi.fn(),
+            setProviderContextObserver: harness.setProviderContextObserver,
             resolveAuth: vi.fn(),
             runToolCallHook: vi.fn(),
         } as unknown as AgentHarnessHost,
@@ -235,6 +273,82 @@ describe("AgentSessionRuntime — owned transcript", () => {
         const fake = makeFakeHarness();
         new AgentSessionRuntime("/s", fake.pane);
         expect(fake.listenerCount()).toBe(1);
+    });
+
+    it("owns a provider-ready context snapshot and exposes it in session state", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const userMessage = user("inspect me");
+        const entry = {
+            type: "message",
+            id: "user-1",
+            parentId: null,
+            timestamp: "2026-08-01T00:00:00.000Z",
+            message: userMessage,
+        } as SessionTreeEntry;
+
+        await fake.observeProviderContext({
+            messages: [userMessage],
+            messageEntryIds: ["user-1"],
+            entries: [entry],
+            payload: { input: [{ role: "user", content: "inspect me" }] },
+        });
+
+        const snapshot = owner.getSessionState().contextSnapshot;
+        expect(snapshot).toMatchObject({
+            lifecycle: "in_use",
+            accuracy: "estimated",
+            identity: { sessionPath: "/s", sessionId: "session-1", leafId: "leaf-1" },
+            contextWindow: 1000,
+            outputReserve: 1000,
+        });
+        expect(snapshot?.items).toEqual([
+            expect.objectContaining({ id: "turn:user-1", category: "conversation" }),
+        ]);
+    });
+
+    it("tracks tool waiting state and isolates snapshot failures by identity", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        await fake.observeProviderContext();
+
+        fake.emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read", args: {} });
+        expect(owner.getSessionState().contextSnapshot?.lifecycle).toBe("waiting_for_tool");
+        fake.emit({ type: "tool_execution_end", toolCallId: "call-1", toolName: "read", result: {}, isError: false });
+        expect(owner.getSessionState().contextSnapshot?.lifecycle).toBe("in_use");
+
+        fake.failProviderContext(new Error("counter failed"));
+        expect(owner.getSessionState().contextSnapshot).toMatchObject({
+            lifecycle: "out_of_date",
+            diagnostic: "counter failed",
+        });
+
+        await fake.observeProviderContext({ leafId: "leaf-2", entries: null });
+        expect(owner.getSessionState().contextSnapshot).toMatchObject({
+            lifecycle: "unavailable",
+            identity: { leafId: "leaf-2" },
+        });
+    });
+
+    it("rebuilds an idle snapshot after a run settles", async () => {
+        const fake = makeFakeHarness();
+        const owner = new AgentSessionRuntime("/s", fake.pane);
+        const lifecycles: Array<string | undefined> = [];
+        owner.subscribe((event) => {
+            if (event.type === "session_state") {
+                lifecycles.push(owner.getSessionState().contextSnapshot?.lifecycle);
+            }
+        });
+
+        await owner.refreshContextSnapshot("initial context");
+        expect(owner.getSessionState().contextSnapshot?.lifecycle).toBe("ready");
+        fake.emit({ type: "agent_start" });
+        expect(owner.getSessionState().contextSnapshot?.lifecycle).toBe("in_use");
+        fake.emit({ type: "agent_end", messages: [] });
+        await waitFor(() => owner.getSessionState().contextSnapshot?.lifecycle === "ready");
+
+        expect(lifecycles).toContain("updating");
+        expect(owner.getSessionState().contextSnapshot?.identity.revision).toBeGreaterThan(1);
     });
 
     it("appends on message_start and replaces the tail on update/end", () => {

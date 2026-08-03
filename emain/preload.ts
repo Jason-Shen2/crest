@@ -238,6 +238,8 @@ contextBridge.exposeInMainWorld("api", {
         listCommands: (context: unknown) => ipcRenderer.invoke("agent:list-commands", context),
         getSessionState: (context: unknown, sessionMetadata: unknown) =>
             ipcRenderer.invoke("agent:get-session-state", context, sessionMetadata),
+        inspectContext: (context: unknown, options: unknown) =>
+            ipcRenderer.invoke("agent:inspect-context", context, options),
         listTree: (context: unknown, sessionMetadata: unknown) =>
             ipcRenderer.invoke("agent:list-tree", context, sessionMetadata),
         listForkPoints: (context: unknown, sessionMetadata: unknown) =>

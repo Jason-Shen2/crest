@@ -84,6 +84,8 @@ export interface AgentHostState {
     context: ContextReferenceRendererState;
     contextSendRecovery?: ContextSendRecovery;
     commands: AgentPtySnapshot[];
+    contextSnapshot?: AgentContextSnapshotView;
+    contextInspectionError?: string;
 }
 
 export type AgentChatHostContextApi = Pick<
@@ -204,6 +206,9 @@ const UnavailableAgentRuntimeClient = {
         steer: [],
         followUp: [],
     }),
+    inspectContext: async (): Promise<AgentInspectContextResult> => {
+        throw new Error("Workspace Agent runtime client is unavailable");
+    },
     send: async (): Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }> => {
         throw new Error("Workspace Agent runtime client is unavailable");
     },
@@ -694,11 +699,15 @@ export function AgentChatHost({
             context: chat.contextState,
             contextSendRecovery: chat.contextSendRecovery,
             commands: chat.commands,
+            contextSnapshot: chat.contextSnapshot,
+            contextInspectionError: chat.contextInspectionError,
         });
     }, [
         chat.commands,
         chat.contextSendRecovery,
         chat.contextState,
+        chat.contextInspectionError,
+        chat.contextSnapshot,
         chat.errorMessage,
         chat.queuedMessages,
         chat.status,
