@@ -626,7 +626,7 @@ describe("AgentContent", () => {
                     frozen: true,
                     redo: {
                         operationId: "redo-frozen",
-                        targetPrompt: "Frozen prompt",
+                        messages: ["Frozen prompt"],
                         messageCount: 1,
                         fileCount: 1,
                         files: [],
@@ -1220,7 +1220,7 @@ describe("AgentContent", () => {
                     semanticLeafId: "turn-a",
                     redo: {
                         operationId: "clean-rewind",
-                        targetPrompt: "Original prompt",
+                        messages: ["Original prompt"],
                         messageCount: 2,
                         fileCount: 1,
                         files: [],
@@ -1266,7 +1266,7 @@ describe("AgentContent", () => {
                     semanticLeafId: "turn-a",
                     redo: {
                         operationId: "force-rewind",
-                        targetPrompt: "Original prompt",
+                        messages: ["Original prompt"],
                         messageCount: 2,
                         fileCount: 1,
                         files: [],
@@ -1337,7 +1337,7 @@ describe("AgentContent", () => {
                 rewindState: makeRewindState({
                     redo: {
                         operationId: "operation-1",
-                        targetPrompt: "Original prompt",
+                        messages: ["Original prompt"],
                         messageCount: 2,
                         fileCount: 1,
                         files: [],
@@ -1357,7 +1357,7 @@ describe("AgentContent", () => {
         const { client } = renderRewindContent();
         const redo: AgentRedoView = {
             operationId: "operation-1",
-            targetPrompt: "Original prompt",
+            messages: ["Original prompt"],
             messageCount: 4,
             fileCount: 1,
             files: [],
@@ -1423,7 +1423,7 @@ describe("AgentContent", () => {
                 rewindState: makeRewindState({
                     redo: {
                         operationId: "operation-a",
-                        targetPrompt: "Session A prompt",
+                        messages: ["Session A prompt"],
                         messageCount: 2,
                         fileCount: 0,
                         files: [],

@@ -210,7 +210,7 @@ export interface AgentPurgeTrashedSessionResult {
 
 export interface AgentRedoView {
     operationId: string;
-    targetPrompt: string;
+    messages: string[];
     messageCount: number;
     fileCount: number;
     files: AgentRewindFileRowView[];

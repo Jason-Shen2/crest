@@ -5,6 +5,7 @@ import { filterCommittedTransactionEntries } from "@crest/agent/harness/session/
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { isContextCustomEntry } from "../context/journal";
 import type { AgentCheckpointQuotaView, AgentRedoView, AgentRewindSessionStateView } from "./api-types";
+import { projectRedoFileRows } from "./redo-view";
 import type {
     FoldedWorkspaceSessionState,
     WorkspaceCheckpointV1,
@@ -78,11 +79,19 @@ export function countRevertedMessages(
     targetTurnId: string,
     fromLeafId: string | null
 ): number {
+    return revertedUserMessages(entries, targetTurnId, fromLeafId).length;
+}
+
+export function revertedUserMessages(
+    entries: SessionTreeEntry[],
+    targetTurnId: string,
+    fromLeafId: string | null
+): string[] {
     const branch = activeBranch(entries, fromLeafId);
-    if (!branch.valid) return 0;
+    if (!branch.valid) return [];
     const targetIndex = branch.entries.findIndex((entry) => entry.id === targetTurnId);
-    if (targetIndex < 0) return 0;
-    return branch.entries.slice(targetIndex).filter(isUserTurn).length;
+    if (targetIndex < 0) return [];
+    return branch.entries.slice(targetIndex).filter(isUserTurn).map(messageText);
 }
 
 function displayLeafId(branch: SessionTreeEntry[]): string | null {
@@ -282,6 +291,7 @@ export interface AgentRewindSessionStateProbe {
     busy: boolean;
     frozen: boolean;
     verifySnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void>;
+    readBlob(oid: string): Promise<Buffer>;
     getQuota(): Promise<AgentCheckpointQuotaView>;
 }
 
@@ -292,8 +302,7 @@ const DisabledQuota: AgentCheckpointQuotaView = {
     cleanupAvailable: false,
 };
 
-function userPrompt(entries: SessionTreeEntry[], turnId: string): string {
-    const entry = entries.find((candidate) => candidate.id === turnId);
+function messageText(entry: SessionTreeEntry): string {
     if (entry?.type !== "message") return "";
     const content = (entry.message as { content?: unknown }).content;
     if (typeof content === "string") return content;
@@ -370,12 +379,15 @@ export async function buildAgentRewindSessionStateView(
         try {
             await probe.verifySnapshot(state.currentSnapshot);
             await probe.verifySnapshot(state.rewind.redoSnapshot);
+            const messages = revertedUserMessages(entries, state.rewind.targetTurnId, state.rewind.fromLeafId);
+            const files = await projectRedoFileRows(state, probe.readBlob);
+            if (!files) throw new Error("rewind marker is missing an expected current path state");
             redo = {
                 operationId: state.operationId,
-                targetPrompt: userPrompt(entries, state.rewind.targetTurnId),
-                messageCount: countRevertedMessages(entries, state.rewind.targetTurnId, state.rewind.fromLeafId),
-                fileCount: state.rewind.redoStates.length,
-                files: [],
+                messages,
+                messageCount: messages.length,
+                fileCount: files.length,
+                files,
             };
         } catch {
             redo = undefined;

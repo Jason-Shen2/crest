@@ -19,8 +19,8 @@ function TestFileIcon(props: { className?: string; size?: number }) {
 function makeRedo(overrides: Partial<AgentRedoView> = {}): AgentRedoView {
     return {
         operationId: "operation-1",
-        targetPrompt: "Restore the original implementation",
-        messageCount: 3,
+        messages: ["Restore the original implementation", "Keep the tests focused"],
+        messageCount: 2,
         fileCount: 2,
         files: [
             {
@@ -62,7 +62,7 @@ describe("RedoDock", () => {
         expect(statusIcon).not.toBeNull();
         expect(statusIcon?.className).toMatch(/bg-orange/);
         expect(screen.getByText("Changes reverted")).not.toBeNull();
-        expect(screen.getByText("3 messages · 2 files")).not.toBeNull();
+        expect(screen.getByText("2 messages · 2 files")).not.toBeNull();
         expect(screen.queryByText(/Operation/)).toBeNull();
 
         const redoButton = screen.getByRole("button", { name: "Redo" });
@@ -81,6 +81,7 @@ describe("RedoDock", () => {
         const details = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
         expect(details).not.toBeNull();
         expect(details?.textContent).toContain("Restore the original implementation");
+        expect(details?.textContent).toContain("Keep the tests focused");
         expect(details?.getAttribute("aria-hidden")).toBe("true");
         expect(details?.hasAttribute("role")).toBe(false);
         expect(details?.className).toContain("grid-rows-[0fr]");
@@ -91,16 +92,19 @@ describe("RedoDock", () => {
         expect(screen.queryByRole("region", { name: "Reverted operation details" })).toBeNull();
     });
 
-    it("expands the reverted request and file details without exposing the operation id or moving Redo", () => {
+    it("expands reverted user messages and authoritative file details without exposing the operation id", () => {
         render(<RedoDock redo={makeRedo()} busy={false} onRedo={vi.fn()} />);
 
         const toggle = screen.getByRole("button", { name: "Show reverted details" });
         fireEvent.click(toggle);
 
-        expect(screen.getByText("Reverted request")).not.toBeNull();
+        expect(screen.getByText("Reverted messages")).not.toBeNull();
+        expect(screen.getByText("2", { selector: "span" })).not.toBeNull();
         expect(screen.getByText("Restore the original implementation")).not.toBeNull();
+        expect(screen.getByText("Keep the tests focused")).not.toBeNull();
+        expect(screen.queryByText("Reverted request")).toBeNull();
         expect(screen.getByText("Files")).not.toBeNull();
-        expect(screen.getByText("2 files")).not.toBeNull();
+        expect(screen.getByText("2 changed")).not.toBeNull();
         expect(screen.queryByText("operation-1")).toBeNull();
         expect(screen.queryByText(/Operation/)).toBeNull();
         expect(screen.getByRole("button", { name: "Redo" })).not.toBeNull();
@@ -127,18 +131,17 @@ describe("RedoDock", () => {
         expect(details.getAttribute("aria-hidden")).toBe("false");
         expect(details.className).toContain("grid-rows-[1fr]");
         expect(details.className).toContain("opacity-100");
-        const scrollingBody = details.querySelector(".max-h-64");
+        const scrollingBody = details.querySelector('[class*="max-h-"]');
         expect(scrollingBody?.className).toContain("overflow-y-auto");
     });
 
-    it("explains authoritative file counts when session state has no inline file rows", () => {
-        render(<RedoDock redo={makeRedo({ fileCount: 1, files: [] })} busy={false} onRedo={vi.fn()} />);
+    it("does not render a speculative file-details placeholder", () => {
+        render(<RedoDock redo={makeRedo({ fileCount: 0, files: [] })} busy={false} onRedo={vi.fn()} />);
 
         fireEvent.click(screen.getByRole("button", { name: "Show reverted details" }));
 
-        expect(screen.getByText("1 file")).not.toBeNull();
-        const notice = screen.getByText("File details are available in the Redo preview.");
-        expect(notice.className).toContain("text-muted-foreground");
+        expect(screen.getByText("0 changed")).not.toBeNull();
+        expect(screen.queryByText("File details are available in the Redo preview.")).toBeNull();
         expect(getFileIconMock).not.toHaveBeenCalled();
     });
 

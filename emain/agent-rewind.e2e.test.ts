@@ -582,6 +582,7 @@ async function makeFixture() {
                 busy: false,
                 frozen: false,
                 verifySnapshot: (snapshot) => store.verifyOwnedSnapshot(snapshot),
+                readBlob: (oid) => store.readBlob(oid),
                 getQuota: async () => {
                     const quota = await store.getQuotaStatus();
                     return { ...quota, cleanupAvailable: quota.status !== "ok" };
@@ -1064,7 +1065,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         expect(authoritativePublish).toHaveBeenCalled();
 
         state = await value.rewindState();
-        await waitFor(() => expect(state.redo?.targetPrompt).toBe("Original user prompt"));
+        await waitFor(() => expect(state.redo?.messages).toEqual(["Original user prompt"]));
         rewindUi.unmount();
 
         // A reload drops every in-memory confirmation and reconstructs the
@@ -1073,7 +1074,12 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         const reloaded = value.makeService();
         const { client: reloadedClient } = value.register(reloaded.service);
         const persisted = await value.rewindState();
-        expect(persisted.redo).toMatchObject({ targetPrompt: "Original user prompt", fileCount: 1 });
+        expect(persisted.redo).toMatchObject({
+            messages: ["Original user prompt"],
+            messageCount: 1,
+            fileCount: 1,
+            files: [expect.objectContaining({ path: "changed.txt", additions: 1, deletions: 1 })],
+        });
         const dock = render(
             createElement(RedoDock, {
                 redo: persisted.redo!,

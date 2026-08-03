@@ -40,27 +40,27 @@ function RedoFileSummary({ file }: { file: AgentRewindFileRowView }) {
     const operation = operationLabel(file.operation);
 
     return (
-        <li className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2.5 py-2 text-xs transition-colors hover:bg-muted/40">
+        <li className="-mx-1.5 grid min-h-9 grid-cols-[20px_minmax(0,1fr)_auto_16px] items-center gap-2 rounded-lg px-1.5 py-1 font-mono text-[11.5px] transition-colors hover:bg-muted/40">
             <FileIcon aria-hidden="true" className="shrink-0 text-muted-foreground" size={16} />
-            <span className="min-w-0 break-all">
+            <span className="min-w-0 truncate">
                 {directory ? <span className="text-muted-foreground">{directory}</span> : null}
                 <span className="text-foreground">{basename}</span>
             </span>
             <span className="flex shrink-0 items-center gap-2 tabular-nums">
                 {file.additions != null ? <span className="text-success">+{file.additions}</span> : null}
                 {file.deletions != null ? <span className="text-destructive">-{file.deletions}</span> : null}
-                <span
-                    className={cn(
-                        "w-4 text-center text-[10px] font-semibold",
-                        operation === "A"
-                            ? "text-success"
-                            : operation === "D"
-                              ? "text-destructive"
-                              : "text-muted-foreground"
-                    )}
-                >
-                    {operation}
-                </span>
+            </span>
+            <span
+                className={cn(
+                    "w-4 text-center text-[10px] font-semibold",
+                    operation === "A"
+                        ? "text-success"
+                        : operation === "D"
+                          ? "text-destructive"
+                          : "text-muted-foreground"
+                )}
+            >
+                {operation}
             </span>
         </li>
     );
@@ -74,9 +74,9 @@ export function RedoDock({ redo, busy, onRedo }: RedoDockProps) {
         <section
             aria-label="Reverted workspace changes"
             aria-busy={busy}
-            className="overflow-hidden rounded-2xl border border-border bg-card"
+            className="overflow-hidden rounded-xl border border-border bg-card"
         >
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-2 gap-y-2 px-3 py-2.5 max-sm:grid-cols-[auto_minmax(0,1fr)_auto] [@container(max-width:30rem)]:grid-cols-[auto_minmax(0,1fr)_auto]">
+            <div className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-2.5 gap-y-2 py-2 pl-3 pr-2 max-sm:grid-cols-[auto_minmax(0,1fr)_auto] [@container(max-width:30rem)]:grid-cols-[auto_minmax(0,1fr)_auto]">
                 <span
                     aria-hidden="true"
                     className="grid size-8 shrink-0 place-items-center rounded-lg bg-orange-500/15 text-orange-400"
@@ -84,9 +84,9 @@ export function RedoDock({ redo, busy, onRedo }: RedoDockProps) {
                 >
                     <Undo2Icon className="size-4" />
                 </span>
-                <div className="flex min-w-0 items-baseline gap-2 whitespace-nowrap max-sm:block [@container(max-width:30rem)]:block">
-                    <p className="shrink-0 text-sm font-medium text-foreground">Changes reverted</p>
-                    <p className="truncate text-xs text-muted-foreground">
+                <div className="min-w-0 whitespace-nowrap max-sm:block [@container(max-width:30rem)]:block">
+                    <p className="shrink-0 text-[13px] font-semibold leading-tight text-foreground">Changes reverted</p>
+                    <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
                         {countLabel(redo.messageCount, "message")} · {countLabel(redo.fileCount, "file")}
                     </p>
                 </div>
@@ -128,39 +128,49 @@ export function RedoDock({ redo, busy, onRedo }: RedoDockProps) {
                 role={expanded ? "region" : undefined}
             >
                 <div className="min-h-0 overflow-hidden">
-                    <div className="max-h-64 overflow-y-auto px-3 py-3">
-                        <div className="grid gap-3">
-                            <div className="grid gap-1">
-                                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                                    Reverted request
-                                </p>
-                                <blockquote className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">
-                                    {redo.targetPrompt}
-                                </blockquote>
+                    <div className="max-h-[300px] overflow-y-auto py-4 pl-[3.375rem] pr-5 max-sm:px-4 [@container(max-width:30rem)]:px-4">
+                        <div className="grid gap-4">
+                            <div>
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                    <p className="text-[9.5px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
+                                        Reverted messages
+                                    </p>
+                                    <span className="text-[10.5px] text-muted-foreground">{redo.messageCount}</span>
+                                </div>
+                                <ol className="grid gap-2">
+                                    {redo.messages.map((message, index) => (
+                                        <li
+                                            className="grid grid-cols-[14px_minmax(0,1fr)] gap-2 text-xs leading-relaxed text-foreground/85"
+                                            key={`${index}\u0000${message}`}
+                                        >
+                                            <span
+                                                aria-hidden="true"
+                                                className="-mt-1 text-xl font-bold text-orange-400"
+                                            >
+                                                “
+                                            </span>
+                                            <span className="min-w-0 whitespace-pre-wrap break-words">{message}</span>
+                                        </li>
+                                    ))}
+                                </ol>
                             </div>
-                            <div className="grid gap-1.5">
-                                <div className="flex items-center justify-between gap-2">
-                                    <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                            <div>
+                                <div className="mb-1.5 flex items-center justify-between gap-2">
+                                    <p className="text-[9.5px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
                                         Files
                                     </p>
-                                    <span className="text-xs text-muted-foreground">
-                                        {countLabel(redo.fileCount, "file")}
+                                    <span className="text-[10.5px] text-muted-foreground">
+                                        {redo.fileCount} changed
                                     </span>
                                 </div>
-                                {redo.files.length > 0 ? (
-                                    <ul className="grid gap-0.5">
-                                        {redo.files.map((file, index) => (
-                                            <RedoFileSummary
-                                                file={file}
-                                                key={`${file.oldPath ?? ""}\u0000${file.path}\u0000${index}`}
-                                            />
-                                        ))}
-                                    </ul>
-                                ) : redo.fileCount > 0 ? (
-                                    <p className="rounded-lg bg-muted/20 px-2.5 py-2 text-xs text-muted-foreground">
-                                        File details are available in the Redo preview.
-                                    </p>
-                                ) : null}
+                                <ul className="grid">
+                                    {redo.files.map((file, index) => (
+                                        <RedoFileSummary
+                                            file={file}
+                                            key={`${file.oldPath ?? ""}\u0000${file.path}\u0000${index}`}
+                                        />
+                                    ))}
+                                </ul>
                             </div>
                         </div>
                     </div>

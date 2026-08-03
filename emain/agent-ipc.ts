@@ -1121,6 +1121,9 @@ async function createAgentRuntimeFromSession(
                     busy: checkpointManager.isBusy(),
                     frozen: rewindFeature.state === "unavailable",
                     verifySnapshot: async () => {},
+                    readBlob: async () => {
+                        throw new Error("Workspace rewind is unavailable");
+                    },
                     getQuota: async () => ({
                         status: "ok",
                         usedBytes: 0,
@@ -1134,6 +1137,7 @@ async function createAgentRuntimeFromSession(
                 busy: checkpointManager.isBusy(),
                 frozen: recoveryView != null,
                 verifySnapshot: (snapshot) => rewindFeature.store.verifyOwnedSnapshot(snapshot),
+                readBlob: (oid) => rewindFeature.store.readBlob(oid),
                 getQuota: async () => {
                     if (typeof rewindFeature.store.getQuotaStatus !== "function") {
                         return { status: "ok", usedBytes: 0, softQuotaBytes: 0, cleanupAvailable: false };
@@ -1460,6 +1464,10 @@ async function buildColdRewindState(
         frozen: feature.state === "unavailable" || recoveryView != null,
         verifySnapshot: async (snapshot) => {
             if (feature.state === "enabled") await feature.store.verifyOwnedSnapshot(snapshot);
+        },
+        readBlob: async (oid) => {
+            if (feature.state !== "enabled") throw new Error("Workspace rewind is unavailable");
+            return await feature.store.readBlob(oid);
         },
         getQuota: async () => {
             if (feature.state !== "enabled") {

@@ -44,7 +44,7 @@ function makeRewindState(hasRedo = false): AgentRewindSessionStateView {
             ? {
                   redo: {
                       operationId: "op-1",
-                      targetPrompt: "restore this",
+                      messages: ["restore this"],
                       messageCount: 2,
                       fileCount: 0,
                       files: [],

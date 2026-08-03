@@ -354,7 +354,7 @@ describe("useAgentRewind", () => {
     it("uses one authoritative redo preview/apply path without inventing local redo state", async () => {
         const redo = {
             operationId: "redo-op",
-            targetPrompt: "restore this",
+            messages: ["restore this"],
             messageCount: 2,
             fileCount: 1,
             files: [],
@@ -568,7 +568,7 @@ describe("useAgentRewind", () => {
                 displayLeafId: "turn-a",
                 redo: {
                     operationId: "rewind-operation",
-                    targetPrompt: "First prompt",
+                    messages: ["First prompt"],
                     messageCount: 2,
                     fileCount: 1,
                     files: [],
@@ -614,7 +614,7 @@ describe("useAgentRewind", () => {
                 displayLeafId: "rewound-turn",
                 redo: {
                     operationId: "rewind-operation",
-                    targetPrompt: "First prompt",
+                    messages: ["First prompt"],
                     messageCount: 2,
                     fileCount: 1,
                     files: [],
@@ -640,7 +640,7 @@ describe("useAgentRewind", () => {
     it("unlocks redo only when the result leaf is authoritative and the original redo marker is gone", async () => {
         const redo = {
             operationId: "redo-op",
-            targetPrompt: "restore this",
+            messages: ["restore this"],
             messageCount: 2,
             fileCount: 1,
             files: [],
@@ -680,7 +680,7 @@ describe("useAgentRewind", () => {
     it("unlocks rewind only when its authoritative redo marker differs from the captured marker", async () => {
         const priorRedo = {
             operationId: "prior-redo",
-            targetPrompt: "prior prompt",
+            messages: ["prior prompt"],
             messageCount: 1,
             fileCount: 0,
             files: [],
@@ -740,7 +740,7 @@ describe("useAgentRewind", () => {
             rewindState: makeRewindState({
                 redo: {
                     operationId: "redo-op",
-                    targetPrompt: "restore this",
+                    messages: ["restore this"],
                     messageCount: 2,
                     fileCount: 0,
                     files: [],

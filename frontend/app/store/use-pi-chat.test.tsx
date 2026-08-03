@@ -57,7 +57,7 @@ function makeRewindState(overrides: Partial<AgentRewindSessionStateView> = {}): 
         },
         redo: {
             operationId: "op-1",
-            targetPrompt: "restore this prompt",
+            messages: ["restore this prompt"],
             messageCount: 2,
             fileCount: 0,
             files: [],

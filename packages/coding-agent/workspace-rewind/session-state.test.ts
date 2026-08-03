@@ -18,13 +18,13 @@ const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
 const OidC = "c".repeat(40);
 
-function message(id: string, parentId: string | null, role: "user" | "assistant"): SessionTreeEntry {
+function message(id: string, parentId: string | null, role: "user" | "assistant", text: string = id): SessionTreeEntry {
     return {
         type: "message",
         id,
         parentId,
         timestamp: `t-${id}`,
-        message: { role, content: [{ type: "text", text: id }] },
+        message: { role, content: [{ type: "text", text }] },
     } as unknown as SessionTreeEntry;
 }
 
@@ -158,6 +158,7 @@ describe("workspace rewind session state", () => {
                 busy: false,
                 frozen: false,
                 verifySnapshot: async () => {},
+                readBlob: async () => Buffer.alloc(0),
                 getQuota: async () => ({
                     status: "ok",
                     usedBytes: 0,
@@ -168,6 +169,66 @@ describe("workspace rewind session state", () => {
         );
 
         expect(view.redo?.messageCount).toBe(1);
+    });
+
+    it("publishes reverted user messages and snapshot-backed redo files", async () => {
+        const retained = message("retained", null, "assistant");
+        const first = message("first", retained.id, "user", "First request");
+        const firstReply = message("first-reply", first.id, "assistant");
+        const second = message("second", firstReply.id, "user", "Second request");
+        const secondReply = message("second-reply", second.id, "assistant");
+        const rewindData = workspaceState("session-1", "rewind");
+        rewindData.currentStates = [
+            {
+                path: "docs/README.md",
+                state: { state: "file", oid: OidA, executable: false },
+            },
+        ];
+        rewindData.rewind.fromLeafId = secondReply.id;
+        rewindData.rewind.targetTurnId = first.id;
+        rewindData.rewind.redoStates = [
+            {
+                path: "docs/README.md",
+                state: { state: "file", oid: OidC, executable: false },
+            },
+        ];
+        const rewind = custom("rewind", retained.id, WorkspaceControlCustomTypes.state, rewindData);
+
+        const view = await buildAgentRewindSessionStateView(
+            [retained, first, firstReply, second, secondReply, rewind],
+            "session-1",
+            {
+                enabled: true,
+                busy: false,
+                frozen: false,
+                verifySnapshot: async () => {},
+                readBlob: async (oid: string) => {
+                    if (oid === OidA) return Buffer.from("before\n");
+                    if (oid === OidC) return Buffer.from("after\nextra\n");
+                    throw new Error("unexpected oid");
+                },
+                getQuota: async () => ({
+                    status: "ok",
+                    usedBytes: 0,
+                    softQuotaBytes: 100,
+                    cleanupAvailable: false,
+                }),
+            }
+        );
+
+        expect(view.redo).toMatchObject({
+            messages: ["First request", "Second request"],
+            messageCount: 2,
+            fileCount: 1,
+            files: [
+                expect.objectContaining({
+                    path: "docs/README.md",
+                    operation: "write",
+                    additions: 2,
+                    deletions: 1,
+                }),
+            ],
+        });
     });
 
     it("verifies snapshot objects before advertising eligible rewind points", async () => {
@@ -184,6 +245,7 @@ describe("workspace rewind session state", () => {
             busy: false,
             frozen: false,
             verifySnapshot,
+            readBlob: async () => Buffer.alloc(0),
             getQuota: async () => ({
                 status: "ok",
                 usedBytes: 10,
@@ -357,6 +419,7 @@ describe("workspace rewind session state", () => {
             busy: false,
             frozen: false,
             verifySnapshot: async () => {},
+            readBlob: async () => Buffer.alloc(0),
             getQuota: async () => ({
                 status: "ok",
                 usedBytes: 0,
@@ -416,6 +479,7 @@ describe("workspace rewind session state", () => {
             busy: false,
             frozen: false,
             verifySnapshot: async () => {},
+            readBlob: async () => Buffer.alloc(0),
             getQuota: async () => ({
                 status: "ok",
                 usedBytes: 0,
@@ -696,6 +760,7 @@ describe("workspace rewind session state", () => {
                 verifySnapshot: async (ref) => {
                     if (ref.id === OidC) throw new Error("missing object");
                 },
+                readBlob: async () => Buffer.alloc(0),
                 getQuota: async () => ({
                     status: "ok",
                     usedBytes: 0,
