@@ -405,6 +405,33 @@ describe("WorkspaceRewindEngine transaction", () => {
         }
     });
 
+    it("counts only reverted user messages in rewind previews", async () => {
+        const value = makeHarness({ plan: restorePlan() });
+        const assistant: SessionTreeEntry = {
+            type: "message",
+            id: "assistant-1",
+            parentId: "turn-1",
+            timestamp: "2026-07-29T00:00:00.500Z",
+            message: {
+                role: "assistant",
+                content: [{ type: "text", text: "working" }],
+                timestamp: 0,
+            },
+        } as SessionTreeEntry;
+        value.session.entries.splice(2, 0, assistant);
+        value.session.entries[3]!.parentId = assistant.id;
+
+        const preview = await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+        });
+
+        expect(preview.messageCount).toBe(1);
+    });
+
     it("keeps planner authority and other rows when one immutable blob is unavailable", async () => {
         const plan = restorePlan({
             paths: [

@@ -82,7 +82,7 @@ export function countRevertedMessages(
     if (!branch.valid) return 0;
     const targetIndex = branch.entries.findIndex((entry) => entry.id === targetTurnId);
     if (targetIndex < 0) return 0;
-    return branch.entries.slice(targetIndex).filter((entry) => entry.type === "message").length;
+    return branch.entries.slice(targetIndex).filter(isUserTurn).length;
 }
 
 function displayLeafId(branch: SessionTreeEntry[]): string | null {
@@ -373,11 +373,7 @@ export async function buildAgentRewindSessionStateView(
             redo = {
                 operationId: state.operationId,
                 targetPrompt: userPrompt(entries, state.rewind.targetTurnId),
-                messageCount: countRevertedMessages(
-                    entries,
-                    state.rewind.targetTurnId,
-                    state.rewind.fromLeafId
-                ),
+                messageCount: countRevertedMessages(entries, state.rewind.targetTurnId, state.rewind.fromLeafId),
                 fileCount: state.rewind.redoStates.length,
                 files: [],
             };
