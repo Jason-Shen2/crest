@@ -21,6 +21,17 @@ function renderedText(surface: HTMLElement): string {
 }
 
 describe("ContextPayload", () => {
+    it("renders payloads in an inset rounded surface derived from the active theme", () => {
+        renderPayload({ name: "read_file" });
+
+        const region = screen.getByTestId("context-payload-source");
+
+        expect(region.className).toContain("mx-3");
+        expect(region.className).toContain("rounded-md");
+        expect(region.className).toContain("bg-fg-overlay-1");
+        expect(region.className).not.toContain("bg-slate-950");
+    });
+
     it("preserves mixed line endings in one complete large plain-text surface", () => {
         const content = `first line\r\nsecond line\r${"x".repeat(1_048_576)}\r\nlast line`;
 

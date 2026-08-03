@@ -3,6 +3,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { Icon } from "@/app/icon/Icon";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextCategoryItems } from "./context-inventory";
@@ -160,6 +161,21 @@ describe("ContextCategoryItems", () => {
         ).toBeTruthy();
         expect(screen.getByRole("button", { name: "Compacted history, Earlier conversation" })).toBeTruthy();
         expect(screen.queryByText("Turn preview 1")).toBeNull();
+    });
+
+    it("places the OpenCode-style disclosure icon at the right edge of each source row", () => {
+        const item = turn(0).children![0];
+        render(<InventoryHarness category="agent_instructions" items={[item]} />);
+
+        const button = screen.getByRole("button", {
+            name: "Assistant message 1, Answer with tool activity",
+        });
+        const disclosureIcon = button.querySelector("svg");
+        const expectedIcon = render(<Icon name="unfold-more" />).container.querySelector("svg");
+
+        expect(disclosureIcon).toBeTruthy();
+        expect(button.lastElementChild).toBe(disclosureIcon);
+        expect(disclosureIcon?.innerHTML).toBe(expectedIcon?.innerHTML);
     });
 
     it("renders string payloads verbatim with presentation-only line numbers", () => {

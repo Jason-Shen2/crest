@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Icon } from "@/app/icon/Icon";
-import { cn } from "@/util/util";
 import { useRef } from "react";
 import { ContextPayload } from "./context-payload";
 
@@ -53,17 +52,9 @@ export function ContextItem({
                 aria-controls={panelId}
                 aria-expanded={expanded}
                 aria-label={accessibleName}
-                className="flex w-full cursor-pointer items-start gap-2 px-3 py-2 text-left outline-none transition-colors motion-reduce:transition-none hover:bg-fg-overlay-1 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+                className="flex w-full cursor-pointer items-center gap-3 px-3 py-2 text-left outline-none transition-colors motion-reduce:transition-none hover:bg-fg-overlay-1 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
                 onClick={() => onToggle(item.id)}
             >
-                <Icon
-                    name="chevron-right"
-                    size={12}
-                    className={cn(
-                        "mt-0.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none",
-                        expanded && "rotate-90"
-                    )}
-                />
                 <span className="min-w-0 flex-1">
                     <span className="block truncate text-xs font-medium text-foreground">{item.title}</span>
                     {item.preview ? (
@@ -72,6 +63,7 @@ export function ContextItem({
                         </span>
                     ) : null}
                 </span>
+                <Icon name="unfold-more" size={14} className="shrink-0 text-muted-foreground/70" />
             </button>
             {expanded ? (
                 <ContextPayload itemId={item.id} panelId={panelId} labelledBy={buttonId} content={item.content} />

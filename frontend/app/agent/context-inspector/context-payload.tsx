@@ -47,11 +47,11 @@ function exceedsLineThreshold(text: string): boolean {
 
 function jsonTokenTone(token: string, source: string, offset: number): string {
     if (token.startsWith('"')) {
-        return /^\s*:/.test(source.slice(offset + token.length)) ? "text-sky-300" : "text-emerald-300";
+        return /^\s*:/.test(source.slice(offset + token.length)) ? "text-accent-200" : "text-foreground";
     }
-    if (/^(true|false|null)$/.test(token)) return "text-amber-300";
-    if (/^-?\d/.test(token)) return "text-violet-300";
-    return "text-slate-400";
+    if (/^(true|false|null)$/.test(token)) return "text-warning";
+    if (/^-?\d/.test(token)) return "text-accent-100";
+    return "text-muted-foreground/70";
 }
 
 function JsonLine({ line }: { line: string }) {
@@ -103,12 +103,12 @@ export function ContextPayload({
             aria-labelledby={labelledBy}
             tabIndex={0}
             data-testid={`context-payload-${itemId}`}
-            className="max-h-[min(52vh,36rem)] overflow-auto border-t border-border/60 bg-slate-950 text-slate-100 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+            className="mx-3 mt-1 mb-3 max-h-[min(52vh,36rem)] overflow-auto rounded-md border border-fg-overlay-2/70 bg-fg-overlay-1 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
         >
             {payload.large ? (
                 <pre
                     data-testid="context-payload-large-value"
-                    className="m-0 block w-full whitespace-pre px-3 py-2 font-mono text-[11px] leading-5 text-slate-100"
+                    className="m-0 block w-full whitespace-pre px-3 py-2.5 font-mono text-[11px] leading-5 text-foreground"
                 >
                     <code>{payload.text}</code>
                 </pre>
@@ -121,7 +121,7 @@ export function ContextPayload({
                                     <span
                                         aria-hidden="true"
                                         data-testid="context-payload-line-number"
-                                        className="select-none pr-4 text-right text-slate-600"
+                                        className="select-none pr-4 text-right text-muted-foreground/50"
                                     >
                                         {index + 1}
                                     </span>
