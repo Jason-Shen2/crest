@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
 
+import { registryModelsMapAtom } from "@/app/store/ai-registry-models";
+import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -32,6 +34,12 @@ const modalMocks = vi.hoisted(() => ({
 
 const threadProps = vi.hoisted(() => ({ latest: null as any }));
 const layoutProps = vi.hoisted(() => ({ openRightTool: vi.fn() }));
+const catalogMocks = vi.hoisted(() => ({ fetchRegistryModels: vi.fn() }));
+
+vi.mock("@/app/store/ai-registry-models", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/app/store/ai-registry-models")>()),
+    fetchRegistryModels: catalogMocks.fetchRegistryModels,
+}));
 
 vi.mock("@/app/workspace/workspace-layout-model", () => ({
     WorkspaceLayoutModel: { getInstance: () => layoutProps },
@@ -81,7 +89,7 @@ vi.mock("@/app/store/modalmodel", () => ({
 
 vi.mock("./assistant-ui", () => ({
     AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    Thread: (props: { beforeComposer?: React.ReactNode }) => {
+    Thread: (props: any) => {
         threadProps.latest = props;
         return (
             <div data-testid="assistant-thread">
@@ -117,11 +125,59 @@ afterEach(async () => {
     modelPickerProps.latest = null;
     modalMocks.pushModal.mockReset();
     layoutProps.openRightTool.mockClear();
+    catalogMocks.fetchRegistryModels.mockReset();
+    globalStore.set(registryModelsMapAtom, {});
+    globalStore.set(aiUserConfigAtom, { status: "loading", config: null });
     vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
 describe("AgentContent", () => {
+    it("uses the projected catalog for model labels, context, and picker data", async () => {
+        const model = makeModel();
+        globalStore.set(aiUserConfigAtom, {
+            status: "ok",
+            config: {
+                providers: { openai: { tokensecretname: "OPENAI_API_KEY" } },
+                default: { provider: "openai", model: "gpt-5" },
+            },
+        });
+        globalStore.set(registryModelsMapAtom, {
+            openai: {
+                status: "ok",
+                models: [
+                    {
+                        id: "gpt-5",
+                        name: "GPT-5 Fresh",
+                        reasoning: true,
+                        thinkinglevels: ["low", "medium", "high"],
+                        inputmodalities: ["text", "image"],
+                        context: 250_000,
+                    },
+                ],
+                fetchedAt: 1,
+            },
+        });
+
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+
+        await waitFor(() => expect(catalogMocks.fetchRegistryModels).toHaveBeenCalledWith("openai"));
+        expect(threadProps.latest.modelLabel).toBe("GPT-5 Fresh");
+        expect(modelPickerProps.latest.catalog[0].models[0]).toMatchObject({
+            id: "gpt-5",
+            displayName: "GPT-5 Fresh",
+            contextWindow: 250_000,
+        });
+    });
+
     it("opens Settings on Models and closes the model picker from Add", () => {
         const model = makeModel();
         render(

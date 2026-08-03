@@ -1,15 +1,14 @@
-// Static model registry. Two kinds of data live here:
+// Generated model registry. Two kinds of data live here:
 //   1. Request-building fields (api, baseUrl, thinkingLevelMap, compat) —
 //      these are authoritative for how requests are sent and are NOT
 //      auto-refreshed; edit manually when adding providers/models.
 //   2. Capability-display fields (reasoning, input, cost, contextWindow,
-//      maxTokens) — used as a fallback baseline; fresher values are
-//      overlaid at runtime from models.dev (see ai/models-dev-overlay.ts),
-//      which refreshes in the background on startup with local disk cache.
+//      maxTokens) — the offline baseline for ModelCatalogService. Electron
+//      overlays fresher provider records from pi.dev and persists the last
+//      valid result in model-catalog.json.
 //
-// Do not hand-edit capability fields expecting them to stick; the runtime
-// overlay will override them once fetched. Edit request-building fields
-// freely — they are the source of truth for request construction.
+// A failed refresh never removes this baseline. Edit request-building
+// fields here; capability changes may be superseded by the runtime catalog.
 
 import type { Model } from "./types";
 

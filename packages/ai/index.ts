@@ -6,12 +6,14 @@
 // Azure, Codex, Mistral, Cloudflare, Faux are stripped — re-add by
 // copying back from upstream and re-exporting here.
 
-export type { Static, TSchema } from "typebox";
 export { Type } from "typebox";
+export type { Static, TSchema } from "typebox";
 
 export * from "./api-registry";
 export * from "./env-api-keys";
+export * from "./model-catalog";
 export * from "./models";
+export * from "./pi-model-catalog-source";
 export type { AnthropicEffort, AnthropicOptions, AnthropicThinkingDisplay } from "./providers/anthropic";
 export type { GoogleOptions } from "./providers/google";
 export type { GoogleThinkingLevel } from "./providers/google-shared";

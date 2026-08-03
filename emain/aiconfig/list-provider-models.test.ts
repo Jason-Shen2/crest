@@ -3,13 +3,11 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@crest/ai/models", () => ({
-    getModels: vi.fn(() => []),
-    getSupportedThinkingLevels: vi.fn(() => []),
-}));
-vi.mock("../models-dev-overlay", () => ({ getCapabilityOverlay: vi.fn() }));
+import type { Api, Model, ModelCatalog } from "@crest/ai";
 
-import { APIType_AnthropicMessages, listProviderModels } from "./list-provider-models";
+vi.mock("./secrets", () => ({ getSecret: vi.fn() }));
+
+import { APIType_AnthropicMessages, listProviderModels, listRegistryModels } from "./list-provider-models";
 
 describe("listProviderModels", () => {
     afterEach(() => {
@@ -31,4 +29,43 @@ describe("listProviderModels", () => {
         ).resolves.toEqual([]);
         expect(fetch).not.toHaveBeenCalled();
     });
+
+    it("maps the shared catalog snapshot without mutating it", () => {
+        const sourceModel = model("gpt-next");
+        const catalog = {
+            getModels: vi.fn(() => [sourceModel]),
+        } as unknown as ModelCatalog;
+
+        expect(listRegistryModels(catalog, "openai")).toEqual([
+            {
+                id: "gpt-next",
+                name: "GPT Next",
+                reasoning: true,
+                thinkinglevels: ["minimal", "low", "medium", "high", "xhigh"],
+                inputmodalities: ["text", "image"],
+                context: 250_000,
+                maxoutputtokens: 32_000,
+                promptcost: 2,
+                completioncost: 8,
+            },
+        ]);
+        expect(catalog.getModels).toHaveBeenCalledWith("openai");
+        expect(sourceModel).toEqual(model("gpt-next"));
+    });
 });
+
+function model(id: string): Model<Api> {
+    return {
+        id,
+        name: "GPT Next",
+        api: "openai-responses",
+        provider: "openai",
+        baseUrl: "https://api.openai.com/v1",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: { input: 2, output: 8, cacheRead: 0.2, cacheWrite: 0 },
+        contextWindow: 250_000,
+        maxTokens: 32_000,
+        thinkingLevelMap: { off: null, xhigh: "xhigh" },
+    };
+}

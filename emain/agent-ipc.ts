@@ -44,15 +44,19 @@ import * as electron from "electron";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
-import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
-import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
-import { AgentPtyHost } from "./agent-tools/agent-pty-host";
+import { convertToLlm } from "@crest/agent/harness/messages";
+import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
+import type {
+    AgentHarnessTurnPreparation,
+    AgentHarnessTurnPreparationInput,
+    JsonlSessionMetadata,
+    SessionDetailInfo,
+} from "@crest/agent/harness/types";
+import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
+import type { Api, ImageContent, Message, Model, ModelCatalog } from "@crest/ai";
 import { parseAgentExecutionContext, type AgentExecutionContext } from "@crest/coding-agent/agent-execution-context";
 import { MaxAgentPtyCols, MaxAgentPtyRows } from "@crest/coding-agent/agent-pty-host";
-import {
-    AgentRuntimeRegistry,
-    AgentSessionMutationActiveError,
-} from "@crest/coding-agent/agent-runtime-registry";
+import { AgentRuntimeRegistry, AgentSessionMutationActiveError } from "@crest/coding-agent/agent-runtime-registry";
 import {
     AgentSessionRuntime,
     buildContextStateFromSessionEntries,
@@ -62,7 +66,10 @@ import {
     type AgentTurn,
 } from "@crest/coding-agent/agent-session-runtime";
 import type { SystemPromptInputs } from "@crest/coding-agent/build-system-prompt";
-import { extractChangeOperationsFromMessages, generateChangeOutline } from "@crest/coding-agent/change-review/change-outline";
+import {
+    extractChangeOperationsFromMessages,
+    generateChangeOutline,
+} from "@crest/coding-agent/change-review/change-outline";
 import { getBuiltInAgentCommands } from "@crest/coding-agent/commands/registry";
 import { commandNoop, commandSuccess } from "@crest/coding-agent/commands/session-command-results";
 import {
@@ -87,21 +94,23 @@ import { ContextDraftRegistry } from "@crest/coding-agent/context/draft-registry
 import { decorateContextHistory } from "@crest/coding-agent/context/history";
 import type { AgentContextSnapshot } from "@crest/coding-agent/context/inspector-types";
 import type { ContextProviderRequest } from "@crest/coding-agent/context/projector";
-import { createContextProviderAdapter, type ContextProviderAdapter } from "@crest/coding-agent/context/provider-adapter";
+import {
+    createContextProviderAdapter,
+    type ContextProviderAdapter,
+} from "@crest/coding-agent/context/provider-adapter";
 import { captureContextArtifactDraft } from "@crest/coding-agent/context/snapshot";
 import { summarizeContextDraft, type ContextSummaryCompletion } from "@crest/coding-agent/context/summary";
-import { createContextTurnPreparation, type ContextTurnDraftAttachmentInput } from "@crest/coding-agent/context/turn-preparer";
-import type { ContextBudgetResult, ContextReferenceConfig, ContextRepresentation } from "@crest/coding-agent/context/types";
+import {
+    createContextTurnPreparation,
+    type ContextTurnDraftAttachmentInput,
+} from "@crest/coding-agent/context/turn-preparer";
+import type {
+    ContextBudgetResult,
+    ContextReferenceConfig,
+    ContextRepresentation,
+} from "@crest/coding-agent/context/types";
 import { ContextReferenceError } from "@crest/coding-agent/context/types";
 import { buildAgentHarnessHost, type AgentHarnessHost } from "@crest/coding-agent/harness-factory";
-import { convertToLlm } from "@crest/agent/harness/messages";
-import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
-import type {
-    AgentHarnessTurnPreparation,
-    AgentHarnessTurnPreparationInput,
-    JsonlSessionMetadata,
-    SessionDetailInfo,
-} from "@crest/agent/harness/types";
 import { buildPermissionsHook, isBenchMode } from "@crest/coding-agent/permissions";
 import { loadProjectContextFiles } from "@crest/coding-agent/resource-loader";
 import {
@@ -120,10 +129,10 @@ import {
 } from "@crest/coding-agent/sessions";
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { getDefaultTools } from "@crest/coding-agent/tools";
+import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
+import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
+import { AgentPtyHost } from "./agent-tools/agent-pty-host";
 import { createSpawnCliAgentTool } from "./agent-tools/spawn-cli-agent";
-import type { AgentMessage, ThinkingLevel } from "@crest/agent/types";
-import type { Api, ImageContent, Message, Model } from "@crest/ai";
-import { getModel } from "@crest/ai";
 import { getSecret } from "./aiconfig/secrets";
 import { readAIUserConfig } from "./aiconfig/user-config";
 
@@ -280,6 +289,7 @@ export interface ResolvedWorkspaceAgentSender extends WorkspaceAgentRequestConte
 }
 
 export interface AgentIpcRegistrationOptions {
+    modelCatalog: ModelCatalog;
     resolveWorkspaceSender: (senderId: number) => Promise<ResolvedWorkspaceAgentSender | undefined>;
     loadWorkspace: (workspaceId: string) => Promise<Workspace>;
     saveWorkspaceAgentState: (data: SaveWorkspaceAgentStateData) => Promise<WorkspaceAgentStateCheckpoint>;
@@ -715,14 +725,19 @@ async function validateCloneInput(value: unknown): Promise<{
     }
 }
 
-function resolveModelOrThrow(provider: string, modelId: string): Model<Api> {
-    // pi's getModel is typed with literal generics; our renderer-supplied
-    // strings can't satisfy them. Cast — runtime accepts any registered id.
-    const model = (getModel as unknown as (p: string, m: string) => Model<Api> | undefined)(provider, modelId);
-    if (!model) {
-        throw new Error(`agent: unknown provider/model "${provider}/${modelId}"`);
+async function resolveModelOrThrow(catalog: ModelCatalog, provider: string, modelId: string): Promise<Model<Api>> {
+    catalog.activateProvider(provider);
+    const cached = catalog.getModel(provider, modelId);
+    if (cached) {
+        void catalog.refreshProvider(provider).catch((error) => {
+            console.log(`[agent-ipc] model catalog refresh failed for ${provider}`, error);
+        });
+        return cached;
     }
-    return model;
+    await catalog.refreshProvider(provider);
+    const refreshed = catalog.getModel(provider, modelId);
+    if (refreshed) return refreshed;
+    throw new Error(`agent: unknown provider/model "${provider}/${modelId}"`);
 }
 
 function buildPromptInputs(opts: SendOptions): SystemPromptInputs {
@@ -897,9 +912,10 @@ async function createAgentRuntimeFromSession(
 async function ensureAgentRuntime(
     metadata: JsonlSessionMetadata,
     opts: SendOptions,
+    modelCatalog: ModelCatalog,
     workspaceId?: string
 ): Promise<{ runtime: AgentSessionRuntime; config: AgentExecutionConfig }> {
-    const resolved = await resolveAgentExecution(opts);
+    const resolved = await resolveAgentExecution(opts, modelCatalog);
     const runtime = await runtimeRegistry.getOrCreate(metadata.path, async () => {
         const created = await createAgentRuntime(metadata, opts, resolved.config);
         if (workspaceId) {
@@ -917,9 +933,12 @@ async function ensureAgentRuntime(
     return { runtime, config: resolved.config };
 }
 
-async function resolveAgentExecution(opts: SendOptions): Promise<{ config: AgentExecutionConfig; apiKey?: string }> {
+async function resolveAgentExecution(
+    opts: SendOptions,
+    modelCatalog: ModelCatalog
+): Promise<{ config: AgentExecutionConfig; apiKey?: string }> {
     const apiKey = await resolveApiKey(opts);
-    const model = resolveModelOrThrow(opts.provider, opts.model);
+    const model = await resolveModelOrThrow(modelCatalog, opts.provider, opts.model);
     const config: AgentExecutionConfig = {
         promptInputs: buildPromptInputs(opts),
         model,
@@ -1463,7 +1482,8 @@ export async function prepareContextDraftForIpc(input: unknown) {
                 throw new ContextReferenceError("invalid_input", "sourceTurnId is not valid for session context");
             }
             const sourceEntries = await source.session.getBranch();
-            const sourceTitle = (await source.session.getSessionName()) || path.basename(source.metadata.cwd) || undefined;
+            const sourceTitle =
+                (await source.session.getSessionName()) || path.basename(source.metadata.cwd) || undefined;
             const draft = captureContextArtifactDraft({
                 sourceMetadata: source.metadata,
                 sourceEntries,
@@ -1513,7 +1533,7 @@ export async function discardContextDraftForIpc(input: unknown): Promise<{ disca
     }
 }
 
-async function resolveContextSummaryConfig() {
+async function resolveContextSummaryConfig(modelCatalog: ModelCatalog) {
     const result = await readAIUserConfig();
     if (result.status !== "ok" || !result.config) {
         throw new ContextReferenceError("disabled", "Context summaries require a valid AI configuration");
@@ -1525,14 +1545,14 @@ async function resolveContextSummaryConfig() {
         credentials?.token?.trim() ||
         (credentials?.tokensecretname ? await getSecret(credentials.tokensecretname) : undefined);
     return {
-        model: resolveModelOrThrow(provider, modelId),
+        model: await resolveModelOrThrow(modelCatalog, provider, modelId),
         modelKey: `${provider}/${modelId}`,
         ...(apiKey ? { apiKey } : {}),
         ...(contextSummaryCompletion ? { complete: contextSummaryCompletion } : {}),
     };
 }
 
-export async function summarizeContextDraftForIpc(input: unknown) {
+export async function summarizeContextDraftForIpc(input: unknown, modelCatalog: ModelCatalog) {
     await requireContextReferencesEnabled();
     const value = requireContextObject(input, "summarizeContextDraft");
     const target = await openCanonicalContextSession(value.targetSessionPath, "targetSessionPath");
@@ -1542,7 +1562,7 @@ export async function summarizeContextDraftForIpc(input: unknown) {
             registry: contextDraftRegistry,
             targetSessionPath: target.canonicalPath,
             draftId,
-            ...(await resolveContextSummaryConfig()),
+            ...(await resolveContextSummaryConfig(modelCatalog)),
         });
         if (!result.ok) throw result.error;
         return contextDraftRegistry.peek(target.canonicalPath, draftId);
@@ -2678,7 +2698,10 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                 sessionMetadata = await requireSessionBelongsToWorkspace(authenticated, sessionMetadata);
             }
             if (rendererContext.sessionPath) {
-                const contextSessionPath = await validateSessionPath(rendererContext.sessionPath, "context.sessionPath");
+                const contextSessionPath = await validateSessionPath(
+                    rendererContext.sessionPath,
+                    "context.sessionPath"
+                );
                 if (!sessionMetadata || contextSessionPath !== sessionMetadata.path) {
                     throw new Error("agent IPC: execution context session does not match the request");
                 }
@@ -2694,13 +2717,14 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                 },
             };
             await assertCurrent(event, authenticated);
-            const { config } = await resolveAgentExecution(opts);
+            const { config } = await resolveAgentExecution(opts, options.modelCatalog);
 
             if (sessionMetadata) {
                 return await runtimeRegistry.withSessionAccess(sessionMetadata.path, async () => {
                     const { runtime } = await ensureAgentRuntime(
                         sessionMetadata,
                         opts,
+                        options.modelCatalog,
                         authenticated.workspaceId
                     );
                     const authorization = makeAuthorization(event, authenticated);
@@ -2790,7 +2814,10 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
     electron.ipcMain.handle("agent:discard-context-draft", contextHandler(discardContextDraftForIpc));
     electron.ipcMain.handle("agent:list-reference-points", contextHandler(listAgentReferencePointsForIpc));
     electron.ipcMain.handle("agent:list-context-state", contextHandler(listContextStateForIpc));
-    electron.ipcMain.handle("agent:summarize-context-draft", contextHandler(summarizeContextDraftForIpc));
+    electron.ipcMain.handle(
+        "agent:summarize-context-draft",
+        contextHandler((input) => summarizeContextDraftForIpc(input, options.modelCatalog))
+    );
 
     electron.ipcMain.handle(
         "agent:navigate-tree",
@@ -2922,6 +2949,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                         const { runtime, config } = await ensureAgentRuntime(
                             metadata,
                             opts,
+                            options.modelCatalog,
                             authenticated.workspaceId
                         );
                         const authorization = makeAuthorization(event, authenticated);

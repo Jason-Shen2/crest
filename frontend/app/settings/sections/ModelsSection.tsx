@@ -19,8 +19,9 @@
 //   - No local providers (LM Studio, MLX, Ollama) — catalog is
 //     cloud-only.  Custom OpenAI-compatible endpoints fill the
 //     "self-hosted / third-party" niche instead.
-//   - Test-connection for custom endpoints uses listProviderModels
-//     (existing emain IPC) rather than a terax-specific `lm_ping`.
+//   - Test-connection for custom endpoints uses provider /models as an
+//     account/deployment availability check; capability facts come
+//     from the shared Electron model catalog.
 //   - "Configured" is determined by `cfg.providers[id].tokensecretname`
 //     being set, NOT by reading the keychain value.  The renderer
 //     never sees the actual key (it lives in the OS keychain, only
@@ -30,12 +31,11 @@
 //     config validator (`default.provider` and `default.model`
 //     must both be present).
 
-import { Icon } from "@/app/icon/Icon";
+import { CATALOG, type ProviderEntry } from "@/app/store/ai-catalog";
+import type { UserConfig, UserCustomEndpoint } from "@/app/store/ai-types";
+import { aiUserConfigAtom, writeAIUserConfig } from "@/app/store/ai-user-config";
 import { RpcApi } from "@/app/store/wshclientapi";
 import { TabRpcClient } from "@/app/store/wshrpcutil";
-import { CATALOG, type ProviderEntry } from "@/app/store/ai-catalog";
-import { aiUserConfigAtom, writeAIUserConfig } from "@/app/store/ai-user-config";
-import type { UserConfig, UserCustomEndpoint } from "@/app/store/ai-types";
 import { fireAndForget } from "@/util/util";
 import { useAtomValue } from "jotai";
 import { useCallback, useMemo, useState } from "react";
@@ -44,7 +44,7 @@ import { ChatModelPicker } from "../components/ChatModelPicker";
 import { CustomEndpointCard } from "../components/CustomEndpointCard";
 import { FieldRow } from "../components/FieldRow";
 import { Label } from "../components/Label";
-import { ProviderIcon, type ProviderId } from "../components/ProviderIcon";
+import { type ProviderId } from "../components/ProviderIcon";
 import { ProviderKeyCard } from "../components/ProviderKeyCard";
 import { SectionHeader } from "./SectionHeader";
 
@@ -95,8 +95,7 @@ export function ModelsSection() {
     }, [configuredIds, adding]);
 
     const addableProviderIds = useMemo<ProviderId[]>(
-        () =>
-            CATALOG.filter((p) => !visibleIds.has(p.id as ProviderId)).map((p) => p.id as ProviderId),
+        () => CATALOG.filter((p) => !visibleIds.has(p.id as ProviderId)).map((p) => p.id as ProviderId),
         [visibleIds]
     );
 
@@ -167,9 +166,7 @@ export function ModelsSection() {
             // emain validator (default.provider + default.model required)
             // doesn't choke on the next save.
             if (userConfig.default?.provider === id) {
-                const firstCatalog = CATALOG.find((p) =>
-                    nextConfig.providers?.[p.id]?.tokensecretname
-                );
+                const firstCatalog = CATALOG.find((p) => nextConfig.providers?.[p.id]?.tokensecretname);
                 const fallbackModel = firstCatalog?.models[0]?.id ?? "";
                 nextConfig.default = {
                     provider: firstCatalog?.id ?? "",
@@ -221,7 +218,10 @@ export function ModelsSection() {
             const trimmed = value.trim();
             if (!trimmed) throw new Error("key is empty");
             await RpcApi.SetSecretsCommand(TabRpcClient, { [provider.tokenSecretName]: trimmed });
-            const nextProviders = { ...userConfig.providers, [provider.id]: { tokensecretname: provider.tokenSecretName } };
+            const nextProviders = {
+                ...userConfig.providers,
+                [provider.id]: { tokensecretname: provider.tokenSecretName },
+            };
             const needsDefault = !userConfig.default?.provider || !userConfig.default?.model;
             const next: UserConfig = {
                 ...userConfig,
@@ -314,7 +314,11 @@ export function ModelsSection() {
                                 <ProviderKeyCard
                                     key={p.id}
                                     provider={p.id as ProviderId}
-                                    tokenSecretName={isConfigured ? userConfig.providers[p.id].tokensecretname ?? "" : p.tokenSecretName}
+                                    tokenSecretName={
+                                        isConfigured
+                                            ? (userConfig.providers[p.id].tokensecretname ?? "")
+                                            : p.tokenSecretName
+                                    }
                                     hasKey={isConfigured}
                                     initiallyEditing={isAdding && !isConfigured}
                                     onSave={(v) => handleSave(p, v)}
@@ -338,16 +342,13 @@ export function ModelsSection() {
                             // provider → OpenAI Compatible; in that case the
                             // entry's endpoint URL is empty and we want the
                             // form open immediately so they can paste it.
-                            const isNewlyAdded =
-                                !hasKey && !endpoint.endpoint.trim();
+                            const isNewlyAdded = !hasKey && !endpoint.endpoint.trim();
                             return (
                                 <CustomEndpointCard
                                     key={id}
                                     providerId={id}
                                     endpoint={endpoint}
-                                    tokenSecretName={
-                                        creds?.tokensecretname ?? endpoint.tokensecretname
-                                    }
+                                    tokenSecretName={creds?.tokensecretname ?? endpoint.tokensecretname}
                                     hasKey={hasKey}
                                     initiallyEditing={isNewlyAdded}
                                     onUpdate={(patch) => handleUpdateCustom(id, patch)}
@@ -380,10 +381,7 @@ function DefaultsBlock({
             <Label>Defaults</Label>
             <div className="flex flex-col gap-2.5 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2.5">
                 <FieldRow label="Chat model">
-                    <ChatModelPicker
-                        defaultModel={defaultModel}
-                        configuredProviderIds={configuredIds}
-                    />
+                    <ChatModelPicker defaultModel={defaultModel} configuredProviderIds={configuredIds} />
                 </FieldRow>
             </div>
         </div>
@@ -423,10 +421,7 @@ function ModelsUnavailable({ status, error }: { status: string; error?: string }
     }
     return (
         <div className="flex flex-col gap-7">
-            <SectionHeader
-                title="Models"
-                description="Connect the providers you use. Keys live in your OS keychain."
-            />
+            <SectionHeader title="Models" description="Connect the providers you use. Keys live in your OS keychain." />
             <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-[12px] text-rose-200">
                 <div className="font-medium">AI config unavailable</div>
                 <div className="mt-1 text-[11px] text-rose-300/80">
