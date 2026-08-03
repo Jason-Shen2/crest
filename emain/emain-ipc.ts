@@ -219,6 +219,7 @@ export function initIpcHandlers(modelCatalog: ModelCatalog) {
     // Agent runtime IPC (renderer ↔ Electron-main agent loop).
     // See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
     registerAgentIpcHandlers({
+        modelCatalog,
         loadWorkspace: (workspaceId) => WorkspaceService.GetWorkspace(workspaceId),
         saveWorkspaceAgentState: (data) => WorkspaceService.SaveWorkspaceAgentState(data),
         async resolveWorkspaceSender(senderId) {
