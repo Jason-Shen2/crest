@@ -29,7 +29,6 @@ export interface DiffReviewDialogProps {
     selectedPath?: string;
     loading?: boolean;
     errorMessage?: string;
-    warnings?: string[];
     locked?: boolean;
     emptyMessage?: string;
     footer: ReactNode;
@@ -246,7 +245,6 @@ export function DiffReviewDialog({
     selectedPath,
     loading = false,
     errorMessage,
-    warnings = [],
     locked = false,
     emptyMessage = "No workspace files will change.",
     footer,
@@ -259,9 +257,6 @@ export function DiffReviewDialog({
     const selectedIndex = selectedFile ? files.indexOf(selectedFile) : -1;
     const stats = aggregateStats(files);
     const optionId = (index: number) => `diff-review-file-${index}`;
-    const fileReasons = new Set(files.flatMap((file) => (file.reason ? [file.reason] : [])));
-    const uniqueWarnings = [...new Set(warnings.filter((warning) => warning && !fileReasons.has(warning)))];
-    const announcedWarnings = [...new Set(warnings.filter(Boolean))];
     const handleFilePaneResize = useCallback((clientX: number) => {
         if (!reviewBodyRef.current) return;
         const rect = reviewBodyRef.current.getBoundingClientRect();
@@ -317,16 +312,6 @@ export function DiffReviewDialog({
                                 )}
                             </div>
                         </div>
-                    </div>
-                    {uniqueWarnings.map((warning) => (
-                        <p key={warning} className="text-sm text-destructive">
-                            {warning}
-                        </p>
-                    ))}
-                    <div role="status" aria-label="Review warnings" aria-atomic="true" className="sr-only">
-                        {announcedWarnings.map((warning) => (
-                            <p key={warning}>{warning}</p>
-                        ))}
                     </div>
                     {errorMessage && (
                         <p role="alert" className="text-sm text-destructive">

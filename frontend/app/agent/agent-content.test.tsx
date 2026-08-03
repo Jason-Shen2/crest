@@ -529,6 +529,37 @@ describe("AgentContent", () => {
         expect(screen.getByRole("button", { name: "Undo 1 file" }).hasAttribute("disabled")).toBe(true);
     });
 
+    it("keeps checkpoint coverage diagnostics out of the turn undo dialog", async () => {
+        const coverageWarnings = [
+            ".DS_Store: ignored",
+            ".git: nested-repository",
+            ".vite: ignored",
+            "node_modules: ignored",
+        ];
+        renderRewindContent(
+            makeRewindClient({
+                previewTurnUndo: vi.fn(async () => makeTurnPreview("turn-undo", { coverageWarnings })),
+            })
+        );
+        act(() => {
+            hostProps.latest.onTurnsChange([{ turnId: "turn-a", responseMessages: [], status: "done" }]);
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({ turnChanges: [{ turnId: "turn-a", action: "undo" }] }),
+            });
+        });
+        await waitFor(() => expect(threadProps.latest.turnChanges.cards.has("turn-a")).toBe(true));
+
+        await act(async () => threadProps.latest.turnChanges.openMutation("turn-a"));
+
+        expect(turnDialogProps.latest.warnings ?? []).toEqual([]);
+        for (const warning of coverageWarnings) {
+            expect(screen.queryByText(warning)).toBeNull();
+        }
+    });
+
     it("shows force only for undo, hard blockers only cancel, and never force-redoes drift", async () => {
         const previewTurnUndo = vi
             .fn()
@@ -1218,8 +1249,8 @@ describe("AgentContent", () => {
         );
         await act(() => threadProps.latest.onRevertTurn("turn-a"));
         await waitFor(() => expect(screen.getByRole("button", { name: "Force revert" })).not.toBeNull());
-        expect(screen.getByText("checkpoint excluded a socket")).not.toBeNull();
-        expect(screen.getByText("checkpoint excluded generated output")).not.toBeNull();
+        expect(screen.queryByText("checkpoint excluded a socket")).toBeNull();
+        expect(screen.queryByText("checkpoint excluded generated output")).toBeNull();
         expect(screen.getAllByText("files changed on disk since the agent last wrote them")).toHaveLength(1);
         expect(screen.queryByRole("button", { name: "Revert 1 file" })).toBeNull();
         fireEvent.click(screen.getByRole("button", { name: "Force revert" }));

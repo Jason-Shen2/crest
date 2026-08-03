@@ -647,9 +647,6 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
         !rewindPreview.forceRequired;
     const rewindFileCount = rewindPreview?.fileCount ?? 0;
     const rewindFileLabel = `${rewindFileCount} ${rewindFileCount === 1 ? "file" : "files"}`;
-    const rewindWarnings = (rewindPreview?.coverageWarnings ?? []).filter(
-        (warning, index, allWarnings) => allWarnings.indexOf(warning) === index
-    );
     const turnMutationDialog = turnChangesController.dialog.kind !== "review";
     const turnMutationControlsLocked =
         turnMutationDialog &&
@@ -1151,7 +1148,6 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                         selectedPath={rewindSelectedPath}
                         loading={rewindController.preview.phase === "loading"}
                         errorMessage={rewindController.preview.errorMessage}
-                        warnings={rewindWarnings}
                         locked={rewindDialogLocked}
                         emptyMessage="No workspace files will change."
                         footer={
@@ -1209,7 +1205,6 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                         selectedPath={turnChangesController.dialog.selectedPath}
                         loading={turnChangesController.dialog.phase === "loading"}
                         errorMessage={turnChangesController.dialog.errorMessage}
-                        warnings={turnChangesController.dialog.preview?.coverageWarnings ?? []}
                         locked={turnMutationControlsLocked}
                         emptyMessage="No workspace files will change."
                         footer={

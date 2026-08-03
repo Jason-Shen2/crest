@@ -257,55 +257,19 @@ describe("DiffReviewDialog", () => {
         expect(screen.queryByText("covered")).toBeNull();
     });
 
-    it("renders forceable conflicts, deduplicated warnings, and errors with destructive styling", () => {
+    it("renders forceable conflicts and errors with destructive styling", () => {
         const warning = "files changed on disk since the agent last wrote them";
-        const coverageWarning = "checkpoint excluded an unsupported path";
         renderDialog({
-            warnings: [coverageWarning, warning, coverageWarning],
             errorMessage: "preview failed",
             files: [makeFile({ conflict: "forceable-drift", reason: warning })],
         });
 
-        const visibleCoverageWarning = screen
-            .getAllByText(coverageWarning)
-            .find((message) => message.className.includes("text-destructive"));
-        const visibleConflictWarning = screen
-            .getAllByText(warning)
-            .find((message) => !message.closest('[aria-label="Review warnings"]'));
-        expect(visibleCoverageWarning).toBeDefined();
-        expect(visibleConflictWarning).toBeDefined();
+        const visibleConflictWarning = screen.getByText(warning);
         expect(screen.getByRole("alert").textContent).toBe("preview failed");
-        for (const message of [visibleConflictWarning!, visibleCoverageWarning!, screen.getByText("preview failed")]) {
+        for (const message of [visibleConflictWarning, screen.getByText("preview failed")]) {
             expect(message.className).toMatch(/destructive|red|rose/);
         }
         expect(screen.getByRole("option", { name: /alpha\.ts/ }).className).toMatch(/destructive|red|rose/);
-    });
-
-    it("pre-mounts one warning status that announces deduplicated coverage and conflict warnings", () => {
-        const coverageWarning = "checkpoint excluded an unsupported path";
-        const conflictWarning = "files changed on disk since the agent last wrote them";
-        const files = [makeFile({ conflict: "forceable-drift", reason: conflictWarning })];
-        const { rerender, props } = renderDialog({ files, warnings: [] });
-        const initialWarningStatus = screen.getByRole("status", { name: "Review warnings" });
-
-        expect(initialWarningStatus.textContent).toBe("");
-        rerender(
-            <DiffReviewDialog {...props} files={files} warnings={[coverageWarning, conflictWarning, coverageWarning]} />
-        );
-
-        const warningStatus = screen.getByRole("status", { name: "Review warnings" });
-        expect(warningStatus).toBe(initialWarningStatus);
-        expect(warningStatus.getAttribute("aria-atomic")).toBe("true");
-        expect(warningStatus.querySelectorAll("p")).toHaveLength(2);
-        expect(warningStatus.textContent).toContain(coverageWarning);
-        expect(warningStatus.textContent).toContain(conflictWarning);
-        expect(
-            screen.getAllByText(coverageWarning).filter((message) => message.className.includes("text-destructive"))
-        ).toHaveLength(1);
-        expect(
-            screen.getAllByText(conflictWarning).filter((message) => !message.closest('[aria-label="Review warnings"]'))
-        ).toHaveLength(1);
-        expect(screen.getAllByRole("status")).toHaveLength(2);
     });
 
     it("shows an unavailable reason instead of fabricating an empty diff", () => {
