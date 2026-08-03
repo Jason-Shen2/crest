@@ -15,6 +15,7 @@ import * as keyutil from "../frontend/util/keyutil";
 import { fireAndForget, parseDataUrl } from "../frontend/util/util";
 import { registerAgentIpcHandlers } from "./agent-ipc";
 import { registerAgentObservabilityIpcHandlers } from "./agent-observability-ipc";
+import type { ModelCatalog } from "@crest/ai";
 import { resolveAuthenticatedWorkspaceSender } from "@crest/coding-agent/agent-execution-context";
 import { registerAiConfigIpcHandlers } from "./aiconfig-ipc";
 import {
@@ -214,7 +215,7 @@ function saveImageFileWithNativeDialog(
         });
 }
 
-export function initIpcHandlers() {
+export function initIpcHandlers(_modelCatalog: ModelCatalog) {
     // Agent runtime IPC (renderer ↔ Electron-main agent loop).
     // See emain/agent-ipc.ts + docs/agent-runtime-architecture.md.
     registerAgentIpcHandlers({
