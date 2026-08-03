@@ -1,11 +1,50 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
+// @vitest-environment jsdom
 
+import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
+import { registryModelsMapAtom } from "@/app/store/ai-registry-models";
+import { globalStore } from "@/app/store/jotaiStore";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { Provider } from "jotai";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { COMMAND_INLINE_FRAME_CLASSNAME } from "./command-inline-frame";
 import { ModelPickerInline } from "./model-picker-popover";
+
+const mocks = vi.hoisted(() => ({
+    fetchProviderModels: vi.fn(),
+    refreshProviderModels: vi.fn(),
+    fetchRegistryModels: vi.fn(),
+    refreshRegistryModels: vi.fn(),
+}));
+
+vi.mock("@/app/store/ai-provider-models", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/app/store/ai-provider-models")>()),
+    fetchProviderModels: mocks.fetchProviderModels,
+    refreshProviderModels: mocks.refreshProviderModels,
+}));
+
+vi.mock("@/app/store/ai-registry-models", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/app/store/ai-registry-models")>()),
+    fetchRegistryModels: mocks.fetchRegistryModels,
+    refreshRegistryModels: mocks.refreshRegistryModels,
+}));
+
+vi.mock("@/store/global", async () => {
+    const { atom } = await import("jotai");
+    return { atoms: { modalOpen: atom(false) } };
+});
+
+beforeEach(() => {
+    vi.clearAllMocks();
+    Element.prototype.scrollIntoView = vi.fn();
+    globalStore.set(providerModelsMapAtom, {});
+    globalStore.set(registryModelsMapAtom, {});
+});
+
+afterEach(cleanup);
 
 describe("ModelPickerInline", () => {
     it("renders inside the shared command inline frame", () => {
@@ -51,5 +90,84 @@ describe("ModelPickerInline", () => {
         expect(html).toContain("border-t border-white/[0.06]");
         expect(html).not.toContain("border-b border-fg-overlay-2");
         expect(html).not.toContain("bg-fg-overlay-1/60");
+    });
+
+    it("loads and force-refreshes catalog facts and account availability independently", async () => {
+        const userConfig = {
+            providers: { openai: { tokensecretname: "OPENAI_API_KEY" } },
+            default: { provider: "openai", model: "gpt-5" },
+        };
+        render(
+            <Provider store={globalStore}>
+                <ModelPickerInline
+                    open
+                    onOpenChange={() => undefined}
+                    selection={{ provider: "openai", model: "gpt-5" }}
+                    onSelectionChange={vi.fn()}
+                    userConfig={userConfig}
+                    userConfigStatus="ok"
+                />
+            </Provider>
+        );
+
+        await waitFor(() => {
+            expect(mocks.fetchRegistryModels).toHaveBeenCalledWith("openai");
+            expect(mocks.fetchProviderModels).toHaveBeenCalledWith("openai", userConfig);
+        });
+
+        fireEvent.mouseDown(screen.getByTitle("Refresh model list"));
+        expect(mocks.refreshRegistryModels).toHaveBeenCalledWith("openai");
+        expect(mocks.refreshProviderModels).toHaveBeenCalledWith("openai", userConfig);
+    });
+
+    it("uses registry metadata, filters by availability, and keeps availability-only ids provisional", async () => {
+        const userConfig = {
+            providers: { openai: { tokensecretname: "OPENAI_API_KEY" } },
+            default: { provider: "openai", model: "gpt-5" },
+        };
+        const registryState = {
+            status: "ok" as const,
+            models: [
+                {
+                    id: "gpt-5",
+                    name: "GPT-5 Fresh",
+                    reasoning: true,
+                    thinkinglevels: ["low", "medium", "high"],
+                    inputmodalities: ["text", "image"],
+                    context: 250_000,
+                },
+            ],
+            fetchedAt: 1,
+        };
+        globalStore.set(registryModelsMapAtom, { openai: registryState });
+        globalStore.set(providerModelsMapAtom, {
+            openai: {
+                status: "ok",
+                models: [
+                    { id: "gpt-5", name: "Stale availability name", context: 100_000 },
+                    { id: "deployment-alias", name: "Deployment Alias", context: 999_000 },
+                ],
+                fetchedAt: 1,
+            },
+        });
+
+        render(
+            <Provider store={globalStore}>
+                <ModelPickerInline
+                    open
+                    onOpenChange={() => undefined}
+                    selection={{ provider: "openai", model: "gpt-5" }}
+                    onSelectionChange={vi.fn()}
+                    userConfig={userConfig}
+                    userConfigStatus="ok"
+                />
+            </Provider>
+        );
+
+        expect(await screen.findAllByText("GPT-5 Fresh")).not.toHaveLength(0);
+        expect(screen.getByText("Deployment Alias")).toBeTruthy();
+        expect(screen.getAllByText(/250k/)).not.toHaveLength(0);
+        expect(screen.queryByText(/999k/)).toBeNull();
+        expect(globalStore.get(registryModelsMapAtom)).toEqual({ openai: registryState });
     });
 });

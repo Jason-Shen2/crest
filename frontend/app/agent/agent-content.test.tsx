@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
 
+import { registryModelsMapAtom } from "@/app/store/ai-registry-models";
+import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -20,6 +22,22 @@ const hostProps = vi.hoisted(() => ({
 
 const selectorProps = vi.hoisted(() => ({
     latest: null as any,
+}));
+
+const threadProps = vi.hoisted(() => ({ latest: null as any }));
+const pickerProps = vi.hoisted(() => ({ latest: null as any }));
+const catalogMocks = vi.hoisted(() => ({ fetchRegistryModels: vi.fn() }));
+
+vi.mock("@/app/store/ai-registry-models", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/app/store/ai-registry-models")>()),
+    fetchRegistryModels: catalogMocks.fetchRegistryModels,
+}));
+
+vi.mock("@/app/view/cmdblock/model-picker-popover", () => ({
+    ModelPickerInline: (props: any) => {
+        pickerProps.latest = props;
+        return null;
+    },
 }));
 
 vi.mock("./agent-chat-host", () => ({
@@ -53,12 +71,15 @@ vi.mock("@/app/view/cmdblock/session-selector", () => ({
 
 vi.mock("./assistant-ui", () => ({
     AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    Thread: ({ beforeComposer }: { beforeComposer?: React.ReactNode }) => (
-        <div data-testid="assistant-thread">
-            {beforeComposer}
-            <textarea aria-label="Prompt" />
-        </div>
-    ),
+    Thread: (props: any) => {
+        threadProps.latest = props;
+        return (
+            <div data-testid="assistant-thread">
+                {props.beforeComposer}
+                <textarea aria-label="Prompt" />
+            </div>
+        );
+    },
     useAui: () => ({ composer: () => ({ setText: vi.fn() }) }),
     useCrestAssistantRuntime: (value: unknown) => {
         hostProps.runtime = value;
@@ -83,11 +104,66 @@ afterEach(async () => {
     hostProps.submitResult = true;
     hostProps.submitError = "";
     selectorProps.latest = null;
+    threadProps.latest = null;
+    pickerProps.latest = null;
+    catalogMocks.fetchRegistryModels.mockReset();
+    globalStore.set(registryModelsMapAtom, {});
+    globalStore.set(aiUserConfigAtom, { status: "loading", config: null });
     vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
 describe("AgentContent", () => {
+    it("uses the projected catalog for model labels, context, and picker data", async () => {
+        const model = makeModel();
+        globalStore.set(aiUserConfigAtom, {
+            status: "ok",
+            config: {
+                providers: { openai: { tokensecretname: "OPENAI_API_KEY" } },
+                default: { provider: "openai", model: "gpt-5" },
+            },
+        });
+        globalStore.set(registryModelsMapAtom, {
+            openai: {
+                status: "ok",
+                models: [
+                    {
+                        id: "gpt-5",
+                        name: "GPT-5 Fresh",
+                        reasoning: true,
+                        thinkinglevels: ["low", "medium", "high"],
+                        inputmodalities: ["text", "image"],
+                        context: 250_000,
+                    },
+                ],
+                fetchedAt: 1,
+            },
+        });
+
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{
+                        workspaceId: "workspace-1",
+                        workspaceDir: "/repo",
+                        environment: {},
+                    }}
+                />
+            </Provider>
+        );
+
+        await waitFor(() => expect(catalogMocks.fetchRegistryModels).toHaveBeenCalledWith("openai"));
+        expect(threadProps.latest.modelLabel).toBe("GPT-5 Fresh");
+        expect(threadProps.latest.modelContextWindow).toBe(250_000);
+        expect(pickerProps.latest.catalog[0].models[0]).toMatchObject({
+            id: "gpt-5",
+            displayName: "GPT-5 Fresh",
+            contextWindow: 250_000,
+        });
+    });
+
     it("writes session changes to the model but keeps user errors component-local", () => {
         const model = makeModel();
         render(

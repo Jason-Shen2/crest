@@ -1,8 +1,9 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { CATALOG } from "@/app/store/ai-catalog";
+import { CATALOG, projectRegistryCatalog } from "@/app/store/ai-catalog";
 import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
+import { fetchRegistryModels, registryModelsMapAtom } from "@/app/store/ai-registry-models";
 import { resolveAIConfig } from "@/app/store/ai-resolver";
 import { AgentSelection, ResolvedAIConfig, ResolveError } from "@/app/store/ai-types";
 import { aiUserConfigAtom } from "@/app/store/ai-user-config";
@@ -230,6 +231,8 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
     const sessionRevision = useAtomValue(model.sessionGenerationAtom);
     const modelErrorMessage = useAtomValue(model.errorAtom);
     const providerModelsMap = useAtomValue(providerModelsMapAtom);
+    const registryModelsMap = useAtomValue(registryModelsMapAtom);
+    const effectiveCatalog = useMemo(() => projectRegistryCatalog(CATALOG, registryModelsMap), [registryModelsMap]);
     const activeSelection = useMemo<AgentSelection | null>(() => {
         if (agentStateValue.selection?.provider && agentStateValue.selection?.model) {
             return {
@@ -248,9 +251,13 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         }
         return null;
     }, [agentStateValue.selection, userConfigState.config]);
+    useEffect(() => {
+        if (!activeSelection?.provider) return;
+        void fetchRegistryModels(activeSelection.provider);
+    }, [activeSelection?.provider]);
     const modelDisplayLabel = useMemo(() => {
         if (!activeSelection) return "Pick model";
-        const provider = CATALOG.find((p) => p.id === activeSelection.provider);
+        const provider = effectiveCatalog.find((p) => p.id === activeSelection.provider);
         const modelMeta = provider?.models.find((m) => m.id === activeSelection.model);
         const liveMatch = providerModelsMap[activeSelection.provider]?.models.find(
             (m) => m.id === activeSelection.model
@@ -258,7 +265,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         const fallbackId = stripVendorPrefix(activeSelection.model);
         const base = cleanModelLabel(modelMeta?.displayName ?? liveMatch?.name ?? fallbackId);
         return activeSelection.reasoning ? `${base} · ${activeSelection.reasoning}` : base;
-    }, [activeSelection, providerModelsMap]);
+    }, [activeSelection, effectiveCatalog, providerModelsMap]);
     const resolved = useMemo<{ resolvedAIConfig: ResolvedAIConfig | null; aiConfigError: ResolveError | null }>(() => {
         if (!activeSelection) {
             return {
@@ -269,10 +276,10 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                 },
             };
         }
-        const result = resolveAIConfig(activeSelection, userConfigState.config ?? undefined, CATALOG);
+        const result = resolveAIConfig(activeSelection, userConfigState.config ?? undefined, effectiveCatalog);
         if ("config" in result) return { resolvedAIConfig: result.config, aiConfigError: null };
         return { resolvedAIConfig: null, aiConfigError: result.error };
-    }, [activeSelection, userConfigState.config]);
+    }, [activeSelection, effectiveCatalog, userConfigState.config]);
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
     const composerAnchorRef = useRef<HTMLDivElement>(null);
     const [agentRestoredTextRequest, setAgentRestoredTextRequest] = useState<
@@ -584,7 +591,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                                     userConfig={userConfigState.config}
                                     userConfigStatus={userConfigState.status}
                                     userConfigError={userConfigState.error}
-                                    catalog={CATALOG}
+                                    catalog={effectiveCatalog}
                                     onOpenConfigFile={() => {}}
                                     anchorRef={composerAnchorRef}
                                 />

@@ -24,9 +24,8 @@
 // Key differences from V2:
 //   - Only providers with saved credentials appear as tabs. An "+ Add"
 //     tab opens the AI setup wizard for unconfigured providers.
-//   - The active provider tab fetches /models live via the
-//     listprovidermodels wshrpc, so OpenRouter etc. no longer show
-//     only the ~2 catalog placeholders.
+//   - The active provider tab fetches catalog facts from Electron and
+//     account/deployment availability from the provider's /models API.
 //   - A cross-provider Pinned tab surfaces user-starred models for
 //     quick access. Pins persist via ai.json (Pinned []PinnedModel).
 
@@ -56,8 +55,7 @@ import {
     ModelEntry,
     ProviderEntry,
     ReasoningLevel,
-    findModel,
-    findProvider,
+    projectRegistryCatalog,
 } from "@/app/store/ai-catalog";
 import {
     ProviderModelInfoLite,
@@ -68,6 +66,7 @@ import {
     providersWithCredentials,
     refreshProviderModels,
 } from "@/app/store/ai-provider-models";
+import { fetchRegistryModels, refreshRegistryModels, registryModelsMapAtom } from "@/app/store/ai-registry-models";
 import { AIUserConfig, AgentSelection, UserCustomEndpointModel, UserCustomModel } from "@/app/store/ai-types";
 import { AIUserConfigStatus, isPinned, togglePinned } from "@/app/store/ai-user-config";
 import { CommandInlineFrame } from "./command-inline-frame";
@@ -167,6 +166,11 @@ export const ModelPickerPopover = memo(
         const [activeTab, setActiveTab] = useState<string>("");
         const searchRef = useRef<HTMLInputElement>(null);
         const listRef = useRef<HTMLDivElement>(null);
+        const registryModelsMap = useAtomValue(registryModelsMapAtom);
+        const effectiveCatalog = useMemo(
+            () => projectRegistryCatalog(catalog, registryModelsMap),
+            [catalog, registryModelsMap]
+        );
 
         const configuredProviders = useMemo(() => providersWithCredentials(userConfig), [userConfig]);
 
@@ -189,14 +193,16 @@ export const ModelPickerPopover = memo(
             // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [open]);
 
-        // Kick off the live-fetch when a provider tab becomes active.
-        // fetchProviderModels is a no-op when already cached, so this
-        // can fire freely on every activation.
+        // Catalog facts and account/deployment availability are
+        // independent reads with separate failure and cache state.
         useEffect(() => {
             if (!open) return;
             const tab = tabs.find((t) => t.id === activeTab);
             if (tab?.kind === "provider" && tab.providerId) {
-                void fetchProviderModels(tab.providerId, userConfig);
+                void Promise.all([
+                    fetchRegistryModels(tab.providerId),
+                    fetchProviderModels(tab.providerId, userConfig),
+                ]);
             }
         }, [open, activeTab, tabs, userConfig]);
 
@@ -213,17 +219,17 @@ export const ModelPickerPopover = memo(
 
         const rows = useMemo<PickRow[]>(() => {
             if (!activeTabSpec) return [];
-            if (activeTabSpec.kind === "pinned") return buildPinnedRows(catalog, userConfig);
+            if (activeTabSpec.kind === "pinned") return buildPinnedRows(effectiveCatalog, userConfig);
             if (activeTabSpec.kind === "provider" && activeTabSpec.providerId) {
                 return buildProviderRows(
                     activeTabSpec.providerId,
-                    catalog,
+                    effectiveCatalog,
                     userConfig,
                     liveState.status === "ok" ? liveState.models : null
                 );
             }
             return [];
-        }, [activeTabSpec, catalog, userConfig, liveState]);
+        }, [activeTabSpec, effectiveCatalog, userConfig, liveState]);
 
         const filtered = useMemo(() => filterRows(query, rows), [query, rows]);
 
@@ -319,7 +325,10 @@ export const ModelPickerPopover = memo(
 
         const handleRefresh = useCallback(() => {
             if (activeTabSpec?.kind === "provider" && activeTabSpec.providerId) {
-                void refreshProviderModels(activeTabSpec.providerId, userConfig);
+                void Promise.all([
+                    refreshRegistryModels(activeTabSpec.providerId),
+                    refreshProviderModels(activeTabSpec.providerId, userConfig),
+                ]);
             }
         }, [activeTabSpec, userConfig]);
 
@@ -372,7 +381,8 @@ export const ModelPickerPopover = memo(
         if (!open) return null;
 
         const showRefresh = activeTabSpec?.kind === "provider";
-        const isLoading = showRefresh && liveState.status === "loading";
+        const registryState = registryModelsMap[activeTabSpec?.providerId ?? ""];
+        const isLoading = showRefresh && (liveState.status === "loading" || registryState?.status === "loading");
 
         return (
             <FloatingPortal>
@@ -603,7 +613,7 @@ ProfilesStrip.displayName = "ProfilesStrip";
 //   - "Manage" action is wired to the AI setup wizard (which is also the
 //     write path the user would use to add a new provider — same role as
 //     warp's "Manage defaults" jumping to settings).
-//   - Refresh icon is crest-specific (warp doesn't fetch live models).
+//   - Refresh icon updates catalog facts and provider availability.
 
 const HEADER_BAR_HEIGHT_PX = 36;
 
@@ -1578,7 +1588,7 @@ function buildPinnedRows(catalog: ProviderEntry[], userConfig: AIUserConfig | nu
     return pins.map((pin) => {
         const provider = catalog.find((p) => p.id === pin.provider);
         const customEp = userConfig?.custom_endpoints?.[pin.provider];
-        const catalogModel = provider ? findModel(provider.id, pin.model) : undefined;
+        const catalogModel = provider?.models.find((model) => model.id === pin.model);
         const customModel = userConfig?.custom_models?.find((m) => m.provider === pin.provider && m.id === pin.model);
         const endpointModel = customEp?.models.find((m) => m.id === pin.model);
         const displayName =
@@ -1625,7 +1635,7 @@ function buildProviderRows(
     userConfig: AIUserConfig | null,
     liveModels: ProviderModelInfoLite[] | null
 ): PickRow[] {
-    const provider = findProvider(providerId);
+    const provider = catalog.find((entry) => entry.id === providerId);
     const customEp = userConfig?.custom_endpoints?.[providerId];
     const hasCreds = !!userConfig?.providers?.[providerId];
     const icon = provider?.icon ?? customEp?.icon ?? "code-02";
@@ -1644,9 +1654,8 @@ function buildProviderRows(
     const endpointByModelId = new Map<string, UserCustomEndpointModel>();
     for (const m of customEp?.models ?? []) endpointByModelId.set(m.id, m);
 
-    // Source of truth for which model ids show up. Prefer live results;
-    // fall back to the union of catalog + custom_models + custom_endpoint
-    // models when live data isn't available yet.
+    // `/models` contributes account/deployment visibility only. Catalog
+    // metadata remains authoritative for every known ID.
     const ids = new Set<string>();
     if (liveModels && liveModels.length > 0) {
         for (const m of liveModels) ids.add(m.id);
@@ -1667,7 +1676,7 @@ function buildProviderRows(
         const endpointDef = endpointByModelId.get(id);
 
         const displayName = cat?.displayName ?? custom?.displayname ?? endpointDef?.displayName ?? live?.name ?? id;
-        const context = cat?.contextWindow ?? custom?.contextwindow ?? endpointDef?.contextWindow ?? live?.context ?? 0;
+        const context = cat?.contextWindow ?? custom?.contextwindow ?? endpointDef?.contextWindow ?? 0;
         const capabilities: Capability[] =
             cat?.capabilities ??
             (custom?.capabilities as Capability[] | undefined) ??
@@ -1682,7 +1691,7 @@ function buildProviderRows(
             key: `model-${providerId}-${id}`,
             selection: { provider: providerId, model: id },
             displayName,
-            subtitle: composeSubtitle(context, capabilities, live?.description),
+            subtitle: composeSubtitle(context, capabilities),
             icon,
             providerId,
             needsCredentials: !hasCreds,
@@ -1691,18 +1700,10 @@ function buildProviderRows(
             detail: {
                 modelId: id,
                 providerLabel: providerDisplayName(providerId, userConfig),
-                description: cat?.description ?? custom?.description ?? endpointDef?.description ?? live?.description,
+                description: cat?.description ?? custom?.description ?? endpointDef?.description,
                 contextWindow: context || undefined,
                 capabilities,
                 reasoningLevels,
-                maxOutputTokens: live?.maxoutputtokens || undefined,
-                promptCostPerToken: live?.promptcost || undefined,
-                completionCostPerToken: live?.completioncost || undefined,
-                imageCostPerImage: live?.imagecost || undefined,
-                inputModalities:
-                    live?.inputmodalities && live.inputmodalities.length > 0 ? live.inputmodalities : undefined,
-                tokenizer: live?.tokenizer || undefined,
-                isModerated: live?.ismoderated || undefined,
             },
         });
     }
@@ -1848,6 +1849,11 @@ export const ModelPickerInline = memo(
         const searchRef = useRef<HTMLInputElement>(null);
         const listRef = useRef<HTMLDivElement>(null);
         const rootRef = useRef<HTMLDivElement>(null);
+        const registryModelsMap = useAtomValue(registryModelsMapAtom);
+        const effectiveCatalog = useMemo(
+            () => projectRegistryCatalog(catalog, registryModelsMap),
+            [catalog, registryModelsMap]
+        );
 
         const configuredProviders = useMemo(() => providersWithCredentials(userConfig), [userConfig]);
 
@@ -1872,7 +1878,10 @@ export const ModelPickerInline = memo(
             if (!open) return;
             const tab = tabs.find((t) => t.id === activeTab);
             if (tab?.kind === "provider" && tab.providerId) {
-                void fetchProviderModels(tab.providerId, userConfig);
+                void Promise.all([
+                    fetchRegistryModels(tab.providerId),
+                    fetchProviderModels(tab.providerId, userConfig),
+                ]);
             }
         }, [open, activeTab, tabs, userConfig]);
 
@@ -1885,17 +1894,17 @@ export const ModelPickerInline = memo(
 
         const rows = useMemo<PickRow[]>(() => {
             if (!activeTabSpec) return [];
-            if (activeTabSpec.kind === "pinned") return buildPinnedRows(catalog, userConfig);
+            if (activeTabSpec.kind === "pinned") return buildPinnedRows(effectiveCatalog, userConfig);
             if (activeTabSpec.kind === "provider" && activeTabSpec.providerId) {
                 return buildProviderRows(
                     activeTabSpec.providerId,
-                    catalog,
+                    effectiveCatalog,
                     userConfig,
                     liveState.status === "ok" ? liveState.models : null
                 );
             }
             return [];
-        }, [activeTabSpec, catalog, userConfig, liveState]);
+        }, [activeTabSpec, effectiveCatalog, userConfig, liveState]);
 
         const filtered = useMemo(() => filterRows(query, rows), [query, rows]);
 
@@ -2019,7 +2028,10 @@ export const ModelPickerInline = memo(
 
         const handleRefresh = useCallback(() => {
             if (activeTabSpec?.kind === "provider" && activeTabSpec.providerId) {
-                void refreshProviderModels(activeTabSpec.providerId, userConfig);
+                void Promise.all([
+                    refreshRegistryModels(activeTabSpec.providerId),
+                    refreshProviderModels(activeTabSpec.providerId, userConfig),
+                ]);
             }
         }, [activeTabSpec, userConfig]);
 
@@ -2072,7 +2084,8 @@ export const ModelPickerInline = memo(
         if (!open) return null;
 
         const showRefresh = activeTabSpec?.kind === "provider";
-        const isLoading = showRefresh && liveState.status === "loading";
+        const registryState = registryModelsMap[activeTabSpec?.providerId ?? ""];
+        const isLoading = showRefresh && (liveState.status === "loading" || registryState?.status === "loading");
 
         const showSidecarProvider = activeTabSpec?.kind !== "provider";
 

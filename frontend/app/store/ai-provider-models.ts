@@ -1,10 +1,10 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Per-provider live model list — fetched on demand from the provider's
-// /models endpoint via the listprovidermodels wshrpc, then cached in a
-// session-scoped jotai atom map. The picker mounts this; the wizard
-// has its own preview path that hits the same RPC directly.
+// Per-provider account/deployment availability — fetched on demand
+// from the provider's /models endpoint and cached in a session-scoped
+// jotai atom map. This state determines which IDs the current account
+// can see; capability metadata belongs to the Electron model catalog.
 //
 // Cache is in-memory only — restarting the app re-fetches. A per-provider
 // refresh helper bypasses the cache. Errors surface verbatim so the user
@@ -81,10 +81,7 @@ interface FetchInputs {
 // RPC needs from catalog + saved user config. Returns null when the
 // provider isn't known and isn't a custom endpoint either — caller treats
 // that as "no live fetch available".
-function resolveFetchInputs(
-    providerId: string,
-    userConfig: UserConfig | null
-): FetchInputs | null {
+function resolveFetchInputs(providerId: string, userConfig: UserConfig | null): FetchInputs | null {
     const creds = userConfig?.providers?.[providerId];
     const catalogProvider = findProvider(providerId);
     if (catalogProvider) {
@@ -120,20 +117,14 @@ function setSlice(providerId: string, next: ProviderModelsState) {
 // loading or has a successful result (use refreshProviderModels for
 // explicit refresh). Errors are cached in the slice so the picker can
 // render them inline; the next refresh clears them.
-export function fetchProviderModels(
-    providerId: string,
-    userConfig: UserConfig | null
-): Promise<void> {
+export function fetchProviderModels(providerId: string, userConfig: UserConfig | null): Promise<void> {
     const cur = globalStore.get(providerModelsMapAtom)[providerId];
     if (cur?.status === "ok") return Promise.resolve();
     if (cur?.status === "loading") return inflight.get(providerId) ?? Promise.resolve();
     return runFetch(providerId, userConfig);
 }
 
-export function refreshProviderModels(
-    providerId: string,
-    userConfig: UserConfig | null
-): Promise<void> {
+export function refreshProviderModels(providerId: string, userConfig: UserConfig | null): Promise<void> {
     return runFetch(providerId, userConfig);
 }
 
@@ -200,10 +191,7 @@ export function providersWithCredentials(userConfig: UserConfig | null): string[
 // providerDisplayName — small lookup used by the picker for tab labels.
 // Falls back to the id when nothing matches (which shouldn't happen for
 // configured providers, but keeps the UI from crashing on stale data).
-export function providerDisplayName(
-    providerId: string,
-    userConfig: UserConfig | null
-): string {
+export function providerDisplayName(providerId: string, userConfig: UserConfig | null): string {
     const cat = findProvider(providerId);
     if (cat) return cat.displayName;
     const custom = userConfig?.custom_endpoints?.[providerId];
