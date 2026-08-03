@@ -13,6 +13,7 @@ export * from "./api-registry";
 export * from "./env-api-keys";
 export * from "./model-catalog";
 export * from "./models";
+export * from "./pi-model-catalog-source";
 export type { AnthropicEffort, AnthropicOptions, AnthropicThinkingDisplay } from "./providers/anthropic";
 export type { GoogleOptions } from "./providers/google";
 export type { GoogleThinkingLevel } from "./providers/google-shared";
