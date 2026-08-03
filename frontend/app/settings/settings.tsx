@@ -32,13 +32,13 @@ import { modalsModel } from "@/app/store/modalmodel";
 import clsx from "clsx";
 import { useCallback, useEffect, useState } from "react";
 import ReactDOM from "react-dom";
-import "./settings.scss";
 import { AboutSection } from "./sections/AboutSection";
 import { AgentsSection } from "./sections/AgentsSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
 import { ThemesSection } from "./sections/ThemesSection";
+import "./settings.scss";
 
 export type SettingsTab = "general" | "themes" | "shortcuts" | "models" | "agents" | "about";
 
@@ -57,13 +57,12 @@ const TABS: TabDef[] = [
     { id: "about", label: "About", icon: "information-circle" },
 ];
 
-function readInitialTab(): SettingsTab {
-    // Future: read ?tab= from a deep-link or settings URL.
-    return "general";
+interface SettingsModalProps {
+    initialTab?: SettingsTab;
 }
 
-const SettingsModal = () => {
-    const [active, setActive] = useState<SettingsTab>(readInitialTab);
+const SettingsModal = ({ initialTab = "general" }: SettingsModalProps) => {
+    const [active, setActive] = useState<SettingsTab>(initialTab);
 
     const handleClose = useCallback(() => {
         modalsModel.popModal();

@@ -2482,7 +2482,6 @@ const SessionRow = memo(function SessionRow({
 }: SessionRowProps) {
     const detail = entry.sessionDetail;
     const hasName = !!entry.label;
-    const msgCount = detail?.messageCount ?? 0;
     const age = formatRelativeTime(entry.timestamp || new Date(0).toISOString());
     const displayText = hasName ? entry.label! : entry.preview || "";
     const secondaryText = detail?.cwd || "";
@@ -2517,14 +2516,17 @@ const SessionRow = memo(function SessionRow({
                 </span>
                 {secondaryText && <span className="resume-sub">{secondaryText}</span>}
             </div>
-            <div className="flex shrink-0 items-center gap-1">
+            <div className="session-row-actions grid shrink-0 grid-cols-[64px_92px_3ch] items-center gap-1">
                 <button
                     type="button"
                     aria-label={`Resume ${displayText}`}
+                    aria-hidden={!isActive}
+                    tabIndex={isActive ? 0 : -1}
                     data-session-action-selected={selectedAction === "resume" ? "true" : undefined}
                     disabled={isBusy || isDisabled}
                     className={cn(
-                        "h-[20px] cursor-pointer rounded-md px-[6px] text-[11px] transition-colors hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 disabled:pointer-events-none disabled:opacity-40",
+                        "h-[20px] w-full cursor-pointer rounded-md px-[6px] text-[11px] transition-colors hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 disabled:pointer-events-none disabled:opacity-40",
+                        !isActive && "pointer-events-none invisible",
                         selectedAction === "resume" ? "bg-accent/15 text-accent" : "text-secondary/65"
                     )}
                     onClick={(event) => {
@@ -2534,14 +2536,17 @@ const SessionRow = memo(function SessionRow({
                 >
                     Resume
                 </button>
-                {onAddContext && (
+                {onAddContext ? (
                     <button
                         type="button"
                         aria-label={`Add ${displayText} as context`}
+                        aria-hidden={!isActive}
+                        tabIndex={isActive ? 0 : -1}
                         data-session-action-selected={selectedAction === "reference" ? "true" : undefined}
                         disabled={isBusy || isDisabled}
                         className={cn(
-                            "h-[20px] cursor-pointer rounded-md px-[6px] text-[11px] transition-colors hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 disabled:pointer-events-none disabled:opacity-40",
+                            "h-[20px] w-full cursor-pointer rounded-md px-[6px] text-[11px] transition-colors hover:bg-white/[0.05] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 disabled:pointer-events-none disabled:opacity-40",
+                            !isActive && "pointer-events-none invisible",
                             selectedAction === "reference" ? "bg-accent/15 text-accent" : "text-secondary/65"
                         )}
                         onClick={(event) => {
@@ -2551,11 +2556,10 @@ const SessionRow = memo(function SessionRow({
                     >
                         Add context
                     </button>
+                ) : (
+                    <span />
                 )}
-                <span className="resume-meta">
-                    <span className="resume-count">{msgCount || ""}</span>
-                    <span className="resume-age">{age}</span>
-                </span>
+                <span className="resume-age">{age}</span>
             </div>
         </div>
     );
@@ -3112,24 +3116,13 @@ const TreeListStyles = `
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.resume-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11px;
-    line-height: ${TREE_ROW_LINE_HEIGHT_PX}px;
-}
-.resume-count {
-    min-width: 2ch;
-    color: rgba(148, 163, 184, 0.50);
-    text-align: right;
-}
 .resume-age {
     min-width: 3ch;
     color: rgba(148, 163, 184, 0.45);
+    font-size: 11px;
+    line-height: ${TREE_ROW_LINE_HEIGHT_PX}px;
     text-align: right;
 }
-.resume-row-active .resume-count,
 .resume-row-active .resume-age {
     color: rgba(92, 184, 232, 0.70);
 }

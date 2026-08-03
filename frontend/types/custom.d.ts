@@ -240,6 +240,7 @@ declare global {
         respondWorkspaceClose: (response: WorkspaceCloseResponse) => void; // workspace-close-response
         onWorkspaceCloseFinalize: (callback: (finalize: WorkspaceCloseFinalize) => void) => () => void; // workspace-close-finalize
         setWorkspaceSurface: (surface: WorkspaceSurfaceState) => void; // workspace-surface
+        setWorkspaceOverlayVisible: (visible: boolean) => void; // workspace-overlay-visible
         onTerminalSurfaceStatus: (callback: (status: TerminalSurfaceStatus) => void) => () => void; // terminal-surface-status
         onWaveInit: (callback: (initOpts: WaveInitOpts) => void) => void; // wave-init
         onBuilderInit: (callback: (initOpts: BuilderInitOpts) => void) => void; // builder-init

@@ -33,6 +33,7 @@ import { TerminalRendererKindMismatchError, TerminalSurfaceController } from "./
 import { delay, ensureBoundsAreVisible, waveKeyToElectronKey } from "./emain-util";
 import { resolveWaveWindowByWebContentsId } from "./emain-window-sender";
 import { WorkspaceCloseHandshake } from "./emain-workspace-close-handshake";
+import { WorkspaceOverlayController } from "./emain-workspace-overlay";
 import {
     applyWorkspaceSurface,
     isWorkspaceSurfaceState,
@@ -177,6 +178,7 @@ export class WaveBrowserWindow extends BaseWindow {
     workspaceSurface: WorkspaceSurfaceState;
     workspaceSurfaceRevision: number;
     terminalSurfaceController: TerminalSurfaceController;
+    workspaceOverlayController: WorkspaceOverlayController<WaveTabView>;
     terminalMembership = makeTerminalMembershipValidator((workspaceId, terminalTabId) =>
         WorkspaceService.ValidateWorkspaceTerminalTab(workspaceId, terminalTabId)
     );
@@ -281,6 +283,13 @@ export class WaveBrowserWindow extends BaseWindow {
         });
         positionWorkspaceView(this.workspaceView, this.getContentBounds());
         this.contentView.addChildView(this.workspaceView);
+        this.workspaceOverlayController = new WorkspaceOverlayController({
+            raiseWorkspace: () => this.contentView.addChildView(this.workspaceView),
+            focusWorkspace: () => this.focusWorkspaceOverlay(),
+            raiseTerminal: (tabView) => this.contentView.addChildView(tabView),
+            focusTerminal: (tabView) => this.focusTerminalView(tabView),
+            restoreSurface: () => this.restoreWorkspaceSurfaceAfterOverlay(),
+        });
         this.terminalSurfaceController = new TerminalSurfaceController({
             getCurrentIdentity: () => this.workspaceView.initOpts,
             getView: (terminalTabId) => this.allLoadedTabViews.get(terminalTabId),
@@ -307,8 +316,14 @@ export class WaveBrowserWindow extends BaseWindow {
                 tabView.isActiveTab = false;
                 tabView.positionTabOffScreen(this.getContentBounds());
             },
-            raiseView: (view) => this.contentView.addChildView(view as WaveTabView),
-            focusTerminal: (view) => this.focusTerminalView(view as WaveTabView),
+            raiseView: (view) => {
+                const tabView = view as WaveTabView;
+                this.workspaceOverlayController.raiseTerminal(tabView);
+            },
+            focusTerminal: (view) => {
+                const tabView = view as WaveTabView;
+                this.workspaceOverlayController.focusTerminal(tabView);
+            },
             focusWorkspace: () => this.focusWorkspaceView(),
             emitStatus: (status) => this.sendTerminalSurfaceStatus(status),
         });
@@ -512,11 +527,18 @@ export class WaveBrowserWindow extends BaseWindow {
                 if (
                     !tabView.webContents?.isDestroyed() &&
                     this.activeTabView === tabView &&
+                    !this.workspaceOverlayController.visible &&
                     !tabView.webContents.isFocused()
                 ) {
                     tabView.webContents.focus();
                 }
             }, delayMs);
+        }
+    }
+
+    focusWorkspaceOverlay() {
+        if (!this.workspaceView.webContents.isDestroyed()) {
+            this.workspaceView.webContents.focus();
         }
     }
 
@@ -627,7 +649,7 @@ export class WaveBrowserWindow extends BaseWindow {
         delete tabView.savedInitOpts.primaryTabStartup;
         await this.awaitWithDevTimeout(tabView.initPromise, "initPromise", tabView.waveTabId);
         tabView.positionTabOffScreen(this.getContentBounds());
-        this.contentView.addChildView(tabView);
+        this.workspaceOverlayController.attachTerminal(tabView);
         const startTime = Date.now();
         console.log(
             "before wave ready, init tab, sending wave-init",
@@ -674,11 +696,52 @@ export class WaveBrowserWindow extends BaseWindow {
                 workspaceView: this.workspaceView,
                 activeTabView: this.activeTabView,
                 allLoadedTabViews: this.allLoadedTabViews,
-                bringToFront: (view) => this.contentView.addChildView(view as WaveTabView),
+                bringToFront: (view) => {
+                    const tabView = view as WaveTabView;
+                    this.workspaceOverlayController.raiseTerminal(tabView);
+                },
+                canShowTerminal: (view) => this.canShowTerminalSurface(view as WaveTabView),
             },
             this.workspaceSurface,
             this.getContentBounds()
         );
+    }
+
+    canShowTerminalSurface(tabView: WaveTabView): boolean {
+        return (
+            this.workspaceSurface?.kind === "terminal" &&
+            this.workspaceSurface.bounds.width > 0 &&
+            this.workspaceSurface.bounds.height > 0 &&
+            !tabView.isDestroyed &&
+            this.terminalSurfaceController.isViewReady(tabView)
+        );
+    }
+
+    restoreWorkspaceSurfaceAfterOverlay() {
+        if (this.isDestroyed()) return;
+        if (this.workspaceSurface?.kind !== "terminal") {
+            this.finalizePositioning();
+            this.focusWorkspaceView();
+            return;
+        }
+        const tabView = this.allLoadedTabViews.get(this.workspaceSurface.terminalTabId);
+        if (!tabView || !this.canShowTerminalSurface(tabView)) {
+            this.workspaceOverlayController.showWorkspace();
+            this.focusWorkspaceView();
+            return;
+        }
+        this.finalizePositioning();
+        if (this.activeTabView && this.activeTabView !== tabView) {
+            this.activeTabView.isActiveTab = false;
+        }
+        tabView.isActiveTab = true;
+        this.activeTabView = tabView;
+        this.workspaceOverlayController.focusTerminal(tabView);
+    }
+
+    setWorkspaceOverlayVisible(visible: boolean) {
+        if (this.isDestroyed()) return;
+        this.workspaceOverlayController.setVisible(visible);
     }
 
     async setWorkspaceSurface(surface: WorkspaceSurfaceState) {
@@ -915,6 +978,14 @@ ipcMain.on("workspace-surface", async (event, surface: unknown) => {
         return;
     }
     await getWaveWindowById(sourceWorkspaceView.waveWindowId)?.setWorkspaceSurface(surface);
+});
+
+ipcMain.on("workspace-overlay-visible", (event, visible: unknown) => {
+    const sourceWorkspaceView = getWorkspaceViewByWebContentsId(event.sender.id);
+    if (!sourceWorkspaceView || typeof visible !== "boolean") {
+        return;
+    }
+    getWaveWindowById(sourceWorkspaceView.waveWindowId)?.setWorkspaceOverlayVisible(visible);
 });
 
 ipcMain.on("set-waveai-open", (event, isOpen: boolean) => {
@@ -1209,8 +1280,12 @@ async function quakeToggle() {
             }
             quakeRestoreFullscreenOnShow = false;
             window.focus();
-            if (window.activeTabView?.webContents) {
-                window.activeTabView.webContents.focus();
+            if (window.workspaceOverlayController.visible) {
+                window.focusWorkspaceOverlay();
+            } else if (window.activeTabView?.webContents) {
+                window.workspaceOverlayController.focusTerminal(window.activeTabView);
+            } else {
+                window.focusWorkspaceOverlay();
             }
         }
     } finally {

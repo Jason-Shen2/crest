@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { WorkspaceModalOverlay } from "@/app/modals/workspace-modal-overlay";
 import { useEffect, useSyncExternalStore } from "react";
 import type { TopTabCloseDecision, TopTabCloseRequest } from "./top-tab-close-coordinator";
 
@@ -46,26 +47,29 @@ export function TopTabCloseDialog({ controller }: { controller: TopTabCloseDialo
         return null;
     }
     return (
-        <div
-            role="dialog"
-            aria-modal="true"
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-        >
-            <div className="rounded bg-secondary p-4 shadow-xl">
-                <p>Save changes to {request.title}?</p>
-                <div className="mt-4 flex justify-end gap-2">
-                    {(["cancel", "discard", "save"] as const).map((decision) => (
-                        <button
-                            key={decision}
-                            type="button"
-                            className="cursor-pointer rounded px-3 py-1 capitalize hover:bg-white/10"
-                            onClick={() => controller.resolve(decision)}
-                        >
-                            {decision[0].toUpperCase() + decision.slice(1)}
-                        </button>
-                    ))}
+        <>
+            <WorkspaceModalOverlay visible />
+            <div
+                role="dialog"
+                aria-modal="true"
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+            >
+                <div className="rounded bg-secondary p-4 shadow-xl">
+                    <p>Save changes to {request.title}?</p>
+                    <div className="mt-4 flex justify-end gap-2">
+                        {(["cancel", "discard", "save"] as const).map((decision) => (
+                            <button
+                                key={decision}
+                                type="button"
+                                className="cursor-pointer rounded px-3 py-1 capitalize hover:bg-white/10"
+                                onClick={() => controller.resolve(decision)}
+                            >
+                                {decision[0].toUpperCase() + decision.slice(1)}
+                            </button>
+                        ))}
+                    </div>
                 </div>
             </div>
-        </div>
+        </>
     );
 }

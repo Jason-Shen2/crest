@@ -239,6 +239,15 @@ export class TerminalSurfaceController {
         this.deps.focusWorkspace();
     }
 
+    isViewReady(view: TerminalSurfaceView): boolean {
+        return (
+            !this.destroyed &&
+            !this.unreadyViews.has(view) &&
+            !this.disposedViews.has(view) &&
+            this.deps.isTerminalView(view)
+        );
+    }
+
     accepts(surface: WorkspaceSurfaceState): boolean {
         if (this.destroyed || surface.revision <= this.lastRevision) {
             return false;

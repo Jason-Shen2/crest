@@ -36,4 +36,13 @@ describe("FileCard", () => {
         expect(screen.getByRole("button", { name: /README\.md/i }).textContent).not.toContain("+");
         expect(container.querySelector('[data-slot="file-card-stats"]')).toBeNull();
     });
+
+    it("uses the Crest file icon for the filename", () => {
+        const { container } = render(<FileCard filename="docs/README.md">content</FileCard>);
+
+        const icon = container.querySelector('[data-slot="file-card-file-icon"]');
+        expect(icon).toBeTruthy();
+        expect(icon?.querySelector("path")?.getAttribute("stroke")).toBe("#22c55e");
+        expect(container.querySelector('[data-slot="file-card-file-badge"]')).toBeNull();
+    });
 });

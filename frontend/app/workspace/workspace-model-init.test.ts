@@ -30,4 +30,11 @@ describe("workspace renderer model initialization", () => {
             "workspaceModelOptionsFromLoadedWorkspace(initOpts.windowId, workspace, initOpts.generation)"
         );
     });
+
+    it("loads the AI user config before rendering the workspace", () => {
+        const source = fs.readFileSync(path.resolve(__dirname, "../../wave.ts"), "utf8");
+
+        expect(source).toContain('import { initAIUserConfig } from "@/app/store/ai-user-config";');
+        expect(source).toMatch(/globalStore\.set\(atoms\.fullConfigAtom, fullConfig\);\s+initAIUserConfig\(\);/);
+    });
 });

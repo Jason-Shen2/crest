@@ -152,6 +152,7 @@ contextBridge.exposeInMainWorld("api", {
     },
     sendWorkspaceCommand: (command) => ipcRenderer.send("workspace-command", command),
     setWorkspaceSurface: (surface) => ipcRenderer.send("workspace-surface", surface),
+    setWorkspaceOverlayVisible: (visible) => ipcRenderer.send("workspace-overlay-visible", visible),
     onTerminalSurfaceStatus: (callback) => {
         const listener = (_event: Electron.IpcRendererEvent, status: TerminalSurfaceStatus) => callback(status);
         ipcRenderer.on("terminal-surface-status", listener);

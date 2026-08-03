@@ -4,6 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { ChevronsUpDownIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
+import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/shadcn/ui/collapsible";
 import { cn } from "@/util/util";
 
@@ -50,7 +51,8 @@ export function FileCard({
     children,
 }: FileCardProps) {
     const [open, setOpen] = useState(defaultOpen);
-    const extension = filename.split(".").pop()?.toUpperCase();
+    const iconFilename = filename.split(/[\\/]/).pop() || filename;
+    const FileIcon = getFileIcon(iconFilename, false, false);
     const renamed = previousFilename && previousFilename !== filename;
     const showStats = additions != null || deletions != null;
 
@@ -68,13 +70,12 @@ export function FileCard({
                     aria-expanded={open}
                     className="bg-[var(--color-code-header-bg)] text-muted-foreground flex w-full cursor-pointer items-center gap-2 border-b border-border/50 px-3.5 py-1.5 text-left text-xs"
                 >
-                    {showIcon && extension && (
-                        <span
-                            data-slot="file-card-file-badge"
-                            className="bg-background inline-flex size-5 shrink-0 items-end justify-end rounded-sm border text-[8px] leading-none font-bold"
-                        >
-                            <span className="p-0.5">{extension}</span>
-                        </span>
+                    {showIcon && (
+                        <FileIcon
+                            data-slot="file-card-file-icon"
+                            aria-hidden="true"
+                            className="size-4 shrink-0"
+                        />
                     )}
                     <span className="min-w-0 flex-1 truncate font-mono">
                         {renamed ? (

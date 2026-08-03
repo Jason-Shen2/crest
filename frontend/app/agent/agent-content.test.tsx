@@ -22,6 +22,14 @@ const selectorProps = vi.hoisted(() => ({
     latest: null as any,
 }));
 
+const modelPickerProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
+const modalMocks = vi.hoisted(() => ({
+    pushModal: vi.fn(),
+}));
+
 vi.mock("./agent-chat-host", () => ({
     AgentChatHost: (props: any) => {
         hostProps.latest = props;
@@ -48,6 +56,19 @@ vi.mock("@/app/view/cmdblock/session-selector", () => ({
     SessionSelector: (props: any) => {
         selectorProps.latest = props;
         return null;
+    },
+}));
+
+vi.mock("@/app/view/cmdblock/model-picker-popover", () => ({
+    ModelPickerInline: (props: any) => {
+        modelPickerProps.latest = props;
+        return null;
+    },
+}));
+
+vi.mock("@/app/store/modalmodel", () => ({
+    modalsModel: {
+        pushModal: modalMocks.pushModal,
     },
 }));
 
@@ -83,11 +104,38 @@ afterEach(async () => {
     hostProps.submitResult = true;
     hostProps.submitError = "";
     selectorProps.latest = null;
+    modelPickerProps.latest = null;
+    modalMocks.pushModal.mockReset();
     vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
 describe("AgentContent", () => {
+    it("opens Settings on Models and closes the model picker from Add", () => {
+        const model = makeModel();
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{
+                        workspaceId: "workspace-1",
+                        workspaceDir: "/repo",
+                        environment: {},
+                    }}
+                />
+            </Provider>
+        );
+
+        act(() => hostProps.latest.onOpenModelPicker());
+        expect(modelPickerProps.latest.open).toBe(true);
+
+        act(() => modelPickerProps.latest.onOpenConfigFile());
+
+        expect(modelPickerProps.latest.open).toBe(false);
+        expect(modalMocks.pushModal).toHaveBeenCalledWith("SettingsModal", { initialTab: "models" });
+    });
+
     it("writes session changes to the model but keeps user errors component-local", () => {
         const model = makeModel();
         render(

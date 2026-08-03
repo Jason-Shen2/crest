@@ -12,6 +12,7 @@ import {
     resolveContextReferenceUiConfig,
     type ContextReferenceSendDisabledReason,
 } from "@/app/store/context-references";
+import { modalsModel } from "@/app/store/modalmodel";
 import type { PiAgentMessage, PiTurn } from "@/app/store/use-pi-chat";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
@@ -370,6 +371,10 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
         },
         [model]
     );
+    const onOpenModelSettings = useCallback(() => {
+        setAttachedPanelState((prev) => ({ ...prev, modelPickerOpen: false }));
+        modalsModel.pushModal("SettingsModal", { initialTab: "models" });
+    }, []);
     const onSessionChange = useCallback(
         (meta: AgentSessionMeta | undefined) => {
             model.selectSession(meta);
@@ -585,7 +590,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile }: Ag
                                     userConfigStatus={userConfigState.status}
                                     userConfigError={userConfigState.error}
                                     catalog={CATALOG}
-                                    onOpenConfigFile={() => {}}
+                                    onOpenConfigFile={onOpenModelSettings}
                                     anchorRef={composerAnchorRef}
                                 />
                                 <AgentInlineNotification

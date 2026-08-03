@@ -5,13 +5,13 @@ import { NewInstallOnboardingModal } from "@/app/onboarding/onboarding";
 import { CurrentOnboardingVersion } from "@/app/onboarding/onboarding-common";
 import { UpgradeOnboardingModal } from "@/app/onboarding/onboarding-upgrade";
 import { ClientModel } from "@/app/store/client-model";
-import { globalStore } from "@/app/store/jotaiStore";
-import { atoms, globalPrimaryTabStartup } from "@/store/global";
+import { globalPrimaryTabStartup } from "@/store/global";
 import { modalsModel } from "@/store/modalmodel";
 import * as jotai from "jotai";
 import { useEffect } from "react";
 import * as semver from "semver";
 import { getModalComponent } from "./modalregistry";
+import { WorkspaceModalOverlay } from "./workspace-modal-overlay";
 
 const ModalsRenderer = () => {
     const clientData = jotai.useAtomValue(ClientModel.getInstance().clientAtom);
@@ -49,11 +49,12 @@ const ModalsRenderer = () => {
             setUpgradeOnboardingOpen(true);
         }
     }, []);
-    useEffect(() => {
-        globalStore.set(atoms.modalOpen, rtn.length > 0);
-    }, [rtn]);
-
-    return <>{rtn}</>;
+    return (
+        <>
+            <WorkspaceModalOverlay visible={rtn.length > 0} />
+            {rtn}
+        </>
+    );
 };
 
 export { ModalsRenderer };
